@@ -26,13 +26,13 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { orderBy, where, QueryConstraint } from 'firebase/firestore';
+import { orderBy, QueryConstraint } from 'firebase/firestore';
 import debounce from 'lodash.debounce';
 import { toast } from 'react-toastify';
 
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import { clientsService, appointmentsService, transactionsService } from '@/lib/services/api';
-import type { Client, SortConfig, Appointment, Transaction } from '@/lib/types';
+import { clientsService } from '@/lib/services/api';
+import type { Client, SortConfig } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import {
   formatCPFCNPJ,
@@ -42,6 +42,7 @@ import {
   getInitials,
 } from '@/lib/utils/format';
 
+import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { ClientFormDialog } from './ClientFormDialog';
 import { ClientDetailDrawer } from './ClientDetailDrawer';
 
@@ -166,6 +167,7 @@ const ITEMS_PER_PAGE_OPTIONS = [10, 25, 50];
 
 export default function ClientsModule() {
   const { user } = useAuth();
+  const { isDark } = useTheme();
   const queryClient = useQueryClient();
   const businessId = user?.businessId || '';
 
@@ -217,40 +219,6 @@ export default function ClientsModule() {
     enabled: true,
   });
 
-  // ---- Fetch related data for selected client ----
-  const { data: recentAppointments = [] } = useQuery<Appointment[]>({
-    queryKey: ['clientAppointments', selectedClient?.id],
-    queryFn: async () => {
-      if (!selectedClient || !businessId) return [];
-      try {
-        const constraints: QueryConstraint[] = [
-          where('clientId', '==', selectedClient.id),
-          orderBy('date', 'desc'),
-        ];
-        return await appointmentsService.getAll(businessId, constraints);
-      } catch {
-        return [];
-      }
-    },
-    enabled: !!selectedClient && isDrawerOpen,
-  });
-
-  const { data: recentTransactions = [] } = useQuery<Transaction[]>({
-    queryKey: ['clientTransactions', selectedClient?.id],
-    queryFn: async () => {
-      if (!selectedClient || !businessId) return [];
-      try {
-        const constraints: QueryConstraint[] = [
-          where('clientId', '==', selectedClient.id),
-          orderBy('dueDate', 'desc'),
-        ];
-        return await transactionsService.getAll(businessId, constraints);
-      } catch {
-        return [];
-      }
-    },
-    enabled: !!selectedClient && isDrawerOpen,
-  });
 
   // ---- Filter + Search + Sort ----
   const filteredClients = useMemo(() => {
@@ -356,7 +324,7 @@ export default function ClientsModule() {
 
   function getSortIcon(field: string) {
     if (sortConfig.field !== field)
-      return <ArrowUpDown size={14} className="text-slate-300" />;
+      return <ArrowUpDown size={14} className="text-slate-300 dark:text-gray-600" />;
     return sortConfig.direction === 'asc' ? (
       <ArrowUp size={14} className="text-red-500" />
     ) : (
@@ -377,14 +345,14 @@ export default function ClientsModule() {
         className="flex flex-col sm:flex-row sm:items-center justify-between gap-4"
       >
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-red-50 flex items-center justify-center">
-            <Users size={22} className="text-red-600" />
+          <div className="w-10 h-10 rounded-xl bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
+            <Users size={22} className="text-red-600 dark:text-red-400" />
           </div>
           <div>
-            <h1 className="text-2xl font-display font-bold text-slate-900">
+            <h1 className="text-2xl font-display font-bold text-slate-900 dark:text-gray-100">
               Clientes
             </h1>
-            <p className="text-sm text-slate-500">
+            <p className="text-sm text-slate-500 dark:text-gray-400">
               {filteredClients.length} cliente{filteredClients.length !== 1 ? 's' : ''} encontrado{filteredClients.length !== 1 ? 's' : ''}
             </p>
           </div>
@@ -410,13 +378,13 @@ export default function ClientsModule() {
       >
         {/* Search */}
         <div className="relative flex-1 max-w-md">
-          <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-gray-500" />
           <input
             type="text"
             placeholder="Buscar por nome, CPF/CNPJ, telefone, e-mail..."
             value={searchTerm}
             onChange={handleSearchChange}
-            className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 bg-white text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400 transition-all"
+            className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-slate-800 dark:text-gray-200 placeholder:text-slate-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400 transition-all"
           />
         </div>
 
@@ -445,9 +413,12 @@ export default function ClientsModule() {
                       '&:hover': { backgroundColor: '#B91C1C' },
                     }
                   : {
-                      borderColor: '#E2E8F0',
-                      color: '#64748B',
-                      '&:hover': { borderColor: '#CBD5E1', backgroundColor: '#F8FAFC' },
+                      borderColor: isDark ? 'rgba(55, 65, 81, 1)' : '#E2E8F0',
+                      color: isDark ? '#9CA3AF' : '#64748B',
+                      '&:hover': {
+                        borderColor: isDark ? 'rgba(75, 85, 99, 1)' : '#CBD5E1',
+                        backgroundColor: isDark ? 'rgba(255,255,255,0.04)' : '#F8FAFC',
+                      },
                     }),
               }}
             />
@@ -460,7 +431,7 @@ export default function ClientsModule() {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.3, delay: 0.1 }}
-        className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden"
+        className="surface rounded-2xl overflow-hidden"
       >
         {isLoading ? (
           <LoadingSkeleton />
@@ -482,7 +453,7 @@ export default function ClientsModule() {
             <div className="hidden md:block overflow-x-auto">
               <table className="w-full">
                 <thead>
-                  <tr className="border-b border-slate-100">
+                  <tr className="border-b border-slate-100 dark:border-gray-800">
                     {[
                       { key: 'nome', label: 'Cliente' },
                       { key: 'cpfCnpj', label: 'CPF/CNPJ' },
@@ -495,7 +466,7 @@ export default function ClientsModule() {
                       <th
                         key={col.key}
                         onClick={() => handleSort(col.key)}
-                        className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider cursor-pointer select-none hover:text-slate-700 transition-colors"
+                        className="px-4 py-3 text-left text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase tracking-wider cursor-pointer select-none hover:text-slate-700 dark:hover:text-gray-300 transition-colors"
                       >
                         <span className="inline-flex items-center gap-1.5">
                           {col.label}
@@ -516,7 +487,7 @@ export default function ClientsModule() {
                         exit={{ opacity: 0, y: -8 }}
                         transition={{ duration: 0.2, delay: index * 0.03 }}
                         onClick={() => handleOpenDrawer(client)}
-                        className="border-b border-slate-50 cursor-pointer hover:bg-slate-50/80 transition-colors group"
+                        className="border-b border-slate-50 dark:border-gray-800/50 cursor-pointer hover:bg-slate-50/80 dark:hover:bg-white/[0.04] transition-colors group"
                       >
                         {/* Avatar + Nome */}
                         <td className="px-4 py-3">
@@ -532,10 +503,10 @@ export default function ClientsModule() {
                               {getInitials(client.nome)}
                             </div>
                             <div className="min-w-0">
-                              <p className="text-sm font-medium text-slate-800 truncate group-hover:text-red-600 transition-colors">
+                              <p className="text-sm font-medium text-slate-800 dark:text-gray-200 truncate group-hover:text-red-600 dark:group-hover:text-red-400 transition-colors">
                                 {client.nome}
                               </p>
-                              <p className="text-xs text-slate-400">
+                              <p className="text-xs text-slate-400 dark:text-gray-500">
                                 {client.tipo === 'pf' ? 'PF' : 'PJ'}
                               </p>
                             </div>
@@ -544,35 +515,35 @@ export default function ClientsModule() {
 
                         {/* CPF/CNPJ */}
                         <td className="px-4 py-3">
-                          <span className="text-sm text-slate-600 font-mono">
+                          <span className="text-sm text-slate-600 dark:text-gray-400 font-mono">
                             {formatCPFCNPJ(client.cpfCnpj)}
                           </span>
                         </td>
 
                         {/* Telefone */}
                         <td className="px-4 py-3">
-                          <span className="text-sm text-slate-600">
+                          <span className="text-sm text-slate-600 dark:text-gray-400">
                             {formatPhone(client.phone)}
                           </span>
                         </td>
 
                         {/* Email */}
                         <td className="px-4 py-3">
-                          <span className="text-sm text-slate-600 truncate block max-w-[180px]">
+                          <span className="text-sm text-slate-600 dark:text-gray-400 truncate block max-w-[180px]">
                             {client.email || '-'}
                           </span>
                         </td>
 
                         {/* Ultima Visita */}
                         <td className="px-4 py-3">
-                          <span className="text-sm text-slate-600">
+                          <span className="text-sm text-slate-600 dark:text-gray-400">
                             {client.lastVisit ? formatDate(client.lastVisit) : '-'}
                           </span>
                         </td>
 
                         {/* Total Gasto */}
                         <td className="px-4 py-3">
-                          <span className="text-sm font-semibold text-slate-800">
+                          <span className="text-sm font-semibold text-slate-800 dark:text-gray-200">
                             {formatCurrency(client.totalSpent)}
                           </span>
                         </td>
@@ -583,8 +554,12 @@ export default function ClientsModule() {
                             label={client.isActive ? 'Ativo' : 'Inativo'}
                             size="small"
                             sx={{
-                              backgroundColor: client.isActive ? '#DCFCE7' : '#F1F5F9',
-                              color: client.isActive ? '#16A34A' : '#64748B',
+                              backgroundColor: client.isActive
+                                ? (isDark ? 'rgba(34,197,94,0.1)' : '#DCFCE7')
+                                : (isDark ? 'rgba(148,163,184,0.1)' : '#F1F5F9'),
+                              color: client.isActive
+                                ? (isDark ? '#4ADE80' : '#16A34A')
+                                : (isDark ? '#94A3B8' : '#64748B'),
                               fontWeight: 600,
                               fontSize: '0.7rem',
                             }}
@@ -601,7 +576,7 @@ export default function ClientsModule() {
                                 handleOpenDrawer(client);
                               }}
                             >
-                              <MoreHorizontal size={16} className="text-slate-400" />
+                              <MoreHorizontal size={16} className="text-slate-400 dark:text-gray-500" />
                             </IconButton>
                           </Tooltip>
                         </td>
@@ -613,7 +588,7 @@ export default function ClientsModule() {
             </div>
 
             {/* Mobile Cards */}
-            <div className="md:hidden divide-y divide-slate-100">
+            <div className="md:hidden divide-y divide-slate-100 dark:divide-gray-800">
               <AnimatePresence mode="popLayout">
                 {paginatedClients.map((client, index) => (
                   <motion.div
@@ -623,7 +598,7 @@ export default function ClientsModule() {
                     exit={{ opacity: 0, y: -8 }}
                     transition={{ duration: 0.2, delay: index * 0.03 }}
                     onClick={() => handleOpenDrawer(client)}
-                    className="p-4 cursor-pointer hover:bg-slate-50/80 transition-colors active:bg-slate-100"
+                    className="p-4 cursor-pointer hover:bg-slate-50/80 dark:hover:bg-white/[0.04] transition-colors active:bg-slate-100 dark:active:bg-white/[0.06]"
                   >
                     <div className="flex items-start gap-3">
                       <div
@@ -638,41 +613,45 @@ export default function ClientsModule() {
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between gap-2">
-                          <p className="text-sm font-medium text-slate-800 truncate">
+                          <p className="text-sm font-medium text-slate-800 dark:text-gray-200 truncate">
                             {client.nome}
                           </p>
                           <Chip
                             label={client.isActive ? 'Ativo' : 'Inativo'}
                             size="small"
                             sx={{
-                              backgroundColor: client.isActive ? '#DCFCE7' : '#F1F5F9',
-                              color: client.isActive ? '#16A34A' : '#64748B',
+                              backgroundColor: client.isActive
+                                ? (isDark ? 'rgba(34,197,94,0.1)' : '#DCFCE7')
+                                : (isDark ? 'rgba(148,163,184,0.1)' : '#F1F5F9'),
+                              color: client.isActive
+                                ? (isDark ? '#4ADE80' : '#16A34A')
+                                : (isDark ? '#94A3B8' : '#64748B'),
                               fontWeight: 600,
                               fontSize: '0.65rem',
                               height: 20,
                             }}
                           />
                         </div>
-                        <p className="text-xs text-slate-400 mt-0.5 font-mono">
+                        <p className="text-xs text-slate-400 dark:text-gray-500 mt-0.5 font-mono">
                           {formatCPFCNPJ(client.cpfCnpj)}
                         </p>
                         <div className="flex items-center gap-4 mt-2">
-                          <span className="inline-flex items-center gap-1 text-xs text-slate-500">
+                          <span className="inline-flex items-center gap-1 text-xs text-slate-500 dark:text-gray-400">
                             <Phone size={12} />
                             {formatPhone(client.phone)}
                           </span>
                           {client.email && (
-                            <span className="inline-flex items-center gap-1 text-xs text-slate-500 truncate">
+                            <span className="inline-flex items-center gap-1 text-xs text-slate-500 dark:text-gray-400 truncate">
                               <Mail size={12} />
                               {client.email}
                             </span>
                           )}
                         </div>
                         <div className="flex items-center justify-between mt-2">
-                          <span className="text-xs text-slate-400">
+                          <span className="text-xs text-slate-400 dark:text-gray-500">
                             {client.lastVisit ? `Ultima visita: ${formatDate(client.lastVisit)}` : 'Sem visitas'}
                           </span>
-                          <span className="text-sm font-semibold text-slate-800">
+                          <span className="text-sm font-semibold text-slate-800 dark:text-gray-200">
                             {formatCurrency(client.totalSpent)}
                           </span>
                         </div>
@@ -687,8 +666,8 @@ export default function ClientsModule() {
 
         {/* Pagination */}
         {!isLoading && filteredClients.length > 0 && (
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 border-t border-slate-100 bg-slate-50/50">
-            <div className="flex items-center gap-2 text-sm text-slate-500">
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 border-t border-slate-100 dark:border-gray-800 bg-slate-50/50 dark:bg-white/[0.02]">
+            <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-gray-400">
               <span>Exibindo</span>
               <FormControl size="small" sx={{ minWidth: 70 }}>
                 <Select
@@ -726,7 +705,7 @@ export default function ClientsModule() {
 
               {generatePageNumbers(page, totalPages).map((p, i) =>
                 p === '...' ? (
-                  <span key={`ellipsis-${i}`} className="px-1 text-slate-400 text-sm">
+                  <span key={`ellipsis-${i}`} className="px-1 text-slate-400 dark:text-gray-500 text-sm">
                     ...
                   </span>
                 ) : (
@@ -737,7 +716,7 @@ export default function ClientsModule() {
                       'w-8 h-8 rounded-lg text-sm font-medium transition-colors',
                       page === p
                         ? 'bg-red-600 text-white'
-                        : 'text-slate-600 hover:bg-slate-100'
+                        : 'text-slate-600 dark:text-gray-400 hover:bg-slate-100 dark:hover:bg-white/[0.06]'
                     )}
                   >
                     {p}
@@ -774,15 +753,7 @@ export default function ClientsModule() {
         open={isDrawerOpen}
         onClose={() => setIsDrawerOpen(false)}
         client={selectedClient}
-        recentAppointments={recentAppointments}
-        recentTransactions={recentTransactions}
         onEdit={handleEditFromDrawer}
-        onSchedule={(client) => {
-          toast.info(`Agendar para ${client.nome} - funcionalidade em desenvolvimento`);
-        }}
-        onNewSale={(client) => {
-          toast.info(`Nova venda para ${client.nome} - funcionalidade em desenvolvimento`);
-        }}
         onToggleActive={handleToggleActive}
       />
     </div>
@@ -835,11 +806,11 @@ function LoadingSkeleton() {
 function ErrorState() {
   return (
     <div className="py-16 text-center">
-      <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-red-50 flex items-center justify-center">
+      <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
         <Users size={28} className="text-red-400" />
       </div>
-      <p className="text-slate-600 font-medium">Erro ao carregar clientes</p>
-      <p className="text-sm text-slate-400 mt-1">
+      <p className="text-slate-600 dark:text-gray-400 font-medium">Erro ao carregar clientes</p>
+      <p className="text-sm text-slate-400 dark:text-gray-500 mt-1">
         Verifique sua conexao e tente novamente.
       </p>
     </div>
@@ -857,26 +828,26 @@ function EmptyState({
 }) {
   return (
     <div className="py-16 text-center">
-      <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-slate-50 flex items-center justify-center">
-        <UserPlus size={36} className="text-slate-300" />
+      <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-slate-50 dark:bg-gray-800/50 flex items-center justify-center">
+        <UserPlus size={36} className="text-slate-300 dark:text-gray-600" />
       </div>
       {hasSearch ? (
         <>
-          <p className="text-slate-600 font-medium">Nenhum cliente encontrado</p>
-          <p className="text-sm text-slate-400 mt-1">
+          <p className="text-slate-600 dark:text-gray-400 font-medium">Nenhum cliente encontrado</p>
+          <p className="text-sm text-slate-400 dark:text-gray-500 mt-1">
             Tente alterar os filtros ou o termo de busca.
           </p>
           <button
             onClick={onClearFilters}
-            className="mt-4 px-4 py-2 text-sm text-red-600 font-medium hover:bg-red-50 rounded-lg transition-colors"
+            className="mt-4 px-4 py-2 text-sm text-red-600 dark:text-red-400 font-medium hover:bg-red-50 dark:hover:bg-red-500/10 rounded-lg transition-colors"
           >
             Limpar filtros
           </button>
         </>
       ) : (
         <>
-          <p className="text-slate-600 font-medium">Nenhum cliente cadastrado</p>
-          <p className="text-sm text-slate-400 mt-1">
+          <p className="text-slate-600 dark:text-gray-400 font-medium">Nenhum cliente cadastrado</p>
+          <p className="text-sm text-slate-400 dark:text-gray-500 mt-1">
             Comece adicionando seu primeiro cliente.
           </p>
           <motion.button

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Dialog,
@@ -35,11 +35,16 @@ import {
   Send,
   FileCode,
   Printer,
+  Loader2,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
+import { collection, query, where, orderBy, getDocs, doc as firestoreDoc, updateDoc } from 'firebase/firestore';
+import { db } from '@/lib/config/firebase';
+import { useAuth } from '@/app/components/providers/AuthProvider';
 import type { FiscalDocument, FiscalDocType, FiscalDocStatus, FiscalItem } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatCPFCNPJ, formatDateTime, getStatusColor } from '@/lib/utils/format';
+import { useTheme } from '@/app/components/providers/ThemeProvider';
 import EmitirNotaDialog from './EmitirNotaDialog';
 import CertificateManager from './CertificateManager';
 
@@ -52,243 +57,6 @@ interface FiscalModuleProps {
 }
 
 type StatusTab = 'todas' | FiscalDocStatus;
-
-// ==============================================
-// MOCK DATA
-// ==============================================
-
-const mockDocuments: FiscalDocument[] = [
-  {
-    id: 'nf-001',
-    businessId: 'biz-001',
-    type: 'nfe',
-    number: 1247,
-    series: '1',
-    accessKey: '35260312345678000190550010000012471000000001',
-    protocol: '135260300012345',
-    status: 'autorizada',
-    clientId: 'c-001',
-    clientName: 'Tech Solutions LTDA',
-    clientCpfCnpj: '12345678000190',
-    items: [
-      { description: 'Shampoo Profissional 500ml', quantity: 10, unitPrice: 45.9, totalPrice: 459.0, ncm: '33051000', cfop: '5102', unit: 'UN' },
-      { description: 'Condicionador Hidratante 500ml', quantity: 5, unitPrice: 42.5, totalPrice: 212.5, ncm: '33051000', cfop: '5102', unit: 'UN' },
-    ],
-    totalValue: 671.5,
-    issueDate: '2026-03-13T10:30:00',
-    xmlUrl: '/mock/xml/nf-001.xml',
-    pdfUrl: '/mock/pdf/nf-001.pdf',
-    createdAt: '2026-03-13T10:28:00',
-    updatedAt: '2026-03-13T10:30:00',
-  },
-  {
-    id: 'nf-002',
-    businessId: 'biz-001',
-    type: 'nfce',
-    number: 4589,
-    series: '1',
-    accessKey: '35260312345678000190650010000045891000000002',
-    protocol: '135260300012346',
-    status: 'autorizada',
-    clientId: 'c-002',
-    clientName: 'Maria Silva',
-    clientCpfCnpj: '12345678901',
-    items: [
-      { description: 'Corte Feminino', quantity: 1, unitPrice: 120.0, totalPrice: 120.0, unit: 'UN' },
-    ],
-    totalValue: 120.0,
-    issueDate: '2026-03-12T15:45:00',
-    xmlUrl: '/mock/xml/nf-002.xml',
-    pdfUrl: '/mock/pdf/nf-002.pdf',
-    createdAt: '2026-03-12T15:44:00',
-    updatedAt: '2026-03-12T15:45:00',
-  },
-  {
-    id: 'nf-003',
-    businessId: 'biz-001',
-    type: 'nfse',
-    number: 892,
-    series: 'U',
-    status: 'autorizada',
-    clientId: 'c-003',
-    clientName: 'Comercio ABC EIRELI',
-    clientCpfCnpj: '98765432000110',
-    items: [
-      { description: 'Consultoria em Marketing Digital', quantity: 1, unitPrice: 3500.0, totalPrice: 3500.0, unit: 'SV', taxes: { iss: { aliquota: 5, valor: 175 } } },
-    ],
-    totalValue: 3500.0,
-    issueDate: '2026-03-11T09:00:00',
-    xmlUrl: '/mock/xml/nf-003.xml',
-    pdfUrl: '/mock/pdf/nf-003.pdf',
-    createdAt: '2026-03-11T08:58:00',
-    updatedAt: '2026-03-11T09:00:00',
-  },
-  {
-    id: 'nf-004',
-    businessId: 'biz-001',
-    type: 'nfe',
-    number: 1248,
-    series: '1',
-    status: 'processando',
-    clientName: 'Joao Santos',
-    clientCpfCnpj: '98765432109',
-    items: [
-      { description: 'Oleo Capilar 100ml', quantity: 20, unitPrice: 38.9, totalPrice: 778.0, ncm: '33059010', cfop: '5102', unit: 'UN' },
-    ],
-    totalValue: 778.0,
-    issueDate: '2026-03-13T11:20:00',
-    createdAt: '2026-03-13T11:20:00',
-    updatedAt: '2026-03-13T11:20:00',
-  },
-  {
-    id: 'nf-005',
-    businessId: 'biz-001',
-    type: 'nfce',
-    number: 4590,
-    series: '1',
-    status: 'rejeitada',
-    clientName: 'Ana Oliveira',
-    clientCpfCnpj: '11122233344',
-    items: [
-      { description: 'Tintura Capilar 60g', quantity: 2, unitPrice: 28.0, totalPrice: 56.0, ncm: '33059090', cfop: '5102', unit: 'UN' },
-    ],
-    totalValue: 56.0,
-    issueDate: '2026-03-12T16:30:00',
-    statusMessage: 'Rejeicao: CNPJ do emitente nao cadastrado no ambiente de producao.',
-    createdAt: '2026-03-12T16:30:00',
-    updatedAt: '2026-03-12T16:31:00',
-  },
-  {
-    id: 'nf-006',
-    businessId: 'biz-001',
-    type: 'nfe',
-    number: 1245,
-    series: '1',
-    accessKey: '35260312345678000190550010000012451000000003',
-    protocol: '135260300012340',
-    status: 'cancelada',
-    clientName: 'Pedro Ferreira',
-    clientCpfCnpj: '44455566677',
-    items: [
-      { description: 'Creme de Tratamento 300g', quantity: 3, unitPrice: 55.0, totalPrice: 165.0, ncm: '33059090', cfop: '5102', unit: 'UN' },
-    ],
-    totalValue: 165.0,
-    issueDate: '2026-03-10T14:00:00',
-    canceledAt: '2026-03-10T16:00:00',
-    cancelReason: 'Erro no valor dos itens',
-    xmlUrl: '/mock/xml/nf-006.xml',
-    pdfUrl: '/mock/pdf/nf-006.pdf',
-    createdAt: '2026-03-10T13:58:00',
-    updatedAt: '2026-03-10T16:00:00',
-  },
-  {
-    id: 'nf-007',
-    businessId: 'biz-001',
-    type: 'nfse',
-    status: 'rascunho',
-    clientName: 'Carlos Mendes',
-    clientCpfCnpj: '55566677788',
-    items: [
-      { description: 'Servico de Manutencao', quantity: 1, unitPrice: 800.0, totalPrice: 800.0, unit: 'SV', taxes: { iss: { aliquota: 3, valor: 24 } } },
-    ],
-    totalValue: 800.0,
-    issueDate: '2026-03-13T08:00:00',
-    createdAt: '2026-03-13T08:00:00',
-    updatedAt: '2026-03-13T08:00:00',
-  },
-  {
-    id: 'nf-008',
-    businessId: 'biz-001',
-    type: 'nfce',
-    number: 4591,
-    series: '1',
-    status: 'erro',
-    clientName: 'Fernanda Lima',
-    clientCpfCnpj: '66677788899',
-    items: [
-      { description: 'Shampoo Profissional 500ml', quantity: 1, unitPrice: 45.9, totalPrice: 45.9, ncm: '33051000', cfop: '5102', unit: 'UN' },
-    ],
-    totalValue: 45.9,
-    issueDate: '2026-03-12T18:00:00',
-    statusMessage: 'Erro de comunicacao com o SEFAZ. Tente novamente.',
-    createdAt: '2026-03-12T18:00:00',
-    updatedAt: '2026-03-12T18:01:00',
-  },
-  {
-    id: 'nf-009',
-    businessId: 'biz-001',
-    type: 'nfe',
-    number: 1246,
-    series: '1',
-    accessKey: '35260312345678000190550010000012461000000004',
-    protocol: '135260300012342',
-    status: 'autorizada',
-    clientName: 'Distribuidora Norte LTDA',
-    clientCpfCnpj: '11222333000144',
-    items: [
-      { description: 'Shampoo Profissional 500ml', quantity: 50, unitPrice: 35.0, totalPrice: 1750.0, ncm: '33051000', cfop: '5102', unit: 'UN' },
-      { description: 'Condicionador Hidratante 500ml', quantity: 50, unitPrice: 32.0, totalPrice: 1600.0, ncm: '33051000', cfop: '5102', unit: 'UN' },
-      { description: 'Creme de Tratamento 300g', quantity: 30, unitPrice: 42.0, totalPrice: 1260.0, ncm: '33059090', cfop: '5102', unit: 'UN' },
-    ],
-    totalValue: 4610.0,
-    issueDate: '2026-03-10T11:00:00',
-    xmlUrl: '/mock/xml/nf-009.xml',
-    pdfUrl: '/mock/pdf/nf-009.pdf',
-    createdAt: '2026-03-10T10:58:00',
-    updatedAt: '2026-03-10T11:00:00',
-  },
-  {
-    id: 'nf-010',
-    businessId: 'biz-001',
-    type: 'nfse',
-    number: 891,
-    series: 'U',
-    accessKey: '35260312345678000190990010000008911000000005',
-    status: 'autorizada',
-    clientName: 'Studio Design ME',
-    clientCpfCnpj: '22333444000155',
-    items: [
-      { description: 'Design de Identidade Visual', quantity: 1, unitPrice: 5000.0, totalPrice: 5000.0, unit: 'SV', taxes: { iss: { aliquota: 5, valor: 250 } } },
-    ],
-    totalValue: 5000.0,
-    issueDate: '2026-03-09T10:00:00',
-    xmlUrl: '/mock/xml/nf-010.xml',
-    pdfUrl: '/mock/pdf/nf-010.pdf',
-    createdAt: '2026-03-09T09:58:00',
-    updatedAt: '2026-03-09T10:00:00',
-  },
-];
-
-const MOCK_XML = `<?xml version="1.0" encoding="UTF-8"?>
-<nfeProc xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">
-  <NFe xmlns="http://www.portalfiscal.inf.br/nfe">
-    <infNFe Id="NFe35260312345678000190550010000012471000000001" versao="4.00">
-      <ide>
-        <cUF>35</cUF>
-        <cNF>00000001</cNF>
-        <natOp>Venda de mercadoria</natOp>
-        <mod>55</mod>
-        <serie>1</serie>
-        <nNF>1247</nNF>
-        <dhEmi>2026-03-13T10:30:00-03:00</dhEmi>
-        <tpNF>1</tpNF>
-        <idDest>1</idDest>
-        <cMunFG>3550308</cMunFG>
-        <tpImp>1</tpImp>
-        <tpEmis>1</tpEmis>
-        <finNFe>1</finNFe>
-      </ide>
-      <emit>
-        <CNPJ>12345678000190</CNPJ>
-        <xNome>EMPRESA SERVICOS LTDA</xNome>
-      </emit>
-      <dest>
-        <CNPJ>12345678000190</CNPJ>
-        <xNome>Tech Solutions LTDA</xNome>
-      </dest>
-    </infNFe>
-  </NFe>
-</nfeProc>`;
 
 // ==============================================
 // ANIMATION VARIANTS
@@ -331,7 +99,7 @@ const STATUS_TABS: { value: StatusTab; label: string }[] = [
   { value: 'erro', label: 'Erros' },
 ];
 
-const ITEMS_PER_PAGE = 5;
+const ITEMS_PER_PAGE = 10;
 
 // ==============================================
 // STATUS CHIP COMPONENT
@@ -385,9 +153,7 @@ function StatCard({ label, value, icon, iconBg }: StatCardProps) {
     <motion.div
       variants={itemVariants}
       className={cn(
-        'relative overflow-hidden rounded-xl border border-border/60',
-        'bg-white/70 backdrop-blur-sm p-5',
-        'hover:shadow-sm transition-shadow duration-200',
+        'surface stat-card-accent hover-lift rounded-xl p-5 overflow-hidden',
       )}
     >
       <div className="flex items-center justify-between">
@@ -411,13 +177,16 @@ interface DocumentDetailDialogProps {
   open: boolean;
   onClose: () => void;
   document: FiscalDocument | null;
+  onDocumentUpdated: () => void;
+  business: { razaoSocial: string; cnpj: string } | null;
 }
 
-function DocumentDetailDialog({ open, onClose, document: doc }: DocumentDetailDialogProps) {
+function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated, business }: DocumentDetailDialogProps) {
   const [showXml, setShowXml] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
   const [isCancelling, setIsCancelling] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [ccOpen, setCcOpen] = useState(false);
   const [ccText, setCcText] = useState('');
 
@@ -473,7 +242,9 @@ function DocumentDetailDialog({ open, onClose, document: doc }: DocumentDetailDi
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          type: doc.type,
           chaveAcesso: doc.accessKey,
+          protocolo: doc.protocol,
           justificativa: cancelReason.trim(),
         }),
       });
@@ -485,13 +256,80 @@ function DocumentDetailDialog({ open, onClose, document: doc }: DocumentDetailDi
         return;
       }
 
+      // Update document status in Firestore
+      await updateDoc(firestoreDoc(db, 'fiscal_documents', doc.id), {
+        status: 'cancelada' as const,
+        canceledAt: new Date().toISOString(),
+        cancelReason: cancelReason.trim(),
+        updatedAt: new Date().toISOString(),
+      });
+
       toast.success('Nota fiscal cancelada com sucesso!');
       setCancelOpen(false);
       setCancelReason('');
+      onDocumentUpdated();
+      onClose();
     } catch {
       toast.error('Erro de conexao. Tente novamente.');
     } finally {
       setIsCancelling(false);
+    }
+  }
+
+  async function handleSyncStatus() {
+    if (!doc || !doc.accessKey) return;
+
+    setIsSyncing(true);
+    try {
+      const response = await fetch('/api/fiscal/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: doc.type,
+          chaveAcesso: doc.accessKey,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        toast.error(result.error || 'Erro ao consultar status.');
+        return;
+      }
+
+      // Update Firestore with the latest status from SEFAZ
+      const updateData: Record<string, string> = {
+        updatedAt: new Date().toISOString(),
+      };
+
+      if (result.data?.status) {
+        const statusMap: Record<string, FiscalDocStatus> = {
+          autorizada: 'autorizada',
+          authorized: 'autorizada',
+          cancelada: 'cancelada',
+          cancelled: 'cancelada',
+          rejeitada: 'rejeitada',
+          rejected: 'rejeitada',
+          denied: 'rejeitada',
+        };
+        const mappedStatus = statusMap[result.data.status.toLowerCase()];
+        if (mappedStatus) {
+          updateData.status = mappedStatus;
+        }
+      }
+
+      if (result.data?.protocolo) {
+        updateData.protocol = result.data.protocolo;
+      }
+
+      await updateDoc(firestoreDoc(db, 'fiscal_documents', doc.id), updateData);
+
+      toast.success('Status atualizado com sucesso!');
+      onDocumentUpdated();
+    } catch {
+      toast.error('Erro ao sincronizar status.');
+    } finally {
+      setIsSyncing(false);
     }
   }
 
@@ -513,6 +351,7 @@ function DocumentDetailDialog({ open, onClose, document: doc }: DocumentDetailDi
         maxWidth="md"
         fullWidth
         PaperProps={{
+          className: 'dark:!bg-gray-900 dark:!text-gray-100',
           sx: {
             borderRadius: '16px',
             maxHeight: '90vh',
@@ -562,9 +401,9 @@ function DocumentDetailDialog({ open, onClose, document: doc }: DocumentDetailDi
           <div className="space-y-6">
             {/* Status message */}
             {doc.statusMessage && (
-              <div className="flex items-start gap-2 p-3 rounded-lg bg-red-50 border border-red-100">
+              <div className="flex items-start gap-2 p-3 rounded-lg bg-red-50 dark:bg-red-500/10 border border-red-100 dark:border-red-500/20">
                 <AlertTriangle className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
-                <p className="text-sm text-red-700">{doc.statusMessage}</p>
+                <p className="text-sm text-red-700 dark:text-red-400">{doc.statusMessage}</p>
               </div>
             )}
 
@@ -592,10 +431,14 @@ function DocumentDetailDialog({ open, onClose, document: doc }: DocumentDetailDi
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
                   Emitente
                 </p>
-                <p className="text-sm font-medium text-foreground">EMPRESA SERVICOS LTDA</p>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  CNPJ: {formatCPFCNPJ('12345678000190')}
+                <p className="text-sm font-medium text-foreground">
+                  {business?.razaoSocial || 'Empresa'}
                 </p>
+                {business?.cnpj && (
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    CNPJ: {formatCPFCNPJ(business.cnpj)}
+                  </p>
+                )}
               </div>
               <div className="p-4 rounded-lg border border-border/60">
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
@@ -616,7 +459,7 @@ function DocumentDetailDialog({ open, onClose, document: doc }: DocumentDetailDi
             {/* Items Table */}
             <div>
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-                Itens
+                {doc.type === 'nfse' ? 'Servico' : 'Itens'}
               </p>
               <div className="rounded-lg border border-border/60 overflow-hidden">
                 <div className="overflow-x-auto">
@@ -778,45 +621,12 @@ function DocumentDetailDialog({ open, onClose, document: doc }: DocumentDetailDi
 
             {/* Cancel info */}
             {doc.status === 'cancelada' && doc.cancelReason && (
-              <div className="flex items-start gap-2 p-3 rounded-lg bg-gray-50 border border-gray-200">
-                <XCircle className="w-4 h-4 text-gray-500 mt-0.5 shrink-0" />
+              <div className="flex items-start gap-2 p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700">
+                <XCircle className="w-4 h-4 text-gray-500 dark:text-gray-400 mt-0.5 shrink-0" />
                 <div>
                   <p className="text-xs text-muted-foreground">Motivo do Cancelamento</p>
                   <p className="text-sm text-foreground">{doc.cancelReason}</p>
                 </div>
-              </div>
-            )}
-
-            {/* XML Viewer */}
-            {doc.xmlUrl && (
-              <div>
-                <button
-                  onClick={() => setShowXml(!showXml)}
-                  className="flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <Code className="w-4 h-4" />
-                  <span>XML do Documento</span>
-                  {showXml ? (
-                    <ChevronUp className="w-4 h-4" />
-                  ) : (
-                    <ChevronDown className="w-4 h-4" />
-                  )}
-                </button>
-                <AnimatePresence>
-                  {showXml && (
-                    <motion.div
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.2 }}
-                      className="overflow-hidden"
-                    >
-                      <pre className="mt-3 p-4 rounded-lg bg-slate-900 text-slate-100 text-xs font-mono overflow-x-auto max-h-64 leading-relaxed">
-                        {MOCK_XML}
-                      </pre>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
               </div>
             )}
           </div>
@@ -825,11 +635,24 @@ function DocumentDetailDialog({ open, onClose, document: doc }: DocumentDetailDi
         <Divider />
 
         <DialogActions sx={{ px: 3, py: 2, flexWrap: 'wrap', gap: 1 }}>
+          {/* Sync status button for processing/pending docs */}
+          {['processando', 'rascunho'].includes(doc.status) && doc.accessKey && (
+            <Button
+              onClick={handleSyncStatus}
+              startIcon={isSyncing ? <CircularProgress size={14} sx={{ color: '#64748B' }} /> : <RefreshCw size={16} />}
+              size="small"
+              disabled={isSyncing}
+              sx={{ color: '#3B82F6' }}
+            >
+              Sincronizar Status
+            </Button>
+          )}
           {doc.pdfUrl && (
             <Button
               startIcon={<Download size={16} />}
               size="small"
               sx={{ color: '#DC2626' }}
+              onClick={() => window.open(doc.pdfUrl!, '_blank')}
             >
               Baixar PDF
             </Button>
@@ -839,6 +662,7 @@ function DocumentDetailDialog({ open, onClose, document: doc }: DocumentDetailDi
               startIcon={<FileCode size={16} />}
               size="small"
               sx={{ color: '#64748B' }}
+              onClick={() => window.open(doc.xmlUrl!, '_blank')}
             >
               Baixar XML
             </Button>
@@ -885,7 +709,7 @@ function DocumentDetailDialog({ open, onClose, document: doc }: DocumentDetailDi
         onClose={() => !isCancelling && setCancelOpen(false)}
         maxWidth="sm"
         fullWidth
-        PaperProps={{ sx: { borderRadius: '16px' } }}
+        PaperProps={{ className: 'dark:!bg-gray-900 dark:!text-gray-100', sx: { borderRadius: '16px' } }}
       >
         <DialogTitle
           sx={{
@@ -945,7 +769,7 @@ function DocumentDetailDialog({ open, onClose, document: doc }: DocumentDetailDi
         onClose={() => setCcOpen(false)}
         maxWidth="sm"
         fullWidth
-        PaperProps={{ sx: { borderRadius: '16px' } }}
+        PaperProps={{ className: 'dark:!bg-gray-900 dark:!text-gray-100', sx: { borderRadius: '16px' } }}
       >
         <DialogTitle
           sx={{
@@ -994,10 +818,38 @@ function DocumentDetailDialog({ open, onClose, document: doc }: DocumentDetailDi
 }
 
 // ==============================================
+// LOADING SKELETON
+// ==============================================
+
+function TableSkeleton() {
+  return (
+    <div className="animate-pulse">
+      {Array.from({ length: 5 }).map((_, i) => (
+        <div key={i} className="flex items-center gap-4 px-4 py-3.5 border-t border-border/30">
+          <div className="h-4 w-12 bg-muted rounded" />
+          <div className="h-4 w-8 bg-muted rounded" />
+          <div className="h-4 w-28 bg-muted rounded" />
+          <div className="h-4 w-32 bg-muted rounded flex-1" />
+          <div className="h-4 w-24 bg-muted rounded hidden md:block" />
+          <div className="h-4 w-20 bg-muted rounded" />
+          <div className="h-5 w-20 bg-muted rounded-full" />
+          <div className="h-6 w-16 bg-muted rounded" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ==============================================
 // MAIN COMPONENT
 // ==============================================
 
 export default function FiscalModule({ type }: FiscalModuleProps) {
+  const { business } = useAuth();
+  const { isDark } = useTheme();
+  const [documents, setDocuments] = useState<FiscalDocument[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState<StatusTab>('todas');
   const [searchQuery, setSearchQuery] = useState('');
   const [page, setPage] = useState(1);
@@ -1008,9 +860,51 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
 
   const typeConfig = TYPE_CONFIG[type];
 
-  // Filter documents by type and status
+  // Fetch documents from Firestore
+  const fetchDocuments = useCallback(async (showRefreshIndicator = false) => {
+    if (!business?.id) return;
+
+    if (showRefreshIndicator) {
+      setIsRefreshing(true);
+    }
+
+    try {
+      const q = query(
+        collection(db, 'fiscal_documents'),
+        where('businessId', '==', business.id),
+        where('type', '==', type),
+        orderBy('createdAt', 'desc'),
+      );
+
+      const snapshot = await getDocs(q);
+      const docs: FiscalDocument[] = snapshot.docs.map((d) => ({
+        ...d.data(),
+        id: d.id,
+      })) as FiscalDocument[];
+
+      setDocuments(docs);
+    } catch (error) {
+      console.error('[FiscalModule] Error fetching documents:', error);
+      toast.error('Erro ao carregar documentos fiscais.');
+    } finally {
+      setIsLoading(false);
+      setIsRefreshing(false);
+    }
+  }, [business?.id, type]);
+
+  // Load documents on mount and when type changes
+  useEffect(() => {
+    setIsLoading(true);
+    setDocuments([]);
+    setActiveTab('todas');
+    setSearchQuery('');
+    setPage(1);
+    fetchDocuments();
+  }, [fetchDocuments]);
+
+  // Filter documents by status and search
   const filteredDocuments = useMemo(() => {
-    let docs = mockDocuments.filter((d) => d.type === type);
+    let docs = documents;
 
     if (activeTab !== 'todas') {
       docs = docs.filter((d) => d.status === activeTab);
@@ -1028,18 +922,17 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
     }
 
     return docs;
-  }, [type, activeTab, searchQuery]);
+  }, [documents, activeTab, searchQuery]);
 
-  // Stats
+  // Stats from all documents (not filtered)
   const stats = useMemo(() => {
-    const docs = mockDocuments.filter((d) => d.type === type);
     return {
-      total: docs.length,
-      autorizadas: docs.filter((d) => d.status === 'autorizada').length,
-      pendentes: docs.filter((d) => ['rascunho', 'processando'].includes(d.status)).length,
-      canceladas: docs.filter((d) => d.status === 'cancelada').length,
+      total: documents.length,
+      autorizadas: documents.filter((d) => d.status === 'autorizada').length,
+      pendentes: documents.filter((d) => ['rascunho', 'processando'].includes(d.status)).length,
+      canceladas: documents.filter((d) => d.status === 'cancelada').length,
     };
-  }, [type]);
+  }, [documents]);
 
   // Pagination
   const totalPages = Math.ceil(filteredDocuments.length / ITEMS_PER_PAGE);
@@ -1048,8 +941,8 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
     page * ITEMS_PER_PAGE,
   );
 
-  const handleOpenDetail = useCallback((doc: FiscalDocument) => {
-    setSelectedDoc(doc);
+  const handleOpenDetail = useCallback((fiscalDoc: FiscalDocument) => {
+    setSelectedDoc(fiscalDoc);
     setDetailOpen(true);
   }, []);
 
@@ -1058,9 +951,66 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
     setPage(1);
   }, []);
 
+  const handleRefresh = useCallback(() => {
+    fetchDocuments(true);
+  }, [fetchDocuments]);
+
+  const handleEmitSuccess = useCallback(() => {
+    fetchDocuments(true);
+  }, [fetchDocuments]);
+
+  // Certificate warning
+  const hasCertificate = !!business?.fiscal?.certificate?.serialNumber;
+  const certExpired = business?.fiscal?.certificate?.expiresAt
+    ? new Date(business.fiscal.certificate.expiresAt) < new Date()
+    : false;
+
   return (
     <>
       <div className="space-y-6">
+        {/* Certificate Warning Banner */}
+        {(!hasCertificate || certExpired) && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            className={cn(
+              'flex items-center gap-3 p-4 rounded-xl border',
+              certExpired
+                ? 'bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/20'
+                : 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20',
+            )}
+          >
+            <AlertTriangle className={cn('w-5 h-5 shrink-0', certExpired ? 'text-red-500' : 'text-amber-500')} />
+            <div className="flex-1">
+              <p className={cn('text-sm font-semibold', certExpired ? 'text-red-700 dark:text-red-400' : 'text-amber-700 dark:text-amber-400')}>
+                {certExpired ? 'Certificado digital expirado' : 'Certificado digital nao configurado'}
+              </p>
+              <p className={cn('text-xs mt-0.5', certExpired ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-400')}>
+                {certExpired
+                  ? 'Renove seu certificado A1 para continuar emitindo documentos fiscais.'
+                  : 'Configure seu certificado digital A1 em Configuracoes > Fiscal para emitir notas.'}
+              </p>
+            </div>
+            <Button
+              size="small"
+              onClick={() => setCertOpen(true)}
+              sx={{
+                color: certExpired ? '#DC2626' : '#D97706',
+                borderColor: certExpired ? '#FCA5A5' : '#FCD34D',
+                '&:hover': {
+                  borderColor: certExpired ? '#EF4444' : '#F59E0B',
+                  backgroundColor: certExpired
+                    ? (isDark ? 'rgba(220, 38, 38, 0.1)' : '#FEF2F2')
+                    : (isDark ? 'rgba(217, 119, 6, 0.1)' : '#FFFBEB'),
+                },
+              }}
+              variant="outlined"
+            >
+              {certExpired ? 'Renovar' : 'Configurar'}
+            </Button>
+          </motion.div>
+        )}
+
         {/* Page Header */}
         <motion.div
           initial={{ opacity: 0, y: -12 }}
@@ -1082,14 +1032,22 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
               </div>
             </div>
             <div className="flex items-center gap-2">
+              <IconButton
+                onClick={handleRefresh}
+                disabled={isRefreshing}
+                size="small"
+                title="Atualizar lista"
+              >
+                <RefreshCw size={18} className={cn('text-muted-foreground', isRefreshing && 'animate-spin')} />
+              </IconButton>
               <Button
                 onClick={() => setCertOpen(true)}
                 startIcon={<Shield size={16} />}
                 size="small"
                 sx={{
-                  color: '#64748B',
-                  borderColor: '#E2E8F0',
-                  '&:hover': { borderColor: '#CBD5E1', backgroundColor: '#F8FAFC' },
+                  color: isDark ? '#94A3B8' : '#64748B',
+                  borderColor: isDark ? '#374151' : '#E2E8F0',
+                  '&:hover': { borderColor: isDark ? '#4B5563' : '#CBD5E1', backgroundColor: isDark ? 'rgba(255,255,255,0.04)' : '#F8FAFC' },
                 }}
                 variant="outlined"
               >
@@ -1121,26 +1079,26 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
           <StatCard
             label="Total Emitidas"
             value={stats.total}
-            icon={<FileText className="w-5 h-5 text-blue-600" />}
-            iconBg="bg-blue-50"
+            icon={<FileText className="w-5 h-5 text-blue-600 dark:text-blue-400" />}
+            iconBg="bg-blue-50 dark:bg-blue-500/10"
           />
           <StatCard
             label="Autorizadas"
             value={stats.autorizadas}
-            icon={<CheckCircle className="w-5 h-5 text-emerald-600" />}
-            iconBg="bg-emerald-50"
+            icon={<CheckCircle className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />}
+            iconBg="bg-emerald-50 dark:bg-emerald-500/10"
           />
           <StatCard
             label="Pendentes"
             value={stats.pendentes}
-            icon={<Clock className="w-5 h-5 text-amber-600" />}
-            iconBg="bg-amber-50"
+            icon={<Clock className="w-5 h-5 text-amber-600 dark:text-amber-400" />}
+            iconBg="bg-amber-50 dark:bg-amber-500/10"
           />
           <StatCard
             label="Canceladas"
             value={stats.canceladas}
-            icon={<XCircle className="w-5 h-5 text-gray-500" />}
-            iconBg="bg-gray-100"
+            icon={<XCircle className="w-5 h-5 text-gray-500 dark:text-gray-400" />}
+            iconBg="bg-gray-100 dark:bg-gray-800"
           />
         </motion.div>
 
@@ -1149,7 +1107,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.3, delay: 0.15 }}
-          className="rounded-xl border border-border/60 bg-white/70 backdrop-blur-sm"
+          className="surface rounded-xl"
         >
           {/* Controls */}
           <div className="p-4 space-y-4">
@@ -1166,7 +1124,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
                 placeholder="Buscar por numero, cliente ou CPF/CNPJ..."
                 className={cn(
                   'w-full pl-10 pr-4 py-2.5 text-sm rounded-lg',
-                  'border border-border/60 bg-white',
+                  'border border-border/60 bg-white dark:bg-gray-900',
                   'text-foreground placeholder:text-muted-foreground',
                   'focus:outline-none focus:ring-2 focus:ring-primary-500/20 focus:border-primary-400',
                   'transition-all duration-200',
@@ -1195,139 +1153,173 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
 
           {/* Documents Table */}
           <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-t border-border/40 bg-muted/20">
-                  <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">
-                    Numero
-                  </th>
-                  <th className="text-left text-xs font-medium text-muted-foreground px-3 py-3">
-                    Serie
-                  </th>
-                  <th className="text-left text-xs font-medium text-muted-foreground px-3 py-3">
-                    Data Emissao
-                  </th>
-                  <th className="text-left text-xs font-medium text-muted-foreground px-3 py-3">
-                    Cliente
-                  </th>
-                  <th className="text-left text-xs font-medium text-muted-foreground px-3 py-3 hidden md:table-cell">
-                    CPF/CNPJ
-                  </th>
-                  <th className="text-right text-xs font-medium text-muted-foreground px-3 py-3">
-                    Valor Total
-                  </th>
-                  <th className="text-center text-xs font-medium text-muted-foreground px-3 py-3">
-                    Status
-                  </th>
-                  <th className="text-center text-xs font-medium text-muted-foreground px-4 py-3">
-                    Acoes
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                <AnimatePresence mode="popLayout">
-                  {paginatedDocs.length === 0 ? (
-                    <motion.tr
-                      key="empty"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                    >
-                      <td colSpan={8} className="text-center py-16 px-4">
-                        <div className="flex flex-col items-center gap-3">
-                          <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-muted">
-                            <FileText className="w-6 h-6 text-muted-foreground" />
-                          </div>
-                          <div>
-                            <p className="text-sm font-medium text-foreground">
-                              Nenhum documento encontrado
-                            </p>
-                            <p className="text-xs text-muted-foreground mt-0.5">
-                              {searchQuery
-                                ? 'Tente ajustar os filtros de busca.'
-                                : 'Emita sua primeira nota fiscal.'}
-                            </p>
-                          </div>
-                        </div>
-                      </td>
-                    </motion.tr>
-                  ) : (
-                    paginatedDocs.map((doc) => (
+            {isLoading ? (
+              <TableSkeleton />
+            ) : (
+              <table className="w-full">
+                <thead>
+                  <tr className="border-t border-border/40 bg-muted/20">
+                    <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">
+                      Numero
+                    </th>
+                    <th className="text-left text-xs font-medium text-muted-foreground px-3 py-3">
+                      Serie
+                    </th>
+                    <th className="text-left text-xs font-medium text-muted-foreground px-3 py-3">
+                      Data Emissao
+                    </th>
+                    <th className="text-left text-xs font-medium text-muted-foreground px-3 py-3">
+                      {type === 'nfse' ? 'Tomador' : 'Cliente'}
+                    </th>
+                    <th className="text-left text-xs font-medium text-muted-foreground px-3 py-3 hidden md:table-cell">
+                      CPF/CNPJ
+                    </th>
+                    <th className="text-right text-xs font-medium text-muted-foreground px-3 py-3">
+                      Valor Total
+                    </th>
+                    <th className="text-center text-xs font-medium text-muted-foreground px-3 py-3">
+                      Status
+                    </th>
+                    <th className="text-center text-xs font-medium text-muted-foreground px-4 py-3">
+                      Acoes
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <AnimatePresence mode="popLayout">
+                    {paginatedDocs.length === 0 ? (
                       <motion.tr
-                        key={doc.id}
-                        initial={{ opacity: 0, y: 8 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -8 }}
-                        transition={{ duration: 0.2 }}
-                        onClick={() => handleOpenDetail(doc)}
-                        className="border-t border-border/30 hover:bg-muted/30 transition-colors cursor-pointer"
+                        key="empty"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
                       >
-                        <td className="px-4 py-3">
-                          <span className="text-sm font-semibold text-foreground">
-                            {doc.number || '-'}
-                          </span>
-                        </td>
-                        <td className="px-3 py-3">
-                          <span className="text-sm text-muted-foreground">{doc.series || '-'}</span>
-                        </td>
-                        <td className="px-3 py-3">
-                          <span className="text-sm text-foreground">
-                            {formatDateTime(doc.issueDate)}
-                          </span>
-                        </td>
-                        <td className="px-3 py-3">
-                          <span className="text-sm font-medium text-foreground truncate max-w-[180px] block">
-                            {doc.clientName || 'Consumidor'}
-                          </span>
-                        </td>
-                        <td className="px-3 py-3 hidden md:table-cell">
-                          <span className="text-sm text-muted-foreground font-mono">
-                            {doc.clientCpfCnpj ? formatCPFCNPJ(doc.clientCpfCnpj) : '-'}
-                          </span>
-                        </td>
-                        <td className="px-3 py-3 text-right">
-                          <span className="text-sm font-semibold text-foreground">
-                            {formatCurrency(doc.totalValue)}
-                          </span>
-                        </td>
-                        <td className="px-3 py-3 text-center">
-                          <StatusChip status={doc.status} />
-                        </td>
-                        <td className="px-4 py-3">
-                          <div
-                            className="flex items-center justify-center gap-1"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <IconButton
-                              size="small"
-                              onClick={() => handleOpenDetail(doc)}
-                              title="Ver detalhes"
-                            >
-                              <Eye size={16} className="text-muted-foreground" />
-                            </IconButton>
-                            {doc.xmlUrl && (
-                              <IconButton size="small" title="Ver XML">
-                                <FileCode size={16} className="text-muted-foreground" />
-                              </IconButton>
-                            )}
-                            {doc.pdfUrl && (
-                              <IconButton size="small" title="Download PDF">
-                                <Printer size={16} className="text-muted-foreground" />
-                              </IconButton>
-                            )}
-                            {(doc.status === 'rejeitada' || doc.status === 'erro') && (
-                              <IconButton size="small" title="Reenviar">
-                                <Send size={16} className="text-amber-500" />
-                              </IconButton>
+                        <td colSpan={8} className="text-center py-16 px-4">
+                          <div className="flex flex-col items-center gap-3">
+                            <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-muted">
+                              {type === 'nfse' ? (
+                                <FileCheck2 className="w-6 h-6 text-muted-foreground" />
+                              ) : type === 'nfce' ? (
+                                <Receipt className="w-6 h-6 text-muted-foreground" />
+                              ) : (
+                                <FileText className="w-6 h-6 text-muted-foreground" />
+                              )}
+                            </div>
+                            <div>
+                              <p className="text-sm font-medium text-foreground">
+                                Nenhum documento encontrado
+                              </p>
+                              <p className="text-xs text-muted-foreground mt-0.5">
+                                {searchQuery
+                                  ? 'Tente ajustar os filtros de busca.'
+                                  : `Emita sua primeira ${type.toUpperCase()}.`}
+                              </p>
+                            </div>
+                            {!searchQuery && (
+                              <Button
+                                onClick={() => setEmitirOpen(true)}
+                                variant="contained"
+                                size="small"
+                                startIcon={<Plus size={14} />}
+                                sx={{
+                                  mt: 1,
+                                  backgroundColor: '#DC2626',
+                                  '&:hover': { backgroundColor: '#B91C1C' },
+                                  fontSize: '0.75rem',
+                                }}
+                              >
+                                Emitir {type.toUpperCase()}
+                              </Button>
                             )}
                           </div>
                         </td>
                       </motion.tr>
-                    ))
-                  )}
-                </AnimatePresence>
-              </tbody>
-            </table>
+                    ) : (
+                      paginatedDocs.map((fiscalDoc) => (
+                        <motion.tr
+                          key={fiscalDoc.id}
+                          initial={{ opacity: 0, y: 8 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -8 }}
+                          transition={{ duration: 0.2 }}
+                          onClick={() => handleOpenDetail(fiscalDoc)}
+                          className="border-t border-border/30 hover:bg-muted/30 transition-colors cursor-pointer"
+                        >
+                          <td className="px-4 py-3">
+                            <span className="text-sm font-semibold text-foreground">
+                              {fiscalDoc.number || '-'}
+                            </span>
+                          </td>
+                          <td className="px-3 py-3">
+                            <span className="text-sm text-muted-foreground">{fiscalDoc.series || '-'}</span>
+                          </td>
+                          <td className="px-3 py-3">
+                            <span className="text-sm text-foreground">
+                              {formatDateTime(fiscalDoc.issueDate)}
+                            </span>
+                          </td>
+                          <td className="px-3 py-3">
+                            <span className="text-sm font-medium text-foreground truncate max-w-[180px] block">
+                              {fiscalDoc.clientName || 'Consumidor'}
+                            </span>
+                          </td>
+                          <td className="px-3 py-3 hidden md:table-cell">
+                            <span className="text-sm text-muted-foreground font-mono">
+                              {fiscalDoc.clientCpfCnpj ? formatCPFCNPJ(fiscalDoc.clientCpfCnpj) : '-'}
+                            </span>
+                          </td>
+                          <td className="px-3 py-3 text-right">
+                            <span className="text-sm font-semibold text-foreground">
+                              {formatCurrency(fiscalDoc.totalValue)}
+                            </span>
+                          </td>
+                          <td className="px-3 py-3 text-center">
+                            <StatusChip status={fiscalDoc.status} />
+                          </td>
+                          <td className="px-4 py-3">
+                            <div
+                              className="flex items-center justify-center gap-1"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <IconButton
+                                size="small"
+                                onClick={() => handleOpenDetail(fiscalDoc)}
+                                title="Ver detalhes"
+                              >
+                                <Eye size={16} className="text-muted-foreground" />
+                              </IconButton>
+                              {fiscalDoc.xmlUrl && (
+                                <IconButton
+                                  size="small"
+                                  title="Ver XML"
+                                  onClick={() => window.open(fiscalDoc.xmlUrl!, '_blank')}
+                                >
+                                  <FileCode size={16} className="text-muted-foreground" />
+                                </IconButton>
+                              )}
+                              {fiscalDoc.pdfUrl && (
+                                <IconButton
+                                  size="small"
+                                  title="Download PDF"
+                                  onClick={() => window.open(fiscalDoc.pdfUrl!, '_blank')}
+                                >
+                                  <Printer size={16} className="text-muted-foreground" />
+                                </IconButton>
+                              )}
+                              {(fiscalDoc.status === 'rejeitada' || fiscalDoc.status === 'erro') && (
+                                <IconButton size="small" title="Reenviar">
+                                  <Send size={16} className="text-amber-500" />
+                                </IconButton>
+                              )}
+                            </div>
+                          </td>
+                        </motion.tr>
+                      ))
+                    )}
+                  </AnimatePresence>
+                </tbody>
+              </table>
+            )}
           </div>
 
           {/* Pagination */}
@@ -1348,7 +1340,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
                     fontSize: '0.75rem',
                   },
                   '& .Mui-selected': {
-                    backgroundColor: '#FEF2F2 !important',
+                    backgroundColor: isDark ? 'rgba(220, 38, 38, 0.15) !important' : '#FEF2F2 !important',
                     color: '#DC2626',
                     fontWeight: 600,
                   },
@@ -1364,6 +1356,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
         open={emitirOpen}
         onClose={() => setEmitirOpen(false)}
         type={type}
+        onSuccess={handleEmitSuccess}
       />
 
       <CertificateManager
@@ -1378,6 +1371,8 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
           setSelectedDoc(null);
         }}
         document={selectedDoc}
+        onDocumentUpdated={handleRefresh}
+        business={business ? { razaoSocial: business.razaoSocial, cnpj: business.cnpj } : null}
       />
     </>
   );

@@ -25,6 +25,7 @@ import InputMask from 'react-input-mask';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'react-toastify';
 import type { Client, Address } from '@/lib/types';
+import { useTheme } from '@/app/components/providers/ThemeProvider';
 
 interface ClientFormDialogProps {
   open: boolean;
@@ -50,6 +51,7 @@ const UF_OPTIONS = [
 ];
 
 export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDialogProps) {
+  const { isDark } = useTheme();
   const [tipo, setTipo] = useState<'pf' | 'pj'>('pf');
   const [nome, setNome] = useState('');
   const [cpfCnpj, setCpfCnpj] = useState('');
@@ -241,10 +243,10 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
                       px: 3,
                       gap: 1,
                       '&.Mui-selected': {
-                        backgroundColor: '#FEF2F2',
-                        color: '#DC2626',
-                        borderColor: '#DC2626',
-                        '&:hover': { backgroundColor: '#FEE2E2' },
+                        backgroundColor: isDark ? 'rgba(220,38,38,0.1)' : '#FEF2F2',
+                        color: isDark ? '#F87171' : '#DC2626',
+                        borderColor: isDark ? '#EF4444' : '#DC2626',
+                        '&:hover': { backgroundColor: isDark ? 'rgba(220,38,38,0.15)' : '#FEE2E2' },
                       },
                     }}
                   >
@@ -257,10 +259,10 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
                       px: 3,
                       gap: 1,
                       '&.Mui-selected': {
-                        backgroundColor: '#FEF2F2',
-                        color: '#DC2626',
-                        borderColor: '#DC2626',
-                        '&:hover': { backgroundColor: '#FEE2E2' },
+                        backgroundColor: isDark ? 'rgba(220,38,38,0.1)' : '#FEF2F2',
+                        color: isDark ? '#F87171' : '#DC2626',
+                        borderColor: isDark ? '#EF4444' : '#DC2626',
+                        '&:hover': { backgroundColor: isDark ? 'rgba(220,38,38,0.15)' : '#FEE2E2' },
                       },
                     }}
                   >
@@ -381,7 +383,7 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
 
               {/* Endereco */}
               <div>
-                <p className="text-sm font-semibold text-slate-700 mb-3">Endereco</p>
+                <p className="text-sm font-semibold text-slate-700 dark:text-gray-300 mb-3">Endereco</p>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                   <InputMask
                     mask={cepMask}
@@ -464,7 +466,7 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
 
               {/* Tags */}
               <div>
-                <p className="text-sm font-semibold text-slate-700 mb-2">Tags</p>
+                <p className="text-sm font-semibold text-slate-700 dark:text-gray-300 mb-2">Tags</p>
                 <div className="flex flex-wrap gap-2 mb-2">
                   {tags.map((tag) => (
                     <Chip
@@ -473,9 +475,9 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
                       onDelete={() => handleRemoveTag(tag)}
                       size="small"
                       sx={{
-                        backgroundColor: '#FEF2F2',
-                        color: '#DC2626',
-                        '& .MuiChip-deleteIcon': { color: '#EF4444' },
+                        backgroundColor: isDark ? 'rgba(220,38,38,0.1)' : '#FEF2F2',
+                        color: isDark ? '#F87171' : '#DC2626',
+                        '& .MuiChip-deleteIcon': { color: isDark ? '#F87171' : '#EF4444' },
                       }}
                     />
                   ))}
@@ -488,7 +490,7 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
                   fullWidth
                   size="small"
                   InputProps={{
-                    startAdornment: <Plus size={16} className="text-slate-400 mr-2" />,
+                    startAdornment: <Plus size={16} className="text-slate-400 dark:text-gray-500 mr-2" />,
                   }}
                 />
               </div>

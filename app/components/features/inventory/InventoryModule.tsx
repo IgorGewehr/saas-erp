@@ -107,10 +107,10 @@ const MOVEMENT_REASONS: Record<MovementType, string[]> = {
 };
 
 const CATEGORY_COLORS: Record<string, { bg: string; text: string; icon: string }> = {
-  Material: { bg: 'bg-blue-50', text: 'text-blue-700', icon: 'text-blue-500' },
-  Produto: { bg: 'bg-emerald-50', text: 'text-emerald-700', icon: 'text-emerald-500' },
-  Insumo: { bg: 'bg-amber-50', text: 'text-amber-700', icon: 'text-amber-500' },
-  Equipamento: { bg: 'bg-violet-50', text: 'text-violet-700', icon: 'text-violet-500' },
+  Material: { bg: 'bg-blue-50 dark:bg-blue-500/10', text: 'text-blue-700 dark:text-blue-400', icon: 'text-blue-500 dark:text-blue-400' },
+  Produto: { bg: 'bg-emerald-50 dark:bg-emerald-500/10', text: 'text-emerald-700 dark:text-emerald-400', icon: 'text-emerald-500 dark:text-emerald-400' },
+  Insumo: { bg: 'bg-amber-50 dark:bg-amber-500/10', text: 'text-amber-700 dark:text-amber-400', icon: 'text-amber-500 dark:text-amber-400' },
+  Equipamento: { bg: 'bg-violet-50 dark:bg-violet-500/10', text: 'text-violet-700 dark:text-violet-400', icon: 'text-violet-500 dark:text-violet-400' },
 };
 
 const CATEGORY_ICONS: Record<string, React.ReactNode> = {
@@ -246,9 +246,9 @@ function getStockColor(current: number, max?: number): string {
 }
 
 function getStockTextColor(current: number, min: number): string {
-  if (current <= 0) return 'text-red-600';
-  if (current <= min) return 'text-amber-600';
-  return 'text-emerald-600';
+  if (current <= 0) return 'text-red-600 dark:text-red-400';
+  if (current <= min) return 'text-amber-600 dark:text-amber-400';
+  return 'text-emerald-600 dark:text-emerald-400';
 }
 
 function isLowStock(product: Product): boolean {
@@ -277,12 +277,11 @@ function StatCard({ icon, iconBg, label, value, subtitle }: StatCardProps) {
     <motion.div
       variants={itemVariants}
       className={cn(
-        'group relative overflow-hidden rounded-xl border border-border/60',
-        'bg-white/70 backdrop-blur-sm p-6',
-        'hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 cursor-default',
+        'group relative surface stat-card-accent hover-lift rounded-xl p-6 overflow-hidden',
+        'cursor-default',
       )}
     >
-      <div className="absolute inset-0 bg-gradient-to-br from-white/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+      <div className="absolute inset-0 bg-gradient-to-br from-white/50 dark:from-white/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
       <div className="relative flex items-start justify-between">
         <div className="flex-1">
           <p className="text-sm font-medium text-muted-foreground mb-1">{label}</p>
@@ -319,18 +318,18 @@ function ProductCard({ product, onEdit, onMovement }: ProductCardProps) {
       variants={cardVariants}
       layout
       className={cn(
-        'group relative rounded-xl border bg-white/70 backdrop-blur-sm overflow-hidden',
+        'group relative surface rounded-xl overflow-hidden',
         'hover:shadow-md hover:-translate-y-0.5 transition-all duration-200',
-        low ? 'border-amber-200' : 'border-border/60',
+        low ? 'border-amber-200' : '',
         !product.isActive && 'opacity-60',
       )}
     >
       {/* Low stock warning badge */}
       {low && (
         <div className="absolute top-3 right-3 z-10">
-          <div className="flex items-center gap-1 px-2 py-1 rounded-full bg-amber-50 border border-amber-200">
-            <AlertTriangle className="w-3 h-3 text-amber-600" />
-            <span className="text-[10px] font-semibold text-amber-700">Estoque Baixo</span>
+          <div className="flex items-center gap-1 px-2 py-1 rounded-full bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20">
+            <AlertTriangle className="w-3 h-3 text-amber-600 dark:text-amber-400" />
+            <span className="text-[10px] font-semibold text-amber-700 dark:text-amber-400">Estoque Baixo</span>
           </div>
         </div>
       )}
@@ -355,7 +354,7 @@ function ProductCard({ product, onEdit, onMovement }: ProductCardProps) {
               {product.currentStock} {product.unit}
             </span>
           </div>
-          <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+          <div className="w-full h-2 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
             <motion.div
               className={cn('h-full rounded-full', stockColor)}
               initial={{ width: 0 }}
@@ -389,7 +388,7 @@ function ProductCard({ product, onEdit, onMovement }: ProductCardProps) {
             {product.category}
           </span>
           {!product.isActive && (
-            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-gray-100 text-gray-500">
+            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400">
               Inativo
             </span>
           )}
@@ -399,14 +398,14 @@ function ProductCard({ product, onEdit, onMovement }: ProductCardProps) {
         <div className="flex items-center gap-1.5 pt-2 border-t border-border/40">
           <button
             onClick={() => onMovement(product, 'entrada')}
-            className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 transition-colors"
+            className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 transition-colors"
           >
             <Plus className="w-3.5 h-3.5" />
             Entrada
           </button>
           <button
             onClick={() => onMovement(product, 'saida')}
-            className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 transition-colors"
+            className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-500/10 hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors"
           >
             <Minus className="w-3.5 h-3.5" />
             Saida
@@ -479,7 +478,7 @@ function ProductRow({ product, onEdit, onMovement }: ProductRowProps) {
   return (
     <tr className={cn(
       'border-b border-border/40 hover:bg-muted/30 transition-colors',
-      low && 'bg-amber-50/40',
+      low && 'bg-amber-50/40 dark:bg-amber-500/5',
     )}>
       {/* Produto */}
       <td className="py-3 px-4">
@@ -492,7 +491,7 @@ function ProductRow({ product, onEdit, onMovement }: ProductRowProps) {
             {low && (
               <div className="flex items-center gap-1 mt-0.5">
                 <AlertTriangle className="w-3 h-3 text-amber-500" />
-                <span className="text-[10px] font-medium text-amber-600">Abaixo do minimo</span>
+                <span className="text-[10px] font-medium text-amber-600 dark:text-amber-400">Abaixo do minimo</span>
               </div>
             )}
           </div>
@@ -514,7 +513,7 @@ function ProductRow({ product, onEdit, onMovement }: ProductRowProps) {
           <span className={cn('text-sm font-bold', getStockTextColor(product.currentStock, product.minStock))}>
             {product.currentStock} {product.unit}
           </span>
-          <div className="w-20 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+          <div className="w-20 h-1.5 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
             <div className={cn('h-full rounded-full', stockBarColor)} style={{ width: `${stockPct}%` }} />
           </div>
         </div>
@@ -536,8 +535,8 @@ function ProductRow({ product, onEdit, onMovement }: ProductRowProps) {
         <span className={cn(
           'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold',
           product.isActive
-            ? 'bg-emerald-50 text-emerald-700'
-            : 'bg-gray-100 text-gray-500',
+            ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+            : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400',
         )}>
           <span className={cn('w-1.5 h-1.5 rounded-full', product.isActive ? 'bg-emerald-500' : 'bg-gray-400')} />
           {product.isActive ? 'Ativo' : 'Inativo'}
@@ -548,14 +547,14 @@ function ProductRow({ product, onEdit, onMovement }: ProductRowProps) {
         <div className="flex items-center gap-1">
           <button
             onClick={() => onMovement(product, 'entrada')}
-            className="p-1.5 rounded-md text-emerald-600 hover:bg-emerald-50 transition-colors"
+            className="p-1.5 rounded-md text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 transition-colors"
             title="Entrada"
           >
             <Plus className="w-4 h-4" />
           </button>
           <button
             onClick={() => onMovement(product, 'saida')}
-            className="p-1.5 rounded-md text-red-600 hover:bg-red-50 transition-colors"
+            className="p-1.5 rounded-md text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
             title="Saida"
           >
             <Minus className="w-4 h-4" />
@@ -632,9 +631,9 @@ function StockMovementDialog({
   }
 
   const typeStyles: Record<MovementType, { bg: string; text: string; activeBg: string }> = {
-    entrada: { bg: 'bg-emerald-50', text: 'text-emerald-700', activeBg: 'bg-emerald-100 border-emerald-300' },
-    saida: { bg: 'bg-red-50', text: 'text-red-700', activeBg: 'bg-red-100 border-red-300' },
-    ajuste: { bg: 'bg-blue-50', text: 'text-blue-700', activeBg: 'bg-blue-100 border-blue-300' },
+    entrada: { bg: 'bg-emerald-50 dark:bg-emerald-500/10', text: 'text-emerald-700 dark:text-emerald-400', activeBg: 'bg-emerald-100 dark:bg-emerald-500/20 border-emerald-300 dark:border-emerald-500/40' },
+    saida: { bg: 'bg-red-50 dark:bg-red-500/10', text: 'text-red-700 dark:text-red-400', activeBg: 'bg-red-100 dark:bg-red-500/20 border-red-300 dark:border-red-500/40' },
+    ajuste: { bg: 'bg-blue-50 dark:bg-blue-500/10', text: 'text-blue-700 dark:text-blue-400', activeBg: 'bg-blue-100 dark:bg-blue-500/20 border-blue-300 dark:border-blue-500/40' },
   };
 
   return (
@@ -667,7 +666,7 @@ function StockMovementDialog({
         <div className="space-y-5">
           {/* Movement Type */}
           <div>
-            <p className="text-sm font-semibold text-slate-700 mb-2">Tipo de Movimentacao</p>
+            <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Tipo de Movimentacao</p>
             <div className="grid grid-cols-3 gap-2">
               {(['entrada', 'saida', 'ajuste'] as MovementType[]).map((type) => {
                 const style = typeStyles[type];
@@ -680,7 +679,7 @@ function StockMovementDialog({
                       'px-3 py-2.5 rounded-lg text-sm font-medium border transition-all',
                       isSelected
                         ? cn(style.activeBg, style.text, 'border')
-                        : 'bg-white border-border/60 text-muted-foreground hover:bg-muted/30',
+                        : 'bg-white dark:bg-gray-800 border-border/60 text-muted-foreground hover:bg-muted/30',
                     )}
                   >
                     {type === 'entrada' ? 'Entrada' : type === 'saida' ? 'Saida' : 'Ajuste'}
@@ -972,7 +971,7 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
 
             {/* Prices */}
             <div>
-              <p className="text-sm font-semibold text-slate-700 mb-3">Precos</p>
+              <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">Precos</p>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <TextField
                   label="Preco de Custo"
@@ -1014,7 +1013,7 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
 
             {/* Stock Levels */}
             <div>
-              <p className="text-sm font-semibold text-slate-700 mb-3">Estoque</p>
+              <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">Estoque</p>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <TextField
                   label="Estoque Atual"
@@ -1054,7 +1053,7 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
 
             {/* Fiscal */}
             <div>
-              <p className="text-sm font-semibold text-slate-700 mb-3">Fiscal (Opcional)</p>
+              <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">Fiscal (Opcional)</p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <TextField
                   label="NCM"
@@ -1136,9 +1135,9 @@ interface MovementHistoryProps {
 
 function MovementHistory({ movements }: MovementHistoryProps) {
   const typeConfig: Record<string, { label: string; bg: string; text: string }> = {
-    entrada: { label: 'Entrada', bg: 'bg-emerald-50', text: 'text-emerald-700' },
-    saida: { label: 'Saida', bg: 'bg-red-50', text: 'text-red-700' },
-    ajuste: { label: 'Ajuste', bg: 'bg-blue-50', text: 'text-blue-700' },
+    entrada: { label: 'Entrada', bg: 'bg-emerald-50 dark:bg-emerald-500/10', text: 'text-emerald-700 dark:text-emerald-400' },
+    saida: { label: 'Saida', bg: 'bg-red-50 dark:bg-red-500/10', text: 'text-red-700 dark:text-red-400' },
+    ajuste: { label: 'Ajuste', bg: 'bg-blue-50 dark:bg-blue-500/10', text: 'text-blue-700 dark:text-blue-400' },
   };
 
   return (
@@ -1332,7 +1331,7 @@ export default function InventoryModule() {
             placeholder="Buscar por nome, SKU ou codigo..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-10 pr-4 py-2.5 rounded-lg border border-border/60 bg-white/70 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-300 transition-all"
+            className="w-full pl-10 pr-4 py-2.5 rounded-lg border border-border/60 bg-white/70 dark:bg-gray-900/70 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-300 transition-all"
           />
         </div>
 
@@ -1341,7 +1340,7 @@ export default function InventoryModule() {
           <select
             value={categoryFilter}
             onChange={(e) => setCategoryFilter(e.target.value)}
-            className="appearance-none pl-3 pr-9 py-2.5 rounded-lg border border-border/60 bg-white/70 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-300 transition-all cursor-pointer"
+            className="appearance-none pl-3 pr-9 py-2.5 rounded-lg border border-border/60 bg-white/70 dark:bg-gray-900/70 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-300 transition-all cursor-pointer"
           >
             <option value="all">Todas Categorias</option>
             {CATEGORIES.map((cat) => (
@@ -1358,7 +1357,7 @@ export default function InventoryModule() {
             className={cn(
               'p-2 rounded-md transition-all duration-200',
               viewMode === 'grid'
-                ? 'bg-white text-foreground shadow-sm'
+                ? 'bg-white dark:bg-gray-700 text-foreground shadow-sm'
                 : 'text-muted-foreground hover:text-foreground',
             )}
             title="Visualizacao em grade"
@@ -1370,7 +1369,7 @@ export default function InventoryModule() {
             className={cn(
               'p-2 rounded-md transition-all duration-200',
               viewMode === 'list'
-                ? 'bg-white text-foreground shadow-sm'
+                ? 'bg-white dark:bg-gray-700 text-foreground shadow-sm'
                 : 'text-muted-foreground hover:text-foreground',
             )}
             title="Visualizacao em lista"
@@ -1463,7 +1462,7 @@ export default function InventoryModule() {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.2 }}
-              className="rounded-xl border border-border/60 bg-white/70 backdrop-blur-sm overflow-hidden"
+              className="surface rounded-xl overflow-hidden"
             >
               {filteredProducts.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -1528,7 +1527,7 @@ export default function InventoryModule() {
         variants={sectionVariants}
         initial="hidden"
         animate="visible"
-        className="rounded-xl border border-border/60 bg-white/70 backdrop-blur-sm overflow-hidden"
+        className="surface rounded-xl overflow-hidden"
       >
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-6 pb-4">
           <div className="flex items-center gap-2">

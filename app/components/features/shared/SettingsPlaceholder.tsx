@@ -49,8 +49,8 @@ function FormField({
 }) {
   return (
     <div className={className}>
-      <label className="flex items-center gap-1.5 text-sm font-medium text-gray-700 mb-1.5">
-        {Icon && <Icon className="w-3.5 h-3.5 text-gray-400" />}
+      <label className="flex items-center gap-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+        {Icon && <Icon className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />}
         {label}
       </label>
       {children}
@@ -147,9 +147,9 @@ export default function SettingsPlaceholder() {
   };
 
   const inputClasses = cn(
-    'w-full px-3.5 py-2.5 rounded-xl border border-gray-200',
-    'bg-white text-sm text-gray-900 placeholder:text-gray-400',
-    'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-300',
+    'w-full px-3.5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
+    'bg-white dark:bg-white/[0.04] text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
+    'focus:outline-none focus:ring-2 focus:ring-red-500/20 dark:focus:ring-red-500/30 focus:border-red-300 dark:focus:border-red-500/40',
     'transition-all duration-200'
   );
 
@@ -163,12 +163,12 @@ export default function SettingsPlaceholder() {
       {/* Header */}
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-1">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-red-50 to-red-100 flex items-center justify-center border border-red-200/50">
-            <Building2 className="w-5 h-5 text-red-500" />
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-red-50 to-red-100 dark:from-red-900/20 dark:to-red-800/15 flex items-center justify-center border border-red-200/50 dark:border-red-800/30">
+            <Building2 className="w-5 h-5 text-red-500 dark:text-red-400" />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-gray-900 font-display">Perfil da Empresa</h2>
-            <p className="text-sm text-gray-500">
+            <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100 font-display">Perfil da Empresa</h2>
+            <p className="text-sm text-gray-500 dark:text-gray-400">
               Gerencie as informações do seu negócio
             </p>
           </div>
@@ -177,10 +177,10 @@ export default function SettingsPlaceholder() {
 
       <form onSubmit={handleSubmit} className="space-y-6">
         {/* Business Info Card */}
-        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50">
-            <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
-              <Store className="w-4 h-4 text-gray-500" />
+        <div className="bg-white dark:bg-[#111827] rounded-2xl border border-gray-200 dark:border-gray-700/50 shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-white/[0.02]">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+              <Store className="w-4 h-4 text-gray-500 dark:text-gray-400" />
               Dados da Empresa
             </h3>
           </div>
@@ -238,10 +238,10 @@ export default function SettingsPlaceholder() {
         </div>
 
         {/* Contact Info Card */}
-        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50">
-            <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
-              <Phone className="w-4 h-4 text-gray-500" />
+        <div className="bg-white dark:bg-[#111827] rounded-2xl border border-gray-200 dark:border-gray-700/50 shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-white/[0.02]">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+              <Phone className="w-4 h-4 text-gray-500 dark:text-gray-400" />
               Contato
             </h3>
           </div>
@@ -269,10 +269,10 @@ export default function SettingsPlaceholder() {
         </div>
 
         {/* Address Card */}
-        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50">
-            <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
-              <MapPin className="w-4 h-4 text-gray-500" />
+        <div className="bg-white dark:bg-[#111827] rounded-2xl border border-gray-200 dark:border-gray-700/50 shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-white/[0.02]">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+              <MapPin className="w-4 h-4 text-gray-500 dark:text-gray-400" />
               Endereço
             </h3>
           </div>
@@ -363,7 +363,7 @@ export default function SettingsPlaceholder() {
               'shadow-lg shadow-red-500/25',
               'transition-all duration-200',
               'disabled:opacity-60 disabled:cursor-not-allowed',
-              'focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:ring-offset-2'
+              'focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:ring-offset-2 dark:focus:ring-offset-[#0B0F19]'
             )}
           >
             {isSaving ? (

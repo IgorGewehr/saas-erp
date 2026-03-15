@@ -32,8 +32,14 @@ const InventoryModule = lazy(
 const FiscalModule = lazy(
   () => import('@/app/components/features/fiscal/FiscalModule')
 );
-const SettingsPlaceholder = lazy(
-  () => import('@/app/components/features/shared/SettingsPlaceholder')
+const KanbanModule = lazy(
+  () => import('@/app/components/features/kanban/KanbanModule')
+);
+const CRMModule = lazy(
+  () => import('@/app/components/features/crm/CRMModule')
+);
+const SettingsModule = lazy(
+  () => import('@/app/components/features/settings/SettingsModule')
 );
 
 // Loading fallback
@@ -42,7 +48,7 @@ function ModuleLoadingFallback() {
     <div className="flex items-center justify-center min-h-[calc(100vh-10rem)]">
       <div className="flex flex-col items-center gap-3">
         <Loader2 className="w-8 h-8 text-red-500 animate-spin" />
-        <p className="text-sm text-gray-500">Carregando módulo...</p>
+        <p className="text-sm text-gray-500 dark:text-gray-400">Carregando módulo...</p>
       </div>
     </div>
   );
@@ -58,14 +64,14 @@ function HelpPlaceholder() {
         transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] as [number, number, number, number] }}
         className="text-center max-w-md mx-auto px-6"
       >
-        <div className="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-gradient-to-br from-red-50 to-red-100 mb-6 border border-red-200/50">
-          <HelpCircle className="w-9 h-9 text-red-500" />
+        <div className="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-gradient-to-br from-red-50 to-red-100 dark:from-red-900/20 dark:to-red-800/15 mb-6 border border-red-200/50 dark:border-red-800/30">
+          <HelpCircle className="w-9 h-9 text-red-500 dark:text-red-400" />
         </div>
-        <h2 className="text-2xl font-bold text-gray-900 font-display mb-2">Central de Ajuda</h2>
-        <p className="text-gray-500 text-sm leading-relaxed mb-6">
+        <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100 font-display mb-2">Central de Ajuda</h2>
+        <p className="text-gray-500 dark:text-gray-400 text-sm leading-relaxed mb-6">
           Em breve você terá acesso a tutoriais, FAQ e suporte técnico diretamente por aqui.
         </p>
-        <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-amber-50 border border-amber-200 text-amber-700 text-sm font-medium">
+        <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 text-amber-700 dark:text-amber-400 text-sm font-medium">
           <Construction className="w-4 h-4" />
           Em desenvolvimento
         </div>
@@ -93,6 +99,13 @@ export default function AppPage() {
           </Suspense>
         );
 
+      case 'CRM':
+        return (
+          <Suspense fallback={<ModuleLoadingFallback />}>
+            <CRMModule />
+          </Suspense>
+        );
+
       case 'Agenda':
         return (
           <Suspense fallback={<ModuleLoadingFallback />}>
@@ -104,6 +117,13 @@ export default function AppPage() {
         return (
           <Suspense fallback={<ModuleLoadingFallback />}>
             <PDVModule />
+          </Suspense>
+        );
+
+      case 'Kanban':
+        return (
+          <Suspense fallback={<ModuleLoadingFallback />}>
+            <KanbanModule />
           </Suspense>
         );
 
@@ -145,7 +165,7 @@ export default function AppPage() {
       case 'Configurações':
         return (
           <Suspense fallback={<ModuleLoadingFallback />}>
-            <SettingsPlaceholder />
+            <SettingsModule />
           </Suspense>
         );
 
@@ -161,8 +181,11 @@ export default function AppPage() {
     }
   };
 
+  const fullHeightPages = ['Agenda', 'PDV'];
+  const isFullHeight = fullHeightPages.includes(activePage);
+
   return (
-    <div className={cn('p-4 sm:p-6 lg:p-8')}>
+    <div className={cn(isFullHeight ? 'h-full' : 'p-4 sm:p-6 lg:p-8')}>
       {renderModule()}
     </div>
   );

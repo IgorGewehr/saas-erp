@@ -4,53 +4,35 @@ const SEFAZ_API_URL = process.env.SEFAZ_API_URL;
 const SEFAZ_API_KEY = process.env.SEFAZ_API_KEY;
 
 interface CancelRequestBody {
+  type: 'nfse' | 'nfe' | 'nfce';
   chaveAcesso: string;
+  protocolo?: string;
   justificativa: string;
+  ufEmitente?: string;
   certificado?: {
     pfxBase64: string;
-    senha: string;
+    password: string;
   };
 }
 
 export async function POST(request: NextRequest) {
   try {
-    if (!SEFAZ_API_URL) {
+    if (!SEFAZ_API_URL || !SEFAZ_API_KEY) {
       return NextResponse.json(
-        { error: 'SEFAZ_API_URL nao configurada no ambiente.' },
-        { status: 500 },
-      );
-    }
-
-    if (!SEFAZ_API_KEY) {
-      return NextResponse.json(
-        { error: 'SEFAZ_API_KEY nao configurada no ambiente.' },
+        { error: 'SEFAZ_API_URL ou SEFAZ_API_KEY nao configurada.' },
         { status: 500 },
       );
     }
 
     const body: CancelRequestBody = await request.json();
-
-    if (!body.chaveAcesso || typeof body.chaveAcesso !== 'string') {
-      return NextResponse.json(
-        { error: 'Chave de acesso e obrigatoria.' },
-        { status: 400 },
-      );
-    }
-
-    if (body.chaveAcesso.replace(/\D/g, '').length !== 44) {
-      return NextResponse.json(
-        { error: 'Chave de acesso deve conter 44 digitos.' },
-        { status: 400 },
-      );
-    }
+    const type = body.type || 'nfe';
 
     if (!body.justificativa || body.justificativa.trim().length < 15) {
       return NextResponse.json(
-        { error: 'Justificativa e obrigatoria e deve ter no minimo 15 caracteres.' },
+        { error: 'Justificativa deve ter no minimo 15 caracteres.' },
         { status: 400 },
       );
     }
-
     if (body.justificativa.trim().length > 255) {
       return NextResponse.json(
         { error: 'Justificativa deve ter no maximo 255 caracteres.' },
@@ -58,46 +40,65 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const url = `${SEFAZ_API_URL}/nfe/cancelar`;
+    let endpoint: string;
+    let payload: Record<string, unknown>;
 
+    if (type === 'nfse') {
+      // NFSe cancel (50-digit key)
+      if (!body.chaveAcesso || body.chaveAcesso.replace(/\D/g, '').length !== 50) {
+        return NextResponse.json(
+          { error: 'Chave de acesso NFSe deve conter 50 digitos.' },
+          { status: 400 },
+        );
+      }
+      endpoint = '/nfse/cancelar';
+      payload = {
+        chaveAcesso: body.chaveAcesso,
+        justificativa: body.justificativa.trim(),
+        certificado: body.certificado,
+      };
+    } else {
+      // NFe/NFCe cancel (44-digit key)
+      if (!body.chaveAcesso || body.chaveAcesso.replace(/\D/g, '').length !== 44) {
+        return NextResponse.json(
+          { error: 'Chave de acesso deve conter 44 digitos.' },
+          { status: 400 },
+        );
+      }
+      endpoint = '/nfe/cancelar';
+      payload = {
+        chaveAcesso: body.chaveAcesso,
+        protocolo: body.protocolo,
+        justificativa: body.justificativa.trim(),
+        ufEmitente: body.ufEmitente || body.chaveAcesso.substring(0, 2),
+        certificado: body.certificado,
+      };
+    }
+
+    const url = `${SEFAZ_API_URL}${endpoint}`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${SEFAZ_API_KEY}`,
       },
-      body: JSON.stringify({
-        chaveAcesso: body.chaveAcesso,
-        justificativa: body.justificativa.trim(),
-        certificado: body.certificado,
-      }),
+      body: JSON.stringify(payload),
     });
 
     const responseData = await response.json();
 
     if (!response.ok) {
       return NextResponse.json(
-        {
-          error: 'Erro ao cancelar documento no SEFAZ.',
-          details: responseData,
-          statusCode: response.status,
-        },
+        { error: 'Erro ao cancelar documento.', details: responseData, statusCode: response.status },
         { status: response.status },
       );
     }
 
-    return NextResponse.json({
-      success: true,
-      data: responseData,
-    });
+    return NextResponse.json({ success: true, data: responseData });
   } catch (error) {
-    console.error('[Fiscal Cancel] Erro ao cancelar documento:', error);
-
+    console.error('[Fiscal Cancel] Erro:', error);
     return NextResponse.json(
-      {
-        error: 'Erro interno ao cancelar documento fiscal.',
-        details: error instanceof Error ? error.message : 'Erro desconhecido',
-      },
+      { error: 'Erro interno ao cancelar documento fiscal.', details: error instanceof Error ? error.message : 'Erro desconhecido' },
       { status: 500 },
     );
   }

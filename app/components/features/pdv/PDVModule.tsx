@@ -48,6 +48,7 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { formatCurrency } from '@/lib/utils/format';
+import { useTheme } from '@/app/components/providers/ThemeProvider';
 import type { Product, Service, Client, SaleItem, Payment, PaymentMethod } from '@/lib/types';
 
 // ==========================================
@@ -110,7 +111,7 @@ function getItemIcon(item: CatalogItem) {
       Unha: <Sparkles size={20} className="text-pink-500" />,
       Estética: <Heart size={20} className="text-emerald-500" />,
     };
-    return icons[item.category] || <Package size={20} className="text-slate-400" />;
+    return icons[item.category] || <Package size={20} className="text-slate-400 dark:text-gray-500" />;
   }
   const icons: Record<string, React.ReactNode> = {
     Cabelo: <Scissors size={20} className="text-red-500" />,
@@ -129,6 +130,7 @@ interface CartItem extends SaleItem {
 }
 
 export default function PDVModule() {
+  const { isDark } = useTheme();
   // --- State ---
   const [activeTab, setActiveTab] = useState<'produtos' | 'servicos'>('produtos');
   const [searchQuery, setSearchQuery] = useState('');
@@ -305,18 +307,18 @@ export default function PDVModule() {
   // ==========================================
 
   return (
-    <div className="h-full flex flex-col lg:flex-row gap-0 bg-slate-50 min-h-[calc(100vh-80px)]">
+    <div className="h-full flex flex-col lg:flex-row gap-0 bg-slate-50 dark:bg-[#0B0F19] min-h-[calc(100vh-80px)]">
       {/* ========== LEFT PANEL - Catalog ========== */}
-      <div className="w-full lg:w-[60%] flex flex-col border-r border-slate-200 bg-white">
+      <div className="w-full lg:w-[60%] flex flex-col border-r border-slate-200 dark:border-gray-800 bg-white dark:bg-[#0d1117]">
         {/* Header */}
-        <div className="px-6 pt-6 pb-4 border-b border-slate-100">
+        <div className="px-6 pt-6 pb-4 border-b border-slate-100 dark:border-gray-800">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h1 className="text-2xl font-display font-bold text-slate-900">PDV</h1>
-              <p className="text-sm text-slate-500 mt-0.5">Ponto de Venda</p>
+              <h1 className="text-2xl font-display font-bold text-slate-900 dark:text-gray-100">PDV</h1>
+              <p className="text-sm text-slate-500 dark:text-gray-400 mt-0.5">Ponto de Venda</p>
             </div>
             <Tooltip title="Atalhos: Enter para buscar, Esc para limpar">
-              <div className="flex items-center gap-1.5 text-xs text-slate-400 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200">
+              <div className="flex items-center gap-1.5 text-xs text-slate-400 dark:text-gray-500 bg-slate-50 dark:bg-gray-800/50 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-gray-700">
                 <Keyboard size={14} />
                 <span>Atalhos</span>
               </div>
@@ -325,28 +327,28 @@ export default function PDVModule() {
 
           {/* Search */}
           <div className="relative">
-            <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-gray-500" />
             <input
               ref={searchInputRef}
               type="text"
               placeholder="Buscar produto ou serviço..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 transition-all"
+              className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-gray-800/50 border border-slate-200 dark:border-gray-700 rounded-xl text-sm text-slate-900 dark:text-gray-100 placeholder:text-slate-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 transition-all"
             />
           </div>
         </div>
 
         {/* Product/Service Tabs */}
         <div className="px-6 pt-4 pb-0">
-          <div className="flex gap-1 p-1 bg-slate-100 rounded-xl w-fit">
+          <div className="flex gap-1 p-1 bg-slate-100 dark:bg-gray-800 rounded-xl w-fit">
             <button
               onClick={() => { setActiveTab('produtos'); setActiveCategory('Todos'); setSearchQuery(''); }}
               className={cn(
                 'px-5 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2',
                 activeTab === 'produtos'
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-500 hover:text-slate-700',
+                  ? 'bg-white dark:bg-gray-700 text-slate-900 dark:text-gray-100 shadow-sm'
+                  : 'text-slate-500 dark:text-gray-400 hover:text-slate-700 dark:text-gray-300',
               )}
             >
               <Package size={16} />
@@ -357,8 +359,8 @@ export default function PDVModule() {
               className={cn(
                 'px-5 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2',
                 activeTab === 'servicos'
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-500 hover:text-slate-700',
+                  ? 'bg-white dark:bg-gray-700 text-slate-900 dark:text-gray-100 shadow-sm'
+                  : 'text-slate-500 dark:text-gray-400 hover:text-slate-700 dark:text-gray-300',
               )}
             >
               <Scissors size={16} />
@@ -377,8 +379,8 @@ export default function PDVModule() {
                 className={cn(
                   'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-all border',
                   activeCategory === cat
-                    ? 'bg-red-50 text-red-600 border-red-200'
-                    : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300 hover:text-slate-700',
+                    ? 'bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 border-red-200 dark:border-red-500/20'
+                    : 'bg-white dark:bg-gray-800 text-slate-500 dark:text-gray-400 border-slate-200 dark:border-gray-700 hover:border-slate-300 dark:hover:border-gray-600 hover:text-slate-700 dark:hover:text-gray-300',
                 )}
               >
                 {getCategoryIcon(cat)}
@@ -411,8 +413,8 @@ export default function PDVModule() {
                     className={cn(
                       'relative flex flex-col items-start p-4 rounded-xl border transition-colors text-left',
                       inCartQty > 0
-                        ? 'bg-red-50/50 border-red-200'
-                        : 'bg-white border-slate-200 hover:border-slate-300',
+                        ? 'bg-red-50/50 dark:bg-red-500/10 border-red-200 dark:border-red-500/20'
+                        : 'bg-white dark:bg-gray-800/50 border-slate-200 dark:border-gray-700 hover:border-slate-300 dark:hover:border-gray-600',
                     )}
                   >
                     {inCartQty > 0 && (
@@ -425,25 +427,25 @@ export default function PDVModule() {
                       </motion.div>
                     )}
                     <div className="flex items-center gap-2 mb-2">
-                      <div className="w-8 h-8 rounded-lg bg-slate-50 flex items-center justify-center">
+                      <div className="w-8 h-8 rounded-lg bg-slate-50 dark:bg-gray-800/50 flex items-center justify-center">
                         {getItemIcon(item)}
                       </div>
                     </div>
-                    <span className="text-sm font-medium text-slate-900 leading-tight mb-1 line-clamp-2">
+                    <span className="text-sm font-medium text-slate-900 dark:text-gray-100 leading-tight mb-1 line-clamp-2">
                       {item.name}
                     </span>
                     <div className="flex items-center gap-2 mt-auto pt-1">
-                      <span className="text-base font-bold text-red-600">
+                      <span className="text-base font-bold text-red-600 dark:text-red-400">
                         {formatCurrency(price)}
                       </span>
                     </div>
                     {item.type === 'product' && (
-                      <span className="text-[10px] text-slate-400 mt-1">
+                      <span className="text-[10px] text-slate-400 dark:text-gray-500 mt-1">
                         Estoque: {(item as Product).currentStock}
                       </span>
                     )}
                     {item.type === 'service' && (
-                      <span className="text-[10px] text-slate-400 mt-1">
+                      <span className="text-[10px] text-slate-400 dark:text-gray-500 mt-1">
                         {(item as Service).duration} min
                       </span>
                     )}
@@ -454,7 +456,7 @@ export default function PDVModule() {
           </div>
 
           {catalogItems.length === 0 && (
-            <div className="flex flex-col items-center justify-center py-16 text-slate-400">
+            <div className="flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
               <Search size={40} strokeWidth={1.5} />
               <p className="mt-3 text-sm">Nenhum item encontrado</p>
             </div>
@@ -463,17 +465,17 @@ export default function PDVModule() {
       </div>
 
       {/* ========== RIGHT PANEL - Cart/Checkout ========== */}
-      <div className="w-full lg:w-[40%] flex flex-col bg-white">
+      <div className="w-full lg:w-[40%] flex flex-col bg-white dark:bg-[#111827]">
         {/* Cart Header */}
-        <div className="px-6 pt-6 pb-4 border-b border-slate-100">
+        <div className="px-6 pt-6 pb-4 border-b border-slate-100 dark:border-gray-800">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-red-50 flex items-center justify-center">
-                <ShoppingCart size={18} className="text-red-600" />
+              <div className="w-9 h-9 rounded-xl bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
+                <ShoppingCart size={18} className="text-red-600 dark:text-red-400" />
               </div>
               <div>
-                <h2 className="text-lg font-display font-bold text-slate-900">
-                  Venda <span className="text-red-600">#{String(saleNumber).padStart(3, '0')}</span>
+                <h2 className="text-lg font-display font-bold text-slate-900 dark:text-gray-100">
+                  Venda <span className="text-red-600 dark:text-red-400">#{String(saleNumber).padStart(3, '0')}</span>
                 </h2>
               </div>
             </div>
@@ -481,8 +483,12 @@ export default function PDVModule() {
               label={`${cart.length} ${cart.length === 1 ? 'item' : 'itens'}`}
               size="small"
               sx={{
-                backgroundColor: cart.length > 0 ? '#FEF2F2' : '#F1F5F9',
-                color: cart.length > 0 ? '#DC2626' : '#64748B',
+                backgroundColor: cart.length > 0
+                  ? (isDark ? 'rgba(220,38,38,0.1)' : '#FEF2F2')
+                  : (isDark ? '#1f2937' : '#F1F5F9'),
+                color: cart.length > 0
+                  ? (isDark ? '#f87171' : '#DC2626')
+                  : (isDark ? '#9ca3af' : '#64748B'),
                 fontWeight: 600,
                 fontSize: '0.75rem',
               }}
@@ -505,7 +511,7 @@ export default function PDVModule() {
                   startAdornment: (
                     <>
                       <InputAdornment position="start">
-                        <User size={16} className="text-slate-400" />
+                        <User size={16} className="text-slate-400 dark:text-gray-500" />
                       </InputAdornment>
                       {params.InputProps.startAdornment}
                     </>
@@ -514,22 +520,25 @@ export default function PDVModule() {
                 sx={{
                   '& .MuiOutlinedInput-root': {
                     borderRadius: '12px',
-                    backgroundColor: '#F8FAFC',
-                    '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#CBD5E1' },
+                    backgroundColor: isDark ? '#1f2937' : '#F8FAFC',
+                    color: isDark ? '#f3f4f6' : undefined,
+                    '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: isDark ? '#4b5563' : '#CBD5E1' },
                     '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: '#DC2626' },
+                    '& .MuiOutlinedInput-notchedOutline': { borderColor: isDark ? '#374151' : undefined },
                   },
+                  '& .MuiInputBase-input::placeholder': { color: isDark ? '#6b7280' : undefined },
                 }}
               />
             )}
             renderOption={(props, option) => (
               <li {...props} key={option.id}>
                 <div className="flex items-center gap-3 py-1">
-                  <div className="w-8 h-8 rounded-full bg-red-50 flex items-center justify-center text-xs font-bold text-red-600">
+                  <div className="w-8 h-8 rounded-full bg-red-50 dark:bg-red-500/10 flex items-center justify-center text-xs font-bold text-red-600 dark:text-red-400">
                     {option.nome.split(' ').map(n => n[0]).slice(0, 2).join('')}
                   </div>
                   <div>
-                    <p className="text-sm font-medium text-slate-900">{option.nome}</p>
-                    <p className="text-xs text-slate-400">{option.visitCount} visitas</p>
+                    <p className="text-sm font-medium text-slate-900 dark:text-gray-100">{option.nome}</p>
+                    <p className="text-xs text-slate-400 dark:text-gray-500">{option.visitCount} visitas</p>
                   </div>
                 </div>
               </li>
@@ -545,11 +554,11 @@ export default function PDVModule() {
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
-                className="flex flex-col items-center justify-center py-16 text-slate-300"
+                className="flex flex-col items-center justify-center py-16 text-slate-300 dark:text-gray-600"
               >
                 <ShoppingCart size={48} strokeWidth={1.2} />
-                <p className="mt-3 text-sm text-slate-400">Carrinho vazio</p>
-                <p className="text-xs text-slate-300 mt-1">Clique em um produto ou serviço para adicionar</p>
+                <p className="mt-3 text-sm text-slate-400 dark:text-gray-500">Carrinho vazio</p>
+                <p className="text-xs text-slate-300 dark:text-gray-600 mt-1">Clique em um produto ou serviço para adicionar</p>
               </motion.div>
             ) : (
               <div className="space-y-2">
@@ -560,37 +569,37 @@ export default function PDVModule() {
                     initial={{ opacity: 0, x: 20 }}
                     animate={{ opacity: 1, x: 0 }}
                     exit={{ opacity: 0, x: -20 }}
-                    className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 border border-slate-100 group"
+                    className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 dark:bg-gray-800/50 border border-slate-100 dark:border-gray-700/50 group"
                   >
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-slate-900 truncate">{item.description}</p>
-                      <p className="text-xs text-slate-400 mt-0.5">
+                      <p className="text-sm font-medium text-slate-900 dark:text-gray-100 truncate">{item.description}</p>
+                      <p className="text-xs text-slate-400 dark:text-gray-500 mt-0.5">
                         {formatCurrency(item.unitPrice)} cada
                       </p>
                     </div>
                     <div className="flex items-center gap-1.5">
                       <button
                         onClick={() => updateQuantity(item.id, -1)}
-                        className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center text-slate-500 hover:border-red-300 hover:text-red-600 transition-colors"
+                        className="w-7 h-7 rounded-lg bg-white dark:bg-gray-700 border border-slate-200 dark:border-gray-600 flex items-center justify-center text-slate-500 dark:text-gray-400 hover:border-red-300 hover:text-red-600 dark:hover:text-red-400 transition-colors"
                       >
                         <Minus size={14} />
                       </button>
-                      <span className="w-8 text-center text-sm font-semibold text-slate-900">
+                      <span className="w-8 text-center text-sm font-semibold text-slate-900 dark:text-gray-100">
                         {item.quantity}
                       </span>
                       <button
                         onClick={() => updateQuantity(item.id, 1)}
-                        className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center text-slate-500 hover:border-red-300 hover:text-red-600 transition-colors"
+                        className="w-7 h-7 rounded-lg bg-white dark:bg-gray-700 border border-slate-200 dark:border-gray-600 flex items-center justify-center text-slate-500 dark:text-gray-400 hover:border-red-300 hover:text-red-600 dark:hover:text-red-400 transition-colors"
                       >
                         <Plus size={14} />
                       </button>
                     </div>
-                    <p className="text-sm font-bold text-slate-900 w-20 text-right">
+                    <p className="text-sm font-bold text-slate-900 dark:text-gray-100 w-20 text-right">
                       {formatCurrency(item.unitPrice * item.quantity)}
                     </p>
                     <button
                       onClick={() => removeFromCart(item.id)}
-                      className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-300 hover:bg-red-50 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
+                      className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-300 dark:text-gray-600 hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-500 dark:hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
                     >
                       <X size={14} />
                     </button>
@@ -606,16 +615,16 @@ export default function PDVModule() {
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            className="border-t border-slate-200 bg-slate-50/50 px-6 py-4"
+            className="border-t border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-800/50 px-6 py-4"
           >
             {/* Subtotal & Discount */}
             <div className="space-y-2 mb-4">
-              <div className="flex justify-between text-sm text-slate-600">
+              <div className="flex justify-between text-sm text-slate-600 dark:text-gray-400">
                 <span>Subtotal</span>
                 <span className="font-medium">{formatCurrency(subtotal)}</span>
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-sm text-slate-600 whitespace-nowrap">Desconto</span>
+                <span className="text-sm text-slate-600 dark:text-gray-400 whitespace-nowrap">Desconto</span>
                 <div className="flex-1 flex items-center gap-1">
                   <div className="relative flex-1">
                     <input
@@ -624,17 +633,17 @@ export default function PDVModule() {
                       onChange={(e) => setDiscountValue(e.target.value)}
                       placeholder="0"
                       min="0"
-                      className="w-full pl-3 pr-8 py-1.5 bg-white border border-slate-200 rounded-lg text-sm text-right focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
+                      className="w-full pl-3 pr-8 py-1.5 bg-white dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-lg text-sm text-slate-900 dark:text-gray-100 text-right focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
                     />
                   </div>
-                  <div className="flex p-0.5 bg-white border border-slate-200 rounded-lg">
+                  <div className="flex p-0.5 bg-white dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-lg">
                     <button
                       onClick={() => setDiscountType('reais')}
                       className={cn(
                         'px-2 py-1 rounded-md text-xs font-medium transition-colors',
                         discountType === 'reais'
                           ? 'bg-red-600 text-white'
-                          : 'text-slate-500 hover:text-slate-700',
+                          : 'text-slate-500 dark:text-gray-400 hover:text-slate-700 dark:text-gray-300',
                       )}
                     >
                       R$
@@ -645,7 +654,7 @@ export default function PDVModule() {
                         'px-2 py-1 rounded-md text-xs font-medium transition-colors',
                         discountType === 'percent'
                           ? 'bg-red-600 text-white'
-                          : 'text-slate-500 hover:text-slate-700',
+                          : 'text-slate-500 dark:text-gray-400 hover:text-slate-700 dark:text-gray-300',
                       )}
                     >
                       %
@@ -653,19 +662,19 @@ export default function PDVModule() {
                   </div>
                 </div>
                 {discountAmount > 0 && (
-                  <span className="text-sm font-medium text-red-600 whitespace-nowrap">
+                  <span className="text-sm font-medium text-red-600 dark:text-red-400 whitespace-nowrap">
                     -{formatCurrency(discountAmount)}
                   </span>
                 )}
               </div>
               <Divider sx={{ my: 1 }} />
               <div className="flex justify-between items-center">
-                <span className="text-lg font-bold text-slate-900">Total</span>
+                <span className="text-lg font-bold text-slate-900 dark:text-gray-100">Total</span>
                 <motion.span
                   key={total}
                   initial={{ scale: 1.1 }}
                   animate={{ scale: 1 }}
-                  className="text-2xl font-display font-bold text-red-600"
+                  className="text-2xl font-display font-bold text-red-600 dark:text-red-400"
                 >
                   {formatCurrency(total)}
                 </motion.span>
@@ -674,7 +683,7 @@ export default function PDVModule() {
 
             {/* Payment Methods */}
             <div className="mb-4">
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
+              <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase tracking-wider mb-2">
                 Pagamento
               </p>
               <div className="grid grid-cols-4 gap-2 mb-3">
@@ -690,8 +699,8 @@ export default function PDVModule() {
                     className={cn(
                       'flex flex-col items-center gap-1 py-2.5 px-2 rounded-xl border text-xs font-medium transition-all',
                       activePaymentMethod === pm.method
-                        ? 'bg-red-50 border-red-300 text-red-600'
-                        : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300',
+                        ? 'bg-red-50 dark:bg-red-500/10 border-red-300 text-red-600 dark:text-red-400'
+                        : 'bg-white dark:bg-gray-800 border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:border-slate-300 dark:hover:border-gray-600',
                     )}
                   >
                     {pm.icon}
@@ -707,13 +716,13 @@ export default function PDVModule() {
                   className="flex gap-2 mb-3"
                 >
                   <div className="relative flex-1">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">R$</span>
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 dark:text-gray-500">R$</span>
                     <input
                       type="number"
                       value={paymentAmount}
                       onChange={(e) => setPaymentAmount(e.target.value)}
                       placeholder="0,00"
-                      className="w-full pl-9 pr-3 py-2 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
+                      className="w-full pl-9 pr-3 py-2 bg-white dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-xl text-sm text-slate-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
                     />
                   </div>
                   <Button
@@ -738,20 +747,20 @@ export default function PDVModule() {
               {payments.length > 0 && (
                 <div className="space-y-1.5 mb-3">
                   {payments.map((p, idx) => (
-                    <div key={idx} className="flex items-center justify-between py-1.5 px-3 bg-emerald-50 rounded-lg border border-emerald-100">
+                    <div key={idx} className="flex items-center justify-between py-1.5 px-3 bg-emerald-50 dark:bg-emerald-500/10 rounded-lg border border-emerald-100 dark:border-emerald-500/20">
                       <div className="flex items-center gap-2">
-                        <CheckCircle2 size={14} className="text-emerald-500" />
-                        <span className="text-sm text-emerald-800 font-medium">
+                        <CheckCircle2 size={14} className="text-emerald-500 dark:text-emerald-400" />
+                        <span className="text-sm text-emerald-800 dark:text-emerald-300 font-medium">
                           {paymentMethodLabels[p.method]}
                         </span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold text-emerald-700">
+                        <span className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">
                           {formatCurrency(p.amount)}
                         </span>
                         <button
                           onClick={() => removePayment(idx)}
-                          className="text-emerald-400 hover:text-red-500 transition-colors"
+                          className="text-emerald-400 dark:text-emerald-500 hover:text-red-500 dark:hover:text-red-400 transition-colors"
                         >
                           <X size={14} />
                         </button>
@@ -763,20 +772,20 @@ export default function PDVModule() {
 
               {/* Remaining / Change */}
               {payments.length > 0 && (
-                <div className="flex justify-between text-sm py-2 px-3 bg-slate-100 rounded-lg">
+                <div className="flex justify-between text-sm py-2 px-3 bg-slate-100 dark:bg-gray-800 rounded-lg">
                   {remaining > 0.01 ? (
                     <>
-                      <span className="text-slate-600">Falta</span>
+                      <span className="text-slate-600 dark:text-gray-400">Falta</span>
                       <span className="font-bold text-amber-600">{formatCurrency(remaining)}</span>
                     </>
                   ) : change > 0 ? (
                     <>
-                      <span className="text-slate-600">Troco</span>
+                      <span className="text-slate-600 dark:text-gray-400">Troco</span>
                       <span className="font-bold text-emerald-600">{formatCurrency(change)}</span>
                     </>
                   ) : (
                     <>
-                      <span className="text-slate-600">Pagamento</span>
+                      <span className="text-slate-600 dark:text-gray-400">Pagamento</span>
                       <span className="font-bold text-emerald-600">Completo</span>
                     </>
                   )}
@@ -790,9 +799,9 @@ export default function PDVModule() {
                 onClick={cancelSale}
                 variant="outlined"
                 sx={{
-                  color: '#64748B',
-                  borderColor: '#CBD5E1',
-                  '&:hover': { borderColor: '#94A3B8', backgroundColor: '#F8FAFC' },
+                  color: isDark ? '#9ca3af' : '#64748B',
+                  borderColor: isDark ? '#374151' : '#CBD5E1',
+                  '&:hover': { borderColor: isDark ? '#4b5563' : '#94A3B8', backgroundColor: isDark ? '#1f2937' : '#F8FAFC' },
                   borderRadius: '12px',
                   textTransform: 'none',
                   fontWeight: 600,
@@ -804,10 +813,10 @@ export default function PDVModule() {
               <Tooltip title="Emitir Nota Fiscal">
                 <IconButton
                   sx={{
-                    border: '1px solid #CBD5E1',
+                    border: `1px solid ${isDark ? '#374151' : '#CBD5E1'}`,
                     borderRadius: '12px',
-                    color: '#64748B',
-                    '&:hover': { borderColor: '#94A3B8', backgroundColor: '#F8FAFC' },
+                    color: isDark ? '#9ca3af' : '#64748B',
+                    '&:hover': { borderColor: isDark ? '#4b5563' : '#94A3B8', backgroundColor: isDark ? '#1f2937' : '#F8FAFC' },
                   }}
                 >
                   <FileText size={18} />
@@ -857,15 +866,15 @@ export default function PDVModule() {
                 animate={{ scale: 1 }}
                 transition={{ type: 'spring', stiffness: 200, damping: 15, delay: 0.1 }}
               >
-                <div className="w-20 h-20 rounded-full bg-emerald-100 flex items-center justify-center mb-6">
-                  <CheckCircle2 size={40} className="text-emerald-500" />
+                <div className="w-20 h-20 rounded-full bg-emerald-100 dark:bg-emerald-500/10 flex items-center justify-center mb-6">
+                  <CheckCircle2 size={40} className="text-emerald-500 dark:text-emerald-400" />
                 </div>
               </motion.div>
               <motion.h3
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.3 }}
-                className="text-xl font-display font-bold text-slate-900 mb-2"
+                className="text-xl font-display font-bold text-slate-900 dark:text-gray-100 mb-2"
               >
                 Venda Finalizada!
               </motion.h3>
@@ -873,7 +882,7 @@ export default function PDVModule() {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.4 }}
-                className="text-sm text-slate-500"
+                className="text-sm text-slate-500 dark:text-gray-400"
               >
                 Venda #{String(saleNumber).padStart(3, '0')} registrada com sucesso
               </motion.p>
@@ -894,7 +903,7 @@ export default function PDVModule() {
                 }}
               >
                 <div className="flex items-center gap-3">
-                  <Receipt size={20} className="text-red-600" />
+                  <Receipt size={20} className="text-red-600 dark:text-red-400" />
                   <span>Confirmar Venda</span>
                 </div>
                 <IconButton onClick={() => setShowConfirmation(false)} size="small">
@@ -905,14 +914,14 @@ export default function PDVModule() {
               <DialogContent>
                 <div className="space-y-4 py-2">
                   {/* Receipt Preview */}
-                  <div className="bg-slate-50 rounded-xl p-4 border border-slate-100">
+                  <div className="bg-slate-50 dark:bg-gray-800/50 rounded-xl p-4 border border-slate-100 dark:border-gray-700/50">
                     <div className="text-center mb-4">
-                      <p className="text-xs text-slate-400 uppercase tracking-widest">Resumo da Venda</p>
-                      <p className="text-sm font-bold text-slate-900 mt-1">
+                      <p className="text-xs text-slate-400 dark:text-gray-500 uppercase tracking-widest">Resumo da Venda</p>
+                      <p className="text-sm font-bold text-slate-900 dark:text-gray-100 mt-1">
                         Venda #{String(saleNumber).padStart(3, '0')}
                       </p>
                       {selectedClient && (
-                        <p className="text-xs text-slate-500 mt-0.5">
+                        <p className="text-xs text-slate-500 dark:text-gray-400 mt-0.5">
                           Cliente: {selectedClient.nome}
                         </p>
                       )}
@@ -922,10 +931,10 @@ export default function PDVModule() {
                       {cart.map((item) => (
                         <div key={item.id} className="flex justify-between text-sm">
                           <div className="flex-1 min-w-0">
-                            <span className="text-slate-700 truncate block">{item.description}</span>
-                            <span className="text-xs text-slate-400">{item.quantity}x {formatCurrency(item.unitPrice)}</span>
+                            <span className="text-slate-700 dark:text-gray-300 truncate block">{item.description}</span>
+                            <span className="text-xs text-slate-400 dark:text-gray-500">{item.quantity}x {formatCurrency(item.unitPrice)}</span>
                           </div>
-                          <span className="font-medium text-slate-900 ml-4">
+                          <span className="font-medium text-slate-900 dark:text-gray-100 ml-4">
                             {formatCurrency(item.unitPrice * item.quantity)}
                           </span>
                         </div>
@@ -933,26 +942,26 @@ export default function PDVModule() {
                     </div>
                     <Divider sx={{ my: 1.5, borderStyle: 'dashed' }} />
                     <div className="space-y-1">
-                      <div className="flex justify-between text-sm text-slate-600">
+                      <div className="flex justify-between text-sm text-slate-600 dark:text-gray-400">
                         <span>Subtotal</span>
                         <span>{formatCurrency(subtotal)}</span>
                       </div>
                       {discountAmount > 0 && (
-                        <div className="flex justify-between text-sm text-red-600">
+                        <div className="flex justify-between text-sm text-red-600 dark:text-red-400">
                           <span>Desconto</span>
                           <span>-{formatCurrency(discountAmount)}</span>
                         </div>
                       )}
-                      <div className="flex justify-between text-base font-bold text-slate-900 pt-1">
+                      <div className="flex justify-between text-base font-bold text-slate-900 dark:text-gray-100 pt-1">
                         <span>Total</span>
                         <span>{formatCurrency(total)}</span>
                       </div>
                     </div>
                     <Divider sx={{ my: 1.5, borderStyle: 'dashed' }} />
                     <div className="space-y-1">
-                      <p className="text-xs font-semibold text-slate-500 uppercase">Pagamento</p>
+                      <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase">Pagamento</p>
                       {payments.map((p, idx) => (
-                        <div key={idx} className="flex justify-between text-sm text-slate-700">
+                        <div key={idx} className="flex justify-between text-sm text-slate-700 dark:text-gray-300">
                           <span>{paymentMethodLabels[p.method]}</span>
                           <span>{formatCurrency(p.amount)}</span>
                         </div>
@@ -971,9 +980,9 @@ export default function PDVModule() {
                 <Tooltip title="Imprimir recibo">
                   <IconButton
                     sx={{
-                      border: '1px solid #E2E8F0',
+                      border: `1px solid ${isDark ? '#374151' : '#E2E8F0'}`,
                       borderRadius: '12px',
-                      color: '#64748B',
+                      color: isDark ? '#9ca3af' : '#64748B',
                     }}
                   >
                     <Printer size={18} />
@@ -982,7 +991,7 @@ export default function PDVModule() {
                 <div className="flex-1" />
                 <Button
                   onClick={() => setShowConfirmation(false)}
-                  sx={{ color: '#64748B', textTransform: 'none', fontWeight: 600, borderRadius: '12px' }}
+                  sx={{ color: isDark ? '#9ca3af' : '#64748B', textTransform: 'none', fontWeight: 600, borderRadius: '12px' }}
                 >
                   Voltar
                 </Button>

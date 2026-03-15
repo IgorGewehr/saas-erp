@@ -6,7 +6,6 @@ import {
   IconButton,
   Chip,
   Button,
-  Divider,
   Skeleton,
 } from '@mui/material';
 import {
@@ -15,41 +14,33 @@ import {
   Mail,
   MapPin,
   Calendar,
-  DollarSign,
-  TrendingUp,
-  Clock,
   Edit,
-  CalendarPlus,
-  ShoppingCart,
   UserX,
   UserCheck,
   Tag,
   FileText,
+  Copy,
+  Building2,
+  User,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
-import type { Client, Appointment, Transaction } from '@/lib/types';
+import { toast } from 'react-toastify';
+import type { Client } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import {
   formatCPFCNPJ,
   formatPhone,
-  formatCurrency,
   formatDate,
-  formatDateTime,
   getInitials,
-  getStatusColor,
-  getStatusLabel,
 } from '@/lib/utils/format';
+import { useTheme } from '@/app/components/providers/ThemeProvider';
 
 interface ClientDetailDrawerProps {
   open: boolean;
   onClose: () => void;
   client: Client | null;
-  recentAppointments?: Appointment[];
-  recentTransactions?: Transaction[];
   isLoading?: boolean;
   onEdit?: (client: Client) => void;
-  onSchedule?: (client: Client) => void;
-  onNewSale?: (client: Client) => void;
   onToggleActive?: (client: Client) => void;
 }
 
@@ -68,15 +59,17 @@ export function ClientDetailDrawer({
   open,
   onClose,
   client,
-  recentAppointments = [],
-  recentTransactions = [],
   isLoading = false,
   onEdit,
-  onSchedule,
-  onNewSale,
   onToggleActive,
 }: ClientDetailDrawerProps) {
+  const { isDark } = useTheme();
   if (!client && !isLoading) return null;
+
+  function copyToClipboard(text: string, label: string) {
+    navigator.clipboard.writeText(text);
+    toast.success(`${label} copiado!`);
+  }
 
   return (
     <Drawer
@@ -85,15 +78,15 @@ export function ClientDetailDrawer({
       onClose={onClose}
       PaperProps={{
         sx: {
-          width: { xs: '100%', sm: 420 },
+          width: { xs: '100%', sm: 400 },
           maxWidth: '100vw',
         },
       }}
     >
       <div className="h-full flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-slate-100">
-          <h2 className="text-lg font-display font-bold text-slate-900">
+        <div className="flex items-center justify-between p-4 border-b border-slate-100 dark:border-gray-800">
+          <h2 className="text-lg font-display font-bold text-slate-900 dark:text-gray-100">
             Detalhes do Cliente
           </h2>
           <IconButton onClick={onClose} size="small">
@@ -110,13 +103,13 @@ export function ClientDetailDrawer({
               initial="initial"
               animate="animate"
               variants={stagger}
-              className="p-4 space-y-6"
+              className="p-5 space-y-5"
             >
               {/* Client Header */}
               <motion.div variants={fadeInUp} className="flex items-center gap-4">
                 <div
                   className={cn(
-                    'w-16 h-16 rounded-full flex items-center justify-center text-xl font-bold text-white shrink-0',
+                    'w-14 h-14 rounded-2xl flex items-center justify-center text-lg font-bold text-white shrink-0',
                     client.isActive
                       ? 'bg-gradient-to-br from-red-500 to-red-700'
                       : 'bg-gradient-to-br from-slate-400 to-slate-600'
@@ -124,220 +117,166 @@ export function ClientDetailDrawer({
                 >
                   {getInitials(client.nome)}
                 </div>
-                <div className="min-w-0">
-                  <h3 className="text-lg font-display font-bold text-slate-900 truncate">
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-lg font-display font-bold text-slate-900 dark:text-gray-100 truncate">
                     {client.nome}
                   </h3>
-                  <p className="text-sm text-slate-500">
-                    {client.tipo === 'pf' ? 'Pessoa Fisica' : 'Pessoa Juridica'} &middot;{' '}
-                    {formatCPFCNPJ(client.cpfCnpj)}
-                  </p>
-                  <Chip
-                    label={client.isActive ? 'Ativo' : 'Inativo'}
-                    size="small"
-                    sx={{
-                      mt: 0.5,
-                      backgroundColor: client.isActive ? '#DCFCE7' : '#F1F5F9',
-                      color: client.isActive ? '#16A34A' : '#64748B',
-                      fontWeight: 600,
-                      fontSize: '0.75rem',
-                    }}
-                  />
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="inline-flex items-center gap-1 text-xs text-slate-500 dark:text-gray-400 bg-slate-100 dark:bg-gray-800 px-2 py-0.5 rounded-full">
+                      {client.tipo === 'pf' ? <User size={10} /> : <Building2 size={10} />}
+                      {client.tipo === 'pf' ? 'Pessoa Fisica' : 'Pessoa Juridica'}
+                    </span>
+                    <Chip
+                      label={client.isActive ? 'Ativo' : 'Inativo'}
+                      size="small"
+                      sx={{
+                        height: 22,
+                        backgroundColor: client.isActive
+                          ? (isDark ? 'rgba(34,197,94,0.1)' : '#DCFCE7')
+                          : (isDark ? 'rgba(148,163,184,0.1)' : '#F1F5F9'),
+                        color: client.isActive
+                          ? (isDark ? '#4ADE80' : '#16A34A')
+                          : (isDark ? '#94A3B8' : '#64748B'),
+                        fontWeight: 600,
+                        fontSize: '0.7rem',
+                      }}
+                    />
+                  </div>
                 </div>
+              </motion.div>
+
+              {/* CPF/CNPJ */}
+              <motion.div variants={fadeInUp}>
+                <InfoRow
+                  label={client.tipo === 'pf' ? 'CPF' : 'CNPJ'}
+                  value={formatCPFCNPJ(client.cpfCnpj)}
+                  mono
+                  onCopy={() => copyToClipboard(client.cpfCnpj, client.tipo === 'pf' ? 'CPF' : 'CNPJ')}
+                />
               </motion.div>
 
               {/* Contact Info */}
-              <motion.div variants={fadeInUp} className="space-y-3">
-                <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+              <motion.div variants={fadeInUp} className="space-y-1">
+                <h4 className="text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider mb-2">
                   Contato
                 </h4>
-                <div className="space-y-2">
-                  <ContactRow icon={<Phone size={16} />} label="Telefone" value={formatPhone(client.phone)} />
-                  {client.phone2 && (
-                    <ContactRow icon={<Phone size={16} />} label="Telefone 2" value={formatPhone(client.phone2)} />
-                  )}
-                  {client.email && (
-                    <ContactRow icon={<Mail size={16} />} label="E-mail" value={client.email} />
-                  )}
-                  {client.endereco && client.endereco.logradouro && (
-                    <ContactRow
-                      icon={<MapPin size={16} />}
-                      label="Endereco"
-                      value={`${client.endereco.logradouro}, ${client.endereco.numero}${client.endereco.complemento ? ` - ${client.endereco.complemento}` : ''}, ${client.endereco.bairro}, ${client.endereco.municipio}/${client.endereco.uf}`}
-                    />
-                  )}
-                  {client.birthDate && (
-                    <ContactRow icon={<Calendar size={16} />} label="Nascimento" value={formatDate(client.birthDate)} />
-                  )}
-                </div>
-              </motion.div>
-
-              <Divider />
-
-              {/* Stats */}
-              <motion.div variants={fadeInUp}>
-                <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
-                  Resumo
-                </h4>
-                <div className="grid grid-cols-3 gap-3">
-                  <StatCard
-                    icon={<DollarSign size={18} />}
-                    label="Total Gasto"
-                    value={formatCurrency(client.totalSpent)}
-                    color="#DC2626"
+                <ContactRow
+                  icon={<Phone size={15} />}
+                  value={formatPhone(client.phone)}
+                  onCopy={() => copyToClipboard(client.phone, 'Telefone')}
+                />
+                {client.phone2 && (
+                  <ContactRow
+                    icon={<Phone size={15} />}
+                    value={formatPhone(client.phone2)}
+                    onCopy={() => copyToClipboard(client.phone2!, 'Telefone 2')}
                   />
-                  <StatCard
-                    icon={<TrendingUp size={18} />}
-                    label="Visitas"
-                    value={String(client.visitCount)}
-                    color="#3B82F6"
+                )}
+                {client.email && (
+                  <ContactRow
+                    icon={<Mail size={15} />}
+                    value={client.email}
+                    onCopy={() => copyToClipboard(client.email!, 'E-mail')}
                   />
-                  <StatCard
-                    icon={<Clock size={18} />}
-                    label="Ultima Visita"
-                    value={client.lastVisit ? formatDate(client.lastVisit) : '-'}
-                    color="#10B981"
+                )}
+                {client.birthDate && (
+                  <ContactRow
+                    icon={<Calendar size={15} />}
+                    value={formatDate(client.birthDate)}
                   />
-                </div>
-              </motion.div>
-
-              <Divider />
-
-              {/* Recent Appointments */}
-              <motion.div variants={fadeInUp}>
-                <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
-                  Agendamentos Recentes
-                </h4>
-                {recentAppointments.length > 0 ? (
-                  <div className="space-y-2">
-                    {recentAppointments.slice(0, 5).map((apt) => (
-                      <div
-                        key={apt.id}
-                        className="flex items-center justify-between p-3 rounded-lg bg-slate-50 hover:bg-slate-100 transition-colors"
-                      >
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-slate-800 truncate">
-                            {apt.serviceName}
-                          </p>
-                          <p className="text-xs text-slate-500">
-                            {formatDate(apt.date)} as {apt.startTime}
-                          </p>
-                        </div>
-                        <Chip
-                          label={getStatusLabel(apt.status)}
-                          size="small"
-                          sx={{
-                            backgroundColor: `${getStatusColor(apt.status)}15`,
-                            color: getStatusColor(apt.status),
-                            fontWeight: 600,
-                            fontSize: '0.7rem',
-                          }}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <EmptySection text="Nenhum agendamento recente" />
                 )}
               </motion.div>
 
-              <Divider />
-
-              {/* Recent Transactions */}
-              <motion.div variants={fadeInUp}>
-                <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
-                  Transacoes Recentes
-                </h4>
-                {recentTransactions.length > 0 ? (
-                  <div className="space-y-2">
-                    {recentTransactions.slice(0, 5).map((tx) => (
-                      <div
-                        key={tx.id}
-                        className="flex items-center justify-between p-3 rounded-lg bg-slate-50 hover:bg-slate-100 transition-colors"
-                      >
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-slate-800 truncate">
-                            {tx.description}
-                          </p>
-                          <p className="text-xs text-slate-500">
-                            {formatDate(tx.dueDate)}
-                          </p>
-                        </div>
-                        <span
-                          className={cn(
-                            'text-sm font-semibold',
-                            tx.type === 'receita' ? 'text-emerald-600' : 'text-red-600'
-                          )}
-                        >
-                          {tx.type === 'receita' ? '+' : '-'}
-                          {formatCurrency(tx.amount)}
-                        </span>
-                      </div>
-                    ))}
+              {/* Address */}
+              {client.endereco && client.endereco.logradouro && (
+                <motion.div variants={fadeInUp}>
+                  <h4 className="text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider mb-2">
+                    Endereco
+                  </h4>
+                  <div className="flex items-start gap-3 p-3 rounded-xl bg-slate-50 dark:bg-gray-800/50">
+                    <MapPin size={15} className="text-slate-400 dark:text-gray-500 mt-0.5 shrink-0" />
+                    <p className="text-sm text-slate-700 dark:text-gray-300 leading-relaxed">
+                      {client.endereco.logradouro}, {client.endereco.numero}
+                      {client.endereco.complemento && ` - ${client.endereco.complemento}`}
+                      <br />
+                      {client.endereco.bairro}, {client.endereco.municipio}/{client.endereco.uf}
+                      {client.endereco.cep && (
+                        <span className="text-slate-400 dark:text-gray-500"> - CEP {client.endereco.cep}</span>
+                      )}
+                    </p>
                   </div>
-                ) : (
-                  <EmptySection text="Nenhuma transacao recente" />
-                )}
-              </motion.div>
-
-              {/* Tags & Notes */}
-              {((client.tags && client.tags.length > 0) || client.notes) && (
-                <>
-                  <Divider />
-                  <motion.div variants={fadeInUp}>
-                    {client.tags && client.tags.length > 0 && (
-                      <div className="mb-4">
-                        <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                          <Tag size={12} />
-                          Tags
-                        </h4>
-                        <div className="flex flex-wrap gap-1.5">
-                          {client.tags.map((tag) => (
-                            <Chip
-                              key={tag}
-                              label={tag}
-                              size="small"
-                              sx={{
-                                backgroundColor: '#FEF2F2',
-                                color: '#DC2626',
-                                fontSize: '0.75rem',
-                              }}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {client.notes && (
-                      <div>
-                        <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                          <FileText size={12} />
-                          Observacoes
-                        </h4>
-                        <p className="text-sm text-slate-600 bg-slate-50 rounded-lg p-3 whitespace-pre-wrap">
-                          {client.notes}
-                        </p>
-                      </div>
-                    )}
-                  </motion.div>
-                </>
+                </motion.div>
               )}
+
+              {/* Tags */}
+              {client.tags && client.tags.length > 0 && (
+                <motion.div variants={fadeInUp}>
+                  <h4 className="text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                    <Tag size={11} />
+                    Tags
+                  </h4>
+                  <div className="flex flex-wrap gap-1.5">
+                    {client.tags.map((tag) => (
+                      <Chip
+                        key={tag}
+                        label={tag}
+                        size="small"
+                        sx={{
+                          backgroundColor: isDark ? 'rgba(220,38,38,0.1)' : '#FEF2F2',
+                          color: isDark ? '#F87171' : '#DC2626',
+                          fontSize: '0.75rem',
+                          fontWeight: 500,
+                        }}
+                      />
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+
+              {/* Notes */}
+              {client.notes && (
+                <motion.div variants={fadeInUp}>
+                  <h4 className="text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                    <FileText size={11} />
+                    Observacoes
+                  </h4>
+                  <p className="text-sm text-slate-600 dark:text-gray-400 bg-slate-50 dark:bg-gray-800/50 rounded-xl p-3 whitespace-pre-wrap leading-relaxed">
+                    {client.notes}
+                  </p>
+                </motion.div>
+              )}
+
+              {/* Metadata */}
+              <motion.div variants={fadeInUp}>
+                <div className="text-[11px] text-slate-400 dark:text-gray-500 space-y-0.5 pt-2 border-t border-slate-100 dark:border-gray-800">
+                  <p>Cadastrado em {formatDate(client.createdAt)}</p>
+                  <p>Atualizado em {formatDate(client.updatedAt)}</p>
+                </div>
+              </motion.div>
             </motion.div>
           ) : null}
         </div>
 
         {/* Action Buttons */}
         {client && !isLoading && (
-          <div className="border-t border-slate-100 p-4">
-            <div className="grid grid-cols-2 gap-2">
+          <div className="border-t border-slate-100 dark:border-gray-800 p-4">
+            <div className="flex gap-2">
               <Button
                 variant="outlined"
                 size="small"
+                fullWidth
                 startIcon={<Edit size={16} />}
                 onClick={() => onEdit?.(client)}
                 sx={{
-                  borderColor: '#E2E8F0',
-                  color: '#475569',
-                  '&:hover': { borderColor: '#CBD5E1', backgroundColor: '#F8FAFC' },
+                  borderColor: isDark ? 'rgba(55,65,81,1)' : '#E2E8F0',
+                  color: isDark ? '#D1D5DB' : '#475569',
+                  borderRadius: '12px',
+                  textTransform: 'none',
+                  fontWeight: 600,
+                  '&:hover': {
+                    borderColor: isDark ? 'rgba(75,85,99,1)' : '#CBD5E1',
+                    backgroundColor: isDark ? 'rgba(255,255,255,0.04)' : '#F8FAFC',
+                  },
                 }}
               >
                 Editar
@@ -345,40 +284,26 @@ export function ClientDetailDrawer({
               <Button
                 variant="outlined"
                 size="small"
-                startIcon={<CalendarPlus size={16} />}
-                onClick={() => onSchedule?.(client)}
-                sx={{
-                  borderColor: '#E2E8F0',
-                  color: '#475569',
-                  '&:hover': { borderColor: '#CBD5E1', backgroundColor: '#F8FAFC' },
-                }}
-              >
-                Agendar
-              </Button>
-              <Button
-                variant="outlined"
-                size="small"
-                startIcon={<ShoppingCart size={16} />}
-                onClick={() => onNewSale?.(client)}
-                sx={{
-                  borderColor: '#E2E8F0',
-                  color: '#475569',
-                  '&:hover': { borderColor: '#CBD5E1', backgroundColor: '#F8FAFC' },
-                }}
-              >
-                Nova Venda
-              </Button>
-              <Button
-                variant="outlined"
-                size="small"
+                fullWidth
                 startIcon={client.isActive ? <UserX size={16} /> : <UserCheck size={16} />}
                 onClick={() => onToggleActive?.(client)}
                 sx={{
-                  borderColor: client.isActive ? '#FEE2E2' : '#DCFCE7',
-                  color: client.isActive ? '#DC2626' : '#16A34A',
+                  borderColor: client.isActive
+                    ? (isDark ? 'rgba(220,38,38,0.2)' : '#FEE2E2')
+                    : (isDark ? 'rgba(34,197,94,0.2)' : '#DCFCE7'),
+                  color: client.isActive
+                    ? (isDark ? '#F87171' : '#DC2626')
+                    : (isDark ? '#4ADE80' : '#16A34A'),
+                  borderRadius: '12px',
+                  textTransform: 'none',
+                  fontWeight: 600,
                   '&:hover': {
-                    borderColor: client.isActive ? '#FECACA' : '#BBF7D0',
-                    backgroundColor: client.isActive ? '#FEF2F2' : '#F0FDF4',
+                    borderColor: client.isActive
+                      ? (isDark ? 'rgba(220,38,38,0.3)' : '#FECACA')
+                      : (isDark ? 'rgba(34,197,94,0.3)' : '#BBF7D0'),
+                    backgroundColor: client.isActive
+                      ? (isDark ? 'rgba(220,38,38,0.1)' : '#FEF2F2')
+                      : (isDark ? 'rgba(34,197,94,0.1)' : '#F0FDF4'),
                   },
                 }}
               >
@@ -394,68 +319,73 @@ export function ClientDetailDrawer({
 
 /* ---- Sub-components ---- */
 
+function InfoRow({
+  label,
+  value,
+  mono = false,
+  onCopy,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  onCopy?: () => void;
+}) {
+  return (
+    <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-gray-800/50">
+      <div>
+        <p className="text-[11px] text-slate-400 dark:text-gray-500 font-medium">{label}</p>
+        <p className={cn('text-sm text-slate-800 dark:text-gray-200', mono && 'font-mono')}>{value}</p>
+      </div>
+      {onCopy && (
+        <IconButton size="small" onClick={onCopy} sx={{ color: '#94A3B8' }}>
+          <Copy size={14} />
+        </IconButton>
+      )}
+    </div>
+  );
+}
+
 function ContactRow({
   icon,
-  label,
   value,
+  onCopy,
 }: {
   icon: React.ReactNode;
-  label: string;
   value: string;
+  onCopy?: () => void;
 }) {
   return (
-    <div className="flex items-start gap-3 p-2 rounded-lg hover:bg-slate-50 transition-colors">
-      <span className="text-slate-400 mt-0.5">{icon}</span>
-      <div className="min-w-0">
-        <p className="text-xs text-slate-400">{label}</p>
-        <p className="text-sm text-slate-800 break-all">{value}</p>
+    <div className="flex items-center justify-between py-2 px-3 rounded-lg hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors group">
+      <div className="flex items-center gap-3 min-w-0">
+        <span className="text-slate-400 dark:text-gray-500">{icon}</span>
+        <p className="text-sm text-slate-700 dark:text-gray-300 truncate">{value}</p>
       </div>
-    </div>
-  );
-}
-
-function StatCard({
-  icon,
-  label,
-  value,
-  color,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  color: string;
-}) {
-  return (
-    <div className="text-center p-3 rounded-xl bg-slate-50">
-      <div className="flex justify-center mb-1" style={{ color }}>
-        {icon}
-      </div>
-      <p className="text-sm font-bold text-slate-800">{value}</p>
-      <p className="text-[10px] text-slate-400 mt-0.5">{label}</p>
-    </div>
-  );
-}
-
-function EmptySection({ text }: { text: string }) {
-  return (
-    <div className="py-4 text-center">
-      <p className="text-sm text-slate-400">{text}</p>
+      {onCopy && (
+        <IconButton
+          size="small"
+          onClick={onCopy}
+          sx={{ color: '#94A3B8', opacity: 0, '.group:hover &': { opacity: 1 } }}
+        >
+          <Copy size={13} />
+        </IconButton>
+      )}
     </div>
   );
 }
 
 function DrawerSkeleton() {
   return (
-    <div className="p-4 space-y-6">
+    <div className="p-5 space-y-5">
       <div className="flex items-center gap-4">
-        <Skeleton variant="circular" width={64} height={64} />
+        <Skeleton variant="rounded" width={56} height={56} sx={{ borderRadius: '16px' }} />
         <div className="flex-1">
           <Skeleton width="60%" height={24} />
           <Skeleton width="40%" height={18} />
         </div>
       </div>
-      {[...Array(4)].map((_, i) => (
-        <Skeleton key={i} variant="rounded" height={48} />
+      <Skeleton variant="rounded" height={56} sx={{ borderRadius: '12px' }} />
+      {[...Array(3)].map((_, i) => (
+        <Skeleton key={i} variant="rounded" height={40} sx={{ borderRadius: '8px' }} />
       ))}
     </div>
   );

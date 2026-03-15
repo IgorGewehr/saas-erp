@@ -6,7 +6,6 @@ import React, {
   useMemo,
   useCallback,
   useRef,
-  Fragment,
 } from 'react';
 import {
   format,
@@ -56,7 +55,6 @@ import {
   LayoutGrid,
   Columns3,
   CalendarDays,
-  AlertCircle,
   Search,
   ChevronDown,
 } from 'lucide-react';
@@ -72,7 +70,6 @@ import Alert from '@mui/material/Alert';
 import { cn } from '@/lib/utils';
 import { formatCurrency, getStatusColor, getStatusLabel } from '@/lib/utils/format';
 import type { Appointment, AppointmentStatus, Service } from '@/lib/types';
-import { useAuth } from '@/app/components/providers/AuthProvider';
 
 // ==========================================
 // CONSTANTS
@@ -378,25 +375,25 @@ function MiniCalendar({ selectedDate, onSelect, appointments }: MiniCalendarProp
       <div className="flex items-center justify-between mb-3">
         <button
           onClick={() => setViewMonth(subMonths(viewMonth, 1))}
-          className="p-1 hover:bg-gray-100 rounded-md transition-colors"
+          className="p-1 hover:bg-gray-100 dark:hover:bg-white/[0.06] rounded-md transition-colors"
         >
-          <ChevronLeft className="w-4 h-4 text-gray-500" />
+          <ChevronLeft className="w-4 h-4 text-gray-500 dark:text-gray-400" />
         </button>
-        <span className="text-sm font-semibold text-gray-900 capitalize">
+        <span className="text-sm font-semibold text-gray-900 dark:text-gray-100 capitalize">
           {format(viewMonth, 'MMMM yyyy', { locale: ptBR })}
         </span>
         <button
           onClick={() => setViewMonth(addMonths(viewMonth, 1))}
-          className="p-1 hover:bg-gray-100 rounded-md transition-colors"
+          className="p-1 hover:bg-gray-100 dark:hover:bg-white/[0.06] rounded-md transition-colors"
         >
-          <ChevronRight className="w-4 h-4 text-gray-500" />
+          <ChevronRight className="w-4 h-4 text-gray-500 dark:text-gray-400" />
         </button>
       </div>
 
       {/* Weekday headers */}
       <div className="grid grid-cols-7 mb-1">
         {['D', 'S', 'T', 'Q', 'Q', 'S', 'S'].map((d, i) => (
-          <div key={i} className="text-center text-[11px] font-medium text-gray-400 py-1">
+          <div key={i} className="text-center text-[11px] font-medium text-gray-400 dark:text-gray-500 py-1">
             {d}
           </div>
         ))}
@@ -416,8 +413,8 @@ function MiniCalendar({ selectedDate, onSelect, appointments }: MiniCalendarProp
               onClick={() => onSelect(day)}
               className={cn(
                 'relative w-9 h-9 flex items-center justify-center text-[13px] rounded-lg transition-all duration-150',
-                !isCurrentMonth && 'text-gray-300',
-                isCurrentMonth && !isSelected && !isTodayDate && 'text-gray-700 hover:bg-gray-50',
+                !isCurrentMonth && 'text-gray-300 dark:text-gray-600',
+                isCurrentMonth && !isSelected && !isTodayDate && 'text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/[0.04]',
                 isTodayDate && !isSelected && 'text-red-600 font-bold',
                 isSelected && 'bg-red-600 text-white font-semibold shadow-sm',
               )}
@@ -427,7 +424,7 @@ function MiniCalendar({ selectedDate, onSelect, appointments }: MiniCalendarProp
                 <span
                   className={cn(
                     'absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full',
-                    isTodayDate ? 'bg-red-600' : 'bg-gray-400',
+                    isTodayDate ? 'bg-red-600' : 'bg-gray-400 dark:bg-gray-500',
                   )}
                 />
               )}
@@ -450,7 +447,7 @@ function AppointmentBlock({ appointment, onClick, compact = false }: Appointment
   const color = STATUS_COLORS[appointment.status];
   const bgColor = STATUS_BG_COLORS[appointment.status];
   const height = getAppointmentHeight(appointment.duration);
-  const isShort = height < 48;
+  const isShort = compact || height < 48;
 
   return (
     <Tooltip
@@ -476,7 +473,7 @@ function AppointmentBlock({ appointment, onClick, compact = false }: Appointment
           onClick(appointment);
         }}
         className={cn(
-          'absolute left-1 right-1 rounded-lg cursor-pointer overflow-hidden',
+          'absolute left-1 right-1 z-10 rounded-lg cursor-pointer overflow-hidden',
           'border-l-[3px] transition-shadow duration-200',
           'hover:shadow-lg hover:shadow-black/10',
           appointment.status === 'cancelado' && 'opacity-50',
@@ -490,24 +487,29 @@ function AppointmentBlock({ appointment, onClick, compact = false }: Appointment
       >
         <div className={cn('px-2 h-full flex flex-col justify-center', isShort ? 'py-0.5' : 'py-1.5')}>
           <div
-            className="text-[11px] font-semibold truncate leading-tight"
+            className={cn(
+              'font-semibold truncate leading-tight',
+              compact ? 'text-[10px]' : 'text-[11px]',
+            )}
             style={{ color }}
           >
-            {appointment.clientName}
+            {compact ? appointment.clientName.split(' ')[0] : appointment.clientName}
           </div>
           {!isShort && (
             <>
-              <div className="text-[10px] text-gray-600 truncate leading-tight mt-0.5">
+              <div className="text-[10px] text-gray-600 dark:text-gray-400 truncate leading-tight mt-0.5">
                 {appointment.serviceName}
               </div>
-              <div className="text-[10px] text-gray-500 leading-tight mt-0.5">
+              <div className="text-[10px] text-gray-500 dark:text-gray-400 leading-tight mt-0.5">
                 {appointment.startTime} - {appointment.endTime}
               </div>
             </>
           )}
           {isShort && (
-            <div className="text-[10px] text-gray-500 truncate leading-tight">
-              {appointment.startTime}
+            <div className="text-[10px] text-gray-500 dark:text-gray-400 truncate leading-tight">
+              {compact
+                ? `${appointment.startTime} ${appointment.serviceName.split(' ')[0]}`
+                : appointment.startTime}
             </div>
           )}
         </div>
@@ -657,14 +659,14 @@ function AppointmentFormDialog({
           fontFamily: 'Inter, sans-serif',
         }}
       >
-        <span className="text-lg font-semibold text-gray-900">
+        <span className="text-lg font-semibold text-gray-900 dark:text-gray-100">
           {isEditing ? 'Editar Agendamento' : 'Novo Agendamento'}
         </span>
         <button
           onClick={onClose}
-          className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors"
+          className="p-1.5 hover:bg-gray-100 dark:hover:bg-white/[0.06] rounded-lg transition-colors"
         >
-          <X className="w-5 h-5 text-gray-400" />
+          <X className="w-5 h-5 text-gray-400 dark:text-gray-500" />
         </button>
       </DialogTitle>
 
@@ -672,11 +674,11 @@ function AppointmentFormDialog({
         <div className="space-y-4 py-2">
           {/* Client search */}
           <div ref={clientSearchRef} className="relative">
-            <label className="block text-xs font-medium text-gray-500 mb-1.5">
+            <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
               Cliente *
             </label>
             <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500" />
               <input
                 type="text"
                 value={clientSearch}
@@ -688,8 +690,9 @@ function AppointmentFormDialog({
                 onFocus={() => setShowClientDropdown(true)}
                 placeholder="Buscar cliente..."
                 className={cn(
-                  'w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200',
-                  'text-sm text-gray-900 placeholder:text-gray-400',
+                  'w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
+                  'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
+                  'bg-white dark:bg-gray-800',
                   'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
                   'transition-all duration-200',
                 )}
@@ -701,20 +704,20 @@ function AppointmentFormDialog({
                   initial={{ opacity: 0, y: -4 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -4 }}
-                  className="absolute z-50 left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl max-h-48 overflow-y-auto"
+                  className="absolute z-50 left-0 right-0 mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl max-h-48 overflow-y-auto"
                 >
                   {filteredClients.map((client) => (
                     <button
                       key={client.id}
                       onClick={() => handleClientSelect(client)}
-                      className="w-full px-4 py-2.5 text-left hover:bg-gray-50 flex items-center gap-3 transition-colors first:rounded-t-xl last:rounded-b-xl"
+                      className="w-full px-4 py-2.5 text-left hover:bg-gray-50 dark:hover:bg-white/[0.04] flex items-center gap-3 transition-colors first:rounded-t-xl last:rounded-b-xl"
                     >
-                      <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-xs font-semibold text-gray-500">
+                      <div className="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-xs font-semibold text-gray-500 dark:text-gray-400">
                         {client.name.split(' ').map((n) => n[0]).slice(0, 2).join('')}
                       </div>
                       <div>
-                        <div className="text-sm font-medium text-gray-900">{client.name}</div>
-                        <div className="text-xs text-gray-500">{client.phone}</div>
+                        <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{client.name}</div>
+                        <div className="text-xs text-gray-500 dark:text-gray-400">{client.phone}</div>
                       </div>
                     </button>
                   ))}
@@ -725,15 +728,15 @@ function AppointmentFormDialog({
 
           {/* Service select */}
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1.5">
+            <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
               Serviço *
             </label>
             <select
               value={formData.serviceId}
               onChange={(e) => handleServiceChange(e.target.value)}
               className={cn(
-                'w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-white',
-                'text-sm text-gray-900 appearance-none',
+                'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800',
+                'text-sm text-gray-900 dark:text-gray-100 appearance-none',
                 'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
                 'transition-all duration-200',
               )}
@@ -750,7 +753,7 @@ function AppointmentFormDialog({
           {/* Date and time row */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1.5">
+              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
                 Data *
               </label>
               <input
@@ -758,23 +761,24 @@ function AppointmentFormDialog({
                 value={formData.date}
                 onChange={(e) => setFormData((prev) => ({ ...prev, date: e.target.value }))}
                 className={cn(
-                  'w-full px-4 py-2.5 rounded-xl border border-gray-200',
-                  'text-sm text-gray-900',
+                  'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
+                  'text-sm text-gray-900 dark:text-gray-100',
+                  'bg-white dark:bg-gray-800',
                   'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
                   'transition-all duration-200',
                 )}
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1.5">
+              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
                 Horário Início *
               </label>
               <select
                 value={formData.startTime}
                 onChange={(e) => setFormData((prev) => ({ ...prev, startTime: e.target.value }))}
                 className={cn(
-                  'w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-white',
-                  'text-sm text-gray-900 appearance-none',
+                  'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800',
+                  'text-sm text-gray-900 dark:text-gray-100 appearance-none',
                   'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
                   'transition-all duration-200',
                 )}
@@ -789,15 +793,15 @@ function AppointmentFormDialog({
           {/* Duration and end time */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1.5">
+              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
                 Duração
               </label>
               <select
                 value={formData.duration}
                 onChange={(e) => setFormData((prev) => ({ ...prev, duration: Number(e.target.value) }))}
                 className={cn(
-                  'w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-white',
-                  'text-sm text-gray-900 appearance-none',
+                  'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800',
+                  'text-sm text-gray-900 dark:text-gray-100 appearance-none',
                   'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
                   'transition-all duration-200',
                 )}
@@ -808,10 +812,10 @@ function AppointmentFormDialog({
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1.5">
+              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
                 Término
               </label>
-              <div className="px-4 py-2.5 rounded-xl border border-gray-100 bg-gray-50 text-sm text-gray-500">
+              <div className="px-4 py-2.5 rounded-xl border border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50 text-sm text-gray-500 dark:text-gray-400">
                 {endTime}
               </div>
             </div>
@@ -819,7 +823,7 @@ function AppointmentFormDialog({
 
           {/* Professional */}
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1.5">
+            <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
               Profissional
             </label>
             <select
@@ -832,8 +836,8 @@ function AppointmentFormDialog({
                 }))
               }
               className={cn(
-                'w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-white',
-                'text-sm text-gray-900 appearance-none',
+                'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800',
+                'text-sm text-gray-900 dark:text-gray-100 appearance-none',
                 'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
                 'transition-all duration-200',
               )}
@@ -848,7 +852,7 @@ function AppointmentFormDialog({
           {/* Status and Price */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1.5">
+              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
                 Status
               </label>
               <select
@@ -857,8 +861,8 @@ function AppointmentFormDialog({
                   setFormData((prev) => ({ ...prev, status: e.target.value as AppointmentStatus }))
                 }
                 className={cn(
-                  'w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-white',
-                  'text-sm text-gray-900 appearance-none',
+                  'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800',
+                  'text-sm text-gray-900 dark:text-gray-100 appearance-none',
                   'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
                   'transition-all duration-200',
                 )}
@@ -869,7 +873,7 @@ function AppointmentFormDialog({
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1.5">
+              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
                 Valor (R$)
               </label>
               <input
@@ -880,8 +884,9 @@ function AppointmentFormDialog({
                 }
                 placeholder="0,00"
                 className={cn(
-                  'w-full px-4 py-2.5 rounded-xl border border-gray-200',
-                  'text-sm text-gray-900 placeholder:text-gray-400',
+                  'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
+                  'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
+                  'bg-white dark:bg-gray-800',
                   'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
                   'transition-all duration-200',
                 )}
@@ -891,7 +896,7 @@ function AppointmentFormDialog({
 
           {/* Notes */}
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1.5">
+            <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
               Observações
             </label>
             <textarea
@@ -900,8 +905,9 @@ function AppointmentFormDialog({
               rows={3}
               placeholder="Observações adicionais..."
               className={cn(
-                'w-full px-4 py-2.5 rounded-xl border border-gray-200 resize-none',
-                'text-sm text-gray-900 placeholder:text-gray-400',
+                'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 resize-none',
+                'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
+                'bg-white dark:bg-gray-800',
                 'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
                 'transition-all duration-200',
               )}
@@ -923,7 +929,7 @@ function AppointmentFormDialog({
             onClick={onDelete}
             className={cn(
               'px-4 py-2 rounded-xl text-sm font-medium',
-              'text-red-600 hover:bg-red-50 transition-colors',
+              'text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors',
             )}
           >
             <Trash2 className="w-4 h-4 inline mr-1.5" />
@@ -935,7 +941,7 @@ function AppointmentFormDialog({
             onClick={onClose}
             className={cn(
               'px-5 py-2.5 rounded-xl text-sm font-medium',
-              'text-gray-600 hover:bg-gray-100 border border-gray-200',
+              'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] border border-gray-200 dark:border-gray-700',
               'transition-all duration-200',
             )}
           >
@@ -1003,9 +1009,9 @@ function ViewAppointmentDialog({
         {/* Close button */}
         <button
           onClick={onClose}
-          className="absolute top-4 right-4 p-1.5 hover:bg-gray-100 rounded-lg transition-colors z-10"
+          className="absolute top-4 right-4 p-1.5 hover:bg-gray-100 dark:hover:bg-white/[0.06] rounded-lg transition-colors z-10"
         >
-          <X className="w-5 h-5 text-gray-400" />
+          <X className="w-5 h-5 text-gray-400 dark:text-gray-500" />
         </button>
 
         <div className="px-6 pt-5 pb-6">
@@ -1018,10 +1024,10 @@ function ViewAppointmentDialog({
               {appointment.clientName.split(' ').map((n) => n[0]).slice(0, 2).join('')}
             </div>
             <div className="flex-1 min-w-0">
-              <h3 className="text-lg font-semibold text-gray-900">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
                 {appointment.clientName}
               </h3>
-              <p className="text-sm text-gray-500 mt-0.5">{appointment.serviceName}</p>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">{appointment.serviceName}</p>
               <Chip
                 label={getStatusLabel(appointment.status)}
                 size="small"
@@ -1039,21 +1045,21 @@ function ViewAppointmentDialog({
 
           {/* Details grid */}
           <div className="space-y-3">
-            <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 rounded-xl">
-              <CalendarIcon className="w-4 h-4 text-gray-400 flex-shrink-0" />
+            <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
+              <CalendarIcon className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
               <div>
-                <div className="text-xs text-gray-500">Data</div>
-                <div className="text-sm font-medium text-gray-900">
+                <div className="text-xs text-gray-500 dark:text-gray-400">Data</div>
+                <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
                   {format(parseISO(appointment.date), "EEEE, dd 'de' MMMM 'de' yyyy", { locale: ptBR })}
                 </div>
               </div>
             </div>
 
-            <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 rounded-xl">
-              <Clock className="w-4 h-4 text-gray-400 flex-shrink-0" />
+            <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
+              <Clock className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
               <div>
-                <div className="text-xs text-gray-500">Horário</div>
-                <div className="text-sm font-medium text-gray-900">
+                <div className="text-xs text-gray-500 dark:text-gray-400">Horário</div>
+                <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
                   {appointment.startTime} - {appointment.endTime} ({appointment.duration} min)
                 </div>
               </div>
@@ -1061,59 +1067,59 @@ function ViewAppointmentDialog({
 
             {client && (
               <>
-                <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 rounded-xl">
-                  <Phone className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
+                  <Phone className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
                   <div>
-                    <div className="text-xs text-gray-500">Telefone</div>
-                    <div className="text-sm font-medium text-gray-900">{client.phone}</div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400">Telefone</div>
+                    <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{client.phone}</div>
                   </div>
                 </div>
-                <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 rounded-xl">
-                  <Mail className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
+                  <Mail className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
                   <div>
-                    <div className="text-xs text-gray-500">Email</div>
-                    <div className="text-sm font-medium text-gray-900">{client.email}</div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400">Email</div>
+                    <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{client.email}</div>
                   </div>
                 </div>
               </>
             )}
 
             {appointment.professionalName && (
-              <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 rounded-xl">
-                <User className="w-4 h-4 text-gray-400 flex-shrink-0" />
+              <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
+                <User className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
                 <div>
-                  <div className="text-xs text-gray-500">Profissional</div>
-                  <div className="text-sm font-medium text-gray-900">{appointment.professionalName}</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">Profissional</div>
+                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{appointment.professionalName}</div>
                 </div>
               </div>
             )}
 
-            <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 rounded-xl">
-              <DollarSign className="w-4 h-4 text-gray-400 flex-shrink-0" />
+            <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
+              <DollarSign className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
               <div>
-                <div className="text-xs text-gray-500">Valor</div>
-                <div className="text-sm font-semibold text-gray-900">{formatCurrency(appointment.price)}</div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">Valor</div>
+                <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">{formatCurrency(appointment.price)}</div>
               </div>
             </div>
 
             {appointment.notes && (
-              <div className="flex items-start gap-3 py-2.5 px-3 bg-gray-50 rounded-xl">
-                <FileText className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" />
+              <div className="flex items-start gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
+                <FileText className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0 mt-0.5" />
                 <div>
-                  <div className="text-xs text-gray-500">Observações</div>
-                  <div className="text-sm text-gray-700 mt-0.5">{appointment.notes}</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">Observações</div>
+                  <div className="text-sm text-gray-700 dark:text-gray-300 mt-0.5">{appointment.notes}</div>
                 </div>
               </div>
             )}
           </div>
 
           {/* Action Buttons */}
-          <div className="flex flex-wrap gap-2 mt-6 pt-4 border-t border-gray-100">
+          <div className="flex flex-wrap gap-2 mt-6 pt-4 border-t border-gray-100 dark:border-gray-800">
             <button
               onClick={onEdit}
               className={cn(
                 'flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium',
-                'text-gray-700 bg-gray-100 hover:bg-gray-200 transition-colors',
+                'text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors',
               )}
             >
               <Edit3 className="w-3.5 h-3.5" />
@@ -1125,7 +1131,7 @@ function ViewAppointmentDialog({
                 onClick={() => onStatusChange('confirmado')}
                 className={cn(
                   'flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium',
-                  'text-emerald-700 bg-emerald-50 hover:bg-emerald-100 transition-colors',
+                  'text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 transition-colors',
                 )}
               >
                 <Check className="w-3.5 h-3.5" />
@@ -1138,7 +1144,7 @@ function ViewAppointmentDialog({
                 onClick={() => onStatusChange('cancelado')}
                 className={cn(
                   'flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium',
-                  'text-red-700 bg-red-50 hover:bg-red-100 transition-colors',
+                  'text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-500/10 hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors',
                 )}
               >
                 <X className="w-3.5 h-3.5" />
@@ -1151,7 +1157,7 @@ function ViewAppointmentDialog({
                 onClick={() => onStatusChange('concluido')}
                 className={cn(
                   'flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium',
-                  'text-indigo-700 bg-indigo-50 hover:bg-indigo-100 transition-colors',
+                  'text-indigo-700 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 hover:bg-indigo-100 dark:hover:bg-indigo-500/20 transition-colors',
                 )}
               >
                 <Check className="w-3.5 h-3.5" />
@@ -1456,7 +1462,7 @@ export default function AgendaModule() {
   // ---- Time column ----
   const timeColumn = useMemo(
     () => (
-      <div className="w-16 flex-shrink-0 border-r border-gray-100 relative" style={{ height: `${TOTAL_HOURS * HOUR_HEIGHT}px` }}>
+      <div className="w-16 flex-shrink-0 border-r border-gray-100 dark:border-gray-800 relative" style={{ height: `${TOTAL_HOURS * HOUR_HEIGHT}px` }}>
         {Array.from({ length: TOTAL_HOURS + 1 }, (_, i) => {
           const hour = START_HOUR + i;
           return (
@@ -1465,7 +1471,7 @@ export default function AgendaModule() {
               className="absolute right-0 w-full pr-2 flex items-center justify-end"
               style={{ top: `${i * HOUR_HEIGHT - 6}px` }}
             >
-              <span className="text-[11px] font-medium text-gray-400 tabular-nums">
+              <span className="text-[11px] font-medium text-gray-400 dark:text-gray-500 tabular-nums">
                 {String(hour).padStart(2, '0')}:00
               </span>
             </div>
@@ -1483,14 +1489,14 @@ export default function AgendaModule() {
         {Array.from({ length: TOTAL_HOURS + 1 }, (_, i) => (
           <div
             key={`line-${i}`}
-            className="absolute left-0 right-0 border-t border-gray-100"
+            className="absolute left-0 right-0 border-t border-gray-100 dark:border-gray-800"
             style={{ top: `${i * HOUR_HEIGHT}px` }}
           />
         ))}
         {Array.from({ length: TOTAL_HOURS }, (_, i) => (
           <div
             key={`half-${i}`}
-            className="absolute left-0 right-0 border-t border-gray-50 border-dashed"
+            className="absolute left-0 right-0 border-t border-gray-50 dark:border-gray-800/50 border-dashed"
             style={{ top: `${i * HOUR_HEIGHT + HALF_HOUR_HEIGHT}px` }}
           />
         ))}
@@ -1517,12 +1523,12 @@ export default function AgendaModule() {
         className="flex-1 overflow-hidden"
       >
         {/* Day header */}
-        <div className="flex items-center px-4 py-3 border-b border-gray-100 bg-white">
+        <div className="flex items-center px-4 py-3 border-b border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900">
           <div className="w-16 flex-shrink-0" />
           <div className="flex-1 text-center">
             <div className={cn(
               'text-xs font-medium uppercase tracking-wider',
-              isToday(currentDate) ? 'text-red-600' : 'text-gray-500',
+              isToday(currentDate) ? 'text-red-600' : 'text-gray-500 dark:text-gray-400',
             )}>
               {format(currentDate, 'EEEE', { locale: ptBR })}
             </div>
@@ -1530,7 +1536,7 @@ export default function AgendaModule() {
               'inline-flex items-center justify-center w-10 h-10 rounded-full text-lg font-semibold mt-1',
               isToday(currentDate)
                 ? 'bg-red-600 text-white'
-                : 'text-gray-900',
+                : 'text-gray-900 dark:text-gray-100',
             )}>
               {format(currentDate, 'd')}
             </div>
@@ -1560,7 +1566,7 @@ export default function AgendaModule() {
                 return (
                   <div
                     key={`slot-${i}`}
-                    className="absolute left-0 right-0 cursor-pointer hover:bg-red-50/30 transition-colors z-[5]"
+                    className="absolute left-0 right-0 cursor-pointer hover:bg-red-50/30 dark:hover:bg-red-500/5 transition-colors z-[5]"
                     style={{
                       top: `${i * HALF_HOUR_HEIGHT}px`,
                       height: `${HALF_HOUR_HEIGHT}px`,
@@ -1598,8 +1604,8 @@ export default function AgendaModule() {
       className="flex-1 overflow-hidden"
     >
       {/* Weekday headers */}
-      <div className="flex border-b border-gray-100 bg-white sticky top-0 z-20">
-        <div className="w-16 flex-shrink-0 border-r border-gray-100" />
+      <div className="flex border-b border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900 sticky top-0 z-20">
+        <div className="w-16 flex-shrink-0 border-r border-gray-100 dark:border-gray-800" />
         {weekDays.map((day, i) => {
           const isTodayCol = isToday(day);
           const dayAppointmentsCount = appointmentsByDate.get(format(day, 'yyyy-MM-dd'))?.length || 0;
@@ -1607,13 +1613,13 @@ export default function AgendaModule() {
             <div
               key={i}
               className={cn(
-                'flex-1 text-center py-2.5 border-r border-gray-100 last:border-r-0 min-w-[100px]',
-                isTodayCol && 'bg-red-50/40',
+                'flex-1 text-center py-2.5 border-r border-gray-100 dark:border-gray-800 last:border-r-0 min-w-[100px]',
+                isTodayCol && 'bg-red-50/40 dark:bg-red-500/5',
               )}
             >
               <div className={cn(
                 'text-[11px] font-medium uppercase tracking-wider',
-                isTodayCol ? 'text-red-600' : 'text-gray-400',
+                isTodayCol ? 'text-red-600' : 'text-gray-400 dark:text-gray-500',
               )}>
                 {WEEKDAY_LABELS[i]}
               </div>
@@ -1622,7 +1628,7 @@ export default function AgendaModule() {
                   'inline-flex items-center justify-center w-8 h-8 rounded-full text-sm font-semibold mt-0.5 cursor-pointer',
                   isTodayCol
                     ? 'bg-red-600 text-white'
-                    : 'text-gray-900 hover:bg-gray-100',
+                    : 'text-gray-900 dark:text-gray-100 hover:bg-gray-100 dark:hover:bg-white/[0.06]',
                 )}
                 onClick={() => {
                   setCurrentDate(day);
@@ -1632,7 +1638,7 @@ export default function AgendaModule() {
                 {format(day, 'd')}
               </div>
               {dayAppointmentsCount > 0 && (
-                <div className="text-[10px] text-gray-400 mt-0.5">
+                <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">
                   {dayAppointmentsCount} agend.
                 </div>
               )}
@@ -1661,8 +1667,8 @@ export default function AgendaModule() {
               <div
                 key={dayIdx}
                 className={cn(
-                  'flex-1 relative border-r border-gray-100 last:border-r-0 min-w-[100px]',
-                  isTodayCol && 'bg-red-50/20',
+                  'flex-1 relative border-r border-gray-100 dark:border-gray-800 last:border-r-0 min-w-[100px]',
+                  isTodayCol && 'bg-red-50/20 dark:bg-red-500/5',
                 )}
               >
                 {gridLines}
@@ -1676,7 +1682,7 @@ export default function AgendaModule() {
                   return (
                     <div
                       key={`slot-${dayIdx}-${i}`}
-                      className="absolute left-0 right-0 cursor-pointer hover:bg-red-50/30 transition-colors z-[5]"
+                      className="absolute left-0 right-0 cursor-pointer hover:bg-red-50/30 dark:hover:bg-red-500/5 transition-colors z-[5]"
                       style={{
                         top: `${i * HALF_HOUR_HEIGHT}px`,
                         height: `${HALF_HOUR_HEIGHT}px`,
@@ -1716,9 +1722,9 @@ export default function AgendaModule() {
       className="flex-1 overflow-hidden"
     >
       {/* Weekday headers */}
-      <div className="grid grid-cols-7 border-b border-gray-100 bg-white">
+      <div className="grid grid-cols-7 border-b border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900">
         {WEEKDAY_LABELS.map((label, i) => (
-          <div key={i} className="text-center py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400 border-r border-gray-100 last:border-r-0">
+          <div key={i} className="text-center py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500 border-r border-gray-100 dark:border-gray-800 last:border-r-0">
             {label}
           </div>
         ))}
@@ -1742,9 +1748,9 @@ export default function AgendaModule() {
               <div
                 key={idx}
                 className={cn(
-                  'min-h-[120px] border-r border-b border-gray-100 last:border-r-0',
-                  'p-1.5 cursor-pointer transition-colors hover:bg-gray-50/50',
-                  !isCurrentMonthDay && 'bg-gray-50/30',
+                  'min-h-[120px] border-r border-b border-gray-100 dark:border-gray-800 last:border-r-0',
+                  'p-1.5 cursor-pointer transition-colors hover:bg-gray-50/50 dark:hover:bg-white/[0.02]',
+                  !isCurrentMonthDay && 'bg-gray-50/30 dark:bg-gray-800/30',
                 )}
                 onClick={() => {
                   setCurrentDate(day);
@@ -1758,8 +1764,8 @@ export default function AgendaModule() {
                     className={cn(
                       'inline-flex items-center justify-center w-7 h-7 rounded-full text-xs font-medium',
                       isTodayDate && 'bg-red-600 text-white font-bold',
-                      !isTodayDate && isCurrentMonthDay && 'text-gray-900',
-                      !isTodayDate && !isCurrentMonthDay && 'text-gray-300',
+                      !isTodayDate && isCurrentMonthDay && 'text-gray-900 dark:text-gray-100',
+                      !isTodayDate && !isCurrentMonthDay && 'text-gray-300 dark:text-gray-600',
                     )}
                   >
                     {format(day, 'd')}
@@ -1792,7 +1798,7 @@ export default function AgendaModule() {
                     </motion.div>
                   ))}
                   {overflow > 0 && (
-                    <div className="text-[10px] text-gray-500 font-medium text-center py-0.5">
+                    <div className="text-[10px] text-gray-500 dark:text-gray-400 font-medium text-center py-0.5">
                       +{overflow} mais
                     </div>
                   )}
@@ -1827,19 +1833,19 @@ export default function AgendaModule() {
   // MAIN RENDER
   // ==========================================
   return (
-    <div className="h-full flex flex-col bg-white rounded-2xl border border-gray-200/60 shadow-sm overflow-hidden">
+    <div className="h-full flex flex-col surface rounded-2xl overflow-hidden">
       {/* ========== HEADER BAR ========== */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-4 sm:px-6 py-4 bg-white border-b border-gray-100">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-4 sm:px-6 py-4 bg-white dark:bg-gray-900 border-b border-gray-100 dark:border-gray-800">
         {/* Left: Navigation */}
         <div className="flex items-center gap-2 sm:gap-3">
           {/* Prev / Today / Next */}
-          <div className="flex items-center bg-gray-50 rounded-xl p-0.5">
+          <div className="flex items-center bg-gray-50 dark:bg-gray-800 rounded-xl p-0.5">
             <button
               onClick={navigatePrev}
-              className="p-2 hover:bg-white rounded-lg transition-all duration-200 hover:shadow-sm"
+              className="p-2 hover:bg-white dark:hover:bg-gray-700 rounded-lg transition-all duration-200 hover:shadow-sm"
               title="Anterior"
             >
-              <ChevronLeft className="w-4 h-4 text-gray-600" />
+              <ChevronLeft className="w-4 h-4 text-gray-600 dark:text-gray-400" />
             </button>
             <button
               onClick={navigateToday}
@@ -1847,30 +1853,30 @@ export default function AgendaModule() {
                 'px-3 py-1.5 text-xs font-semibold rounded-lg transition-all duration-200',
                 isToday(currentDate)
                   ? 'bg-red-600 text-white shadow-sm shadow-red-600/20'
-                  : 'text-gray-600 hover:bg-white hover:shadow-sm',
+                  : 'text-gray-600 dark:text-gray-400 hover:bg-white dark:hover:bg-gray-700 hover:shadow-sm',
               )}
             >
               Hoje
             </button>
             <button
               onClick={navigateNext}
-              className="p-2 hover:bg-white rounded-lg transition-all duration-200 hover:shadow-sm"
+              className="p-2 hover:bg-white dark:hover:bg-gray-700 rounded-lg transition-all duration-200 hover:shadow-sm"
               title="Próximo"
             >
-              <ChevronRight className="w-4 h-4 text-gray-600" />
+              <ChevronRight className="w-4 h-4 text-gray-600 dark:text-gray-400" />
             </button>
           </div>
 
           {/* Date display / calendar trigger */}
           <button
             onClick={(e) => setCalendarAnchor(e.currentTarget)}
-            className="flex items-center gap-2 px-3 py-2 hover:bg-gray-50 rounded-xl transition-colors"
+            className="flex items-center gap-2 px-3 py-2 hover:bg-gray-50 dark:hover:bg-white/[0.04] rounded-xl transition-colors"
           >
-            <CalendarIcon className="w-4 h-4 text-gray-400" />
-            <span className="text-sm sm:text-base font-semibold text-gray-900 capitalize whitespace-nowrap">
+            <CalendarIcon className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+            <span className="text-sm sm:text-base font-semibold text-gray-900 dark:text-gray-100 capitalize whitespace-nowrap">
               {periodText}
             </span>
-            <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
+            <ChevronDown className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
           </button>
 
           {/* Mini calendar popover */}
@@ -1899,7 +1905,7 @@ export default function AgendaModule() {
         {/* Right: View toggles + New button */}
         <div className="flex items-center gap-2 sm:gap-3">
           {/* View mode toggle */}
-          <div className="flex items-center bg-gray-50 rounded-xl p-0.5">
+          <div className="flex items-center bg-gray-50 dark:bg-gray-800 rounded-xl p-0.5">
             {([
               { mode: 'day' as ViewMode, icon: CalendarDays, label: 'Dia' },
               { mode: 'week' as ViewMode, icon: Columns3, label: 'Semana' },
@@ -1911,8 +1917,8 @@ export default function AgendaModule() {
                 className={cn(
                   'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200',
                   viewMode === mode
-                    ? 'bg-white text-gray-900 shadow-sm'
-                    : 'text-gray-500 hover:text-gray-700',
+                    ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm'
+                    : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300',
                 )}
               >
                 <Icon className="w-3.5 h-3.5" />
@@ -1940,11 +1946,11 @@ export default function AgendaModule() {
       </div>
 
       {/* ========== STATUS SUMMARY ========== */}
-      <div className="flex items-center gap-1.5 px-4 sm:px-6 py-2 bg-gray-50/50 border-b border-gray-100 overflow-x-auto">
-        <span className="text-xs text-gray-400 mr-1 whitespace-nowrap">
+      <div className="flex items-center gap-1.5 px-4 sm:px-6 py-2 bg-gray-50/50 dark:bg-gray-800/50 border-b border-gray-100 dark:border-gray-800 overflow-x-auto">
+        <span className="text-xs text-gray-400 dark:text-gray-500 mr-1 whitespace-nowrap">
           {visibleAppointments.length} agendamento{visibleAppointments.length !== 1 ? 's' : ''}
         </span>
-        <div className="w-px h-4 bg-gray-200 mx-1" />
+        <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-1" />
         {STATUS_OPTIONS.filter((s) => statusSummary[s.value] > 0).map((s) => (
           <span
             key={s.value}

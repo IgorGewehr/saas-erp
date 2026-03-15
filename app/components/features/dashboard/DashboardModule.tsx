@@ -15,7 +15,10 @@ import {
   PackageX,
   ChevronRight,
   BarChart3,
+  Sparkles,
 } from 'lucide-react';
+import { format } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
 import {
   AreaChart,
   Area,
@@ -28,6 +31,7 @@ import {
 import type { AppointmentStatus } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { formatCurrency, getStatusColor, getStatusLabel } from '@/lib/utils/format';
+import { useTheme } from '@/app/components/providers/ThemeProvider';
 
 // ==============================================
 // MOCK DATA
@@ -176,13 +180,12 @@ function StatCard({ icon, iconBg, label, value, subtitle, trend }: StatCardProps
     <motion.div
       variants={itemVariants}
       className={cn(
-        'group relative overflow-hidden rounded-xl border border-border/60',
-        'bg-white/70 backdrop-blur-sm p-6',
-        'hover-lift cursor-default',
+        'group relative overflow-hidden rounded-xl surface stat-card-accent',
+        'p-6 hover-lift cursor-default',
       )}
     >
-      {/* Subtle gradient overlay on hover */}
-      <div className="absolute inset-0 bg-gradient-to-br from-white/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+      {/* Subtle shimmer on hover */}
+      <div className="absolute inset-0 bg-gradient-to-br from-white/60 via-transparent to-transparent dark:from-white/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" />
 
       <div className="relative flex items-start justify-between">
         <div className="flex-1">
@@ -194,8 +197,8 @@ function StatCard({ icon, iconBg, label, value, subtitle, trend }: StatCardProps
                 className={cn(
                   'inline-flex items-center gap-0.5 text-xs font-semibold px-1.5 py-0.5 rounded-full',
                   trend.isPositive
-                    ? 'text-emerald-700 bg-emerald-50'
-                    : 'text-red-700 bg-red-50',
+                    ? 'text-emerald-700 bg-emerald-50 dark:text-emerald-400 dark:bg-emerald-500/10'
+                    : 'text-red-700 bg-red-50 dark:text-red-400 dark:bg-red-500/10',
                 )}
               >
                 {trend.isPositive ? (
@@ -234,7 +237,7 @@ function ChartTooltipContent({
   if (!active || !payload?.length) return null;
 
   return (
-    <div className="bg-white rounded-lg shadow-lg border border-border/60 p-3 min-w-[160px]">
+    <div className="bg-white dark:bg-gray-900 rounded-lg shadow-lg dark:shadow-none border border-border/60 p-3 min-w-[160px]">
       <p className="text-xs font-medium text-muted-foreground mb-2">{label}</p>
       {payload.map((entry) => (
         <div key={entry.dataKey} className="flex items-center justify-between gap-4 text-sm">
@@ -336,12 +339,12 @@ function AlertRow({ alert }: { alert: (typeof mockAlerts)[number] }) {
 
   const severityStyles = {
     warning: {
-      iconBg: 'bg-amber-50 text-amber-600',
-      border: 'border-amber-100',
+      iconBg: 'bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400',
+      border: 'border-amber-100 dark:border-amber-500/20',
     },
     error: {
-      iconBg: 'bg-red-50 text-red-600',
-      border: 'border-red-100',
+      iconBg: 'bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400',
+      border: 'border-red-100 dark:border-red-500/20',
     },
   };
 
@@ -366,7 +369,7 @@ function AlertRow({ alert }: { alert: (typeof mockAlerts)[number] }) {
         <p className="text-sm font-medium text-foreground truncate">{alert.title}</p>
         <p className="text-xs text-muted-foreground truncate">{alert.message}</p>
       </div>
-      <button className="text-xs font-medium text-primary-600 hover:text-primary-700 transition-colors shrink-0 px-2 py-1 rounded-md hover:bg-primary-50">
+      <button className="text-xs font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300 transition-colors shrink-0 px-2 py-1 rounded-md hover:bg-primary-50 dark:hover:bg-primary-500/10">
         Ver
       </button>
     </div>
@@ -378,6 +381,7 @@ function AlertRow({ alert }: { alert: (typeof mockAlerts)[number] }) {
 // ==============================================
 
 export default function DashboardModule() {
+  const { isDark } = useTheme();
   const [selectedPeriod, setSelectedPeriod] = useState<PeriodKey>('30d');
 
   const periodLabels: Record<PeriodKey, string> = {
@@ -390,16 +394,30 @@ export default function DashboardModule() {
   const chartData = mockRevenueData[selectedPeriod];
   const maxServiceRevenue = Math.max(...mockTopServices.map((s) => s.revenue));
 
+  const now = new Date();
+  const greeting = now.getHours() < 12 ? 'Bom dia' : now.getHours() < 18 ? 'Boa tarde' : 'Boa noite';
+  const todayLabel = format(now, "EEEE, d 'de' MMMM", { locale: ptBR });
+
   return (
     <div className="space-y-6">
       {/* Page Header */}
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight text-foreground font-display">
-          Dashboard
-        </h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Visao geral do seu negocio
-        </p>
+      <div className="flex items-start justify-between">
+        <div>
+          <div className="flex items-center gap-2 mb-0.5">
+            <Sparkles className="w-4 h-4 text-primary-500" />
+            <p className="text-sm font-medium text-primary-600 capitalize">{todayLabel}</p>
+          </div>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground font-display">
+            {greeting}! 👋
+          </h1>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Aqui está o resumo do seu negócio hoje.
+          </p>
+        </div>
+        <div className="hidden sm:flex items-center gap-2 px-3 py-2 rounded-xl bg-primary-50 dark:bg-primary-500/10 border border-primary-100 dark:border-primary-500/20 text-primary-700 dark:text-primary-400">
+          <div className="w-2 h-2 rounded-full bg-primary-500 animate-pulse-soft" />
+          <span className="text-xs font-semibold">Ao vivo</span>
+        </div>
       </div>
 
       {/* Stats Cards */}
@@ -410,31 +428,31 @@ export default function DashboardModule() {
         className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4"
       >
         <StatCard
-          icon={<DollarSign className="w-5 h-5 text-emerald-600" />}
-          iconBg="bg-emerald-50"
+          icon={<DollarSign className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />}
+          iconBg="bg-emerald-50 dark:bg-emerald-500/10"
           label="Receita Hoje"
           value={formatCurrency(3847.5)}
           subtitle="vs. ontem"
           trend={{ value: 12.5, isPositive: true }}
         />
         <StatCard
-          icon={<CalendarCheck className="w-5 h-5 text-blue-600" />}
-          iconBg="bg-blue-50"
+          icon={<CalendarCheck className="w-5 h-5 text-blue-600 dark:text-blue-400" />}
+          iconBg="bg-blue-50 dark:bg-blue-500/10"
           label="Agendamentos Hoje"
           value="14"
           subtitle="Proximo: 09:30"
           trend={{ value: 8, isPositive: true }}
         />
         <StatCard
-          icon={<Users className="w-5 h-5 text-violet-600" />}
-          iconBg="bg-violet-50"
+          icon={<Users className="w-5 h-5 text-violet-600 dark:text-violet-400" />}
+          iconBg="bg-violet-50 dark:bg-violet-500/10"
           label="Clientes Ativos"
           value="248"
           subtitle="+12 este mes"
         />
         <StatCard
-          icon={<CreditCard className="w-5 h-5 text-amber-600" />}
-          iconBg="bg-amber-50"
+          icon={<CreditCard className="w-5 h-5 text-amber-600 dark:text-amber-400" />}
+          iconBg="bg-amber-50 dark:bg-amber-500/10"
           label="Pagamentos Pendentes"
           value={formatCurrency(4320.0)}
           subtitle="6 pendentes"
@@ -447,7 +465,7 @@ export default function DashboardModule() {
         variants={chartVariants}
         initial="hidden"
         animate="visible"
-        className="rounded-xl border border-border/60 bg-white/70 backdrop-blur-sm p-6"
+        className="surface surface-hover rounded-xl p-6"
       >
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
           <div>
@@ -464,7 +482,7 @@ export default function DashboardModule() {
                 className={cn(
                   'px-3 py-1.5 text-xs font-medium rounded-md transition-all duration-200',
                   selectedPeriod === period
-                    ? 'bg-white text-foreground shadow-sm'
+                    ? 'bg-white dark:bg-gray-800 text-foreground shadow-sm dark:shadow-none'
                     : 'text-muted-foreground hover:text-foreground',
                 )}
               >
@@ -489,27 +507,27 @@ export default function DashboardModule() {
               </defs>
               <CartesianGrid
                 strokeDasharray="3 3"
-                stroke="#E5E7EB"
+                stroke={isDark ? '#374151' : '#E5E7EB'}
                 vertical={false}
               />
               <XAxis
                 dataKey="period"
                 axisLine={false}
                 tickLine={false}
-                tick={{ fontSize: 12, fill: '#9CA3AF' }}
+                tick={{ fontSize: 12, fill: isDark ? '#6B7280' : '#9CA3AF' }}
                 dy={10}
               />
               <YAxis
                 axisLine={false}
                 tickLine={false}
-                tick={{ fontSize: 12, fill: '#9CA3AF' }}
+                tick={{ fontSize: 12, fill: isDark ? '#6B7280' : '#9CA3AF' }}
                 tickFormatter={(value: number) =>
                   value >= 1000 ? `${(value / 1000).toFixed(0)}k` : String(value)
                 }
               />
               <RechartsTooltip
                 content={<ChartTooltipContent />}
-                cursor={{ stroke: '#E5E7EB', strokeWidth: 1 }}
+                cursor={{ stroke: isDark ? '#374151' : '#E5E7EB', strokeWidth: 1 }}
               />
               <Area
                 type="monotone"
@@ -553,7 +571,7 @@ export default function DashboardModule() {
           variants={chartVariants}
           initial="hidden"
           animate="visible"
-          className="rounded-xl border border-border/60 bg-white/70 backdrop-blur-sm p-6"
+          className="surface surface-hover rounded-xl p-6"
         >
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
@@ -562,7 +580,7 @@ export default function DashboardModule() {
                 Proximos Agendamentos
               </h2>
             </div>
-            <button className="text-xs font-medium text-primary-600 hover:text-primary-700 transition-colors px-2 py-1 rounded-md hover:bg-primary-50">
+            <button className="text-xs font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300 transition-colors px-2 py-1 rounded-md hover:bg-primary-50 dark:hover:bg-primary-500/10">
               Ver todos
             </button>
           </div>
@@ -578,7 +596,7 @@ export default function DashboardModule() {
           variants={chartVariants}
           initial="hidden"
           animate="visible"
-          className="rounded-xl border border-border/60 bg-white/70 backdrop-blur-sm p-6"
+          className="surface surface-hover rounded-xl p-6"
         >
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
@@ -606,7 +624,7 @@ export default function DashboardModule() {
         variants={chartVariants}
         initial="hidden"
         animate="visible"
-        className="rounded-xl border border-border/60 bg-white/70 backdrop-blur-sm p-6"
+        className="surface surface-hover rounded-xl p-6"
       >
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">

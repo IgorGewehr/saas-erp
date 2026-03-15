@@ -1,1 +1,5 @@
-node_modules/\n.next/\n.env\n.env.local\n*.log
+node_modules/
+.next/
+.env
+.env.local
+*.log

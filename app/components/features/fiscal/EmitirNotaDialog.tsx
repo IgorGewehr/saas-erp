@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Dialog,
@@ -8,14 +8,7 @@ import {
   DialogContent,
   DialogActions,
   TextField,
-  Button,
   IconButton,
-  Divider,
-  CircularProgress,
-  Select,
-  MenuItem,
-  FormControl,
-  InputLabel,
   Autocomplete,
 } from '@mui/material';
 import {
@@ -27,23 +20,52 @@ import {
   FileText,
   Search,
   Calculator,
+  Loader2,
+  AlertTriangle,
+  Info,
+  User,
+  Building2,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
-import type { FiscalDocType, PaymentMethod } from '@/lib/types';
+import { collection, getDocs, query, where, doc, setDoc, updateDoc, increment } from 'firebase/firestore';
+import { db } from '@/lib/config/firebase';
+import { useAuth } from '@/app/components/providers/AuthProvider';
+import type { FiscalDocType, PaymentMethod, Client } from '@/lib/types';
 import { cn } from '@/lib/utils';
-import { formatCurrency } from '@/lib/utils/format';
+import { formatCurrency, formatCPFCNPJ } from '@/lib/utils/format';
 
-// ==============================================
-// TYPES
-// ==============================================
+// ─── Types ───────────────────────────────────────────────────────────────────
 
 interface EmitirNotaDialogProps {
   open: boolean;
   onClose: () => void;
   type: FiscalDocType;
+  onSuccess?: () => void;
 }
 
-interface ItemForm {
+interface NFSeFormData {
+  // Tomador
+  tomadorTipo: 'cpf' | 'cnpj';
+  tomadorDocumento: string;
+  tomadorNome: string;
+  tomadorEmail: string;
+  tomadorPhone: string;
+  // Servico
+  discriminacao: string;
+  codigoTributacaoNacional: string;
+  codigoTributacaoMunicipal: string;
+  // Valores
+  valorServicos: number;
+  valorDeducoes: number;
+  valorDescontoIncondicionado: number;
+  // ISSQN
+  tipoRetencaoISSQN: '1' | '2' | '3';
+  aliquotaISS: number;
+  // Extras
+  informacoesAdicionais: string;
+}
+
+interface NFCeItemForm {
   id: string;
   description: string;
   ncm: string;
@@ -51,50 +73,15 @@ interface ItemForm {
   unit: string;
   quantity: number;
   unitPrice: number;
-  icmsCst: string;
-  icmsCsosn: string;
-  icmsAliquota: number;
-  icmsValor: number;
-  pisCst: string;
-  pisAliquota: number;
-  pisValor: number;
-  cofinsCst: string;
-  cofinsAliquota: number;
-  cofinsValor: number;
-  ipiAliquota: number;
-  ipiValor: number;
 }
 
 interface PaymentForm {
   id: string;
   method: PaymentMethod;
   amount: number;
-  installments: number;
 }
 
-// ==============================================
-// MOCK CLIENT DATA
-// ==============================================
-
-const mockClients = [
-  { id: '1', nome: 'Maria Silva', cpfCnpj: '12345678901', tipo: 'pf' as const },
-  { id: '2', nome: 'Joao Santos', cpfCnpj: '98765432109', tipo: 'pf' as const },
-  { id: '3', nome: 'Tech Solutions LTDA', cpfCnpj: '12345678000190', tipo: 'pj' as const },
-  { id: '4', nome: 'Comercio ABC EIRELI', cpfCnpj: '98765432000110', tipo: 'pj' as const },
-  { id: '5', nome: 'Ana Oliveira', cpfCnpj: '11122233344', tipo: 'pf' as const },
-];
-
-const mockProducts = [
-  { id: '1', name: 'Shampoo Profissional 500ml', ncm: '33051000', cfop: '5102', price: 45.9 },
-  { id: '2', name: 'Condicionador Hidratante 500ml', ncm: '33051000', cfop: '5102', price: 42.5 },
-  { id: '3', name: 'Tintura Capilar 60g', ncm: '33059090', cfop: '5102', price: 28.0 },
-  { id: '4', name: 'Creme de Tratamento 300g', ncm: '33059090', cfop: '5102', price: 55.0 },
-  { id: '5', name: 'Oleo Capilar 100ml', ncm: '33059010', cfop: '5102', price: 38.9 },
-];
-
-// ==============================================
-// CONSTANTS
-// ==============================================
+// ─── Constants ───────────────────────────────────────────────────────────────
 
 const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   dinheiro: 'Dinheiro',
@@ -105,27 +92,923 @@ const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   outros: 'Outros',
 };
 
-const NATUREZA_OPERACAO_OPTIONS = [
-  'Venda de mercadoria',
-  'Prestacao de servico',
-  'Devolucao de mercadoria',
-  'Transferencia',
-  'Remessa para conserto',
-  'Bonificacao',
-];
+const PAYMENT_SEFAZ_CODES: Record<PaymentMethod, string> = {
+  dinheiro: '01',
+  pix: '17',
+  credito: '03',
+  debito: '04',
+  boleto: '15',
+  outros: '99',
+};
 
-const FINALIDADE_OPTIONS = [
-  { value: '1', label: 'Normal' },
-  { value: '2', label: 'Complementar' },
-  { value: '3', label: 'Ajuste' },
-  { value: '4', label: 'Devolucao' },
-];
+const RETENCAO_ISS_LABELS: Record<string, string> = {
+  '1': 'Nao Retido',
+  '2': 'Retido pelo Tomador',
+  '3': 'Retido pelo Intermediario',
+};
 
-// ==============================================
-// HELPERS
-// ==============================================
+const inputClasses = cn(
+  'w-full px-3.5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
+  'bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
+  'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-300 dark:focus:border-red-500/40',
+  'transition-all duration-200'
+);
 
-function createEmptyItem(): ItemForm {
+const selectClasses = cn(
+  'w-full h-10 px-3 rounded-xl border text-sm appearance-none cursor-pointer',
+  'bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100',
+  'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-300 dark:focus:border-red-500/40',
+  'transition-all duration-150'
+);
+
+function getTypeConfig(type: FiscalDocType) {
+  const configs = {
+    nfse: { title: 'Emitir NFSe', subtitle: 'Nota Fiscal de Servico Eletronica', icon: <FileCheck2 className="w-5 h-5" />, color: 'text-emerald-500' },
+    nfce: { title: 'Emitir NFCe', subtitle: 'Nota Fiscal de Consumidor Eletronica', icon: <Receipt className="w-5 h-5" />, color: 'text-blue-500' },
+    nfe: { title: 'Emitir NFe', subtitle: 'Nota Fiscal Eletronica', icon: <FileText className="w-5 h-5" />, color: 'text-red-500' },
+  };
+  return configs[type];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MAIN COMPONENT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: EmitirNotaDialogProps) {
+  const { business, user } = useAuth();
+  const config = getTypeConfig(type);
+  const [isEmitting, setIsEmitting] = useState(false);
+  const [clients, setClients] = useState<Client[]>([]);
+
+  // ── NFSe State ──
+  const [nfseForm, setNfseForm] = useState<NFSeFormData>({
+    tomadorTipo: 'cpf',
+    tomadorDocumento: '',
+    tomadorNome: '',
+    tomadorEmail: '',
+    tomadorPhone: '',
+    discriminacao: '',
+    codigoTributacaoNacional: '',
+    codigoTributacaoMunicipal: '',
+    valorServicos: 0,
+    valorDeducoes: 0,
+    valorDescontoIncondicionado: 0,
+    tipoRetencaoISSQN: '1',
+    aliquotaISS: 5,
+    informacoesAdicionais: '',
+  });
+
+  // ── NFCe State ──
+  const [nfceConsumidorCpf, setNfceConsumidorCpf] = useState('');
+  const [nfceConsumidorNome, setNfceConsumidorNome] = useState('');
+  const [nfceItems, setNfceItems] = useState<NFCeItemForm[]>([createEmptyNFCeItem()]);
+  const [nfcePayments, setNfcePayments] = useState<PaymentForm[]>([{ id: '1', method: 'dinheiro', amount: 0 }]);
+
+  // ── NFe State (same items/payment structure as NFCe + recipient details) ──
+  const [nfeRecipientDoc, setNfeRecipientDoc] = useState('');
+  const [nfeRecipientName, setNfeRecipientName] = useState('');
+  const [nfeRecipientIE, setNfeRecipientIE] = useState('');
+  const [nfeNatureza, setNfeNatureza] = useState('Venda de mercadoria');
+  const [nfeItems, setNfeItems] = useState<NFCeItemForm[]>([createEmptyNFCeItem()]);
+  const [nfePayments, setNfePayments] = useState<PaymentForm[]>([{ id: '1', method: 'dinheiro', amount: 0 }]);
+
+  // Load clients from Firestore
+  useEffect(() => {
+    if (!open || !business) return;
+    const loadClients = async () => {
+      try {
+        const q = query(collection(db, 'clients'), where('businessId', '==', business.id));
+        const snapshot = await getDocs(q);
+        setClients(snapshot.docs.map(d => ({ ...d.data(), id: d.id }) as Client));
+      } catch { /* silent */ }
+    };
+    loadClients();
+  }, [open, business]);
+
+  // ── NFSe Computed Values ──
+  const nfseBaseCalculo = useMemo(() => {
+    return Math.max(0, nfseForm.valorServicos - nfseForm.valorDeducoes - nfseForm.valorDescontoIncondicionado);
+  }, [nfseForm.valorServicos, nfseForm.valorDeducoes, nfseForm.valorDescontoIncondicionado]);
+
+  const nfseValorISS = useMemo(() => {
+    return parseFloat((nfseBaseCalculo * (nfseForm.aliquotaISS / 100)).toFixed(2));
+  }, [nfseBaseCalculo, nfseForm.aliquotaISS]);
+
+  const nfseValorLiquido = useMemo(() => {
+    return nfseForm.tipoRetencaoISSQN === '1'
+      ? nfseForm.valorServicos - nfseForm.valorDescontoIncondicionado
+      : nfseForm.valorServicos - nfseForm.valorDescontoIncondicionado - nfseValorISS;
+  }, [nfseForm.valorServicos, nfseForm.valorDescontoIncondicionado, nfseForm.tipoRetencaoISSQN, nfseValorISS]);
+
+  // ── NFCe/NFe Computed ──
+  const itemsTotal = (items: NFCeItemForm[]) => items.reduce((sum, i) => sum + i.quantity * i.unitPrice, 0);
+  const paymentsTotal = (payments: PaymentForm[]) => payments.reduce((sum, p) => sum + p.amount, 0);
+
+  // ── Client Selection ──
+  const handleClientSelect = (client: Client | null) => {
+    if (!client) return;
+    if (type === 'nfse') {
+      setNfseForm(prev => ({
+        ...prev,
+        tomadorTipo: client.tipo === 'pj' ? 'cnpj' : 'cpf',
+        tomadorDocumento: client.cpfCnpj,
+        tomadorNome: client.nome,
+        tomadorEmail: client.email || '',
+        tomadorPhone: client.phone || '',
+      }));
+    } else if (type === 'nfce') {
+      setNfceConsumidorCpf(client.cpfCnpj);
+      setNfceConsumidorNome(client.nome);
+    } else {
+      setNfeRecipientDoc(client.cpfCnpj);
+      setNfeRecipientName(client.nome);
+    }
+  };
+
+  // ── Emit Handlers ──
+
+  const handleEmitNFSe = async () => {
+    if (!business || !user) return;
+
+    // Validate
+    if (!nfseForm.tomadorNome.trim()) { toast.error('Nome do tomador e obrigatorio'); return; }
+    if (!nfseForm.tomadorDocumento.trim()) { toast.error('CPF/CNPJ do tomador e obrigatorio'); return; }
+    if (!nfseForm.discriminacao.trim()) { toast.error('Descricao do servico e obrigatoria'); return; }
+    if (nfseForm.valorServicos <= 0) { toast.error('Valor do servico deve ser maior que zero'); return; }
+    if (!business.endereco?.codigoMunicipio) { toast.error('Configure o codigo IBGE do municipio nas configuracoes da empresa'); return; }
+
+    if (!business.fiscal?.certificate) { toast.error('Certificado digital nao configurado. Acesse Configuracoes > Fiscal.'); return; }
+
+    setIsEmitting(true);
+    try {
+      const fiscalConfig = business.fiscal;
+      const nextNumber = fiscalConfig?.nfseConfig?.nextNumber || 1;
+      const cleanDoc = nfseForm.tomadorDocumento.replace(/\D/g, '');
+
+      const payload = {
+        serie: fiscalConfig?.nfseConfig?.series || 'NFSE',
+        numeroDPS: nextNumber,
+        codigoMunicipioEmissao: business.endereco.codigoMunicipio,
+        prestador: {
+          cnpj: (business.cnpj || business.cpf || '').replace(/\D/g, ''),
+          inscricaoMunicipal: business.inscricaoMunicipal || '',
+          nome: business.razaoSocial || business.nomeFantasia,
+          nomeFantasia: business.nomeFantasia || undefined,
+          simplesNacional: business.crt === '1' || business.crt === '4' ? '1' : '2',
+        },
+        tomador: {
+          [nfseForm.tomadorTipo === 'cnpj' ? 'cnpj' : 'cpf']: cleanDoc,
+          nome: nfseForm.tomadorNome,
+        },
+        servico: {
+          codigoTributacaoNacional: nfseForm.codigoTributacaoNacional || '0107',
+          codigoTributacaoMunicipal: nfseForm.codigoTributacaoMunicipal || undefined,
+          discriminacao: nfseForm.discriminacao,
+          localPrestacao: {
+            codigoMunicipio: business.endereco.codigoMunicipio,
+          },
+        },
+        valores: {
+          valorServicos: nfseForm.valorServicos,
+          valorDeducoes: nfseForm.valorDeducoes || undefined,
+          valorDescontoIncondicionado: nfseForm.valorDescontoIncondicionado || undefined,
+        },
+        issqn: {
+          tipoRetencaoISSQN: nfseForm.tipoRetencaoISSQN,
+          baseCalculo: nfseBaseCalculo,
+          aliquota: nfseForm.aliquotaISS,
+          valorISS: nfseValorISS,
+          valorISSRetido: nfseForm.tipoRetencaoISSQN !== '1' ? nfseValorISS : undefined,
+        },
+        certificado: {
+          pfxBase64: 'FROM_STORAGE',
+          password: 'FROM_STORAGE',
+        },
+      };
+
+      const res = await fetch('/api/fiscal/emit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'nfse', data: payload }),
+      });
+
+      const result = await res.json();
+
+      if (!res.ok || !result.success) {
+        const errorMsg = result.details?.motivoStatus || result.details?.erros?.[0] || result.error || 'Erro ao emitir NFSe';
+        toast.error(errorMsg);
+        // Save as rejected
+        await saveFiscalDoc('nfse', nextNumber, 'rejeitada', result, payload);
+        return;
+      }
+
+      // Success - save to Firestore
+      const sefazData = result.data;
+      await saveFiscalDoc('nfse', nextNumber, sefazData.status === 'autorizado' ? 'autorizada' : 'processando', sefazData, payload);
+
+      // Increment next number
+      if (business.fiscal?.nfseConfig) {
+        await setDoc(doc(db, 'businesses', business.id), {
+          fiscal: { nfseConfig: { ...business.fiscal.nfseConfig, nextNumber: nextNumber + 1 } },
+          updatedAt: new Date().toISOString(),
+        }, { merge: true });
+      }
+
+      toast.success(sefazData.status === 'autorizado' ? 'NFSe emitida com sucesso!' : 'NFSe enviada, aguardando autorizacao');
+      onSuccess?.();
+      onClose();
+    } catch (error) {
+      console.error('Emit NFSe error:', error);
+      toast.error('Erro ao emitir NFSe. Verifique os dados e tente novamente.');
+    } finally {
+      setIsEmitting(false);
+    }
+  };
+
+  const handleEmitNFCe = async () => {
+    if (!business || !user) return;
+    if (nfceItems.every(i => !i.description.trim())) { toast.error('Adicione pelo menos um item'); return; }
+    if (!business.fiscal?.certificate) { toast.error('Certificado digital nao configurado.'); return; }
+
+    const total = itemsTotal(nfceItems);
+    if (total <= 0) { toast.error('Valor total deve ser maior que zero'); return; }
+
+    setIsEmitting(true);
+    try {
+      const fiscalConfig = business.fiscal;
+      const nextNumber = fiscalConfig?.nfceConfig?.nextNumber || 1;
+      const cleanDoc = (business.cnpj || '').replace(/\D/g, '');
+
+      const payload = {
+        emitente: {
+          cnpj: cleanDoc,
+          ie: business.inscricaoEstadual || '',
+          crt: business.crt || '1',
+          razaoSocial: business.razaoSocial || business.nomeFantasia,
+        },
+        consumidor: nfceConsumidorCpf ? {
+          cpf: nfceConsumidorCpf.replace(/\D/g, ''),
+          nome: nfceConsumidorNome || undefined,
+        } : undefined,
+        numero: nextNumber,
+        serie: fiscalConfig?.nfceConfig?.series || '1',
+        ufEmitente: business.endereco?.uf || 'SP',
+        itens: nfceItems.filter(i => i.description.trim()).map((item, idx) => ({
+          numero: idx + 1,
+          produto: {
+            codigo: String(idx + 1),
+            cEAN: 'SEM GTIN',
+            descricao: item.description,
+            ncm: item.ncm || '00000000',
+            cfop: item.cfop || fiscalConfig?.cfops?.defaultSales || '5102',
+            unidade: item.unit || 'UN',
+            quantidade: item.quantity,
+            valorUnitario: item.unitPrice,
+            valorTotal: item.quantity * item.unitPrice,
+            cEANTrib: 'SEM GTIN',
+            unidadeTrib: item.unit || 'UN',
+            quantidadeTrib: item.quantity,
+            valorUnitarioTrib: item.unitPrice,
+            indTot: '1',
+          },
+          imposto: {
+            icms: { orig: '0', csosn: fiscalConfig?.taxation?.icms?.cstCsosn || '102' },
+            pis: { cst: fiscalConfig?.taxation?.pis?.cst || '49' },
+            cofins: { cst: fiscalConfig?.taxation?.cofins?.cst || '49' },
+          },
+        })),
+        pagamento: {
+          indicadorPagamento: '0',
+          formas: nfcePayments.map(p => ({
+            tipo: PAYMENT_SEFAZ_CODES[p.method],
+            valor: p.amount || total,
+          })),
+        },
+        csc: fiscalConfig?.nfceConfig?.cscId ? {
+          id: fiscalConfig.nfceConfig.cscId,
+          token: fiscalConfig.nfceConfig.cscToken || '',
+        } : undefined,
+        certificado: { pfxBase64: 'FROM_STORAGE', password: 'FROM_STORAGE' },
+      };
+
+      const res = await fetch('/api/fiscal/emit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'nfce', data: payload }),
+      });
+
+      const result = await res.json();
+      if (!res.ok || !result.success) {
+        toast.error(result.details?.motivoStatus || result.error || 'Erro ao emitir NFCe');
+        await saveFiscalDoc('nfce', nextNumber, 'rejeitada', result, payload);
+        return;
+      }
+
+      await saveFiscalDoc('nfce', nextNumber, result.data.status === 'autorizado' ? 'autorizada' : 'processando', result.data, payload);
+
+      if (business.fiscal?.nfceConfig) {
+        await setDoc(doc(db, 'businesses', business.id), {
+          fiscal: { nfceConfig: { ...business.fiscal.nfceConfig, nextNumber: nextNumber + 1 } },
+          updatedAt: new Date().toISOString(),
+        }, { merge: true });
+      }
+
+      toast.success('NFCe emitida com sucesso!');
+      onSuccess?.();
+      onClose();
+    } catch (error) {
+      console.error('Emit NFCe error:', error);
+      toast.error('Erro ao emitir NFCe.');
+    } finally {
+      setIsEmitting(false);
+    }
+  };
+
+  const handleEmitNFe = async () => {
+    if (!business || !user) return;
+    if (!nfeRecipientDoc.trim()) { toast.error('CPF/CNPJ do destinatario e obrigatorio'); return; }
+    if (!nfeRecipientName.trim()) { toast.error('Nome do destinatario e obrigatorio'); return; }
+    if (nfeItems.every(i => !i.description.trim())) { toast.error('Adicione pelo menos um item'); return; }
+    if (!business.fiscal?.certificate) { toast.error('Certificado digital nao configurado.'); return; }
+
+    setIsEmitting(true);
+    try {
+      const fiscalConfig = business.fiscal;
+      const nextNumber = fiscalConfig?.nfeConfig?.nextNumber || 1;
+      const cleanEmitDoc = (business.cnpj || '').replace(/\D/g, '');
+      const cleanDestDoc = nfeRecipientDoc.replace(/\D/g, '');
+      const isDestPJ = cleanDestDoc.length > 11;
+
+      const payload = {
+        emitente: {
+          cnpj: cleanEmitDoc,
+          ie: business.inscricaoEstadual || '',
+          crt: business.crt || '1',
+          razaoSocial: business.razaoSocial || business.nomeFantasia,
+        },
+        destinatario: {
+          [isDestPJ ? 'cnpj' : 'cpf']: cleanDestDoc,
+          nome: nfeRecipientName,
+          ie: nfeRecipientIE || undefined,
+        },
+        numero: nextNumber,
+        serie: fiscalConfig?.nfeConfig?.series || '1',
+        naturezaOperacao: nfeNatureza,
+        ufEmitente: business.endereco?.uf || 'SP',
+        itens: nfeItems.filter(i => i.description.trim()).map((item, idx) => ({
+          numero: idx + 1,
+          produto: {
+            codigo: String(idx + 1),
+            cEAN: 'SEM GTIN',
+            descricao: item.description,
+            ncm: item.ncm || '00000000',
+            cfop: item.cfop || fiscalConfig?.cfops?.defaultSales || '5102',
+            unidade: item.unit || 'UN',
+            quantidade: item.quantity,
+            valorUnitario: item.unitPrice,
+            valorTotal: item.quantity * item.unitPrice,
+            cEANTrib: 'SEM GTIN',
+            unidadeTrib: item.unit || 'UN',
+            quantidadeTrib: item.quantity,
+            valorUnitarioTrib: item.unitPrice,
+            indTot: '1',
+          },
+          imposto: {
+            icms: { orig: '0', csosn: fiscalConfig?.taxation?.icms?.cstCsosn || '102' },
+            pis: { cst: fiscalConfig?.taxation?.pis?.cst || '49' },
+            cofins: { cst: fiscalConfig?.taxation?.cofins?.cst || '49' },
+          },
+        })),
+        pagamento: {
+          indicadorPagamento: '0',
+          formas: nfePayments.map(p => ({
+            tipo: PAYMENT_SEFAZ_CODES[p.method],
+            valor: p.amount || itemsTotal(nfeItems),
+          })),
+        },
+        certificado: { pfxBase64: 'FROM_STORAGE', password: 'FROM_STORAGE' },
+      };
+
+      const res = await fetch('/api/fiscal/emit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'nfe', data: payload }),
+      });
+
+      const result = await res.json();
+      if (!res.ok || !result.success) {
+        toast.error(result.details?.motivoStatus || result.error || 'Erro ao emitir NFe');
+        await saveFiscalDoc('nfe', nextNumber, 'rejeitada', result, payload);
+        return;
+      }
+
+      await saveFiscalDoc('nfe', nextNumber, result.data.status === 'autorizado' ? 'autorizada' : 'processando', result.data, payload);
+
+      if (business.fiscal?.nfeConfig) {
+        await setDoc(doc(db, 'businesses', business.id), {
+          fiscal: { nfeConfig: { ...business.fiscal.nfeConfig, nextNumber: nextNumber + 1 } },
+          updatedAt: new Date().toISOString(),
+        }, { merge: true });
+      }
+
+      toast.success(result.data.status === 'autorizado' ? 'NFe emitida com sucesso!' : 'NFe enviada, aguardando autorizacao');
+      onSuccess?.();
+      onClose();
+    } catch (error) {
+      console.error('Emit NFe error:', error);
+      toast.error('Erro ao emitir NFe.');
+    } finally {
+      setIsEmitting(false);
+    }
+  };
+
+  // ── Save fiscal doc to Firestore ──
+  const saveFiscalDoc = async (
+    docType: FiscalDocType,
+    number: number,
+    status: string,
+    sefazResponse: Record<string, unknown>,
+    originalPayload: Record<string, unknown>,
+  ) => {
+    if (!business) return;
+    const docRef = doc(collection(db, 'fiscal_documents'));
+    const sefazData = (sefazResponse as Record<string, unknown>).data as Record<string, unknown> | undefined;
+
+    await setDoc(docRef, {
+      businessId: business.id,
+      type: docType,
+      number,
+      series: docType === 'nfse' ? 'NFSE' : '1',
+      accessKey: sefazData?.chaveAcesso || null,
+      protocol: sefazData?.protocolo || null,
+      status,
+      statusMessage: sefazData?.motivoStatus || null,
+      totalValue: docType === 'nfse'
+        ? (originalPayload as { valores?: { valorServicos?: number } }).valores?.valorServicos || 0
+        : 0,
+      clientName: docType === 'nfse'
+        ? (originalPayload as { tomador?: { nome?: string } }).tomador?.nome
+        : (originalPayload as { destinatario?: { nome?: string } }).destinatario?.nome
+          || (originalPayload as { consumidor?: { nome?: string } }).consumidor?.nome
+          || 'Consumidor',
+      issueDate: new Date().toISOString(),
+      xml: sefazData?.xml || null,
+      sefazResponse: sefazData || null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+  };
+
+  const handleEmit = () => {
+    if (type === 'nfse') handleEmitNFSe();
+    else if (type === 'nfce') handleEmitNFCe();
+    else handleEmitNFe();
+  };
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // RENDER
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      maxWidth="md"
+      fullWidth
+      PaperProps={{
+        className: 'dark:!bg-gray-900 dark:!text-gray-100',
+        sx: {
+          borderRadius: '16px',
+          maxHeight: '90vh',
+        },
+      }}
+    >
+      {/* Header */}
+      <DialogTitle sx={{ p: 0 }}>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800">
+          <div className="flex items-center gap-3">
+            <div className={cn('w-10 h-10 rounded-xl flex items-center justify-center bg-gray-100 dark:bg-gray-800', config.color)}>
+              {config.icon}
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">{config.title}</h2>
+              <p className="text-xs text-gray-400 dark:text-gray-500">{config.subtitle}</p>
+            </div>
+          </div>
+          <IconButton onClick={onClose} size="small">
+            <X className="w-5 h-5 text-gray-400 dark:text-gray-500" />
+          </IconButton>
+        </div>
+      </DialogTitle>
+
+      <DialogContent sx={{ p: 0 }}>
+        <div className="px-6 py-5 space-y-6">
+          {/* ══════════════════════ NFSe FORM ══════════════════════ */}
+          {type === 'nfse' && (
+            <div className="space-y-6">
+              {/* Tomador */}
+              <div className="bg-gray-50/80 dark:bg-white/[0.02] rounded-xl p-5 border border-gray-100 dark:border-gray-800 space-y-4">
+                <div className="flex items-center gap-2 text-sm font-semibold text-gray-700 dark:text-gray-300">
+                  <User className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+                  Tomador do Servico
+                </div>
+
+                {/* Client search */}
+                <Autocomplete
+                  options={clients}
+                  getOptionLabel={(opt) => `${opt.nome} — ${formatCPFCNPJ(opt.cpfCnpj)}`}
+                  onChange={(_, val) => handleClientSelect(val)}
+                  size="small"
+                  noOptionsText="Nenhum cliente encontrado"
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      placeholder="Buscar cliente cadastrado..."
+                      size="small"
+                      InputProps={{
+                        ...params.InputProps,
+                        startAdornment: <><Search size={14} className="text-gray-400 dark:text-gray-500 mr-1" />{params.InputProps.startAdornment}</>,
+                      }}
+                    />
+                  )}
+                />
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Tipo</label>
+                    <select
+                      value={nfseForm.tomadorTipo}
+                      onChange={(e) => setNfseForm(prev => ({ ...prev, tomadorTipo: e.target.value as 'cpf' | 'cnpj' }))}
+                      className={selectClasses}
+                    >
+                      <option value="cpf">Pessoa Fisica (CPF)</option>
+                      <option value="cnpj">Pessoa Juridica (CNPJ)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">
+                      {nfseForm.tomadorTipo === 'cpf' ? 'CPF' : 'CNPJ'}
+                    </label>
+                    <input
+                      value={nfseForm.tomadorDocumento}
+                      onChange={(e) => setNfseForm(prev => ({ ...prev, tomadorDocumento: e.target.value }))}
+                      placeholder={nfseForm.tomadorTipo === 'cpf' ? '000.000.000-00' : '00.000.000/0001-00'}
+                      className={inputClasses}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Nome / Razao Social</label>
+                  <input
+                    value={nfseForm.tomadorNome}
+                    onChange={(e) => setNfseForm(prev => ({ ...prev, tomadorNome: e.target.value }))}
+                    placeholder="Nome completo ou razao social"
+                    className={inputClasses}
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Email</label>
+                    <input
+                      type="email"
+                      value={nfseForm.tomadorEmail}
+                      onChange={(e) => setNfseForm(prev => ({ ...prev, tomadorEmail: e.target.value }))}
+                      placeholder="email@exemplo.com"
+                      className={inputClasses}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Telefone</label>
+                    <input
+                      value={nfseForm.tomadorPhone}
+                      onChange={(e) => setNfseForm(prev => ({ ...prev, tomadorPhone: e.target.value }))}
+                      placeholder="(00) 00000-0000"
+                      className={inputClasses}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Servico */}
+              <div className="bg-gray-50/80 dark:bg-white/[0.02] rounded-xl p-5 border border-gray-100 dark:border-gray-800 space-y-4">
+                <div className="flex items-center gap-2 text-sm font-semibold text-gray-700 dark:text-gray-300">
+                  <FileCheck2 className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+                  Servico Prestado
+                </div>
+
+                <div>
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Discriminacao do Servico *</label>
+                  <textarea
+                    value={nfseForm.discriminacao}
+                    onChange={(e) => setNfseForm(prev => ({ ...prev, discriminacao: e.target.value }))}
+                    placeholder="Descreva detalhadamente o servico prestado..."
+                    rows={3}
+                    className={cn(inputClasses, 'resize-none')}
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 flex items-center gap-1">
+                      Cod. Tributacao Nacional (cTribNac)
+                      <span className="group relative">
+                        <Info className="w-3 h-3 text-gray-300 dark:text-gray-600 cursor-help" />
+                        <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 text-xs text-white bg-gray-900 dark:bg-gray-700 rounded-lg whitespace-nowrap opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity z-50">
+                          Codigo NBS/LC 116 do servico
+                        </span>
+                      </span>
+                    </label>
+                    <input
+                      value={nfseForm.codigoTributacaoNacional}
+                      onChange={(e) => setNfseForm(prev => ({ ...prev, codigoTributacaoNacional: e.target.value }))}
+                      placeholder="0107"
+                      className={inputClasses}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Cod. Tributacao Municipal</label>
+                    <input
+                      value={nfseForm.codigoTributacaoMunicipal}
+                      onChange={(e) => setNfseForm(prev => ({ ...prev, codigoTributacaoMunicipal: e.target.value }))}
+                      placeholder="Opcional"
+                      className={inputClasses}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Valores + ISSQN */}
+              <div className="bg-gray-50/80 dark:bg-white/[0.02] rounded-xl p-5 border border-gray-100 dark:border-gray-800 space-y-4">
+                <div className="flex items-center gap-2 text-sm font-semibold text-gray-700 dark:text-gray-300">
+                  <Calculator className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+                  Valores e ISSQN
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Valor do Servico *</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min={0}
+                      value={nfseForm.valorServicos || ''}
+                      onChange={(e) => setNfseForm(prev => ({ ...prev, valorServicos: Number(e.target.value) }))}
+                      placeholder="0,00"
+                      className={inputClasses}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Deducoes</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min={0}
+                      value={nfseForm.valorDeducoes || ''}
+                      onChange={(e) => setNfseForm(prev => ({ ...prev, valorDeducoes: Number(e.target.value) }))}
+                      placeholder="0,00"
+                      className={inputClasses}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Desconto</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min={0}
+                      value={nfseForm.valorDescontoIncondicionado || ''}
+                      onChange={(e) => setNfseForm(prev => ({ ...prev, valorDescontoIncondicionado: Number(e.target.value) }))}
+                      placeholder="0,00"
+                      className={inputClasses}
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Retencao ISS</label>
+                    <select
+                      value={nfseForm.tipoRetencaoISSQN}
+                      onChange={(e) => setNfseForm(prev => ({ ...prev, tipoRetencaoISSQN: e.target.value as '1' | '2' | '3' }))}
+                      className={selectClasses}
+                    >
+                      {Object.entries(RETENCAO_ISS_LABELS).map(([v, l]) => (
+                        <option key={v} value={v}>{l}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Aliquota ISS (%)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min={0}
+                      max={100}
+                      value={nfseForm.aliquotaISS}
+                      onChange={(e) => setNfseForm(prev => ({ ...prev, aliquotaISS: Number(e.target.value) }))}
+                      className={inputClasses}
+                    />
+                  </div>
+                </div>
+
+                {/* Calculated summary */}
+                <div className="bg-white dark:bg-gray-900 rounded-xl p-4 border border-gray-200 dark:border-gray-700 space-y-2">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-500 dark:text-gray-400">Base de Calculo</span>
+                    <span className="font-medium text-gray-900 dark:text-gray-100">{formatCurrency(nfseBaseCalculo)}</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-500 dark:text-gray-400">ISS ({nfseForm.aliquotaISS}%)</span>
+                    <span className="font-medium text-gray-900 dark:text-gray-100">{formatCurrency(nfseValorISS)}</span>
+                  </div>
+                  {nfseForm.tipoRetencaoISSQN !== '1' && (
+                    <div className="flex justify-between text-sm text-amber-600 dark:text-amber-400">
+                      <span>ISS Retido</span>
+                      <span className="font-medium">-{formatCurrency(nfseValorISS)}</span>
+                    </div>
+                  )}
+                  <hr className="border-gray-100 dark:border-gray-800" />
+                  <div className="flex justify-between text-base font-bold">
+                    <span className="text-gray-700 dark:text-gray-300">Valor Liquido</span>
+                    <span className="text-emerald-600 dark:text-emerald-400">{formatCurrency(nfseValorLiquido)}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Additional Info */}
+              <div>
+                <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Informacoes Adicionais</label>
+                <textarea
+                  value={nfseForm.informacoesAdicionais}
+                  onChange={(e) => setNfseForm(prev => ({ ...prev, informacoesAdicionais: e.target.value }))}
+                  placeholder="Observacoes opcionais..."
+                  rows={2}
+                  className={cn(inputClasses, 'resize-none')}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* ══════════════════════ NFCe FORM ══════════════════════ */}
+          {type === 'nfce' && (
+            <div className="space-y-6">
+              {/* Consumer */}
+              <div className="bg-gray-50/80 dark:bg-white/[0.02] rounded-xl p-5 border border-gray-100 dark:border-gray-800 space-y-3">
+                <div className="flex items-center gap-2 text-sm font-semibold text-gray-700 dark:text-gray-300">
+                  <User className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+                  Consumidor (Opcional)
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">CPF</label>
+                    <input value={nfceConsumidorCpf} onChange={(e) => setNfceConsumidorCpf(e.target.value)} placeholder="Opcional" className={inputClasses} />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Nome</label>
+                    <input value={nfceConsumidorNome} onChange={(e) => setNfceConsumidorNome(e.target.value)} placeholder="Opcional" className={inputClasses} />
+                  </div>
+                </div>
+              </div>
+
+              {/* Items */}
+              <ItemsSection
+                items={nfceItems}
+                onUpdate={(id, field, value) => setNfceItems(prev => prev.map(i => i.id === id ? { ...i, [field]: value } : i))}
+                onAdd={() => setNfceItems(prev => [...prev, createEmptyNFCeItem()])}
+                onRemove={(id) => setNfceItems(prev => prev.filter(i => i.id !== id))}
+              />
+
+              {/* Payment */}
+              <PaymentsSection
+                payments={nfcePayments}
+                total={itemsTotal(nfceItems)}
+                onUpdate={(id, field, value) => setNfcePayments(prev => prev.map(p => p.id === id ? { ...p, [field]: value } : p))}
+                onAdd={() => setNfcePayments(prev => [...prev, { id: Math.random().toString(36).substring(2), method: 'dinheiro', amount: 0 }])}
+                onRemove={(id) => setNfcePayments(prev => prev.filter(p => p.id !== id))}
+              />
+            </div>
+          )}
+
+          {/* ══════════════════════ NFe FORM ══════════════════════ */}
+          {type === 'nfe' && (
+            <div className="space-y-6">
+              {/* Recipient */}
+              <div className="bg-gray-50/80 dark:bg-white/[0.02] rounded-xl p-5 border border-gray-100 dark:border-gray-800 space-y-3">
+                <div className="flex items-center gap-2 text-sm font-semibold text-gray-700 dark:text-gray-300">
+                  <Building2 className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+                  Destinatario
+                </div>
+                <Autocomplete
+                  options={clients}
+                  getOptionLabel={(opt) => `${opt.nome} — ${formatCPFCNPJ(opt.cpfCnpj)}`}
+                  onChange={(_, val) => handleClientSelect(val)}
+                  size="small"
+                  noOptionsText="Nenhum cliente encontrado"
+                  renderInput={(params) => (
+                    <TextField {...params} placeholder="Buscar cliente..." size="small"
+                      InputProps={{ ...params.InputProps, startAdornment: <><Search size={14} className="text-gray-400 dark:text-gray-500 mr-1" />{params.InputProps.startAdornment}</> }}
+                    />
+                  )}
+                />
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">CPF/CNPJ *</label>
+                    <input value={nfeRecipientDoc} onChange={(e) => setNfeRecipientDoc(e.target.value)} className={inputClasses} />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Nome/Razao Social *</label>
+                    <input value={nfeRecipientName} onChange={(e) => setNfeRecipientName(e.target.value)} className={inputClasses} />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">IE</label>
+                    <input value={nfeRecipientIE} onChange={(e) => setNfeRecipientIE(e.target.value)} placeholder="Opcional" className={inputClasses} />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Natureza da Operacao</label>
+                  <select value={nfeNatureza} onChange={(e) => setNfeNatureza(e.target.value)} className={selectClasses}>
+                    {['Venda de mercadoria', 'Prestacao de servico', 'Devolucao de mercadoria', 'Transferencia', 'Remessa para conserto'].map(n => (
+                      <option key={n} value={n}>{n}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Items */}
+              <ItemsSection
+                items={nfeItems}
+                onUpdate={(id, field, value) => setNfeItems(prev => prev.map(i => i.id === id ? { ...i, [field]: value } : i))}
+                onAdd={() => setNfeItems(prev => [...prev, createEmptyNFCeItem()])}
+                onRemove={(id) => setNfeItems(prev => prev.filter(i => i.id !== id))}
+              />
+
+              {/* Payment */}
+              <PaymentsSection
+                payments={nfePayments}
+                total={itemsTotal(nfeItems)}
+                onUpdate={(id, field, value) => setNfePayments(prev => prev.map(p => p.id === id ? { ...p, [field]: value } : p))}
+                onAdd={() => setNfePayments(prev => [...prev, { id: Math.random().toString(36).substring(2), method: 'dinheiro', amount: 0 }])}
+                onRemove={(id) => setNfePayments(prev => prev.filter(p => p.id !== id))}
+              />
+            </div>
+          )}
+
+          {/* Certificate warning */}
+          {!business?.fiscal?.certificate && (
+            <div className="flex items-start gap-3 p-4 bg-amber-50 dark:bg-amber-500/10 rounded-xl border border-amber-200 dark:border-amber-500/20">
+              <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-amber-700 dark:text-amber-400">Certificado digital nao configurado</p>
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">
+                  Acesse Configuracoes {'>'} Fiscal para fazer upload do certificado A1 antes de emitir documentos fiscais.
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+      </DialogContent>
+
+      {/* Footer */}
+      <DialogActions sx={{ p: 0 }}>
+        <div className="flex items-center justify-between w-full px-6 py-4 border-t border-gray-100 dark:border-gray-800">
+          <button
+            onClick={onClose}
+            className="px-4 py-2.5 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={handleEmit}
+            disabled={isEmitting || !business?.fiscal?.certificate}
+            className={cn(
+              'flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-semibold transition-all',
+              'bg-gradient-to-r from-red-600 to-red-500 text-white',
+              'hover:from-red-700 hover:to-red-600 shadow-lg shadow-red-500/25',
+              'disabled:opacity-50 disabled:cursor-not-allowed',
+            )}
+          >
+            {isEmitting ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Emitindo...
+              </>
+            ) : (
+              <>
+                <FileCheck2 className="w-4 h-4" />
+                Emitir {type.toUpperCase()}
+              </>
+            )}
+          </button>
+        </div>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+// ─── Shared Sub-components ───────────────────────────────────────────────────
+
+function createEmptyNFCeItem(): NFCeItemForm {
   return {
     id: Math.random().toString(36).substring(2),
     description: '',
@@ -134,1316 +1017,132 @@ function createEmptyItem(): ItemForm {
     unit: 'UN',
     quantity: 1,
     unitPrice: 0,
-    icmsCst: '',
-    icmsCsosn: '',
-    icmsAliquota: 0,
-    icmsValor: 0,
-    pisCst: '',
-    pisAliquota: 0,
-    pisValor: 0,
-    cofinsCst: '',
-    cofinsAliquota: 0,
-    cofinsValor: 0,
-    ipiAliquota: 0,
-    ipiValor: 0,
   };
 }
 
-function createEmptyPayment(): PaymentForm {
-  return {
-    id: Math.random().toString(36).substring(2),
-    method: 'dinheiro',
-    amount: 0,
-    installments: 1,
-  };
-}
-
-function getTypeConfig(type: FiscalDocType) {
-  const configs = {
-    nfse: {
-      title: 'Emitir NFSe',
-      subtitle: 'Nota Fiscal de Servico Eletronica',
-      icon: <FileCheck2 className="w-5 h-5" />,
-    },
-    nfce: {
-      title: 'Emitir NFCe',
-      subtitle: 'Nota Fiscal de Consumidor Eletronica',
-      icon: <Receipt className="w-5 h-5" />,
-    },
-    nfe: {
-      title: 'Emitir NFe',
-      subtitle: 'Nota Fiscal Eletronica',
-      icon: <FileText className="w-5 h-5" />,
-    },
-  };
-  return configs[type];
-}
-
-// ==============================================
-// ITEM ROW COMPONENT
-// ==============================================
-
-interface ItemRowProps {
-  item: ItemForm;
-  index: number;
-  showTaxes: boolean;
-  onUpdate: (id: string, field: keyof ItemForm, value: string | number) => void;
+function ItemsSection({
+  items,
+  onUpdate,
+  onAdd,
+  onRemove,
+}: {
+  items: NFCeItemForm[];
+  onUpdate: (id: string, field: string, value: string | number) => void;
+  onAdd: () => void;
   onRemove: (id: string) => void;
-  onProductSelect: (id: string, product: (typeof mockProducts)[number]) => void;
-}
-
-function ItemRow({ item, index, showTaxes, onUpdate, onRemove, onProductSelect }: ItemRowProps) {
-  const totalItem = item.quantity * item.unitPrice;
+}) {
+  const total = items.reduce((sum, i) => sum + i.quantity * i.unitPrice, 0);
 
   return (
-    <motion.div
-      initial={{ opacity: 0, height: 0 }}
-      animate={{ opacity: 1, height: 'auto' }}
-      exit={{ opacity: 0, height: 0 }}
-      transition={{ duration: 0.2 }}
-      className="space-y-3 p-4 rounded-lg border border-border/60 bg-muted/20"
-    >
+    <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-          Item {index + 1}
-        </span>
-        <IconButton onClick={() => onRemove(item.id)} size="small">
-          <Trash2 size={16} className="text-red-500" />
-        </IconButton>
+        <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">Itens</span>
+        <button onClick={onAdd} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors">
+          <Plus className="w-3.5 h-3.5" /> Adicionar Item
+        </button>
       </div>
-
-      {/* Product search + basic fields */}
-      <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
-        <div className="md:col-span-5">
-          <Autocomplete
-            options={mockProducts}
-            getOptionLabel={(opt) => opt.name}
-            onChange={(_, val) => {
-              if (val) onProductSelect(item.id, val);
-            }}
-            size="small"
-            renderInput={(params) => (
-              <TextField
-                {...params}
-                label="Produto/Servico"
-                size="small"
-                InputProps={{
-                  ...params.InputProps,
-                  startAdornment: (
-                    <>
-                      <Search size={14} className="text-muted-foreground mr-1" />
-                      {params.InputProps.startAdornment}
-                    </>
-                  ),
-                }}
-              />
-            )}
-          />
-        </div>
-        <div className="md:col-span-2">
-          <TextField
-            label="NCM"
-            value={item.ncm}
-            onChange={(e) => onUpdate(item.id, 'ncm', e.target.value)}
-            fullWidth
-            size="small"
-          />
-        </div>
-        <div className="md:col-span-2">
-          <TextField
-            label="CFOP"
-            value={item.cfop}
-            onChange={(e) => onUpdate(item.id, 'cfop', e.target.value)}
-            fullWidth
-            size="small"
-          />
-        </div>
-        <div className="md:col-span-1">
-          <TextField
-            label="Qtd"
-            type="number"
-            value={item.quantity}
-            onChange={(e) => onUpdate(item.id, 'quantity', Number(e.target.value))}
-            fullWidth
-            size="small"
-            inputProps={{ min: 0, step: 1 }}
-          />
-        </div>
-        <div className="md:col-span-2">
-          <TextField
-            label="Valor Unit."
-            type="number"
-            value={item.unitPrice}
-            onChange={(e) => onUpdate(item.id, 'unitPrice', Number(e.target.value))}
-            fullWidth
-            size="small"
-            inputProps={{ min: 0, step: 0.01 }}
-          />
-        </div>
-      </div>
-
-      {/* Item total */}
-      <div className="flex justify-end">
-        <span className="text-sm font-medium text-foreground">
-          Total: {formatCurrency(totalItem)}
-        </span>
-      </div>
-
-      {/* Tax fields (NFe only) */}
-      {showTaxes && (
-        <motion.div
-          initial={{ opacity: 0, height: 0 }}
-          animate={{ opacity: 1, height: 'auto' }}
-          transition={{ duration: 0.2 }}
-          className="space-y-3 pt-3 border-t border-border/40"
-        >
-          {/* ICMS */}
-          <div>
-            <p className="text-xs font-semibold text-muted-foreground mb-2">ICMS</p>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <TextField
-                label="CST"
-                value={item.icmsCst}
-                onChange={(e) => onUpdate(item.id, 'icmsCst', e.target.value)}
-                fullWidth
-                size="small"
-              />
-              <TextField
-                label="CSOSN"
-                value={item.icmsCsosn}
-                onChange={(e) => onUpdate(item.id, 'icmsCsosn', e.target.value)}
-                fullWidth
-                size="small"
-              />
-              <TextField
-                label="Aliquota %"
-                type="number"
-                value={item.icmsAliquota}
-                onChange={(e) => onUpdate(item.id, 'icmsAliquota', Number(e.target.value))}
-                fullWidth
-                size="small"
-                inputProps={{ min: 0, step: 0.01 }}
-              />
-              <TextField
-                label="Valor"
-                type="number"
-                value={item.icmsValor}
-                onChange={(e) => onUpdate(item.id, 'icmsValor', Number(e.target.value))}
-                fullWidth
-                size="small"
-                inputProps={{ min: 0, step: 0.01 }}
-              />
-            </div>
-          </div>
-
-          {/* PIS */}
-          <div>
-            <p className="text-xs font-semibold text-muted-foreground mb-2">PIS</p>
-            <div className="grid grid-cols-3 gap-3">
-              <TextField
-                label="CST"
-                value={item.pisCst}
-                onChange={(e) => onUpdate(item.id, 'pisCst', e.target.value)}
-                fullWidth
-                size="small"
-              />
-              <TextField
-                label="Aliquota %"
-                type="number"
-                value={item.pisAliquota}
-                onChange={(e) => onUpdate(item.id, 'pisAliquota', Number(e.target.value))}
-                fullWidth
-                size="small"
-                inputProps={{ min: 0, step: 0.01 }}
-              />
-              <TextField
-                label="Valor"
-                type="number"
-                value={item.pisValor}
-                onChange={(e) => onUpdate(item.id, 'pisValor', Number(e.target.value))}
-                fullWidth
-                size="small"
-                inputProps={{ min: 0, step: 0.01 }}
-              />
-            </div>
-          </div>
-
-          {/* COFINS */}
-          <div>
-            <p className="text-xs font-semibold text-muted-foreground mb-2">COFINS</p>
-            <div className="grid grid-cols-3 gap-3">
-              <TextField
-                label="CST"
-                value={item.cofinsCst}
-                onChange={(e) => onUpdate(item.id, 'cofinsCst', e.target.value)}
-                fullWidth
-                size="small"
-              />
-              <TextField
-                label="Aliquota %"
-                type="number"
-                value={item.cofinsAliquota}
-                onChange={(e) => onUpdate(item.id, 'cofinsAliquota', Number(e.target.value))}
-                fullWidth
-                size="small"
-                inputProps={{ min: 0, step: 0.01 }}
-              />
-              <TextField
-                label="Valor"
-                type="number"
-                value={item.cofinsValor}
-                onChange={(e) => onUpdate(item.id, 'cofinsValor', Number(e.target.value))}
-                fullWidth
-                size="small"
-                inputProps={{ min: 0, step: 0.01 }}
-              />
-            </div>
-          </div>
-
-          {/* IPI */}
-          <div>
-            <p className="text-xs font-semibold text-muted-foreground mb-2">IPI (opcional)</p>
-            <div className="grid grid-cols-2 gap-3">
-              <TextField
-                label="Aliquota %"
-                type="number"
-                value={item.ipiAliquota}
-                onChange={(e) => onUpdate(item.id, 'ipiAliquota', Number(e.target.value))}
-                fullWidth
-                size="small"
-                inputProps={{ min: 0, step: 0.01 }}
-              />
-              <TextField
-                label="Valor"
-                type="number"
-                value={item.ipiValor}
-                onChange={(e) => onUpdate(item.id, 'ipiValor', Number(e.target.value))}
-                fullWidth
-                size="small"
-                inputProps={{ min: 0, step: 0.01 }}
-              />
-            </div>
-          </div>
-        </motion.div>
-      )}
-    </motion.div>
-  );
-}
-
-// ==============================================
-// PAYMENT ROW COMPONENT
-// ==============================================
-
-interface PaymentRowProps {
-  payment: PaymentForm;
-  index: number;
-  onUpdate: (id: string, field: keyof PaymentForm, value: string | number) => void;
-  onRemove: (id: string) => void;
-}
-
-function PaymentRow({ payment, index, onUpdate, onRemove }: PaymentRowProps) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, height: 0 }}
-      animate={{ opacity: 1, height: 'auto' }}
-      exit={{ opacity: 0, height: 0 }}
-      transition={{ duration: 0.2 }}
-      className="flex items-end gap-3"
-    >
-      <FormControl size="small" sx={{ minWidth: 160 }}>
-        <InputLabel>Forma {index + 1}</InputLabel>
-        <Select
-          value={payment.method}
-          onChange={(e) => onUpdate(payment.id, 'method', e.target.value)}
-          label={`Forma ${index + 1}`}
-        >
-          {(Object.keys(PAYMENT_METHOD_LABELS) as PaymentMethod[]).map((method) => (
-            <MenuItem key={method} value={method}>
-              {PAYMENT_METHOD_LABELS[method]}
-            </MenuItem>
-          ))}
-        </Select>
-      </FormControl>
-
-      <TextField
-        label="Valor"
-        type="number"
-        value={payment.amount}
-        onChange={(e) => onUpdate(payment.id, 'amount', Number(e.target.value))}
-        size="small"
-        inputProps={{ min: 0, step: 0.01 }}
-        sx={{ flex: 1 }}
-      />
-
-      {payment.method === 'credito' && (
-        <TextField
-          label="Parcelas"
-          type="number"
-          value={payment.installments}
-          onChange={(e) => onUpdate(payment.id, 'installments', Number(e.target.value))}
-          size="small"
-          inputProps={{ min: 1, max: 12 }}
-          sx={{ width: 100 }}
-        />
-      )}
-
-      <IconButton onClick={() => onRemove(payment.id)} size="small">
-        <Trash2 size={16} className="text-red-500" />
-      </IconButton>
-    </motion.div>
-  );
-}
-
-// ==============================================
-// NFSE FORM
-// ==============================================
-
-interface NFSeFormData {
-  clientId: string;
-  clientCpfCnpj: string;
-  clientNome: string;
-  descricaoServico: string;
-  codigoServicoMunicipal: string;
-  valorServico: number;
-  aliquotaIss: number;
-  valorIss: number;
-  valorTotal: number;
-  naturezaOperacao: string;
-  observacoes: string;
-}
-
-function NFSeForm({
-  data,
-  onChange,
-}: {
-  data: NFSeFormData;
-  onChange: (d: NFSeFormData) => void;
-}) {
-  function handleChange(field: keyof NFSeFormData, value: string | number) {
-    const updated = { ...data, [field]: value };
-
-    // Auto-calculate ISS
-    if (field === 'valorServico' || field === 'aliquotaIss') {
-      const valorServico = field === 'valorServico' ? (value as number) : data.valorServico;
-      const aliquotaIss = field === 'aliquotaIss' ? (value as number) : data.aliquotaIss;
-      updated.valorIss = Number(((valorServico * aliquotaIss) / 100).toFixed(2));
-      updated.valorTotal = valorServico;
-    }
-
-    onChange(updated);
-  }
-
-  return (
-    <div className="space-y-5">
-      {/* Tomador (Client) */}
-      <div>
-        <p className="text-sm font-semibold text-slate-700 mb-3">Tomador do Servico</p>
-        <div className="space-y-3">
-          <Autocomplete
-            options={mockClients}
-            getOptionLabel={(opt) => `${opt.nome} - ${opt.cpfCnpj}`}
-            onChange={(_, val) => {
-              if (val) {
-                handleChange('clientId', val.id);
-                handleChange('clientNome', val.nome);
-                handleChange('clientCpfCnpj', val.cpfCnpj);
-              }
-            }}
-            size="small"
-            renderInput={(params) => (
-              <TextField
-                {...params}
-                label="Buscar cliente"
-                size="small"
-                InputProps={{
-                  ...params.InputProps,
-                  startAdornment: (
-                    <>
-                      <Search size={14} className="text-muted-foreground mr-1" />
-                      {params.InputProps.startAdornment}
-                    </>
-                  ),
-                }}
-              />
-            )}
-          />
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <TextField
-              label="CPF/CNPJ"
-              value={data.clientCpfCnpj}
-              onChange={(e) => handleChange('clientCpfCnpj', e.target.value)}
-              fullWidth
-              size="small"
-            />
-            <TextField
-              label="Nome/Razao Social"
-              value={data.clientNome}
-              onChange={(e) => handleChange('clientNome', e.target.value)}
-              fullWidth
-              size="small"
-            />
-          </div>
-        </div>
-      </div>
-
-      <Divider />
-
-      {/* Servico */}
-      <div>
-        <p className="text-sm font-semibold text-slate-700 mb-3">Servico</p>
-        <div className="space-y-3">
-          <TextField
-            label="Descricao do Servico"
-            value={data.descricaoServico}
-            onChange={(e) => handleChange('descricaoServico', e.target.value)}
-            fullWidth
-            size="small"
-            multiline
-            rows={3}
-          />
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <TextField
-              label="Codigo do Servico Municipal"
-              value={data.codigoServicoMunicipal}
-              onChange={(e) => handleChange('codigoServicoMunicipal', e.target.value)}
-              fullWidth
-              size="small"
-              placeholder="Ex: 1.01"
-            />
-            <FormControl fullWidth size="small">
-              <InputLabel>Natureza da Operacao</InputLabel>
-              <Select
-                value={data.naturezaOperacao}
-                onChange={(e) => handleChange('naturezaOperacao', e.target.value)}
-                label="Natureza da Operacao"
-              >
-                {NATUREZA_OPERACAO_OPTIONS.map((opt) => (
-                  <MenuItem key={opt} value={opt}>
-                    {opt}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          </div>
-        </div>
-      </div>
-
-      <Divider />
-
-      {/* Valores */}
-      <div>
-        <p className="text-sm font-semibold text-slate-700 mb-3">Valores</p>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <TextField
-            label="Valor do Servico"
-            type="number"
-            value={data.valorServico}
-            onChange={(e) => handleChange('valorServico', Number(e.target.value))}
-            fullWidth
-            size="small"
-            inputProps={{ min: 0, step: 0.01 }}
-          />
-          <TextField
-            label="Aliquota ISS (%)"
-            type="number"
-            value={data.aliquotaIss}
-            onChange={(e) => handleChange('aliquotaIss', Number(e.target.value))}
-            fullWidth
-            size="small"
-            inputProps={{ min: 0, max: 100, step: 0.01 }}
-          />
-          <TextField
-            label="Valor ISS"
-            type="number"
-            value={data.valorIss}
-            fullWidth
-            size="small"
-            disabled
-            InputProps={{
-              startAdornment: <Calculator size={14} className="text-muted-foreground mr-1" />,
-            }}
-          />
-        </div>
-      </div>
-
-      {/* Total */}
-      <div className="flex items-center justify-between p-4 rounded-xl bg-primary-50 border border-primary-100">
-        <span className="text-sm font-semibold text-primary-700">Valor Total</span>
-        <span className="text-lg font-bold text-primary-700">
-          {formatCurrency(data.valorTotal)}
-        </span>
-      </div>
-
-      {/* Observacoes */}
-      <TextField
-        label="Observacoes"
-        value={data.observacoes}
-        onChange={(e) => handleChange('observacoes', e.target.value)}
-        fullWidth
-        size="small"
-        multiline
-        rows={2}
-      />
-    </div>
-  );
-}
-
-// ==============================================
-// NFCE FORM
-// ==============================================
-
-interface NFCeFormData {
-  consumidorCpf: string;
-  consumidorNome: string;
-  items: ItemForm[];
-  payments: PaymentForm[];
-}
-
-function NFCeForm({
-  data,
-  onChange,
-}: {
-  data: NFCeFormData;
-  onChange: (d: NFCeFormData) => void;
-}) {
-  const totalItems = useMemo(
-    () => data.items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0),
-    [data.items],
-  );
-
-  const totalPayments = useMemo(
-    () => data.payments.reduce((sum, p) => sum + p.amount, 0),
-    [data.payments],
-  );
-
-  function handleItemUpdate(id: string, field: keyof ItemForm, value: string | number) {
-    onChange({
-      ...data,
-      items: data.items.map((item) =>
-        item.id === id ? { ...item, [field]: value } : item,
-      ),
-    });
-  }
-
-  function handleItemRemove(id: string) {
-    if (data.items.length <= 1) {
-      toast.warning('A nota deve conter pelo menos um item.');
-      return;
-    }
-    onChange({ ...data, items: data.items.filter((item) => item.id !== id) });
-  }
-
-  function handleProductSelect(itemId: string, product: (typeof mockProducts)[number]) {
-    onChange({
-      ...data,
-      items: data.items.map((item) =>
-        item.id === itemId
-          ? { ...item, description: product.name, ncm: product.ncm, cfop: product.cfop, unitPrice: product.price }
-          : item,
-      ),
-    });
-  }
-
-  function handlePaymentUpdate(id: string, field: keyof PaymentForm, value: string | number) {
-    onChange({
-      ...data,
-      payments: data.payments.map((p) =>
-        p.id === id ? { ...p, [field]: value } : p,
-      ),
-    });
-  }
-
-  function handlePaymentRemove(id: string) {
-    if (data.payments.length <= 1) {
-      toast.warning('A nota deve conter pelo menos uma forma de pagamento.');
-      return;
-    }
-    onChange({ ...data, payments: data.payments.filter((p) => p.id !== id) });
-  }
-
-  return (
-    <div className="space-y-5">
-      {/* Consumidor (Optional) */}
-      <div>
-        <p className="text-sm font-semibold text-slate-700 mb-3">
-          Consumidor{' '}
-          <span className="text-xs font-normal text-muted-foreground">(opcional)</span>
-        </p>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <TextField
-            label="CPF"
-            value={data.consumidorCpf}
-            onChange={(e) => onChange({ ...data, consumidorCpf: e.target.value })}
-            fullWidth
-            size="small"
-            placeholder="Nao identificado"
-          />
-          <TextField
-            label="Nome"
-            value={data.consumidorNome}
-            onChange={(e) => onChange({ ...data, consumidorNome: e.target.value })}
-            fullWidth
-            size="small"
-          />
-        </div>
-      </div>
-
-      <Divider />
-
-      {/* Items */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <p className="text-sm font-semibold text-slate-700">Itens</p>
-          <Button
-            onClick={() => onChange({ ...data, items: [...data.items, createEmptyItem()] })}
-            startIcon={<Plus size={16} />}
-            size="small"
-            sx={{ color: '#DC2626' }}
-          >
-            Adicionar Item
-          </Button>
-        </div>
-
-        <div className="space-y-3">
-          <AnimatePresence>
-            {data.items.map((item, idx) => (
-              <ItemRow
-                key={item.id}
-                item={item}
-                index={idx}
-                showTaxes={false}
-                onUpdate={handleItemUpdate}
-                onRemove={handleItemRemove}
-                onProductSelect={handleProductSelect}
-              />
-            ))}
-          </AnimatePresence>
-        </div>
-      </div>
-
-      <Divider />
-
-      {/* Pagamento */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <p className="text-sm font-semibold text-slate-700">Pagamento</p>
-          <Button
-            onClick={() =>
-              onChange({ ...data, payments: [...data.payments, createEmptyPayment()] })
-            }
-            startIcon={<Plus size={16} />}
-            size="small"
-            sx={{ color: '#DC2626' }}
-          >
-            Adicionar Pagamento
-          </Button>
-        </div>
-
-        <div className="space-y-3">
-          <AnimatePresence>
-            {data.payments.map((payment, idx) => (
-              <PaymentRow
-                key={payment.id}
-                payment={payment}
-                index={idx}
-                onUpdate={handlePaymentUpdate}
-                onRemove={handlePaymentRemove}
-              />
-            ))}
-          </AnimatePresence>
-        </div>
-      </div>
-
-      {/* Totals */}
-      <div className="space-y-2 p-4 rounded-xl bg-muted/30 border border-border/60">
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-muted-foreground">Total dos Itens</span>
-          <span className="text-sm font-medium">{formatCurrency(totalItems)}</span>
-        </div>
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-muted-foreground">Total dos Pagamentos</span>
-          <span
-            className={cn(
-              'text-sm font-medium',
-              Math.abs(totalPayments - totalItems) > 0.01 && totalPayments > 0
-                ? 'text-red-600'
-                : 'text-foreground',
-            )}
-          >
-            {formatCurrency(totalPayments)}
-          </span>
-        </div>
-        <Divider />
-        <div className="flex items-center justify-between pt-1">
-          <span className="text-sm font-semibold text-primary-700">Valor Total</span>
-          <span className="text-lg font-bold text-primary-700">
-            {formatCurrency(totalItems)}
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ==============================================
-// NFE FORM
-// ==============================================
-
-interface NFeFormData {
-  destinatarioCpfCnpj: string;
-  destinatarioNome: string;
-  destinatarioIe: string;
-  destinatarioLogradouro: string;
-  destinatarioNumero: string;
-  destinatarioBairro: string;
-  destinatarioMunicipio: string;
-  destinatarioUf: string;
-  destinatarioCep: string;
-  naturezaOperacao: string;
-  tipoOperacao: '0' | '1'; // 0=Entrada, 1=Saida
-  finalidade: string;
-  items: ItemForm[];
-  payments: PaymentForm[];
-  transporteModalidade: string;
-  informacoesAdicionais: string;
-}
-
-function NFeForm({
-  data,
-  onChange,
-}: {
-  data: NFeFormData;
-  onChange: (d: NFeFormData) => void;
-}) {
-  const totalItems = useMemo(
-    () => data.items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0),
-    [data.items],
-  );
-
-  const totalPayments = useMemo(
-    () => data.payments.reduce((sum, p) => sum + p.amount, 0),
-    [data.payments],
-  );
-
-  function handleChange(field: keyof NFeFormData, value: string | number) {
-    onChange({ ...data, [field]: value });
-  }
-
-  function handleItemUpdate(id: string, field: keyof ItemForm, value: string | number) {
-    onChange({
-      ...data,
-      items: data.items.map((item) =>
-        item.id === id ? { ...item, [field]: value } : item,
-      ),
-    });
-  }
-
-  function handleItemRemove(id: string) {
-    if (data.items.length <= 1) {
-      toast.warning('A nota deve conter pelo menos um item.');
-      return;
-    }
-    onChange({ ...data, items: data.items.filter((item) => item.id !== id) });
-  }
-
-  function handleProductSelect(itemId: string, product: (typeof mockProducts)[number]) {
-    onChange({
-      ...data,
-      items: data.items.map((item) =>
-        item.id === itemId
-          ? { ...item, description: product.name, ncm: product.ncm, cfop: product.cfop, unitPrice: product.price }
-          : item,
-      ),
-    });
-  }
-
-  function handlePaymentUpdate(id: string, field: keyof PaymentForm, value: string | number) {
-    onChange({
-      ...data,
-      payments: data.payments.map((p) =>
-        p.id === id ? { ...p, [field]: value } : p,
-      ),
-    });
-  }
-
-  function handlePaymentRemove(id: string) {
-    if (data.payments.length <= 1) {
-      toast.warning('A nota deve conter pelo menos uma forma de pagamento.');
-      return;
-    }
-    onChange({ ...data, payments: data.payments.filter((p) => p.id !== id) });
-  }
-
-  function handleClientSelect(client: (typeof mockClients)[number]) {
-    handleChange('destinatarioCpfCnpj', client.cpfCnpj);
-    handleChange('destinatarioNome', client.nome);
-  }
-
-  return (
-    <div className="space-y-5">
-      {/* Destinatario */}
-      <div>
-        <p className="text-sm font-semibold text-slate-700 mb-3">Destinatario</p>
-        <div className="space-y-3">
-          <Autocomplete
-            options={mockClients}
-            getOptionLabel={(opt) => `${opt.nome} - ${opt.cpfCnpj}`}
-            onChange={(_, val) => val && handleClientSelect(val)}
-            size="small"
-            renderInput={(params) => (
-              <TextField
-                {...params}
-                label="Buscar destinatario"
-                size="small"
-                InputProps={{
-                  ...params.InputProps,
-                  startAdornment: (
-                    <>
-                      <Search size={14} className="text-muted-foreground mr-1" />
-                      {params.InputProps.startAdornment}
-                    </>
-                  ),
-                }}
-              />
-            )}
-          />
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <TextField
-              label="CNPJ/CPF"
-              value={data.destinatarioCpfCnpj}
-              onChange={(e) => handleChange('destinatarioCpfCnpj', e.target.value)}
-              fullWidth
-              size="small"
-              required
-            />
-            <TextField
-              label="Razao Social/Nome"
-              value={data.destinatarioNome}
-              onChange={(e) => handleChange('destinatarioNome', e.target.value)}
-              fullWidth
-              size="small"
-              required
-              className="md:col-span-2"
-            />
-          </div>
-          <TextField
-            label="Inscricao Estadual"
-            value={data.destinatarioIe}
-            onChange={(e) => handleChange('destinatarioIe', e.target.value)}
-            fullWidth
-            size="small"
-          />
-
-          {/* Endereco */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-            <TextField
-              label="Logradouro"
-              value={data.destinatarioLogradouro}
-              onChange={(e) => handleChange('destinatarioLogradouro', e.target.value)}
-              size="small"
-              className="md:col-span-2"
-            />
-            <TextField
-              label="Numero"
-              value={data.destinatarioNumero}
-              onChange={(e) => handleChange('destinatarioNumero', e.target.value)}
-              size="small"
-            />
-            <TextField
-              label="Bairro"
-              value={data.destinatarioBairro}
-              onChange={(e) => handleChange('destinatarioBairro', e.target.value)}
-              size="small"
-            />
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <TextField
-              label="Municipio"
-              value={data.destinatarioMunicipio}
-              onChange={(e) => handleChange('destinatarioMunicipio', e.target.value)}
-              size="small"
-            />
-            <TextField
-              label="UF"
-              value={data.destinatarioUf}
-              onChange={(e) => handleChange('destinatarioUf', e.target.value)}
-              size="small"
-              inputProps={{ maxLength: 2 }}
-            />
-            <TextField
-              label="CEP"
-              value={data.destinatarioCep}
-              onChange={(e) => handleChange('destinatarioCep', e.target.value)}
-              size="small"
-            />
-          </div>
-        </div>
-      </div>
-
-      <Divider />
-
-      {/* Operacao */}
-      <div>
-        <p className="text-sm font-semibold text-slate-700 mb-3">Dados da Operacao</p>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <FormControl fullWidth size="small">
-            <InputLabel>Natureza da Operacao</InputLabel>
-            <Select
-              value={data.naturezaOperacao}
-              onChange={(e) => handleChange('naturezaOperacao', e.target.value)}
-              label="Natureza da Operacao"
-            >
-              {NATUREZA_OPERACAO_OPTIONS.map((opt) => (
-                <MenuItem key={opt} value={opt}>
-                  {opt}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-
-          <FormControl fullWidth size="small">
-            <InputLabel>Tipo de Operacao</InputLabel>
-            <Select
-              value={data.tipoOperacao}
-              onChange={(e) => handleChange('tipoOperacao', e.target.value)}
-              label="Tipo de Operacao"
-            >
-              <MenuItem value="0">Entrada</MenuItem>
-              <MenuItem value="1">Saida</MenuItem>
-            </Select>
-          </FormControl>
-
-          <FormControl fullWidth size="small">
-            <InputLabel>Finalidade</InputLabel>
-            <Select
-              value={data.finalidade}
-              onChange={(e) => handleChange('finalidade', e.target.value)}
-              label="Finalidade"
-            >
-              {FINALIDADE_OPTIONS.map((opt) => (
-                <MenuItem key={opt.value} value={opt.value}>
-                  {opt.label}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-        </div>
-      </div>
-
-      <Divider />
-
-      {/* Items com taxas */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <p className="text-sm font-semibold text-slate-700">Itens</p>
-          <Button
-            onClick={() => onChange({ ...data, items: [...data.items, createEmptyItem()] })}
-            startIcon={<Plus size={16} />}
-            size="small"
-            sx={{ color: '#DC2626' }}
-          >
-            Adicionar Item
-          </Button>
-        </div>
-
-        <div className="space-y-3">
-          <AnimatePresence>
-            {data.items.map((item, idx) => (
-              <ItemRow
-                key={item.id}
-                item={item}
-                index={idx}
-                showTaxes={true}
-                onUpdate={handleItemUpdate}
-                onRemove={handleItemRemove}
-                onProductSelect={handleProductSelect}
-              />
-            ))}
-          </AnimatePresence>
-        </div>
-      </div>
-
-      <Divider />
-
-      {/* Transporte */}
-      <div>
-        <p className="text-sm font-semibold text-slate-700 mb-3">Transporte</p>
-        <FormControl fullWidth size="small">
-          <InputLabel>Modalidade do Frete</InputLabel>
-          <Select
-            value={data.transporteModalidade}
-            onChange={(e) => handleChange('transporteModalidade', e.target.value)}
-            label="Modalidade do Frete"
-          >
-            <MenuItem value="0">Por conta do emitente</MenuItem>
-            <MenuItem value="1">Por conta do destinatario</MenuItem>
-            <MenuItem value="2">Por conta de terceiros</MenuItem>
-            <MenuItem value="9">Sem frete</MenuItem>
-          </Select>
-        </FormControl>
-      </div>
-
-      <Divider />
-
-      {/* Pagamento */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <p className="text-sm font-semibold text-slate-700">Pagamento</p>
-          <Button
-            onClick={() =>
-              onChange({ ...data, payments: [...data.payments, createEmptyPayment()] })
-            }
-            startIcon={<Plus size={16} />}
-            size="small"
-            sx={{ color: '#DC2626' }}
-          >
-            Adicionar Pagamento
-          </Button>
-        </div>
-
-        <div className="space-y-3">
-          <AnimatePresence>
-            {data.payments.map((payment, idx) => (
-              <PaymentRow
-                key={payment.id}
-                payment={payment}
-                index={idx}
-                onUpdate={handlePaymentUpdate}
-                onRemove={handlePaymentRemove}
-              />
-            ))}
-          </AnimatePresence>
-        </div>
-      </div>
-
-      {/* Informacoes Adicionais */}
-      <TextField
-        label="Informacoes Adicionais"
-        value={data.informacoesAdicionais}
-        onChange={(e) => handleChange('informacoesAdicionais', e.target.value)}
-        fullWidth
-        size="small"
-        multiline
-        rows={3}
-      />
-
-      {/* Totals */}
-      <div className="space-y-2 p-4 rounded-xl bg-muted/30 border border-border/60">
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-muted-foreground">Total dos Itens</span>
-          <span className="text-sm font-medium">{formatCurrency(totalItems)}</span>
-        </div>
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-muted-foreground">Total dos Pagamentos</span>
-          <span
-            className={cn(
-              'text-sm font-medium',
-              Math.abs(totalPayments - totalItems) > 0.01 && totalPayments > 0
-                ? 'text-red-600'
-                : 'text-foreground',
-            )}
-          >
-            {formatCurrency(totalPayments)}
-          </span>
-        </div>
-        <Divider />
-        <div className="flex items-center justify-between pt-1">
-          <span className="text-sm font-semibold text-primary-700">Valor Total</span>
-          <span className="text-lg font-bold text-primary-700">
-            {formatCurrency(totalItems)}
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ==============================================
-// MAIN COMPONENT
-// ==============================================
-
-export default function EmitirNotaDialog({ open, onClose, type }: EmitirNotaDialogProps) {
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
-  // NFSe form state
-  const [nfseData, setNfseData] = useState<NFSeFormData>({
-    clientId: '',
-    clientCpfCnpj: '',
-    clientNome: '',
-    descricaoServico: '',
-    codigoServicoMunicipal: '',
-    valorServico: 0,
-    aliquotaIss: 5,
-    valorIss: 0,
-    valorTotal: 0,
-    naturezaOperacao: '',
-    observacoes: '',
-  });
-
-  // NFCe form state
-  const [nfceData, setNfceData] = useState<NFCeFormData>({
-    consumidorCpf: '',
-    consumidorNome: '',
-    items: [createEmptyItem()],
-    payments: [createEmptyPayment()],
-  });
-
-  // NFe form state
-  const [nfeData, setNfeData] = useState<NFeFormData>({
-    destinatarioCpfCnpj: '',
-    destinatarioNome: '',
-    destinatarioIe: '',
-    destinatarioLogradouro: '',
-    destinatarioNumero: '',
-    destinatarioBairro: '',
-    destinatarioMunicipio: '',
-    destinatarioUf: '',
-    destinatarioCep: '',
-    naturezaOperacao: '',
-    tipoOperacao: '1',
-    finalidade: '1',
-    items: [createEmptyItem()],
-    payments: [createEmptyPayment()],
-    transporteModalidade: '9',
-    informacoesAdicionais: '',
-  });
-
-  const typeConfig = getTypeConfig(type);
-
-  async function handleSubmit() {
-    setIsSubmitting(true);
-
-    try {
-      let payload: Record<string, unknown> = {};
-
-      if (type === 'nfse') {
-        if (!nfseData.clientCpfCnpj || !nfseData.descricaoServico || !nfseData.valorServico) {
-          toast.error('Preencha todos os campos obrigatorios.');
-          setIsSubmitting(false);
-          return;
-        }
-        payload = { ...nfseData };
-      } else if (type === 'nfce') {
-        if (nfceData.items.some((i) => !i.description || i.unitPrice <= 0)) {
-          toast.error('Todos os itens devem ter descricao e valor.');
-          setIsSubmitting(false);
-          return;
-        }
-        payload = { ...nfceData };
-      } else {
-        if (!nfeData.destinatarioCpfCnpj || !nfeData.destinatarioNome) {
-          toast.error('Informe os dados do destinatario.');
-          setIsSubmitting(false);
-          return;
-        }
-        if (nfeData.items.some((i) => !i.description || i.unitPrice <= 0)) {
-          toast.error('Todos os itens devem ter descricao e valor.');
-          setIsSubmitting(false);
-          return;
-        }
-        payload = { ...nfeData };
-      }
-
-      const response = await fetch('/api/fiscal/emit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type, data: payload }),
-      });
-
-      const result = await response.json();
-
-      if (!response.ok) {
-        toast.error(result.error || 'Erro ao emitir nota fiscal.');
-        return;
-      }
-
-      toast.success('Nota fiscal emitida com sucesso! Processando autorizacao...');
-      onClose();
-    } catch {
-      toast.error('Erro de conexao. Tente novamente.');
-    } finally {
-      setIsSubmitting(false);
-    }
-  }
-
-  return (
-    <Dialog
-      open={open}
-      onClose={isSubmitting ? undefined : onClose}
-      maxWidth="md"
-      fullWidth
-      PaperProps={{
-        sx: {
-          borderRadius: '16px',
-          maxHeight: '90vh',
-        },
-      }}
-    >
-      <DialogTitle
-        sx={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          pb: 1,
-          fontFamily: '"Plus Jakarta Sans", sans-serif',
-          fontWeight: 700,
-        }}
-      >
-        <div className="flex items-center gap-2">
-          <div className="text-primary-600">{typeConfig.icon}</div>
-          <div>
-            <span className="block">{typeConfig.title}</span>
-            <span className="block text-xs font-normal text-muted-foreground">
-              {typeConfig.subtitle}
-            </span>
-          </div>
-        </div>
-        <IconButton onClick={onClose} disabled={isSubmitting} size="small">
-          <X size={20} />
-        </IconButton>
-      </DialogTitle>
-
-      <Divider />
-
-      <DialogContent sx={{ pt: 3 }}>
-        <AnimatePresence mode="wait">
+      <AnimatePresence>
+        {items.map((item, idx) => (
           <motion.div
-            key={type}
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            transition={{ duration: 0.2 }}
+            key={item.id}
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="bg-gray-50/80 dark:bg-white/[0.02] rounded-xl p-4 border border-gray-100 dark:border-gray-800 space-y-3"
           >
-            {type === 'nfse' && <NFSeForm data={nfseData} onChange={setNfseData} />}
-            {type === 'nfce' && <NFCeForm data={nfceData} onChange={setNfceData} />}
-            {type === 'nfe' && <NFeForm data={nfeData} onChange={setNfeData} />}
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase">Item {idx + 1}</span>
+              {items.length > 1 && (
+                <button onClick={() => onRemove(item.id)} className="p-1 rounded text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-500/10">
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+            <div className="grid grid-cols-12 gap-3">
+              <div className="col-span-12 sm:col-span-5">
+                <input value={item.description} onChange={(e) => onUpdate(item.id, 'description', e.target.value)} placeholder="Descricao do produto/servico" className={inputClasses} />
+              </div>
+              <div className="col-span-4 sm:col-span-2">
+                <input value={item.ncm} onChange={(e) => onUpdate(item.id, 'ncm', e.target.value)} placeholder="NCM" className={inputClasses} />
+              </div>
+              <div className="col-span-4 sm:col-span-2">
+                <input value={item.cfop} onChange={(e) => onUpdate(item.id, 'cfop', e.target.value)} placeholder="CFOP" className={inputClasses} />
+              </div>
+              <div className="col-span-4 sm:col-span-1">
+                <input type="number" min={1} value={item.quantity} onChange={(e) => onUpdate(item.id, 'quantity', Number(e.target.value))} placeholder="Qtd" className={inputClasses} />
+              </div>
+              <div className="col-span-12 sm:col-span-2">
+                <input type="number" step="0.01" min={0} value={item.unitPrice || ''} onChange={(e) => onUpdate(item.id, 'unitPrice', Number(e.target.value))} placeholder="Valor" className={inputClasses} />
+              </div>
+            </div>
+            <div className="text-right text-sm font-medium text-gray-700 dark:text-gray-300">
+              Subtotal: {formatCurrency(item.quantity * item.unitPrice)}
+            </div>
           </motion.div>
-        </AnimatePresence>
-      </DialogContent>
+        ))}
+      </AnimatePresence>
+      <div className="text-right text-base font-bold text-gray-900 dark:text-gray-100">
+        Total: {formatCurrency(total)}
+      </div>
+    </div>
+  );
+}
 
-      <Divider />
+function PaymentsSection({
+  payments,
+  total,
+  onUpdate,
+  onAdd,
+  onRemove,
+}: {
+  payments: PaymentForm[];
+  total: number;
+  onUpdate: (id: string, field: string, value: string | number) => void;
+  onAdd: () => void;
+  onRemove: (id: string) => void;
+}) {
+  const paidTotal = payments.reduce((sum, p) => sum + p.amount, 0);
 
-      <DialogActions sx={{ px: 3, py: 2 }}>
-        <Button onClick={onClose} disabled={isSubmitting} sx={{ color: '#64748B' }}>
-          Cancelar
-        </Button>
-        <Button
-          onClick={handleSubmit}
-          variant="contained"
-          disabled={isSubmitting}
-          sx={{
-            backgroundColor: '#DC2626',
-            '&:hover': { backgroundColor: '#B91C1C' },
-            minWidth: 160,
-          }}
-        >
-          {isSubmitting ? (
-            <CircularProgress size={20} sx={{ color: 'white' }} />
-          ) : (
-            'Emitir Nota Fiscal'
+  return (
+    <div className="bg-gray-50/80 dark:bg-white/[0.02] rounded-xl p-5 border border-gray-100 dark:border-gray-800 space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">Pagamento</span>
+        <button onClick={onAdd} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors">
+          <Plus className="w-3.5 h-3.5" /> Forma
+        </button>
+      </div>
+      {payments.map((payment) => (
+        <div key={payment.id} className="flex items-center gap-3">
+          <select
+            value={payment.method}
+            onChange={(e) => onUpdate(payment.id, 'method', e.target.value)}
+            className={cn(selectClasses, 'flex-1')}
+          >
+            {Object.entries(PAYMENT_METHOD_LABELS).map(([k, v]) => (
+              <option key={k} value={k}>{v}</option>
+            ))}
+          </select>
+          <input
+            type="number"
+            step="0.01"
+            min={0}
+            value={payment.amount || ''}
+            onChange={(e) => onUpdate(payment.id, 'amount', Number(e.target.value))}
+            placeholder={formatCurrency(total)}
+            className={cn(inputClasses, 'w-36')}
+          />
+          {payments.length > 1 && (
+            <button onClick={() => onRemove(payment.id)} className="p-1.5 rounded text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-500/10">
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
           )}
-        </Button>
-      </DialogActions>
-    </Dialog>
+        </div>
+      ))}
+      {paidTotal > 0 && paidTotal !== total && (
+        <p className="text-xs text-amber-600 dark:text-amber-400">
+          Diferenca: {formatCurrency(Math.abs(total - paidTotal))} {paidTotal > total ? '(troco)' : '(faltante)'}
+        </p>
+      )}
+    </div>
   );
 }
