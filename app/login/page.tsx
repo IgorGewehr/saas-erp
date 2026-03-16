@@ -33,6 +33,9 @@ export default function LoginPage() {
   const [resetEmail, setResetEmail] = useState('');
   const [resetSent, setResetSent] = useState(false);
   const [resetError, setResetError] = useState('');
+  // Invite code
+  const [useInviteCode, setUseInviteCode] = useState(false);
+  const [inviteCode, setInviteCode] = useState('');
 
   useEffect(() => {
     if (!isLoading && isAuthenticated) {
@@ -47,10 +50,17 @@ export default function LoginPage() {
     if (mode === 'signup' && !name) { setError('Informe seu nome.'); return; }
     if (password.length < 6) { setError('A senha deve ter pelo menos 6 caracteres.'); return; }
 
+    if (mode === 'signup' && useInviteCode && inviteCode.trim().length !== 6) {
+      setError('O código de convite deve ter 6 caracteres.');
+      return;
+    }
     setIsSubmitting(true);
     try {
-      if (mode === 'login') await signIn(email, password);
-      else await signUp(email, password, name);
+      if (mode === 'login') {
+        await signIn(email, password);
+      } else {
+        await signUp(email, password, name, useInviteCode ? inviteCode.trim().toUpperCase() : undefined);
+      }
       router.push('/app');
     } catch (err: unknown) {
       const fe = err as { code?: string; message?: string };
@@ -58,10 +68,15 @@ export default function LoginPage() {
         'auth/user-not-found': 'Usuário não encontrado.',
         'auth/wrong-password': 'Senha incorreta.',
         'auth/invalid-credential': 'Credenciais inválidas. Verifique e-mail e senha.',
+        'auth/invalid-login-credentials': 'Credenciais inválidas. Verifique e-mail e senha.',
         'auth/email-already-in-use': 'Este e-mail já está em uso.',
         'auth/weak-password': 'A senha é muito fraca.',
         'auth/invalid-email': 'E-mail inválido.',
         'auth/too-many-requests': 'Muitas tentativas. Aguarde e tente novamente.',
+        'auth/network-request-failed': 'Erro de rede. Verifique sua conexão.',
+        'auth/operation-not-allowed': 'Login com e-mail/senha não está habilitado.',
+        'invite/invalid-code': 'Código de convite inválido ou não encontrado.',
+        'invite/code-expired': 'Este código de convite expirou.',
       };
       setError(msgs[fe.code || ''] || fe.message || 'Ocorreu um erro. Tente novamente.');
     } finally {
@@ -306,15 +321,83 @@ export default function LoginPage() {
                   transition={{ duration: 0.22 }}
                   className="overflow-hidden"
                 >
-                  <FormField
-                    label="Nome completo"
-                    icon={User}
-                    type="text"
-                    value={name}
-                    onChange={setName}
-                    placeholder="João Silva"
-                    autoComplete="name"
-                  />
+                  <div className="space-y-3.5">
+                    <FormField
+                      label="Nome completo"
+                      icon={User}
+                      type="text"
+                      value={name}
+                      onChange={setName}
+                      placeholder="João Silva"
+                      autoComplete="name"
+                    />
+
+                    {/* Invite code toggle */}
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => { setUseInviteCode(v => !v); setInviteCode(''); }}
+                        className={cn(
+                          'flex items-center gap-2 text-[13px] font-medium transition-colors duration-150',
+                          useInviteCode
+                            ? 'text-red-600 dark:text-red-400'
+                            : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300'
+                        )}
+                      >
+                        <div className={cn(
+                          'w-4 h-4 rounded-full border-2 flex items-center justify-center transition-all duration-150',
+                          useInviteCode
+                            ? 'border-red-500 bg-red-500'
+                            : 'border-gray-300 dark:border-gray-600'
+                        )}>
+                          {useInviteCode && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                        </div>
+                        Tenho um código de convite
+                      </button>
+
+                      <AnimatePresence>
+                        {useInviteCode && (
+                          <motion.div
+                            initial={{ opacity: 0, height: 0, marginTop: 0 }}
+                            animate={{ opacity: 1, height: 'auto', marginTop: 10 }}
+                            exit={{ opacity: 0, height: 0, marginTop: 0 }}
+                            transition={{ duration: 0.2 }}
+                            className="overflow-hidden"
+                          >
+                            <div>
+                              <label className="block text-[13px] font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                Código de convite
+                              </label>
+                              <input
+                                type="text"
+                                value={inviteCode}
+                                onChange={(e) => setInviteCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6))}
+                                placeholder="AB3K9M"
+                                maxLength={6}
+                                className={cn(
+                                  'w-full px-4 py-[10px] rounded-xl border border-gray-200 dark:border-gray-700',
+                                  'bg-gray-50/50 dark:bg-white/[0.04] text-[18px] font-mono font-bold tracking-[0.3em] text-center',
+                                  'text-gray-900 dark:text-gray-100 placeholder:text-gray-300 dark:placeholder:text-gray-600',
+                                  'placeholder:tracking-[0.3em] placeholder:text-[18px]',
+                                  'focus:outline-none focus:border-red-200 dark:focus:border-red-500/30 focus:bg-white dark:focus:bg-white/[0.06]',
+                                  'focus:shadow-[0_0_0_3px_rgba(220,38,38,0.08)] transition-all duration-150',
+                                  inviteCode.length === 6 && 'border-green-300 dark:border-green-600/50 bg-green-50/30 dark:bg-green-500/5'
+                                )}
+                              />
+                              {inviteCode.length === 6 && (
+                                <p className="text-[11px] text-green-600 dark:text-green-400 mt-1 flex items-center gap-1">
+                                  <span className="w-3 h-3 rounded-full bg-green-500 inline-flex items-center justify-center">
+                                    <svg width="7" height="5" viewBox="0 0 7 5" fill="none"><path d="M1 2.5L2.8 4L6 1" stroke="white" strokeWidth="1.2" strokeLinecap="round"/></svg>
+                                  </span>
+                                  Código completo — você entrará na empresa do convite
+                                </p>
+                              )}
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>

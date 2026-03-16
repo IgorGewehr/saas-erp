@@ -24,15 +24,8 @@ import {
   subWeeks,
   addMonths,
   subMonths,
-  getDay,
-  getHours,
-  getMinutes,
-  setHours,
-  setMinutes,
-  differenceInMinutes,
-  isAfter,
   isBefore,
-  startOfDay,
+  isAfter,
 } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -42,14 +35,13 @@ import {
   Plus,
   Calendar as CalendarIcon,
   Clock,
-  User,
+  User as UserIcon,
   Phone,
   Mail,
   X,
   Check,
   Edit3,
   Trash2,
-  MapPin,
   DollarSign,
   FileText,
   LayoutGrid,
@@ -57,6 +49,11 @@ import {
   CalendarDays,
   Search,
   ChevronDown,
+  Settings2,
+  Palette,
+  ToggleLeft,
+  ToggleRight,
+  AlertTriangle,
 } from 'lucide-react';
 import Dialog from '@mui/material/Dialog';
 import DialogTitle from '@mui/material/DialogTitle';
@@ -69,27 +66,23 @@ import Snackbar from '@mui/material/Snackbar';
 import Alert from '@mui/material/Alert';
 import { cn } from '@/lib/utils';
 import { formatCurrency, getStatusColor, getStatusLabel } from '@/lib/utils/format';
-import type { Appointment, AppointmentStatus, Service } from '@/lib/types';
+import type { Appointment, AppointmentStatus, Service, Client, User } from '@/lib/types';
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot } from 'firebase/firestore';
+import { db } from '@/lib/config/firebase';
+import { useAuth } from '@/app/components/providers/AuthProvider';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 // ==========================================
 // CONSTANTS
 // ==========================================
 
-const HOUR_HEIGHT = 64; // px per hour row
+const HOUR_HEIGHT = 64;
 const HALF_HOUR_HEIGHT = HOUR_HEIGHT / 2;
 const START_HOUR = 6;
 const END_HOUR = 22;
 const TOTAL_HOURS = END_HOUR - START_HOUR;
-const TIME_SLOTS: string[] = [];
 
-for (let h = START_HOUR; h <= END_HOUR; h++) {
-  TIME_SLOTS.push(`${String(h).padStart(2, '0')}:00`);
-  if (h < END_HOUR) {
-    TIME_SLOTS.push(`${String(h).padStart(2, '0')}:30`);
-  }
-}
-
-const WEEKDAY_LABELS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+const WEEKDAY_LABELS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'];
 
 const STATUS_COLORS: Record<AppointmentStatus, string> = {
   agendado: '#3B82F6',
@@ -113,9 +106,9 @@ const STATUS_OPTIONS: { value: AppointmentStatus; label: string }[] = [
   { value: 'agendado', label: 'Agendado' },
   { value: 'confirmado', label: 'Confirmado' },
   { value: 'em_andamento', label: 'Em Andamento' },
-  { value: 'concluido', label: 'Concluído' },
+  { value: 'concluido', label: 'Concluido' },
   { value: 'cancelado', label: 'Cancelado' },
-  { value: 'nao_compareceu', label: 'Não Compareceu' },
+  { value: 'nao_compareceu', label: 'Nao Compareceu' },
 ];
 
 const DURATION_OPTIONS = [
@@ -127,147 +120,14 @@ const DURATION_OPTIONS = [
   { value: 120, label: '2 horas' },
 ];
 
+const SERVICE_COLOR_PALETTE = [
+  '#3B82F6', '#8B5CF6', '#EC4899', '#F97316',
+  '#06B6D4', '#84CC16', '#F59E0B', '#10B981',
+  '#EF4444', '#6366F1', '#14B8A6', '#A855F7',
+  '#E11D48', '#0EA5E9', '#D97706', '#059669',
+];
+
 type ViewMode = 'day' | 'week' | 'month';
-
-// ==========================================
-// MOCK DATA
-// ==========================================
-
-function generateMockAppointments(): Appointment[] {
-  const today = new Date();
-  const monday = startOfWeek(today, { weekStartsOn: 1 });
-
-  const mockClients = [
-    { id: 'c1', name: 'Maria Silva', phone: '(11) 98765-4321', email: 'maria@email.com' },
-    { id: 'c2', name: 'João Santos', phone: '(11) 91234-5678', email: 'joao@email.com' },
-    { id: 'c3', name: 'Ana Oliveira', phone: '(21) 99876-5432', email: 'ana@email.com' },
-    { id: 'c4', name: 'Carlos Souza', phone: '(11) 97654-3210', email: 'carlos@email.com' },
-    { id: 'c5', name: 'Beatriz Lima', phone: '(31) 98765-1234', email: 'beatriz@email.com' },
-    { id: 'c6', name: 'Pedro Mendes', phone: '(11) 96543-2109', email: 'pedro@email.com' },
-    { id: 'c7', name: 'Juliana Costa', phone: '(21) 95432-1098', email: 'juliana@email.com' },
-    { id: 'c8', name: 'Roberto Alves', phone: '(11) 94321-0987', email: 'roberto@email.com' },
-    { id: 'c9', name: 'Fernanda Dias', phone: '(31) 93210-9876', email: 'fernanda@email.com' },
-    { id: 'c10', name: 'Lucas Pereira', phone: '(11) 92109-8765', email: 'lucas@email.com' },
-  ];
-
-  const mockServices = [
-    { id: 's1', name: 'Corte de Cabelo', duration: 45, price: 80, color: '#3B82F6' },
-    { id: 's2', name: 'Coloração', duration: 120, price: 250, color: '#8B5CF6' },
-    { id: 's3', name: 'Manicure', duration: 60, price: 60, color: '#EC4899' },
-    { id: 's4', name: 'Pedicure', duration: 60, price: 70, color: '#F97316' },
-    { id: 's5', name: 'Hidratação', duration: 90, price: 150, color: '#06B6D4' },
-    { id: 's6', name: 'Barba', duration: 30, price: 45, color: '#84CC16' },
-    { id: 's7', name: 'Progressiva', duration: 180, price: 350, color: '#F59E0B' },
-    { id: 's8', name: 'Escova', duration: 45, price: 65, color: '#10B981' },
-  ];
-
-  const statuses: AppointmentStatus[] = [
-    'agendado',
-    'confirmado',
-    'em_andamento',
-    'concluido',
-    'agendado',
-    'confirmado',
-  ];
-
-  const appointments: Appointment[] = [];
-  const now = new Date();
-
-  // Appointment definitions: [dayOffset from monday, hour, minuteOffset, clientIdx, serviceIdx, statusIdx]
-  const defs: [number, number, number, number, number, number][] = [
-    [0, 9, 0, 0, 0, 3],   // Monday 09:00 - Maria - Corte - concluido
-    [0, 10, 0, 1, 5, 3],  // Monday 10:00 - João - Barba - concluido
-    [0, 14, 0, 2, 2, 1],  // Monday 14:00 - Ana - Manicure - confirmado
-    [1, 8, 30, 3, 0, 0],  // Tuesday 08:30 - Carlos - Corte - agendado
-    [1, 11, 0, 4, 1, 1],  // Tuesday 11:00 - Beatriz - Coloração - confirmado
-    [1, 15, 30, 5, 4, 0], // Tuesday 15:30 - Pedro - Hidratação - agendado
-    [2, 9, 0, 6, 7, 1],   // Wednesday 09:00 - Juliana - Escova - confirmado
-    [2, 10, 30, 7, 0, 2], // Wednesday 10:30 - Roberto - Corte - em_andamento
-    [2, 13, 0, 8, 3, 0],  // Wednesday 13:00 - Fernanda - Pedicure - agendado
-    [2, 16, 0, 9, 6, 0],  // Wednesday 16:00 - Lucas - Progressiva - agendado
-    [3, 8, 0, 0, 2, 1],   // Thursday 08:00 - Maria - Manicure - confirmado
-    [3, 10, 0, 1, 4, 0],  // Thursday 10:00 - João - Hidratação - agendado
-    [3, 14, 30, 2, 0, 4], // Thursday 14:30 - Ana - Corte - agendado
-    [4, 9, 30, 3, 7, 1],  // Friday 09:30 - Carlos - Escova - confirmado
-    [4, 11, 0, 4, 5, 0],  // Friday 11:00 - Beatriz - Barba - agendado
-    [4, 14, 0, 5, 1, 1],  // Friday 14:00 - Pedro - Coloração - confirmado
-    [4, 16, 30, 6, 3, 0], // Friday 16:30 - Juliana - Pedicure - agendado
-    [5, 9, 0, 7, 0, 0],   // Saturday 09:00 - Roberto - Corte - agendado
-    [5, 11, 0, 8, 2, 1],  // Saturday 11:00 - Fernanda - Manicure - confirmado
-  ];
-
-  defs.forEach(([dayOff, hour, minute, cIdx, sIdx, stIdx], idx) => {
-    const client = mockClients[cIdx];
-    const service = mockServices[sIdx];
-    const date = addDays(monday, dayOff);
-    const startH = String(hour).padStart(2, '0');
-    const startM = String(minute).padStart(2, '0');
-    const endDate = new Date(date);
-    endDate.setHours(hour, minute + service.duration);
-    const endH = String(endDate.getHours()).padStart(2, '0');
-    const endM = String(endDate.getMinutes()).padStart(2, '0');
-
-    // For past appointments, mark as concluido
-    const appointmentDate = new Date(date);
-    appointmentDate.setHours(hour, minute);
-    let status = statuses[stIdx];
-    if (isBefore(appointmentDate, now) && status !== 'cancelado' && status !== 'nao_compareceu') {
-      if (differenceInMinutes(now, appointmentDate) > service.duration) {
-        status = 'concluido';
-      } else if (differenceInMinutes(now, appointmentDate) > 0) {
-        status = 'em_andamento';
-      }
-    }
-
-    appointments.push({
-      id: `mock-${idx + 1}`,
-      businessId: 'mock-business',
-      clientId: client.id,
-      clientName: client.name,
-      clientPhone: client.phone,
-      serviceId: service.id,
-      serviceName: service.name,
-      professionalId: 'prof-1',
-      professionalName: 'Dr. Ricardo',
-      date: format(date, 'yyyy-MM-dd'),
-      startTime: `${startH}:${startM}`,
-      endTime: `${endH}:${endM}`,
-      duration: service.duration,
-      status,
-      price: service.price,
-      notes: idx % 3 === 0 ? 'Cliente preferencial' : undefined,
-      color: service.color,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
-  });
-
-  return appointments;
-}
-
-const MOCK_SERVICES: Service[] = [
-  { id: 's1', businessId: 'mock', name: 'Corte de Cabelo', duration: 45, price: 80, color: '#3B82F6', isActive: true, createdAt: '', updatedAt: '' },
-  { id: 's2', businessId: 'mock', name: 'Coloração', duration: 120, price: 250, color: '#8B5CF6', isActive: true, createdAt: '', updatedAt: '' },
-  { id: 's3', businessId: 'mock', name: 'Manicure', duration: 60, price: 60, color: '#EC4899', isActive: true, createdAt: '', updatedAt: '' },
-  { id: 's4', businessId: 'mock', name: 'Pedicure', duration: 60, price: 70, color: '#F97316', isActive: true, createdAt: '', updatedAt: '' },
-  { id: 's5', businessId: 'mock', name: 'Hidratação', duration: 90, price: 150, color: '#06B6D4', isActive: true, createdAt: '', updatedAt: '' },
-  { id: 's6', businessId: 'mock', name: 'Barba', duration: 30, price: 45, color: '#84CC16', isActive: true, createdAt: '', updatedAt: '' },
-  { id: 's7', businessId: 'mock', name: 'Progressiva', duration: 180, price: 350, color: '#F59E0B', isActive: true, createdAt: '', updatedAt: '' },
-  { id: 's8', businessId: 'mock', name: 'Escova', duration: 45, price: 65, color: '#10B981', isActive: true, createdAt: '', updatedAt: '' },
-];
-
-const MOCK_CLIENTS = [
-  { id: 'c1', name: 'Maria Silva', phone: '(11) 98765-4321', email: 'maria@email.com' },
-  { id: 'c2', name: 'João Santos', phone: '(11) 91234-5678', email: 'joao@email.com' },
-  { id: 'c3', name: 'Ana Oliveira', phone: '(21) 99876-5432', email: 'ana@email.com' },
-  { id: 'c4', name: 'Carlos Souza', phone: '(11) 97654-3210', email: 'carlos@email.com' },
-  { id: 'c5', name: 'Beatriz Lima', phone: '(31) 98765-1234', email: 'beatriz@email.com' },
-  { id: 'c6', name: 'Pedro Mendes', phone: '(11) 96543-2109', email: 'pedro@email.com' },
-  { id: 'c7', name: 'Juliana Costa', phone: '(21) 95432-1098', email: 'juliana@email.com' },
-  { id: 'c8', name: 'Roberto Alves', phone: '(11) 94321-0987', email: 'roberto@email.com' },
-  { id: 'c9', name: 'Fernanda Dias', phone: '(31) 93210-9876', email: 'fernanda@email.com' },
-  { id: 'c10', name: 'Lucas Pereira', phone: '(11) 92109-8765', email: 'lucas@email.com' },
-];
 
 // ==========================================
 // HELPER FUNCTIONS
@@ -357,10 +217,10 @@ interface MiniCalendarProps {
 function MiniCalendar({ selectedDate, onSelect, appointments }: MiniCalendarProps) {
   const [viewMonth, setViewMonth] = useState(startOfMonth(selectedDate));
 
-  const monthStart = startOfMonth(viewMonth);
-  const monthEnd = endOfMonth(viewMonth);
-  const calStart = startOfWeek(monthStart, { weekStartsOn: 0 });
-  const calEnd = endOfWeek(monthEnd, { weekStartsOn: 0 });
+  const monthStart2 = startOfMonth(viewMonth);
+  const monthEnd2 = endOfMonth(viewMonth);
+  const calStart = startOfWeek(monthStart2, { weekStartsOn: 0 });
+  const calEnd = endOfWeek(monthEnd2, { weekStartsOn: 0 });
   const days = eachDayOfInterval({ start: calStart, end: calEnd });
 
   const datesWithAppointments = useMemo(() => {
@@ -371,7 +231,6 @@ function MiniCalendar({ selectedDate, onSelect, appointments }: MiniCalendarProp
 
   return (
     <div className="p-3 w-[280px]">
-      {/* Month navigation */}
       <div className="flex items-center justify-between mb-3">
         <button
           onClick={() => setViewMonth(subMonths(viewMonth, 1))}
@@ -390,7 +249,6 @@ function MiniCalendar({ selectedDate, onSelect, appointments }: MiniCalendarProp
         </button>
       </div>
 
-      {/* Weekday headers */}
       <div className="grid grid-cols-7 mb-1">
         {['D', 'S', 'T', 'Q', 'Q', 'S', 'S'].map((d, i) => (
           <div key={i} className="text-center text-[11px] font-medium text-gray-400 dark:text-gray-500 py-1">
@@ -399,7 +257,6 @@ function MiniCalendar({ selectedDate, onSelect, appointments }: MiniCalendarProp
         ))}
       </div>
 
-      {/* Days grid */}
       <div className="grid grid-cols-7">
         {days.map((day, i) => {
           const isCurrentMonth = isSameMonth(day, viewMonth);
@@ -518,6 +375,519 @@ function AppointmentBlock({ appointment, onClick, compact = false }: Appointment
   );
 }
 
+// ---- Service Management Dialog ----
+interface ServiceFormData {
+  name: string;
+  description: string;
+  duration: number;
+  price: number;
+  category: string;
+  color: string;
+  isActive: boolean;
+}
+
+interface ServiceManagementDialogProps {
+  open: boolean;
+  onClose: () => void;
+  services: Service[];
+  onCreateService: (data: ServiceFormData) => Promise<void>;
+  onUpdateService: (id: string, data: ServiceFormData) => Promise<void>;
+  onDeleteService: (id: string) => Promise<void>;
+}
+
+function ServiceManagementDialog({
+  open,
+  onClose,
+  services,
+  onCreateService,
+  onUpdateService,
+  onDeleteService,
+}: ServiceManagementDialogProps) {
+  const [view, setView] = useState<'list' | 'form'>('list');
+  const [editingService, setEditingService] = useState<Service | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [formData, setFormData] = useState<ServiceFormData>({
+    name: '',
+    description: '',
+    duration: 60,
+    price: 0,
+    category: '',
+    color: '#3B82F6',
+    isActive: true,
+  });
+
+  const resetForm = useCallback(() => {
+    setFormData({
+      name: '',
+      description: '',
+      duration: 60,
+      price: 0,
+      category: '',
+      color: '#3B82F6',
+      isActive: true,
+    });
+    setEditingService(null);
+  }, []);
+
+  const handleEdit = useCallback((service: Service) => {
+    setEditingService(service);
+    setFormData({
+      name: service.name,
+      description: service.description || '',
+      duration: service.duration,
+      price: service.price,
+      category: service.category || '',
+      color: service.color,
+      isActive: service.isActive,
+    });
+    setView('form');
+  }, []);
+
+  const handleNew = useCallback(() => {
+    resetForm();
+    setView('form');
+  }, [resetForm]);
+
+  const handleSave = useCallback(async () => {
+    if (!formData.name || !formData.duration) return;
+    setSaving(true);
+    try {
+      if (editingService) {
+        await onUpdateService(editingService.id, formData);
+      } else {
+        await onCreateService(formData);
+      }
+      resetForm();
+      setView('list');
+    } finally {
+      setSaving(false);
+    }
+  }, [formData, editingService, onCreateService, onUpdateService, resetForm]);
+
+  const handleDelete = useCallback(async (id: string) => {
+    setDeleting(id);
+    try {
+      await onDeleteService(id);
+      setConfirmDeleteId(null);
+    } finally {
+      setDeleting(null);
+    }
+  }, [onDeleteService]);
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      maxWidth="sm"
+      fullWidth
+      PaperProps={{ sx: { borderRadius: '16px' } }}
+    >
+      <DialogTitle
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          px: 3,
+          pt: 2.5,
+          pb: 1,
+          fontFamily: 'Inter, sans-serif',
+        }}
+      >
+        <span className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+          {view === 'list' ? 'Gerenciar Servicos' : editingService ? 'Editar Servico' : 'Novo Servico'}
+        </span>
+        <button
+          onClick={view === 'form' ? () => { resetForm(); setView('list'); } : onClose}
+          className="p-1.5 hover:bg-gray-100 dark:hover:bg-white/[0.06] rounded-lg transition-colors"
+        >
+          <X className="w-5 h-5 text-gray-400 dark:text-gray-500" />
+        </button>
+      </DialogTitle>
+
+      <DialogContent sx={{ px: 3, pt: 1, pb: 0 }}>
+        <AnimatePresence mode="wait">
+          {view === 'list' ? (
+            <motion.div
+              key="list"
+              initial={{ opacity: 0, x: -10 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -10 }}
+              transition={{ duration: 0.2 }}
+              className="py-2"
+            >
+              {services.length === 0 ? (
+                <div className="text-center py-8">
+                  <div className="w-12 h-12 mx-auto mb-3 rounded-xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
+                    <Settings2 className="w-6 h-6 text-gray-400 dark:text-gray-500" />
+                  </div>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">Nenhum servico cadastrado</p>
+                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">Crie seu primeiro servico para comecar a agendar</p>
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-[400px] overflow-y-auto">
+                  {services.map((service) => (
+                    <motion.div
+                      key={service.id}
+                      initial={{ opacity: 0, y: 4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className={cn(
+                        'flex items-center gap-3 p-3 rounded-xl border transition-colors',
+                        service.isActive
+                          ? 'border-gray-100 dark:border-gray-800 hover:border-gray-200 dark:hover:border-gray-700'
+                          : 'border-gray-100 dark:border-gray-800 opacity-50',
+                      )}
+                    >
+                      <div
+                        className="w-3 h-8 rounded-full flex-shrink-0"
+                        style={{ backgroundColor: service.color }}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+                            {service.name}
+                          </span>
+                          {!service.isActive && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400">
+                              Inativo
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-xs text-gray-500 dark:text-gray-400">{service.duration} min</span>
+                          <span className="text-xs text-gray-300 dark:text-gray-600">|</span>
+                          <span className="text-xs font-medium text-gray-600 dark:text-gray-300">{formatCurrency(service.price)}</span>
+                          {service.category && (
+                            <>
+                              <span className="text-xs text-gray-300 dark:text-gray-600">|</span>
+                              <span className="text-xs text-gray-400 dark:text-gray-500">{service.category}</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 flex-shrink-0">
+                        <button
+                          onClick={() => handleEdit(service)}
+                          className="p-1.5 hover:bg-gray-100 dark:hover:bg-white/[0.06] rounded-lg transition-colors"
+                        >
+                          <Edit3 className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
+                        </button>
+                        {confirmDeleteId === service.id ? (
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => handleDelete(service.id)}
+                              disabled={deleting === service.id}
+                              className="p-1.5 bg-red-50 dark:bg-red-500/10 hover:bg-red-100 dark:hover:bg-red-500/20 rounded-lg transition-colors"
+                            >
+                              <Check className="w-3.5 h-3.5 text-red-600 dark:text-red-400" />
+                            </button>
+                            <button
+                              onClick={() => setConfirmDeleteId(null)}
+                              className="p-1.5 hover:bg-gray-100 dark:hover:bg-white/[0.06] rounded-lg transition-colors"
+                            >
+                              <X className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => setConfirmDeleteId(service.id)}
+                            className="p-1.5 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-lg transition-colors"
+                          >
+                            <Trash2 className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500 hover:text-red-500" />
+                          </button>
+                        )}
+                      </div>
+                    </motion.div>
+                  ))}
+                </div>
+              )}
+            </motion.div>
+          ) : (
+            <motion.div
+              key="form"
+              initial={{ opacity: 0, x: 10 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 10 }}
+              transition={{ duration: 0.2 }}
+              className="space-y-4 py-2"
+            >
+              {/* Name */}
+              <div>
+                <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                  Nome do Servico *
+                </label>
+                <input
+                  type="text"
+                  value={formData.name}
+                  onChange={(e) => setFormData((p) => ({ ...p, name: e.target.value }))}
+                  placeholder="Ex: Corte Masculino"
+                  className={cn(
+                    'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
+                    'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
+                    'bg-white dark:bg-gray-800',
+                    'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
+                    'transition-all duration-200',
+                  )}
+                />
+              </div>
+
+              {/* Description */}
+              <div>
+                <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                  Descricao
+                </label>
+                <textarea
+                  value={formData.description}
+                  onChange={(e) => setFormData((p) => ({ ...p, description: e.target.value }))}
+                  rows={2}
+                  placeholder="Descricao do servico..."
+                  className={cn(
+                    'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 resize-none',
+                    'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
+                    'bg-white dark:bg-gray-800',
+                    'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
+                    'transition-all duration-200',
+                  )}
+                />
+              </div>
+
+              {/* Duration & Price */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                    Duracao *
+                  </label>
+                  <select
+                    value={formData.duration}
+                    onChange={(e) => setFormData((p) => ({ ...p, duration: Number(e.target.value) }))}
+                    className={cn(
+                      'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800',
+                      'text-sm text-gray-900 dark:text-gray-100 appearance-none',
+                      'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
+                      'transition-all duration-200',
+                    )}
+                  >
+                    {DURATION_OPTIONS.map((d) => (
+                      <option key={d.value} value={d.value}>{d.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                    Preco (R$) *
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={formData.price || ''}
+                    onChange={(e) => setFormData((p) => ({ ...p, price: Number(e.target.value) }))}
+                    placeholder="0,00"
+                    className={cn(
+                      'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
+                      'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
+                      'bg-white dark:bg-gray-800',
+                      'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
+                      'transition-all duration-200',
+                    )}
+                  />
+                </div>
+              </div>
+
+              {/* Category */}
+              <div>
+                <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                  Categoria
+                </label>
+                <input
+                  type="text"
+                  value={formData.category}
+                  onChange={(e) => setFormData((p) => ({ ...p, category: e.target.value }))}
+                  placeholder="Ex: Cabelo, Unhas, Barba..."
+                  className={cn(
+                    'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
+                    'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
+                    'bg-white dark:bg-gray-800',
+                    'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
+                    'transition-all duration-200',
+                  )}
+                />
+              </div>
+
+              {/* Color */}
+              <div>
+                <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                  <Palette className="w-3.5 h-3.5 inline mr-1" />
+                  Cor
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {SERVICE_COLOR_PALETTE.map((c) => (
+                    <button
+                      key={c}
+                      onClick={() => setFormData((p) => ({ ...p, color: c }))}
+                      className={cn(
+                        'w-8 h-8 rounded-lg transition-all duration-200',
+                        formData.color === c
+                          ? 'ring-2 ring-offset-2 ring-gray-400 dark:ring-gray-500 dark:ring-offset-gray-900 scale-110'
+                          : 'hover:scale-110',
+                      )}
+                      style={{ backgroundColor: c }}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {/* Active toggle */}
+              <div className="flex items-center justify-between py-2">
+                <div>
+                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100">Servico Ativo</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">Servicos inativos nao aparecem na agenda</div>
+                </div>
+                <button
+                  onClick={() => setFormData((p) => ({ ...p, isActive: !p.isActive }))}
+                  className="transition-colors"
+                >
+                  {formData.isActive ? (
+                    <ToggleRight className="w-8 h-8 text-red-600" />
+                  ) : (
+                    <ToggleLeft className="w-8 h-8 text-gray-400 dark:text-gray-500" />
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </DialogContent>
+
+      <DialogActions
+        sx={{
+          px: 3,
+          py: 2.5,
+          gap: 1,
+          justifyContent: view === 'list' ? 'flex-end' : 'space-between',
+        }}
+      >
+        {view === 'list' ? (
+          <button
+            onClick={handleNew}
+            className={cn(
+              'flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold',
+              'bg-red-600 text-white hover:bg-red-700',
+              'shadow-sm shadow-red-600/20',
+              'transition-all duration-200',
+            )}
+          >
+            <Plus className="w-4 h-4" />
+            Novo Servico
+          </button>
+        ) : (
+          <>
+            <button
+              onClick={() => { resetForm(); setView('list'); }}
+              className={cn(
+                'px-5 py-2.5 rounded-xl text-sm font-medium',
+                'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] border border-gray-200 dark:border-gray-700',
+                'transition-all duration-200',
+              )}
+            >
+              Voltar
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={!formData.name || saving}
+              className={cn(
+                'flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold',
+                'bg-red-600 text-white hover:bg-red-700',
+                'shadow-sm shadow-red-600/20',
+                'transition-all duration-200',
+                'disabled:opacity-50 disabled:cursor-not-allowed',
+              )}
+            >
+              {saving ? 'Salvando...' : editingService ? 'Salvar Alteracoes' : 'Criar Servico'}
+            </button>
+          </>
+        )}
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+// ---- Delete Confirmation Dialog ----
+interface DeleteConfirmDialogProps {
+  open: boolean;
+  onClose: () => void;
+  onCancel: () => void;
+  onDelete: () => void;
+  loading: boolean;
+  appointmentName?: string;
+}
+
+function DeleteConfirmDialog({ open, onClose, onCancel, onDelete, loading, appointmentName }: DeleteConfirmDialogProps) {
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      maxWidth="xs"
+      fullWidth
+      PaperProps={{ sx: { borderRadius: '16px' } }}
+    >
+      <div className="p-6 text-center">
+        <div className="w-12 h-12 mx-auto mb-4 rounded-xl bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
+          <AlertTriangle className="w-6 h-6 text-red-600 dark:text-red-400" />
+        </div>
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">
+          Excluir Agendamento
+        </h3>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-1">
+          {appointmentName ? `Deseja excluir o agendamento de ${appointmentName}?` : 'Deseja excluir este agendamento?'}
+        </p>
+        <p className="text-xs text-gray-400 dark:text-gray-500 mb-6">
+          Voce pode cancelar o agendamento ou exclui-lo permanentemente.
+        </p>
+        <div className="flex flex-col gap-2">
+          <button
+            onClick={onCancel}
+            disabled={loading}
+            className={cn(
+              'w-full px-4 py-2.5 rounded-xl text-sm font-medium',
+              'text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10 hover:bg-amber-100 dark:hover:bg-amber-500/20',
+              'transition-all duration-200',
+              'disabled:opacity-50',
+            )}
+          >
+            Cancelar Agendamento (manter registro)
+          </button>
+          <button
+            onClick={onDelete}
+            disabled={loading}
+            className={cn(
+              'w-full px-4 py-2.5 rounded-xl text-sm font-semibold',
+              'text-white bg-red-600 hover:bg-red-700',
+              'shadow-sm shadow-red-600/20',
+              'transition-all duration-200',
+              'disabled:opacity-50',
+            )}
+          >
+            {loading ? 'Excluindo...' : 'Excluir Permanentemente'}
+          </button>
+          <button
+            onClick={onClose}
+            disabled={loading}
+            className={cn(
+              'w-full px-4 py-2.5 rounded-xl text-sm font-medium',
+              'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06]',
+              'transition-all duration-200',
+            )}
+          >
+            Voltar
+          </button>
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
 // ---- New/Edit Appointment Dialog ----
 interface AppointmentFormData {
   clientId: string;
@@ -533,6 +903,7 @@ interface AppointmentFormData {
   notes: string;
   status: AppointmentStatus;
   price: number;
+  color: string;
 }
 
 interface AppointmentDialogProps {
@@ -542,6 +913,10 @@ interface AppointmentDialogProps {
   onDelete?: () => void;
   initialData?: Partial<AppointmentFormData>;
   isEditing?: boolean;
+  services: Service[];
+  clients: Client[];
+  members: User[];
+  saving?: boolean;
 }
 
 function AppointmentFormDialog({
@@ -551,6 +926,10 @@ function AppointmentFormDialog({
   onDelete,
   initialData,
   isEditing = false,
+  services,
+  clients,
+  members,
+  saving = false,
 }: AppointmentDialogProps) {
   const [formData, setFormData] = useState<AppointmentFormData>({
     clientId: '',
@@ -566,6 +945,7 @@ function AppointmentFormDialog({
     notes: '',
     status: 'agendado',
     price: 0,
+    color: '#3B82F6',
   });
   const [clientSearch, setClientSearch] = useState('');
   const [showClientDropdown, setShowClientDropdown] = useState(false);
@@ -590,20 +970,36 @@ function AppointmentFormDialog({
         notes: '',
         status: 'agendado',
         price: 0,
+        color: '#3B82F6',
       });
       setClientSearch('');
     }
   }, [open, initialData]);
 
+  // Close dropdown on outside click
+  useEffect(() => {
+    if (!showClientDropdown) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (clientSearchRef.current && !clientSearchRef.current.contains(e.target as Node)) {
+        setShowClientDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showClientDropdown]);
+
   const filteredClients = useMemo(() => {
-    if (!clientSearch) return MOCK_CLIENTS;
-    return MOCK_CLIENTS.filter((c) =>
-      c.name.toLowerCase().includes(clientSearch.toLowerCase())
-    );
-  }, [clientSearch]);
+    if (!clientSearch) return clients.slice(0, 20);
+    return clients.filter((c) =>
+      c.nome.toLowerCase().includes(clientSearch.toLowerCase()) ||
+      (c.phone && c.phone.includes(clientSearch))
+    ).slice(0, 20);
+  }, [clientSearch, clients]);
+
+  const activeServices = useMemo(() => services.filter((s) => s.isActive), [services]);
 
   const handleServiceChange = (serviceId: string) => {
-    const service = MOCK_SERVICES.find((s) => s.id === serviceId);
+    const service = services.find((s) => s.id === serviceId);
     if (service) {
       setFormData((prev) => ({
         ...prev,
@@ -611,18 +1007,19 @@ function AppointmentFormDialog({
         serviceName: service.name,
         duration: service.duration,
         price: service.price,
+        color: service.color,
       }));
     }
   };
 
-  const handleClientSelect = (client: typeof MOCK_CLIENTS[0]) => {
+  const handleClientSelect = (client: Client) => {
     setFormData((prev) => ({
       ...prev,
       clientId: client.id,
-      clientName: client.name,
-      clientPhone: client.phone,
+      clientName: client.nome,
+      clientPhone: client.phone || '',
     }));
-    setClientSearch(client.name);
+    setClientSearch(client.nome);
     setShowClientDropdown(false);
   };
 
@@ -685,7 +1082,7 @@ function AppointmentFormDialog({
                 onChange={(e) => {
                   setClientSearch(e.target.value);
                   setShowClientDropdown(true);
-                  setFormData((prev) => ({ ...prev, clientName: e.target.value }));
+                  setFormData((prev) => ({ ...prev, clientName: e.target.value, clientId: '' }));
                 }}
                 onFocus={() => setShowClientDropdown(true)}
                 placeholder="Buscar cliente..."
@@ -713,10 +1110,10 @@ function AppointmentFormDialog({
                       className="w-full px-4 py-2.5 text-left hover:bg-gray-50 dark:hover:bg-white/[0.04] flex items-center gap-3 transition-colors first:rounded-t-xl last:rounded-b-xl"
                     >
                       <div className="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-xs font-semibold text-gray-500 dark:text-gray-400">
-                        {client.name.split(' ').map((n) => n[0]).slice(0, 2).join('')}
+                        {client.nome.split(' ').map((n) => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()}
                       </div>
                       <div>
-                        <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{client.name}</div>
+                        <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{client.nome}</div>
                         <div className="text-xs text-gray-500 dark:text-gray-400">{client.phone}</div>
                       </div>
                     </button>
@@ -729,7 +1126,7 @@ function AppointmentFormDialog({
           {/* Service select */}
           <div>
             <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-              Serviço *
+              Servico *
             </label>
             <select
               value={formData.serviceId}
@@ -741,8 +1138,8 @@ function AppointmentFormDialog({
                 'transition-all duration-200',
               )}
             >
-              <option value="">Selecionar serviço</option>
-              {MOCK_SERVICES.map((s) => (
+              <option value="">Selecionar servico</option>
+              {activeServices.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name} - {formatCurrency(s.price)} ({s.duration} min)
                 </option>
@@ -771,7 +1168,7 @@ function AppointmentFormDialog({
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                Horário Início *
+                Horario Inicio *
               </label>
               <select
                 value={formData.startTime}
@@ -794,7 +1191,7 @@ function AppointmentFormDialog({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                Duração
+                Duracao
               </label>
               <select
                 value={formData.duration}
@@ -813,7 +1210,7 @@ function AppointmentFormDialog({
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                Término
+                Termino
               </label>
               <div className="px-4 py-2.5 rounded-xl border border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50 text-sm text-gray-500 dark:text-gray-400">
                 {endTime}
@@ -827,14 +1224,15 @@ function AppointmentFormDialog({
               Profissional
             </label>
             <select
-              value={formData.professionalName}
-              onChange={(e) =>
+              value={formData.professionalId}
+              onChange={(e) => {
+                const member = members.find((m) => m.id === e.target.value);
                 setFormData((prev) => ({
                   ...prev,
-                  professionalName: e.target.value,
-                  professionalId: e.target.value ? 'prof-1' : '',
-                }))
-              }
+                  professionalId: e.target.value,
+                  professionalName: member?.name || '',
+                }));
+              }}
               className={cn(
                 'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800',
                 'text-sm text-gray-900 dark:text-gray-100 appearance-none',
@@ -843,9 +1241,9 @@ function AppointmentFormDialog({
               )}
             >
               <option value="">Selecionar profissional</option>
-              <option value="Dr. Ricardo">Dr. Ricardo</option>
-              <option value="Dra. Camila">Dra. Camila</option>
-              <option value="Especialista Ana">Especialista Ana</option>
+              {members.map((m) => (
+                <option key={m.id} value={m.id}>{m.name}</option>
+              ))}
             </select>
           </div>
 
@@ -878,6 +1276,8 @@ function AppointmentFormDialog({
               </label>
               <input
                 type="number"
+                step="0.01"
+                min="0"
                 value={formData.price || ''}
                 onChange={(e) =>
                   setFormData((prev) => ({ ...prev, price: Number(e.target.value) }))
@@ -897,13 +1297,13 @@ function AppointmentFormDialog({
           {/* Notes */}
           <div>
             <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-              Observações
+              Observacoes
             </label>
             <textarea
               value={formData.notes}
               onChange={(e) => setFormData((prev) => ({ ...prev, notes: e.target.value }))}
               rows={3}
-              placeholder="Observações adicionais..."
+              placeholder="Observacoes adicionais..."
               className={cn(
                 'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 resize-none',
                 'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
@@ -949,6 +1349,7 @@ function AppointmentFormDialog({
           </button>
           <button
             onClick={handleSubmit}
+            disabled={!formData.clientName || !formData.serviceName || saving}
             className={cn(
               'px-5 py-2.5 rounded-xl text-sm font-semibold',
               'bg-red-600 text-white hover:bg-red-700',
@@ -956,9 +1357,8 @@ function AppointmentFormDialog({
               'transition-all duration-200',
               'disabled:opacity-50 disabled:cursor-not-allowed',
             )}
-            disabled={!formData.clientName || !formData.serviceName}
           >
-            {isEditing ? 'Salvar Alterações' : 'Agendar'}
+            {saving ? 'Salvando...' : isEditing ? 'Salvar Alteracoes' : 'Agendar'}
           </button>
         </div>
       </DialogActions>
@@ -973,6 +1373,7 @@ interface ViewAppointmentDialogProps {
   appointment: Appointment | null;
   onEdit: () => void;
   onStatusChange: (status: AppointmentStatus) => void;
+  statusChanging: boolean;
 }
 
 function ViewAppointmentDialog({
@@ -981,11 +1382,11 @@ function ViewAppointmentDialog({
   appointment,
   onEdit,
   onStatusChange,
+  statusChanging,
 }: ViewAppointmentDialogProps) {
   if (!appointment) return null;
 
   const color = STATUS_COLORS[appointment.status];
-  const client = MOCK_CLIENTS.find((c) => c.id === appointment.clientId);
 
   return (
     <Dialog
@@ -1021,7 +1422,7 @@ function ViewAppointmentDialog({
               className="w-12 h-12 rounded-xl flex items-center justify-center text-white text-lg font-bold flex-shrink-0"
               style={{ backgroundColor: color }}
             >
-              {appointment.clientName.split(' ').map((n) => n[0]).slice(0, 2).join('')}
+              {appointment.clientName.split(' ').map((n) => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()}
             </div>
             <div className="flex-1 min-w-0">
               <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
@@ -1058,35 +1459,26 @@ function ViewAppointmentDialog({
             <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
               <Clock className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
               <div>
-                <div className="text-xs text-gray-500 dark:text-gray-400">Horário</div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">Horario</div>
                 <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
                   {appointment.startTime} - {appointment.endTime} ({appointment.duration} min)
                 </div>
               </div>
             </div>
 
-            {client && (
-              <>
-                <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
-                  <Phone className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
-                  <div>
-                    <div className="text-xs text-gray-500 dark:text-gray-400">Telefone</div>
-                    <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{client.phone}</div>
-                  </div>
+            {appointment.clientPhone && (
+              <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
+                <Phone className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
+                <div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">Telefone</div>
+                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{appointment.clientPhone}</div>
                 </div>
-                <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
-                  <Mail className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
-                  <div>
-                    <div className="text-xs text-gray-500 dark:text-gray-400">Email</div>
-                    <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{client.email}</div>
-                  </div>
-                </div>
-              </>
+              </div>
             )}
 
             {appointment.professionalName && (
               <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
-                <User className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
+                <UserIcon className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
                 <div>
                   <div className="text-xs text-gray-500 dark:text-gray-400">Profissional</div>
                   <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{appointment.professionalName}</div>
@@ -1106,7 +1498,7 @@ function ViewAppointmentDialog({
               <div className="flex items-start gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
                 <FileText className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0 mt-0.5" />
                 <div>
-                  <div className="text-xs text-gray-500 dark:text-gray-400">Observações</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">Observacoes</div>
                   <div className="text-sm text-gray-700 dark:text-gray-300 mt-0.5">{appointment.notes}</div>
                 </div>
               </div>
@@ -1129,9 +1521,11 @@ function ViewAppointmentDialog({
             {appointment.status === 'agendado' && (
               <button
                 onClick={() => onStatusChange('confirmado')}
+                disabled={statusChanging}
                 className={cn(
                   'flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium',
                   'text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 transition-colors',
+                  'disabled:opacity-50',
                 )}
               >
                 <Check className="w-3.5 h-3.5" />
@@ -1141,10 +1535,27 @@ function ViewAppointmentDialog({
 
             {(appointment.status === 'agendado' || appointment.status === 'confirmado') && (
               <button
+                onClick={() => onStatusChange('em_andamento')}
+                disabled={statusChanging}
+                className={cn(
+                  'flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium',
+                  'text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10 hover:bg-amber-100 dark:hover:bg-amber-500/20 transition-colors',
+                  'disabled:opacity-50',
+                )}
+              >
+                <Clock className="w-3.5 h-3.5" />
+                Iniciar
+              </button>
+            )}
+
+            {(appointment.status === 'agendado' || appointment.status === 'confirmado') && (
+              <button
                 onClick={() => onStatusChange('cancelado')}
+                disabled={statusChanging}
                 className={cn(
                   'flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium',
                   'text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-500/10 hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors',
+                  'disabled:opacity-50',
                 )}
               >
                 <X className="w-3.5 h-3.5" />
@@ -1155,13 +1566,29 @@ function ViewAppointmentDialog({
             {(appointment.status === 'confirmado' || appointment.status === 'em_andamento') && (
               <button
                 onClick={() => onStatusChange('concluido')}
+                disabled={statusChanging}
                 className={cn(
                   'flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium',
                   'text-indigo-700 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 hover:bg-indigo-100 dark:hover:bg-indigo-500/20 transition-colors',
+                  'disabled:opacity-50',
                 )}
               >
                 <Check className="w-3.5 h-3.5" />
                 Concluir
+              </button>
+            )}
+
+            {(appointment.status === 'agendado' || appointment.status === 'confirmado') && (
+              <button
+                onClick={() => onStatusChange('nao_compareceu')}
+                disabled={statusChanging}
+                className={cn(
+                  'flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium',
+                  'text-gray-700 dark:text-gray-400 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors',
+                  'disabled:opacity-50',
+                )}
+              >
+                Nao Compareceu
               </button>
             )}
           </div>
@@ -1172,22 +1599,80 @@ function ViewAppointmentDialog({
 }
 
 // ==========================================
+// LOADING SKELETON
+// ==========================================
+function AgendaSkeleton() {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="h-full flex flex-col surface rounded-2xl overflow-hidden"
+    >
+      {/* Header skeleton */}
+      <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800">
+        <div className="flex items-center gap-3">
+          <div className="h-9 w-32 rounded-xl shimmer" />
+          <div className="h-9 w-56 rounded-xl shimmer" />
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="h-9 w-36 rounded-xl shimmer" />
+          <div className="h-9 w-36 rounded-xl shimmer" />
+        </div>
+      </div>
+      {/* Status bar skeleton */}
+      <div className="flex items-center gap-2 px-6 py-2 border-b border-gray-100 dark:border-gray-800">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="h-5 w-20 rounded-md shimmer" />
+        ))}
+      </div>
+      {/* Body skeleton */}
+      <div className="flex-1 flex p-4 gap-4">
+        <div className="w-16 space-y-6 pt-2">
+          {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
+            <div key={i} className="h-4 w-12 rounded shimmer" />
+          ))}
+        </div>
+        <div className="flex-1 space-y-3">
+          {[0, 1, 2, 3, 4].map((i) => (
+            <motion.div
+              key={i}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.28, delay: i * 0.07 }}
+              className="h-16 rounded-xl shimmer"
+            />
+          ))}
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+// ==========================================
 // MAIN AGENDA MODULE
 // ==========================================
 
 export default function AgendaModule() {
+  const { user, business } = useAuth();
+  const queryClient = useQueryClient();
+
   // ---- State ----
   const [viewMode, setViewMode] = useState<ViewMode>('week');
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState(new Date());
-  const [appointments, setAppointments] = useState<Appointment[]>(() => generateMockAppointments());
   const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
   const [showViewDialog, setShowViewDialog] = useState(false);
   const [showFormDialog, setShowFormDialog] = useState(false);
+  const [showServiceDialog, setShowServiceDialog] = useState(false);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [editingAppointment, setEditingAppointment] = useState<Appointment | null>(null);
   const [formInitialData, setFormInitialData] = useState<Partial<AppointmentFormData>>({});
   const [calendarAnchor, setCalendarAnchor] = useState<HTMLElement | null>(null);
   const [slideDirection, setSlideDirection] = useState<'left' | 'right'>('right');
+  const [saving, setSaving] = useState(false);
+  const [statusChanging, setStatusChanging] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [members, setMembers] = useState<User[]>([]);
   const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' }>({
     open: false,
     message: '',
@@ -1205,6 +1690,72 @@ export default function AgendaModule() {
     window.addEventListener('resize', check);
     return () => window.removeEventListener('resize', check);
   }, []);
+
+  // ==========================================
+  // FIRESTORE QUERIES
+  // ==========================================
+
+  // Fetch appointments
+  const { data: appointments = [], isLoading: appointmentsLoading } = useQuery({
+    queryKey: ['appointments', business?.id],
+    queryFn: async () => {
+      if (!business?.id) return [];
+      const q = query(
+        collection(db, 'appointments'),
+        where('businessId', '==', business.id),
+        orderBy('date', 'asc')
+      );
+      const snap = await getDocs(q);
+      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as Appointment));
+    },
+    enabled: !!business?.id,
+    staleTime: 2 * 60 * 1000,
+  });
+
+  // Fetch services
+  const { data: services = [], isLoading: servicesLoading } = useQuery({
+    queryKey: ['services', business?.id],
+    queryFn: async () => {
+      if (!business?.id) return [];
+      const q = query(
+        collection(db, 'services'),
+        where('businessId', '==', business.id),
+        orderBy('name', 'asc')
+      );
+      const snap = await getDocs(q);
+      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as Service));
+    },
+    enabled: !!business?.id,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Fetch clients
+  const { data: clients = [] } = useQuery({
+    queryKey: ['clients', business?.id],
+    queryFn: async () => {
+      if (!business?.id) return [];
+      const q = query(
+        collection(db, 'clients'),
+        where('businessId', '==', business.id),
+        where('isActive', '==', true),
+        orderBy('nome', 'asc')
+      );
+      const snap = await getDocs(q);
+      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as Client));
+    },
+    enabled: !!business?.id,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Fetch team members via onSnapshot
+  useEffect(() => {
+    if (!business?.id) return;
+    const q = query(collection(db, 'users'), where('businessId', '==', business.id));
+    const unsub = onSnapshot(q, (snap) => {
+      setMembers(snap.docs.map((d) => ({ ...d.data(), id: d.id } as User)));
+    });
+    return () => unsub();
+  }, [business?.id]);
 
   // Auto-scroll to current time on mount
   useEffect(() => {
@@ -1224,18 +1775,191 @@ export default function AgendaModule() {
     }
   }, [isMobile]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ==========================================
+  // SERVICE CRUD HANDLERS
+  // ==========================================
+
+  const handleCreateService = useCallback(async (data: ServiceFormData) => {
+    if (!business?.id) return;
+    await addDoc(collection(db, 'services'), {
+      businessId: business.id,
+      name: data.name,
+      description: data.description || null,
+      duration: data.duration,
+      price: data.price,
+      category: data.category || null,
+      color: data.color,
+      isActive: data.isActive,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    queryClient.invalidateQueries({ queryKey: ['services', business.id] });
+    setSnackbar({ open: true, message: 'Servico criado com sucesso!', severity: 'success' });
+  }, [business?.id, queryClient]);
+
+  const handleUpdateService = useCallback(async (id: string, data: ServiceFormData) => {
+    if (!business?.id) return;
+    await updateDoc(doc(db, 'services', id), {
+      name: data.name,
+      description: data.description || null,
+      duration: data.duration,
+      price: data.price,
+      category: data.category || null,
+      color: data.color,
+      isActive: data.isActive,
+      updatedAt: new Date().toISOString(),
+    });
+    queryClient.invalidateQueries({ queryKey: ['services', business.id] });
+    setSnackbar({ open: true, message: 'Servico atualizado com sucesso!', severity: 'success' });
+  }, [business?.id, queryClient]);
+
+  const handleDeleteService = useCallback(async (id: string) => {
+    if (!business?.id) return;
+    await deleteDoc(doc(db, 'services', id));
+    queryClient.invalidateQueries({ queryKey: ['services', business.id] });
+    setSnackbar({ open: true, message: 'Servico excluido.', severity: 'info' });
+  }, [business?.id, queryClient]);
+
+  // ==========================================
+  // APPOINTMENT CRUD HANDLERS
+  // ==========================================
+
+  const handleSaveAppointment = useCallback(async (data: AppointmentFormData) => {
+    if (!business?.id) return;
+    setSaving(true);
+    try {
+      const endTime = addDurationToTime(data.startTime, data.duration);
+      const serviceColor = services.find((s) => s.id === data.serviceId)?.color || data.color || '#3B82F6';
+
+      if (editingAppointment) {
+        await updateDoc(doc(db, 'appointments', editingAppointment.id), {
+          clientId: data.clientId,
+          clientName: data.clientName,
+          clientPhone: data.clientPhone || null,
+          serviceId: data.serviceId || null,
+          serviceName: data.serviceName,
+          date: data.date,
+          startTime: data.startTime,
+          endTime,
+          duration: data.duration,
+          professionalId: data.professionalId || null,
+          professionalName: data.professionalName || null,
+          notes: data.notes || null,
+          status: data.status,
+          price: data.price,
+          color: serviceColor,
+          updatedAt: new Date().toISOString(),
+        });
+        setSnackbar({ open: true, message: 'Agendamento atualizado com sucesso!', severity: 'success' });
+      } else {
+        await addDoc(collection(db, 'appointments'), {
+          businessId: business.id,
+          clientId: data.clientId,
+          clientName: data.clientName,
+          clientPhone: data.clientPhone || null,
+          serviceId: data.serviceId || null,
+          serviceName: data.serviceName,
+          date: data.date,
+          startTime: data.startTime,
+          endTime,
+          duration: data.duration,
+          professionalId: data.professionalId || null,
+          professionalName: data.professionalName || null,
+          notes: data.notes || null,
+          status: data.status,
+          price: data.price,
+          color: serviceColor,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+        setSnackbar({ open: true, message: 'Agendamento criado com sucesso!', severity: 'success' });
+      }
+
+      queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
+      setShowFormDialog(false);
+      setEditingAppointment(null);
+    } catch (err) {
+      console.error('Error saving appointment:', err);
+      setSnackbar({ open: true, message: 'Erro ao salvar agendamento.', severity: 'error' });
+    } finally {
+      setSaving(false);
+    }
+  }, [business?.id, editingAppointment, services, queryClient]);
+
+  const handleDeleteAppointment = useCallback(async () => {
+    if (!editingAppointment || !business?.id) return;
+    setDeleteLoading(true);
+    try {
+      await deleteDoc(doc(db, 'appointments', editingAppointment.id));
+      queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
+      setShowDeleteDialog(false);
+      setShowFormDialog(false);
+      setEditingAppointment(null);
+      setSnackbar({ open: true, message: 'Agendamento excluido.', severity: 'info' });
+    } catch (err) {
+      console.error('Error deleting appointment:', err);
+      setSnackbar({ open: true, message: 'Erro ao excluir agendamento.', severity: 'error' });
+    } finally {
+      setDeleteLoading(false);
+    }
+  }, [editingAppointment, business?.id, queryClient]);
+
+  const handleCancelAppointment = useCallback(async () => {
+    if (!editingAppointment || !business?.id) return;
+    setDeleteLoading(true);
+    try {
+      await updateDoc(doc(db, 'appointments', editingAppointment.id), {
+        status: 'cancelado',
+        updatedAt: new Date().toISOString(),
+      });
+      queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
+      setShowDeleteDialog(false);
+      setShowFormDialog(false);
+      setEditingAppointment(null);
+      setSnackbar({ open: true, message: 'Agendamento cancelado.', severity: 'info' });
+    } catch (err) {
+      console.error('Error cancelling appointment:', err);
+      setSnackbar({ open: true, message: 'Erro ao cancelar agendamento.', severity: 'error' });
+    } finally {
+      setDeleteLoading(false);
+    }
+  }, [editingAppointment, business?.id, queryClient]);
+
+  const handleStatusChange = useCallback(async (status: AppointmentStatus) => {
+    if (!selectedAppointment || !business?.id) return;
+    setStatusChanging(true);
+    try {
+      await updateDoc(doc(db, 'appointments', selectedAppointment.id), {
+        status,
+        updatedAt: new Date().toISOString(),
+      });
+      queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
+      setSelectedAppointment((prev) => (prev ? { ...prev, status } : null));
+      setSnackbar({
+        open: true,
+        message: `Status alterado para "${getStatusLabel(status)}"`,
+        severity: 'success',
+      });
+    } catch (err) {
+      console.error('Error changing status:', err);
+      setSnackbar({ open: true, message: 'Erro ao alterar status.', severity: 'error' });
+    } finally {
+      setStatusChanging(false);
+    }
+  }, [selectedAppointment, business?.id, queryClient]);
+
   // ---- Computed values ----
   const weekStart = useMemo(() => startOfWeek(currentDate, { weekStartsOn: 0 }), [currentDate]);
   const weekEnd = useMemo(() => endOfWeek(currentDate, { weekStartsOn: 0 }), [currentDate]);
   const weekDays = useMemo(() => eachDayOfInterval({ start: weekStart, end: weekEnd }), [weekStart, weekEnd]);
-  const monthStart = useMemo(() => startOfMonth(currentDate), [currentDate]);
-  const monthEnd = useMemo(() => endOfMonth(currentDate), [currentDate]);
+  const monthStartVal = useMemo(() => startOfMonth(currentDate), [currentDate]);
+  const monthEndVal = useMemo(() => endOfMonth(currentDate), [currentDate]);
 
   const monthCalendarDays = useMemo(() => {
-    const start = startOfWeek(monthStart, { weekStartsOn: 0 });
-    const end = endOfWeek(monthEnd, { weekStartsOn: 0 });
+    const start = startOfWeek(monthStartVal, { weekStartsOn: 0 });
+    const end = endOfWeek(monthEndVal, { weekStartsOn: 0 });
     return eachDayOfInterval({ start, end });
-  }, [monthStart, monthEnd]);
+  }, [monthStartVal, monthEndVal]);
 
   // Appointments for current view
   const visibleAppointments = useMemo(() => {
@@ -1363,96 +2087,9 @@ export default function AgendaModule() {
       notes: selectedAppointment.notes || '',
       status: selectedAppointment.status,
       price: selectedAppointment.price,
+      color: selectedAppointment.color || '#3B82F6',
     });
     setShowFormDialog(true);
-  }, [selectedAppointment]);
-
-  const handleSaveAppointment = useCallback((data: AppointmentFormData) => {
-    const endTime = addDurationToTime(data.startTime, data.duration);
-    const service = MOCK_SERVICES.find((s) => s.id === data.serviceId);
-
-    if (editingAppointment) {
-      // Update existing
-      setAppointments((prev) =>
-        prev.map((a) =>
-          a.id === editingAppointment.id
-            ? {
-                ...a,
-                clientId: data.clientId,
-                clientName: data.clientName,
-                clientPhone: data.clientPhone,
-                serviceId: data.serviceId,
-                serviceName: data.serviceName,
-                date: data.date,
-                startTime: data.startTime,
-                endTime,
-                duration: data.duration,
-                professionalId: data.professionalId,
-                professionalName: data.professionalName,
-                notes: data.notes,
-                status: data.status,
-                price: data.price,
-                color: service?.color || a.color,
-                updatedAt: new Date().toISOString(),
-              }
-            : a,
-        ),
-      );
-      setSnackbar({ open: true, message: 'Agendamento atualizado com sucesso!', severity: 'success' });
-    } else {
-      // Create new
-      const newAppointment: Appointment = {
-        id: `new-${Date.now()}`,
-        businessId: 'mock-business',
-        clientId: data.clientId,
-        clientName: data.clientName,
-        clientPhone: data.clientPhone,
-        serviceId: data.serviceId,
-        serviceName: data.serviceName,
-        date: data.date,
-        startTime: data.startTime,
-        endTime,
-        duration: data.duration,
-        professionalId: data.professionalId,
-        professionalName: data.professionalName,
-        notes: data.notes,
-        status: data.status,
-        price: data.price,
-        color: service?.color || '#3B82F6',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      setAppointments((prev) => [...prev, newAppointment]);
-      setSnackbar({ open: true, message: 'Agendamento criado com sucesso!', severity: 'success' });
-    }
-
-    setShowFormDialog(false);
-    setEditingAppointment(null);
-  }, [editingAppointment]);
-
-  const handleDeleteAppointment = useCallback(() => {
-    if (!editingAppointment) return;
-    setAppointments((prev) => prev.filter((a) => a.id !== editingAppointment.id));
-    setShowFormDialog(false);
-    setEditingAppointment(null);
-    setSnackbar({ open: true, message: 'Agendamento excluído.', severity: 'info' });
-  }, [editingAppointment]);
-
-  const handleStatusChange = useCallback((status: AppointmentStatus) => {
-    if (!selectedAppointment) return;
-    setAppointments((prev) =>
-      prev.map((a) =>
-        a.id === selectedAppointment.id
-          ? { ...a, status, updatedAt: new Date().toISOString() }
-          : a,
-      ),
-    );
-    setSelectedAppointment((prev) => (prev ? { ...prev, status } : null));
-    setSnackbar({
-      open: true,
-      message: `Status alterado para "${getStatusLabel(status)}"`,
-      severity: 'success',
-    });
   }, [selectedAppointment]);
 
   const handleSlotClick = useCallback((date: Date, time: string) => {
@@ -1506,6 +2143,13 @@ export default function AgendaModule() {
   );
 
   // ==========================================
+  // LOADING STATE
+  // ==========================================
+  if (appointmentsLoading || servicesLoading) {
+    return <AgendaSkeleton />;
+  }
+
+  // ==========================================
   // RENDER: DAY VIEW
   // ==========================================
   const renderDayView = () => {
@@ -1550,10 +2194,7 @@ export default function AgendaModule() {
           style={{ height: 'calc(100vh - 240px)' }}
         >
           <div className="flex relative" style={{ height: `${TOTAL_HOURS * HOUR_HEIGHT}px` }}>
-            {/* Time column */}
             {timeColumn}
-
-            {/* Appointments area */}
             <div className="flex-1 relative">
               {gridLines}
               <CurrentTimeLine />
@@ -1584,6 +2225,17 @@ export default function AgendaModule() {
                   onClick={handleAppointmentClick}
                 />
               ))}
+
+              {/* Empty state */}
+              {dayAppointments.length === 0 && (
+                <div className="absolute inset-0 flex items-center justify-center z-0 pointer-events-none">
+                  <div className="text-center">
+                    <CalendarIcon className="w-10 h-10 mx-auto text-gray-200 dark:text-gray-700 mb-2" />
+                    <p className="text-sm text-gray-400 dark:text-gray-500">Nenhum agendamento neste dia</p>
+                    <p className="text-xs text-gray-300 dark:text-gray-600 mt-1">Clique em um horario para agendar</p>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -1654,10 +2306,8 @@ export default function AgendaModule() {
         style={{ height: 'calc(100vh - 260px)' }}
       >
         <div className="flex relative" style={{ height: `${TOTAL_HOURS * HOUR_HEIGHT}px`, minWidth: isMobile ? '800px' : 'auto' }}>
-          {/* Time column */}
           {timeColumn}
 
-          {/* Day columns */}
           {weekDays.map((day, dayIdx) => {
             const dayKey = format(day, 'yyyy-MM-dd');
             const dayAppts = appointmentsByDate.get(dayKey) || [];
@@ -1692,7 +2342,6 @@ export default function AgendaModule() {
                   );
                 })}
 
-                {/* Appointment blocks */}
                 {dayAppts.map((appt) => (
                   <AppointmentBlock
                     key={appt.id}
@@ -1758,7 +2407,6 @@ export default function AgendaModule() {
                   setViewMode('day');
                 }}
               >
-                {/* Day number */}
                 <div className="flex justify-center mb-1">
                   <span
                     className={cn(
@@ -1772,7 +2420,6 @@ export default function AgendaModule() {
                   </span>
                 </div>
 
-                {/* Appointment previews */}
                 <div className="space-y-0.5">
                   {dayAppts.slice(0, maxPreview).map((appt) => (
                     <motion.div
@@ -1814,7 +2461,7 @@ export default function AgendaModule() {
   // ==========================================
   // STATUS SUMMARY BAR
   // ==========================================
-  const statusSummary = useMemo(() => {
+  const statusSummary = (() => {
     const counts: Record<AppointmentStatus, number> = {
       agendado: 0,
       confirmado: 0,
@@ -1827,7 +2474,7 @@ export default function AgendaModule() {
       counts[a.status]++;
     });
     return counts;
-  }, [visibleAppointments]);
+  })();
 
   // ==========================================
   // MAIN RENDER
@@ -1861,7 +2508,7 @@ export default function AgendaModule() {
             <button
               onClick={navigateNext}
               className="p-2 hover:bg-white dark:hover:bg-gray-700 rounded-lg transition-all duration-200 hover:shadow-sm"
-              title="Próximo"
+              title="Proximo"
             >
               <ChevronRight className="w-4 h-4 text-gray-600 dark:text-gray-400" />
             </button>
@@ -1902,14 +2549,14 @@ export default function AgendaModule() {
           </Popover>
         </div>
 
-        {/* Right: View toggles + New button */}
+        {/* Right: View toggles + Services + New button */}
         <div className="flex items-center gap-2 sm:gap-3">
           {/* View mode toggle */}
           <div className="flex items-center bg-gray-50 dark:bg-gray-800 rounded-xl p-0.5">
             {([
               { mode: 'day' as ViewMode, icon: CalendarDays, label: 'Dia' },
               { mode: 'week' as ViewMode, icon: Columns3, label: 'Semana' },
-              { mode: 'month' as ViewMode, icon: LayoutGrid, label: 'Mês' },
+              { mode: 'month' as ViewMode, icon: LayoutGrid, label: 'Mes' },
             ]).map(({ mode, icon: Icon, label }) => (
               <button
                 key={mode}
@@ -1926,6 +2573,19 @@ export default function AgendaModule() {
               </button>
             ))}
           </div>
+
+          {/* Services management button */}
+          <button
+            onClick={() => setShowServiceDialog(true)}
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-medium',
+              'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] border border-gray-200 dark:border-gray-700',
+              'transition-all duration-200',
+            )}
+          >
+            <Settings2 className="w-4 h-4" />
+            <span className="hidden sm:inline">Servicos</span>
+          </button>
 
           {/* New appointment button */}
           <button
@@ -1988,6 +2648,7 @@ export default function AgendaModule() {
         appointment={selectedAppointment}
         onEdit={handleEditAppointment}
         onStatusChange={handleStatusChange}
+        statusChanging={statusChanging}
       />
 
       <AppointmentFormDialog
@@ -1997,9 +2658,31 @@ export default function AgendaModule() {
           setEditingAppointment(null);
         }}
         onSave={handleSaveAppointment}
-        onDelete={editingAppointment ? handleDeleteAppointment : undefined}
+        onDelete={editingAppointment ? () => setShowDeleteDialog(true) : undefined}
         initialData={formInitialData}
         isEditing={!!editingAppointment}
+        services={services}
+        clients={clients}
+        members={members}
+        saving={saving}
+      />
+
+      <ServiceManagementDialog
+        open={showServiceDialog}
+        onClose={() => setShowServiceDialog(false)}
+        services={services}
+        onCreateService={handleCreateService}
+        onUpdateService={handleUpdateService}
+        onDeleteService={handleDeleteService}
+      />
+
+      <DeleteConfirmDialog
+        open={showDeleteDialog}
+        onClose={() => setShowDeleteDialog(false)}
+        onCancel={handleCancelAppointment}
+        onDelete={handleDeleteAppointment}
+        loading={deleteLoading}
+        appointmentName={editingAppointment?.clientName}
       />
 
       {/* ========== SNACKBAR ========== */}

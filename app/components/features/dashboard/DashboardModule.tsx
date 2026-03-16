@@ -1,646 +1,580 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
+import { useAuth } from '@/app/components/providers/AuthProvider';
+import type { Appointment, Client, Sale, Transaction } from '@/lib/types';
 import {
-  DollarSign,
-  CalendarCheck,
   Users,
-  CreditCard,
+  CalendarCheck,
+  CalendarClock,
+  Search,
+  ChevronRight,
+  User as UserIcon,
+  DollarSign,
   TrendingUp,
   TrendingDown,
-  Clock,
-  AlertTriangle,
-  ShieldAlert,
-  PackageX,
-  ChevronRight,
-  BarChart3,
-  Sparkles,
+  Receipt,
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip as RechartsTooltip,
-  ResponsiveContainer,
-} from 'recharts';
-import type { AppointmentStatus } from '@/lib/types';
+import { collection, query, where, orderBy, getDocs } from 'firebase/firestore';
+import { db } from '@/lib/config/firebase';
+import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
-import { formatCurrency, getStatusColor, getStatusLabel } from '@/lib/utils/format';
-import { useTheme } from '@/app/components/providers/ThemeProvider';
+import { formatCurrency, formatPhone, getInitials } from '@/lib/utils/format';
 
-// ==============================================
-// MOCK DATA
-// ==============================================
-
-const mockRevenueData = {
-  '7d': [
-    { period: 'Seg', receita: 1200, despesa: 400 },
-    { period: 'Ter', receita: 1800, despesa: 550 },
-    { period: 'Qua', receita: 900, despesa: 320 },
-    { period: 'Qui', receita: 2400, despesa: 680 },
-    { period: 'Sex', receita: 3100, despesa: 900 },
-    { period: 'Sáb', receita: 2800, despesa: 450 },
-    { period: 'Dom', receita: 600, despesa: 200 },
-  ],
-  '30d': [
-    { period: 'Sem 1', receita: 8500, despesa: 3200 },
-    { period: 'Sem 2', receita: 9200, despesa: 2800 },
-    { period: 'Sem 3', receita: 7800, despesa: 3500 },
-    { period: 'Sem 4', receita: 11200, despesa: 4100 },
-  ],
-  '90d': [
-    { period: 'Jan', receita: 28500, despesa: 12400 },
-    { period: 'Fev', receita: 32100, despesa: 11800 },
-    { period: 'Mar', receita: 35600, despesa: 13200 },
-  ],
-  '12m': [
-    { period: 'Abr', receita: 22400, despesa: 9800 },
-    { period: 'Mai', receita: 24800, despesa: 10200 },
-    { period: 'Jun', receita: 27600, despesa: 11500 },
-    { period: 'Jul', receita: 25900, despesa: 10800 },
-    { period: 'Ago', receita: 29300, despesa: 12100 },
-    { period: 'Set', receita: 31200, despesa: 11400 },
-    { period: 'Out', receita: 28700, despesa: 10900 },
-    { period: 'Nov', receita: 33500, despesa: 12800 },
-    { period: 'Dez', receita: 38200, despesa: 14500 },
-    { period: 'Jan', receita: 28500, despesa: 12400 },
-    { period: 'Fev', receita: 32100, despesa: 11800 },
-    { period: 'Mar', receita: 35600, despesa: 13200 },
-  ],
-};
-
-const mockAppointments: {
-  id: string;
-  clientName: string;
-  serviceName: string;
-  startTime: string;
-  status: AppointmentStatus;
-}[] = [
-  { id: '1', clientName: 'Maria Silva', serviceName: 'Corte Feminino', startTime: '09:30', status: 'confirmado' },
-  { id: '2', clientName: 'João Santos', serviceName: 'Barba Completa', startTime: '10:15', status: 'agendado' },
-  { id: '3', clientName: 'Ana Oliveira', serviceName: 'Coloração', startTime: '11:00', status: 'em_andamento' },
-  { id: '4', clientName: 'Carlos Mendes', serviceName: 'Corte Masculino', startTime: '14:00', status: 'agendado' },
-  { id: '5', clientName: 'Fernanda Lima', serviceName: 'Hidratação', startTime: '15:30', status: 'confirmado' },
-];
-
-const mockTopServices = [
-  { name: 'Corte Feminino', count: 142, revenue: 14200 },
-  { name: 'Coloração', count: 98, revenue: 19600 },
-  { name: 'Corte Masculino', count: 87, revenue: 5220 },
-  { name: 'Hidratação', count: 65, revenue: 5850 },
-  { name: 'Barba Completa', count: 53, revenue: 2650 },
-];
-
-const mockAlerts = [
-  {
-    id: '1',
-    type: 'stock' as const,
-    title: 'Shampoo Profissional',
-    message: 'Estoque baixo: 3 unidades restantes',
-    severity: 'warning' as const,
-  },
-  {
-    id: '2',
-    type: 'payment' as const,
-    title: 'Pagamento atrasado',
-    message: 'Fatura de João Santos - R$ 350,00 (5 dias)',
-    severity: 'error' as const,
-  },
-  {
-    id: '3',
-    type: 'certificate' as const,
-    title: 'Certificado Digital',
-    message: 'Expira em 15 dias - renovar agora',
-    severity: 'warning' as const,
-  },
-  {
-    id: '4',
-    type: 'stock' as const,
-    title: 'Tintura Loiro 7.0',
-    message: 'Estoque baixo: 2 unidades restantes',
-    severity: 'warning' as const,
-  },
-];
-
-// ==============================================
-// ANIMATION VARIANTS
-// ==============================================
-
-const containerVariants = {
+// ─── Animation ─────────────────────────────────────────
+const stagger = {
   hidden: { opacity: 0 },
-  visible: {
-    opacity: 1,
-    transition: {
-      staggerChildren: 0.08,
-      delayChildren: 0.1,
+  visible: { opacity: 1, transition: { staggerChildren: 0.07, delayChildren: 0.1 } },
+};
+const fadeUp = {
+  hidden: { opacity: 0, y: 16, filter: 'blur(4px)' },
+  visible: { opacity: 1, y: 0, filter: 'blur(0px)', transition: { duration: 0.4, ease: [0.25, 0.46, 0.45, 0.94] as [number, number, number, number] } },
+};
+
+// ─── Main Component ────────────────────────────────────
+export default function DashboardModule() {
+  const { user, business } = useAuth();
+  const [clientSearch, setClientSearch] = useState('');
+
+  // ── Firestore queries ──
+  const { data: clients = [], isLoading: loadingClients } = useQuery({
+    queryKey: ['clients', business?.id],
+    queryFn: async () => {
+      const q = query(collection(db, 'clients'), where('businessId', '==', business!.id), orderBy('nome', 'asc'));
+      const snap = await getDocs(q);
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Client));
     },
-  },
-};
+    enabled: !!business?.id,
+  });
 
-const itemVariants = {
-  hidden: { opacity: 0, y: 20 },
-  visible: {
-    opacity: 1,
-    y: 0,
-    transition: { duration: 0.4, ease: [0.25, 0.46, 0.45, 0.94] as [number, number, number, number] },
-  },
-};
+  const { data: appointments = [], isLoading: loadingAppointments } = useQuery({
+    queryKey: ['appointments', business?.id],
+    queryFn: async () => {
+      const q = query(collection(db, 'appointments'), where('businessId', '==', business!.id), orderBy('date', 'asc'));
+      const snap = await getDocs(q);
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Appointment));
+    },
+    enabled: !!business?.id,
+  });
 
-const chartVariants = {
-  hidden: { opacity: 0, y: 24 },
-  visible: {
-    opacity: 1,
-    y: 0,
-    transition: { duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] as [number, number, number, number], delay: 0.3 },
-  },
-};
+  const { data: sales = [], isLoading: loadingSales } = useQuery({
+    queryKey: ['sales', business?.id],
+    queryFn: async () => {
+      const q = query(collection(db, 'sales'), where('businessId', '==', business!.id), orderBy('createdAt', 'desc'));
+      const snap = await getDocs(q);
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Sale));
+    },
+    enabled: !!business?.id,
+  });
 
-// ==============================================
-// SUBCOMPONENTS
-// ==============================================
+  const { data: transactions = [], isLoading: loadingTransactions } = useQuery({
+    queryKey: ['transactions', business?.id],
+    queryFn: async () => {
+      const q = query(collection(db, 'transactions'), where('businessId', '==', business!.id), orderBy('dueDate', 'desc'));
+      const snap = await getDocs(q);
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Transaction));
+    },
+    enabled: !!business?.id,
+  });
 
-type PeriodKey = '7d' | '30d' | '90d' | '12m';
+  // ── Computed data ──
+  const todayStr = new Date().toISOString().split('T')[0];
 
-interface StatCardProps {
-  icon: React.ReactNode;
-  iconBg: string;
-  label: string;
-  value: string;
-  subtitle: string;
-  trend?: { value: number; isPositive: boolean };
-}
+  const todayAppointments = useMemo(
+    () => appointments.filter(a => a.date === todayStr && a.status !== 'cancelado'),
+    [appointments, todayStr]
+  );
 
-function StatCard({ icon, iconBg, label, value, subtitle, trend }: StatCardProps) {
+  const nextAppointment = useMemo(
+    () => appointments.find(a =>
+      a.date >= todayStr && a.status !== 'cancelado' && a.status !== 'concluido'
+    ),
+    [appointments, todayStr]
+  );
+
+  const upcomingCount = useMemo(
+    () => appointments.filter(a =>
+      a.date >= todayStr && a.status !== 'cancelado' && a.status !== 'concluido'
+    ).length,
+    [appointments, todayStr]
+  );
+
+  const activeClients = useMemo(
+    () => clients.filter(c => c.isActive).length,
+    [clients]
+  );
+
+  // ── Revenue KPIs ──
+  const todaySales = useMemo(
+    () => sales.filter(s => s.status === 'finalizada' && s.createdAt?.startsWith(todayStr)),
+    [sales, todayStr]
+  );
+
+  const todayRevenue = useMemo(
+    () => todaySales.reduce((sum, s) => sum + s.total, 0),
+    [todaySales]
+  );
+
+  const yesterdayStr = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return d.toISOString().split('T')[0];
+  }, []);
+
+  const yesterdayRevenue = useMemo(
+    () => sales
+      .filter(s => s.status === 'finalizada' && s.createdAt?.startsWith(yesterdayStr))
+      .reduce((sum, s) => sum + s.total, 0),
+    [sales, yesterdayStr]
+  );
+
+  const revenueChange = useMemo(() => {
+    if (yesterdayRevenue === 0) return todayRevenue > 0 ? 100 : 0;
+    return Math.round(((todayRevenue - yesterdayRevenue) / yesterdayRevenue) * 100);
+  }, [todayRevenue, yesterdayRevenue]);
+
+  const ticketMedio = useMemo(
+    () => todaySales.length > 0 ? todayRevenue / todaySales.length : 0,
+    [todayRevenue, todaySales]
+  );
+
+  // Daily average (last 30 days for goal bar)
+  const dailyAvg = useMemo(() => {
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const isoThirty = thirtyDaysAgo.toISOString().split('T')[0];
+    const recentSales = sales.filter(s => s.status === 'finalizada' && s.createdAt && s.createdAt >= isoThirty);
+    if (recentSales.length === 0) return 0;
+    const total = recentSales.reduce((sum, s) => sum + s.total, 0);
+    // count unique days
+    const uniqueDays = new Set(recentSales.map(s => s.createdAt.split('T')[0])).size;
+    return uniqueDays > 0 ? total / uniqueDays : 0;
+  }, [sales]);
+
+  const goalProgress = useMemo(
+    () => dailyAvg > 0 ? Math.min((todayRevenue / dailyAvg) * 100, 100) : 0,
+    [todayRevenue, dailyAvg]
+  );
+
+  // ── Client search/filter ──
+  const filteredClients = useMemo(() => {
+    const term = clientSearch.toLowerCase().trim();
+    const list = term.length >= 1
+      ? clients.filter(c =>
+          c.nome?.toLowerCase().includes(term) ||
+          c.cpfCnpj?.includes(term) ||
+          c.email?.toLowerCase().includes(term) ||
+          c.phone?.includes(term)
+        )
+      : clients;
+    return list.slice(0, 10);
+  }, [clients, clientSearch]);
+
+  // Find next appointment for each client
+  const clientNextAppointment = useMemo(() => {
+    const map: Record<string, Appointment> = {};
+    for (const a of appointments) {
+      if (a.date >= todayStr && a.status !== 'cancelado' && a.status !== 'concluido') {
+        if (!map[a.clientId] || a.date < map[a.clientId].date) {
+          map[a.clientId] = a;
+        }
+      }
+    }
+    return map;
+  }, [appointments, todayStr]);
+
+  // ── Header data ──
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? 'Bom dia' : hour < 18 ? 'Boa tarde' : 'Boa noite';
+  const firstName = user?.name?.split(' ')[0] || '';
+  const isLoading = loadingClients || loadingAppointments || loadingSales || loadingTransactions;
+
+  // ── Render ──
   return (
     <motion.div
-      variants={itemVariants}
-      className={cn(
-        'group relative overflow-hidden rounded-xl surface stat-card-accent',
-        'p-6 hover-lift cursor-default',
-      )}
+      variants={stagger}
+      initial="hidden"
+      animate="visible"
+      className="space-y-6 max-w-[1200px]"
     >
-      {/* Subtle shimmer on hover */}
-      <div className="absolute inset-0 bg-gradient-to-br from-white/60 via-transparent to-transparent dark:from-white/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" />
+      {/* ━━━ Welcome Header ━━━ */}
+      <motion.div variants={fadeUp}>
+        <h1 className="text-2xl font-bold tracking-tight text-gray-900 dark:text-white font-display">
+          {greeting},{' '}
+          <span className="bg-gradient-to-r from-red-600 to-red-500 bg-clip-text text-transparent">
+            {firstName}
+          </span>
+        </h1>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5 capitalize">
+          {format(new Date(), "EEEE, d 'de' MMMM", { locale: ptBR })}
+        </p>
+      </motion.div>
 
-      <div className="relative flex items-start justify-between">
-        <div className="flex-1">
-          <p className="text-sm font-medium text-muted-foreground mb-1">{label}</p>
-          <p className="text-2xl font-bold tracking-tight text-foreground">{value}</p>
-          <div className="flex items-center gap-1.5 mt-2">
-            {trend && (
-              <span
-                className={cn(
-                  'inline-flex items-center gap-0.5 text-xs font-semibold px-1.5 py-0.5 rounded-full',
-                  trend.isPositive
-                    ? 'text-emerald-700 bg-emerald-50 dark:text-emerald-400 dark:bg-emerald-500/10'
-                    : 'text-red-700 bg-red-50 dark:text-red-400 dark:bg-red-500/10',
-                )}
-              >
-                {trend.isPositive ? (
-                  <TrendingUp className="w-3 h-3" />
-                ) : (
-                  <TrendingDown className="w-3 h-3" />
-                )}
-                {trend.value}%
-              </span>
-            )}
-            <span className="text-xs text-muted-foreground">{subtitle}</span>
-          </div>
-        </div>
-        <div
+      {/* ━━━ Top Row: Revenue Card + Next Appointment ━━━ */}
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+        {/* Revenue Today Card */}
+        <motion.div
+          variants={fadeUp}
           className={cn(
-            'flex items-center justify-center w-11 h-11 rounded-xl',
-            iconBg,
+            'md:col-span-2 rounded-2xl p-5',
+            'bg-white dark:bg-gray-800/60',
+            'border border-gray-100 dark:border-gray-700/50',
+            'shadow-sm',
           )}
         >
-          {icon}
-        </div>
-      </div>
-    </motion.div>
-  );
-}
+          {loadingSales ? (
+            <div className="space-y-3">
+              <div className="flex justify-between">
+                <div className="h-4 w-24 rounded-md shimmer" />
+                <div className="h-8 w-8 rounded-lg shimmer" />
+              </div>
+              <div className="h-10 w-28 rounded-md shimmer mt-2" />
+              <div className="h-2 w-full rounded-full shimmer mt-3" />
+              <div className="h-3 w-32 rounded-md shimmer" />
+            </div>
+          ) : (
+            <div className="flex flex-col justify-between h-full">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Receita hoje</p>
+                <div className="w-9 h-9 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 flex items-center justify-center">
+                  <DollarSign className="w-[18px] h-[18px] text-emerald-600 dark:text-emerald-400" />
+                </div>
+              </div>
 
-function ChartTooltipContent({
-  active,
-  payload,
-  label,
-}: {
-  active?: boolean;
-  payload?: Array<{ value: number; dataKey: string; color: string }>;
-  label?: string;
-}) {
-  if (!active || !payload?.length) return null;
+              <div className="mt-2">
+                <div className="flex items-baseline gap-2.5">
+                  <p className="text-3xl font-bold text-gray-900 dark:text-white tracking-tight">
+                    {formatCurrency(todayRevenue)}
+                  </p>
+                  {revenueChange !== 0 && (
+                    <span className={cn(
+                      'inline-flex items-center gap-0.5 text-xs font-semibold px-1.5 py-0.5 rounded-full',
+                      revenueChange > 0
+                        ? 'text-emerald-700 bg-emerald-50 dark:text-emerald-400 dark:bg-emerald-500/10'
+                        : 'text-red-700 bg-red-50 dark:text-red-400 dark:bg-red-500/10',
+                    )}>
+                      {revenueChange > 0
+                        ? <TrendingUp className="w-3 h-3" />
+                        : <TrendingDown className="w-3 h-3" />
+                      }
+                      {revenueChange > 0 ? '+' : ''}{revenueChange}%
+                    </span>
+                  )}
+                </div>
 
-  return (
-    <div className="bg-white dark:bg-gray-900 rounded-lg shadow-lg dark:shadow-none border border-border/60 p-3 min-w-[160px]">
-      <p className="text-xs font-medium text-muted-foreground mb-2">{label}</p>
-      {payload.map((entry) => (
-        <div key={entry.dataKey} className="flex items-center justify-between gap-4 text-sm">
-          <div className="flex items-center gap-2">
-            <div
-              className="w-2.5 h-2.5 rounded-full"
-              style={{ backgroundColor: entry.color }}
-            />
-            <span className="text-muted-foreground">
-              {entry.dataKey === 'receita' ? 'Receitas' : 'Despesas'}
-            </span>
-          </div>
-          <span className="font-semibold text-foreground">{formatCurrency(entry.value)}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
+                {/* Progress bar toward daily average goal */}
+                {dailyAvg > 0 && (
+                  <div className="mt-3">
+                    <div className="w-full h-1.5 bg-gray-100 dark:bg-gray-700/50 rounded-full overflow-hidden">
+                      <motion.div
+                        className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-emerald-400"
+                        initial={{ width: 0 }}
+                        animate={{ width: `${goalProgress}%` }}
+                        transition={{ duration: 0.8, ease: [0.25, 0.46, 0.45, 0.94], delay: 0.3 }}
+                      />
+                    </div>
+                    <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5">
+                      Meta diária: {formatCurrency(dailyAvg)}
+                    </p>
+                  </div>
+                )}
 
-function AppointmentRow({
-  appointment,
-}: {
-  appointment: (typeof mockAppointments)[number];
-}) {
-  const statusColor = getStatusColor(appointment.status);
-  const statusLabel = getStatusLabel(appointment.status);
+                {/* Bottom row: ticket medio + vendas */}
+                <div className="flex items-center gap-4 mt-3 pt-3 border-t border-gray-100 dark:border-gray-700/30">
+                  <div className="flex items-center gap-1.5">
+                    <Receipt className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
+                    <span className="text-xs text-gray-500 dark:text-gray-400">
+                      {todaySales.length} venda{todaySales.length !== 1 ? 's' : ''}
+                    </span>
+                  </div>
+                  {ticketMedio > 0 && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs text-gray-400 dark:text-gray-500">Ticket médio:</span>
+                      <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">
+                        {formatCurrency(ticketMedio)}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </motion.div>
 
-  return (
-    <div className="flex items-center gap-4 p-3 rounded-lg hover:bg-muted/50 transition-colors group cursor-pointer">
-      <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-primary-50 text-primary-600 font-semibold text-sm shrink-0">
-        {appointment.startTime}
-      </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-foreground truncate">
-          {appointment.clientName}
-        </p>
-        <p className="text-xs text-muted-foreground truncate">
-          {appointment.serviceName}
-        </p>
-      </div>
-      <div className="flex items-center gap-2 shrink-0">
-        <span
-          className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full"
-          style={{
-            backgroundColor: `${statusColor}14`,
-            color: statusColor,
-          }}
-        >
-          <span
-            className="w-1.5 h-1.5 rounded-full"
-            style={{ backgroundColor: statusColor }}
-          />
-          {statusLabel}
-        </span>
-        <ChevronRight className="w-4 h-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
-      </div>
-    </div>
-  );
-}
-
-function ServiceRow({
-  service,
-  maxRevenue,
-}: {
-  service: (typeof mockTopServices)[number];
-  maxRevenue: number;
-}) {
-  const proportion = maxRevenue > 0 ? (service.revenue / maxRevenue) * 100 : 0;
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium text-foreground truncate">{service.name}</p>
-          <p className="text-xs text-muted-foreground">{service.count} atendimentos</p>
-        </div>
-        <span className="text-sm font-semibold text-foreground shrink-0 ml-3">
-          {formatCurrency(service.revenue)}
-        </span>
-      </div>
-      <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
+        {/* Next Appointment Card */}
         <motion.div
-          className="h-full rounded-full bg-gradient-to-r from-primary-500 to-primary-400"
-          initial={{ width: 0 }}
-          animate={{ width: `${proportion}%` }}
-          transition={{ duration: 0.8, ease: [0.25, 0.46, 0.45, 0.94], delay: 0.5 }}
-        />
+          variants={fadeUp}
+          className={cn(
+            'md:col-span-3 rounded-2xl p-5 relative overflow-hidden',
+            'bg-gradient-to-br from-red-600 to-red-500',
+            'shadow-red dark:shadow-none',
+          )}
+        >
+          <div className="relative z-10">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium text-white/80">Próximo agendamento</p>
+              {nextAppointment && (
+                <span className="text-xs font-medium text-red-900 bg-white/90 px-2.5 py-1 rounded-full">
+                  {nextAppointment.date === todayStr ? 'Hoje' : format(new Date(nextAppointment.date + 'T12:00:00'), "dd/MM", { locale: ptBR })}, {nextAppointment.startTime}
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3.5 mt-4">
+              <div className="w-11 h-11 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center text-white text-sm font-bold border border-white/30">
+                {nextAppointment
+                  ? getInitials(nextAppointment.clientName)
+                  : <UserIcon className="w-5 h-5" />
+                }
+              </div>
+              <div>
+                <p className="text-lg font-bold text-white">
+                  {nextAppointment ? nextAppointment.clientName : 'Sem agendamentos próximos'}
+                </p>
+                <p className="text-sm text-white/70">
+                  {nextAppointment ? nextAppointment.serviceName : 'Sua agenda está livre'}
+                </p>
+              </div>
+            </div>
+
+            {nextAppointment && (
+              <div className="flex justify-end mt-3">
+                <button className="text-sm font-medium text-red-700 bg-white hover:bg-white/90 px-4 py-2 rounded-xl transition-colors duration-150">
+                  Ver Detalhes
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Decorative circle */}
+          <div className="absolute -right-8 -bottom-8 w-40 h-40 rounded-full bg-white/[0.06]" />
+          <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-white/[0.04]" />
+        </motion.div>
       </div>
-    </div>
-  );
-}
 
-function AlertRow({ alert }: { alert: (typeof mockAlerts)[number] }) {
-  const iconMap = {
-    stock: <PackageX className="w-4 h-4" />,
-    payment: <ShieldAlert className="w-4 h-4" />,
-    certificate: <AlertTriangle className="w-4 h-4" />,
-  };
+      {/* ━━━ KPI Cards ━━━ */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {/* Total Clientes */}
+        <motion.div
+          variants={fadeUp}
+          className={cn(
+            'rounded-2xl p-5',
+            'bg-white dark:bg-gray-800/60',
+            'border border-gray-100 dark:border-gray-700/50',
+            'shadow-sm',
+            'border-l-[3px] border-l-red-500',
+          )}
+        >
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-red-600 dark:text-red-400">Total Clientes</p>
+              {isLoading ? (
+                <div className="h-9 w-16 rounded-lg shimmer mt-1" />
+              ) : (
+                <p className="text-3xl font-bold text-gray-900 dark:text-white mt-1 tracking-tight">{activeClients}</p>
+              )}
+            </div>
+            <div className="w-10 h-10 rounded-xl bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
+              <Users className="w-5 h-5 text-red-500 dark:text-red-400" />
+            </div>
+          </div>
+        </motion.div>
 
-  const severityStyles = {
-    warning: {
-      iconBg: 'bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400',
-      border: 'border-amber-100 dark:border-amber-500/20',
-    },
-    error: {
-      iconBg: 'bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400',
-      border: 'border-red-100 dark:border-red-500/20',
-    },
-  };
+        {/* Agendamentos Hoje */}
+        <motion.div
+          variants={fadeUp}
+          className={cn(
+            'rounded-2xl p-5',
+            'bg-white dark:bg-gray-800/60',
+            'border border-gray-100 dark:border-gray-700/50',
+            'shadow-sm',
+            'border-l-[3px] border-l-amber-500',
+          )}
+        >
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Agendamentos Hoje</p>
+              {isLoading ? (
+                <div className="h-9 w-16 rounded-lg shimmer mt-1" />
+              ) : (
+                <p className="text-3xl font-bold text-gray-900 dark:text-white mt-1 tracking-tight">{todayAppointments.length}</p>
+              )}
+            </div>
+            <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center">
+              <CalendarCheck className="w-5 h-5 text-amber-500 dark:text-amber-400" />
+            </div>
+          </div>
+        </motion.div>
 
-  const styles = severityStyles[alert.severity];
+        {/* Próximos */}
+        <motion.div
+          variants={fadeUp}
+          className={cn(
+            'rounded-2xl p-5',
+            'bg-white dark:bg-gray-800/60',
+            'border border-gray-100 dark:border-gray-700/50',
+            'shadow-sm',
+            'border-l-[3px] border-l-emerald-500',
+          )}
+        >
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Próximos</p>
+              {isLoading ? (
+                <div className="h-9 w-16 rounded-lg shimmer mt-1" />
+              ) : (
+                <p className="text-3xl font-bold text-gray-900 dark:text-white mt-1 tracking-tight">{upcomingCount}</p>
+              )}
+            </div>
+            <div className="w-10 h-10 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 flex items-center justify-center">
+              <CalendarClock className="w-5 h-5 text-emerald-500 dark:text-emerald-400" />
+            </div>
+          </div>
+        </motion.div>
+      </div>
 
-  return (
-    <div
-      className={cn(
-        'flex items-center gap-3 p-3 rounded-lg border transition-colors hover:bg-muted/30',
-        styles.border,
-      )}
-    >
-      <div
+      {/* ━━━ Client List ━━━ */}
+      <motion.div
+        variants={fadeUp}
         className={cn(
-          'flex items-center justify-center w-8 h-8 rounded-lg shrink-0',
-          styles.iconBg,
+          'rounded-2xl',
+          'bg-white dark:bg-gray-800/60',
+          'border border-gray-100 dark:border-gray-700/50',
+          'shadow-sm overflow-hidden',
         )}
       >
-        {iconMap[alert.type]}
-      </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-foreground truncate">{alert.title}</p>
-        <p className="text-xs text-muted-foreground truncate">{alert.message}</p>
-      </div>
-      <button className="text-xs font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300 transition-colors shrink-0 px-2 py-1 rounded-md hover:bg-primary-50 dark:hover:bg-primary-500/10">
-        Ver
-      </button>
-    </div>
-  );
-}
-
-// ==============================================
-// MAIN COMPONENT
-// ==============================================
-
-export default function DashboardModule() {
-  const { isDark } = useTheme();
-  const [selectedPeriod, setSelectedPeriod] = useState<PeriodKey>('30d');
-
-  const periodLabels: Record<PeriodKey, string> = {
-    '7d': '7 dias',
-    '30d': '30 dias',
-    '90d': '90 dias',
-    '12m': '12 meses',
-  };
-
-  const chartData = mockRevenueData[selectedPeriod];
-  const maxServiceRevenue = Math.max(...mockTopServices.map((s) => s.revenue));
-
-  const now = new Date();
-  const greeting = now.getHours() < 12 ? 'Bom dia' : now.getHours() < 18 ? 'Boa tarde' : 'Boa noite';
-  const todayLabel = format(now, "EEEE, d 'de' MMMM", { locale: ptBR });
-
-  return (
-    <div className="space-y-6">
-      {/* Page Header */}
-      <div className="flex items-start justify-between">
-        <div>
-          <div className="flex items-center gap-2 mb-0.5">
-            <Sparkles className="w-4 h-4 text-primary-500" />
-            <p className="text-sm font-medium text-primary-600 capitalize">{todayLabel}</p>
-          </div>
-          <h1 className="text-2xl font-bold tracking-tight text-foreground font-display">
-            {greeting}! 👋
-          </h1>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            Aqui está o resumo do seu negócio hoje.
-          </p>
-        </div>
-        <div className="hidden sm:flex items-center gap-2 px-3 py-2 rounded-xl bg-primary-50 dark:bg-primary-500/10 border border-primary-100 dark:border-primary-500/20 text-primary-700 dark:text-primary-400">
-          <div className="w-2 h-2 rounded-full bg-primary-500 animate-pulse-soft" />
-          <span className="text-xs font-semibold">Ao vivo</span>
-        </div>
-      </div>
-
-      {/* Stats Cards */}
-      <motion.div
-        variants={containerVariants}
-        initial="hidden"
-        animate="visible"
-        className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4"
-      >
-        <StatCard
-          icon={<DollarSign className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />}
-          iconBg="bg-emerald-50 dark:bg-emerald-500/10"
-          label="Receita Hoje"
-          value={formatCurrency(3847.5)}
-          subtitle="vs. ontem"
-          trend={{ value: 12.5, isPositive: true }}
-        />
-        <StatCard
-          icon={<CalendarCheck className="w-5 h-5 text-blue-600 dark:text-blue-400" />}
-          iconBg="bg-blue-50 dark:bg-blue-500/10"
-          label="Agendamentos Hoje"
-          value="14"
-          subtitle="Proximo: 09:30"
-          trend={{ value: 8, isPositive: true }}
-        />
-        <StatCard
-          icon={<Users className="w-5 h-5 text-violet-600 dark:text-violet-400" />}
-          iconBg="bg-violet-50 dark:bg-violet-500/10"
-          label="Clientes Ativos"
-          value="248"
-          subtitle="+12 este mes"
-        />
-        <StatCard
-          icon={<CreditCard className="w-5 h-5 text-amber-600 dark:text-amber-400" />}
-          iconBg="bg-amber-50 dark:bg-amber-500/10"
-          label="Pagamentos Pendentes"
-          value={formatCurrency(4320.0)}
-          subtitle="6 pendentes"
-          trend={{ value: 3.2, isPositive: false }}
-        />
-      </motion.div>
-
-      {/* Revenue Chart */}
-      <motion.div
-        variants={chartVariants}
-        initial="hidden"
-        animate="visible"
-        className="surface surface-hover rounded-xl p-6"
-      >
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-          <div>
-            <h2 className="text-base font-semibold text-foreground">Receitas vs Despesas</h2>
-            <p className="text-sm text-muted-foreground mt-0.5">
-              Acompanhe o fluxo financeiro do periodo
-            </p>
-          </div>
-          <div className="flex items-center gap-1 bg-muted/60 rounded-lg p-1">
-            {(Object.keys(periodLabels) as PeriodKey[]).map((period) => (
-              <button
-                key={period}
-                onClick={() => setSelectedPeriod(period)}
-                className={cn(
-                  'px-3 py-1.5 text-xs font-medium rounded-md transition-all duration-200',
-                  selectedPeriod === period
-                    ? 'bg-white dark:bg-gray-800 text-foreground shadow-sm dark:shadow-none'
-                    : 'text-muted-foreground hover:text-foreground',
-                )}
-              >
-                {periodLabels[period]}
-              </button>
-            ))}
+        {/* Search Bar */}
+        <div className="p-4 border-b border-gray-100 dark:border-gray-700/40">
+          <div className="relative">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500 pointer-events-none" />
+            <input
+              type="text"
+              placeholder="Buscar clientes por nome, e-mail ou CPF..."
+              value={clientSearch}
+              onChange={(e) => setClientSearch(e.target.value)}
+              className={cn(
+                'w-full pl-10 pr-4 py-2.5 rounded-xl text-sm',
+                'bg-gray-50/80 dark:bg-gray-900/40',
+                'border border-gray-200/80 dark:border-gray-700/50',
+                'text-gray-900 dark:text-gray-100',
+                'placeholder:text-gray-400 dark:placeholder:text-gray-500',
+                'focus:outline-none focus:border-red-200 dark:focus:border-red-500/30',
+                'focus:bg-white dark:focus:bg-gray-900/60',
+                'focus:shadow-[0_0_0_3px_rgba(220,38,38,0.06)]',
+                'transition-all duration-200',
+              )}
+            />
           </div>
         </div>
 
-        <div className="h-[300px] w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={chartData} margin={{ top: 5, right: 5, left: -15, bottom: 0 }}>
-              <defs>
-                <linearGradient id="gradientReceita" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#DC2626" stopOpacity={0.2} />
-                  <stop offset="100%" stopColor="#DC2626" stopOpacity={0} />
-                </linearGradient>
-                <linearGradient id="gradientDespesa" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#6B7280" stopOpacity={0.12} />
-                  <stop offset="100%" stopColor="#6B7280" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid
-                strokeDasharray="3 3"
-                stroke={isDark ? '#374151' : '#E5E7EB'}
-                vertical={false}
-              />
-              <XAxis
-                dataKey="period"
-                axisLine={false}
-                tickLine={false}
-                tick={{ fontSize: 12, fill: isDark ? '#6B7280' : '#9CA3AF' }}
-                dy={10}
-              />
-              <YAxis
-                axisLine={false}
-                tickLine={false}
-                tick={{ fontSize: 12, fill: isDark ? '#6B7280' : '#9CA3AF' }}
-                tickFormatter={(value: number) =>
-                  value >= 1000 ? `${(value / 1000).toFixed(0)}k` : String(value)
-                }
-              />
-              <RechartsTooltip
-                content={<ChartTooltipContent />}
-                cursor={{ stroke: isDark ? '#374151' : '#E5E7EB', strokeWidth: 1 }}
-              />
-              <Area
-                type="monotone"
-                dataKey="receita"
-                stroke="#DC2626"
-                strokeWidth={2}
-                fill="url(#gradientReceita)"
-                dot={false}
-                activeDot={{ r: 4, fill: '#DC2626', stroke: '#fff', strokeWidth: 2 }}
-              />
-              <Area
-                type="monotone"
-                dataKey="despesa"
-                stroke="#9CA3AF"
-                strokeWidth={2}
-                fill="url(#gradientDespesa)"
-                dot={false}
-                activeDot={{ r: 4, fill: '#9CA3AF', stroke: '#fff', strokeWidth: 2 }}
-              />
-            </AreaChart>
-          </ResponsiveContainer>
+        {/* Table */}
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-gray-100 dark:border-gray-700/40">
+                <th className="text-left text-xs font-semibold text-red-600 dark:text-red-400 px-5 py-3">Cliente</th>
+                <th className="text-left text-xs font-semibold text-gray-500 dark:text-gray-400 px-4 py-3 hidden sm:table-cell">Tipo</th>
+                <th className="text-left text-xs font-semibold text-gray-500 dark:text-gray-400 px-4 py-3 hidden md:table-cell">Telefone</th>
+                <th className="text-left text-xs font-semibold text-gray-500 dark:text-gray-400 px-4 py-3 hidden lg:table-cell">Próx. Agendamento</th>
+                <th className="text-left text-xs font-semibold text-gray-500 dark:text-gray-400 px-4 py-3">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {isLoading ? (
+                Array.from({ length: 5 }).map((_, i) => (
+                  <tr key={i} className="border-b border-gray-50 dark:border-gray-700/20">
+                    <td className="px-5 py-3.5">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-full shimmer" />
+                        <div className="h-4 w-28 rounded-md shimmer" />
+                      </div>
+                    </td>
+                    <td className="px-4 py-3.5 hidden sm:table-cell"><div className="h-4 w-8 rounded-md shimmer" /></td>
+                    <td className="px-4 py-3.5 hidden md:table-cell"><div className="h-4 w-24 rounded-md shimmer" /></td>
+                    <td className="px-4 py-3.5 hidden lg:table-cell"><div className="h-4 w-16 rounded-md shimmer" /></td>
+                    <td className="px-4 py-3.5"><div className="h-6 w-20 rounded-full shimmer" /></td>
+                  </tr>
+                ))
+              ) : filteredClients.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="text-center py-12">
+                    <Users className="w-8 h-8 text-gray-300 dark:text-gray-600 mx-auto mb-2" />
+                    <p className="text-sm text-gray-400 dark:text-gray-500">
+                      {clientSearch ? 'Nenhum cliente encontrado' : 'Nenhum cliente cadastrado'}
+                    </p>
+                  </td>
+                </tr>
+              ) : (
+                filteredClients.map((client) => {
+                  const nextAppt = clientNextAppointment[client.id];
+                  return (
+                    <tr
+                      key={client.id}
+                      className="border-b border-gray-50 dark:border-gray-700/20 hover:bg-gray-50/50 dark:hover:bg-white/[0.02] transition-colors group cursor-pointer"
+                    >
+                      <td className="px-5 py-3.5">
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-700 dark:to-gray-600 flex items-center justify-center text-[11px] font-bold text-gray-500 dark:text-gray-300 flex-shrink-0">
+                            {getInitials(client.nome)}
+                          </div>
+                          <span className="text-sm font-medium text-gray-800 dark:text-gray-100 truncate max-w-[180px]">
+                            {client.nome}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3.5 hidden sm:table-cell">
+                        <span className="text-xs text-gray-500 dark:text-gray-400 uppercase font-medium">
+                          {client.tipo === 'pf' ? 'PF' : 'PJ'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5 hidden md:table-cell">
+                        <span className="text-sm text-gray-500 dark:text-gray-400">
+                          {client.phone ? formatPhone(client.phone) : '—'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5 hidden lg:table-cell">
+                        <span className="text-sm text-gray-500 dark:text-gray-400">
+                          {nextAppt
+                            ? `${format(new Date(nextAppt.date + 'T12:00:00'), 'dd/MM')} ${nextAppt.startTime}`
+                            : '—'
+                          }
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5">
+                        {nextAppt ? (
+                          <span className="inline-flex items-center text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-500/20">
+                            Agendado
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center text-xs font-medium px-2.5 py-1 rounded-full bg-gray-50 dark:bg-gray-700/40 text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-gray-600/50">
+                            Sem consulta
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
         </div>
 
-        {/* Chart Legend */}
-        <div className="flex items-center justify-center gap-6 mt-4 pt-4 border-t border-border/40">
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-[#DC2626]" />
-            <span className="text-xs text-muted-foreground font-medium">Receitas</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-[#9CA3AF]" />
-            <span className="text-xs text-muted-foreground font-medium">Despesas</span>
-          </div>
-        </div>
-      </motion.div>
-
-      {/* Two Column Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Left: Upcoming Appointments */}
-        <motion.div
-          variants={chartVariants}
-          initial="hidden"
-          animate="visible"
-          className="surface surface-hover rounded-xl p-6"
-        >
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <Clock className="w-4 h-4 text-muted-foreground" />
-              <h2 className="text-base font-semibold text-foreground">
-                Proximos Agendamentos
-              </h2>
-            </div>
-            <button className="text-xs font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300 transition-colors px-2 py-1 rounded-md hover:bg-primary-50 dark:hover:bg-primary-500/10">
+        {/* Footer */}
+        {!isLoading && clients.length > 10 && (
+          <div className="px-5 py-3 border-t border-gray-100 dark:border-gray-700/40 flex items-center justify-between">
+            <span className="text-xs text-gray-400 dark:text-gray-500">
+              Mostrando {filteredClients.length} de {clients.length} clientes
+            </span>
+            <button className="flex items-center gap-1 text-xs font-medium text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors">
               Ver todos
+              <ChevronRight className="w-3.5 h-3.5" />
             </button>
           </div>
-          <div className="space-y-1">
-            {mockAppointments.map((appointment) => (
-              <AppointmentRow key={appointment.id} appointment={appointment} />
-            ))}
-          </div>
-        </motion.div>
-
-        {/* Right: Top Services */}
-        <motion.div
-          variants={chartVariants}
-          initial="hidden"
-          animate="visible"
-          className="surface surface-hover rounded-xl p-6"
-        >
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <BarChart3 className="w-4 h-4 text-muted-foreground" />
-              <h2 className="text-base font-semibold text-foreground">
-                Top Servicos
-              </h2>
-            </div>
-            <span className="text-xs text-muted-foreground">Este mes</span>
-          </div>
-          <div className="space-y-5">
-            {mockTopServices.map((service) => (
-              <ServiceRow
-                key={service.name}
-                service={service}
-                maxRevenue={maxServiceRevenue}
-              />
-            ))}
-          </div>
-        </motion.div>
-      </div>
-
-      {/* Bottom Row: Alerts */}
-      <motion.div
-        variants={chartVariants}
-        initial="hidden"
-        animate="visible"
-        className="surface surface-hover rounded-xl p-6"
-      >
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-500" />
-            <h2 className="text-base font-semibold text-foreground">Alertas</h2>
-          </div>
-          <span className="text-xs font-medium text-muted-foreground px-2 py-1 bg-muted/60 rounded-full">
-            {mockAlerts.length} pendentes
-          </span>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {mockAlerts.map((alert) => (
-            <AlertRow key={alert.id} alert={alert} />
-          ))}
-        </div>
+        )}
       </motion.div>
-    </div>
+    </motion.div>
   );
 }

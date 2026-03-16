@@ -8,7 +8,11 @@ import {
   Select,
   MenuItem,
   FormControl,
-  Skeleton,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Button,
 } from '@mui/material';
 import {
   Plus,
@@ -23,15 +27,27 @@ import {
   Phone,
   Mail,
   MoreHorizontal,
+  Trash2,
+  Filter,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { orderBy, QueryConstraint } from 'firebase/firestore';
+import {
+  collection,
+  query,
+  where,
+  orderBy,
+  getDocs,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
+} from 'firebase/firestore';
 import debounce from 'lodash.debounce';
 import { toast } from 'react-toastify';
 
+import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import { clientsService } from '@/lib/services/api';
 import type { Client, SortConfig } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import {
@@ -46,135 +62,22 @@ import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { ClientFormDialog } from './ClientFormDialog';
 import { ClientDetailDrawer } from './ClientDetailDrawer';
 
-// ---- Mock Data ----
-const MOCK_CLIENTS: Client[] = [
-  {
-    id: '1',
-    businessId: 'demo',
-    tipo: 'pf',
-    nome: 'Maria Silva Santos',
-    cpfCnpj: '12345678901',
-    email: 'maria@email.com',
-    phone: '11999887766',
-    birthDate: '1990-05-15',
-    gender: 'F',
-    tags: ['vip', 'mensal'],
-    isActive: true,
-    totalSpent: 4580.0,
-    visitCount: 24,
-    lastVisit: '2026-03-10',
-    notes: 'Cliente preferencial. Gosta do horario da manha.',
-    createdAt: '2025-01-15T10:00:00Z',
-    updatedAt: '2026-03-10T14:30:00Z',
-  },
-  {
-    id: '2',
-    businessId: 'demo',
-    tipo: 'pf',
-    nome: 'Joao Pedro Oliveira',
-    cpfCnpj: '98765432100',
-    email: 'joao.pedro@email.com',
-    phone: '11988776655',
-    phone2: '1133445566',
-    gender: 'M',
-    isActive: true,
-    totalSpent: 1250.0,
-    visitCount: 8,
-    lastVisit: '2026-02-28',
-    createdAt: '2025-06-20T09:00:00Z',
-    updatedAt: '2026-02-28T16:00:00Z',
-  },
-  {
-    id: '3',
-    businessId: 'demo',
-    tipo: 'pj',
-    nome: 'Tech Solutions Ltda',
-    cpfCnpj: '12345678000199',
-    email: 'contato@techsolutions.com',
-    phone: '1140028922',
-    endereco: {
-      logradouro: 'Rua das Flores',
-      numero: '123',
-      complemento: 'Sala 5',
-      bairro: 'Centro',
-      municipio: 'Sao Paulo',
-      codigoMunicipio: '3550308',
-      uf: 'SP',
-      cep: '01001000',
-    },
-    isActive: true,
-    totalSpent: 12800.0,
-    visitCount: 15,
-    lastVisit: '2026-03-05',
-    tags: ['empresa', 'contrato'],
-    createdAt: '2024-11-01T08:00:00Z',
-    updatedAt: '2026-03-05T11:00:00Z',
-  },
-  {
-    id: '4',
-    businessId: 'demo',
-    tipo: 'pf',
-    nome: 'Ana Beatriz Lima',
-    cpfCnpj: '11122233344',
-    phone: '21977665544',
-    gender: 'F',
-    isActive: false,
-    totalSpent: 320.0,
-    visitCount: 2,
-    lastVisit: '2025-08-12',
-    createdAt: '2025-07-01T12:00:00Z',
-    updatedAt: '2025-08-12T15:00:00Z',
-  },
-  {
-    id: '5',
-    businessId: 'demo',
-    tipo: 'pf',
-    nome: 'Carlos Eduardo Mendes',
-    cpfCnpj: '55566677788',
-    email: 'carlos.mendes@email.com',
-    phone: '31988554433',
-    gender: 'M',
-    birthDate: '1985-11-22',
-    isActive: true,
-    totalSpent: 2100.0,
-    visitCount: 12,
-    lastVisit: '2026-03-12',
-    createdAt: '2025-03-10T14:00:00Z',
-    updatedAt: '2026-03-12T09:00:00Z',
-  },
-  {
-    id: '6',
-    businessId: 'demo',
-    tipo: 'pf',
-    nome: 'Fernanda Costa Reis',
-    cpfCnpj: '99988877766',
-    email: 'fernanda.reis@email.com',
-    phone: '41966778899',
-    gender: 'F',
-    isActive: true,
-    totalSpent: 890.0,
-    visitCount: 5,
-    lastVisit: '2026-01-20',
-    tags: ['novo'],
-    createdAt: '2025-12-01T10:00:00Z',
-    updatedAt: '2026-01-20T13:00:00Z',
-  },
-];
-
 type FilterStatus = 'todos' | 'ativos' | 'inativos';
+type FilterTipo = 'todos' | 'pf' | 'pj';
 
 const ITEMS_PER_PAGE_OPTIONS = [10, 25, 50];
 
 export default function ClientsModule() {
-  const { user } = useAuth();
+  const { user, business } = useAuth();
   const { isDark } = useTheme();
   const queryClient = useQueryClient();
-  const businessId = user?.businessId || '';
+  const businessId = business?.id || '';
 
   // ---- State ----
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState<FilterStatus>('todos');
+  const [filterTipo, setFilterTipo] = useState<FilterTipo>('todos');
   const [sortConfig, setSortConfig] = useState<SortConfig>({ field: 'nome', direction: 'asc' });
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -183,6 +86,10 @@ export default function ClientsModule() {
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
+
+  // Delete confirmation
+  const [deleteTarget, setDeleteTarget] = useState<Client | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // ---- Debounced search ----
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -199,7 +106,7 @@ export default function ClientsModule() {
     debouncedSetSearch(e.target.value);
   }
 
-  // ---- Fetch clients ----
+  // ---- Fetch clients from Firestore ----
   const {
     data: clients = [],
     isLoading,
@@ -207,18 +114,18 @@ export default function ClientsModule() {
   } = useQuery<Client[]>({
     queryKey: ['clients', businessId],
     queryFn: async () => {
-      if (!businessId) return MOCK_CLIENTS;
-      try {
-        const constraints: QueryConstraint[] = [orderBy('nome', 'asc')];
-        const result = await clientsService.getAll(businessId, constraints);
-        return result.length > 0 ? result : MOCK_CLIENTS;
-      } catch {
-        return MOCK_CLIENTS;
-      }
+      if (!businessId) return [];
+      const q = query(
+        collection(db, 'clients'),
+        where('businessId', '==', businessId),
+        orderBy('nome', 'asc')
+      );
+      const snap = await getDocs(q);
+      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as Client));
     },
-    enabled: true,
+    enabled: !!businessId,
+    staleTime: 5 * 60 * 1000,
   });
-
 
   // ---- Filter + Search + Sort ----
   const filteredClients = useMemo(() => {
@@ -227,6 +134,10 @@ export default function ClientsModule() {
     // Status filter
     if (filterStatus === 'ativos') result = result.filter((c) => c.isActive);
     if (filterStatus === 'inativos') result = result.filter((c) => !c.isActive);
+
+    // Tipo filter
+    if (filterTipo === 'pf') result = result.filter((c) => c.tipo === 'pf');
+    if (filterTipo === 'pj') result = result.filter((c) => c.tipo === 'pj');
 
     // Search filter
     if (debouncedSearch) {
@@ -261,7 +172,7 @@ export default function ClientsModule() {
     });
 
     return result;
-  }, [clients, filterStatus, debouncedSearch, sortConfig]);
+  }, [clients, filterStatus, filterTipo, debouncedSearch, sortConfig]);
 
   // ---- Pagination ----
   const totalPages = Math.max(1, Math.ceil(filteredClients.length / pageSize));
@@ -291,30 +202,71 @@ export default function ClientsModule() {
   async function handleSaveClient(
     data: Omit<Client, 'id' | 'createdAt' | 'updatedAt' | 'totalSpent' | 'visitCount' | 'lastVisit'>
   ) {
-    const saveData = { ...data, businessId };
-
-    if (editingClient) {
-      await clientsService.update(editingClient.id, saveData);
-    } else {
-      await clientsService.create({
-        ...saveData,
-        totalSpent: 0,
-        visitCount: 0,
-      } as Omit<Client, 'id'>);
+    if (!businessId) {
+      toast.error('Erro: empresa nao identificada.');
+      return;
     }
 
-    queryClient.invalidateQueries({ queryKey: ['clients'] });
+    const now = new Date().toISOString();
+
+    if (editingClient) {
+      // UPDATE
+      const docRef = doc(db, 'clients', editingClient.id);
+      await updateDoc(docRef, {
+        ...data,
+        businessId,
+        updatedAt: now,
+      });
+    } else {
+      // CREATE
+      await addDoc(collection(db, 'clients'), {
+        ...data,
+        businessId,
+        totalSpent: 0,
+        visitCount: 0,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    queryClient.invalidateQueries({ queryKey: ['clients', businessId] });
   }
 
   async function handleToggleActive(client: Client) {
+    if (!businessId) return;
     try {
-      await clientsService.update(client.id, { isActive: !client.isActive });
+      const docRef = doc(db, 'clients', client.id);
+      await updateDoc(docRef, {
+        isActive: !client.isActive,
+        updatedAt: new Date().toISOString(),
+      });
       toast.success(client.isActive ? 'Cliente desativado' : 'Cliente ativado');
-      queryClient.invalidateQueries({ queryKey: ['clients'] });
+      queryClient.invalidateQueries({ queryKey: ['clients', businessId] });
       setIsDrawerOpen(false);
     } catch {
       toast.error('Erro ao atualizar status do cliente');
     }
+  }
+
+  async function handleDeleteClient() {
+    if (!deleteTarget || !businessId) return;
+    setIsDeleting(true);
+    try {
+      const docRef = doc(db, 'clients', deleteTarget.id);
+      await deleteDoc(docRef);
+      toast.success('Cliente excluido com sucesso');
+      queryClient.invalidateQueries({ queryKey: ['clients', businessId] });
+      setDeleteTarget(null);
+      setIsDrawerOpen(false);
+    } catch {
+      toast.error('Erro ao excluir cliente');
+    } finally {
+      setIsDeleting(false);
+    }
+  }
+
+  function handleDeleteFromDrawer(client: Client) {
+    setDeleteTarget(client);
   }
 
   function handleEditFromDrawer(client: Client) {
@@ -334,13 +286,15 @@ export default function ClientsModule() {
 
   const activeCount = clients.filter((c) => c.isActive).length;
   const inactiveCount = clients.filter((c) => !c.isActive).length;
+  const pfCount = clients.filter((c) => c.tipo === 'pf').length;
+  const pjCount = clients.filter((c) => c.tipo === 'pj').length;
 
   return (
     <div className="space-y-6">
       {/* Header */}
       <motion.div
-        initial={{ opacity: 0, y: -10 }}
-        animate={{ opacity: 1, y: 0 }}
+        initial={{ opacity: 0, y: 12, filter: 'blur(4px)' }}
+        animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
         transition={{ duration: 0.3 }}
         className="flex flex-col sm:flex-row sm:items-center justify-between gap-4"
       >
@@ -371,24 +325,66 @@ export default function ClientsModule() {
 
       {/* Search + Filters */}
       <motion.div
-        initial={{ opacity: 0, y: -5 }}
-        animate={{ opacity: 1, y: 0 }}
+        initial={{ opacity: 0, y: 12, filter: 'blur(4px)' }}
+        animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
         transition={{ duration: 0.3, delay: 0.05 }}
-        className="flex flex-col sm:flex-row gap-3"
+        className="flex flex-col gap-3"
       >
-        {/* Search */}
-        <div className="relative flex-1 max-w-md">
-          <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-gray-500" />
-          <input
-            type="text"
-            placeholder="Buscar por nome, CPF/CNPJ, telefone, e-mail..."
-            value={searchTerm}
-            onChange={handleSearchChange}
-            className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-slate-800 dark:text-gray-200 placeholder:text-slate-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400 transition-all"
-          />
+        {/* Search + Tipo filter row */}
+        <div className="flex flex-col sm:flex-row gap-3">
+          {/* Search */}
+          <div className="relative flex-1 max-w-md">
+            <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-gray-500" />
+            <input
+              type="text"
+              placeholder="Buscar por nome, CPF/CNPJ, telefone, e-mail..."
+              value={searchTerm}
+              onChange={handleSearchChange}
+              className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-slate-800 dark:text-gray-200 placeholder:text-slate-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400 transition-all"
+            />
+          </div>
+
+          {/* Tipo filter */}
+          <div className="flex items-center gap-2">
+            <Filter size={14} className="text-slate-400 dark:text-gray-500 shrink-0" />
+            {[
+              { key: 'todos' as FilterTipo, label: 'Todos', count: clients.length },
+              { key: 'pf' as FilterTipo, label: 'PF', count: pfCount },
+              { key: 'pj' as FilterTipo, label: 'PJ', count: pjCount },
+            ].map((filter) => (
+              <Chip
+                key={filter.key}
+                label={`${filter.label} (${filter.count})`}
+                onClick={() => {
+                  setFilterTipo(filter.key);
+                  setPage(1);
+                }}
+                variant={filterTipo === filter.key ? 'filled' : 'outlined'}
+                size="small"
+                sx={{
+                  fontWeight: 500,
+                  fontSize: '0.75rem',
+                  ...(filterTipo === filter.key
+                    ? {
+                        backgroundColor: isDark ? 'rgba(220, 38, 38, 0.15)' : '#FEE2E2',
+                        color: isDark ? '#F87171' : '#DC2626',
+                        '&:hover': { backgroundColor: isDark ? 'rgba(220, 38, 38, 0.2)' : '#FECACA' },
+                      }
+                    : {
+                        borderColor: isDark ? 'rgba(55, 65, 81, 1)' : '#E2E8F0',
+                        color: isDark ? '#9CA3AF' : '#64748B',
+                        '&:hover': {
+                          borderColor: isDark ? 'rgba(75, 85, 99, 1)' : '#CBD5E1',
+                          backgroundColor: isDark ? 'rgba(255,255,255,0.04)' : '#F8FAFC',
+                        },
+                      }),
+                }}
+              />
+            ))}
+          </div>
         </div>
 
-        {/* Filter chips */}
+        {/* Status filter chips */}
         <div className="flex items-center gap-2">
           {[
             { key: 'todos' as FilterStatus, label: 'Todos', count: clients.length },
@@ -439,11 +435,12 @@ export default function ClientsModule() {
           <ErrorState />
         ) : paginatedClients.length === 0 ? (
           <EmptyState
-            hasSearch={!!debouncedSearch || filterStatus !== 'todos'}
+            hasSearch={!!debouncedSearch || filterStatus !== 'todos' || filterTipo !== 'todos'}
             onClearFilters={() => {
               setSearchTerm('');
               setDebouncedSearch('');
               setFilterStatus('todos');
+              setFilterTipo('todos');
             }}
             onAddClient={() => handleOpenForm()}
           />
@@ -508,6 +505,9 @@ export default function ClientsModule() {
                               </p>
                               <p className="text-xs text-slate-400 dark:text-gray-500">
                                 {client.tipo === 'pf' ? 'PF' : 'PJ'}
+                                {client.visitCount > 0 && (
+                                  <span className="ml-2">{client.visitCount} visita{client.visitCount !== 1 ? 's' : ''}</span>
+                                )}
                               </p>
                             </div>
                           </div>
@@ -755,7 +755,62 @@ export default function ClientsModule() {
         client={selectedClient}
         onEdit={handleEditFromDrawer}
         onToggleActive={handleToggleActive}
+        onDelete={handleDeleteFromDrawer}
       />
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog
+        open={!!deleteTarget}
+        onClose={() => !isDeleting && setDeleteTarget(null)}
+        PaperProps={{
+          sx: {
+            borderRadius: '16px',
+            maxWidth: 420,
+          },
+        }}
+      >
+        <DialogTitle
+          sx={{
+            fontFamily: '"Plus Jakarta Sans", sans-serif',
+            fontWeight: 700,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 1.5,
+          }}
+        >
+          <Trash2 size={20} className="text-red-500" />
+          Excluir Cliente
+        </DialogTitle>
+        <DialogContent>
+          <p className="text-sm text-slate-600 dark:text-gray-400">
+            Tem certeza que deseja excluir o cliente{' '}
+            <strong className="text-slate-800 dark:text-gray-200">{deleteTarget?.nome}</strong>?
+          </p>
+          <p className="text-xs text-slate-400 dark:text-gray-500 mt-2">
+            Esta acao nao pode ser desfeita. Todos os dados do cliente serao removidos permanentemente.
+          </p>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button
+            onClick={() => setDeleteTarget(null)}
+            disabled={isDeleting}
+            sx={{ color: '#64748B' }}
+          >
+            Cancelar
+          </Button>
+          <Button
+            onClick={handleDeleteClient}
+            variant="contained"
+            disabled={isDeleting}
+            sx={{
+              backgroundColor: '#DC2626',
+              '&:hover': { backgroundColor: '#B91C1C' },
+            }}
+          >
+            {isDeleting ? 'Excluindo...' : 'Excluir'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </div>
   );
 }
@@ -789,15 +844,21 @@ function LoadingSkeleton() {
   return (
     <div className="p-4 space-y-4">
       {[...Array(5)].map((_, i) => (
-        <div key={i} className="flex items-center gap-4">
-          <Skeleton variant="circular" width={36} height={36} />
+        <motion.div
+          key={i}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.28, delay: i * 0.07 }}
+          className="flex items-center gap-4"
+        >
+          <div className="w-9 h-9 rounded-full shimmer shrink-0" />
           <div className="flex-1 space-y-2">
-            <Skeleton variant="text" width="30%" height={18} />
-            <Skeleton variant="text" width="20%" height={14} />
+            <div className="h-4 w-[30%] rounded-md shimmer" />
+            <div className="h-3 w-[20%] rounded-md shimmer" />
           </div>
-          <Skeleton variant="text" width="15%" height={18} />
-          <Skeleton variant="rounded" width={60} height={24} />
-        </div>
+          <div className="h-4 w-[15%] rounded-md shimmer" />
+          <div className="h-6 w-[60px] rounded-full shimmer" />
+        </motion.div>
       ))}
     </div>
   );

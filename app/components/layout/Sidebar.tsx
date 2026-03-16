@@ -1,9 +1,8 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
-import { getInitials } from '@/lib/utils/format';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import {
   LayoutDashboard,
@@ -16,14 +15,14 @@ import {
   Receipt,
   FileText,
   Settings,
-  HelpCircle,
   ChevronLeft,
   ChevronRight,
   LogOut,
   X,
-  Sparkles,
   Kanban,
   Target,
+  MessageSquare,
+  Plug,
 } from 'lucide-react';
 
 export type MenuPage =
@@ -31,21 +30,23 @@ export type MenuPage =
   | 'Clientes'
   | 'CRM'
   | 'Agenda'
+  | 'Conversas'
   | 'Kanban'
+  | 'Integrações'
   | 'PDV'
   | 'Financeiro'
   | 'Estoque'
   | 'NFSe'
   | 'NFCe'
   | 'NFe'
-  | 'Configurações'
-  | 'Ajuda';
+  | 'Configurações';
 
 interface MenuItemConfig {
   id: MenuPage;
   label: string;
   icon: React.ElementType;
   comingSoon?: boolean;
+  enterpriseOnly?: boolean;
 }
 
 interface MenuSection {
@@ -55,36 +56,37 @@ interface MenuSection {
 
 const menuSections: MenuSection[] = [
   {
-    title: 'PRINCIPAL',
+    title: 'Principal',
     items: [
       { id: 'Dashboard', label: 'Dashboard', icon: LayoutDashboard },
       { id: 'Clientes', label: 'Clientes', icon: Users },
-      { id: 'CRM', label: 'CRM', icon: Target },
+      { id: 'CRM', label: 'CRM', icon: Target, enterpriseOnly: true },
       { id: 'Agenda', label: 'Agenda', icon: Calendar },
+      { id: 'Conversas', label: 'Conversas', icon: MessageSquare },
       { id: 'PDV', label: 'Ponto de Venda', icon: ShoppingCart },
     ],
   },
   {
-    title: 'GESTÃO',
+    title: 'Gestão',
     items: [
-      { id: 'Kanban', label: 'Kanban', icon: Kanban },
+      { id: 'Kanban', label: 'Kanban', icon: Kanban, enterpriseOnly: true },
+      { id: 'Integrações', label: 'Integrações', icon: Plug, enterpriseOnly: true },
       { id: 'Financeiro', label: 'Financeiro', icon: DollarSign },
       { id: 'Estoque', label: 'Estoque', icon: Package },
     ],
   },
   {
-    title: 'FISCAL',
+    title: 'Fiscal',
     items: [
-      { id: 'NFSe', label: 'NFSe', icon: FileCheck2, comingSoon: false },
-      { id: 'NFCe', label: 'NFCe', icon: Receipt, comingSoon: false },
-      { id: 'NFe', label: 'NFe', icon: FileText, comingSoon: false },
+      { id: 'NFSe', label: 'NFSe', icon: FileCheck2 },
+      { id: 'NFCe', label: 'NFCe', icon: Receipt },
+      { id: 'NFe', label: 'NFe', icon: FileText },
     ],
   },
   {
-    title: 'SISTEMA',
+    title: 'Sistema',
     items: [
       { id: 'Configurações', label: 'Configurações', icon: Settings },
-      { id: 'Ajuda', label: 'Central de Ajuda', icon: HelpCircle },
     ],
   },
 ];
@@ -98,95 +100,153 @@ interface SidebarProps {
   onMobileClose: () => void;
 }
 
-function SidebarMenuItem({
+function MenuItem({
   item,
   isActive,
   isCollapsed,
   onSelect,
-  index,
 }: {
   item: MenuItemConfig;
   isActive: boolean;
   isCollapsed: boolean;
   onSelect: () => void;
-  index: number;
 }) {
+  const [clicked, setClicked] = useState(false);
   const Icon = item.icon;
 
+  const handleClick = () => {
+    setClicked(true);
+    setTimeout(() => setClicked(false), 560);
+    onSelect();
+  };
+
   return (
-    <motion.div
-      initial={{ opacity: 0, x: -8 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ delay: index * 0.04, duration: 0.3 }}
-      className="relative"
-    >
-      <button
-        onClick={onSelect}
+    <div className="relative">
+      <motion.button
+        whileTap={{ scale: 0.93 }}
+        onClick={handleClick}
         title={isCollapsed ? item.label : undefined}
         className={cn(
-          'group relative flex items-center w-full rounded-xl',
-          'transition-all duration-200 focus-visible:outline-none',
-          isCollapsed ? 'justify-center px-2.5 py-2.5' : 'gap-3 px-3 py-2.5',
+          'group relative flex items-center w-full rounded-xl transition-all duration-200 focus-visible:outline-none',
+          isCollapsed ? 'justify-center p-2.5' : 'gap-3 px-3 py-2.5',
           isActive
             ? 'text-white'
-            : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-white/[0.04]'
+            : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100'
         )}
       >
-        {/* Active background pill with layoutId for smooth animation */}
         {isActive && (
           <motion.div
             layoutId="sidebar-active-pill"
-            className="absolute inset-0 rounded-xl sidebar-item-active"
-            transition={{ type: 'spring', stiffness: 400, damping: 35 }}
+            className="absolute inset-0 rounded-xl bg-gradient-to-r from-red-600 to-red-500 shadow-md shadow-red-500/25"
+            transition={{ type: 'spring', stiffness: 420, damping: 38 }}
           />
+        )}
+        {!isActive && (
+          <div className="absolute inset-0 rounded-xl bg-gray-100 dark:bg-white/[0.04] opacity-0 group-hover:opacity-100 transition-opacity duration-150" />
         )}
 
-        {/* Hover ripple (non-active items) */}
-        {!isActive && (
-          <motion.div
-            className="absolute inset-0 rounded-xl bg-gray-100 dark:bg-white/[0.04] opacity-0 group-hover:opacity-100 transition-opacity duration-150"
-          />
-        )}
+        {/* Click ripple burst */}
+        <AnimatePresence>
+          {clicked && (
+            <motion.span
+              initial={{ opacity: 0.45, scale: 0.3 }}
+              animate={{ opacity: 0, scale: 2.5 }}
+              exit={{}}
+              transition={{ duration: 0.52, ease: [0.2, 0, 0.3, 1] }}
+              className="absolute inset-0 rounded-xl bg-red-400/20 pointer-events-none"
+            />
+          )}
+        </AnimatePresence>
 
         <Icon
           className={cn(
             'relative z-10 flex-shrink-0 transition-all duration-200',
-            isCollapsed ? 'w-[18px] h-[18px]' : 'w-[17px] h-[17px]',
+            isCollapsed ? 'w-[19px] h-[19px]' : 'w-[18px] h-[18px]',
             isActive
               ? 'text-white'
               : 'text-gray-400 dark:text-gray-500 group-hover:text-gray-600 dark:group-hover:text-gray-300 group-hover:scale-110'
           )}
         />
 
-        {!isCollapsed && (
-          <span className={cn(
-            'relative z-10 text-sm font-medium truncate leading-none flex-1',
-            isActive ? 'text-white' : ''
-          )}>
-            {item.label}
-          </span>
-        )}
+        <AnimatePresence initial={false}>
+          {!isCollapsed && (
+            <motion.span
+              key="label"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.14, ease: 'easeOut' }}
+              className={cn(
+                'relative z-10 text-[15px] font-medium truncate leading-none flex-1 text-left',
+                isActive ? 'text-white' : ''
+              )}
+            >
+              {item.label}
+            </motion.span>
+          )}
+        </AnimatePresence>
 
-        {!isCollapsed && item.comingSoon && (
-          <span className={cn(
-            'relative z-10 text-[10px] font-semibold px-1.5 py-0.5 rounded-md',
-            isActive
-              ? 'bg-white/20 text-white'
-              : 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-200/80 dark:border-amber-500/20'
-          )}>
-            Beta
-          </span>
-        )}
+        <AnimatePresence initial={false}>
+          {!isCollapsed && item.comingSoon && (
+            <motion.span
+              key="badge"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.14, ease: 'easeOut' }}
+              className={cn(
+                'relative z-10 text-[10px] font-semibold px-1.5 py-0.5 rounded-md',
+                isActive
+                  ? 'bg-white/20 text-white'
+                  : 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-200/80 dark:border-amber-500/20'
+              )}
+            >
+              Beta
+            </motion.span>
+          )}
+        </AnimatePresence>
 
-        {/* Tooltip for collapsed */}
+        {/* Tooltip for collapsed state */}
         {isCollapsed && (
-          <div className="absolute left-full ml-3.5 px-2.5 py-1.5 rounded-lg bg-gray-900 dark:bg-gray-700 text-white text-xs font-medium whitespace-nowrap opacity-0 pointer-events-none group-hover:opacity-100 transition-all duration-150 z-50 shadow-xl translate-x-1 group-hover:translate-x-0">
+          <div className="absolute left-full ml-3 px-2.5 py-1.5 rounded-lg bg-gray-900 dark:bg-gray-700 text-white text-[13px] font-medium whitespace-nowrap opacity-0 pointer-events-none group-hover:opacity-100 transition-all duration-150 z-50 shadow-xl translate-x-1 group-hover:translate-x-0">
             {item.label}
-            <div className="absolute right-full top-1/2 -translate-y-1/2 border-4 border-transparent border-r-gray-900 dark:border-r-gray-700" />
+            <div className="absolute right-full top-1/2 -translate-y-1/2 border-[5px] border-transparent border-r-gray-900 dark:border-r-gray-700" />
           </div>
         )}
-      </button>
-    </motion.div>
+      </motion.button>
+    </div>
+  );
+}
+
+function SectionHeader({ title, isCollapsed }: { title: string; isCollapsed: boolean }) {
+  return (
+    <div className={cn(
+      'flex items-center',
+      isCollapsed ? 'mx-3 my-2' : 'gap-2.5 px-3 pt-1 pb-2'
+    )}>
+      <AnimatePresence initial={false}>
+        {!isCollapsed && (
+          <motion.span
+            key="title"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.14 }}
+            className="text-[11px] font-bold tracking-[0.1em] text-red-500 dark:text-red-400 uppercase select-none whitespace-nowrap"
+          >
+            {title}
+          </motion.span>
+        )}
+      </AnimatePresence>
+      <div
+        className="flex-1 h-px"
+        style={{
+          background: isCollapsed
+            ? 'linear-gradient(to right, transparent, rgba(239,68,68,0.22), transparent)'
+            : 'linear-gradient(to right, rgba(239,68,68,0.38) 0%, rgba(239,68,68,0.1) 45%, transparent 100%)',
+        }}
+      />
+    </div>
   );
 }
 
@@ -198,10 +258,9 @@ function SidebarContent({
   isMobile,
   onMobileClose,
 }: SidebarProps & { isMobile?: boolean }) {
-  const { user, business, signOut } = useAuth();
-  const userName = user?.name || 'Usuário';
-  const businessName = business?.nomeFantasia || 'Meu Negócio';
+  const { signOut, business } = useAuth();
   const collapsed = isCollapsed && !isMobile;
+  const isEnterprise = !!business?.enterprise?.isEnabled;
 
   return (
     <div
@@ -210,133 +269,82 @@ function SidebarContent({
         'bg-white dark:bg-[#0a0e17]',
         'border-r border-gray-200/60 dark:border-gray-800/60',
         'transition-[width] duration-300 ease-in-out',
-        collapsed ? 'w-[68px]' : 'w-[256px]'
+        collapsed ? 'w-[64px]' : 'w-[264px]'
       )}
     >
-      {/* ── Logo Header ── */}
-      <div className={cn(
-        'flex items-center h-[60px] border-b border-gray-100 dark:border-gray-800/80 flex-shrink-0',
-        collapsed ? 'justify-center px-3' : 'justify-between px-4',
-      )}>
-        <AnimatePresence mode="wait">
-          {!collapsed && (
+      {/* ── Header ── */}
+      {collapsed ? (
+        /* Collapsed: full-area expand button */
+        <motion.button
+          whileTap={{ scale: 0.88 }}
+          onClick={onToggleCollapse}
+          className="group flex items-center justify-center h-[60px] w-full border-b border-gray-100 dark:border-gray-800/80 flex-shrink-0 hover:bg-red-50/60 dark:hover:bg-red-500/[0.07] transition-all duration-200"
+          title="Expandir menu"
+        >
+          <ChevronRight className="w-5 h-5 text-red-500 dark:text-red-400 group-hover:translate-x-0.5 transition-transform duration-200" />
+        </motion.button>
+      ) : (
+        /* Expanded: logo + collapse button */
+        <div className="flex items-center justify-between h-[60px] px-4 border-b border-gray-100 dark:border-gray-800/80 flex-shrink-0">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="relative w-8 h-8 rounded-xl bg-gradient-to-br from-red-500 to-red-700 flex items-center justify-center flex-shrink-0 shadow-md shadow-red-500/30">
+              <span className="text-white font-bold text-sm font-display leading-none">S</span>
+              <div className="absolute inset-0 rounded-xl bg-gradient-to-b from-white/20 to-transparent" />
+            </div>
             <motion.div
-              key="logo-full"
               initial={{ opacity: 0, x: -6 }}
               animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -6 }}
-              transition={{ duration: 0.2 }}
-              className="flex items-center gap-2.5 min-w-0"
+              transition={{ duration: 0.18 }}
+              className="min-w-0"
             >
-              <div className="relative w-8 h-8 rounded-xl bg-gradient-to-br from-red-500 to-red-700 flex items-center justify-center flex-shrink-0 shadow-md shadow-red-500/30">
-                <span className="text-white font-bold text-sm font-display leading-none">S</span>
-                <div className="absolute inset-0 rounded-xl bg-gradient-to-b from-white/20 to-transparent" />
-              </div>
-              <div className="min-w-0">
-                <p className="text-sm font-bold text-gray-900 dark:text-gray-100 font-display tracking-tight">ServicePro</p>
-                <p className="text-[10px] text-gray-400 dark:text-gray-500 font-medium">Gestão Inteligente</p>
-              </div>
+              <p className="text-[14px] font-bold text-gray-900 dark:text-gray-100 font-display tracking-tight leading-tight">ServicePro</p>
+              <p className="text-[10.5px] text-gray-400 dark:text-gray-500 font-medium leading-tight">Gestão Inteligente</p>
             </motion.div>
-          )}
-          {collapsed && (
-            <motion.div
-              key="logo-collapsed"
-              initial={{ opacity: 0, scale: 0.8 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.8 }}
-              transition={{ duration: 0.2 }}
-              className="relative w-8 h-8 rounded-xl bg-gradient-to-br from-red-500 to-red-700 flex items-center justify-center shadow-md shadow-red-500/30"
-            >
-              <span className="text-white font-bold text-sm font-display">S</span>
-              <div className="absolute inset-0 rounded-xl bg-gradient-to-b from-white/20 to-transparent" />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {isMobile && (
-          <button
-            onClick={onMobileClose}
-            className="p-1.5 rounded-lg text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
-          >
-            <X className="w-4.5 h-4.5" />
-          </button>
-        )}
-      </div>
-
-      {/* ── User Profile ── */}
-      <div className={cn(
-        'border-b border-gray-100 dark:border-gray-800/80 flex-shrink-0',
-        collapsed ? 'px-3 py-3' : 'px-3 py-3'
-      )}>
-        <motion.div
-          layout
-          className={cn(
-            'flex items-center rounded-xl',
-            collapsed ? 'justify-center' : 'gap-3 px-1 py-1',
-          )}
-        >
-          {/* Avatar */}
-          <div className="relative flex-shrink-0">
-            <div className={cn(
-              'rounded-full flex items-center justify-center text-xs font-bold',
-              'bg-gradient-to-br from-red-100 to-rose-100 dark:from-red-900/40 dark:to-rose-900/30 text-red-700 dark:text-red-400',
-              'border-2 border-red-200/60 dark:border-red-800/40 shadow-sm',
-              collapsed ? 'w-9 h-9' : 'w-9 h-9'
-            )}>
-              {user?.photoURL ? (
-                <img src={user.photoURL} alt={userName} className="w-full h-full rounded-full object-cover" />
-              ) : (
-                getInitials(userName)
-              )}
-            </div>
-            {/* Online indicator */}
-            <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-white dark:border-[#0a0e17]" />
           </div>
 
-          <AnimatePresence>
-            {!collapsed && (
-              <motion.div
-                initial={{ opacity: 0, width: 0 }}
-                animate={{ opacity: 1, width: 'auto' }}
-                exit={{ opacity: 0, width: 0 }}
-                transition={{ duration: 0.2 }}
-                className="min-w-0 flex-1 overflow-hidden"
+          <div className="flex items-center gap-1">
+            {isMobile ? (
+              <button
+                onClick={onMobileClose}
+                className="p-1.5 rounded-lg text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
               >
-                <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate leading-tight">{userName}</p>
-                <p className="text-[11px] text-gray-400 dark:text-gray-500 truncate">{businessName}</p>
-              </motion.div>
+                <X className="w-4 h-4" />
+              </button>
+            ) : (
+              <motion.button
+                whileTap={{ scale: 0.85 }}
+                onClick={onToggleCollapse}
+                className="group p-1.5 rounded-lg hover:bg-red-50/60 dark:hover:bg-red-500/[0.07] transition-all duration-150"
+                title="Recolher menu"
+              >
+                <ChevronLeft className="w-4 h-4 text-red-500 dark:text-red-400 group-hover:-translate-x-0.5 transition-transform duration-200" />
+              </motion.button>
             )}
-          </AnimatePresence>
-        </motion.div>
-      </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Navigation ── */}
       <nav
         className={cn(
           'flex-1 overflow-y-auto overflow-x-hidden py-3',
-          collapsed ? 'px-2' : 'px-2.5'
+          collapsed ? 'px-1.5' : 'px-2.5'
         )}
         style={{ scrollbarWidth: 'none' }}
       >
         {menuSections.map((section, sectionIdx) => (
-          <div key={section.title} className={cn(sectionIdx > 0 && 'mt-4')}>
-            {!collapsed && (
-              <p className="px-3 mb-1.5 text-[10px] font-bold tracking-[0.08em] text-gray-300 dark:text-gray-600 uppercase select-none">
-                {section.title}
-              </p>
-            )}
-            {collapsed && sectionIdx > 0 && (
-              <div className="mx-3 mb-3 border-t border-gray-100 dark:border-gray-800" />
-            )}
+          <div key={section.title} className={cn(sectionIdx > 0 && 'mt-1')}>
+            <SectionHeader title={section.title} isCollapsed={collapsed} />
 
             <div className="space-y-0.5">
-              {section.items.map((item, itemIdx) => (
-                <SidebarMenuItem
+              {section.items
+                .filter((item) => !item.enterpriseOnly || isEnterprise)
+                .map((item) => (
+                <MenuItem
                   key={item.id}
                   item={item}
                   isActive={activePage === item.id}
                   isCollapsed={collapsed}
-                  index={sectionIdx * 10 + itemIdx}
                   onSelect={() => {
                     onMenuSelect(item.id);
                     if (isMobile) onMobileClose();
@@ -350,31 +358,8 @@ function SidebarContent({
 
       {/* ── Footer ── */}
       <div className={cn(
-        'border-t border-gray-100 dark:border-gray-800/80 flex-shrink-0 p-2 space-y-0.5'
+        'border-t border-gray-100 dark:border-gray-800/80 flex-shrink-0 p-2'
       )}>
-        {/* Collapse toggle — desktop only */}
-        {!isMobile && (
-          <button
-            onClick={onToggleCollapse}
-            className={cn(
-              'group flex items-center w-full rounded-xl px-3 py-2.5',
-              'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/[0.04]',
-              'transition-all duration-200',
-              collapsed ? 'justify-center' : 'gap-3'
-            )}
-          >
-            {collapsed ? (
-              <ChevronRight className="w-[17px] h-[17px] group-hover:translate-x-0.5 transition-transform duration-150" />
-            ) : (
-              <>
-                <ChevronLeft className="w-[17px] h-[17px] group-hover:-translate-x-0.5 transition-transform duration-150" />
-                <span className="text-sm font-medium">Recolher</span>
-              </>
-            )}
-          </button>
-        )}
-
-        {/* Sign out */}
         <button
           onClick={signOut}
           className={cn(
@@ -386,7 +371,20 @@ function SidebarContent({
           title={collapsed ? 'Sair' : undefined}
         >
           <LogOut className="w-[17px] h-[17px] group-hover:translate-x-0.5 transition-transform duration-150 flex-shrink-0" />
-          {!collapsed && <span className="text-sm font-medium">Sair</span>}
+          <AnimatePresence initial={false}>
+            {!collapsed && (
+              <motion.span
+                key="sair"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.14 }}
+                className="text-[15px] font-medium"
+              >
+                Sair
+              </motion.span>
+            )}
+          </AnimatePresence>
         </button>
       </div>
     </div>
@@ -403,7 +401,7 @@ export default function Sidebar(props: SidebarProps) {
 
   return (
     <>
-      {/* Desktop — sticky full-height */}
+      {/* Desktop */}
       <div className="hidden lg:block flex-shrink-0 h-screen sticky top-0">
         <SidebarContent {...props} isMobile={false} />
       </div>

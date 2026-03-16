@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300..700;1,14..32,300..700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+/* Fonts loaded via next/font in layout.tsx — no render-blocking @import */
 
 /* ─── CSS Variables ─────────────────────────────── */
 @layer base {
@@ -373,6 +373,73 @@ input:focus, textarea:focus, select:focus {
   background: linear-gradient(135deg, #dc2626 0%, #ef4444 100%);
   box-shadow: 0 2px 12px rgba(239,68,68,0.35), 0 1px 4px rgba(239,68,68,0.2);
 }
+
+/* ─── Navigation Progress Bar ────────────────────── */
+.nav-progress-bar {
+  background: linear-gradient(
+    90deg,
+    #b91c1c 0%,
+    #dc2626 30%,
+    #ef4444 60%,
+    #f87171 80%,
+    transparent 100%
+  );
+  box-shadow: 0 0 12px rgba(220,38,38,0.5), 0 0 4px rgba(220,38,38,0.3);
+}
+.dark .nav-progress-bar {
+  box-shadow: 0 0 16px rgba(239,68,68,0.6), 0 0 6px rgba(239,68,68,0.4);
+}
+
+/* ─── Content area smooth transition ─────────────── */
+.will-change-transform {
+  will-change: transform, opacity, filter;
+}
+
+/* ─── Ambient dot grid (static, rendered via inline style) ── */
+
+/* ─── Tech scan-line effect (optional overlay) ───── */
+@keyframes scan-line {
+  0%   { transform: translateY(-100%); opacity: 0; }
+  10%  { opacity: 0.4; }
+  90%  { opacity: 0.4; }
+  100% { transform: translateY(100vh); opacity: 0; }
+}
+
+/* ─── Stagger animation helpers ──────────────────── */
+.stagger-children > * {
+  animation: stagger-fade-up 0.4s var(--transition-decelerate) both;
+}
+.stagger-children > *:nth-child(1)  { animation-delay: 0ms; }
+.stagger-children > *:nth-child(2)  { animation-delay: 50ms; }
+.stagger-children > *:nth-child(3)  { animation-delay: 100ms; }
+.stagger-children > *:nth-child(4)  { animation-delay: 150ms; }
+.stagger-children > *:nth-child(5)  { animation-delay: 200ms; }
+.stagger-children > *:nth-child(6)  { animation-delay: 250ms; }
+@keyframes stagger-fade-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ─── Glow pulse (for live indicators) ───────────── */
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 4px rgba(220,38,38,0.3); }
+  50%       { box-shadow: 0 0 14px rgba(220,38,38,0.65), 0 0 28px rgba(220,38,38,0.25); }
+}
+.glow-pulse { animation: glow-pulse 2.5s ease-in-out infinite; }
+
+/* ─── Blink cursor (for live/typing effects) ─────── */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+.blink { animation: blink 1.1s step-end infinite; }
+
+/* ─── Number count-up shimmer ────────────────────── */
+@keyframes number-reveal {
+  from { opacity: 0; transform: translateY(6px) scale(0.95); filter: blur(4px); }
+  to   { opacity: 1; transform: translateY(0)   scale(1);    filter: blur(0);   }
+}
+.number-reveal { animation: number-reveal 0.45s var(--transition-decelerate) both; }
 
 /* ─── Gradient Border ────────────────────────────── */
 .gradient-border {

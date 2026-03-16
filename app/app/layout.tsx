@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -8,20 +8,20 @@ import Sidebar, { type MenuPage } from '@/app/components/layout/Sidebar';
 import TopBar from '@/app/components/layout/TopBar';
 import { AppContext } from './AppContext';
 
+// ─── Loading skeleton ────────────────────────────────────────────────────────
 function LoadingSkeleton() {
   return (
     <div className="min-h-screen flex bg-gradient-to-br from-gray-50 to-gray-100 dark:from-[#0B0F19] dark:to-[#0d1117]">
-      <div className="hidden lg:block w-[260px] bg-white dark:bg-[#0a0e17] border-r border-gray-100 dark:border-gray-800/60 flex-shrink-0">
+      <div className="hidden lg:block w-[264px] bg-white dark:bg-[#0a0e17] border-r border-gray-100 dark:border-gray-800/60 flex-shrink-0">
         <div className="p-5 space-y-4">
           <div className="flex items-center gap-3 h-[60px]">
             <div className="w-8 h-8 rounded-xl shimmer" />
             <div className="w-24 h-4 rounded-lg shimmer" />
           </div>
-          <div className="w-full h-10 rounded-xl shimmer" />
           <div className="pt-3 space-y-1.5">
-            {[80, 65, 70, 55, 75, 60].map((w, i) => (
+            {[80, 65, 70, 55, 75, 60, 68, 72].map((w, i) => (
               <div key={i} className="flex items-center gap-3 px-3 py-2.5 rounded-xl">
-                <div className="w-5 h-5 rounded-lg shimmer flex-shrink-0" />
+                <div className="w-[18px] h-[18px] rounded-lg shimmer flex-shrink-0" />
                 <div className="h-3.5 rounded-lg shimmer" style={{ width: `${w}%` }} />
               </div>
             ))}
@@ -55,12 +55,110 @@ function LoadingSkeleton() {
   );
 }
 
+// ─── Navigation progress bar ─────────────────────────────────────────────────
+// key={trigger} causes React to remount on each navigation, restarting the animation.
+// No AnimatePresence needed — the bar self-completes: fills then fades out.
+function NavProgress({ trigger }: { trigger: string }) {
+  return (
+    <motion.div
+      key={trigger}
+      initial={{ scaleX: 0, opacity: 1 }}
+      animate={{ scaleX: 1, opacity: 0 }}
+      transition={{
+        scaleX: { duration: 0.55, ease: [0.22, 1, 0.36, 1] },
+        opacity: { duration: 0.3, delay: 0.42 },
+      }}
+      style={{ transformOrigin: 'left center' }}
+      className="absolute top-0 left-0 right-0 h-[2px] z-50 pointer-events-none nav-progress-bar"
+    />
+  );
+}
+
+// ─── Ambient background orbs ──────────────────────────────────────────────────
+function AmbientBackground() {
+  return (
+    <div className="fixed inset-0 overflow-hidden pointer-events-none z-0" aria-hidden>
+      {/* Top-right warm orb */}
+      <motion.div
+        className="absolute rounded-full"
+        style={{
+          width: 700,
+          height: 700,
+          top: '-15%',
+          right: '-10%',
+          background: 'radial-gradient(circle, rgba(220,38,38,1) 0%, transparent 68%)',
+          opacity: 0,
+        }}
+        animate={{ opacity: [0.03, 0.055, 0.03], x: [0, 28, -12, 0], y: [0, -18, 26, 0] }}
+        transition={{ duration: 28, repeat: Infinity, ease: 'easeInOut' }}
+      />
+      {/* Bottom-left cool orb */}
+      <motion.div
+        className="absolute rounded-full"
+        style={{
+          width: 500,
+          height: 500,
+          bottom: '5%',
+          left: '10%',
+          background: 'radial-gradient(circle, rgba(244,63,94,1) 0%, transparent 68%)',
+          opacity: 0,
+        }}
+        animate={{ opacity: [0.02, 0.04, 0.02], x: [0, -18, 10, 0], y: [0, 14, -22, 0] }}
+        transition={{ duration: 22, repeat: Infinity, ease: 'easeInOut', delay: 9 }}
+      />
+      {/* Subtle dot grid overlay */}
+      <div
+        className="absolute inset-0 opacity-[0.018] dark:opacity-[0.035]"
+        style={{
+          backgroundImage: 'radial-gradient(circle, #94a3b8 1px, transparent 1px)',
+          backgroundSize: '32px 32px',
+        }}
+      />
+    </div>
+  );
+}
+
+// ─── Page transition variants ─────────────────────────────────────────────────
+const pageVariants: import('framer-motion').Variants = {
+  initial: {
+    opacity: 0,
+    y: 14,
+    scale: 0.994,
+    filter: 'blur(5px)',
+  },
+  animate: {
+    opacity: 1,
+    y: 0,
+    scale: 1,
+    filter: 'blur(0px)',
+    transition: {
+      duration: 0.38,
+      ease: [0.22, 1, 0.36, 1],
+      opacity: { duration: 0.22 },
+      filter: { duration: 0.3 },
+      scale: { duration: 0.38 },
+    },
+  },
+  exit: {
+    opacity: 0,
+    y: -4,
+    scale: 0.998,
+    // No blur on exit — blur during AnimatePresence exit can stall on low-end GPUs
+    transition: {
+      duration: 0.15,
+      ease: [0.4, 0, 1, 1],
+    },
+  },
+};
+
+// ─── Layout ───────────────────────────────────────────────────────────────────
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const { isAuthenticated, isLoading } = useAuth();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [activePage, setActivePage] = useState<MenuPage>('Dashboard');
+  const prevPageRef = useRef<MenuPage>('Dashboard');
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
@@ -69,6 +167,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }, [isAuthenticated, isLoading, router]);
 
   const handleMenuSelect = (page: MenuPage) => {
+    prevPageRef.current = activePage;
     setActivePage(page);
     setMobileMenuOpen(false);
   };
@@ -78,33 +177,38 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <AppContext.Provider value={{ activePage, setActivePage: handleMenuSelect }}>
-      <div className="min-h-screen flex bg-gradient-to-br from-gray-50 to-gray-100 dark:from-[#0B0F19] dark:to-[#0d1117]">
+    <AppContext.Provider value={{ activePage, setActivePage: handleMenuSelect, sidebarCollapsed }}>
+      <AmbientBackground />
+
+      <div className="relative min-h-screen flex bg-gradient-to-br from-gray-50/90 to-gray-100/90 dark:from-[#0B0F19]/95 dark:to-[#0d1117]/95 z-10">
         <Sidebar
           activePage={activePage}
           onMenuSelect={handleMenuSelect}
           isCollapsed={sidebarCollapsed}
-          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+          onToggleCollapse={() => setSidebarCollapsed(v => !v)}
           isMobileOpen={mobileMenuOpen}
           onMobileClose={() => setMobileMenuOpen(false)}
         />
 
+        {/* Main content — expands smoothly as sidebar collapses */}
         <div className="flex-1 flex flex-col min-w-0">
           <TopBar
-            activePage={activePage}
             onMobileMenuToggle={() => setMobileMenuOpen(!mobileMenuOpen)}
             onNavigate={handleMenuSelect}
           />
 
-          <main className="flex-1 overflow-x-hidden">
-            <AnimatePresence mode="wait">
+          <main className="relative flex-1 overflow-x-hidden">
+            {/* Page transition progress line */}
+            <NavProgress trigger={activePage} />
+
+            <AnimatePresence mode="popLayout" initial={false}>
               <motion.div
                 key={activePage}
-                initial={{ opacity: 0, y: 10, filter: 'blur(2px)' }}
-                animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-                exit={{ opacity: 0, y: -6, filter: 'blur(2px)' }}
-                transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-                className="h-full"
+                variants={pageVariants}
+                initial="initial"
+                animate="animate"
+                exit="exit"
+                className="h-full will-change-transform"
               >
                 {children}
               </motion.div>

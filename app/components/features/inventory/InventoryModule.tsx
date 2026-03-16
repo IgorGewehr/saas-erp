@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Dialog,
@@ -38,16 +38,31 @@ import {
   ChevronDown,
   Download,
   Box,
-  Wrench,
   Beaker,
   Cpu,
-  ShoppingCart,
-  RotateCcw,
   Trash2,
   ClipboardList,
-  Eye,
+  Image as ImageIcon,
+  Upload,
+  Camera,
 } from 'lucide-react';
+import {
+  collection,
+  query,
+  where,
+  orderBy,
+  getDocs,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
+} from 'firebase/firestore';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { db, storage } from '@/lib/config/firebase';
+import { useAuth } from '@/app/components/providers/AuthProvider';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Product, StockMovement } from '@/lib/types';
+import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatDateTime } from '@/lib/utils/format';
 
@@ -59,14 +74,15 @@ type ViewMode = 'grid' | 'list';
 type MovementType = 'entrada' | 'saida' | 'ajuste';
 type SortField = 'name' | 'sku' | 'category' | 'currentStock' | 'costPrice' | 'salePrice';
 type SortDirection = 'asc' | 'desc';
+type StockStatusFilter = 'all' | 'em_estoque' | 'estoque_baixo' | 'sem_estoque';
 
-interface SortConfig {
+interface LocalSortConfig {
   field: SortField;
   direction: SortDirection;
 }
 
 type ProductCategory = 'Material' | 'Produto' | 'Insumo' | 'Equipamento';
-type ProductUnit = 'UN' | 'KG' | 'L' | 'M' | 'CX' | 'PCT';
+type ProductUnit = 'UN' | 'KG' | 'L' | 'M' | 'M2' | 'M3' | 'CX' | 'PCT';
 
 interface ProductFormData {
   name: string;
@@ -83,6 +99,9 @@ interface ProductFormData {
   ncm: string;
   cfop: string;
   isActive: boolean;
+  imageFile: File | null;
+  imagePreview: string;
+  existingImageUrl: string;
 }
 
 interface MovementFormData {
@@ -98,7 +117,7 @@ interface MovementFormData {
 // ==============================================
 
 const CATEGORIES: ProductCategory[] = ['Material', 'Produto', 'Insumo', 'Equipamento'];
-const UNITS: ProductUnit[] = ['UN', 'KG', 'L', 'M', 'CX', 'PCT'];
+const UNITS: ProductUnit[] = ['UN', 'KG', 'L', 'M', 'M2', 'M3', 'CX', 'PCT'];
 
 const MOVEMENT_REASONS: Record<MovementType, string[]> = {
   entrada: ['Compra', 'Devolucao de Cliente', 'Transferencia', 'Ajuste Manual', 'Producao'],
@@ -135,6 +154,9 @@ const EMPTY_PRODUCT_FORM: ProductFormData = {
   ncm: '',
   cfop: '',
   isActive: true,
+  imageFile: null,
+  imagePreview: '',
+  existingImageUrl: '',
 };
 
 const EMPTY_MOVEMENT_FORM: MovementFormData = {
@@ -145,45 +167,8 @@ const EMPTY_MOVEMENT_FORM: MovementFormData = {
   notes: '',
 };
 
-// ==============================================
-// MOCK DATA
-// ==============================================
-
-const mockProducts: Product[] = [
-  { id: '1', businessId: 'b1', name: 'Shampoo Profissional 1L', description: 'Shampoo para uso profissional', sku: 'SHP-001', barcode: '7891234560010', category: 'Insumo', unit: 'UN', costPrice: 28.90, salePrice: 45.00, currentStock: 3, minStock: 5, maxStock: 50, ncm: '33051000', cfop: '5102', isActive: true, createdAt: '2025-12-01T10:00:00Z', updatedAt: '2026-03-10T14:30:00Z' },
-  { id: '2', businessId: 'b1', name: 'Condicionador Profissional 1L', description: 'Condicionador para uso profissional', sku: 'CND-001', barcode: '7891234560027', category: 'Insumo', unit: 'UN', costPrice: 32.50, salePrice: 52.00, currentStock: 8, minStock: 5, maxStock: 50, isActive: true, createdAt: '2025-12-01T10:00:00Z', updatedAt: '2026-03-09T11:00:00Z' },
-  { id: '3', businessId: 'b1', name: 'Tintura Loiro 7.0', description: 'Tintura capilar loiro natural', sku: 'TNT-070', barcode: '7891234560034', category: 'Insumo', unit: 'UN', costPrice: 18.00, salePrice: 35.00, currentStock: 2, minStock: 10, maxStock: 100, isActive: true, createdAt: '2025-12-05T09:00:00Z', updatedAt: '2026-03-12T08:00:00Z' },
-  { id: '4', businessId: 'b1', name: 'Tintura Castanho 4.0', description: 'Tintura capilar castanho natural', sku: 'TNT-040', barcode: '7891234560041', category: 'Insumo', unit: 'UN', costPrice: 18.00, salePrice: 35.00, currentStock: 15, minStock: 10, maxStock: 100, isActive: true, createdAt: '2025-12-05T09:00:00Z', updatedAt: '2026-03-11T10:00:00Z' },
-  { id: '5', businessId: 'b1', name: 'Oxidante 20 Vol 1L', description: 'Oxidante cremoso 20 volumes', sku: 'OXD-020', barcode: '7891234560058', category: 'Insumo', unit: 'UN', costPrice: 12.00, salePrice: 22.00, currentStock: 20, minStock: 8, maxStock: 60, isActive: true, createdAt: '2025-12-10T14:00:00Z', updatedAt: '2026-03-10T16:00:00Z' },
-  { id: '6', businessId: 'b1', name: 'Mascara Hidratacao 500g', description: 'Mascara de hidratacao profunda', sku: 'MSK-001', barcode: '7891234560065', category: 'Produto', unit: 'UN', costPrice: 42.00, salePrice: 79.90, currentStock: 12, minStock: 5, maxStock: 30, isActive: true, createdAt: '2025-12-15T11:00:00Z', updatedAt: '2026-03-08T09:00:00Z' },
-  { id: '7', businessId: 'b1', name: 'Oleo Reparador 60ml', description: 'Oleo finalizador reparador de pontas', sku: 'OLR-001', barcode: '7891234560072', category: 'Produto', unit: 'UN', costPrice: 25.00, salePrice: 49.90, currentStock: 7, minStock: 5, maxStock: 25, isActive: true, createdAt: '2025-12-20T13:00:00Z', updatedAt: '2026-03-07T15:00:00Z' },
-  { id: '8', businessId: 'b1', name: 'Pomada Modeladora 150g', description: 'Pomada para modelagem capilar', sku: 'PMD-001', barcode: '7891234560089', category: 'Produto', unit: 'UN', costPrice: 15.00, salePrice: 32.00, currentStock: 22, minStock: 8, maxStock: 40, isActive: true, createdAt: '2026-01-05T10:00:00Z', updatedAt: '2026-03-06T12:00:00Z' },
-  { id: '9', businessId: 'b1', name: 'Gel Fixador Forte 300g', description: 'Gel para fixacao forte dos fios', sku: 'GEL-001', barcode: '7891234560096', category: 'Produto', unit: 'UN', costPrice: 10.00, salePrice: 22.00, currentStock: 18, minStock: 10, maxStock: 50, isActive: true, createdAt: '2026-01-10T08:00:00Z', updatedAt: '2026-03-05T14:00:00Z' },
-  { id: '10', businessId: 'b1', name: 'Luvas Descartaveis M CX100', description: 'Caixa com 100 luvas descartaveis tamanho M', sku: 'LUV-M01', barcode: '7891234560102', category: 'Material', unit: 'CX', costPrice: 28.00, salePrice: 28.00, currentStock: 4, minStock: 3, maxStock: 20, isActive: true, createdAt: '2026-01-15T09:00:00Z', updatedAt: '2026-03-12T10:00:00Z' },
-  { id: '11', businessId: 'b1', name: 'Papel Aluminio 30cm x 100m', description: 'Rolo de papel aluminio para mechas', sku: 'PAL-001', barcode: '7891234560119', category: 'Material', unit: 'UN', costPrice: 22.00, salePrice: 22.00, currentStock: 6, minStock: 3, maxStock: 15, isActive: true, createdAt: '2026-01-20T11:00:00Z', updatedAt: '2026-03-11T08:00:00Z' },
-  { id: '12', businessId: 'b1', name: 'Toalha Descartavel PCT50', description: 'Pacote com 50 toalhas descartaveis', sku: 'TWL-001', barcode: '7891234560126', category: 'Material', unit: 'PCT', costPrice: 18.00, salePrice: 18.00, currentStock: 1, minStock: 5, maxStock: 30, isActive: true, createdAt: '2026-02-01T10:00:00Z', updatedAt: '2026-03-13T07:00:00Z' },
-  { id: '13', businessId: 'b1', name: 'Secador Profissional 2100W', description: 'Secador de cabelo profissional potencia 2100W', sku: 'SEC-001', barcode: '7891234560133', category: 'Equipamento', unit: 'UN', costPrice: 289.00, salePrice: 450.00, currentStock: 3, minStock: 1, maxStock: 5, isActive: true, createdAt: '2026-02-05T14:00:00Z', updatedAt: '2026-03-01T10:00:00Z' },
-  { id: '14', businessId: 'b1', name: 'Prancha Alisadora Titanio', description: 'Prancha alisadora com placas de titanio', sku: 'PRA-001', barcode: '7891234560140', category: 'Equipamento', unit: 'UN', costPrice: 195.00, salePrice: 320.00, currentStock: 2, minStock: 1, maxStock: 5, isActive: true, createdAt: '2026-02-10T09:00:00Z', updatedAt: '2026-03-02T11:00:00Z' },
-  { id: '15', businessId: 'b1', name: 'Maquina de Corte Pro', description: 'Maquina de corte profissional sem fio', sku: 'MAQ-001', barcode: '7891234560157', category: 'Equipamento', unit: 'UN', costPrice: 350.00, salePrice: 550.00, currentStock: 2, minStock: 1, maxStock: 4, isActive: true, createdAt: '2026-02-15T10:00:00Z', updatedAt: '2026-03-03T13:00:00Z' },
-  { id: '16', businessId: 'b1', name: 'Po Descolorante 500g', description: 'Po descolorante profissional', sku: 'DSC-001', barcode: '7891234560164', category: 'Insumo', unit: 'UN', costPrice: 35.00, salePrice: 65.00, currentStock: 9, minStock: 5, maxStock: 25, isActive: true, createdAt: '2026-02-20T08:00:00Z', updatedAt: '2026-03-10T09:00:00Z' },
-  { id: '17', businessId: 'b1', name: 'Creme Alisante 300g', description: 'Creme para alisamento capilar', sku: 'CRA-001', barcode: '7891234560171', category: 'Produto', unit: 'UN', costPrice: 38.00, salePrice: 72.00, currentStock: 0, minStock: 3, maxStock: 15, isActive: false, createdAt: '2026-03-01T10:00:00Z', updatedAt: '2026-03-12T16:00:00Z' },
-  { id: '18', businessId: 'b1', name: 'Spray Termoprotetor 200ml', description: 'Protetor termico para cabelos', sku: 'SPT-001', barcode: '7891234560188', category: 'Produto', unit: 'UN', costPrice: 20.00, salePrice: 39.90, currentStock: 14, minStock: 5, maxStock: 30, isActive: true, createdAt: '2026-03-05T11:00:00Z', updatedAt: '2026-03-10T15:00:00Z' },
-];
-
-const mockMovements: StockMovement[] = [
-  { id: 'm1', businessId: 'b1', productId: '1', productName: 'Shampoo Profissional 1L', type: 'saida', quantity: 2, previousStock: 5, newStock: 3, reason: 'Venda', operatorId: 'u1', operatorName: 'Igor Garcia', createdAt: '2026-03-13T09:15:00Z' },
-  { id: 'm2', businessId: 'b1', productId: '3', productName: 'Tintura Loiro 7.0', type: 'saida', quantity: 3, previousStock: 5, newStock: 2, reason: 'Consumo Interno', operatorId: 'u1', operatorName: 'Igor Garcia', createdAt: '2026-03-13T08:40:00Z' },
-  { id: 'm3', businessId: 'b1', productId: '12', productName: 'Toalha Descartavel PCT50', type: 'saida', quantity: 4, previousStock: 5, newStock: 1, reason: 'Consumo Interno', operatorId: 'u2', operatorName: 'Ana Souza', createdAt: '2026-03-13T08:00:00Z' },
-  { id: 'm4', businessId: 'b1', productId: '5', productName: 'Oxidante 20 Vol 1L', type: 'entrada', quantity: 12, previousStock: 8, newStock: 20, reason: 'Compra', operatorId: 'u1', operatorName: 'Igor Garcia', createdAt: '2026-03-12T16:30:00Z' },
-  { id: 'm5', businessId: 'b1', productId: '8', productName: 'Pomada Modeladora 150g', type: 'entrada', quantity: 10, previousStock: 12, newStock: 22, reason: 'Compra', operatorId: 'u1', operatorName: 'Igor Garcia', createdAt: '2026-03-12T14:20:00Z' },
-  { id: 'm6', businessId: 'b1', productId: '17', productName: 'Creme Alisante 300g', type: 'ajuste', quantity: 0, previousStock: 3, newStock: 0, reason: 'Avaria', operatorId: 'u1', operatorName: 'Igor Garcia', createdAt: '2026-03-12T11:00:00Z' },
-  { id: 'm7', businessId: 'b1', productId: '6', productName: 'Mascara Hidratacao 500g', type: 'saida', quantity: 1, previousStock: 13, newStock: 12, reason: 'Venda', operatorId: 'u2', operatorName: 'Ana Souza', createdAt: '2026-03-12T10:45:00Z' },
-  { id: 'm8', businessId: 'b1', productId: '9', productName: 'Gel Fixador Forte 300g', type: 'entrada', quantity: 8, previousStock: 10, newStock: 18, reason: 'Compra', operatorId: 'u1', operatorName: 'Igor Garcia', createdAt: '2026-03-11T15:00:00Z' },
-  { id: 'm9', businessId: 'b1', productId: '4', productName: 'Tintura Castanho 4.0', type: 'entrada', quantity: 5, previousStock: 10, newStock: 15, reason: 'Compra', operatorId: 'u1', operatorName: 'Igor Garcia', createdAt: '2026-03-11T14:00:00Z' },
-  { id: 'm10', businessId: 'b1', productId: '10', productName: 'Luvas Descartaveis M CX100', type: 'saida', quantity: 1, previousStock: 5, newStock: 4, reason: 'Consumo Interno', operatorId: 'u2', operatorName: 'Ana Souza', createdAt: '2026-03-11T09:30:00Z' },
-  { id: 'm11', businessId: 'b1', productId: '7', productName: 'Oleo Reparador 60ml', type: 'saida', quantity: 2, previousStock: 9, newStock: 7, reason: 'Venda', operatorId: 'u2', operatorName: 'Ana Souza', createdAt: '2026-03-10T16:15:00Z' },
-  { id: 'm12', businessId: 'b1', productId: '16', productName: 'Po Descolorante 500g', type: 'entrada', quantity: 4, previousStock: 5, newStock: 9, reason: 'Compra', operatorId: 'u1', operatorName: 'Igor Garcia', createdAt: '2026-03-10T11:00:00Z' },
-];
+const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
+const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
 // ==============================================
 // ANIMATION VARIANTS
@@ -260,6 +245,88 @@ function getMargin(cost: number, sale: number): number {
   return ((sale - cost) / sale) * 100;
 }
 
+function generateSKU(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = 'PRD-';
+  for (let i = 0; i < 5; i++) {
+    code += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return code;
+}
+
+function parseCurrencyInput(raw: string): string {
+  const digits = raw.replace(/\D/g, '');
+  if (!digits) return '';
+  const num = parseInt(digits, 10);
+  const formatted = (num / 100).toLocaleString('pt-BR', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return formatted;
+}
+
+function currencyDisplayToNumber(display: string): number {
+  if (!display) return 0;
+  const cleaned = display.replace(/\./g, '').replace(',', '.');
+  return parseFloat(cleaned) || 0;
+}
+
+// ==============================================
+// SKELETON LOADING
+// ==============================================
+
+function InventorySkeleton() {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="space-y-6"
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="h-7 w-32 rounded-xl shimmer" />
+          <div className="h-4 w-48 rounded-lg shimmer mt-2" />
+        </div>
+        <div className="h-10 w-36 rounded-lg shimmer" />
+      </div>
+
+      {/* Filter bar */}
+      <div className="flex gap-3">
+        <div className="h-10 flex-1 max-w-md rounded-lg shimmer" />
+        <div className="h-10 w-40 rounded-lg shimmer" />
+        <div className="h-10 w-20 rounded-lg shimmer" />
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {[0, 1, 2, 3].map((i) => (
+          <motion.div
+            key={i}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.28, delay: i * 0.07 }}
+            className="h-[100px] rounded-2xl shimmer"
+          />
+        ))}
+      </div>
+
+      {/* Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+        {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
+          <motion.div
+            key={i}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.28, delay: i * 0.05 }}
+            className="h-[320px] rounded-xl shimmer"
+          />
+        ))}
+      </div>
+    </motion.div>
+  );
+}
+
 // ==============================================
 // STAT CARD
 // ==============================================
@@ -303,10 +370,11 @@ function StatCard({ icon, iconBg, label, value, subtitle }: StatCardProps) {
 interface ProductCardProps {
   product: Product;
   onEdit: (product: Product) => void;
+  onDelete: (product: Product) => void;
   onMovement: (product: Product, type: MovementType) => void;
 }
 
-function ProductCard({ product, onEdit, onMovement }: ProductCardProps) {
+function ProductCard({ product, onEdit, onDelete, onMovement }: ProductCardProps) {
   const catColor = CATEGORY_COLORS[product.category] || CATEGORY_COLORS.Produto;
   const catIcon = CATEGORY_ICONS[product.category] || CATEGORY_ICONS.Produto;
   const stockPct = getStockPercentage(product.currentStock, product.maxStock);
@@ -334,10 +402,20 @@ function ProductCard({ product, onEdit, onMovement }: ProductCardProps) {
         </div>
       )}
 
-      {/* Product Image Placeholder */}
-      <div className={cn('flex items-center justify-center h-32', catColor.bg)}>
-        <div className={catColor.icon}>{catIcon}</div>
-      </div>
+      {/* Product Image / Placeholder */}
+      {product.imageUrl ? (
+        <div className="relative h-32 overflow-hidden bg-gray-100 dark:bg-gray-800">
+          <img
+            src={product.imageUrl}
+            alt={product.name}
+            className="w-full h-full object-cover"
+          />
+        </div>
+      ) : (
+        <div className={cn('flex items-center justify-center h-32', catColor.bg)}>
+          <div className={catColor.icon}>{catIcon}</div>
+        </div>
+      )}
 
       <div className="p-4 space-y-3">
         {/* Name & SKU */}
@@ -413,8 +491,16 @@ function ProductCard({ product, onEdit, onMovement }: ProductCardProps) {
           <button
             onClick={() => onEdit(product)}
             className="flex items-center justify-center p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+            title="Editar"
           >
             <Edit3 className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => onDelete(product)}
+            className="flex items-center justify-center p-1.5 rounded-lg text-muted-foreground hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+            title="Excluir"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
@@ -429,7 +515,7 @@ function ProductCard({ product, onEdit, onMovement }: ProductCardProps) {
 interface SortableHeaderProps {
   label: string;
   field: SortField;
-  sortConfig: SortConfig;
+  sortConfig: LocalSortConfig;
   onSort: (field: SortField) => void;
   className?: string;
 }
@@ -466,10 +552,11 @@ function SortableHeader({ label, field, sortConfig, onSort, className }: Sortabl
 interface ProductRowProps {
   product: Product;
   onEdit: (product: Product) => void;
+  onDelete: (product: Product) => void;
   onMovement: (product: Product, type: MovementType) => void;
 }
 
-function ProductRow({ product, onEdit, onMovement }: ProductRowProps) {
+function ProductRow({ product, onEdit, onDelete, onMovement }: ProductRowProps) {
   const catColor = CATEGORY_COLORS[product.category] || CATEGORY_COLORS.Produto;
   const low = isLowStock(product);
   const stockPct = getStockPercentage(product.currentStock, product.maxStock);
@@ -480,21 +567,28 @@ function ProductRow({ product, onEdit, onMovement }: ProductRowProps) {
       'border-b border-border/40 hover:bg-muted/30 transition-colors',
       low && 'bg-amber-50/40 dark:bg-amber-500/5',
     )}>
+      {/* Image */}
+      <td className="py-3 px-4">
+        {product.imageUrl ? (
+          <div className="w-9 h-9 rounded-lg overflow-hidden shrink-0">
+            <img src={product.imageUrl} alt={product.name} className="w-full h-full object-cover" />
+          </div>
+        ) : (
+          <div className={cn('flex items-center justify-center w-9 h-9 rounded-lg shrink-0', catColor.bg, catColor.icon)}>
+            {React.cloneElement((CATEGORY_ICONS[product.category] || CATEGORY_ICONS.Produto) as React.ReactElement<{ className?: string }>, { className: 'w-4 h-4' })}
+          </div>
+        )}
+      </td>
       {/* Produto */}
       <td className="py-3 px-4">
-        <div className="flex items-center gap-3">
-          <div className={cn('flex items-center justify-center w-9 h-9 rounded-lg shrink-0', catColor.bg, catColor.icon)}>
-            {React.cloneElement((CATEGORY_ICONS[product.category] || CATEGORY_ICONS.Produto) as React.ReactElement<any>, { className: 'w-4 h-4' })}
-          </div>
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-foreground truncate">{product.name}</p>
-            {low && (
-              <div className="flex items-center gap-1 mt-0.5">
-                <AlertTriangle className="w-3 h-3 text-amber-500" />
-                <span className="text-[10px] font-medium text-amber-600 dark:text-amber-400">Abaixo do minimo</span>
-              </div>
-            )}
-          </div>
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-foreground truncate">{product.name}</p>
+          {low && (
+            <div className="flex items-center gap-1 mt-0.5">
+              <AlertTriangle className="w-3 h-3 text-amber-500" />
+              <span className="text-[10px] font-medium text-amber-600 dark:text-amber-400">Abaixo do minimo</span>
+            </div>
+          )}
         </div>
       </td>
       {/* SKU */}
@@ -517,14 +611,6 @@ function ProductRow({ product, onEdit, onMovement }: ProductRowProps) {
             <div className={cn('h-full rounded-full', stockBarColor)} style={{ width: `${stockPct}%` }} />
           </div>
         </div>
-      </td>
-      {/* Min/Max */}
-      <td className="py-3 px-4">
-        <span className="text-sm text-muted-foreground">{product.minStock} / {product.maxStock ?? '--'}</span>
-      </td>
-      {/* Preco Custo */}
-      <td className="py-3 px-4">
-        <span className="text-sm text-foreground">{formatCurrency(product.costPrice)}</span>
       </td>
       {/* Preco Venda */}
       <td className="py-3 px-4">
@@ -566,9 +652,248 @@ function ProductRow({ product, onEdit, onMovement }: ProductRowProps) {
           >
             <Edit3 className="w-4 h-4" />
           </button>
+          <button
+            onClick={() => onDelete(product)}
+            className="p-1.5 rounded-md text-muted-foreground hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+            title="Excluir"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
         </div>
       </td>
     </tr>
+  );
+}
+
+// ==============================================
+// IMAGE UPLOAD DROP ZONE
+// ==============================================
+
+interface ImageDropZoneProps {
+  preview: string;
+  existingUrl: string;
+  onFileSelect: (file: File) => void;
+  onRemove: () => void;
+  error?: string;
+}
+
+function ImageDropZone({ preview, existingUrl, onFileSelect, onRemove, error }: ImageDropZoneProps) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const displayUrl = preview || existingUrl;
+
+  function handleFile(file: File) {
+    if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) {
+      return;
+    }
+    if (file.size > MAX_IMAGE_SIZE) {
+      return;
+    }
+    onFileSelect(file);
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (file) handleFile(file);
+  }
+
+  function handleDragOver(e: React.DragEvent) {
+    e.preventDefault();
+    setIsDragging(true);
+  }
+
+  function handleDragLeave() {
+    setIsDragging(false);
+  }
+
+  function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (file) handleFile(file);
+  }
+
+  if (displayUrl) {
+    return (
+      <div className="relative">
+        <div className="relative w-full h-40 rounded-xl overflow-hidden border border-border/60 bg-gray-50 dark:bg-gray-800">
+          <img src={displayUrl} alt="Preview" className="w-full h-full object-contain" />
+          <div className="absolute inset-0 bg-black/0 hover:bg-black/40 transition-colors flex items-center justify-center opacity-0 hover:opacity-100">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="px-3 py-1.5 rounded-lg bg-white/90 text-sm font-medium text-gray-700 hover:bg-white transition-colors"
+              >
+                <Camera className="w-4 h-4 inline mr-1" />
+                Trocar
+              </button>
+              <button
+                type="button"
+                onClick={onRemove}
+                className="px-3 py-1.5 rounded-lg bg-red-500/90 text-sm font-medium text-white hover:bg-red-500 transition-colors"
+              >
+                <Trash2 className="w-4 h-4 inline mr-1" />
+                Remover
+              </button>
+            </div>
+          </div>
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={ACCEPTED_IMAGE_TYPES.join(',')}
+          onChange={handleInputChange}
+          className="hidden"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div
+        onDrop={handleDrop}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onClick={() => fileInputRef.current?.click()}
+        className={cn(
+          'flex flex-col items-center justify-center h-40 rounded-xl border-2 border-dashed cursor-pointer transition-all',
+          isDragging
+            ? 'border-red-400 bg-red-50/50 dark:bg-red-500/5'
+            : 'border-border/60 hover:border-red-300 dark:hover:border-red-500/40 bg-gray-50/50 dark:bg-gray-800/50 hover:bg-red-50/30 dark:hover:bg-red-500/5',
+          error && 'border-red-400',
+        )}
+      >
+        <Upload className="w-8 h-8 text-muted-foreground/60 mb-2" />
+        <p className="text-sm font-medium text-muted-foreground">
+          Arraste uma imagem ou clique para selecionar
+        </p>
+        <p className="text-xs text-muted-foreground/60 mt-1">
+          JPG, PNG ou WebP - Max 5MB
+        </p>
+      </div>
+      {error && <p className="text-xs text-red-500 mt-1">{error}</p>}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={ACCEPTED_IMAGE_TYPES.join(',')}
+        onChange={handleInputChange}
+        className="hidden"
+      />
+    </div>
+  );
+}
+
+// ==============================================
+// CURRENCY INPUT
+// ==============================================
+
+interface CurrencyInputProps {
+  label: string;
+  value: string;
+  onChange: (formatted: string) => void;
+  error?: string;
+  helperText?: string;
+  required?: boolean;
+}
+
+function CurrencyInput({ label, value, onChange, error, helperText, required }: CurrencyInputProps) {
+  function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const raw = e.target.value;
+    const formatted = parseCurrencyInput(raw);
+    onChange(formatted);
+  }
+
+  return (
+    <TextField
+      label={label}
+      value={value ? `R$ ${value}` : ''}
+      onChange={handleChange}
+      error={!!error}
+      helperText={helperText || error}
+      fullWidth
+      required={required}
+      size="small"
+      placeholder="R$ 0,00"
+      slotProps={{
+        input: {
+          inputMode: 'numeric',
+        },
+      }}
+    />
+  );
+}
+
+// ==============================================
+// DELETE CONFIRMATION DIALOG
+// ==============================================
+
+interface DeleteDialogProps {
+  open: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+  productName: string;
+  isDeleting: boolean;
+}
+
+function DeleteDialog({ open, onClose, onConfirm, productName, isDeleting }: DeleteDialogProps) {
+  return (
+    <Dialog
+      open={open}
+      onClose={isDeleting ? undefined : onClose}
+      maxWidth="xs"
+      fullWidth
+      PaperProps={{ sx: { borderRadius: '16px' } }}
+    >
+      <DialogTitle
+        sx={{
+          fontFamily: '"Plus Jakarta Sans", sans-serif',
+          fontWeight: 700,
+          pb: 1,
+        }}
+      >
+        Excluir Produto
+      </DialogTitle>
+      <Divider />
+      <DialogContent sx={{ pt: 3 }}>
+        <div className="flex flex-col items-center text-center py-4">
+          <div className="flex items-center justify-center w-14 h-14 rounded-full bg-red-50 dark:bg-red-500/10 mb-4">
+            <Trash2 className="w-7 h-7 text-red-600 dark:text-red-400" />
+          </div>
+          <p className="text-sm text-foreground">
+            Tem certeza que deseja excluir o produto{' '}
+            <span className="font-semibold">{productName}</span>?
+          </p>
+          <p className="text-xs text-muted-foreground mt-2">
+            Esta acao nao pode ser desfeita.
+          </p>
+        </div>
+      </DialogContent>
+      <Divider />
+      <DialogActions sx={{ px: 3, py: 2 }}>
+        <Button onClick={onClose} disabled={isDeleting} sx={{ color: '#64748B' }}>
+          Cancelar
+        </Button>
+        <Button
+          onClick={onConfirm}
+          variant="contained"
+          disabled={isDeleting}
+          sx={{
+            backgroundColor: '#DC2626',
+            '&:hover': { backgroundColor: '#B91C1C' },
+            minWidth: 100,
+          }}
+        >
+          {isDeleting ? (
+            <CircularProgress size={20} sx={{ color: 'white' }} />
+          ) : (
+            'Excluir'
+          )}
+        </Button>
+      </DialogActions>
+    </Dialog>
   );
 }
 
@@ -579,7 +904,7 @@ function ProductRow({ product, onEdit, onMovement }: ProductRowProps) {
 interface StockMovementDialogProps {
   open: boolean;
   onClose: () => void;
-  onSave: (data: MovementFormData) => void;
+  onSave: (data: MovementFormData) => Promise<void>;
   products: Product[];
   initialProduct?: Product | null;
   initialType?: MovementType;
@@ -617,17 +942,21 @@ function StockMovementDialog({
       ? selectedProduct.currentStock + qty
       : form.type === 'saida'
         ? Math.max(0, selectedProduct.currentStock - qty)
-        : qty // ajuste sets to the quantity value
+        : qty
     : 0;
 
   async function handleSubmit() {
     if (!form.productId || !form.quantity || !form.reason) return;
     setIsSaving(true);
-    // Simulate API call
-    await new Promise((r) => setTimeout(r, 500));
-    onSave(form);
-    setIsSaving(false);
-    onClose();
+    try {
+      await onSave(form);
+      onClose();
+    } catch (err) {
+      console.error('Error saving movement:', err);
+      toast.error('Erro ao registrar movimentacao');
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   const typeStyles: Record<MovementType, { bg: string; text: string; activeBg: string }> = {
@@ -738,7 +1067,7 @@ function StockMovementDialog({
             onChange={(e) => setForm((f) => ({ ...f, quantity: e.target.value }))}
             fullWidth
             size="small"
-            inputProps={{ min: 0 }}
+            slotProps={{ htmlInput: { min: 0 } }}
           />
 
           {/* Reason */}
@@ -805,7 +1134,7 @@ function StockMovementDialog({
 interface ProductDialogProps {
   open: boolean;
   onClose: () => void;
-  onSave: (data: ProductFormData) => void;
+  onSave: (data: ProductFormData) => Promise<void>;
   product?: Product | null;
 }
 
@@ -813,40 +1142,58 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
   const [form, setForm] = useState<ProductFormData>(EMPTY_PRODUCT_FORM);
   const [isSaving, setIsSaving] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [imageError, setImageError] = useState('');
 
   const isEditing = !!product;
 
   React.useEffect(() => {
-    if (product) {
-      setForm({
-        name: product.name,
-        description: product.description || '',
-        sku: product.sku || '',
-        barcode: product.barcode || '',
-        category: product.category,
-        unit: product.unit,
-        costPrice: String(product.costPrice),
-        salePrice: String(product.salePrice),
-        currentStock: String(product.currentStock),
-        minStock: String(product.minStock),
-        maxStock: product.maxStock ? String(product.maxStock) : '',
-        ncm: product.ncm || '',
-        cfop: product.cfop || '',
-        isActive: product.isActive,
-      });
-    } else {
-      setForm(EMPTY_PRODUCT_FORM);
+    if (open) {
+      if (product) {
+        const costFormatted = product.costPrice
+          ? (product.costPrice).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+          : '';
+        const saleFormatted = product.salePrice
+          ? (product.salePrice).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+          : '';
+        setForm({
+          name: product.name,
+          description: product.description || '',
+          sku: product.sku || '',
+          barcode: product.barcode || '',
+          category: product.category,
+          unit: product.unit,
+          costPrice: costFormatted,
+          salePrice: saleFormatted,
+          currentStock: String(product.currentStock),
+          minStock: String(product.minStock),
+          maxStock: product.maxStock ? String(product.maxStock) : '',
+          ncm: product.ncm || '',
+          cfop: product.cfop || '',
+          isActive: product.isActive,
+          imageFile: null,
+          imagePreview: '',
+          existingImageUrl: product.imageUrl || '',
+        });
+      } else {
+        setForm(EMPTY_PRODUCT_FORM);
+      }
+      setErrors({});
+      setImageError('');
     }
-    setErrors({});
   }, [product, open]);
 
   function validate(): boolean {
     const newErrors: Record<string, string> = {};
     if (!form.name.trim()) newErrors.name = 'Nome obrigatorio';
-    if (!form.costPrice || parseFloat(form.costPrice) < 0) newErrors.costPrice = 'Preco de custo invalido';
-    if (!form.salePrice || parseFloat(form.salePrice) < 0) newErrors.salePrice = 'Preco de venda invalido';
+    const costNum = currencyDisplayToNumber(form.costPrice);
+    const saleNum = currencyDisplayToNumber(form.salePrice);
+    if (costNum < 0) newErrors.costPrice = 'Preco de custo invalido';
+    if (saleNum < 0) newErrors.salePrice = 'Preco de venda invalido';
     if (form.currentStock === '' || parseInt(form.currentStock) < 0) newErrors.currentStock = 'Estoque invalido';
     if (form.minStock === '' || parseInt(form.minStock) < 0) newErrors.minStock = 'Estoque minimo invalido';
+    if (form.ncm && form.ncm.replace(/\D/g, '').length !== 0 && form.ncm.replace(/\D/g, '').length !== 8) {
+      newErrors.ncm = 'NCM deve ter 8 digitos';
+    }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   }
@@ -854,19 +1201,45 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
   async function handleSubmit() {
     if (!validate()) return;
     setIsSaving(true);
-    await new Promise((r) => setTimeout(r, 500));
-    onSave(form);
-    setIsSaving(false);
-    onClose();
+    try {
+      await onSave(form);
+      onClose();
+    } catch (err) {
+      console.error('Error saving product:', err);
+      toast.error('Erro ao salvar produto');
+    } finally {
+      setIsSaving(false);
+    }
   }
 
-  const costVal = parseFloat(form.costPrice) || 0;
-  const saleVal = parseFloat(form.salePrice) || 0;
+  const costVal = currencyDisplayToNumber(form.costPrice);
+  const saleVal = currencyDisplayToNumber(form.salePrice);
   const margin = getMargin(costVal, saleVal);
 
   function updateField(field: keyof ProductFormData, value: string | boolean) {
     setForm((f) => ({ ...f, [field]: value }));
     if (errors[field]) setErrors((e) => ({ ...e, [field]: '' }));
+  }
+
+  function handleFileSelect(file: File) {
+    if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) {
+      setImageError('Formato invalido. Use JPG, PNG ou WebP.');
+      return;
+    }
+    if (file.size > MAX_IMAGE_SIZE) {
+      setImageError('Imagem muito grande. Maximo 5MB.');
+      return;
+    }
+    setImageError('');
+    const preview = URL.createObjectURL(file);
+    setForm((f) => ({ ...f, imageFile: file, imagePreview: preview, existingImageUrl: '' }));
+  }
+
+  function handleImageRemove() {
+    if (form.imagePreview) {
+      URL.revokeObjectURL(form.imagePreview);
+    }
+    setForm((f) => ({ ...f, imageFile: null, imagePreview: '', existingImageUrl: '' }));
   }
 
   return (
@@ -902,6 +1275,21 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
           transition={{ duration: 0.2 }}
         >
           <div className="space-y-5">
+            {/* Image Upload */}
+            <div>
+              <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3 flex items-center gap-2">
+                <ImageIcon className="w-4 h-4" />
+                Imagem do Produto
+              </p>
+              <ImageDropZone
+                preview={form.imagePreview}
+                existingUrl={form.existingImageUrl}
+                onFileSelect={handleFileSelect}
+                onRemove={handleImageRemove}
+                error={imageError}
+              />
+            </div>
+
             {/* Nome + SKU */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <TextField
@@ -920,6 +1308,7 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
                 onChange={(e) => updateField('sku', e.target.value)}
                 fullWidth
                 size="small"
+                placeholder="Auto-gerado se vazio"
               />
             </div>
 
@@ -973,29 +1362,19 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
             <div>
               <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">Precos</p>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <TextField
+                <CurrencyInput
                   label="Preco de Custo"
-                  type="number"
                   value={form.costPrice}
-                  onChange={(e) => updateField('costPrice', e.target.value)}
-                  error={!!errors.costPrice}
-                  helperText={errors.costPrice}
-                  fullWidth
+                  onChange={(v) => updateField('costPrice', v)}
+                  error={errors.costPrice}
                   required
-                  size="small"
-                  inputProps={{ min: 0, step: 0.01 }}
                 />
-                <TextField
+                <CurrencyInput
                   label="Preco de Venda"
-                  type="number"
                   value={form.salePrice}
-                  onChange={(e) => updateField('salePrice', e.target.value)}
-                  error={!!errors.salePrice}
-                  helperText={errors.salePrice}
-                  fullWidth
+                  onChange={(v) => updateField('salePrice', v)}
+                  error={errors.salePrice}
                   required
-                  size="small"
-                  inputProps={{ min: 0, step: 0.01 }}
                 />
                 <div className="flex items-center px-3 rounded-lg bg-muted/40 border border-border/40">
                   <div>
@@ -1025,7 +1404,7 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
                   fullWidth
                   required
                   size="small"
-                  inputProps={{ min: 0 }}
+                  slotProps={{ htmlInput: { min: 0 } }}
                 />
                 <TextField
                   label="Estoque Minimo"
@@ -1037,7 +1416,7 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
                   fullWidth
                   required
                   size="small"
-                  inputProps={{ min: 0 }}
+                  slotProps={{ htmlInput: { min: 0 } }}
                 />
                 <TextField
                   label="Estoque Maximo"
@@ -1046,7 +1425,7 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
                   onChange={(e) => updateField('maxStock', e.target.value)}
                   fullWidth
                   size="small"
-                  inputProps={{ min: 0 }}
+                  slotProps={{ htmlInput: { min: 0 } }}
                 />
               </div>
             </div>
@@ -1059,9 +1438,12 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
                   label="NCM"
                   value={form.ncm}
                   onChange={(e) => updateField('ncm', e.target.value)}
+                  error={!!errors.ncm}
+                  helperText={errors.ncm}
                   fullWidth
                   size="small"
                   placeholder="00000000"
+                  slotProps={{ htmlInput: { maxLength: 8 } }}
                 />
                 <TextField
                   label="CFOP"
@@ -1070,6 +1452,7 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
                   fullWidth
                   size="small"
                   placeholder="0000"
+                  slotProps={{ htmlInput: { maxLength: 4 } }}
                 />
               </div>
             </div>
@@ -1131,14 +1514,35 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
 
 interface MovementHistoryProps {
   movements: StockMovement[];
+  isLoading: boolean;
 }
 
-function MovementHistory({ movements }: MovementHistoryProps) {
+function MovementHistory({ movements, isLoading }: MovementHistoryProps) {
   const typeConfig: Record<string, { label: string; bg: string; text: string }> = {
     entrada: { label: 'Entrada', bg: 'bg-emerald-50 dark:bg-emerald-500/10', text: 'text-emerald-700 dark:text-emerald-400' },
     saida: { label: 'Saida', bg: 'bg-red-50 dark:bg-red-500/10', text: 'text-red-700 dark:text-red-400' },
     ajuste: { label: 'Ajuste', bg: 'bg-blue-50 dark:bg-blue-500/10', text: 'text-blue-700 dark:text-blue-400' },
   };
+
+  if (isLoading) {
+    return (
+      <div className="p-6 space-y-3">
+        {[0, 1, 2, 3, 4].map((i) => (
+          <div key={i} className="h-10 rounded-lg shimmer" />
+        ))}
+      </div>
+    );
+  }
+
+  if (movements.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-12 text-center">
+        <ClipboardList className="w-10 h-10 text-muted-foreground/40 mb-3" />
+        <p className="text-sm font-medium text-muted-foreground">Nenhuma movimentacao registrada</p>
+        <p className="text-xs text-muted-foreground mt-1">As movimentacoes de estoque aparecerao aqui</p>
+      </div>
+    );
+  }
 
   return (
     <div className="overflow-x-auto">
@@ -1196,17 +1600,52 @@ function MovementHistory({ movements }: MovementHistoryProps) {
 }
 
 // ==============================================
+// EMPTY STATE
+// ==============================================
+
+function EmptyState({ onAdd }: { onAdd: () => void }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.4 }}
+      className="flex flex-col items-center justify-center py-20 text-center"
+    >
+      <div className="flex items-center justify-center w-20 h-20 rounded-2xl bg-gradient-to-br from-red-50 to-red-100 dark:from-red-500/10 dark:to-red-500/5 mb-6">
+        <Package className="w-10 h-10 text-red-500/60" />
+      </div>
+      <h3 className="text-lg font-semibold text-foreground mb-2">
+        Nenhum produto cadastrado
+      </h3>
+      <p className="text-sm text-muted-foreground max-w-sm mb-6">
+        Comece adicionando seus produtos e materiais para controlar o estoque da sua empresa.
+      </p>
+      <button
+        onClick={onAdd}
+        className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-gradient-to-r from-red-600 to-red-500 text-white text-sm font-medium hover:from-red-700 hover:to-red-600 transition-all shadow-sm"
+      >
+        <Plus className="w-4 h-4" />
+        Cadastrar Primeiro Produto
+      </button>
+    </motion.div>
+  );
+}
+
+// ==============================================
 // MAIN COMPONENT
 // ==============================================
 
 export default function InventoryModule() {
-  // State
-  const [products] = useState<Product[]>(mockProducts);
-  const [movements] = useState<StockMovement[]>(mockMovements);
+  const { user, business } = useAuth();
+  const queryClient = useQueryClient();
+
+  // UI State
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
-  const [sortConfig, setSortConfig] = useState<SortConfig>({ field: 'name', direction: 'asc' });
+  const [stockFilter, setStockFilter] = useState<StockStatusFilter>('all');
+  const [activeFilter, setActiveFilter] = useState<string>('all');
+  const [sortConfig, setSortConfig] = useState<LocalSortConfig>({ field: 'name', direction: 'asc' });
 
   // Dialog state
   const [productDialogOpen, setProductDialogOpen] = useState(false);
@@ -1214,8 +1653,213 @@ export default function InventoryModule() {
   const [movementDialogOpen, setMovementDialogOpen] = useState(false);
   const [movementProduct, setMovementProduct] = useState<Product | null>(null);
   const [movementType, setMovementType] = useState<MovementType>('entrada');
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deletingProduct, setDeletingProduct] = useState<Product | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
-  // Computed
+  // ==========================================
+  // FIRESTORE QUERIES
+  // ==========================================
+
+  const { data: products = [], isLoading: productsLoading } = useQuery({
+    queryKey: ['products', business?.id],
+    queryFn: async () => {
+      if (!business?.id) return [];
+      const q = query(
+        collection(db, 'products'),
+        where('businessId', '==', business.id),
+        orderBy('name', 'asc'),
+      );
+      const snap = await getDocs(q);
+      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as Product));
+    },
+    enabled: !!business?.id,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const { data: movements = [], isLoading: movementsLoading } = useQuery({
+    queryKey: ['stockMovements', business?.id],
+    queryFn: async () => {
+      if (!business?.id) return [];
+      const q = query(
+        collection(db, 'stockMovements'),
+        where('businessId', '==', business.id),
+        orderBy('createdAt', 'desc'),
+      );
+      const snap = await getDocs(q);
+      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as StockMovement));
+    },
+    enabled: !!business?.id,
+    staleTime: 2 * 60 * 1000,
+  });
+
+  // ==========================================
+  // IMAGE UPLOAD
+  // ==========================================
+
+  async function uploadProductImage(file: File, productId: string): Promise<string> {
+    if (!business?.id) throw new Error('Business not found');
+    const ext = file.name.split('.').pop() || 'jpg';
+    const fileName = `${productId}_${Date.now()}.${ext}`;
+    const storageRef = ref(storage, `products/${business.id}/${productId}/${fileName}`);
+    await uploadBytes(storageRef, file);
+    return getDownloadURL(storageRef);
+  }
+
+  // ==========================================
+  // CRUD HANDLERS
+  // ==========================================
+
+  const handleSaveProduct = useCallback(async (data: ProductFormData) => {
+    if (!business?.id || !user) return;
+
+    const costPrice = currencyDisplayToNumber(data.costPrice);
+    const salePrice = currencyDisplayToNumber(data.salePrice);
+    const currentStock = parseInt(data.currentStock) || 0;
+    const minStock = parseInt(data.minStock) || 0;
+    const maxStock = data.maxStock ? parseInt(data.maxStock) : undefined;
+    const sku = data.sku.trim() || generateSKU();
+
+    if (editingProduct) {
+      // UPDATE
+      let imageUrl = data.existingImageUrl || editingProduct.imageUrl || '';
+
+      if (data.imageFile) {
+        imageUrl = await uploadProductImage(data.imageFile, editingProduct.id);
+      } else if (!data.existingImageUrl && !data.imagePreview) {
+        imageUrl = '';
+      }
+
+      const updateData: Record<string, unknown> = {
+        name: data.name.trim(),
+        description: data.description.trim() || undefined,
+        sku,
+        barcode: data.barcode.trim() || undefined,
+        category: data.category,
+        unit: data.unit,
+        costPrice,
+        salePrice,
+        currentStock,
+        minStock,
+        maxStock: maxStock ?? null,
+        ncm: data.ncm.trim() || undefined,
+        cfop: data.cfop.trim() || undefined,
+        isActive: data.isActive,
+        imageUrl: imageUrl || null,
+        updatedAt: new Date().toISOString(),
+      };
+
+      // Remove undefined values
+      const cleanedData = Object.fromEntries(
+        Object.entries(updateData).filter(([, v]) => v !== undefined)
+      );
+
+      await updateDoc(doc(db, 'products', editingProduct.id), cleanedData);
+      toast.success('Produto atualizado com sucesso!');
+    } else {
+      // CREATE
+      const productData = {
+        businessId: business.id,
+        name: data.name.trim(),
+        description: data.description.trim() || '',
+        sku,
+        barcode: data.barcode.trim() || '',
+        category: data.category,
+        unit: data.unit,
+        costPrice,
+        salePrice,
+        currentStock,
+        minStock,
+        maxStock: maxStock ?? null,
+        ncm: data.ncm.trim() || '',
+        cfop: data.cfop.trim() || '',
+        isActive: data.isActive,
+        imageUrl: '',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      const docRef = await addDoc(collection(db, 'products'), productData);
+
+      // Upload image if provided
+      if (data.imageFile) {
+        const imageUrl = await uploadProductImage(data.imageFile, docRef.id);
+        await updateDoc(doc(db, 'products', docRef.id), { imageUrl });
+      }
+      toast.success('Produto cadastrado com sucesso!');
+    }
+
+    queryClient.invalidateQueries({ queryKey: ['products', business.id] });
+  }, [business?.id, user, editingProduct, queryClient]);
+
+  const handleSaveMovement = useCallback(async (data: MovementFormData) => {
+    if (!business?.id || !user) return;
+
+    const product = products.find((p) => p.id === data.productId);
+    if (!product) return;
+
+    const qty = parseInt(data.quantity) || 0;
+    const previousStock = product.currentStock;
+    let newStock: number;
+
+    if (data.type === 'entrada') {
+      newStock = previousStock + qty;
+    } else if (data.type === 'saida') {
+      newStock = Math.max(0, previousStock - qty);
+    } else {
+      // ajuste - set to exact value
+      newStock = qty;
+    }
+
+    // Create stock movement record
+    const movementData = {
+      businessId: business.id,
+      productId: product.id,
+      productName: product.name,
+      type: data.type,
+      quantity: qty,
+      previousStock,
+      newStock,
+      reason: data.reason,
+      operatorId: user.uid,
+      operatorName: user.name,
+      createdAt: new Date().toISOString(),
+    };
+
+    await addDoc(collection(db, 'stockMovements'), movementData);
+
+    // Update product stock
+    await updateDoc(doc(db, 'products', product.id), {
+      currentStock: newStock,
+      updatedAt: new Date().toISOString(),
+    });
+
+    toast.success('Movimentacao registrada com sucesso!');
+    queryClient.invalidateQueries({ queryKey: ['products', business.id] });
+    queryClient.invalidateQueries({ queryKey: ['stockMovements', business.id] });
+  }, [business?.id, user, products, queryClient]);
+
+  const handleDeleteProduct = useCallback(async () => {
+    if (!business?.id || !deletingProduct) return;
+    setIsDeleting(true);
+    try {
+      await deleteDoc(doc(db, 'products', deletingProduct.id));
+      toast.success('Produto excluido com sucesso');
+      queryClient.invalidateQueries({ queryKey: ['products', business.id] });
+      setDeleteDialogOpen(false);
+      setDeletingProduct(null);
+    } catch (err) {
+      console.error('Error deleting product:', err);
+      toast.error('Erro ao excluir produto');
+    } finally {
+      setIsDeleting(false);
+    }
+  }, [business?.id, deletingProduct, queryClient]);
+
+  // ==========================================
+  // COMPUTED VALUES
+  // ==========================================
+
   const activeProducts = useMemo(() => products.filter((p) => p.isActive), [products]);
 
   const filteredProducts = useMemo(() => {
@@ -1238,6 +1882,22 @@ export default function InventoryModule() {
       result = result.filter((p) => p.category === categoryFilter);
     }
 
+    // Stock status filter
+    if (stockFilter !== 'all') {
+      if (stockFilter === 'sem_estoque') {
+        result = result.filter((p) => p.currentStock <= 0);
+      } else if (stockFilter === 'estoque_baixo') {
+        result = result.filter((p) => p.currentStock > 0 && p.currentStock <= p.minStock);
+      } else if (stockFilter === 'em_estoque') {
+        result = result.filter((p) => p.currentStock > p.minStock);
+      }
+    }
+
+    // Active filter
+    if (activeFilter !== 'all') {
+      result = result.filter((p) => activeFilter === 'ativo' ? p.isActive : !p.isActive);
+    }
+
     // Sort
     result.sort((a, b) => {
       const dir = sortConfig.direction === 'asc' ? 1 : -1;
@@ -1253,7 +1913,7 @@ export default function InventoryModule() {
     });
 
     return result;
-  }, [products, searchQuery, categoryFilter, sortConfig]);
+  }, [products, searchQuery, categoryFilter, stockFilter, activeFilter, sortConfig]);
 
   const stats = useMemo(() => {
     const totalProducts = activeProducts.length;
@@ -1266,7 +1926,10 @@ export default function InventoryModule() {
     return { totalProducts, totalValue, lowStockCount, todayMovements };
   }, [activeProducts, movements]);
 
-  // Handlers
+  // ==========================================
+  // UI HANDLERS
+  // ==========================================
+
   const handleSort = useCallback((field: SortField) => {
     setSortConfig((prev) => ({
       field,
@@ -1290,15 +1953,53 @@ export default function InventoryModule() {
     setMovementDialogOpen(true);
   }, []);
 
-  const handleSaveProduct = useCallback((data: ProductFormData) => {
-    // In a real app, this would call productsService
-    console.log('Save product:', data);
+  const handleRequestDelete = useCallback((product: Product) => {
+    setDeletingProduct(product);
+    setDeleteDialogOpen(true);
   }, []);
 
-  const handleSaveMovement = useCallback((data: MovementFormData) => {
-    // In a real app, this would call stockMovementsService
-    console.log('Save movement:', data);
-  }, []);
+  // ==========================================
+  // LOADING STATE
+  // ==========================================
+
+  if (productsLoading) {
+    return <InventorySkeleton />;
+  }
+
+  // ==========================================
+  // EMPTY STATE (no products at all)
+  // ==========================================
+
+  if (products.length === 0 && !productsLoading) {
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight text-foreground font-display">
+              Estoque
+            </h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              Gerencie seus produtos e materiais
+            </p>
+          </div>
+        </div>
+        <EmptyState onAdd={handleNewProduct} />
+        <ProductDialog
+          open={productDialogOpen}
+          onClose={() => {
+            setProductDialogOpen(false);
+            setEditingProduct(null);
+          }}
+          onSave={handleSaveProduct}
+          product={editingProduct}
+        />
+      </div>
+    );
+  }
+
+  // ==========================================
+  // MAIN RENDER
+  // ==========================================
 
   return (
     <div className="space-y-6">
@@ -1314,7 +2015,7 @@ export default function InventoryModule() {
         </div>
         <button
           onClick={handleNewProduct}
-          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-[#DC2626] text-white text-sm font-medium hover:bg-[#B91C1C] transition-colors shadow-sm"
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-gradient-to-r from-red-600 to-red-500 text-white text-sm font-medium hover:from-red-700 hover:to-red-600 transition-all shadow-sm"
         >
           <Plus className="w-4 h-4" />
           Novo Produto
@@ -1322,9 +2023,9 @@ export default function InventoryModule() {
       </div>
 
       {/* ============ FILTERS BAR ============ */}
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 flex-wrap">
         {/* Search */}
-        <div className="relative flex-1 max-w-md">
+        <div className="relative flex-1 min-w-[200px] max-w-md">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <input
             type="text"
@@ -1346,6 +2047,35 @@ export default function InventoryModule() {
             {CATEGORIES.map((cat) => (
               <option key={cat} value={cat}>{cat}</option>
             ))}
+          </select>
+          <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+        </div>
+
+        {/* Stock Status Filter */}
+        <div className="relative">
+          <select
+            value={stockFilter}
+            onChange={(e) => setStockFilter(e.target.value as StockStatusFilter)}
+            className="appearance-none pl-3 pr-9 py-2.5 rounded-lg border border-border/60 bg-white/70 dark:bg-gray-900/70 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-300 transition-all cursor-pointer"
+          >
+            <option value="all">Todo Estoque</option>
+            <option value="em_estoque">Em Estoque</option>
+            <option value="estoque_baixo">Estoque Baixo</option>
+            <option value="sem_estoque">Sem Estoque</option>
+          </select>
+          <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+        </div>
+
+        {/* Active Filter */}
+        <div className="relative">
+          <select
+            value={activeFilter}
+            onChange={(e) => setActiveFilter(e.target.value)}
+            className="appearance-none pl-3 pr-9 py-2.5 rounded-lg border border-border/60 bg-white/70 dark:bg-gray-900/70 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-300 transition-all cursor-pointer"
+          >
+            <option value="all">Todos</option>
+            <option value="ativo">Ativos</option>
+            <option value="inativo">Inativos</option>
           </select>
           <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
         </div>
@@ -1388,28 +2118,28 @@ export default function InventoryModule() {
       >
         <StatCard
           icon={<Package className="w-5 h-5 text-blue-600" />}
-          iconBg="bg-blue-50"
+          iconBg="bg-blue-50 dark:bg-blue-500/10"
           label="Total de Produtos"
           value={String(stats.totalProducts)}
           subtitle={`${filteredProducts.length} exibidos`}
         />
         <StatCard
           icon={<DollarSign className="w-5 h-5 text-emerald-600" />}
-          iconBg="bg-emerald-50"
+          iconBg="bg-emerald-50 dark:bg-emerald-500/10"
           label="Valor em Estoque"
           value={formatCurrency(stats.totalValue)}
           subtitle="Custo total em estoque"
         />
         <StatCard
           icon={<TrendingDown className="w-5 h-5 text-amber-600" />}
-          iconBg="bg-amber-50"
+          iconBg="bg-amber-50 dark:bg-amber-500/10"
           label="Itens Abaixo do Minimo"
           value={String(stats.lowStockCount)}
           subtitle={stats.lowStockCount > 0 ? 'Necessita reposicao' : 'Tudo em ordem'}
         />
         <StatCard
           icon={<Activity className="w-5 h-5 text-violet-600" />}
-          iconBg="bg-violet-50"
+          iconBg="bg-violet-50 dark:bg-violet-500/10"
           label="Movimentacoes Hoje"
           value={String(stats.todayMovements)}
           subtitle="Entradas e saidas"
@@ -1449,6 +2179,7 @@ export default function InventoryModule() {
                       key={product.id}
                       product={product}
                       onEdit={handleEditProduct}
+                      onDelete={handleRequestDelete}
                       onMovement={handleMovement}
                     />
                   ))}
@@ -1476,6 +2207,9 @@ export default function InventoryModule() {
                     <thead>
                       <tr className="border-b border-border/60 bg-muted/20">
                         <th className="text-left py-3 px-4">
+                          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Img</span>
+                        </th>
+                        <th className="text-left py-3 px-4">
                           <SortableHeader label="Produto" field="name" sortConfig={sortConfig} onSort={handleSort} />
                         </th>
                         <th className="text-left py-3 px-4">
@@ -1486,12 +2220,6 @@ export default function InventoryModule() {
                         </th>
                         <th className="text-left py-3 px-4">
                           <SortableHeader label="Estoque" field="currentStock" sortConfig={sortConfig} onSort={handleSort} />
-                        </th>
-                        <th className="text-left py-3 px-4">
-                          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Min/Max</span>
-                        </th>
-                        <th className="text-left py-3 px-4">
-                          <SortableHeader label="P. Custo" field="costPrice" sortConfig={sortConfig} onSort={handleSort} />
                         </th>
                         <th className="text-left py-3 px-4">
                           <SortableHeader label="P. Venda" field="salePrice" sortConfig={sortConfig} onSort={handleSort} />
@@ -1510,6 +2238,7 @@ export default function InventoryModule() {
                           key={product.id}
                           product={product}
                           onEdit={handleEditProduct}
+                          onDelete={handleRequestDelete}
                           onMovement={handleMovement}
                         />
                       ))}
@@ -1536,12 +2265,19 @@ export default function InventoryModule() {
               Historico de Movimentacoes
             </h2>
           </div>
-          <button className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors border border-border/60">
-            <Download className="w-3.5 h-3.5" />
-            Exportar
+          <button
+            onClick={() => {
+              setMovementProduct(null);
+              setMovementType('entrada');
+              setMovementDialogOpen(true);
+            }}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors border border-red-200 dark:border-red-500/20"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Nova Movimentacao
           </button>
         </div>
-        <MovementHistory movements={movements} />
+        <MovementHistory movements={movements} isLoading={movementsLoading} />
       </motion.div>
 
       {/* ============ DIALOGS ============ */}
@@ -1565,6 +2301,17 @@ export default function InventoryModule() {
         products={activeProducts}
         initialProduct={movementProduct}
         initialType={movementType}
+      />
+
+      <DeleteDialog
+        open={deleteDialogOpen}
+        onClose={() => {
+          setDeleteDialogOpen(false);
+          setDeletingProduct(null);
+        }}
+        onConfirm={handleDeleteProduct}
+        productName={deletingProduct?.name || ''}
+        isDeleting={isDeleting}
       />
     </div>
   );

@@ -28,16 +28,21 @@ export function formatCPFCNPJ(value: string): string {
   return cleaned.length <= 11 ? formatCPF(cleaned) : formatCNPJ(cleaned);
 }
 
-export function formatDate(dateStr: string): string {
-  const date = new Date(dateStr + 'T00:00:00');
+export function formatDate(dateStr: string | null | undefined): string {
+  if (!dateStr) return '-';
+  const date = new Date(dateStr.includes('T') ? dateStr : dateStr + 'T00:00:00');
+  if (isNaN(date.getTime())) return '-';
   return new Intl.DateTimeFormat('pt-BR').format(date);
 }
 
-export function formatDateTime(dateStr: string): string {
+export function formatDateTime(dateStr: string | null | undefined): string {
+  if (!dateStr) return '-';
+  const date = new Date(dateStr);
+  if (isNaN(date.getTime())) return '-';
   return new Intl.DateTimeFormat('pt-BR', {
     dateStyle: 'short',
     timeStyle: 'short',
-  }).format(new Date(dateStr));
+  }).format(date);
 }
 
 export function formatPercentage(value: number): string {

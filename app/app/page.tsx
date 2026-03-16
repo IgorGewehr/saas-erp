@@ -4,188 +4,150 @@ import { Suspense, lazy } from 'react';
 import { motion } from 'framer-motion';
 import { useAppContext } from './AppContext';
 import { cn } from '@/lib/utils';
-import {
-  Loader2,
-  Construction,
-  HelpCircle,
-} from 'lucide-react';
 
 // Lazy-loaded modules
-const DashboardModule = lazy(
-  () => import('@/app/components/features/dashboard/DashboardModule')
-);
-const ClientsModule = lazy(
-  () => import('@/app/components/features/clients/ClientsModule')
-);
-const AgendaModule = lazy(
-  () => import('@/app/components/features/agenda/AgendaModule')
-);
-const PDVModule = lazy(
-  () => import('@/app/components/features/pdv/PDVModule')
-);
-const FinancialModule = lazy(
-  () => import('@/app/components/features/financial/FinancialModule')
-);
-const InventoryModule = lazy(
-  () => import('@/app/components/features/inventory/InventoryModule')
-);
-const FiscalModule = lazy(
-  () => import('@/app/components/features/fiscal/FiscalModule')
-);
-const KanbanModule = lazy(
-  () => import('@/app/components/features/kanban/KanbanModule')
-);
-const CRMModule = lazy(
-  () => import('@/app/components/features/crm/CRMModule')
-);
-const SettingsModule = lazy(
-  () => import('@/app/components/features/settings/SettingsModule')
-);
+const DashboardModule  = lazy(() => import('@/app/components/features/dashboard/DashboardModule'));
+const ClientsModule    = lazy(() => import('@/app/components/features/clients/ClientsModule'));
+const AgendaModule     = lazy(() => import('@/app/components/features/agenda/AgendaModule'));
+const PDVModule        = lazy(() => import('@/app/components/features/pdv/PDVModule'));
+const FinancialModule  = lazy(() => import('@/app/components/features/financial/FinancialModule'));
+const InventoryModule  = lazy(() => import('@/app/components/features/inventory/InventoryModule'));
+const FiscalModule     = lazy(() => import('@/app/components/features/fiscal/FiscalModule'));
+const KanbanModule     = lazy(() => import('@/app/components/features/kanban/KanbanModule'));
+const CRMModule        = lazy(() => import('@/app/components/features/crm/CRMModule'));
+const SettingsModule   = lazy(() => import('@/app/components/features/settings/SettingsModule'));
+const ConversasModule  = lazy(() => import('@/app/components/features/conversations/ConversasModule'));
+const IntegrationsModule = lazy(() => import('@/app/components/features/integrations/IntegrationsModule'));
 
-// Loading fallback
-function ModuleLoadingFallback() {
+// ─── Full-height page loading fallback (Agenda, PDV, Kanban, Conversas) ───────
+function FullHeightFallback() {
   return (
-    <div className="flex items-center justify-center min-h-[calc(100vh-10rem)]">
-      <div className="flex flex-col items-center gap-3">
-        <Loader2 className="w-8 h-8 text-red-500 animate-spin" />
-        <p className="text-sm text-gray-500 dark:text-gray-400">Carregando módulo...</p>
-      </div>
-    </div>
-  );
-}
-
-// Help placeholder
-function HelpPlaceholder() {
-  return (
-    <div className="flex items-center justify-center min-h-[calc(100vh-10rem)]">
+    <div className="flex h-full min-h-[calc(100vh-10rem)] items-center justify-center">
       <motion.div
-        initial={{ opacity: 0, scale: 0.95 }}
+        initial={{ opacity: 0, scale: 0.9 }}
         animate={{ opacity: 1, scale: 1 }}
-        transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] as [number, number, number, number] }}
-        className="text-center max-w-md mx-auto px-6"
+        transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+        className="flex flex-col items-center gap-3"
       >
-        <div className="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-gradient-to-br from-red-50 to-red-100 dark:from-red-900/20 dark:to-red-800/15 mb-6 border border-red-200/50 dark:border-red-800/30">
-          <HelpCircle className="w-9 h-9 text-red-500 dark:text-red-400" />
+        <div className="relative w-11 h-11">
+          <div className="absolute inset-0 rounded-full border-2 border-red-100 dark:border-red-900/30" />
+          <motion.div
+            className="absolute inset-0 rounded-full border-2 border-transparent border-t-red-500"
+            animate={{ rotate: 360 }}
+            transition={{ duration: 0.85, repeat: Infinity, ease: 'linear' }}
+          />
+          <div className="absolute inset-[5px] rounded-full bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
+            <motion.div
+              className="w-2.5 h-2.5 rounded-full bg-red-400"
+              animate={{ scale: [1, 1.35, 1], opacity: [0.6, 1, 0.6] }}
+              transition={{ duration: 1.1, repeat: Infinity, ease: 'easeInOut' }}
+            />
+          </div>
         </div>
-        <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100 font-display mb-2">Central de Ajuda</h2>
-        <p className="text-gray-500 dark:text-gray-400 text-sm leading-relaxed mb-6">
-          Em breve você terá acesso a tutoriais, FAQ e suporte técnico diretamente por aqui.
+        <p className="text-[12.5px] text-gray-400 dark:text-gray-500 font-medium tracking-wide">
+          Carregando...
         </p>
-        <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 text-amber-700 dark:text-amber-400 text-sm font-medium">
-          <Construction className="w-4 h-4" />
-          Em desenvolvimento
-        </div>
       </motion.div>
     </div>
   );
 }
 
+// ─── Standard module loading fallback — animated content skeleton ─────────────
+// Mirrors a typical module layout: header, KPI cards, main block, bottom row.
+// Staggered entrance makes the skeleton feel alive and intentional.
+function ModuleLoadingFallback() {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.18 }}
+      className="p-4 sm:p-6 lg:p-8 space-y-5"
+    >
+      {/* Page header */}
+      <div className="flex items-start justify-between gap-4">
+        <div className="space-y-2">
+          <div className="h-7 w-52 rounded-xl shimmer" />
+          <div className="h-4 w-36 rounded-lg shimmer" />
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <div className="h-9 w-24 rounded-xl shimmer" />
+          <div className="h-9 w-36 rounded-xl shimmer" />
+        </div>
+      </div>
+
+      {/* KPI / stat cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {[0, 1, 2, 3].map((i) => (
+          <motion.div
+            key={i}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.28, delay: i * 0.07, ease: [0.22, 1, 0.36, 1] }}
+            className="h-[100px] rounded-2xl shimmer"
+          />
+        ))}
+      </div>
+
+      {/* Main content block (table / chart) */}
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3, delay: 0.24 }}
+        className="h-72 rounded-2xl shimmer"
+      />
+
+      {/* Bottom row */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {[0, 1].map((i) => (
+          <motion.div
+            key={i}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.28, delay: 0.32 + i * 0.07 }}
+            className="h-48 rounded-2xl shimmer"
+          />
+        ))}
+      </div>
+    </motion.div>
+  );
+}
+
+// ─── Full-height pages (use all vertical space, no padding wrapper) ───────────
+const FULL_HEIGHT_PAGES = new Set(['Agenda', 'PDV', 'Kanban', 'Conversas']);
+
 export default function AppPage() {
-  const { activePage } = useAppContext();
+  const { activePage, sidebarCollapsed } = useAppContext();
+  const isFullHeight = FULL_HEIGHT_PAGES.has(activePage);
+
+  // Full-height pages (canvas UIs) get a centered spinner; standard pages get a content skeleton
+  const fallback = isFullHeight ? <FullHeightFallback /> : <ModuleLoadingFallback />;
 
   const renderModule = () => {
     switch (activePage) {
-      case 'Dashboard':
-        return (
-          <Suspense fallback={<ModuleLoadingFallback />}>
-            <DashboardModule />
-          </Suspense>
-        );
-
-      case 'Clientes':
-        return (
-          <Suspense fallback={<ModuleLoadingFallback />}>
-            <ClientsModule />
-          </Suspense>
-        );
-
-      case 'CRM':
-        return (
-          <Suspense fallback={<ModuleLoadingFallback />}>
-            <CRMModule />
-          </Suspense>
-        );
-
-      case 'Agenda':
-        return (
-          <Suspense fallback={<ModuleLoadingFallback />}>
-            <AgendaModule />
-          </Suspense>
-        );
-
-      case 'PDV':
-        return (
-          <Suspense fallback={<ModuleLoadingFallback />}>
-            <PDVModule />
-          </Suspense>
-        );
-
-      case 'Kanban':
-        return (
-          <Suspense fallback={<ModuleLoadingFallback />}>
-            <KanbanModule />
-          </Suspense>
-        );
-
-      case 'Financeiro':
-        return (
-          <Suspense fallback={<ModuleLoadingFallback />}>
-            <FinancialModule />
-          </Suspense>
-        );
-
-      case 'Estoque':
-        return (
-          <Suspense fallback={<ModuleLoadingFallback />}>
-            <InventoryModule />
-          </Suspense>
-        );
-
-      case 'NFSe':
-        return (
-          <Suspense fallback={<ModuleLoadingFallback />}>
-            <FiscalModule type="nfse" />
-          </Suspense>
-        );
-
-      case 'NFCe':
-        return (
-          <Suspense fallback={<ModuleLoadingFallback />}>
-            <FiscalModule type="nfce" />
-          </Suspense>
-        );
-
-      case 'NFe':
-        return (
-          <Suspense fallback={<ModuleLoadingFallback />}>
-            <FiscalModule type="nfe" />
-          </Suspense>
-        );
-
-      case 'Configurações':
-        return (
-          <Suspense fallback={<ModuleLoadingFallback />}>
-            <SettingsModule />
-          </Suspense>
-        );
-
-      case 'Ajuda':
-        return <HelpPlaceholder />;
-
-      default:
-        return (
-          <Suspense fallback={<ModuleLoadingFallback />}>
-            <DashboardModule />
-          </Suspense>
-        );
+      case 'Dashboard':    return <Suspense fallback={fallback}><DashboardModule /></Suspense>;
+      case 'Clientes':     return <Suspense fallback={fallback}><ClientsModule /></Suspense>;
+      case 'CRM':          return <Suspense fallback={fallback}><CRMModule /></Suspense>;
+      case 'Agenda':       return <Suspense fallback={fallback}><AgendaModule /></Suspense>;
+      case 'Conversas':    return <Suspense fallback={fallback}><ConversasModule /></Suspense>;
+      case 'PDV':          return <Suspense fallback={fallback}><PDVModule /></Suspense>;
+      case 'Kanban':       return <Suspense fallback={fallback}><KanbanModule /></Suspense>;
+      case 'Financeiro':   return <Suspense fallback={fallback}><FinancialModule /></Suspense>;
+      case 'Estoque':      return <Suspense fallback={fallback}><InventoryModule /></Suspense>;
+      case 'NFSe':         return <Suspense fallback={fallback}><FiscalModule type="nfse" /></Suspense>;
+      case 'NFCe':         return <Suspense fallback={fallback}><FiscalModule type="nfce" /></Suspense>;
+      case 'NFe':          return <Suspense fallback={fallback}><FiscalModule type="nfe" /></Suspense>;
+      case 'Integrações':   return <Suspense fallback={fallback}><IntegrationsModule /></Suspense>;
+      case 'Configurações': return <Suspense fallback={fallback}><SettingsModule /></Suspense>;
+      default:             return <Suspense fallback={fallback}><DashboardModule /></Suspense>;
     }
   };
 
-  const fullHeightPages = ['Agenda', 'PDV'];
-  const isFullHeight = fullHeightPages.includes(activePage);
+  if (isFullHeight) {
+    return <div className="h-full">{renderModule()}</div>;
+  }
 
   return (
-    <div className={cn(isFullHeight ? 'h-full' : 'p-4 sm:p-6 lg:p-8')}>
+    <div className="p-4 sm:p-5 lg:p-7">
       {renderModule()}
     </div>
   );

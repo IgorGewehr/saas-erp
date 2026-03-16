@@ -5,6 +5,16 @@
 // ---- Auth & User Roles ----
 export type UserRole = 'founder' | 'admin' | 'manager' | 'operator' | 'viewer';
 
+// ---- User Status (manual presence mode) ----
+export type UserStatus = 'online' | 'busy' | 'invisible' | 'offline';
+
+export const USER_STATUS_LABELS: Record<UserStatus, string> = {
+  online: 'Online',
+  busy: 'Ocupado',
+  invisible: 'Invisível',
+  offline: 'Offline',
+};
+
 export interface User {
   id: string;
   uid: string;
@@ -15,8 +25,20 @@ export interface User {
   role: UserRole;
   businessId: string;
   isActive: boolean;
+  isOnline?: boolean;
+  userStatus?: UserStatus;
   lastLoginAt?: string;
+  lastSeenAt?: string;
   invitedBy?: string;
+  profileAddress?: {
+    logradouro?: string;
+    numero?: string;
+    complemento?: string;
+    bairro?: string;
+    municipio?: string;
+    uf?: string;
+    cep?: string;
+  };
   createdAt: string;
   updatedAt: string;
 }
@@ -71,10 +93,47 @@ export interface Business {
   fiscal?: FiscalConfig;
   // Settings
   settings?: BusinessSettings;
+  // Enterprise
+  enterprise?: EnterpriseSettings;
+  // Omnichannel (WhatsApp, Facebook, Instagram)
+  channels?: ChannelCredentials;
   // Status
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+// ---- Omnichannel Channel Credentials ----
+export interface WhatsAppChannelConfig {
+  phoneNumberId: string;
+  businessAccountId: string;
+  accessToken: string; // btoa encrypted
+  isConnected: boolean;
+}
+
+export interface FacebookChannelConfig {
+  pageId: string;
+  pageAccessToken: string; // btoa encrypted
+  isConnected: boolean;
+}
+
+export interface InstagramChannelConfig {
+  accountId: string;
+  isConnected: boolean;
+  // Uses Facebook pageAccessToken
+}
+
+export interface MetaAppConfig {
+  appId: string;
+  appSecret: string; // btoa encrypted
+  webhookVerifyToken: string;
+}
+
+export interface ChannelCredentials {
+  whatsapp?: WhatsAppChannelConfig;
+  facebook?: FacebookChannelConfig;
+  instagram?: InstagramChannelConfig;
+  meta?: MetaAppConfig;
 }
 
 export const COMPANY_TYPE_LABELS: Record<string, string> = {
@@ -147,6 +206,22 @@ export interface CertificateConfig {
   uploadedAt?: string;
 }
 
+// ---- Invite Codes ----
+export interface InviteCode {
+  id: string;          // the 6-char code (document ID)
+  businessId: string;
+  code: string;
+  role: UserRole;
+  createdBy: string;       // uid
+  createdByName: string;
+  usedBy?: string;
+  usedByName?: string;
+  usedAt?: string;
+  expiresAt: string;
+  isActive: boolean;
+  createdAt: string;
+}
+
 // ---- Invitations ----
 export type InvitationStatus = 'pending' | 'accepted' | 'rejected' | 'expired';
 
@@ -191,6 +266,8 @@ export interface Client {
   birthDate?: string;
   gender?: 'M' | 'F' | 'O';
   endereco?: Address;
+  inscricaoEstadual?: string;  // IE - required for B2B NF-e
+  indicadorIE?: '1' | '2' | '9'; // 1=Contribuinte, 2=Isento, 9=Nao Contribuinte
   notes?: string;
   tags?: string[];
   isActive: boolean;
@@ -552,6 +629,7 @@ export interface KanbanColumn {
 
 export interface KanbanCard {
   id: string;
+  businessId: string;
   boardId: string;
   columnId: string;
   title: string;
@@ -683,6 +761,50 @@ export interface CRMIntegration {
   updatedAt: string;
 }
 
+// ---- Conversations / Unified Inbox ----
+export type ConversationChannel = 'whatsapp' | 'facebook' | 'instagram';
+export type ConversationStatus = 'open' | 'waiting' | 'resolved';
+export type MessageDirection = 'inbound' | 'outbound';
+export type MessageStatus = 'sending' | 'sent' | 'delivered' | 'read' | 'failed';
+
+export interface Conversation {
+  id: string;
+  businessId: string;
+  channel: ConversationChannel;
+  status: ConversationStatus;
+  contactName: string;
+  contactPhone?: string;
+  contactExternalId?: string;
+  contactAvatarUrl?: string;
+  lastMessage: string;
+  lastMessageAt: string;
+  lastMessageDirection: MessageDirection;
+  unreadCount: number;
+  assignedTo?: string;
+  assignedToName?: string;
+  tags?: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConversationMessage {
+  id: string;
+  conversationId: string;
+  businessId: string;
+  channel: ConversationChannel;
+  direction: MessageDirection;
+  content: string;
+  status: MessageStatus;
+  externalMessageId?: string; // Meta API message ID (wamid, mid)
+  senderName?: string;
+  mediaUrl?: string;
+  mediaType?: 'image' | 'audio' | 'video' | 'document';
+  sentAt: string;
+  deliveredAt?: string;
+  readAt?: string;
+  createdAt?: string;
+}
+
 // ---- Pagination & Filters ----
 export interface PaginatedResult<T> {
   data: T[];
@@ -701,3 +823,186 @@ export interface SortConfig {
   field: string;
   direction: 'asc' | 'desc';
 }
+
+// ============================================
+// Enterprise Mode & Integrations
+// ============================================
+
+export type IntegrationProvider =
+  | 'stripe'
+  | 'vercel'
+  | 'resend'
+  | 'sentry'
+  | 'cloudflare'
+  | 'aws'
+  | 'supabase'
+  | 'godaddy';
+
+export interface IntegrationConfig {
+  provider: IntegrationProvider;
+  apiKey: string; // stored encrypted in Firestore
+  isActive: boolean;
+  connectedAt?: string;
+  lastSyncAt?: string;
+  status: IntegrationStatus;
+  metadata?: Record<string, unknown>;
+}
+
+export interface EnterpriseSettings {
+  isEnabled: boolean;
+  enabledAt?: string;
+  integrations: IntegrationConfig[];
+  apiKeys: SaasApiKey[];
+}
+
+export interface SaasApiKey {
+  id: string;
+  name: string;
+  keyPrefix: string; // first 8 chars for display (e.g., "sp_live_a3")
+  keyHash: string; // SHA-256 hash of full key
+  scopes: ApiKeyScope[];
+  createdAt: string;
+  lastUsedAt?: string;
+  expiresAt?: string;
+  createdBy: string;
+  createdByName: string;
+  status: 'active' | 'revoked';
+  businessId: string;
+}
+
+export type ApiKeyScope =
+  | 'read:clients'
+  | 'write:clients'
+  | 'read:appointments'
+  | 'write:appointments'
+  | 'read:financial'
+  | 'write:financial'
+  | 'read:products'
+  | 'write:products'
+  | 'read:kanban'
+  | 'write:kanban'
+  | 'read:crm'
+  | 'write:crm'
+  | 'read:sales'
+  | 'write:sales'
+  | 'admin:all';
+
+export const INTEGRATION_PROVIDERS: Record<IntegrationProvider, {
+  name: string;
+  description: string;
+  icon: string;
+  color: string;
+  bgColor: string;
+  darkBgColor: string;
+  fields: { key: string; label: string; placeholder: string; help?: string }[];
+}> = {
+  stripe: {
+    name: 'Stripe',
+    description: 'Pagamentos, assinaturas e receita',
+    icon: 'CreditCard',
+    color: '#635BFF',
+    bgColor: 'bg-[#635BFF]/10',
+    darkBgColor: 'dark:bg-[#635BFF]/20',
+    fields: [
+      { key: 'apiKey', label: 'Secret Key', placeholder: 'sk_live_...', help: 'Encontre em Stripe Dashboard → Developers → API Keys' },
+    ],
+  },
+  vercel: {
+    name: 'Vercel',
+    description: 'Deploys, domínios e performance',
+    icon: 'Triangle',
+    color: '#000000',
+    bgColor: 'bg-black/10',
+    darkBgColor: 'dark:bg-white/10',
+    fields: [
+      { key: 'apiKey', label: 'Access Token', placeholder: 'Bearer token...', help: 'Gere em Vercel Dashboard → Settings → Tokens' },
+    ],
+  },
+  resend: {
+    name: 'Resend',
+    description: 'E-mails transacionais e delivery',
+    icon: 'Mail',
+    color: '#000000',
+    bgColor: 'bg-black/10',
+    darkBgColor: 'dark:bg-white/10',
+    fields: [
+      { key: 'apiKey', label: 'API Key', placeholder: 're_...', help: 'Encontre em Resend Dashboard → API Keys' },
+    ],
+  },
+  sentry: {
+    name: 'Sentry',
+    description: 'Monitoramento de erros e release health',
+    icon: 'Bug',
+    color: '#362D59',
+    bgColor: 'bg-[#362D59]/10',
+    darkBgColor: 'dark:bg-[#362D59]/20',
+    fields: [
+      { key: 'apiKey', label: 'Auth Token', placeholder: 'sntrys_...', help: 'Gere em Sentry → Settings → Auth Tokens (escopo: project:read, org:read)' },
+      { key: 'org', label: 'Organization Slug', placeholder: 'minha-org', help: 'Slug da organização visível na URL do Sentry' },
+    ],
+  },
+  cloudflare: {
+    name: 'Cloudflare',
+    description: 'CDN, DNS, tráfego e segurança',
+    icon: 'Shield',
+    color: '#F6821F',
+    bgColor: 'bg-[#F6821F]/10',
+    darkBgColor: 'dark:bg-[#F6821F]/20',
+    fields: [
+      { key: 'apiKey', label: 'API Token', placeholder: 'Bearer token...', help: 'Crie em Cloudflare → My Profile → API Tokens (permissão: Zone Analytics)' },
+    ],
+  },
+  aws: {
+    name: 'AWS',
+    description: 'Custos cloud, forecast e anomalias',
+    icon: 'Cloud',
+    color: '#FF9900',
+    bgColor: 'bg-[#FF9900]/10',
+    darkBgColor: 'dark:bg-[#FF9900]/20',
+    fields: [
+      { key: 'apiKey', label: 'Access Key ID', placeholder: 'AKIA...', help: 'Crie em AWS IAM → Users → Security Credentials (permissão: ce:*)' },
+      { key: 'secretKey', label: 'Secret Access Key', placeholder: 'wJalrXUtnFEMI/...', help: 'Gerado junto com o Access Key ID' },
+    ],
+  },
+  supabase: {
+    name: 'Supabase',
+    description: 'Banco de dados, auth e API health',
+    icon: 'Database',
+    color: '#3ECF8E',
+    bgColor: 'bg-[#3ECF8E]/10',
+    darkBgColor: 'dark:bg-[#3ECF8E]/20',
+    fields: [
+      { key: 'apiKey', label: 'Access Token', placeholder: 'sbp_...', help: 'Gere em Supabase → Account → Access Tokens' },
+    ],
+  },
+  godaddy: {
+    name: 'GoDaddy',
+    description: 'Domínios, DNS e renovações',
+    icon: 'Globe',
+    color: '#1BDBDB',
+    bgColor: 'bg-[#1BDBDB]/10',
+    darkBgColor: 'dark:bg-[#1BDBDB]/20',
+    fields: [
+      { key: 'apiKey', label: 'API Key', placeholder: 'API key...', help: 'Gere em GoDaddy Developer Portal → API Keys' },
+      { key: 'apiSecret', label: 'API Secret', placeholder: 'Secret...', help: 'Gerado junto com a API Key' },
+    ],
+  },
+};
+
+export const API_KEY_SCOPES: Record<ApiKeyScope, { label: string; description: string }> = {
+  'read:clients': { label: 'Ler Clientes', description: 'Acessar lista e dados de clientes' },
+  'write:clients': { label: 'Escrever Clientes', description: 'Criar e editar clientes' },
+  'read:appointments': { label: 'Ler Agenda', description: 'Acessar agendamentos' },
+  'write:appointments': { label: 'Escrever Agenda', description: 'Criar e editar agendamentos' },
+  'read:financial': { label: 'Ler Financeiro', description: 'Acessar transações financeiras' },
+  'write:financial': { label: 'Escrever Financeiro', description: 'Criar e editar transações' },
+  'read:products': { label: 'Ler Produtos', description: 'Acessar catálogo de produtos' },
+  'write:products': { label: 'Escrever Produtos', description: 'Criar e editar produtos' },
+  'read:kanban': { label: 'Ler Kanban', description: 'Acessar boards e cards' },
+  'write:kanban': { label: 'Escrever Kanban', description: 'Criar e editar boards e cards' },
+  'read:crm': { label: 'Ler CRM', description: 'Acessar contatos e deals' },
+  'write:crm': { label: 'Escrever CRM', description: 'Criar e editar contatos e deals' },
+  'read:sales': { label: 'Ler Vendas', description: 'Acessar histórico de vendas' },
+  'write:sales': { label: 'Escrever Vendas', description: 'Criar e editar vendas' },
+  'admin:all': { label: 'Administrador', description: 'Acesso total a todos os recursos' },
+};

@@ -1,0 +1,116 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // ============================================
+    // HELPER FUNCTIONS
+    // ============================================
+
+    // Check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Get the user's businessId from their Firestore profile
+    function userBusinessId() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.businessId;
+    }
+
+    // Check if the user belongs to the specified business
+    function belongsToBusiness(businessId) {
+      return isAuthenticated() && userBusinessId() == businessId;
+    }
+
+    // Validate file size (in bytes)
+    function isUnderSize(maxSizeMB) {
+      return request.resource.size < maxSizeMB * 1024 * 1024;
+    }
+
+    // Validate image content type
+    function isImage() {
+      return request.resource.contentType.matches('image/(jpeg|png|webp|gif|svg\\+xml)');
+    }
+
+    // Validate certificate file
+    function isCertificate() {
+      return request.resource.contentType.matches('application/x-pkcs12')
+             || request.resource.contentType.matches('application/octet-stream');
+    }
+
+    // ============================================
+    // USER AVATARS
+    // Path: users/{uid}/avatar
+    // ============================================
+    match /users/{userId}/{fileName} {
+      // Anyone authenticated can view user avatars (for team presence panels)
+      allow read: if isAuthenticated();
+
+      // Users can only upload their own avatar
+      allow write: if isAuthenticated()
+                   && request.auth.uid == userId
+                   && isImage()
+                   && isUnderSize(5); // Max 5MB
+    }
+
+    // ============================================
+    // PRODUCT IMAGES
+    // Path: products/{businessId}/{productId}/{fileName}
+    // ============================================
+    match /products/{businessId}/{productId}/{fileName} {
+      // Only users in the same business can read product images
+      allow read: if isAuthenticated()
+                  && belongsToBusiness(businessId);
+
+      // Only users in the same business can upload product images
+      allow write: if isAuthenticated()
+                   && belongsToBusiness(businessId)
+                   && isImage()
+                   && isUnderSize(5); // Max 5MB
+
+      allow delete: if isAuthenticated()
+                    && belongsToBusiness(businessId);
+    }
+
+    // ============================================
+    // BUSINESS LOGOS
+    // Path: businesses/{businessId}/logo
+    // ============================================
+    match /businesses/{businessId}/{fileName} {
+      // Anyone authenticated can read business logos
+      allow read: if isAuthenticated();
+
+      // Only users in the same business can upload logos
+      allow write: if isAuthenticated()
+                   && belongsToBusiness(businessId)
+                   && isImage()
+                   && isUnderSize(5); // Max 5MB
+    }
+
+    // ============================================
+    // FISCAL CERTIFICATES (PFX)
+    // Path: businesses/{businessId}/certificates/{fileName}
+    // ============================================
+    match /businesses/{businessId}/certificates/{fileName} {
+      // Only users in the same business can read certificates
+      allow read: if isAuthenticated()
+                  && belongsToBusiness(businessId);
+
+      // Only users in the same business can upload certificates
+      allow write: if isAuthenticated()
+                   && belongsToBusiness(businessId)
+                   && (isCertificate() || request.resource.contentType.matches('application/.*'))
+                   && isUnderSize(10); // Max 10MB for PFX files
+
+      allow delete: if isAuthenticated()
+                    && belongsToBusiness(businessId);
+    }
+
+    // ============================================
+    // CATCH-ALL: Deny everything else
+    // ============================================
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

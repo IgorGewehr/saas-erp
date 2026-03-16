@@ -186,18 +186,22 @@ const darkTheme = createTheme({
 });
 
 // ─── Provider ───────────────────────────────────────────
+function getInitialMode(): ThemeMode {
+  if (typeof window === 'undefined') return 'system';
+  const saved = localStorage.getItem('theme-mode') as ThemeMode | null;
+  return saved && ['light', 'dark', 'system'].includes(saved) ? saved : 'system';
+}
+
 export default function ThemeProvider({ children }: { children: ReactNode }) {
-  const [mode, setMode] = useState<ThemeMode>('system');
-  const [systemDark, setSystemDark] = useState(false);
+  const [mode, setMode] = useState<ThemeMode>(getInitialMode);
+  const [systemDark, setSystemDark] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches
+  );
   const [mounted, setMounted] = useState(false);
 
-  // Initialize from localStorage + system preference
+  // Listen for system preference changes + mark mounted
   useEffect(() => {
     setMounted(true);
-    const saved = localStorage.getItem('theme-mode') as ThemeMode | null;
-    if (saved && ['light', 'dark', 'system'].includes(saved)) {
-      setMode(saved);
-    }
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
     setSystemDark(mq.matches);
     const handler = (e: MediaQueryListEvent) => setSystemDark(e.matches);

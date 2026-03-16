@@ -1,10 +1,24 @@
 import type { Metadata } from 'next';
+import { Inter, Plus_Jakarta_Sans } from 'next/font/google';
 import './globals.css';
 import ThemeProvider from './components/providers/ThemeProvider';
 import QueryProvider from './components/providers/QueryProvider';
 import AuthProvider from './components/providers/AuthProvider';
 import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
+
+const inter = Inter({
+  subsets: ['latin'],
+  variable: '--font-inter',
+  display: 'swap',
+});
+
+const plusJakarta = Plus_Jakarta_Sans({
+  subsets: ['latin'],
+  variable: '--font-display',
+  weight: ['400', '500', '600', '700', '800'],
+  display: 'swap',
+});
 
 export const metadata: Metadata = {
   title: 'ServicePro - Gestão para Prestadores de Serviço',
@@ -17,7 +31,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="pt-BR" suppressHydrationWarning>
+    <html lang="pt-BR" suppressHydrationWarning className={`${inter.variable} ${plusJakarta.variable}`}>
       <head>
         {/* Prevent FOUC: apply dark class before React hydrates */}
         <script
@@ -26,7 +40,7 @@ export default function RootLayout({
           }}
         />
       </head>
-      <body className="antialiased">
+      <body className="antialiased font-sans">
         <ThemeProvider>
           <QueryProvider>
             <AuthProvider>

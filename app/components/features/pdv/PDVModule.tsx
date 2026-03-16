@@ -21,12 +21,10 @@ import {
   Plus,
   Minus,
   X,
-  Trash2,
   User,
   Receipt,
   CreditCard,
   Banknote,
-  Smartphone,
   Wallet,
   Tag,
   Package,
@@ -39,66 +37,55 @@ import {
   CheckCircle2,
   FileText,
   Keyboard,
-  Hash,
-  Percent,
-  DollarSign,
   ChevronRight,
   Printer,
+  QrCode,
+  MoreHorizontal,
+  AlertCircle,
+  Loader2,
+  History,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
-import { formatCurrency } from '@/lib/utils/format';
+import { formatCurrency, formatDate, formatDateTime, generateId } from '@/lib/utils/format';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
-import type { Product, Service, Client, SaleItem, Payment, PaymentMethod } from '@/lib/types';
+import { useAuth } from '@/app/components/providers/AuthProvider';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, doc } from 'firebase/firestore';
+import { db } from '@/lib/config/firebase';
+import type { Product, Service, Client, Sale, SaleItem, Payment, PaymentMethod } from '@/lib/types';
 
 // ==========================================
-// MOCK DATA
+// TYPES & CONSTANTS
 // ==========================================
-
-const MOCK_PRODUCTS: (Product & { type: 'product' })[] = [
-  { id: 'p1', businessId: 'b1', name: 'Shampoo Profissional 1L', description: '', sku: 'SHP001', barcode: '', category: 'Cabelo', unit: 'UN', costPrice: 35, salePrice: 65, currentStock: 24, minStock: 5, isActive: true, createdAt: '', updatedAt: '', type: 'product' },
-  { id: 'p2', businessId: 'b1', name: 'Condicionador Hidratante 500ml', description: '', sku: 'CND001', barcode: '', category: 'Cabelo', unit: 'UN', costPrice: 28, salePrice: 52, currentStock: 18, minStock: 5, isActive: true, createdAt: '', updatedAt: '', type: 'product' },
-  { id: 'p3', businessId: 'b1', name: 'Máscara Capilar 300g', description: '', sku: 'MSK001', barcode: '', category: 'Cabelo', unit: 'UN', costPrice: 42, salePrice: 89, currentStock: 12, minStock: 3, isActive: true, createdAt: '', updatedAt: '', type: 'product' },
-  { id: 'p4', businessId: 'b1', name: 'Óleo de Argan 60ml', description: '', sku: 'OIL001', barcode: '', category: 'Cabelo', unit: 'UN', costPrice: 22, salePrice: 45, currentStock: 30, minStock: 8, isActive: true, createdAt: '', updatedAt: '', type: 'product' },
-  { id: 'p5', businessId: 'b1', name: 'Creme para Mãos 200ml', description: '', sku: 'CRM001', barcode: '', category: 'Estética', unit: 'UN', costPrice: 15, salePrice: 35, currentStock: 40, minStock: 10, isActive: true, createdAt: '', updatedAt: '', type: 'product' },
-  { id: 'p6', businessId: 'b1', name: 'Esmalte Premium', description: '', sku: 'ESM001', barcode: '', category: 'Unha', unit: 'UN', costPrice: 8, salePrice: 22, currentStock: 60, minStock: 15, isActive: true, createdAt: '', updatedAt: '', type: 'product' },
-  { id: 'p7', businessId: 'b1', name: 'Kit Manicure Completo', description: '', sku: 'KIT001', barcode: '', category: 'Unha', unit: 'UN', costPrice: 85, salePrice: 159, currentStock: 8, minStock: 2, isActive: true, createdAt: '', updatedAt: '', type: 'product' },
-  { id: 'p8', businessId: 'b1', name: 'Protetor Solar FPS 50', description: '', sku: 'SUN001', barcode: '', category: 'Estética', unit: 'UN', costPrice: 30, salePrice: 65, currentStock: 22, minStock: 5, isActive: true, createdAt: '', updatedAt: '', type: 'product' },
-  { id: 'p9', businessId: 'b1', name: 'Gel Modelador Forte 300g', description: '', sku: 'GEL001', barcode: '', category: 'Cabelo', unit: 'UN', costPrice: 18, salePrice: 38, currentStock: 15, minStock: 5, isActive: true, createdAt: '', updatedAt: '', type: 'product' },
-  { id: 'p10', businessId: 'b1', name: 'Removedor de Cutícula 30ml', description: '', sku: 'RMV001', barcode: '', category: 'Unha', unit: 'UN', costPrice: 6, salePrice: 15, currentStock: 35, minStock: 10, isActive: true, createdAt: '', updatedAt: '', type: 'product' },
-];
-
-const MOCK_SERVICES: (Service & { type: 'service' })[] = [
-  { id: 's1', businessId: 'b1', name: 'Corte Feminino', description: '', duration: 60, price: 85, category: 'Cabelo', color: '#DC2626', isActive: true, createdAt: '', updatedAt: '', type: 'service' },
-  { id: 's2', businessId: 'b1', name: 'Corte Masculino', description: '', duration: 30, price: 55, category: 'Cabelo', color: '#DC2626', isActive: true, createdAt: '', updatedAt: '', type: 'service' },
-  { id: 's3', businessId: 'b1', name: 'Escova Progressiva', description: '', duration: 180, price: 280, category: 'Cabelo', color: '#F59E0B', isActive: true, createdAt: '', updatedAt: '', type: 'service' },
-  { id: 's4', businessId: 'b1', name: 'Coloração Completa', description: '', duration: 120, price: 190, category: 'Cabelo', color: '#8B5CF6', isActive: true, createdAt: '', updatedAt: '', type: 'service' },
-  { id: 's5', businessId: 'b1', name: 'Mechas / Luzes', description: '', duration: 150, price: 250, category: 'Cabelo', color: '#F59E0B', isActive: true, createdAt: '', updatedAt: '', type: 'service' },
-  { id: 's6', businessId: 'b1', name: 'Manicure', description: '', duration: 45, price: 40, category: 'Unha', color: '#EC4899', isActive: true, createdAt: '', updatedAt: '', type: 'service' },
-  { id: 's7', businessId: 'b1', name: 'Pedicure', description: '', duration: 50, price: 45, category: 'Unha', color: '#EC4899', isActive: true, createdAt: '', updatedAt: '', type: 'service' },
-  { id: 's8', businessId: 'b1', name: 'Limpeza de Pele', description: '', duration: 90, price: 120, category: 'Estética', color: '#10B981', isActive: true, createdAt: '', updatedAt: '', type: 'service' },
-  { id: 's9', businessId: 'b1', name: 'Design de Sobrancelha', description: '', duration: 30, price: 35, category: 'Estética', color: '#10B981', isActive: true, createdAt: '', updatedAt: '', type: 'service' },
-  { id: 's10', businessId: 'b1', name: 'Hidratação Capilar', description: '', duration: 60, price: 95, category: 'Cabelo', color: '#3B82F6', isActive: true, createdAt: '', updatedAt: '', type: 'service' },
-];
-
-const MOCK_CLIENTS: Client[] = [
-  { id: 'c1', businessId: 'b1', tipo: 'pf', nome: 'Maria Silva', cpfCnpj: '12345678901', email: 'maria@email.com', phone: '11999887766', isActive: true, totalSpent: 2450, visitCount: 12, lastVisit: '2026-03-10', createdAt: '', updatedAt: '' },
-  { id: 'c2', businessId: 'b1', tipo: 'pf', nome: 'João Santos', cpfCnpj: '98765432100', email: 'joao@email.com', phone: '11988776655', isActive: true, totalSpent: 890, visitCount: 5, lastVisit: '2026-03-08', createdAt: '', updatedAt: '' },
-  { id: 'c3', businessId: 'b1', tipo: 'pf', nome: 'Ana Oliveira', cpfCnpj: '11122233344', email: 'ana@email.com', phone: '11977665544', isActive: true, totalSpent: 3200, visitCount: 18, lastVisit: '2026-03-12', createdAt: '', updatedAt: '' },
-  { id: 'c4', businessId: 'b1', tipo: 'pf', nome: 'Pedro Costa', cpfCnpj: '55566677788', phone: '11966554433', isActive: true, totalSpent: 420, visitCount: 3, createdAt: '', updatedAt: '' },
-  { id: 'c5', businessId: 'b1', tipo: 'pf', nome: 'Carla Mendes', cpfCnpj: '99988877766', phone: '11955443322', isActive: true, totalSpent: 1580, visitCount: 9, lastVisit: '2026-03-11', createdAt: '', updatedAt: '' },
-  { id: 'c6', businessId: 'b1', tipo: 'pj', nome: 'Salão Beleza & Cia', cpfCnpj: '12345678000190', phone: '1133224455', isActive: true, totalSpent: 5600, visitCount: 4, createdAt: '', updatedAt: '' },
-];
 
 type CatalogItem = (Product & { type: 'product' }) | (Service & { type: 'service' });
 
-const CATEGORIES = ['Todos', 'Cabelo', 'Unha', 'Estética'];
+type MainView = 'pdv' | 'historico';
+
+const PAYMENT_METHODS: { value: PaymentMethod; label: string; icon: React.ReactNode }[] = [
+  { value: 'dinheiro', label: 'Dinheiro', icon: <Banknote size={18} /> },
+  { value: 'pix', label: 'PIX', icon: <QrCode size={18} /> },
+  { value: 'credito', label: 'Credito', icon: <CreditCard size={18} /> },
+  { value: 'debito', label: 'Debito', icon: <Wallet size={18} /> },
+  { value: 'boleto', label: 'Boleto', icon: <FileText size={18} /> },
+  { value: 'outros', label: 'Outros', icon: <MoreHorizontal size={18} /> },
+];
+
+const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
+  dinheiro: 'Dinheiro',
+  pix: 'PIX',
+  credito: 'Credito',
+  debito: 'Debito',
+  boleto: 'Boleto',
+  outros: 'Outros',
+};
 
 function getCategoryIcon(category: string) {
   const icons: Record<string, React.ReactNode> = {
     Cabelo: <Scissors size={16} />,
     Unha: <Sparkles size={16} />,
-    Estética: <Heart size={16} />,
+    Estetica: <Heart size={16} />,
     Todos: <Star size={16} />,
   };
   return icons[category] || <Tag size={16} />;
@@ -109,14 +96,14 @@ function getItemIcon(item: CatalogItem) {
     const icons: Record<string, React.ReactNode> = {
       Cabelo: <Droplets size={20} className="text-blue-500" />,
       Unha: <Sparkles size={20} className="text-pink-500" />,
-      Estética: <Heart size={20} className="text-emerald-500" />,
+      Estetica: <Heart size={20} className="text-emerald-500" />,
     };
     return icons[item.category] || <Package size={20} className="text-slate-400 dark:text-gray-500" />;
   }
   const icons: Record<string, React.ReactNode> = {
     Cabelo: <Scissors size={20} className="text-red-500" />,
     Unha: <Brush size={20} className="text-pink-500" />,
-    Estética: <Heart size={20} className="text-emerald-500" />,
+    Estetica: <Heart size={20} className="text-emerald-500" />,
   };
   return icons[(item as Service & { type: 'service' }).category || ''] || <Star size={20} className="text-amber-500" />;
 }
@@ -131,6 +118,12 @@ interface CartItem extends SaleItem {
 
 export default function PDVModule() {
   const { isDark } = useTheme();
+  const { user, business } = useAuth();
+  const queryClient = useQueryClient();
+
+  // --- Main view ---
+  const [mainView, setMainView] = useState<MainView>('pdv');
+
   // --- State ---
   const [activeTab, setActiveTab] = useState<'produtos' | 'servicos'>('produtos');
   const [searchQuery, setSearchQuery] = useState('');
@@ -142,25 +135,109 @@ export default function PDVModule() {
   const [payments, setPayments] = useState<Payment[]>([]);
   const [activePaymentMethod, setActivePaymentMethod] = useState<PaymentMethod | null>(null);
   const [paymentAmount, setPaymentAmount] = useState('');
+  const [installments, setInstallments] = useState(1);
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [saleComplete, setSaleComplete] = useState(false);
-  const [saleNumber, setSaleNumber] = useState(1);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saleError, setSaleError] = useState<string | null>(null);
+  const [lastSaleId, setLastSaleId] = useState<string | null>(null);
+
+  // History view state
+  const [historySearch, setHistorySearch] = useState('');
+  const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
+
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Focus search on mount
   useEffect(() => {
-    searchInputRef.current?.focus();
-  }, []);
+    if (mainView === 'pdv') {
+      searchInputRef.current?.focus();
+    }
+  }, [mainView]);
 
-  // --- Derived ---
+  // --- Firestore Queries ---
+  const { data: products = [], isLoading: loadingProducts } = useQuery({
+    queryKey: ['products', business?.id],
+    queryFn: async () => {
+      const q = query(
+        collection(db, 'products'),
+        where('businessId', '==', business!.id),
+        where('isActive', '==', true),
+        orderBy('name', 'asc'),
+      );
+      const snap = await getDocs(q);
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Product));
+    },
+    enabled: !!business?.id,
+  });
+
+  const { data: services = [], isLoading: loadingServices } = useQuery({
+    queryKey: ['services', business?.id],
+    queryFn: async () => {
+      const q = query(
+        collection(db, 'services'),
+        where('businessId', '==', business!.id),
+        where('isActive', '==', true),
+        orderBy('name', 'asc'),
+      );
+      const snap = await getDocs(q);
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Service));
+    },
+    enabled: !!business?.id,
+  });
+
+  const { data: clients = [], isLoading: loadingClients } = useQuery({
+    queryKey: ['clients', business?.id],
+    queryFn: async () => {
+      const q = query(
+        collection(db, 'clients'),
+        where('businessId', '==', business!.id),
+        where('isActive', '==', true),
+        orderBy('nome', 'asc'),
+      );
+      const snap = await getDocs(q);
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Client));
+    },
+    enabled: !!business?.id,
+  });
+
+  const { data: salesHistory = [], isLoading: loadingSales } = useQuery({
+    queryKey: ['sales', business?.id],
+    queryFn: async () => {
+      const q = query(
+        collection(db, 'sales'),
+        where('businessId', '==', business!.id),
+        orderBy('createdAt', 'desc'),
+      );
+      const snap = await getDocs(q);
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Sale));
+    },
+    enabled: !!business?.id,
+  });
+
+  const isLoading = loadingProducts || loadingServices || loadingClients;
+
+  // --- Derived Data ---
+  const categories = useMemo(() => {
+    const cats = new Set<string>();
+    if (activeTab === 'produtos') {
+      products.forEach(p => { if (p.category) cats.add(p.category); });
+    } else {
+      services.forEach(s => { if (s.category) cats.add(s.category); });
+    }
+    return ['Todos', ...Array.from(cats).sort()];
+  }, [activeTab, products, services]);
+
   const catalogItems: CatalogItem[] = useMemo(() => {
-    const items: CatalogItem[] = activeTab === 'produtos' ? MOCK_PRODUCTS : MOCK_SERVICES;
+    const items: CatalogItem[] = activeTab === 'produtos'
+      ? products.map(p => ({ ...p, type: 'product' as const }))
+      : services.map(s => ({ ...s, type: 'service' as const }));
     return items.filter((item) => {
       const matchesSearch = item.name.toLowerCase().includes(searchQuery.toLowerCase());
       const matchesCategory = activeCategory === 'Todos' || item.category === activeCategory;
       return matchesSearch && matchesCategory;
     });
-  }, [activeTab, searchQuery, activeCategory]);
+  }, [activeTab, searchQuery, activeCategory, products, services]);
 
   const subtotal = useMemo(() => {
     return cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
@@ -199,17 +276,38 @@ export default function PDVModule() {
     [cart],
   );
 
+  // Filtered sales history
+  const filteredSales = useMemo(() => {
+    if (!historySearch.trim()) return salesHistory;
+    const search = historySearch.toLowerCase();
+    return salesHistory.filter(sale =>
+      (sale.clientName && sale.clientName.toLowerCase().includes(search)) ||
+      sale.id.toLowerCase().includes(search) ||
+      sale.items.some(item => item.description.toLowerCase().includes(search))
+    );
+  }, [salesHistory, historySearch]);
+
   // --- Handlers ---
   const addToCart = useCallback((item: CatalogItem) => {
     setCart((prev) => {
       const idField = item.type === 'product' ? 'productId' : 'serviceId';
       const existing = prev.find((c) => c[idField] === item.id);
       if (existing) {
+        // For products, check stock
+        if (item.type === 'product') {
+          const product = item as Product;
+          if (existing.quantity >= product.currentStock) return prev;
+        }
         return prev.map((c) =>
           c[idField] === item.id
             ? { ...c, quantity: c.quantity + 1, total: (c.quantity + 1) * c.unitPrice }
             : c,
         );
+      }
+      // For products, check if stock > 0
+      if (item.type === 'product') {
+        const product = item as Product;
+        if (product.currentStock <= 0) return prev;
       }
       const price = item.type === 'product' ? (item as Product).salePrice : (item as Service).price;
       const newItem: CartItem = {
@@ -248,34 +346,147 @@ export default function PDVModule() {
     if (!activePaymentMethod || !paymentAmount) return;
     const amount = parseFloat(paymentAmount);
     if (isNaN(amount) || amount <= 0) return;
-    setPayments((prev) => [...prev, { method: activePaymentMethod, amount }]);
+    const payment: Payment = {
+      method: activePaymentMethod,
+      amount,
+    };
+    if (activePaymentMethod === 'credito' && installments > 1) {
+      payment.installments = installments;
+    }
+    setPayments((prev) => [...prev, payment]);
     setPaymentAmount('');
     setActivePaymentMethod(null);
-  }, [activePaymentMethod, paymentAmount]);
+    setInstallments(1);
+  }, [activePaymentMethod, paymentAmount, installments]);
 
   const removePayment = useCallback((index: number) => {
     setPayments((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
-  const finalizeSale = useCallback(() => {
+  const openConfirmation = useCallback(() => {
     if (cart.length === 0 || remaining > 0.01) return;
+    setSaleError(null);
     setShowConfirmation(true);
   }, [cart.length, remaining]);
 
-  const confirmSale = useCallback(() => {
-    setSaleComplete(true);
-    setTimeout(() => {
-      setSaleComplete(false);
-      setShowConfirmation(false);
-      setCart([]);
-      setPayments([]);
-      setSelectedClient(null);
-      setDiscountValue('');
-      setActivePaymentMethod(null);
-      setPaymentAmount('');
-      setSaleNumber((n) => n + 1);
-    }, 2500);
-  }, []);
+  const confirmSale = useCallback(async () => {
+    if (!user || !business) return;
+    setIsSaving(true);
+    setSaleError(null);
+
+    try {
+      const now = new Date().toISOString();
+
+      const saleData = {
+        businessId: business.id,
+        clientId: selectedClient?.id || null,
+        clientName: selectedClient?.nome || null,
+        items: cart.map(item => ({
+          id: generateId(),
+          productId: item.productId || null,
+          serviceId: item.serviceId || null,
+          description: item.description,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          discount: item.discount || 0,
+          total: item.quantity * item.unitPrice - (item.discount || 0),
+        })),
+        payments: payments,
+        subtotal,
+        discount: discountAmount,
+        total,
+        status: 'finalizada' as const,
+        operatorId: user.uid,
+        operatorName: user.name,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      const docRef = await addDoc(collection(db, 'sales'), saleData);
+
+      // Update stock for product items
+      for (const item of cart) {
+        if (item.productId) {
+          const product = products.find(p => p.id === item.productId);
+          if (product) {
+            await updateDoc(doc(db, 'products', item.productId), {
+              currentStock: product.currentStock - item.quantity,
+              updatedAt: now,
+            });
+            await addDoc(collection(db, 'stockMovements'), {
+              businessId: business.id,
+              productId: item.productId,
+              productName: item.description,
+              type: 'saida',
+              quantity: item.quantity,
+              previousStock: product.currentStock,
+              newStock: product.currentStock - item.quantity,
+              reason: `Venda #${docRef.id.substring(0, 6)}`,
+              saleId: docRef.id,
+              operatorId: user.uid,
+              operatorName: user.name,
+              createdAt: now,
+            });
+          }
+        }
+      }
+
+      // Create financial transaction for the sale
+      await addDoc(collection(db, 'transactions'), {
+        businessId: business.id,
+        type: 'receita',
+        category: 'Vendas',
+        description: `Venda ${selectedClient?.nome ? `- ${selectedClient.nome}` : ''}`,
+        amount: total,
+        dueDate: now.split('T')[0],
+        paymentDate: now.split('T')[0],
+        status: 'pago',
+        clientId: selectedClient?.id || null,
+        clientName: selectedClient?.nome || null,
+        saleId: docRef.id,
+        paymentMethod: payments[0]?.method || 'dinheiro',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      // Update client stats
+      if (selectedClient) {
+        await updateDoc(doc(db, 'clients', selectedClient.id), {
+          totalSpent: (selectedClient.totalSpent || 0) + total,
+          visitCount: (selectedClient.visitCount || 0) + 1,
+          lastVisit: now,
+          updatedAt: now,
+        });
+      }
+
+      // Invalidate caches
+      queryClient.invalidateQueries({ queryKey: ['sales'] });
+      queryClient.invalidateQueries({ queryKey: ['products'] });
+      queryClient.invalidateQueries({ queryKey: ['transactions'] });
+      queryClient.invalidateQueries({ queryKey: ['clients'] });
+
+      setLastSaleId(docRef.id);
+      setSaleComplete(true);
+
+      setTimeout(() => {
+        setSaleComplete(false);
+        setShowConfirmation(false);
+        setCart([]);
+        setPayments([]);
+        setSelectedClient(null);
+        setDiscountValue('');
+        setActivePaymentMethod(null);
+        setPaymentAmount('');
+        setInstallments(1);
+        setLastSaleId(null);
+      }, 2500);
+    } catch (error) {
+      console.error('Error finalizing sale:', error);
+      setSaleError('Erro ao finalizar venda. Tente novamente.');
+    } finally {
+      setIsSaving(false);
+    }
+  }, [user, business, cart, selectedClient, payments, subtotal, discountAmount, total, products, queryClient]);
 
   const cancelSale = useCallback(() => {
     setCart([]);
@@ -284,30 +495,281 @@ export default function PDVModule() {
     setDiscountValue('');
     setActivePaymentMethod(null);
     setPaymentAmount('');
+    setInstallments(1);
   }, []);
 
-  const paymentMethodConfig: { method: PaymentMethod; label: string; icon: React.ReactNode }[] = [
-    { method: 'dinheiro', label: 'Dinheiro', icon: <Banknote size={18} /> },
-    { method: 'pix', label: 'PIX', icon: <Smartphone size={18} /> },
-    { method: 'credito', label: 'Crédito', icon: <CreditCard size={18} /> },
-    { method: 'debito', label: 'Débito', icon: <Wallet size={18} /> },
-  ];
-
-  const paymentMethodLabels: Record<PaymentMethod, string> = {
-    dinheiro: 'Dinheiro',
-    pix: 'PIX',
-    credito: 'Crédito',
-    debito: 'Débito',
-    boleto: 'Boleto',
-    outros: 'Outros',
-  };
+  // ==========================================
+  // LOADING STATE
+  // ==========================================
+  if (isLoading) {
+    return (
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full flex flex-col lg:flex-row gap-0 bg-slate-50 dark:bg-[#0B0F19]">
+        <div className="w-full lg:w-[60%] flex flex-col border-r border-slate-200 dark:border-gray-800 bg-white dark:bg-[#0d1117] p-6 space-y-4">
+          <div className="h-8 w-48 rounded-xl shimmer" />
+          <div className="h-10 w-full rounded-xl shimmer" />
+          <div className="h-8 w-64 rounded-xl shimmer" />
+          <div className="grid grid-cols-2 xl:grid-cols-3 gap-3 flex-1">
+            {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
+              <motion.div
+                key={i}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.28, delay: i * 0.07 }}
+                className="h-[110px] rounded-xl shimmer"
+              />
+            ))}
+          </div>
+        </div>
+        <div className="w-full lg:w-[40%] flex flex-col bg-white dark:bg-[#111827] p-6 space-y-4">
+          <div className="h-8 w-40 rounded-xl shimmer" />
+          <div className="h-10 w-full rounded-xl shimmer" />
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-slate-300 dark:text-gray-600">
+              <ShoppingCart size={48} strokeWidth={1.2} />
+            </div>
+          </div>
+        </div>
+      </motion.div>
+    );
+  }
 
   // ==========================================
-  // RENDER
+  // SALES HISTORY VIEW
   // ==========================================
+  if (mainView === 'historico') {
+    return (
+      <div className="h-full flex flex-col bg-slate-50 dark:bg-[#0B0F19]">
+        {/* Header */}
+        <div className="px-6 pt-6 pb-4 border-b border-slate-200 dark:border-gray-800 bg-white dark:bg-[#0d1117]">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setMainView('pdv')}
+                className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-gray-800 flex items-center justify-center text-slate-500 dark:text-gray-400 hover:bg-slate-200 dark:hover:bg-gray-700 transition-colors"
+              >
+                <ChevronRight size={18} className="rotate-180" />
+              </button>
+              <div>
+                <h1 className="text-2xl font-display font-bold text-slate-900 dark:text-gray-100">Historico de Vendas</h1>
+                <p className="text-sm text-slate-500 dark:text-gray-400 mt-0.5">
+                  {salesHistory.length} {salesHistory.length === 1 ? 'venda registrada' : 'vendas registradas'}
+                </p>
+              </div>
+            </div>
+          </div>
+          <div className="relative">
+            <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-gray-500" />
+            <input
+              type="text"
+              placeholder="Buscar por cliente, produto ou ID da venda..."
+              value={historySearch}
+              onChange={(e) => setHistorySearch(e.target.value)}
+              className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-gray-800/50 border border-slate-200 dark:border-gray-700 rounded-xl text-sm text-slate-900 dark:text-gray-100 placeholder:text-slate-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 transition-all"
+            />
+          </div>
+        </div>
 
+        {/* Sales List */}
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+          {loadingSales ? (
+            <div className="space-y-3">
+              {[0, 1, 2, 3, 4].map((i) => (
+                <div key={i} className="h-20 rounded-xl shimmer" />
+              ))}
+            </div>
+          ) : filteredSales.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
+              <Receipt size={40} strokeWidth={1.5} />
+              <p className="mt-3 text-sm">{historySearch ? 'Nenhuma venda encontrada' : 'Nenhuma venda registrada ainda'}</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {filteredSales.map((sale, index) => (
+                <motion.button
+                  key={sale.id}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.2, delay: index * 0.03 }}
+                  onClick={() => setSelectedSale(sale)}
+                  className="w-full flex items-center gap-4 p-4 rounded-xl bg-white dark:bg-gray-800/60 border border-slate-200/80 dark:border-gray-700/80 hover:border-slate-300 dark:hover:border-gray-600 hover:shadow-sm transition-all text-left group"
+                >
+                  <div className={cn(
+                    'w-10 h-10 rounded-xl flex items-center justify-center shrink-0',
+                    sale.status === 'finalizada'
+                      ? 'bg-emerald-50 dark:bg-emerald-500/10'
+                      : sale.status === 'cancelada'
+                        ? 'bg-red-50 dark:bg-red-500/10'
+                        : 'bg-amber-50 dark:bg-amber-500/10',
+                  )}>
+                    <Receipt size={18} className={cn(
+                      sale.status === 'finalizada'
+                        ? 'text-emerald-500 dark:text-emerald-400'
+                        : sale.status === 'cancelada'
+                          ? 'text-red-500 dark:text-red-400'
+                          : 'text-amber-500 dark:text-amber-400',
+                    )} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-semibold text-slate-900 dark:text-gray-100">
+                        #{sale.id.substring(0, 6).toUpperCase()}
+                      </p>
+                      <Chip
+                        label={sale.status === 'finalizada' ? 'Finalizada' : sale.status === 'cancelada' ? 'Cancelada' : 'Aberta'}
+                        size="small"
+                        sx={{
+                          height: 20,
+                          fontSize: '0.65rem',
+                          fontWeight: 700,
+                          backgroundColor: sale.status === 'finalizada'
+                            ? (isDark ? 'rgba(16,185,129,0.1)' : '#ECFDF5')
+                            : sale.status === 'cancelada'
+                              ? (isDark ? 'rgba(239,68,68,0.1)' : '#FEF2F2')
+                              : (isDark ? 'rgba(245,158,11,0.1)' : '#FFFBEB'),
+                          color: sale.status === 'finalizada'
+                            ? (isDark ? '#34d399' : '#059669')
+                            : sale.status === 'cancelada'
+                              ? (isDark ? '#f87171' : '#DC2626')
+                              : (isDark ? '#fbbf24' : '#D97706'),
+                        }}
+                      />
+                    </div>
+                    <p className="text-xs text-slate-500 dark:text-gray-400 mt-0.5 truncate">
+                      {sale.clientName || 'Cliente avulso'} - {sale.items.length} {sale.items.length === 1 ? 'item' : 'itens'}
+                    </p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="text-sm font-bold text-slate-900 dark:text-gray-100">{formatCurrency(sale.total)}</p>
+                    <p className="text-xs text-slate-400 dark:text-gray-500 mt-0.5">{formatDateTime(sale.createdAt)}</p>
+                  </div>
+                  <ChevronRight size={16} className="text-slate-300 dark:text-gray-600 group-hover:text-slate-400 dark:group-hover:text-gray-500 transition-colors shrink-0" />
+                </motion.button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Sale Detail Dialog */}
+        <Dialog
+          open={!!selectedSale}
+          onClose={() => setSelectedSale(null)}
+          maxWidth="sm"
+          fullWidth
+          PaperProps={{
+            sx: {
+              borderRadius: '20px',
+              overflow: 'hidden',
+              backgroundColor: isDark ? '#1f2937' : '#fff',
+            },
+          }}
+        >
+          {selectedSale && (
+            <>
+              <DialogTitle
+                sx={{
+                  fontFamily: '"Plus Jakarta Sans", sans-serif',
+                  fontWeight: 700,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  color: isDark ? '#f3f4f6' : undefined,
+                }}
+              >
+                <div className="flex items-center gap-3">
+                  <Receipt size={20} className="text-red-600 dark:text-red-400" />
+                  <span>Venda #{selectedSale.id.substring(0, 6).toUpperCase()}</span>
+                </div>
+                <IconButton onClick={() => setSelectedSale(null)} size="small">
+                  <X size={18} className={isDark ? 'text-gray-400' : ''} />
+                </IconButton>
+              </DialogTitle>
+              <Divider />
+              <DialogContent sx={{ backgroundColor: isDark ? '#1f2937' : undefined }}>
+                <div className="space-y-4 py-2">
+                  <div className="bg-slate-50 dark:bg-gray-800/50 rounded-xl p-4 border border-slate-100 dark:border-gray-700/50">
+                    {/* Sale info */}
+                    <div className="flex items-center justify-between text-sm mb-3">
+                      <span className="text-slate-500 dark:text-gray-400">Data</span>
+                      <span className="font-medium text-slate-900 dark:text-gray-100">{formatDateTime(selectedSale.createdAt)}</span>
+                    </div>
+                    {selectedSale.clientName && (
+                      <div className="flex items-center justify-between text-sm mb-3">
+                        <span className="text-slate-500 dark:text-gray-400">Cliente</span>
+                        <span className="font-medium text-slate-900 dark:text-gray-100">{selectedSale.clientName}</span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between text-sm mb-3">
+                      <span className="text-slate-500 dark:text-gray-400">Operador</span>
+                      <span className="font-medium text-slate-900 dark:text-gray-100">{selectedSale.operatorName}</span>
+                    </div>
+                    <Divider sx={{ my: 1.5, borderStyle: 'dashed', borderColor: isDark ? '#374151' : undefined }} />
+
+                    {/* Items */}
+                    <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase tracking-wider mb-2">Itens</p>
+                    <div className="space-y-2">
+                      {selectedSale.items.map((item, idx) => (
+                        <div key={idx} className="flex justify-between text-sm">
+                          <div className="flex-1 min-w-0">
+                            <span className="text-slate-700 dark:text-gray-300 truncate block">{item.description}</span>
+                            <span className="text-xs text-slate-400 dark:text-gray-500">{item.quantity}x {formatCurrency(item.unitPrice)}</span>
+                          </div>
+                          <span className="font-medium text-slate-900 dark:text-gray-100 ml-4">
+                            {formatCurrency(item.total)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+
+                    <Divider sx={{ my: 1.5, borderStyle: 'dashed', borderColor: isDark ? '#374151' : undefined }} />
+
+                    {/* Totals */}
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-sm text-slate-600 dark:text-gray-400">
+                        <span>Subtotal</span>
+                        <span>{formatCurrency(selectedSale.subtotal)}</span>
+                      </div>
+                      {selectedSale.discount > 0 && (
+                        <div className="flex justify-between text-sm text-red-600 dark:text-red-400">
+                          <span>Desconto</span>
+                          <span>-{formatCurrency(selectedSale.discount)}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between text-base font-bold text-slate-900 dark:text-gray-100 pt-1">
+                        <span>Total</span>
+                        <span>{formatCurrency(selectedSale.total)}</span>
+                      </div>
+                    </div>
+
+                    <Divider sx={{ my: 1.5, borderStyle: 'dashed', borderColor: isDark ? '#374151' : undefined }} />
+
+                    {/* Payments */}
+                    <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase tracking-wider mb-2">Pagamento</p>
+                    <div className="space-y-1">
+                      {selectedSale.payments.map((p, idx) => (
+                        <div key={idx} className="flex justify-between text-sm text-slate-700 dark:text-gray-300">
+                          <span>
+                            {PAYMENT_METHOD_LABELS[p.method]}
+                            {p.installments && p.installments > 1 ? ` (${p.installments}x)` : ''}
+                          </span>
+                          <span>{formatCurrency(p.amount)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </DialogContent>
+            </>
+          )}
+        </Dialog>
+      </div>
+    );
+  }
+
+  // ==========================================
+  // PDV MAIN VIEW
+  // ==========================================
   return (
-    <div className="h-full flex flex-col lg:flex-row gap-0 bg-slate-50 dark:bg-[#0B0F19] min-h-[calc(100vh-80px)]">
+    <div className="h-full flex flex-col lg:flex-row gap-0 bg-slate-50 dark:bg-[#0B0F19]">
       {/* ========== LEFT PANEL - Catalog ========== */}
       <div className="w-full lg:w-[60%] flex flex-col border-r border-slate-200 dark:border-gray-800 bg-white dark:bg-[#0d1117]">
         {/* Header */}
@@ -317,12 +779,23 @@ export default function PDVModule() {
               <h1 className="text-2xl font-display font-bold text-slate-900 dark:text-gray-100">PDV</h1>
               <p className="text-sm text-slate-500 dark:text-gray-400 mt-0.5">Ponto de Venda</p>
             </div>
-            <Tooltip title="Atalhos: Enter para buscar, Esc para limpar">
-              <div className="flex items-center gap-1.5 text-xs text-slate-400 dark:text-gray-500 bg-slate-50 dark:bg-gray-800/50 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-gray-700">
-                <Keyboard size={14} />
-                <span>Atalhos</span>
-              </div>
-            </Tooltip>
+            <div className="flex items-center gap-2">
+              <Tooltip title="Historico de vendas">
+                <button
+                  onClick={() => setMainView('historico')}
+                  className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-gray-400 bg-slate-50 dark:bg-gray-800/50 px-3 py-2 rounded-lg border border-slate-200 dark:border-gray-700 hover:border-slate-300 dark:hover:border-gray-600 hover:text-slate-700 dark:hover:text-gray-300 transition-all"
+                >
+                  <History size={14} />
+                  <span>Historico</span>
+                </button>
+              </Tooltip>
+              <Tooltip title="Atalhos: Enter para buscar, Esc para limpar">
+                <div className="flex items-center gap-1.5 text-xs text-slate-400 dark:text-gray-500 bg-slate-50 dark:bg-gray-800/50 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-gray-700">
+                  <Keyboard size={14} />
+                  <span>Atalhos</span>
+                </div>
+              </Tooltip>
+            </div>
           </div>
 
           {/* Search */}
@@ -331,7 +804,7 @@ export default function PDVModule() {
             <input
               ref={searchInputRef}
               type="text"
-              placeholder="Buscar produto ou serviço..."
+              placeholder="Buscar produto ou servico..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-gray-800/50 border border-slate-200 dark:border-gray-700 rounded-xl text-sm text-slate-900 dark:text-gray-100 placeholder:text-slate-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 transition-all"
@@ -353,6 +826,9 @@ export default function PDVModule() {
             >
               <Package size={16} />
               Produtos
+              {products.length > 0 && (
+                <span className="text-xs text-slate-400 dark:text-gray-500">({products.length})</span>
+              )}
             </button>
             <button
               onClick={() => { setActiveTab('servicos'); setActiveCategory('Todos'); setSearchQuery(''); }}
@@ -364,7 +840,10 @@ export default function PDVModule() {
               )}
             >
               <Scissors size={16} />
-              Serviços
+              Servicos
+              {services.length > 0 && (
+                <span className="text-xs text-slate-400 dark:text-gray-500">({services.length})</span>
+              )}
             </button>
           </div>
         </div>
@@ -372,7 +851,7 @@ export default function PDVModule() {
         {/* Category Filters */}
         <div className="px-6 py-3">
           <div className="flex gap-2 overflow-x-auto scrollbar-hide">
-            {CATEGORIES.map((cat) => (
+            {categories.map((cat) => (
               <button
                 key={cat}
                 onClick={() => setActiveCategory(cat)}
@@ -399,56 +878,80 @@ export default function PDVModule() {
                   ? (item as Product).salePrice
                   : (item as Service).price;
                 const inCartQty = cartItemCount(item.id);
+                const outOfStock = item.type === 'product' && (item as Product).currentStock <= 0;
                 return (
                   <motion.button
                     key={item.id}
                     layout
                     initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
+                    animate={{ opacity: outOfStock ? 0.5 : 1, scale: 1 }}
                     exit={{ opacity: 0, scale: 0.95 }}
                     transition={{ duration: 0.15, delay: index * 0.02 }}
-                    whileHover={{ y: -2, boxShadow: '0 8px 25px -5px rgba(0,0,0,0.08)' }}
-                    whileTap={{ scale: 0.98 }}
-                    onClick={() => addToCart(item)}
+                    whileHover={outOfStock ? {} : { y: -3, boxShadow: '0 12px 32px -8px rgba(0,0,0,0.12)' }}
+                    whileTap={outOfStock ? {} : { scale: 0.97 }}
+                    onClick={() => !outOfStock && addToCart(item)}
+                    disabled={outOfStock}
                     className={cn(
-                      'relative flex flex-col items-start p-4 rounded-xl border transition-colors text-left',
-                      inCartQty > 0
-                        ? 'bg-red-50/50 dark:bg-red-500/10 border-red-200 dark:border-red-500/20'
-                        : 'bg-white dark:bg-gray-800/50 border-slate-200 dark:border-gray-700 hover:border-slate-300 dark:hover:border-gray-600',
+                      'relative flex flex-col items-start p-3.5 rounded-xl border transition-all duration-200 text-left group',
+                      outOfStock
+                        ? 'bg-slate-50 dark:bg-gray-800/30 border-slate-200/50 dark:border-gray-700/50 cursor-not-allowed'
+                        : inCartQty > 0
+                          ? 'bg-gradient-to-br from-red-50 to-red-50/50 dark:from-red-500/10 dark:to-red-500/5 border-red-200 dark:border-red-500/30 shadow-sm shadow-red-100 dark:shadow-red-500/5'
+                          : 'bg-white dark:bg-gray-800/60 border-slate-200/80 dark:border-gray-700/80 hover:border-slate-300 dark:hover:border-gray-600 hover:bg-slate-50/50 dark:hover:bg-gray-800/80',
                     )}
                   >
                     {inCartQty > 0 && (
                       <motion.div
                         initial={{ scale: 0 }}
                         animate={{ scale: 1 }}
-                        className="absolute -top-2 -right-2 w-6 h-6 bg-red-600 text-white rounded-full flex items-center justify-center text-xs font-bold shadow-md"
+                        className="absolute -top-2 -right-2 w-6 h-6 bg-gradient-to-br from-red-500 to-red-600 text-white rounded-full flex items-center justify-center text-xs font-bold shadow-lg shadow-red-500/30"
                       >
                         {inCartQty}
                       </motion.div>
                     )}
-                    <div className="flex items-center gap-2 mb-2">
-                      <div className="w-8 h-8 rounded-lg bg-slate-50 dark:bg-gray-800/50 flex items-center justify-center">
+                    {outOfStock && (
+                      <div className="absolute top-2 right-2 text-[9px] font-bold text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-500/10 px-1.5 py-0.5 rounded-md">
+                        SEM ESTOQUE
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between w-full mb-2.5">
+                      <div className={cn(
+                        'w-9 h-9 rounded-xl flex items-center justify-center transition-transform duration-200 group-hover:scale-110',
+                        inCartQty > 0
+                          ? 'bg-red-100 dark:bg-red-500/20'
+                          : 'bg-slate-100 dark:bg-gray-700/80'
+                      )}>
                         {getItemIcon(item)}
                       </div>
+                      {item.type === 'service' && (
+                        <span className="text-[9px] font-semibold text-slate-400 dark:text-gray-500 bg-slate-100 dark:bg-gray-700/60 px-1.5 py-0.5 rounded-md">
+                          {(item as Service).duration}min
+                        </span>
+                      )}
                     </div>
-                    <span className="text-sm font-medium text-slate-900 dark:text-gray-100 leading-tight mb-1 line-clamp-2">
+                    <span className="text-[13px] font-semibold text-slate-800 dark:text-gray-100 leading-snug mb-1.5 line-clamp-2 text-left w-full">
                       {item.name}
                     </span>
-                    <div className="flex items-center gap-2 mt-auto pt-1">
-                      <span className="text-base font-bold text-red-600 dark:text-red-400">
+                    <div className="flex items-end justify-between w-full mt-auto">
+                      <span className={cn(
+                        'text-base font-bold leading-none',
+                        outOfStock
+                          ? 'text-slate-400 dark:text-gray-500'
+                          : inCartQty > 0 ? 'text-red-600 dark:text-red-400' : 'text-red-500 dark:text-red-400'
+                      )}>
                         {formatCurrency(price)}
                       </span>
+                      {item.type === 'product' && (
+                        <span className={cn(
+                          'text-[10px] font-medium rounded-md px-1.5 py-0.5',
+                          (item as Product).currentStock <= (item as Product).minStock
+                            ? 'text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-500/10'
+                            : 'text-slate-400 dark:text-gray-500 bg-slate-100/80 dark:bg-gray-700/50'
+                        )}>
+                          {(item as Product).currentStock} un
+                        </span>
+                      )}
                     </div>
-                    {item.type === 'product' && (
-                      <span className="text-[10px] text-slate-400 dark:text-gray-500 mt-1">
-                        Estoque: {(item as Product).currentStock}
-                      </span>
-                    )}
-                    {item.type === 'service' && (
-                      <span className="text-[10px] text-slate-400 dark:text-gray-500 mt-1">
-                        {(item as Service).duration} min
-                      </span>
-                    )}
                   </motion.button>
                 );
               })}
@@ -459,6 +962,9 @@ export default function PDVModule() {
             <div className="flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
               <Search size={40} strokeWidth={1.5} />
               <p className="mt-3 text-sm">Nenhum item encontrado</p>
+              <p className="text-xs text-slate-300 dark:text-gray-600 mt-1">
+                {activeTab === 'produtos' ? 'Cadastre produtos no modulo de Estoque' : 'Cadastre servicos no modulo de Agenda'}
+              </p>
             </div>
           )}
         </div>
@@ -475,7 +981,7 @@ export default function PDVModule() {
               </div>
               <div>
                 <h2 className="text-lg font-display font-bold text-slate-900 dark:text-gray-100">
-                  Venda <span className="text-red-600 dark:text-red-400">#{String(saleNumber).padStart(3, '0')}</span>
+                  Nova Venda
                 </h2>
               </div>
             </div>
@@ -497,11 +1003,13 @@ export default function PDVModule() {
 
           {/* Client Selector */}
           <Autocomplete
-            options={MOCK_CLIENTS}
+            options={clients}
             getOptionLabel={(option) => option.nome}
             value={selectedClient}
             onChange={(_, value) => setSelectedClient(value)}
             size="small"
+            loading={loadingClients}
+            loadingText="Carregando clientes..."
             renderInput={(params) => (
               <TextField
                 {...params}
@@ -534,7 +1042,7 @@ export default function PDVModule() {
               <li {...props} key={option.id}>
                 <div className="flex items-center gap-3 py-1">
                   <div className="w-8 h-8 rounded-full bg-red-50 dark:bg-red-500/10 flex items-center justify-center text-xs font-bold text-red-600 dark:text-red-400">
-                    {option.nome.split(' ').map(n => n[0]).slice(0, 2).join('')}
+                    {option.nome.split(' ').map(n => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()}
                   </div>
                   <div>
                     <p className="text-sm font-medium text-slate-900 dark:text-gray-100">{option.nome}</p>
@@ -558,7 +1066,7 @@ export default function PDVModule() {
               >
                 <ShoppingCart size={48} strokeWidth={1.2} />
                 <p className="mt-3 text-sm text-slate-400 dark:text-gray-500">Carrinho vazio</p>
-                <p className="text-xs text-slate-300 dark:text-gray-600 mt-1">Clique em um produto ou serviço para adicionar</p>
+                <p className="text-xs text-slate-300 dark:text-gray-600 mt-1">Clique em um produto ou servico para adicionar</p>
               </motion.div>
             ) : (
               <div className="space-y-2">
@@ -667,7 +1175,7 @@ export default function PDVModule() {
                   </span>
                 )}
               </div>
-              <Divider sx={{ my: 1 }} />
+              <Divider sx={{ my: 1, borderColor: isDark ? '#374151' : undefined }} />
               <div className="flex justify-between items-center">
                 <span className="text-lg font-bold text-slate-900 dark:text-gray-100">Total</span>
                 <motion.span
@@ -686,20 +1194,21 @@ export default function PDVModule() {
               <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase tracking-wider mb-2">
                 Pagamento
               </p>
-              <div className="grid grid-cols-4 gap-2 mb-3">
-                {paymentMethodConfig.map((pm) => (
+              <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 mb-3">
+                {PAYMENT_METHODS.map((pm) => (
                   <button
-                    key={pm.method}
+                    key={pm.value}
                     onClick={() => {
-                      setActivePaymentMethod(pm.method);
+                      setActivePaymentMethod(pm.value);
+                      setInstallments(1);
                       if (!paymentAmount) {
                         setPaymentAmount(remaining.toFixed(2));
                       }
                     }}
                     className={cn(
                       'flex flex-col items-center gap-1 py-2.5 px-2 rounded-xl border text-xs font-medium transition-all',
-                      activePaymentMethod === pm.method
-                        ? 'bg-red-50 dark:bg-red-500/10 border-red-300 text-red-600 dark:text-red-400'
+                      activePaymentMethod === pm.value
+                        ? 'bg-red-50 dark:bg-red-500/10 border-red-300 dark:border-red-500/30 text-red-600 dark:text-red-400'
                         : 'bg-white dark:bg-gray-800 border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:border-slate-300 dark:hover:border-gray-600',
                     )}
                   >
@@ -713,33 +1222,53 @@ export default function PDVModule() {
                 <motion.div
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: 'auto' }}
-                  className="flex gap-2 mb-3"
+                  className="space-y-2 mb-3"
                 >
-                  <div className="relative flex-1">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 dark:text-gray-500">R$</span>
-                    <input
-                      type="number"
-                      value={paymentAmount}
-                      onChange={(e) => setPaymentAmount(e.target.value)}
-                      placeholder="0,00"
-                      className="w-full pl-9 pr-3 py-2 bg-white dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-xl text-sm text-slate-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
-                    />
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 dark:text-gray-500">R$</span>
+                      <input
+                        type="number"
+                        value={paymentAmount}
+                        onChange={(e) => setPaymentAmount(e.target.value)}
+                        placeholder="0,00"
+                        className="w-full pl-9 pr-3 py-2 bg-white dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-xl text-sm text-slate-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
+                      />
+                    </div>
+                    <Button
+                      onClick={addPayment}
+                      variant="contained"
+                      size="small"
+                      sx={{
+                        backgroundColor: '#DC2626',
+                        '&:hover': { backgroundColor: '#B91C1C' },
+                        borderRadius: '12px',
+                        textTransform: 'none',
+                        fontWeight: 600,
+                        minWidth: 80,
+                      }}
+                    >
+                      Adicionar
+                    </Button>
                   </div>
-                  <Button
-                    onClick={addPayment}
-                    variant="contained"
-                    size="small"
-                    sx={{
-                      backgroundColor: '#DC2626',
-                      '&:hover': { backgroundColor: '#B91C1C' },
-                      borderRadius: '12px',
-                      textTransform: 'none',
-                      fontWeight: 600,
-                      minWidth: 80,
-                    }}
-                  >
-                    Adicionar
-                  </Button>
+
+                  {/* Credit card installments */}
+                  {activePaymentMethod === 'credito' && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-500 dark:text-gray-400 whitespace-nowrap">Parcelas:</span>
+                      <select
+                        value={installments}
+                        onChange={(e) => setInstallments(parseInt(e.target.value))}
+                        className="flex-1 px-3 py-1.5 bg-white dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-lg text-sm text-slate-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
+                      >
+                        {Array.from({ length: 12 }, (_, i) => i + 1).map((n) => (
+                          <option key={n} value={n}>
+                            {n}x {n === 1 ? 'a vista' : `de ${formatCurrency((parseFloat(paymentAmount) || 0) / n)}`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                 </motion.div>
               )}
 
@@ -751,7 +1280,8 @@ export default function PDVModule() {
                       <div className="flex items-center gap-2">
                         <CheckCircle2 size={14} className="text-emerald-500 dark:text-emerald-400" />
                         <span className="text-sm text-emerald-800 dark:text-emerald-300 font-medium">
-                          {paymentMethodLabels[p.method]}
+                          {PAYMENT_METHOD_LABELS[p.method]}
+                          {p.installments && p.installments > 1 ? ` (${p.installments}x)` : ''}
                         </span>
                       </div>
                       <div className="flex items-center gap-2">
@@ -823,13 +1353,13 @@ export default function PDVModule() {
                 </IconButton>
               </Tooltip>
               <Button
-                onClick={finalizeSale}
+                onClick={openConfirmation}
                 variant="contained"
                 disabled={cart.length === 0 || remaining > 0.01}
                 sx={{
                   backgroundColor: '#DC2626',
                   '&:hover': { backgroundColor: '#B91C1C' },
-                  '&.Mui-disabled': { backgroundColor: '#FCA5A5', color: '#fff' },
+                  '&.Mui-disabled': { backgroundColor: isDark ? '#7f1d1d' : '#FCA5A5', color: '#fff' },
                   borderRadius: '12px',
                   textTransform: 'none',
                   fontWeight: 700,
@@ -848,10 +1378,16 @@ export default function PDVModule() {
       {/* ========== CONFIRMATION DIALOG ========== */}
       <Dialog
         open={showConfirmation}
-        onClose={() => !saleComplete && setShowConfirmation(false)}
+        onClose={() => !saleComplete && !isSaving && setShowConfirmation(false)}
         maxWidth="sm"
         fullWidth
-        PaperProps={{ sx: { borderRadius: '20px', overflow: 'hidden' } }}
+        PaperProps={{
+          sx: {
+            borderRadius: '20px',
+            overflow: 'hidden',
+            backgroundColor: isDark ? '#1f2937' : '#fff',
+          },
+        }}
       >
         <AnimatePresence mode="wait">
           {saleComplete ? (
@@ -884,7 +1420,9 @@ export default function PDVModule() {
                 transition={{ delay: 0.4 }}
                 className="text-sm text-slate-500 dark:text-gray-400"
               >
-                Venda #{String(saleNumber).padStart(3, '0')} registrada com sucesso
+                {lastSaleId
+                  ? `Venda #${lastSaleId.substring(0, 6).toUpperCase()} registrada com sucesso`
+                  : 'Venda registrada com sucesso'}
               </motion.p>
             </motion.div>
           ) : (
@@ -900,33 +1438,43 @@ export default function PDVModule() {
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
+                  color: isDark ? '#f3f4f6' : undefined,
                 }}
               >
                 <div className="flex items-center gap-3">
                   <Receipt size={20} className="text-red-600 dark:text-red-400" />
                   <span>Confirmar Venda</span>
                 </div>
-                <IconButton onClick={() => setShowConfirmation(false)} size="small">
-                  <X size={18} />
+                <IconButton onClick={() => !isSaving && setShowConfirmation(false)} size="small" disabled={isSaving}>
+                  <X size={18} className={isDark ? 'text-gray-400' : ''} />
                 </IconButton>
               </DialogTitle>
               <Divider />
-              <DialogContent>
+              <DialogContent sx={{ backgroundColor: isDark ? '#1f2937' : undefined }}>
                 <div className="space-y-4 py-2">
+                  {/* Error message */}
+                  {saleError && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="flex items-center gap-2 p-3 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 rounded-xl"
+                    >
+                      <AlertCircle size={16} className="text-red-500 dark:text-red-400 shrink-0" />
+                      <p className="text-sm text-red-700 dark:text-red-300">{saleError}</p>
+                    </motion.div>
+                  )}
+
                   {/* Receipt Preview */}
                   <div className="bg-slate-50 dark:bg-gray-800/50 rounded-xl p-4 border border-slate-100 dark:border-gray-700/50">
                     <div className="text-center mb-4">
                       <p className="text-xs text-slate-400 dark:text-gray-500 uppercase tracking-widest">Resumo da Venda</p>
-                      <p className="text-sm font-bold text-slate-900 dark:text-gray-100 mt-1">
-                        Venda #{String(saleNumber).padStart(3, '0')}
-                      </p>
                       {selectedClient && (
-                        <p className="text-xs text-slate-500 dark:text-gray-400 mt-0.5">
+                        <p className="text-xs text-slate-500 dark:text-gray-400 mt-1">
                           Cliente: {selectedClient.nome}
                         </p>
                       )}
                     </div>
-                    <Divider sx={{ my: 1.5, borderStyle: 'dashed' }} />
+                    <Divider sx={{ my: 1.5, borderStyle: 'dashed', borderColor: isDark ? '#374151' : undefined }} />
                     <div className="space-y-2">
                       {cart.map((item) => (
                         <div key={item.id} className="flex justify-between text-sm">
@@ -940,7 +1488,7 @@ export default function PDVModule() {
                         </div>
                       ))}
                     </div>
-                    <Divider sx={{ my: 1.5, borderStyle: 'dashed' }} />
+                    <Divider sx={{ my: 1.5, borderStyle: 'dashed', borderColor: isDark ? '#374151' : undefined }} />
                     <div className="space-y-1">
                       <div className="flex justify-between text-sm text-slate-600 dark:text-gray-400">
                         <span>Subtotal</span>
@@ -957,12 +1505,15 @@ export default function PDVModule() {
                         <span>{formatCurrency(total)}</span>
                       </div>
                     </div>
-                    <Divider sx={{ my: 1.5, borderStyle: 'dashed' }} />
+                    <Divider sx={{ my: 1.5, borderStyle: 'dashed', borderColor: isDark ? '#374151' : undefined }} />
                     <div className="space-y-1">
                       <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase">Pagamento</p>
                       {payments.map((p, idx) => (
                         <div key={idx} className="flex justify-between text-sm text-slate-700 dark:text-gray-300">
-                          <span>{paymentMethodLabels[p.method]}</span>
+                          <span>
+                            {PAYMENT_METHOD_LABELS[p.method]}
+                            {p.installments && p.installments > 1 ? ` (${p.installments}x)` : ''}
+                          </span>
                           <span>{formatCurrency(p.amount)}</span>
                         </div>
                       ))}
@@ -976,7 +1527,7 @@ export default function PDVModule() {
                   </div>
                 </div>
               </DialogContent>
-              <DialogActions sx={{ px: 3, py: 2, gap: 1 }}>
+              <DialogActions sx={{ px: 3, py: 2, gap: 1, backgroundColor: isDark ? '#1f2937' : undefined }}>
                 <Tooltip title="Imprimir recibo">
                   <IconButton
                     sx={{
@@ -991,6 +1542,7 @@ export default function PDVModule() {
                 <div className="flex-1" />
                 <Button
                   onClick={() => setShowConfirmation(false)}
+                  disabled={isSaving}
                   sx={{ color: isDark ? '#9ca3af' : '#64748B', textTransform: 'none', fontWeight: 600, borderRadius: '12px' }}
                 >
                   Voltar
@@ -998,16 +1550,25 @@ export default function PDVModule() {
                 <Button
                   onClick={confirmSale}
                   variant="contained"
+                  disabled={isSaving}
                   sx={{
                     backgroundColor: '#DC2626',
                     '&:hover': { backgroundColor: '#B91C1C' },
+                    '&.Mui-disabled': { backgroundColor: isDark ? '#7f1d1d' : '#FCA5A5', color: '#fff' },
                     borderRadius: '12px',
                     textTransform: 'none',
                     fontWeight: 700,
                     px: 4,
                   }}
                 >
-                  Confirmar Venda
+                  {isSaving ? (
+                    <div className="flex items-center gap-2">
+                      <Loader2 size={16} className="animate-spin" />
+                      Salvando...
+                    </div>
+                  ) : (
+                    'Confirmar Venda'
+                  )}
                 </Button>
               </DialogActions>
             </motion.div>

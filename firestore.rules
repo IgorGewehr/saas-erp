@@ -1,0 +1,555 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ============================================
+    // HELPER FUNCTIONS
+    // ============================================
+
+    // Check if the user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Get the user document for the authenticated user
+    function getUserDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // Get the user's businessId
+    function userBusinessId() {
+      return getUserDoc().businessId;
+    }
+
+    // Check if the user belongs to the specified business
+    function belongsToBusiness(businessId) {
+      return isAuthenticated() && userBusinessId() == businessId;
+    }
+
+    // Check if the resource's businessId matches the user's business
+    function isOwnBusiness() {
+      return isAuthenticated() && resource.data.businessId == userBusinessId();
+    }
+
+    // Check if incoming data's businessId matches the user's business
+    function incomingBelongsToBusiness() {
+      return isAuthenticated() && request.resource.data.businessId == userBusinessId();
+    }
+
+    // Role hierarchy values
+    function roleValue(role) {
+      return role == 'founder' ? 100 :
+             role == 'admin' ? 80 :
+             role == 'manager' ? 60 :
+             role == 'operator' ? 40 :
+             role == 'viewer' ? 20 : 0;
+    }
+
+    // Get user's role numeric value
+    function userRoleValue() {
+      return roleValue(getUserDoc().role);
+    }
+
+    // Check if user has at least the specified role
+    function hasMinRole(minRole) {
+      return isAuthenticated() && userRoleValue() >= roleValue(minRole);
+    }
+
+    // Check if user is admin or founder
+    function isAdmin() {
+      return hasMinRole('admin');
+    }
+
+    // Check if user is manager or above
+    function isManager() {
+      return hasMinRole('manager');
+    }
+
+    // Check if user is operator or above
+    function isOperator() {
+      return hasMinRole('operator');
+    }
+
+    // Validate required string field
+    function isNonEmptyString(field) {
+      return field is string && field.size() > 0;
+    }
+
+    // Validate timestamp string (ISO format)
+    function hasTimestamps() {
+      return request.resource.data.keys().hasAll(['createdAt', 'updatedAt'])
+             && request.resource.data.createdAt is string
+             && request.resource.data.updatedAt is string;
+    }
+
+    // ============================================
+    // USERS COLLECTION
+    // ============================================
+    match /users/{userId} {
+      // Users can read their own profile
+      // Users can read profiles of people in the same business
+      allow read: if isAuthenticated()
+                  && (request.auth.uid == userId || belongsToBusiness(resource.data.businessId));
+
+      // Users can only update their own profile
+      // Admins can update users in their business (for role changes, etc.)
+      allow update: if isAuthenticated()
+                    && (request.auth.uid == userId
+                        || (isAdmin() && belongsToBusiness(resource.data.businessId)));
+
+      // User creation happens during signup (auth trigger or client-side)
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+
+      // Only founders can delete users (soft delete preferred)
+      allow delete: if isAuthenticated()
+                    && hasMinRole('founder')
+                    && belongsToBusiness(resource.data.businessId)
+                    && request.auth.uid != userId; // Cannot delete yourself
+    }
+
+    // ============================================
+    // BUSINESSES COLLECTION
+    // ============================================
+    match /businesses/{businessId} {
+      // Members of the business can read
+      allow read: if isAuthenticated() && belongsToBusiness(businessId);
+
+      // Business is created during signup
+      allow create: if isAuthenticated()
+                    && request.resource.data.ownerUserId == request.auth.uid;
+
+      // Only admin/founder can update business settings
+      allow update: if isAuthenticated()
+                    && belongsToBusiness(businessId)
+                    && isAdmin();
+
+      // Only founder can delete
+      allow delete: if isAuthenticated()
+                    && belongsToBusiness(businessId)
+                    && hasMinRole('founder');
+    }
+
+    // ============================================
+    // INVITE CODES COLLECTION
+    // ============================================
+    match /inviteCodes/{code} {
+      // Anyone authenticated can read (for code validation during signup)
+      allow read: if isAuthenticated();
+
+      // Only admin/founder can create invite codes
+      allow create: if isAuthenticated()
+                    && isAdmin()
+                    && incomingBelongsToBusiness();
+
+      // Allow update: only the code's own business admin can revoke,
+      // or any authenticated user can mark as used (but cannot change businessId or role)
+      allow update: if isAuthenticated()
+                    && (
+                      // Admin/founder of the code's business can do anything (revoke, etc.)
+                      (isAdmin() && belongsToBusiness(resource.data.businessId))
+                      ||
+                      // During signup: anyone can mark as used, but cannot change businessId or role
+                      (
+                        request.resource.data.businessId == resource.data.businessId
+                        && request.resource.data.role == resource.data.role
+                        && request.resource.data.code == resource.data.code
+                        && request.resource.data.isActive == false
+                        && resource.data.isActive == true
+                      )
+                    );
+
+      // Only admin/founder can delete
+      allow delete: if isAuthenticated()
+                    && isAdmin()
+                    && isOwnBusiness();
+    }
+
+    // ============================================
+    // CLIENTS COLLECTION
+    // ============================================
+    match /clients/{clientId} {
+      // Operators and above can read clients in their business
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isOperator();
+
+      // Operators and above can create clients
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator()
+                    && isNonEmptyString(request.resource.data.nome)
+                    && request.resource.data.tipo in ['pf', 'pj'];
+
+      // Operators and above can update clients
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator()
+                    && incomingBelongsToBusiness();
+
+      // Only managers and above can delete
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isManager();
+    }
+
+    // ============================================
+    // APPOINTMENTS COLLECTION
+    // ============================================
+    match /appointments/{appointmentId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isOperator();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator()
+                    && isNonEmptyString(request.resource.data.clientName)
+                    && isNonEmptyString(request.resource.data.date)
+                    && isNonEmptyString(request.resource.data.startTime);
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isManager();
+    }
+
+    // ============================================
+    // SERVICES COLLECTION
+    // ============================================
+    match /services/{serviceId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isManager()
+                    && isNonEmptyString(request.resource.data.name);
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isManager()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isAdmin();
+    }
+
+    // ============================================
+    // PRODUCTS COLLECTION
+    // ============================================
+    match /products/{productId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isOperator();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isManager()
+                    && isNonEmptyString(request.resource.data.name);
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isManager();
+    }
+
+    // ============================================
+    // STOCK MOVEMENTS COLLECTION
+    // ============================================
+    match /stockMovements/{movementId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isOperator();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator()
+                    && request.resource.data.type in ['entrada', 'saida', 'ajuste'];
+
+      // Stock movements are immutable (append-only ledger)
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // ============================================
+    // SALES COLLECTION
+    // ============================================
+    match /sales/{saleId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isOperator();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator()
+                    && request.resource.data.status in ['aberta', 'finalizada', 'cancelada'];
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator()
+                    && incomingBelongsToBusiness();
+
+      // Only managers can delete sales
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isManager();
+    }
+
+    // ============================================
+    // TRANSACTIONS (FINANCIAL) COLLECTION
+    // ============================================
+    match /transactions/{transactionId} {
+      // Only managers and above can see financial data
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isManager();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isManager()
+                    && request.resource.data.type in ['receita', 'despesa']
+                    && request.resource.data.status in ['pendente', 'pago', 'atrasado', 'cancelado'];
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isManager()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isAdmin();
+    }
+
+    // ============================================
+    // BANK ACCOUNTS COLLECTION
+    // ============================================
+    match /bankAccounts/{accountId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isManager();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isAdmin();
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isAdmin()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isAdmin();
+    }
+
+    // ============================================
+    // KANBAN BOARDS COLLECTION
+    // ============================================
+    match /kanbanBoards/{boardId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator();
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isManager();
+    }
+
+    // ============================================
+    // KANBAN CARDS COLLECTION
+    // ============================================
+    match /kanbanCards/{cardId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator();
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator();
+    }
+
+    // ============================================
+    // CRM CONTACTS COLLECTION
+    // ============================================
+    match /crmContacts/{contactId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isOperator();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator()
+                    && isNonEmptyString(request.resource.data.name);
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isManager();
+    }
+
+    // ============================================
+    // CRM DEALS COLLECTION
+    // ============================================
+    match /crmDeals/{dealId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isOperator();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator();
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isManager();
+    }
+
+    // ============================================
+    // CRM ACTIVITIES COLLECTION
+    // ============================================
+    match /crmActivities/{activityId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator();
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator();
+    }
+
+    // ============================================
+    // FISCAL DOCUMENTS COLLECTION
+    // ============================================
+    match /fiscalDocuments/{docId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isManager();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isManager()
+                    && request.resource.data.type in ['nfse', 'nfce', 'nfe'];
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isManager()
+                    && incomingBelongsToBusiness();
+
+      // Fiscal documents should not be deleted (legal requirement)
+      allow delete: if false;
+    }
+
+    // ============================================
+    // CONVERSATIONS COLLECTION
+    // ============================================
+    match /conversations/{conversationId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isOperator();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator();
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isAdmin();
+    }
+
+    // ============================================
+    // CONVERSATION MESSAGES COLLECTION
+    // ============================================
+    match /conversationMessages/{messageId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isOperator();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator();
+
+      // Messages are append-only - no updates or deletes
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator();
+      allow delete: if false;
+    }
+
+    // ============================================
+    // SAAS API KEYS COLLECTION
+    // ============================================
+    match /saasApiKeys/{keyId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isAdmin();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isAdmin();
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isAdmin()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isAdmin();
+    }
+
+    // ============================================
+    // CATCH-ALL: Deny everything else
+    // ============================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

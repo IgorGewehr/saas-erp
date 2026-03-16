@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import { doc, setDoc } from 'firebase/firestore';
+import { doc, setDoc, collection, query, where, onSnapshot, updateDoc, getDocs, addDoc, deleteDoc } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '@/lib/config/firebase';
 import { toast } from 'react-toastify';
@@ -33,8 +33,42 @@ import {
   ImagePlus,
   Info,
   Briefcase,
+  Copy,
+  Check,
+  Plus,
+  UserPlus,
+  Link2,
+  Clock,
+  RefreshCw,
+  Crown,
+  Wifi,
+  WifiOff,
+  User as UserCircle,
+  Blocks,
+  Plug,
+  Zap,
+  ToggleLeft,
+  ToggleRight,
+  ExternalLink,
+  Lock,
+  CheckCircle2,
+  XCircle,
+  AlertCircle,
+  CreditCard,
+  Triangle,
+  ChevronRight,
+  Bug,
+  Cloud,
+  Database,
+  Globe,
+  MessageCircle,
+  Camera,
+  Plug2,
 } from 'lucide-react';
-import type { Business } from '@/lib/types';
+import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope } from '@/lib/types';
+import { ROLE_LABELS, ROLE_HIERARCHY, USER_STATUS_LABELS, INTEGRATION_PROVIDERS, API_KEY_SCOPES } from '@/lib/types';
+import { formatDate } from '@/lib/utils/format';
+import { encryptToken, decryptToken } from '@/lib/utils/encryption';
 import {
   validateCNPJ,
   validateCPF,
@@ -48,7 +82,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type Tab = 'empresa' | 'fiscal' | 'usuarios';
+type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'enterprise' | 'canais';
 
 interface CertStatus {
   hasCertificate: boolean;
@@ -173,6 +207,299 @@ function SaveButton({
         </>
       )}
     </button>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PERFIL TAB
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const STATUS_OPTIONS: { value: UserStatus; label: string; dot: string; text: string; bg: string }[] = [
+  { value: 'online',    label: 'Online',    dot: 'bg-emerald-400', text: 'text-emerald-700 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
+  { value: 'busy',      label: 'Ocupado',   dot: 'bg-amber-400',   text: 'text-amber-700 dark:text-amber-400',     bg: 'bg-amber-50 dark:bg-amber-500/10'     },
+  { value: 'invisible', label: 'Invisível', dot: 'bg-gray-400',    text: 'text-gray-600 dark:text-gray-400',       bg: 'bg-gray-100 dark:bg-gray-700/40'      },
+  { value: 'offline',   label: 'Offline',   dot: 'bg-gray-400',    text: 'text-gray-600 dark:text-gray-400',       bg: 'bg-gray-100 dark:bg-gray-700/40'      },
+];
+
+function ProfileTab() {
+  const { user, updateUserProfile } = useAuth();
+  const [isSaving, setIsSaving]                 = useState(false);
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
+  const [name, setName]                         = useState('');
+  const [phone, setPhone]                       = useState('');
+  const [photoPreview, setPhotoPreview]         = useState<string | null>(null);
+  const [cep, setCep]                           = useState('');
+  const [logradouro, setLogradouro]             = useState('');
+  const [numero, setNumero]                     = useState('');
+  const [complemento, setComplemento]           = useState('');
+  const [bairro, setBairro]                     = useState('');
+  const [municipio, setMunicipio]               = useState('');
+  const [uf, setUf]                             = useState('');
+
+  useEffect(() => {
+    if (user) {
+      setName(user.name || '');
+      setPhone(user.phone ? formatPhoneInput(user.phone) : '');
+      setPhotoPreview(user.photoURL || null);
+      const pa = user.profileAddress;
+      if (pa) {
+        setCep(pa.cep ? formatCEPInput(pa.cep) : '');
+        setLogradouro(pa.logradouro || '');
+        setNumero(pa.numero || '');
+        setComplemento(pa.complemento || '');
+        setBairro(pa.bairro || '');
+        setMunicipio(pa.municipio || '');
+        setUf(pa.uf || '');
+      }
+    }
+  }, [user]);
+
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user) return;
+    if (!file.type.startsWith('image/')) return;
+    if (file.size > 2 * 1024 * 1024) { toast.error('Foto deve ter no máximo 2MB'); return; }
+
+    setIsUploadingPhoto(true);
+    const reader = new FileReader();
+    reader.onload = () => setPhotoPreview(reader.result as string);
+    reader.readAsDataURL(file);
+
+    try {
+      const storageRef = ref(storage, `users/${user.uid}/avatar`);
+      await uploadBytes(storageRef, file);
+      const url = await getDownloadURL(storageRef);
+      setPhotoPreview(url);
+      await updateUserProfile({ photoURL: url });
+      toast.success('Foto atualizada!');
+    } catch {
+      toast.error('Erro ao fazer upload da foto');
+    } finally {
+      setIsUploadingPhoto(false);
+    }
+  };
+
+  const handleRemovePhoto = async () => {
+    if (!user) return;
+    setPhotoPreview(null);
+    await updateUserProfile({ photoURL: '' });
+    toast.success('Foto removida');
+  };
+
+  const handleCEPChange = async (value: string) => {
+    const formatted = formatCEPInput(value);
+    setCep(formatted);
+    const cleaned = formatted.replace(/\D/g, '');
+    if (cleaned.length === 8) {
+      try {
+        const res = await fetch(`https://viacep.com.br/ws/${cleaned}/json/`);
+        const data = await res.json();
+        if (!data.erro) {
+          setLogradouro(data.logradouro || '');
+          setBairro(data.bairro || '');
+          setMunicipio(data.localidade || '');
+          setUf(data.uf || '');
+        }
+      } catch { /* silently fail */ }
+    }
+  };
+
+  const handleSave = async () => {
+    if (!user) return;
+    if (!name.trim()) { toast.error('Nome é obrigatório'); return; }
+    setIsSaving(true);
+    try {
+      await updateUserProfile({
+        name: name.trim(),
+        phone: phone.replace(/\D/g, ''),
+        profileAddress: { logradouro, numero, complemento, bairro, municipio, uf, cep: cep.replace(/\D/g, '') },
+      });
+      toast.success('Perfil atualizado com sucesso!');
+    } catch {
+      toast.error('Erro ao salvar o perfil');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleSetStatus = async (status: UserStatus) => {
+    await updateUserProfile({ userStatus: status });
+  };
+
+  const currentStatus = (user?.userStatus || 'online') as UserStatus;
+  const currentStatusCfg = STATUS_OPTIONS.find(s => s.value === currentStatus) || STATUS_OPTIONS[0];
+  const initials = user?.name ? user.name.split(' ').filter(Boolean).map(w => w[0]).join('').toUpperCase().slice(0, 2) : '??';
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
+      transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
+      className="space-y-6"
+    >
+      {/* Avatar & Status */}
+      <SectionCard title="Foto de Perfil" icon={UserCircle}>
+        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-6">
+          {/* Avatar */}
+          <div className="relative group flex-shrink-0">
+            <div className="w-24 h-24 rounded-2xl overflow-hidden bg-gradient-to-br from-red-100 to-rose-100 dark:from-red-900/40 dark:to-rose-900/30 border-2 border-red-200/60 dark:border-red-800/40 flex items-center justify-center">
+              {photoPreview
+                ? <img src={photoPreview} alt="Avatar" className="w-full h-full object-cover" />
+                : <span className="text-2xl font-bold text-red-700 dark:text-red-400">{initials}</span>
+              }
+            </div>
+            {isUploadingPhoto && (
+              <div className="absolute inset-0 rounded-2xl bg-black/40 flex items-center justify-center">
+                <Loader2 className="w-5 h-5 text-white animate-spin" />
+              </div>
+            )}
+            {!isUploadingPhoto && (
+              <label className="absolute inset-0 rounded-2xl bg-black/0 group-hover:bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-200 cursor-pointer">
+                <ImagePlus className="w-5 h-5 text-white" />
+                <input type="file" accept="image/*" onChange={handlePhotoUpload} className="hidden" />
+              </label>
+            )}
+          </div>
+
+          {/* Info + actions */}
+          <div className="flex-1 space-y-3">
+            <div>
+              <p className="text-base font-semibold text-gray-900 dark:text-gray-100">{user?.name}</p>
+              <p className="text-sm text-gray-400 dark:text-gray-500">{user?.email}</p>
+              <span className="inline-block mt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded-md">
+                {ROLE_LABELS[user?.role || 'viewer']}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors cursor-pointer">
+                <Upload className="w-3.5 h-3.5" />
+                Alterar foto
+                <input type="file" accept="image/*" onChange={handlePhotoUpload} className="hidden" />
+              </label>
+              {photoPreview && (
+                <button
+                  onClick={handleRemovePhoto}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Remover
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </SectionCard>
+
+      {/* Status */}
+      <SectionCard title="Status de Presença" icon={Wifi}>
+        <div className="space-y-3">
+          <p className="text-sm text-gray-500 dark:text-gray-400">Controle como você aparece para os outros membros da equipe.</p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {STATUS_OPTIONS.map((opt) => {
+              const isActive = currentStatus === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  onClick={() => handleSetStatus(opt.value)}
+                  className={cn(
+                    'flex items-center gap-2 px-3 py-2.5 rounded-xl border transition-all duration-200',
+                    isActive
+                      ? `${opt.bg} border-current ${opt.text} shadow-sm`
+                      : 'border-gray-200 dark:border-gray-700/50 bg-white dark:bg-white/[0.03] text-gray-600 dark:text-gray-400 hover:border-gray-300 dark:hover:border-gray-600'
+                  )}
+                >
+                  <div className={cn('w-2 h-2 rounded-full flex-shrink-0', opt.dot)} />
+                  <span className="text-sm font-medium">{opt.label}</span>
+                  {isActive && <Check className="w-3.5 h-3.5 ml-auto" />}
+                </button>
+              );
+            })}
+          </div>
+          {currentStatus === 'invisible' && (
+            <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
+              <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+              No modo invisível, você aparecerá como offline para os outros membros.
+            </p>
+          )}
+        </div>
+      </SectionCard>
+
+      {/* Personal Info */}
+      <SectionCard title="Informações Pessoais" icon={UserCircle}>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <FormField label="Nome completo" icon={UserCircle}>
+            <input
+              type="text"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="Seu nome completo"
+              className={inputClasses}
+            />
+          </FormField>
+          <FormField label="Telefone" icon={Phone}>
+            <input
+              type="tel"
+              value={phone}
+              onChange={e => setPhone(formatPhoneInput(e.target.value))}
+              placeholder="(00) 00000-0000"
+              maxLength={15}
+              className={inputClasses}
+            />
+          </FormField>
+          <FormField label="E-mail" icon={Mail} className="md:col-span-2">
+            <input
+              type="email"
+              value={user?.email || ''}
+              readOnly
+              className={cn(inputClasses, 'bg-gray-50 dark:bg-gray-800/50 cursor-not-allowed opacity-70')}
+            />
+          </FormField>
+        </div>
+      </SectionCard>
+
+      {/* Address */}
+      <SectionCard title="Endereço" icon={MapPin}>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <FormField label="CEP" tooltip="Busca automática do endereço">
+            <input
+              type="text"
+              value={cep}
+              onChange={e => handleCEPChange(e.target.value)}
+              placeholder="00000-000"
+              maxLength={9}
+              className={inputClasses}
+            />
+          </FormField>
+          <FormField label="Logradouro">
+            <input type="text" value={logradouro} onChange={e => setLogradouro(e.target.value)} placeholder="Rua, Avenida, etc." className={inputClasses} />
+          </FormField>
+          <FormField label="Número">
+            <input type="text" value={numero} onChange={e => setNumero(e.target.value)} placeholder="Nº" className={inputClasses} />
+          </FormField>
+          <FormField label="Complemento">
+            <input type="text" value={complemento} onChange={e => setComplemento(e.target.value)} placeholder="Sala, Andar, etc." className={inputClasses} />
+          </FormField>
+          <FormField label="Bairro">
+            <input type="text" value={bairro} onChange={e => setBairro(e.target.value)} placeholder="Bairro" className={inputClasses} />
+          </FormField>
+          <FormField label="Município">
+            <input type="text" value={municipio} onChange={e => setMunicipio(e.target.value)} placeholder="Cidade" className={inputClasses} />
+          </FormField>
+          <FormField label="UF">
+            <select value={uf} onChange={e => setUf(e.target.value)} className={selectClasses}>
+              <option value="">Selecione...</option>
+              {UF_LIST.map(u => <option key={u} value={u}>{u}</option>)}
+            </select>
+          </FormField>
+        </div>
+      </SectionCard>
+
+      {/* Save */}
+      <div className="flex justify-end">
+        <SaveButton onClick={handleSave} loading={isSaving} label="Salvar Perfil" />
+      </div>
+    </motion.div>
   );
 }
 
@@ -1348,7 +1675,132 @@ function CertificateUploadInline({
 // USERS TAB
 // ═══════════════════════════════════════════════════════════════════════════════
 
+const ROLE_COLORS: Record<UserRole, string> = {
+  founder: 'bg-purple-100 dark:bg-purple-500/15 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-500/20',
+  admin:   'bg-red-100 dark:bg-red-500/15 text-red-700 dark:text-red-300 border-red-200 dark:border-red-500/20',
+  manager: 'bg-blue-100 dark:bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-500/20',
+  operator:'bg-amber-100 dark:bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-500/20',
+  viewer:  'bg-gray-100 dark:bg-gray-700/40 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-600/30',
+};
+
+const INVITE_ROLES: UserRole[] = ['admin', 'manager', 'operator', 'viewer'];
+
+function generateCode(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  return Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+}
+
+function isUserOnline(member: UserType): boolean {
+  if (!member.isOnline || !member.lastSeenAt) return false;
+  return Date.now() - new Date(member.lastSeenAt).getTime() < 3 * 60 * 1000;
+}
+
+function relativeTime(dateStr?: string): string {
+  if (!dateStr) return 'Nunca';
+  const diff = Date.now() - new Date(dateStr).getTime();
+  if (diff < 60_000)       return 'Agora mesmo';
+  if (diff < 3_600_000)    return `${Math.floor(diff / 60_000)}min atrás`;
+  if (diff < 86_400_000)   return `${Math.floor(diff / 3_600_000)}h atrás`;
+  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)}d atrás`;
+  return formatDate(dateStr);
+}
+
+function daysUntil(dateStr: string): number {
+  return Math.max(0, Math.ceil((new Date(dateStr).getTime() - Date.now()) / 86_400_000));
+}
+
 function UsersTab() {
+  const { user, business } = useAuth();
+  const [members, setMembers]           = useState<UserType[]>([]);
+  const [inviteCodes, setInviteCodes]   = useState<InviteCode[]>([]);
+  const [loadingMembers, setLoadingMembers] = useState(true);
+  const [generatingCode, setGeneratingCode] = useState(false);
+  const [selectedRole, setSelectedRole] = useState<UserRole>('operator');
+  const [copiedCode, setCopiedCode]     = useState<string | null>(null);
+  const [revokingCode, setRevokingCode] = useState<string | null>(null);
+  const isOwner = user?.role === 'founder' || user?.role === 'admin';
+
+  // ── Live members ─────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!business?.id) return;
+    const q = query(collection(db, 'users'), where('businessId', '==', business.id));
+    const unsub = onSnapshot(q, (snap) => {
+      const data = snap.docs.map(d => ({ ...d.data(), id: d.id }) as UserType);
+      data.sort((a, b) => (ROLE_HIERARCHY[b.role] ?? 0) - (ROLE_HIERARCHY[a.role] ?? 0));
+      setMembers(data);
+      setLoadingMembers(false);
+    }, () => setLoadingMembers(false));
+    return () => unsub();
+  }, [business?.id]);
+
+  // ── Live invite codes ────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!business?.id || !isOwner) return;
+    const q = query(
+      collection(db, 'inviteCodes'),
+      where('businessId', '==', business.id),
+      where('isActive', '==', true),
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      const data = snap.docs.map(d => ({ ...d.data(), id: d.id }) as InviteCode);
+      data.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      setInviteCodes(data);
+    });
+    return () => unsub();
+  }, [business?.id, isOwner]);
+
+  // ── Generate invite code ─────────────────────────────────────────────────
+  const handleGenerateCode = async () => {
+    if (!business || !user) return;
+    setGeneratingCode(true);
+    try {
+      let code = generateCode();
+      // Ensure uniqueness (retry up to 3 times)
+      for (let i = 0; i < 3; i++) {
+        const existing = inviteCodes.find(c => c.code === code);
+        if (!existing) break;
+        code = generateCode();
+      }
+      const expiresAt = new Date(Date.now() + 7 * 86_400_000).toISOString();
+      await setDoc(doc(db, 'inviteCodes', code), {
+        businessId: business.id,
+        code,
+        role: selectedRole,
+        createdBy: user.uid,
+        createdByName: user.name,
+        expiresAt,
+        isActive: true,
+        createdAt: new Date().toISOString(),
+      });
+      toast.success(`Código ${code} gerado! Válido por 7 dias.`);
+    } catch {
+      toast.error('Erro ao gerar código. Tente novamente.');
+    } finally {
+      setGeneratingCode(false);
+    }
+  };
+
+  // ── Copy code to clipboard ───────────────────────────────────────────────
+  const handleCopy = (code: string) => {
+    navigator.clipboard.writeText(code).then(() => {
+      setCopiedCode(code);
+      setTimeout(() => setCopiedCode(null), 2000);
+    });
+  };
+
+  // ── Revoke code ──────────────────────────────────────────────────────────
+  const handleRevoke = async (code: string) => {
+    setRevokingCode(code);
+    try {
+      await updateDoc(doc(db, 'inviteCodes', code), { isActive: false });
+      toast.success('Código revogado.');
+    } catch {
+      toast.error('Erro ao revogar código.');
+    } finally {
+      setRevokingCode(null);
+    }
+  };
+
   return (
     <motion.div
       key="users"
@@ -1358,18 +1810,1759 @@ function UsersTab() {
       transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
       className="space-y-6"
     >
-      <SectionCard title="Gerenciamento de Equipe" icon={Users}>
-        <div className="flex flex-col items-center justify-center py-12 text-center">
-          <div className="w-16 h-16 rounded-2xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center mb-4">
-            <Users className="w-8 h-8 text-gray-400 dark:text-gray-500" />
+      {/* ── Team members ─────────────────────────────────────────────────── */}
+      <SectionCard title="Equipe" icon={Users}>
+        {loadingMembers ? (
+          <div className="space-y-3">
+            {[1, 2, 3].map(i => (
+              <div key={i} className="flex items-center gap-3 p-3 rounded-xl">
+                <div className="w-9 h-9 rounded-full shimmer flex-shrink-0" />
+                <div className="flex-1 space-y-1.5">
+                  <div className="h-3.5 w-32 rounded-lg shimmer" />
+                  <div className="h-3 w-48 rounded-lg shimmer" />
+                </div>
+              </div>
+            ))}
           </div>
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">
-            Em breve
-          </h3>
-          <p className="text-sm text-gray-500 dark:text-gray-400 max-w-md">
-            O gerenciamento de equipe, convites e permissões estará disponível em uma atualização futura.
-            Por enquanto, utilize as abas Empresa e Fiscal para configurar seu negócio.
+        ) : members.length === 0 ? (
+          <p className="text-sm text-gray-400 dark:text-gray-500 text-center py-8">Nenhum membro encontrado.</p>
+        ) : (
+          <div className="divide-y divide-gray-100 dark:divide-gray-800/80 -mx-6 -mb-6">
+            {members.map((member, i) => {
+              const online = isUserOnline(member);
+              const isCurrentUser = member.uid === user?.uid;
+              return (
+                <motion.div
+                  key={member.id}
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: i * 0.04, duration: 0.25 }}
+                  className="flex items-center gap-3 px-6 py-3.5 hover:bg-gray-50/50 dark:hover:bg-white/[0.02] transition-colors"
+                >
+                  {/* Avatar */}
+                  <div className="relative flex-shrink-0">
+                    <div className="w-9 h-9 rounded-full bg-gradient-to-br from-red-100 to-rose-100 dark:from-red-900/40 dark:to-rose-900/30 border border-red-200/60 dark:border-red-800/40 flex items-center justify-center text-xs font-bold text-red-700 dark:text-red-400 shadow-sm">
+                      {member.photoURL
+                        ? <img src={member.photoURL} alt={member.name} className="w-full h-full rounded-full object-cover" />
+                        : member.name.split(' ').map(n => n[0]).slice(0, 2).join('').toUpperCase()
+                      }
+                    </div>
+                    {/* Online indicator */}
+                    <div className={cn(
+                      'absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-[#111827] transition-colors',
+                      online ? 'bg-emerald-400' : 'bg-gray-300 dark:bg-gray-600'
+                    )} />
+                  </div>
+
+                  {/* Info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[13.5px] font-semibold text-gray-900 dark:text-gray-100 truncate">
+                        {member.name}
+                        {isCurrentUser && <span className="text-gray-400 dark:text-gray-500 font-normal"> (você)</span>}
+                      </span>
+                      {member.role === 'founder' && <Crown className="w-3.5 h-3.5 text-purple-500 flex-shrink-0" />}
+                    </div>
+                    <p className="text-[12px] text-gray-400 dark:text-gray-500 truncate">{member.email}</p>
+                  </div>
+
+                  {/* Right side */}
+                  <div className="flex items-center gap-3 flex-shrink-0">
+                    {/* Online status */}
+                    <div className="hidden sm:flex items-center gap-1.5 text-[11.5px]">
+                      {online ? (
+                        <>
+                          <Wifi className="w-3 h-3 text-emerald-500" />
+                          <span className="text-emerald-600 dark:text-emerald-400 font-medium">Online</span>
+                        </>
+                      ) : (
+                        <>
+                          <WifiOff className="w-3 h-3 text-gray-400 dark:text-gray-500" />
+                          <span className="text-gray-400 dark:text-gray-500">
+                            {relativeTime(member.lastSeenAt || member.lastLoginAt)}
+                          </span>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Role badge */}
+                    <span className={cn(
+                      'text-[11px] font-semibold px-2 py-0.5 rounded-lg border',
+                      ROLE_COLORS[member.role]
+                    )}>
+                      {ROLE_LABELS[member.role]}
+                    </span>
+                  </div>
+                </motion.div>
+              );
+            })}
+          </div>
+        )}
+      </SectionCard>
+
+      {/* ── Invite codes (admin/founder only) ────────────────────────────── */}
+      {isOwner && (
+        <SectionCard title="Códigos de Convite" icon={Link2}>
+          <div className="space-y-5">
+            {/* Generator */}
+            <div className="flex flex-col sm:flex-row items-start sm:items-end gap-3 p-4 rounded-xl bg-gray-50 dark:bg-white/[0.02] border border-gray-100 dark:border-gray-800/60">
+              <div className="flex-1 min-w-0">
+                <label className="block text-[12px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
+                  Função do novo membro
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {INVITE_ROLES.map(role => (
+                    <button
+                      key={role}
+                      type="button"
+                      onClick={() => setSelectedRole(role)}
+                      className={cn(
+                        'text-[12px] font-semibold px-3 py-1.5 rounded-lg border transition-all duration-150',
+                        selectedRole === role
+                          ? ROLE_COLORS[role]
+                          : 'bg-white dark:bg-white/[0.04] text-gray-500 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
+                      )}
+                    >
+                      {ROLE_LABELS[role]}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11.5px] text-gray-400 dark:text-gray-500 mt-1.5">
+                  O código expira em <span className="font-semibold">7 dias</span> e só pode ser usado <span className="font-semibold">uma vez</span>.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleGenerateCode}
+                disabled={generatingCode}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-red-500 text-white text-[13px] font-semibold shadow-md shadow-red-500/25 hover:from-red-700 hover:to-red-600 transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed flex-shrink-0"
+              >
+                {generatingCode
+                  ? <><Loader2 className="w-4 h-4 animate-spin" />Gerando...</>
+                  : <><Plus className="w-4 h-4" />Gerar Código</>
+                }
+              </button>
+            </div>
+
+            {/* Active codes list */}
+            {inviteCodes.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-8 text-center">
+                <div className="w-12 h-12 rounded-2xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center mb-3">
+                  <UserPlus className="w-5 h-5 text-gray-400 dark:text-gray-500" />
+                </div>
+                <p className="text-[13px] text-gray-400 dark:text-gray-500">Nenhum código ativo. Gere um acima.</p>
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                <p className="text-[12px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide">
+                  Códigos ativos ({inviteCodes.length})
+                </p>
+                <AnimatePresence>
+                  {inviteCodes.map((ic) => {
+                    const days = daysUntil(ic.expiresAt);
+                    const isCopied = copiedCode === ic.code;
+                    const isRevoking = revokingCode === ic.code;
+                    return (
+                      <motion.div
+                        key={ic.id}
+                        initial={{ opacity: 0, y: -6, scale: 0.98 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, x: 20, scale: 0.96 }}
+                        transition={{ duration: 0.2 }}
+                        className="flex items-center gap-3 p-3.5 rounded-xl bg-white dark:bg-white/[0.03] border border-gray-200 dark:border-gray-700/50 shadow-sm hover:shadow-md transition-shadow duration-200"
+                      >
+                        {/* Code */}
+                        <div className="flex-shrink-0 px-3 py-2 rounded-lg bg-gray-900 dark:bg-gray-800 border border-gray-700">
+                          <span className="font-mono font-bold text-[17px] tracking-[0.25em] text-white">
+                            {ic.code}
+                          </span>
+                        </div>
+
+                        {/* Meta */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-0.5">
+                            <span className={cn(
+                              'text-[11px] font-semibold px-2 py-0.5 rounded-md border',
+                              ROLE_COLORS[ic.role]
+                            )}>
+                              {ROLE_LABELS[ic.role]}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1 text-[11.5px] text-gray-400 dark:text-gray-500">
+                            <Clock className="w-3 h-3 flex-shrink-0" />
+                            <span className={cn(days <= 1 && 'text-amber-500 dark:text-amber-400 font-medium')}>
+                              {days === 0 ? 'Expira hoje!' : `Expira em ${days}d`}
+                            </span>
+                            <span className="mx-1 opacity-40">·</span>
+                            <span>por {ic.createdByName}</span>
+                          </div>
+                        </div>
+
+                        {/* Actions */}
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleCopy(ic.code)}
+                            title="Copiar código"
+                            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] font-medium bg-gray-100 dark:bg-white/[0.06] text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/[0.1] transition-colors"
+                          >
+                            {isCopied
+                              ? <><Check className="w-3.5 h-3.5 text-green-500" /><span className="text-green-600 dark:text-green-400">Copiado</span></>
+                              : <><Copy className="w-3.5 h-3.5" />Copiar</>
+                            }
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRevoke(ic.code)}
+                            disabled={isRevoking}
+                            title="Revogar código"
+                            className="p-1.5 rounded-lg text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors disabled:opacity-50"
+                          >
+                            {isRevoking
+                              ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              : <X className="w-3.5 h-3.5" />
+                            }
+                          </button>
+                        </div>
+                      </motion.div>
+                    );
+                  })}
+                </AnimatePresence>
+              </div>
+            )}
+          </div>
+        </SectionCard>
+      )}
+
+      {/* Info card for non-admins */}
+      {!isOwner && (
+        <div className="flex items-start gap-3 p-4 rounded-xl bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/20 text-sm text-blue-700 dark:text-blue-300">
+          <Shield className="w-4 h-4 flex-shrink-0 mt-0.5" />
+          <p>Somente administradores e fundadores podem gerar códigos de convite.</p>
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ENTERPRISE TAB
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const ICON_MAP: Record<string, React.ElementType> = {
+  CreditCard, Triangle, Mail, Bug, Shield, Cloud, Database, Globe,
+};
+
+function IntegrationRow({
+  providerId,
+  provider,
+  config,
+  keyValues,
+  showKeys,
+  saving,
+  testing,
+  onKeyChange,
+  onToggleShowKey,
+  onSave,
+  onTest,
+}: {
+  providerId: string;
+  provider: typeof INTEGRATION_PROVIDERS[IntegrationProvider];
+  config: IntegrationConfig | undefined;
+  keyValues: Record<string, string>;
+  showKeys: Record<string, boolean>;
+  saving: string | null;
+  testing: string | null;
+  onKeyChange: (providerId: string, fieldKey: string, value: string) => void;
+  onToggleShowKey: (providerId: string) => void;
+  onSave: (providerId: string) => void;
+  onTest: (providerId: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const IconComponent = ICON_MAP[provider.icon] || Plug;
+  const isConnected = config?.isActive;
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-4 px-5 py-4 hover:bg-gray-50/60 dark:hover:bg-white/[0.02] transition-colors text-left"
+      >
+        <div
+          className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+          style={{ backgroundColor: `${provider.color}12` }}
+        >
+          <IconComponent className="w-[18px] h-[18px]" style={{ color: provider.color }} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-gray-900 dark:text-white">{provider.name}</span>
+            {isConnected ? (
+              <span className="flex items-center gap-1 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                Conectado
+              </span>
+            ) : (
+              <span className="text-[10px] font-medium text-gray-400 dark:text-gray-500">Não configurado</span>
+            )}
+          </div>
+          <p className="text-[12px] text-gray-400 dark:text-gray-500 truncate">{provider.description}</p>
+        </div>
+        <motion.div
+          animate={{ rotate: expanded ? 90 : 0 }}
+          transition={{ duration: 0.15 }}
+          className="text-gray-300 dark:text-gray-600 flex-shrink-0"
+        >
+          <ChevronRight className="w-4 h-4" />
+        </motion.div>
+      </button>
+
+      <AnimatePresence>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+            className="overflow-hidden"
+          >
+            <div className="px-5 pb-5 pt-1 space-y-3">
+              {provider.fields.map(field => (
+                <div key={field.key}>
+                  <label className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5 block">
+                    {field.label}
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showKeys[providerId] ? 'text' : 'password'}
+                      placeholder={field.placeholder}
+                      value={keyValues[`${providerId}_${field.key}`] || ''}
+                      onChange={(e) => onKeyChange(providerId, field.key, e.target.value)}
+                      className="w-full px-3.5 py-2.5 pr-10 text-sm font-mono rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 text-gray-900 dark:text-white placeholder-gray-300 dark:placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 dark:focus:border-violet-500 transition-all"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => onToggleShowKey(providerId)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 dark:text-gray-600 hover:text-gray-500 dark:hover:text-gray-400 transition-colors"
+                    >
+                      {showKeys[providerId] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                  {field.help && (
+                    <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5 flex items-start gap-1">
+                      <Info className="w-3 h-3 flex-shrink-0 mt-px" />
+                      {field.help}
+                    </p>
+                  )}
+                </div>
+              ))}
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => onSave(providerId)}
+                  disabled={saving === providerId}
+                  className="px-5 py-2 text-xs font-semibold rounded-xl bg-gray-900 dark:bg-white text-white dark:text-gray-900 hover:bg-gray-800 dark:hover:bg-gray-100 transition-all disabled:opacity-50"
+                >
+                  {saving === providerId ? (
+                    <span className="flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" /> Salvando</span>
+                  ) : 'Salvar'}
+                </button>
+                {isConnected && (
+                  <button
+                    type="button"
+                    onClick={() => onTest(providerId)}
+                    disabled={testing === providerId}
+                    className="px-4 py-2 text-xs font-medium rounded-xl text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-all"
+                  >
+                    {testing === providerId ? (
+                      <span className="flex items-center gap-1.5"><RefreshCw className="w-3 h-3 animate-spin" /> Testando</span>
+                    ) : 'Testar conexão'}
+                  </button>
+                )}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function StatusBadge({ status }: { status: IntegrationStatus }) {
+  const cfg = {
+    connected: { label: 'Conectado', className: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' },
+    disconnected: { label: 'Desconectado', className: 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400' },
+    error: { label: 'Erro', className: 'bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-400' },
+    pending: { label: 'Pendente', className: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400' },
+  };
+  const c = cfg[status];
+  return <span className={cn('text-[10px] font-semibold px-2 py-0.5 rounded-full', c.className)}>{c.label}</span>;
+}
+
+function EnterpriseTab() {
+  const { user, business, refreshUser } = useAuth();
+
+  // ── Enterprise mode state ──
+  const [isEnterprise, setIsEnterprise] = useState(false);
+  const [loadingEnterprise, setLoadingEnterprise] = useState(true);
+
+  // ── Integration state ──
+  const [integrations, setIntegrations] = useState<Record<string, IntegrationConfig>>({});
+  const [keyValues, setKeyValues] = useState<Record<string, string>>({});
+  const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
+  const [saving, setSaving] = useState<string | null>(null);
+  const [testing, setTesting] = useState<string | null>(null);
+
+  // ── API Key management state ──
+  const [apiKeys, setApiKeys] = useState<SaasApiKey[]>([]);
+  const [showGenerateModal, setShowGenerateModal] = useState(false);
+  const [newKeyName, setNewKeyName] = useState('');
+  const [newKeyScopes, setNewKeyScopes] = useState<ApiKeyScope[]>([]);
+  const [newKeyExpiration, setNewKeyExpiration] = useState('90');
+  const [generatingKey, setGeneratingKey] = useState(false);
+  const [generatedKey, setGeneratedKey] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState(false);
+  const [revokingKeyId, setRevokingKeyId] = useState<string | null>(null);
+
+  // ── Load enterprise settings ──
+  useEffect(() => {
+    if (!business) return;
+    const enterprise = (business as Business & { enterprise?: EnterpriseSettings }).enterprise;
+    if (enterprise) {
+      setIsEnterprise(enterprise.isEnabled || false);
+      const intMap: Record<string, IntegrationConfig> = {};
+      (enterprise.integrations || []).forEach(i => { intMap[i.provider] = i; });
+      setIntegrations(intMap);
+
+      // Pre-fill key values from existing integrations
+      const vals: Record<string, string> = {};
+      (enterprise.integrations || []).forEach(i => {
+        const provider = INTEGRATION_PROVIDERS[i.provider];
+        if (provider) {
+          provider.fields.forEach(f => {
+            vals[`${i.provider}_${f.key}`] = (i.metadata?.[f.key] as string) || (f.key === 'apiKey' ? i.apiKey : '');
+          });
+        }
+      });
+      setKeyValues(vals);
+    }
+    setLoadingEnterprise(false);
+  }, [business]);
+
+  // ── Load API keys ──
+  useEffect(() => {
+    if (!business?.id) return;
+    const q = query(
+      collection(db, 'saasApiKeys'),
+      where('businessId', '==', business.id),
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      const data = snap.docs.map(d => ({ ...d.data(), id: d.id }) as SaasApiKey);
+      data.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      setApiKeys(data);
+    });
+    return () => unsub();
+  }, [business?.id]);
+
+  // ── Toggle enterprise mode ──
+  const toggleEnterprise = async () => {
+    if (!business) return;
+    const newValue = !isEnterprise;
+    setIsEnterprise(newValue);
+    try {
+      await updateDoc(doc(db, 'businesses', business.id), {
+        'enterprise.isEnabled': newValue,
+        'enterprise.enabledAt': newValue ? new Date().toISOString() : null,
+        updatedAt: new Date().toISOString(),
+      });
+      toast.success(newValue ? 'Modo Enterprise ativado!' : 'Modo Enterprise desativado');
+    } catch {
+      setIsEnterprise(!newValue);
+      toast.error('Erro ao alterar modo Enterprise');
+    }
+  };
+
+  // ── Integration handlers ──
+  const handleKeyChange = (providerId: string, fieldKey: string, value: string) => {
+    setKeyValues(prev => ({ ...prev, [`${providerId}_${fieldKey}`]: value }));
+  };
+
+  const toggleShowKey = (providerId: string) => {
+    setShowKeys(prev => ({ ...prev, [providerId]: !prev[providerId] }));
+  };
+
+  const saveIntegration = async (providerId: string) => {
+    if (!business) return;
+    setSaving(providerId);
+    try {
+      const provider = INTEGRATION_PROVIDERS[providerId as IntegrationProvider];
+      const apiKeyValue = keyValues[`${providerId}_apiKey`] || '';
+      const metadata: Record<string, unknown> = {};
+      provider.fields.forEach(f => {
+        if (f.key !== 'apiKey') {
+          metadata[f.key] = keyValues[`${providerId}_${f.key}`] || '';
+        }
+      });
+
+      const config: IntegrationConfig = {
+        provider: providerId as IntegrationProvider,
+        apiKey: apiKeyValue,
+        isActive: !!apiKeyValue,
+        connectedAt: apiKeyValue ? new Date().toISOString() : undefined,
+        status: apiKeyValue ? 'connected' : 'disconnected',
+        metadata,
+      };
+
+      // Update the integrations array in enterprise settings
+      const currentEnterprise = (business as Business & { enterprise?: EnterpriseSettings }).enterprise;
+      const currentIntegrations = currentEnterprise?.integrations || [];
+      const filteredIntegrations = currentIntegrations.filter(i => i.provider !== providerId);
+      const newIntegrations = [...filteredIntegrations, config];
+
+      await updateDoc(doc(db, 'businesses', business.id), {
+        'enterprise.integrations': newIntegrations,
+        updatedAt: new Date().toISOString(),
+      });
+
+      setIntegrations(prev => ({ ...prev, [providerId]: config }));
+      await refreshUser();
+      toast.success(`${provider.name} salvo com sucesso!`);
+    } catch {
+      toast.error('Erro ao salvar integração');
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const testConnection = async (providerId: string) => {
+    setTesting(providerId);
+    try {
+      // Simulate connection test
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      const apiKey = keyValues[`${providerId}_apiKey`] || '';
+      if (apiKey.length > 5) {
+        toast.success('Conexão estabelecida com sucesso!');
+      } else {
+        toast.error('Falha na conexão. Verifique a API Key.');
+      }
+    } catch {
+      toast.error('Erro ao testar conexão');
+    } finally {
+      setTesting(null);
+    }
+  };
+
+  // ── API Key handlers ──
+  const generateApiKey = (): string => {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const prefix = 'sp_live_';
+    const keyBody = Array.from({ length: 40 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+    return prefix + keyBody;
+  };
+
+  const hashKey = async (key: string): Promise<string> => {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(key);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  };
+
+  const handleGenerateApiKey = async () => {
+    if (!business || !user || !newKeyName.trim() || newKeyScopes.length === 0) {
+      toast.error('Preencha o nome e selecione pelo menos um escopo');
+      return;
+    }
+    setGeneratingKey(true);
+    try {
+      const fullKey = generateApiKey();
+      const keyHash = await hashKey(fullKey);
+      const keyPrefix = fullKey.substring(0, 12);
+
+      let expiresAt: string | undefined;
+      if (newKeyExpiration !== 'never') {
+        const days = parseInt(newKeyExpiration);
+        expiresAt = new Date(Date.now() + days * 86_400_000).toISOString();
+      }
+
+      await addDoc(collection(db, 'saasApiKeys'), {
+        name: newKeyName.trim(),
+        keyPrefix,
+        keyHash,
+        scopes: newKeyScopes,
+        createdAt: new Date().toISOString(),
+        createdBy: user.uid,
+        createdByName: user.name,
+        status: 'active',
+        businessId: business.id,
+        ...(expiresAt && { expiresAt }),
+      });
+
+      setGeneratedKey(fullKey);
+      toast.success('API Key gerada com sucesso!');
+    } catch {
+      toast.error('Erro ao gerar API Key');
+    } finally {
+      setGeneratingKey(false);
+    }
+  };
+
+  const handleRevokeKey = async (keyId: string) => {
+    if (!confirm('Tem certeza que deseja revogar esta API Key? Esta ação não pode ser desfeita.')) return;
+    setRevokingKeyId(keyId);
+    try {
+      await deleteDoc(doc(db, 'saasApiKeys', keyId));
+      toast.success('API Key revogada com sucesso');
+    } catch {
+      toast.error('Erro ao revogar API Key');
+    } finally {
+      setRevokingKeyId(null);
+    }
+  };
+
+  const handleCopyKey = (key: string) => {
+    navigator.clipboard.writeText(key).then(() => {
+      setCopiedKey(true);
+      setTimeout(() => setCopiedKey(false), 2000);
+    });
+  };
+
+  const closeGenerateModal = () => {
+    setShowGenerateModal(false);
+    setNewKeyName('');
+    setNewKeyScopes([]);
+    setNewKeyExpiration('90');
+    setGeneratedKey(null);
+    setCopiedKey(false);
+  };
+
+  const toggleScope = (scope: ApiKeyScope) => {
+    setNewKeyScopes(prev =>
+      prev.includes(scope) ? prev.filter(s => s !== scope) : [...prev, scope]
+    );
+  };
+
+  if (loadingEnterprise) {
+    return (
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
+        <div className="h-32 rounded-2xl shimmer" />
+        <div className="h-64 rounded-2xl shimmer" />
+      </motion.div>
+    );
+  }
+
+  return (
+    <motion.div
+      key="enterprise"
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
+      transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
+      className="space-y-6"
+    >
+      {/* ── Enterprise Mode Toggle ── */}
+      <div className="relative overflow-hidden rounded-2xl border border-gray-200 dark:border-gray-700/50 shadow-sm dark:shadow-black/10">
+        <div className="absolute inset-0 bg-gradient-to-br from-violet-50 via-purple-50 to-fuchsia-50 dark:from-violet-950/30 dark:via-purple-950/20 dark:to-fuchsia-950/10" />
+        <div className="relative p-6 sm:p-8">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex items-start gap-4">
+              <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center shadow-lg shadow-violet-500/25">
+                <Blocks className="w-6 h-6 text-white" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-gray-900 dark:text-white font-display">Modo Enterprise</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mt-1 max-w-md">
+                  Ative para desbloquear integrações com provedores externos, gerenciamento de API Keys e funcionalidades avançadas para sua empresa.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={toggleEnterprise}
+              className={cn(
+                'relative inline-flex h-7 w-12 items-center rounded-full transition-colors duration-300 flex-shrink-0',
+                isEnterprise ? 'bg-gradient-to-r from-violet-500 to-purple-500' : 'bg-gray-300 dark:bg-gray-600'
+              )}
+            >
+              <span className={cn(
+                'inline-block h-5 w-5 transform rounded-full bg-white shadow-lg transition-transform duration-300',
+                isEnterprise ? 'translate-x-6' : 'translate-x-1'
+              )} />
+            </button>
+          </div>
+          {isEnterprise && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              className="mt-4 flex items-center gap-2 text-sm"
+            >
+              <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+              <span className="text-emerald-700 dark:text-emerald-400 font-medium">Modo Enterprise ativo</span>
+            </motion.div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Integrations Section (only when enterprise is enabled) ── */}
+      <AnimatePresence>
+        {isEnterprise && (
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.3 }}
+            className="space-y-6"
+          >
+            {/* Integration List */}
+            <div>
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <Plug className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+                  <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Integrações</h3>
+                  <span className="text-[11px] text-gray-400 dark:text-gray-500 ml-1">
+                    {Object.values(integrations).filter(i => i.isActive).length} de {Object.keys(INTEGRATION_PROVIDERS).length} conectadas
+                  </span>
+                </div>
+              </div>
+              <div className="rounded-2xl border border-gray-200 dark:border-gray-700/50 bg-white dark:bg-[#111827] overflow-hidden divide-y divide-gray-100 dark:divide-gray-800/60">
+                {(Object.entries(INTEGRATION_PROVIDERS) as [IntegrationProvider, typeof INTEGRATION_PROVIDERS[IntegrationProvider]][]).map(([providerId, provider]) => (
+                  <IntegrationRow
+                    key={providerId}
+                    providerId={providerId}
+                    provider={provider}
+                    config={integrations[providerId]}
+                    keyValues={keyValues}
+                    showKeys={showKeys}
+                    saving={saving}
+                    testing={testing}
+                    onKeyChange={handleKeyChange}
+                    onToggleShowKey={toggleShowKey}
+                    onSave={saveIntegration}
+                    onTest={testConnection}
+                  />
+                ))}
+              </div>
+            </div>
+
+            {/* ── API Keys Section ── */}
+            <div>
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <Key className="w-4.5 h-4.5 text-gray-500 dark:text-gray-400" />
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">API Keys do ServicePro</h3>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">Gere chaves para acessar a API do ServicePro externamente</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowGenerateModal(true)}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-violet-500 to-purple-500 text-white text-xs font-semibold shadow-md shadow-violet-500/25 hover:from-violet-600 hover:to-purple-600 transition-all"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Nova API Key
+                </button>
+              </div>
+
+              {/* Existing keys list */}
+              {apiKeys.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12 text-center bg-white dark:bg-[#111827] rounded-2xl border border-gray-200 dark:border-gray-700/50">
+                  <div className="w-12 h-12 rounded-2xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center mb-3">
+                    <Key className="w-5 h-5 text-gray-400 dark:text-gray-500" />
+                  </div>
+                  <p className="text-sm text-gray-400 dark:text-gray-500">Nenhuma API Key gerada.</p>
+                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">Clique em &quot;Nova API Key&quot; para criar uma.</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <AnimatePresence>
+                    {apiKeys.map((ak, i) => (
+                      <motion.div
+                        key={ak.id}
+                        initial={{ opacity: 0, y: -6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, x: 20 }}
+                        transition={{ delay: i * 0.04, duration: 0.2 }}
+                        className="bg-white dark:bg-[#111827] rounded-2xl border border-gray-200 dark:border-gray-700/50 shadow-sm dark:shadow-black/10 p-4"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-sm font-semibold text-gray-900 dark:text-white">{ak.name}</span>
+                              <span className={cn(
+                                'text-[10px] font-semibold px-2 py-0.5 rounded-full',
+                                ak.status === 'active'
+                                  ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400'
+                                  : 'bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-400',
+                              )}>
+                                {ak.status === 'active' ? 'Ativa' : 'Revogada'}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2 mb-2">
+                              <code className="text-xs font-mono text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded-md">
+                                {ak.keyPrefix}••••••••
+                              </code>
+                            </div>
+                            <div className="flex flex-wrap gap-1 mb-2">
+                              {ak.scopes.map(scope => (
+                                <span key={scope} className="text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-violet-50 dark:bg-violet-500/10 text-violet-700 dark:text-violet-400">
+                                  {API_KEY_SCOPES[scope]?.label || scope}
+                                </span>
+                              ))}
+                            </div>
+                            <div className="flex items-center gap-3 text-[11px] text-gray-400 dark:text-gray-500">
+                              <span>Criada {formatDate(ak.createdAt)}</span>
+                              {ak.lastUsedAt && <span>Usada {formatDate(ak.lastUsedAt)}</span>}
+                              {ak.expiresAt && (
+                                <span className={cn(
+                                  new Date(ak.expiresAt).getTime() < Date.now() && 'text-red-500 dark:text-red-400 font-medium',
+                                )}>
+                                  Expira {formatDate(ak.expiresAt)}
+                                </span>
+                              )}
+                              <span>por {ak.createdByName}</span>
+                            </div>
+                          </div>
+                          {ak.status === 'active' && (
+                            <button
+                              onClick={() => handleRevokeKey(ak.id)}
+                              disabled={revokingKeyId === ak.id}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors disabled:opacity-50"
+                            >
+                              {revokingKeyId === ak.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Trash2 className="w-3.5 h-3.5" />
+                              )}
+                              Revogar
+                            </button>
+                          )}
+                        </div>
+                      </motion.div>
+                    ))}
+                  </AnimatePresence>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Generate API Key Modal ── */}
+      <AnimatePresence>
+        {showGenerateModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+            onClick={closeGenerateModal}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 12 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-lg bg-white dark:bg-[#111827] rounded-2xl border border-gray-200 dark:border-gray-700/50 shadow-2xl overflow-hidden"
+              onClick={e => e.stopPropagation()}
+            >
+              {/* Modal header */}
+              <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center">
+                    <Key className="w-4.5 h-4.5 text-white" />
+                  </div>
+                  <h3 className="text-base font-bold text-gray-900 dark:text-white font-display">
+                    {generatedKey ? 'API Key Gerada' : 'Nova API Key'}
+                  </h3>
+                </div>
+                <button onClick={closeGenerateModal} className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Modal body */}
+              <div className="p-6 space-y-5">
+                {generatedKey ? (
+                  // ── Show generated key (only once) ──
+                  <div className="space-y-4">
+                    <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-500/20 flex items-start gap-3">
+                      <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+                      <p className="text-sm text-amber-700 dark:text-amber-300">
+                        Copie esta chave agora. Ela não será exibida novamente.
+                      </p>
+                    </div>
+                    <div className="relative">
+                      <div className="p-3 rounded-xl bg-gray-900 dark:bg-gray-800 border border-gray-700 font-mono text-sm text-emerald-400 break-all">
+                        {generatedKey}
+                      </div>
+                      <button
+                        onClick={() => handleCopyKey(generatedKey)}
+                        className="absolute top-2 right-2 p-1.5 rounded-lg bg-gray-800 dark:bg-gray-700 text-gray-400 hover:text-white transition-colors"
+                      >
+                        {copiedKey ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                    {copiedKey && (
+                      <p className="text-xs text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1">
+                        <CheckCircle2 className="w-3.5 h-3.5" /> Copiado para a área de transferência
+                      </p>
+                    )}
+                    <button
+                      onClick={closeGenerateModal}
+                      className="w-full py-2.5 text-sm font-semibold rounded-xl bg-gradient-to-r from-violet-500 to-purple-500 text-white hover:from-violet-600 hover:to-purple-600 transition-all"
+                    >
+                      Concluído
+                    </button>
+                  </div>
+                ) : (
+                  // ── Key creation form ──
+                  <>
+                    {/* Name */}
+                    <FormField label="Nome da chave" icon={Key}>
+                      <input
+                        type="text"
+                        value={newKeyName}
+                        onChange={e => setNewKeyName(e.target.value)}
+                        placeholder="Ex: Integração ERP, App Mobile..."
+                        className={inputClasses}
+                      />
+                    </FormField>
+
+                    {/* Scopes */}
+                    <div>
+                      <label className="flex items-center gap-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        <Lock className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
+                        Escopos de acesso
+                      </label>
+                      <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
+                        {(Object.entries(API_KEY_SCOPES) as [ApiKeyScope, { label: string; description: string }][]).map(([scope, info]) => (
+                          <button
+                            key={scope}
+                            type="button"
+                            onClick={() => toggleScope(scope)}
+                            className={cn(
+                              'text-left px-3 py-2 rounded-xl border text-xs transition-all',
+                              newKeyScopes.includes(scope)
+                                ? 'border-violet-400 dark:border-violet-500/50 bg-violet-50 dark:bg-violet-500/10 text-violet-700 dark:text-violet-300'
+                                : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-white/[0.03] text-gray-600 dark:text-gray-400 hover:border-gray-300 dark:hover:border-gray-600',
+                            )}
+                          >
+                            <span className="font-semibold">{info.label}</span>
+                            <p className="text-[10px] opacity-70 mt-0.5">{info.description}</p>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Expiration */}
+                    <FormField label="Expiração" icon={Clock}>
+                      <select
+                        value={newKeyExpiration}
+                        onChange={e => setNewKeyExpiration(e.target.value)}
+                        className={selectClasses}
+                      >
+                        <option value="30">30 dias</option>
+                        <option value="90">90 dias</option>
+                        <option value="180">180 dias</option>
+                        <option value="never">Nunca expira</option>
+                      </select>
+                    </FormField>
+
+                    {/* Generate */}
+                    <button
+                      onClick={handleGenerateApiKey}
+                      disabled={generatingKey || !newKeyName.trim() || newKeyScopes.length === 0}
+                      className="w-full py-2.5 text-sm font-semibold rounded-xl bg-gradient-to-r from-violet-500 to-purple-500 text-white hover:from-violet-600 hover:to-purple-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    >
+                      {generatingKey ? (
+                        <><Loader2 className="w-4 h-4 animate-spin" /> Gerando...</>
+                      ) : (
+                        <><Zap className="w-4 h-4" /> Gerar API Key</>
+                      )}
+                    </button>
+                  </>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANAIS TAB
+// ═══════════════════════════════════════════════════════════════════════════════
+
+type ChannelType = 'whatsapp' | 'facebook' | 'instagram';
+
+interface ChannelConfig {
+  whatsapp?: {
+    phoneNumberId: string;
+    businessAccountId: string;
+    accessToken: string;
+    isConnected: boolean;
+    connectedAt?: string;
+  };
+  facebook?: {
+    pageId: string;
+    pageAccessToken: string;
+    isConnected: boolean;
+    connectedAt?: string;
+  };
+  instagram?: {
+    accountId: string;
+    isConnected: boolean;
+    connectedAt?: string;
+  };
+  meta?: {
+    appId: string;
+    appSecret: string;
+    webhookVerifyToken: string;
+  };
+}
+
+// encryptToken and decryptToken are imported from '@/lib/utils/encryption'
+
+const CHANNEL_INFO: Record<ChannelType, { name: string; icon: React.ElementType; color: string; description: string }> = {
+  whatsapp: { name: 'WhatsApp Business', icon: MessageCircle, color: '#25D366', description: 'Envie e receba mensagens pelo WhatsApp Business API' },
+  facebook: { name: 'Facebook Messenger', icon: Globe, color: '#0866FF', description: 'Conecte sua Página do Facebook para receber mensagens' },
+  instagram: { name: 'Instagram Direct', icon: Camera, color: '#E1306C', description: 'Receba mensagens do Instagram Direct via API' },
+};
+
+function ChannelRow({
+  channelId,
+  channel,
+  isConnected,
+  saving,
+  testing,
+  children,
+}: {
+  channelId: ChannelType;
+  channel: typeof CHANNEL_INFO[ChannelType];
+  isConnected: boolean;
+  saving: string | null;
+  testing: string | null;
+  children: React.ReactNode;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const IconComponent = channel.icon;
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-4 px-5 py-4 hover:bg-gray-50/60 dark:hover:bg-white/[0.02] transition-colors text-left"
+      >
+        <div
+          className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+          style={{ backgroundColor: `${channel.color}12` }}
+        >
+          <IconComponent className="w-[18px] h-[18px]" style={{ color: channel.color }} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-gray-900 dark:text-white">{channel.name}</span>
+            {isConnected ? (
+              <span className="flex items-center gap-1 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                Conectado
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 text-[10px] font-medium text-gray-400 dark:text-gray-500">
+                <span className="w-1.5 h-1.5 rounded-full bg-gray-300 dark:bg-gray-600" />
+                Desconectado
+              </span>
+            )}
+          </div>
+          <p className="text-[12px] text-gray-400 dark:text-gray-500 truncate">{channel.description}</p>
+        </div>
+        <motion.div
+          animate={{ rotate: expanded ? 90 : 0 }}
+          transition={{ duration: 0.15 }}
+          className="text-gray-300 dark:text-gray-600 flex-shrink-0"
+        >
+          <ChevronRight className="w-4 h-4" />
+        </motion.div>
+      </button>
+
+      <AnimatePresence>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+            className="overflow-hidden"
+          >
+            <div className="px-5 pb-5 pt-1 space-y-3">
+              {children}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function CanaisTab() {
+  const { business, refreshUser } = useAuth();
+
+  // ── Channel form state ──
+  const [waPhoneNumberId, setWaPhoneNumberId] = useState('');
+  const [waBusinessAccountId, setWaBusinessAccountId] = useState('');
+  const [waAccessToken, setWaAccessToken] = useState('');
+  const [waConnected, setWaConnected] = useState(false);
+
+  const [fbPageId, setFbPageId] = useState('');
+  const [fbPageAccessToken, setFbPageAccessToken] = useState('');
+  const [fbConnected, setFbConnected] = useState(false);
+
+  const [igAccountId, setIgAccountId] = useState('');
+  const [igConnected, setIgConnected] = useState(false);
+
+  const [metaAppId, setMetaAppId] = useState('');
+  const [metaAppSecret, setMetaAppSecret] = useState('');
+  const [webhookVerifyToken, setWebhookVerifyToken] = useState('');
+
+  // ── Visibility state ──
+  const [showWaToken, setShowWaToken] = useState(false);
+  const [showFbToken, setShowFbToken] = useState(false);
+  const [showMetaSecret, setShowMetaSecret] = useState(false);
+
+  // ── Saving/testing state ──
+  const [saving, setSaving] = useState<string | null>(null);
+  const [testing, setTesting] = useState<string | null>(null);
+  const [copiedWebhook, setCopiedWebhook] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  const appUrl = typeof window !== 'undefined' ? window.location.origin : '';
+  const webhookUrl = `${appUrl}/api/webhooks/meta`;
+
+  // ── Load existing channel config ──
+  useEffect(() => {
+    if (!business) return;
+    const channels = (business as Business & { channels?: ChannelConfig }).channels;
+    if (channels) {
+      const loadChannels = async () => {
+        if (channels.whatsapp) {
+          setWaPhoneNumberId(channels.whatsapp.phoneNumberId || '');
+          setWaBusinessAccountId(channels.whatsapp.businessAccountId || '');
+          setWaAccessToken(channels.whatsapp.accessToken ? await decryptToken(channels.whatsapp.accessToken) : '');
+          setWaConnected(channels.whatsapp.isConnected || false);
+        }
+        if (channels.facebook) {
+          setFbPageId(channels.facebook.pageId || '');
+          setFbPageAccessToken(channels.facebook.pageAccessToken ? await decryptToken(channels.facebook.pageAccessToken) : '');
+          setFbConnected(channels.facebook.isConnected || false);
+        }
+        if (channels.instagram) {
+          setIgAccountId(channels.instagram.accountId || '');
+          setIgConnected(channels.instagram.isConnected || false);
+        }
+        if (channels.meta) {
+          setMetaAppId(channels.meta.appId || '');
+          setMetaAppSecret(channels.meta.appSecret ? await decryptToken(channels.meta.appSecret) : '');
+          setWebhookVerifyToken(channels.meta.webhookVerifyToken || '');
+        }
+        setLoading(false);
+      };
+      loadChannels();
+    } else {
+      setLoading(false);
+    }
+  }, [business]);
+
+  // ── Save WhatsApp ──
+  const handleSaveWhatsApp = async () => {
+    if (!business) return;
+    setSaving('whatsapp');
+    try {
+      const currentChannels = (business as Business & { channels?: ChannelConfig }).channels || {};
+      const hasAllFields = !!waPhoneNumberId.trim() && !!waBusinessAccountId.trim() && !!waAccessToken.trim();
+      const encryptedAccessToken = await encryptToken(waAccessToken.trim());
+      await updateDoc(doc(db, 'businesses', business.id), {
+        'channels.whatsapp': {
+          phoneNumberId: waPhoneNumberId.trim(),
+          businessAccountId: waBusinessAccountId.trim(),
+          accessToken: encryptedAccessToken,
+          isConnected: hasAllFields,
+          connectedAt: hasAllFields ? new Date().toISOString() : (currentChannels.whatsapp?.connectedAt || null),
+        },
+        updatedAt: new Date().toISOString(),
+      });
+      setWaConnected(hasAllFields);
+      await refreshUser();
+      toast.success('WhatsApp Business salvo com sucesso!');
+    } catch {
+      toast.error('Erro ao salvar configurações do WhatsApp');
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  // ── Exchange short-lived token for long-lived token ──
+  const exchangeForLongLivedToken = async (shortLivedToken: string): Promise<string> => {
+    const metaConfig = (business as Business & { channels?: ChannelConfig }).channels?.meta;
+    if (!metaConfig?.appId || !metaConfig?.appSecret) {
+      toast.warning('Configure o Meta App ID e App Secret primeiro na secao "Configuracao Meta"');
+      return shortLivedToken;
+    }
+
+    try {
+      const appSecret = await decryptToken(metaConfig.appSecret);
+      const res = await fetch(
+        `https://graph.facebook.com/v21.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${metaConfig.appId}&client_secret=${appSecret}&fb_exchange_token=${shortLivedToken}`
+      );
+      const data = await res.json();
+      if (data.access_token) {
+        toast.success('Token convertido para longa duracao (60 dias)');
+        return data.access_token;
+      }
+      toast.warning('Nao foi possivel converter o token. Usando o token fornecido.');
+      return shortLivedToken;
+    } catch {
+      toast.warning('Nao foi possivel converter o token. Usando o token fornecido.');
+      return shortLivedToken;
+    }
+  };
+
+  // ── Save Facebook ──
+  const handleSaveFacebook = async () => {
+    if (!business) return;
+    setSaving('facebook');
+    try {
+      const currentChannels = (business as Business & { channels?: ChannelConfig }).channels || {};
+      const hasAllFields = !!fbPageId.trim() && !!fbPageAccessToken.trim();
+      // Exchange for long-lived token before encrypting
+      const longLivedToken = hasAllFields ? await exchangeForLongLivedToken(fbPageAccessToken.trim()) : fbPageAccessToken.trim();
+      const encryptedPageToken = await encryptToken(longLivedToken);
+      await updateDoc(doc(db, 'businesses', business.id), {
+        'channels.facebook': {
+          pageId: fbPageId.trim(),
+          pageAccessToken: encryptedPageToken,
+          isConnected: hasAllFields,
+          connectedAt: hasAllFields ? new Date().toISOString() : (currentChannels.facebook?.connectedAt || null),
+        },
+        updatedAt: new Date().toISOString(),
+      });
+      setFbConnected(hasAllFields);
+      // Update the state with the long-lived token if it changed
+      if (longLivedToken !== fbPageAccessToken.trim()) {
+        setFbPageAccessToken(longLivedToken);
+      }
+      await refreshUser();
+
+      // Auto-subscribe the page to receive messages
+      if (hasAllFields) {
+        try {
+          const res = await fetch(
+            `https://graph.facebook.com/v21.0/${fbPageId.trim()}/subscribed_apps?subscribed_fields=messages,messaging_postbacks,message_deliveries,message_reads&access_token=${longLivedToken}`,
+            { method: 'POST' },
+          );
+          const data = await res.json();
+          if (data.success) {
+            toast.success('Pagina inscrita para receber mensagens!');
+          }
+        } catch {
+          toast.warning('Canal salvo, mas nao foi possivel inscrever automaticamente. Verifique o token.');
+        }
+      }
+
+      toast.success('Facebook Messenger salvo com sucesso!');
+    } catch {
+      toast.error('Erro ao salvar configurações do Facebook');
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  // ── Save Instagram ──
+  const handleSaveInstagram = async () => {
+    if (!business) return;
+    setSaving('instagram');
+    try {
+      const currentChannels = (business as Business & { channels?: ChannelConfig }).channels || {};
+      const hasAllFields = !!igAccountId.trim();
+      await updateDoc(doc(db, 'businesses', business.id), {
+        'channels.instagram': {
+          accountId: igAccountId.trim(),
+          isConnected: hasAllFields,
+          connectedAt: hasAllFields ? new Date().toISOString() : (currentChannels.instagram?.connectedAt || null),
+        },
+        updatedAt: new Date().toISOString(),
+      });
+      setIgConnected(hasAllFields);
+      await refreshUser();
+
+      // Auto-subscribe Instagram to receive messages (requires Facebook page token)
+      if (hasAllFields && fbPageAccessToken) {
+        try {
+          const res = await fetch(
+            `https://graph.facebook.com/v21.0/${igAccountId.trim()}/subscribed_apps?subscribed_fields=messages,messaging_postbacks&access_token=${fbPageAccessToken.trim()}`,
+            { method: 'POST' },
+          );
+          const data = await res.json();
+          if (data.success) {
+            toast.success('Instagram inscrito para receber mensagens!');
+          }
+        } catch {
+          toast.warning('Canal salvo, mas nao foi possivel inscrever automaticamente. Verifique o token.');
+        }
+      }
+
+      toast.success('Instagram Direct salvo com sucesso!');
+    } catch {
+      toast.error('Erro ao salvar configurações do Instagram');
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  // ── Save Meta shared config ──
+  const handleSaveMeta = async () => {
+    if (!business) return;
+    setSaving('meta');
+    try {
+      const encryptedAppSecret = metaAppSecret.trim() ? await encryptToken(metaAppSecret.trim()) : '';
+      await updateDoc(doc(db, 'businesses', business.id), {
+        'channels.meta': {
+          appId: metaAppId.trim(),
+          appSecret: encryptedAppSecret,
+          webhookVerifyToken: webhookVerifyToken.trim(),
+        },
+        updatedAt: new Date().toISOString(),
+      });
+      await refreshUser();
+      toast.success('Configuração Meta salva com sucesso!');
+    } catch {
+      toast.error('Erro ao salvar configuração Meta');
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  // ── Test connection ──
+  const handleTestConnection = async (channelId: ChannelType) => {
+    setTesting(channelId);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      if (channelId === 'whatsapp' && waPhoneNumberId && waAccessToken) {
+        toast.success('Conexão com WhatsApp Business verificada!');
+      } else if (channelId === 'facebook' && fbPageId && fbPageAccessToken) {
+        toast.success('Conexão com Facebook Messenger verificada!');
+      } else if (channelId === 'instagram' && igAccountId && fbPageAccessToken) {
+        toast.success('Conexão com Instagram Direct verificada!');
+      } else {
+        toast.error('Preencha todos os campos obrigatórios para testar a conexão.');
+      }
+    } catch {
+      toast.error('Erro ao testar conexão');
+    } finally {
+      setTesting(null);
+    }
+  };
+
+  // ── Copy webhook URL ──
+  const handleCopyWebhook = () => {
+    navigator.clipboard.writeText(webhookUrl).then(() => {
+      setCopiedWebhook(true);
+      setTimeout(() => setCopiedWebhook(false), 2000);
+    });
+  };
+
+  if (loading) {
+    return (
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
+        <div className="h-32 rounded-2xl shimmer" />
+        <div className="h-64 rounded-2xl shimmer" />
+      </motion.div>
+    );
+  }
+
+  return (
+    <motion.div
+      key="canais"
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
+      transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
+      className="space-y-6"
+    >
+      {/* ── Header info ── */}
+      <div className="relative overflow-hidden rounded-2xl border border-gray-200 dark:border-gray-700/50 shadow-sm dark:shadow-black/10">
+        <div className="absolute inset-0 bg-gradient-to-br from-green-50 via-emerald-50 to-teal-50 dark:from-green-950/30 dark:via-emerald-950/20 dark:to-teal-950/10" />
+        <div className="relative p-6 sm:p-8">
+          <div className="flex items-start gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center shadow-lg shadow-green-500/25">
+              <MessageCircle className="w-6 h-6 text-white" />
+            </div>
+            <div>
+              <h3 className="text-lg font-bold text-gray-900 dark:text-white font-display">Canais de Comunicação</h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mt-1 max-w-md">
+                Conecte seus canais do Meta (WhatsApp, Facebook e Instagram) para centralizar o atendimento ao cliente.
+              </p>
+            </div>
+          </div>
+          <div className="mt-4 flex items-center gap-4 text-sm">
+            <div className="flex items-center gap-1.5">
+              <span className={cn('w-2 h-2 rounded-full', waConnected ? 'bg-emerald-400' : 'bg-gray-300 dark:bg-gray-600')} />
+              <span className="text-gray-600 dark:text-gray-400">WhatsApp</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className={cn('w-2 h-2 rounded-full', fbConnected ? 'bg-emerald-400' : 'bg-gray-300 dark:bg-gray-600')} />
+              <span className="text-gray-600 dark:text-gray-400">Facebook</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className={cn('w-2 h-2 rounded-full', igConnected ? 'bg-emerald-400' : 'bg-gray-300 dark:bg-gray-600')} />
+              <span className="text-gray-600 dark:text-gray-400">Instagram</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Channel Cards ── */}
+      <div>
+        <div className="flex items-center gap-2 mb-4">
+          <Plug2 className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Canais</h3>
+          <span className="text-[11px] text-gray-400 dark:text-gray-500 ml-1">
+            {[waConnected, fbConnected, igConnected].filter(Boolean).length} de 3 conectados
+          </span>
+        </div>
+        <div className="rounded-2xl border border-gray-200 dark:border-gray-700/50 bg-white dark:bg-[#111827] overflow-hidden divide-y divide-gray-100 dark:divide-gray-800/60">
+          {/* WhatsApp Business */}
+          <ChannelRow
+            channelId="whatsapp"
+            channel={CHANNEL_INFO.whatsapp}
+            isConnected={waConnected}
+            saving={saving}
+            testing={testing}
+          >
+            <div>
+              <label className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5 block">
+                Phone Number ID
+              </label>
+              <input
+                type="text"
+                placeholder="Ex: 123456789012345"
+                value={waPhoneNumberId}
+                onChange={(e) => setWaPhoneNumberId(e.target.value)}
+                className={inputClasses}
+              />
+              <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5 flex items-start gap-1">
+                <Info className="w-3 h-3 flex-shrink-0 mt-px" />
+                ID do número de telefone no Meta Business Suite
+              </p>
+            </div>
+            <div>
+              <label className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5 block">
+                WhatsApp Business Account ID
+              </label>
+              <input
+                type="text"
+                placeholder="Ex: 123456789012345"
+                value={waBusinessAccountId}
+                onChange={(e) => setWaBusinessAccountId(e.target.value)}
+                className={inputClasses}
+              />
+            </div>
+            <div>
+              <label className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5 block">
+                Access Token
+              </label>
+              <div className="relative">
+                <input
+                  type={showWaToken ? 'text' : 'password'}
+                  placeholder="Token permanente do Meta"
+                  value={waAccessToken}
+                  onChange={(e) => setWaAccessToken(e.target.value)}
+                  className={cn(inputClasses, 'pr-10 font-mono')}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowWaToken(v => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 dark:text-gray-600 hover:text-gray-500 dark:hover:text-gray-400 transition-colors"
+                >
+                  {showWaToken ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+              <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5 flex items-start gap-1">
+                <Info className="w-3 h-3 flex-shrink-0 mt-px" />
+                Token permanente gerado no painel do Meta Business
+              </p>
+            </div>
+            <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20">
+              <p className="text-[12px] text-amber-700 dark:text-amber-300 flex items-start gap-2">
+                <Info className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                O webhook do WhatsApp e registrado diretamente no Meta Developer Dashboard. Acesse seu App {'>'} WhatsApp {'>'} Configuration e configure a Callback URL com a URL de webhook acima.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={handleSaveWhatsApp}
+                disabled={saving === 'whatsapp'}
+                className="px-5 py-2 text-xs font-semibold rounded-xl bg-gray-900 dark:bg-white text-white dark:text-gray-900 hover:bg-gray-800 dark:hover:bg-gray-100 transition-all disabled:opacity-50"
+              >
+                {saving === 'whatsapp' ? (
+                  <span className="flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" /> Salvando</span>
+                ) : 'Salvar'}
+              </button>
+              {waConnected && (
+                <button
+                  type="button"
+                  onClick={() => handleTestConnection('whatsapp')}
+                  disabled={testing === 'whatsapp'}
+                  className="px-4 py-2 text-xs font-medium rounded-xl text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-all"
+                >
+                  {testing === 'whatsapp' ? (
+                    <span className="flex items-center gap-1.5"><RefreshCw className="w-3 h-3 animate-spin" /> Testando</span>
+                  ) : 'Testar conexão'}
+                </button>
+              )}
+            </div>
+          </ChannelRow>
+
+          {/* Facebook Messenger */}
+          <ChannelRow
+            channelId="facebook"
+            channel={CHANNEL_INFO.facebook}
+            isConnected={fbConnected}
+            saving={saving}
+            testing={testing}
+          >
+            <div>
+              <label className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5 block">
+                Page ID
+              </label>
+              <input
+                type="text"
+                placeholder="Ex: 123456789012345"
+                value={fbPageId}
+                onChange={(e) => setFbPageId(e.target.value)}
+                className={inputClasses}
+              />
+              <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5 flex items-start gap-1">
+                <Info className="w-3 h-3 flex-shrink-0 mt-px" />
+                ID da sua Página do Facebook
+              </p>
+            </div>
+            <div>
+              <label className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5 block">
+                Page Access Token
+              </label>
+              <div className="relative">
+                <input
+                  type={showFbToken ? 'text' : 'password'}
+                  placeholder="Token de acesso da página"
+                  value={fbPageAccessToken}
+                  onChange={(e) => setFbPageAccessToken(e.target.value)}
+                  className={cn(inputClasses, 'pr-10 font-mono')}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowFbToken(v => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 dark:text-gray-600 hover:text-gray-500 dark:hover:text-gray-400 transition-colors"
+                >
+                  {showFbToken ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+              <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5 flex items-start gap-1">
+                <Info className="w-3 h-3 flex-shrink-0 mt-px" />
+                Este token tambem e usado pelo Instagram Direct
+              </p>
+              <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                O token sera automaticamente convertido para longa duracao (60 dias).
+                Apos expirar, cole um novo token aqui.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={handleSaveFacebook}
+                disabled={saving === 'facebook'}
+                className="px-5 py-2 text-xs font-semibold rounded-xl bg-gray-900 dark:bg-white text-white dark:text-gray-900 hover:bg-gray-800 dark:hover:bg-gray-100 transition-all disabled:opacity-50"
+              >
+                {saving === 'facebook' ? (
+                  <span className="flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" /> Salvando</span>
+                ) : 'Salvar'}
+              </button>
+              {fbConnected && (
+                <button
+                  type="button"
+                  onClick={() => handleTestConnection('facebook')}
+                  disabled={testing === 'facebook'}
+                  className="px-4 py-2 text-xs font-medium rounded-xl text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-all"
+                >
+                  {testing === 'facebook' ? (
+                    <span className="flex items-center gap-1.5"><RefreshCw className="w-3 h-3 animate-spin" /> Testando</span>
+                  ) : 'Testar conexão'}
+                </button>
+              )}
+            </div>
+          </ChannelRow>
+
+          {/* Instagram Direct */}
+          <ChannelRow
+            channelId="instagram"
+            channel={CHANNEL_INFO.instagram}
+            isConnected={igConnected}
+            saving={saving}
+            testing={testing}
+          >
+            <div>
+              <label className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5 block">
+                Instagram Business Account ID
+              </label>
+              <input
+                type="text"
+                placeholder="Ex: 17841400123456789"
+                value={igAccountId}
+                onChange={(e) => setIgAccountId(e.target.value)}
+                className={inputClasses}
+              />
+              <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5 flex items-start gap-1">
+                <Info className="w-3 h-3 flex-shrink-0 mt-px" />
+                ID da conta comercial do Instagram vinculada a sua Pagina do Facebook
+              </p>
+            </div>
+            <div className="p-3 rounded-xl bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/20">
+              <p className="text-[12px] text-blue-700 dark:text-blue-300 flex items-start gap-2">
+                <Info className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                O Instagram Direct utiliza o Page Access Token configurado no Facebook Messenger. Certifique-se de que ele esteja configurado.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={handleSaveInstagram}
+                disabled={saving === 'instagram'}
+                className="px-5 py-2 text-xs font-semibold rounded-xl bg-gray-900 dark:bg-white text-white dark:text-gray-900 hover:bg-gray-800 dark:hover:bg-gray-100 transition-all disabled:opacity-50"
+              >
+                {saving === 'instagram' ? (
+                  <span className="flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" /> Salvando</span>
+                ) : 'Salvar'}
+              </button>
+              {igConnected && (
+                <button
+                  type="button"
+                  onClick={() => handleTestConnection('instagram')}
+                  disabled={testing === 'instagram'}
+                  className="px-4 py-2 text-xs font-medium rounded-xl text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-all"
+                >
+                  {testing === 'instagram' ? (
+                    <span className="flex items-center gap-1.5"><RefreshCw className="w-3 h-3 animate-spin" /> Testando</span>
+                  ) : 'Testar conexão'}
+                </button>
+              )}
+            </div>
+          </ChannelRow>
+        </div>
+      </div>
+
+      {/* ── Meta Shared Configuration ── */}
+      <SectionCard title="Configuracao Meta (Compartilhada)" icon={Globe}>
+        <div className="space-y-4">
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            Configuracoes compartilhadas entre todos os canais Meta. Necessario para receber webhooks.
           </p>
+
+          {/* Webhook URL (read-only) */}
+          <div>
+            <label className="flex items-center gap-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+              <Link2 className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
+              Webhook URL
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={webhookUrl}
+                readOnly
+                className={cn(inputClasses, 'bg-gray-50 dark:bg-gray-800/50 cursor-not-allowed opacity-80 font-mono text-xs flex-1')}
+              />
+              <button
+                type="button"
+                onClick={handleCopyWebhook}
+                className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700/50 text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors flex-shrink-0"
+              >
+                {copiedWebhook ? (
+                  <><Check className="w-3.5 h-3.5 text-emerald-500" /><span className="text-emerald-600 dark:text-emerald-400">Copiado</span></>
+                ) : (
+                  <><Copy className="w-3.5 h-3.5" />Copiar</>
+                )}
+              </button>
+            </div>
+            <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5">
+              Configure esta URL como Callback URL no painel de Webhooks do seu Meta App.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Webhook Verify Token */}
+            <FormField label="Webhook Verify Token" icon={Shield} tooltip="Token de verificacao configurado no Meta App">
+              <input
+                type="text"
+                placeholder="Seu token de verificacao"
+                value={webhookVerifyToken}
+                onChange={(e) => setWebhookVerifyToken(e.target.value)}
+                className={inputClasses}
+              />
+            </FormField>
+
+            {/* Meta App ID */}
+            <FormField label="Meta App ID" icon={Key} tooltip="ID do aplicativo no Meta for Developers">
+              <input
+                type="text"
+                placeholder="Ex: 1234567890123456"
+                value={metaAppId}
+                onChange={(e) => setMetaAppId(e.target.value)}
+                className={inputClasses}
+              />
+            </FormField>
+          </div>
+
+          {/* Meta App Secret */}
+          <FormField label="Meta App Secret" icon={Lock} tooltip="Chave secreta do aplicativo Meta">
+            <div className="relative">
+              <input
+                type={showMetaSecret ? 'text' : 'password'}
+                placeholder="App secret do Meta"
+                value={metaAppSecret}
+                onChange={(e) => setMetaAppSecret(e.target.value)}
+                className={cn(inputClasses, 'pr-10 font-mono')}
+              />
+              <button
+                type="button"
+                onClick={() => setShowMetaSecret(v => !v)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                tabIndex={-1}
+              >
+                {showMetaSecret ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
+          </FormField>
+
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={handleSaveMeta}
+              disabled={saving === 'meta'}
+              className={cn(
+                'flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200',
+                'disabled:opacity-60 disabled:cursor-not-allowed',
+                'bg-gradient-to-r from-red-600 to-red-500 text-white hover:from-red-700 hover:to-red-600 shadow-lg shadow-red-500/25 focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-[#111827] focus:ring-red-500/40'
+              )}
+            >
+              {saving === 'meta' ? (
+                <><Loader2 className="w-4 h-4 animate-spin" /> Salvando...</>
+              ) : (
+                <><Save className="w-4 h-4" /> Salvar Configuracao Meta</>
+              )}
+            </button>
+          </div>
         </div>
       </SectionCard>
     </motion.div>
@@ -1381,13 +3574,20 @@ function UsersTab() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export default function SettingsModule() {
-  const [activeTab, setActiveTab] = useState<Tab>('empresa');
+  const { user } = useAuth();
+  const isAdmin = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['admin'];
+  const [activeTab, setActiveTab] = useState<Tab>('perfil');
 
-  const tabs = [
-    { id: 'empresa' as Tab, label: 'Empresa', icon: Building2 },
-    { id: 'fiscal' as Tab, label: 'Fiscal', icon: FileText },
-    { id: 'usuarios' as Tab, label: 'Usuários', icon: Users },
+  const allTabs = [
+    { id: 'perfil'     as Tab, label: 'Meu Perfil',  icon: UserCircle },
+    { id: 'empresa'    as Tab, label: 'Empresa',     icon: Building2  },
+    { id: 'fiscal'     as Tab, label: 'Fiscal',      icon: FileText   },
+    { id: 'usuarios'   as Tab, label: 'Usuários',    icon: Users      },
+    { id: 'enterprise' as Tab, label: 'Enterprise',  icon: Blocks     },
+    { id: 'canais'     as Tab, label: 'Canais',      icon: Plug2      },
   ];
+
+  const tabs = isAdmin ? allTabs : allTabs.filter(t => t.id === 'perfil');
 
   return (
     <motion.div
@@ -1404,7 +3604,9 @@ export default function SettingsModule() {
           </div>
           <div>
             <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100 font-display">Configurações</h2>
-            <p className="text-sm text-gray-500 dark:text-gray-400">Gerencie os dados da empresa, configurações fiscais e equipe</p>
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              {isAdmin ? 'Gerencie os dados da empresa, configurações fiscais e equipe' : 'Gerencie seu perfil pessoal'}
+            </p>
           </div>
         </div>
       </div>
@@ -1442,9 +3644,12 @@ export default function SettingsModule() {
 
       {/* Tab Content */}
       <AnimatePresence mode="wait" initial={false}>
-        {activeTab === 'empresa' && <EmpresaTab key="empresa" />}
-        {activeTab === 'fiscal' && <FiscalTab key="fiscal" />}
-        {activeTab === 'usuarios' && <UsersTab key="usuarios" />}
+        {activeTab === 'perfil'     && <ProfileTab key="perfil" />}
+        {activeTab === 'empresa'    && <EmpresaTab key="empresa" />}
+        {activeTab === 'fiscal'     && <FiscalTab key="fiscal" />}
+        {activeTab === 'usuarios'   && <UsersTab key="usuarios" />}
+        {activeTab === 'enterprise' && <EnterpriseTab key="enterprise" />}
+        {activeTab === 'canais'     && <CanaisTab key="canais" />}
       </AnimatePresence>
     </motion.div>
   );

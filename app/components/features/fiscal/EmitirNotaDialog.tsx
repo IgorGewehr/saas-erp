@@ -28,7 +28,8 @@ import {
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { collection, getDocs, query, where, doc, setDoc, updateDoc, increment } from 'firebase/firestore';
-import { db } from '@/lib/config/firebase';
+import { db, storage } from '@/lib/config/firebase';
+import { ref as storageRef, getDownloadURL } from 'firebase/storage';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import type { FiscalDocType, PaymentMethod, Client } from '@/lib/types';
 import { cn } from '@/lib/utils';
@@ -172,6 +173,19 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
   const [nfeItems, setNfeItems] = useState<NFCeItemForm[]>([createEmptyNFCeItem()]);
   const [nfePayments, setNfePayments] = useState<PaymentForm[]>([{ id: '1', method: 'dinheiro', amount: 0 }]);
 
+  // ── NFe recipient address ──
+  const [nfeRecipientAddress, setNfeRecipientAddress] = useState({
+    logradouro: '',
+    numero: '',
+    complemento: '',
+    bairro: '',
+    municipio: '',
+    codigoMunicipio: '',
+    uf: '',
+    cep: '',
+  });
+  const [nfeRecipientIndicadorIE, setNfeRecipientIndicadorIE] = useState<'1' | '2' | '9'>('9');
+
   // Load clients from Firestore
   useEffect(() => {
     if (!open || !business) return;
@@ -222,7 +236,42 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
     } else {
       setNfeRecipientDoc(client.cpfCnpj);
       setNfeRecipientName(client.nome);
+      setNfeRecipientIE(client.inscricaoEstadual || '');
+      setNfeRecipientIndicadorIE(client.indicadorIE || (client.tipo === 'pj' ? '1' : '9'));
+      if (client.endereco) {
+        setNfeRecipientAddress({
+          logradouro: client.endereco.logradouro || '',
+          numero: client.endereco.numero || '',
+          complemento: client.endereco.complemento || '',
+          bairro: client.endereco.bairro || '',
+          municipio: client.endereco.municipio || '',
+          codigoMunicipio: client.endereco.codigoMunicipio || '',
+          uf: client.endereco.uf || '',
+          cep: client.endereco.cep || '',
+        });
+      }
     }
+  };
+
+  // ── Get certificate from Firebase Storage ──
+  const getCertificate = async (): Promise<{ pfxBase64: string; password: string }> => {
+    const cert = business?.fiscal?.certificate;
+    const pwdEncoded = business?.fiscal?.certPasswordEncrypted;
+    if (!cert?.storagePath || !pwdEncoded) {
+      throw new Error('Certificado digital nao configurado. Acesse Configuracoes > Fiscal.');
+    }
+    const fileRef = storageRef(storage, cert.storagePath);
+    const downloadUrl = await getDownloadURL(fileRef);
+    const response = await fetch(downloadUrl);
+    const buffer = await response.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    const pfxBase64 = btoa(binary);
+    const password = atob(pwdEncoded);
+    return { pfxBase64, password };
   };
 
   // ── Emit Handlers ──
@@ -335,24 +384,41 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
 
     setIsEmitting(true);
     try {
+      const certificado = await getCertificate();
       const fiscalConfig = business.fiscal;
       const nextNumber = fiscalConfig?.nfceConfig?.nextNumber || 1;
-      const cleanDoc = (business.cnpj || '').replace(/\D/g, '');
+      const cleanCnpj = (business.cnpj || '').replace(/\D/g, '');
+      const crtBusiness = business.crt as '1' | '2' | '3' | '4';
+      const crtSefaz = (crtBusiness === '3' || crtBusiness === '4') ? '3' : crtBusiness as '1' | '2';
+      const isSimples = crtBusiness === '1' || crtBusiness === '2';
+      const emitEndereco = business.endereco;
+      const ibgeCod = emitEndereco?.codigoMunicipio || fiscalConfig?.ibgeCodigoMunicipio || '';
 
       const payload = {
         emitente: {
-          cnpj: cleanDoc,
-          ie: business.inscricaoEstadual || '',
-          crt: business.crt || '1',
-          razaoSocial: business.razaoSocial || business.nomeFantasia,
+          cnpj: cleanCnpj,
+          nome: business.razaoSocial || business.nomeFantasia,
+          nomeFantasia: business.nomeFantasia || undefined,
+          inscricaoEstadual: (fiscalConfig?.inscricaoEstadual || business.inscricaoEstadual || '').replace(/\D/g, ''),
+          crt: crtSefaz,
+          endereco: {
+            logradouro: emitEndereco?.logradouro || '',
+            numero: emitEndereco?.numero || 'S/N',
+            complemento: emitEndereco?.complemento || undefined,
+            bairro: emitEndereco?.bairro || '',
+            codigoMunicipio: ibgeCod,
+            municipio: emitEndereco?.municipio || '',
+            uf: emitEndereco?.uf || 'SP',
+            cep: (emitEndereco?.cep || '').replace(/\D/g, ''),
+          },
         },
         consumidor: nfceConsumidorCpf ? {
           cpf: nfceConsumidorCpf.replace(/\D/g, ''),
           nome: nfceConsumidorNome || undefined,
         } : undefined,
         numero: nextNumber,
-        serie: fiscalConfig?.nfceConfig?.series || '1',
-        ufEmitente: business.endereco?.uf || 'SP',
+        serie: String(fiscalConfig?.nfceConfig?.series || '1'),
+        ufEmitente: emitEndereco?.uf || 'SP',
         itens: nfceItems.filter(i => i.description.trim()).map((item, idx) => ({
           numero: idx + 1,
           produto: {
@@ -364,7 +430,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
             unidade: item.unit || 'UN',
             quantidade: item.quantity,
             valorUnitario: item.unitPrice,
-            valorTotal: item.quantity * item.unitPrice,
+            valorTotal: parseFloat((item.quantity * item.unitPrice).toFixed(2)),
             cEANTrib: 'SEM GTIN',
             unidadeTrib: item.unit || 'UN',
             quantidadeTrib: item.quantity,
@@ -372,9 +438,11 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
             indTot: '1',
           },
           imposto: {
-            icms: { orig: '0', csosn: fiscalConfig?.taxation?.icms?.cstCsosn || '102' },
-            pis: { cst: fiscalConfig?.taxation?.pis?.cst || '49' },
-            cofins: { cst: fiscalConfig?.taxation?.cofins?.cst || '49' },
+            icms: isSimples
+              ? { orig: '0', csosn: fiscalConfig?.taxation?.icms?.cstCsosn || '400' }
+              : { orig: '0', cst: fiscalConfig?.taxation?.icms?.cstCsosn || '40', modBC: '3', valorBC: parseFloat((item.quantity * item.unitPrice).toFixed(2)), aliquota: fiscalConfig?.taxation?.icms?.rate || 0, valor: 0 },
+            pis: { cst: fiscalConfig?.taxation?.pis?.cst || '07' },
+            cofins: { cst: fiscalConfig?.taxation?.cofins?.cst || '07' },
           },
         })),
         pagamento: {
@@ -384,11 +452,14 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
             valor: p.amount || total,
           })),
         },
-        csc: fiscalConfig?.nfceConfig?.cscId ? {
-          id: fiscalConfig.nfceConfig.cscId,
-          token: fiscalConfig.nfceConfig.cscToken || '',
-        } : undefined,
-        certificado: { pfxBase64: 'FROM_STORAGE', password: 'FROM_STORAGE' },
+        transporte: { modFrete: '9' },
+        ...(fiscalConfig?.nfceConfig?.cscId ? {
+          csc: {
+            id: fiscalConfig.nfceConfig.cscId,
+            token: fiscalConfig.nfceConfig.cscToken || '',
+          },
+        } : {}),
+        certificado,
       };
 
       const res = await fetch('/api/fiscal/emit', {
@@ -399,7 +470,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
 
       const result = await res.json();
       if (!res.ok || !result.success) {
-        toast.error(result.details?.motivoStatus || result.error || 'Erro ao emitir NFCe');
+        toast.error(result.details?.motivoStatus || result.details?.erros?.[0] || result.error || 'Erro ao emitir NFCe');
         await saveFiscalDoc('nfce', nextNumber, 'rejeitada', result, payload);
         return;
       }
@@ -418,7 +489,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
       onClose();
     } catch (error) {
       console.error('Emit NFCe error:', error);
-      toast.error('Erro ao emitir NFCe.');
+      toast.error(error instanceof Error ? error.message : 'Erro ao emitir NFCe.');
     } finally {
       setIsEmitting(false);
     }
@@ -431,30 +502,73 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
     if (nfeItems.every(i => !i.description.trim())) { toast.error('Adicione pelo menos um item'); return; }
     if (!business.fiscal?.certificate) { toast.error('Certificado digital nao configurado.'); return; }
 
+    const cleanDestDoc = nfeRecipientDoc.replace(/\D/g, '');
+    const isDestPJ = cleanDestDoc.length === 14;
+
+    // For B2B (CNPJ recipient), address is required
+    if (isDestPJ && !nfeRecipientAddress.codigoMunicipio) {
+      toast.error('Endereco do destinatario com codigo IBGE e obrigatorio para NF-e B2B (CNPJ)');
+      return;
+    }
+
     setIsEmitting(true);
     try {
+      const certificado = await getCertificate();
       const fiscalConfig = business.fiscal;
       const nextNumber = fiscalConfig?.nfeConfig?.nextNumber || 1;
-      const cleanEmitDoc = (business.cnpj || '').replace(/\D/g, '');
-      const cleanDestDoc = nfeRecipientDoc.replace(/\D/g, '');
-      const isDestPJ = cleanDestDoc.length > 11;
+      const cleanCnpj = (business.cnpj || '').replace(/\D/g, '');
+      const crtBusiness = business.crt as '1' | '2' | '3' | '4';
+      const crtSefaz = (crtBusiness === '3' || crtBusiness === '4') ? '3' : crtBusiness as '1' | '2';
+      const isSimples = crtBusiness === '1' || crtBusiness === '2';
+      const emitEndereco = business.endereco;
+      const ibgeCod = emitEndereco?.codigoMunicipio || fiscalConfig?.ibgeCodigoMunicipio || '';
+
+      const destinatarioEndereco = nfeRecipientAddress.logradouro && nfeRecipientAddress.codigoMunicipio
+        ? {
+            logradouro: nfeRecipientAddress.logradouro,
+            numero: nfeRecipientAddress.numero || 'S/N',
+            complemento: nfeRecipientAddress.complemento || undefined,
+            bairro: nfeRecipientAddress.bairro,
+            codigoMunicipio: nfeRecipientAddress.codigoMunicipio,
+            municipio: nfeRecipientAddress.municipio,
+            uf: nfeRecipientAddress.uf,
+            cep: nfeRecipientAddress.cep.replace(/\D/g, ''),
+          }
+        : undefined;
 
       const payload = {
         emitente: {
-          cnpj: cleanEmitDoc,
-          ie: business.inscricaoEstadual || '',
-          crt: business.crt || '1',
-          razaoSocial: business.razaoSocial || business.nomeFantasia,
+          cnpj: cleanCnpj,
+          nome: business.razaoSocial || business.nomeFantasia,
+          nomeFantasia: business.nomeFantasia || undefined,
+          inscricaoEstadual: (fiscalConfig?.inscricaoEstadual || business.inscricaoEstadual || '').replace(/\D/g, ''),
+          crt: crtSefaz,
+          endereco: {
+            logradouro: emitEndereco?.logradouro || '',
+            numero: emitEndereco?.numero || 'S/N',
+            complemento: emitEndereco?.complemento || undefined,
+            bairro: emitEndereco?.bairro || '',
+            codigoMunicipio: ibgeCod,
+            municipio: emitEndereco?.municipio || '',
+            uf: emitEndereco?.uf || 'SP',
+            cep: (emitEndereco?.cep || '').replace(/\D/g, ''),
+          },
         },
         destinatario: {
-          [isDestPJ ? 'cnpj' : 'cpf']: cleanDestDoc,
+          ...(isDestPJ ? { cnpj: cleanDestDoc } : { cpf: cleanDestDoc }),
           nome: nfeRecipientName,
-          ie: nfeRecipientIE || undefined,
+          inscricaoEstadual: nfeRecipientIE || undefined,
+          indicadorIE: nfeRecipientIndicadorIE,
+          ...(destinatarioEndereco ? { endereco: destinatarioEndereco } : {}),
         },
         numero: nextNumber,
-        serie: fiscalConfig?.nfeConfig?.series || '1',
+        serie: String(fiscalConfig?.nfeConfig?.series || '1'),
         naturezaOperacao: nfeNatureza,
-        ufEmitente: business.endereco?.uf || 'SP',
+        tipoOperacao: '1',
+        finalidade: '1',
+        consumidorFinal: isDestPJ ? '0' : '1',
+        presencaComprador: '9',
+        ufEmitente: emitEndereco?.uf || 'SP',
         itens: nfeItems.filter(i => i.description.trim()).map((item, idx) => ({
           numero: idx + 1,
           produto: {
@@ -466,7 +580,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
             unidade: item.unit || 'UN',
             quantidade: item.quantity,
             valorUnitario: item.unitPrice,
-            valorTotal: item.quantity * item.unitPrice,
+            valorTotal: parseFloat((item.quantity * item.unitPrice).toFixed(2)),
             cEANTrib: 'SEM GTIN',
             unidadeTrib: item.unit || 'UN',
             quantidadeTrib: item.quantity,
@@ -474,11 +588,14 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
             indTot: '1',
           },
           imposto: {
-            icms: { orig: '0', csosn: fiscalConfig?.taxation?.icms?.cstCsosn || '102' },
-            pis: { cst: fiscalConfig?.taxation?.pis?.cst || '49' },
-            cofins: { cst: fiscalConfig?.taxation?.cofins?.cst || '49' },
+            icms: isSimples
+              ? { orig: '0', csosn: fiscalConfig?.taxation?.icms?.cstCsosn || '400' }
+              : { orig: '0', cst: fiscalConfig?.taxation?.icms?.cstCsosn || '40', modBC: '3', valorBC: parseFloat((item.quantity * item.unitPrice).toFixed(2)), aliquota: fiscalConfig?.taxation?.icms?.rate || 0, valor: 0 },
+            pis: { cst: fiscalConfig?.taxation?.pis?.cst || '07' },
+            cofins: { cst: fiscalConfig?.taxation?.cofins?.cst || '07' },
           },
         })),
+        transporte: { modFrete: '9' },
         pagamento: {
           indicadorPagamento: '0',
           formas: nfePayments.map(p => ({
@@ -486,7 +603,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
             valor: p.amount || itemsTotal(nfeItems),
           })),
         },
-        certificado: { pfxBase64: 'FROM_STORAGE', password: 'FROM_STORAGE' },
+        certificado,
       };
 
       const res = await fetch('/api/fiscal/emit', {
@@ -497,7 +614,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
 
       const result = await res.json();
       if (!res.ok || !result.success) {
-        toast.error(result.details?.motivoStatus || result.error || 'Erro ao emitir NFe');
+        toast.error(result.details?.motivoStatus || result.details?.erros?.[0] || result.error || 'Erro ao emitir NFe');
         await saveFiscalDoc('nfe', nextNumber, 'rejeitada', result, payload);
         return;
       }
@@ -516,7 +633,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
       onClose();
     } catch (error) {
       console.error('Emit NFe error:', error);
-      toast.error('Erro ao emitir NFe.');
+      toast.error(error instanceof Error ? error.message : 'Erro ao emitir NFe.');
     } finally {
       setIsEmitting(false);
     }
@@ -925,13 +1042,68 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
                     <input value={nfeRecipientIE} onChange={(e) => setNfeRecipientIE(e.target.value)} placeholder="Opcional" className={inputClasses} />
                   </div>
                 </div>
-                <div>
-                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Natureza da Operacao</label>
-                  <select value={nfeNatureza} onChange={(e) => setNfeNatureza(e.target.value)} className={selectClasses}>
-                    {['Venda de mercadoria', 'Prestacao de servico', 'Devolucao de mercadoria', 'Transferencia', 'Remessa para conserto'].map(n => (
-                      <option key={n} value={n}>{n}</option>
-                    ))}
-                  </select>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Indicador IE</label>
+                    <select
+                      value={nfeRecipientIndicadorIE}
+                      onChange={(e) => setNfeRecipientIndicadorIE(e.target.value as '1' | '2' | '9')}
+                      className={selectClasses}
+                    >
+                      <option value="9">9 - Nao Contribuinte</option>
+                      <option value="1">1 - Contribuinte ICMS</option>
+                      <option value="2">2 - Contribuinte Isento</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Natureza da Operacao</label>
+                    <select value={nfeNatureza} onChange={(e) => setNfeNatureza(e.target.value)} className={selectClasses}>
+                      {['Venda de mercadoria', 'Prestacao de servico', 'Devolucao de mercadoria', 'Transferencia', 'Remessa para conserto'].map(n => (
+                        <option key={n} value={n}>{n}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="bg-blue-50/50 dark:bg-blue-500/5 rounded-xl p-4 border border-blue-100 dark:border-blue-500/20 space-y-3">
+                  <p className="text-xs font-semibold text-blue-700 dark:text-blue-400 uppercase tracking-wide">Endereco do Destinatario</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="sm:col-span-2">
+                      <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Logradouro</label>
+                      <input value={nfeRecipientAddress.logradouro} onChange={(e) => setNfeRecipientAddress(prev => ({ ...prev, logradouro: e.target.value }))} placeholder="Rua, Av..." className={inputClasses} />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Numero</label>
+                      <input value={nfeRecipientAddress.numero} onChange={(e) => setNfeRecipientAddress(prev => ({ ...prev, numero: e.target.value }))} placeholder="123" className={inputClasses} />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Bairro</label>
+                      <input value={nfeRecipientAddress.bairro} onChange={(e) => setNfeRecipientAddress(prev => ({ ...prev, bairro: e.target.value }))} placeholder="Centro" className={inputClasses} />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Municipio</label>
+                      <input value={nfeRecipientAddress.municipio} onChange={(e) => setNfeRecipientAddress(prev => ({ ...prev, municipio: e.target.value }))} placeholder="Sao Paulo" className={inputClasses} />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Cod. IBGE *</label>
+                      <input value={nfeRecipientAddress.codigoMunicipio} onChange={(e) => setNfeRecipientAddress(prev => ({ ...prev, codigoMunicipio: e.target.value }))} placeholder="3550308" className={inputClasses} />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">UF</label>
+                      <input value={nfeRecipientAddress.uf} onChange={(e) => setNfeRecipientAddress(prev => ({ ...prev, uf: e.target.value.toUpperCase().slice(0, 2) }))} placeholder="SP" maxLength={2} className={inputClasses} />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">CEP</label>
+                      <input value={nfeRecipientAddress.cep} onChange={(e) => setNfeRecipientAddress(prev => ({ ...prev, cep: e.target.value }))} placeholder="00000-000" className={inputClasses} />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Complemento</label>
+                      <input value={nfeRecipientAddress.complemento} onChange={(e) => setNfeRecipientAddress(prev => ({ ...prev, complemento: e.target.value }))} placeholder="Opcional" className={inputClasses} />
+                    </div>
+                  </div>
                 </div>
               </div>
 

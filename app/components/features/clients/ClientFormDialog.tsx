@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Dialog,
   DialogTitle,
@@ -16,16 +16,16 @@ import {
   FormControl,
   InputLabel,
   Chip,
-  Box,
   CircularProgress,
   Divider,
 } from '@mui/material';
-import { X, User, Building2, Plus } from 'lucide-react';
+import { X, User, Building2, Plus, MapPin, Loader2 } from 'lucide-react';
 import InputMask from 'react-input-mask';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'react-toastify';
 import type { Client, Address } from '@/lib/types';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
+import { validateCPF, validateCNPJ } from '@/lib/utils/validators';
 
 interface ClientFormDialogProps {
   open: boolean;
@@ -64,7 +64,10 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
   const [tags, setTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState('');
   const [notes, setNotes] = useState('');
+  const [inscricaoEstadual, setInscricaoEstadual] = useState('');
+  const [indicadorIE, setIndicadorIE] = useState<'1' | '2' | '9'>('9');
   const [isSaving, setIsSaving] = useState(false);
+  const [isFetchingCEP, setIsFetchingCEP] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const isEditing = !!client;
@@ -82,6 +85,8 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
       setEndereco(client.endereco || emptyAddress);
       setTags(client.tags || []);
       setNotes(client.notes || '');
+      setInscricaoEstadual(client.inscricaoEstadual || '');
+      setIndicadorIE((client.indicadorIE as '1' | '2' | '9') || '9');
     } else {
       resetForm();
     }
@@ -101,6 +106,44 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
     setTags([]);
     setTagInput('');
     setNotes('');
+    setInscricaoEstadual('');
+    setIndicadorIE('9');
+  }
+
+  // ---- ViaCEP Integration ----
+  const fetchCEP = useCallback(async (cep: string) => {
+    const cleaned = cep.replace(/\D/g, '');
+    if (cleaned.length !== 8) return;
+
+    setIsFetchingCEP(true);
+    try {
+      const res = await fetch(`https://viacep.com.br/ws/${cleaned}/json/`);
+      const data = await res.json();
+      if (!data.erro) {
+        setEndereco((prev) => ({
+          ...prev,
+          logradouro: data.logradouro || prev.logradouro,
+          bairro: data.bairro || prev.bairro,
+          municipio: data.localidade || prev.municipio,
+          uf: data.uf || prev.uf,
+          codigoMunicipio: data.ibge || prev.codigoMunicipio,
+        }));
+      } else {
+        toast.warning('CEP nao encontrado');
+      }
+    } catch {
+      // Silently fail - user can fill manually
+    } finally {
+      setIsFetchingCEP(false);
+    }
+  }, []);
+
+  function handleCEPChange(value: string) {
+    handleAddressChange('cep', value);
+    const cleaned = value.replace(/\D/g, '');
+    if (cleaned.length === 8) {
+      fetchCEP(cleaned);
+    }
   }
 
   function validate(): boolean {
@@ -113,10 +156,18 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
     const cleanDoc = cpfCnpj.replace(/\D/g, '');
     if (!cleanDoc) {
       newErrors.cpfCnpj = tipo === 'pf' ? 'CPF obrigatorio' : 'CNPJ obrigatorio';
-    } else if (tipo === 'pf' && cleanDoc.length !== 11) {
-      newErrors.cpfCnpj = 'CPF deve ter 11 digitos';
-    } else if (tipo === 'pj' && cleanDoc.length !== 14) {
-      newErrors.cpfCnpj = 'CNPJ deve ter 14 digitos';
+    } else if (tipo === 'pf') {
+      if (cleanDoc.length !== 11) {
+        newErrors.cpfCnpj = 'CPF deve ter 11 digitos';
+      } else if (!validateCPF(cleanDoc)) {
+        newErrors.cpfCnpj = 'CPF invalido';
+      }
+    } else if (tipo === 'pj') {
+      if (cleanDoc.length !== 14) {
+        newErrors.cpfCnpj = 'CNPJ deve ter 14 digitos';
+      } else if (!validateCNPJ(cleanDoc)) {
+        newErrors.cpfCnpj = 'CNPJ invalido';
+      }
     }
 
     const cleanPhone = phone.replace(/\D/g, '');
@@ -159,7 +210,7 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
     setIsSaving(true);
     try {
       await onSave({
-        businessId: client?.businessId || '',
+        businessId: '',
         tipo,
         nome: nome.trim(),
         cpfCnpj: cpfCnpj.replace(/\D/g, ''),
@@ -172,6 +223,8 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
         tags: tags.length > 0 ? tags : undefined,
         notes: notes.trim() || undefined,
         isActive: client?.isActive ?? true,
+        inscricaoEstadual: tipo === 'pj' ? inscricaoEstadual.trim() || undefined : undefined,
+        indicadorIE: tipo === 'pj' ? indicadorIE : undefined,
       });
       toast.success(isEditing ? 'Cliente atualizado com sucesso!' : 'Cliente cadastrado com sucesso!');
       onClose();
@@ -304,6 +357,32 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
                 </InputMask>
               </div>
 
+              {/* Campos fiscais PJ */}
+              {tipo === 'pj' && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <TextField
+                    label="Inscricao Estadual (IE)"
+                    value={inscricaoEstadual}
+                    onChange={(e) => setInscricaoEstadual(e.target.value)}
+                    placeholder="Ex: 123456789012"
+                    fullWidth
+                    size="small"
+                  />
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Indicador IE</InputLabel>
+                    <Select
+                      value={indicadorIE}
+                      onChange={(e) => setIndicadorIE(e.target.value as '1' | '2' | '9')}
+                      label="Indicador IE"
+                    >
+                      <MenuItem value="9">9 - Nao Contribuinte</MenuItem>
+                      <MenuItem value="1">1 - Contribuinte ICMS</MenuItem>
+                      <MenuItem value="2">2 - Contribuinte Isento</MenuItem>
+                    </Select>
+                  </FormControl>
+                </div>
+              )}
+
               {/* Email + Telefone */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <TextField
@@ -354,54 +433,70 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
                   )}
                 </InputMask>
 
-                <TextField
-                  label="Data de Nascimento"
-                  type="date"
-                  value={birthDate}
-                  onChange={(e) => setBirthDate(e.target.value)}
-                  fullWidth
-                  size="small"
-                  InputLabelProps={{ shrink: true }}
-                />
+                {tipo === 'pf' && (
+                  <TextField
+                    label="Data de Nascimento"
+                    type="date"
+                    value={birthDate}
+                    onChange={(e) => setBirthDate(e.target.value)}
+                    fullWidth
+                    size="small"
+                    InputLabelProps={{ shrink: true }}
+                  />
+                )}
 
-                <FormControl fullWidth size="small">
-                  <InputLabel>Genero</InputLabel>
-                  <Select
-                    value={gender}
-                    onChange={(e) => setGender(e.target.value as 'M' | 'F' | 'O' | '')}
-                    label="Genero"
-                  >
-                    <MenuItem value="">
-                      <em>Nao informado</em>
-                    </MenuItem>
-                    <MenuItem value="M">Masculino</MenuItem>
-                    <MenuItem value="F">Feminino</MenuItem>
-                    <MenuItem value="O">Outro</MenuItem>
-                  </Select>
-                </FormControl>
+                {tipo === 'pf' && (
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Genero</InputLabel>
+                    <Select
+                      value={gender}
+                      onChange={(e) => setGender(e.target.value as 'M' | 'F' | 'O' | '')}
+                      label="Genero"
+                    >
+                      <MenuItem value="">
+                        <em>Nao informado</em>
+                      </MenuItem>
+                      <MenuItem value="M">Masculino</MenuItem>
+                      <MenuItem value="F">Feminino</MenuItem>
+                      <MenuItem value="O">Outro</MenuItem>
+                    </Select>
+                  </FormControl>
+                )}
               </div>
 
               {/* Endereco */}
               <div>
-                <p className="text-sm font-semibold text-slate-700 dark:text-gray-300 mb-3">Endereco</p>
+                <div className="flex items-center gap-2 mb-3">
+                  <MapPin size={15} className="text-slate-500 dark:text-gray-400" />
+                  <p className="text-sm font-semibold text-slate-700 dark:text-gray-300">Endereco</p>
+                </div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                  <InputMask
-                    mask={cepMask}
-                    value={endereco.cep}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                      handleAddressChange('cep', e.target.value)
-                    }
-                  >
-                    {/* @ts-ignore react-input-mask children render prop typing */}
-                    {(inputProps: any) => (
-                      <TextField
-                        {...inputProps}
-                        label="CEP"
-                        fullWidth
-                        size="small"
-                      />
-                    )}
-                  </InputMask>
+                  <div className="relative">
+                    <InputMask
+                      mask={cepMask}
+                      value={endereco.cep}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                        handleCEPChange(e.target.value)
+                      }
+                    >
+                      {/* @ts-ignore react-input-mask children render prop typing */}
+                      {(inputProps: any) => (
+                        <TextField
+                          {...inputProps}
+                          label="CEP"
+                          fullWidth
+                          size="small"
+                          helperText="Preencha para buscar endereco automaticamente"
+                          InputProps={{
+                            ...inputProps.InputProps,
+                            endAdornment: isFetchingCEP ? (
+                              <Loader2 size={16} className="animate-spin text-red-500" />
+                            ) : null,
+                          }}
+                        />
+                      )}
+                    </InputMask>
+                  </div>
                   <TextField
                     label="Logradouro"
                     value={endereco.logradouro}
@@ -461,6 +556,14 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
                       ))}
                     </Select>
                   </FormControl>
+                  <TextField
+                    label="Cod. Municipio (IBGE)"
+                    value={endereco.codigoMunicipio}
+                    onChange={(e) => handleAddressChange('codigoMunicipio', e.target.value)}
+                    fullWidth
+                    size="small"
+                    helperText="Preenchido automaticamente via CEP"
+                  />
                 </div>
               </div>
 

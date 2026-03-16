@@ -1,10 +1,21 @@
 'use client';
 
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
-import { motion, AnimatePresence, Reorder } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { getInitials } from '@/lib/utils/format';
 import { useAuth } from '@/app/components/providers/AuthProvider';
+import {
+  collection,
+  query,
+  where,
+  onSnapshot,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
+} from 'firebase/firestore';
+import { db } from '@/lib/config/firebase';
 import type {
   KanbanBoard,
   KanbanColumn,
@@ -12,6 +23,7 @@ import type {
   KanbanLabel,
   KanbanPriority,
   KanbanChecklistItem,
+  User,
 } from '@/lib/types';
 import {
   Plus,
@@ -46,6 +58,7 @@ import {
   LayoutGrid,
   Star,
   Sparkles,
+  Loader2,
 } from 'lucide-react';
 
 // ─── Priority Config ──────────────────────────────────────
@@ -68,194 +81,11 @@ const DEFAULT_LABELS: KanbanLabel[] = [
   { id: 'l8', name: 'Financeiro', color: '#84CC16' },
 ];
 
-// ─── Mock Members ─────────────────────────────────────────
-const MOCK_MEMBERS = [
-  { id: 'u1', name: 'Igor Garcia', photoURL: null },
-  { id: 'u2', name: 'Ana Silva', photoURL: null },
-  { id: 'u3', name: 'Carlos Santos', photoURL: null },
-  { id: 'u4', name: 'Maria Oliveira', photoURL: null },
-  { id: 'u5', name: 'Pedro Lima', photoURL: null },
-];
+// ─── Local ID for client-side entities (columns, checklist items) ─────────────
+const genLocalId = () => `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
-// ─── Mock Data ────────────────────────────────────────────
-const MOCK_BOARDS: KanbanBoard[] = [
-  {
-    id: 'b1',
-    businessId: 'biz1',
-    name: 'Projeto Principal',
-    description: 'Board principal do time de desenvolvimento',
-    color: '#DC2626',
-    columns: [
-      { id: 'col1', title: 'Backlog',       color: '#6B7280', order: 0 },
-      { id: 'col2', title: 'A Fazer',       color: '#3B82F6', order: 1 },
-      { id: 'col3', title: 'Em Progresso',  color: '#F59E0B', order: 2, cardLimit: 5 },
-      { id: 'col4', title: 'Revisão',       color: '#8B5CF6', order: 3, cardLimit: 3 },
-      { id: 'col5', title: 'Concluído',     color: '#10B981', order: 4 },
-    ],
-    memberIds: ['u1', 'u2', 'u3', 'u4', 'u5'],
-    createdBy: 'u1',
-    isArchived: false,
-    createdAt: '2026-01-15T10:00:00Z',
-    updatedAt: '2026-03-14T10:00:00Z',
-  },
-  {
-    id: 'b2',
-    businessId: 'biz1',
-    name: 'Marketing Q1',
-    description: 'Campanhas do primeiro trimestre',
-    color: '#8B5CF6',
-    columns: [
-      { id: 'col6', title: 'Ideias',      color: '#6B7280', order: 0 },
-      { id: 'col7', title: 'Planejado',   color: '#3B82F6', order: 1 },
-      { id: 'col8', title: 'Executando',  color: '#F59E0B', order: 2 },
-      { id: 'col9', title: 'Finalizado',  color: '#10B981', order: 3 },
-    ],
-    memberIds: ['u1', 'u4', 'u5'],
-    createdBy: 'u1',
-    isArchived: false,
-    createdAt: '2026-02-01T10:00:00Z',
-    updatedAt: '2026-03-14T10:00:00Z',
-  },
-];
-
-const MOCK_CARDS: KanbanCard[] = [
-  // Board 1 - Backlog
-  {
-    id: 'c1', boardId: 'b1', columnId: 'col1', title: 'Redesign da página de login',
-    description: 'Atualizar a página de login com o novo design system', priority: 'medium',
-    labels: [DEFAULT_LABELS[3], DEFAULT_LABELS[5]], assigneeIds: ['u2'], assigneeNames: ['Ana Silva'],
-    dueDate: '2026-03-25', checklist: [
-      { id: 'ck1', text: 'Wireframe', completed: true },
-      { id: 'ck2', text: 'UI Design', completed: true },
-      { id: 'ck3', text: 'Implementação', completed: false },
-      { id: 'ck4', text: 'Testes', completed: false },
-    ], commentsCount: 3, attachmentsCount: 2, order: 0, createdBy: 'u1',
-    createdAt: '2026-03-01T10:00:00Z', updatedAt: '2026-03-10T10:00:00Z',
-  },
-  {
-    id: 'c2', boardId: 'b1', columnId: 'col1', title: 'Integração com gateway de pagamento',
-    description: 'Integrar API do Stripe para processar pagamentos online', priority: 'high',
-    labels: [DEFAULT_LABELS[4]], assigneeIds: ['u1', 'u3'], assigneeNames: ['Igor Garcia', 'Carlos Santos'],
-    dueDate: '2026-03-20', commentsCount: 7, attachmentsCount: 1, order: 1, createdBy: 'u1',
-    createdAt: '2026-03-02T10:00:00Z', updatedAt: '2026-03-12T10:00:00Z',
-  },
-  {
-    id: 'c3', boardId: 'b1', columnId: 'col1', title: 'Otimizar queries do dashboard',
-    priority: 'low', labels: [DEFAULT_LABELS[4]], assigneeIds: ['u3'], assigneeNames: ['Carlos Santos'],
-    commentsCount: 1, attachmentsCount: 0, order: 2, createdBy: 'u3',
-    createdAt: '2026-03-05T10:00:00Z', updatedAt: '2026-03-05T10:00:00Z',
-  },
-  // Board 1 - A Fazer
-  {
-    id: 'c4', boardId: 'b1', columnId: 'col2', title: 'Sistema de notificações push',
-    description: 'Implementar notificações push para lembretes de agendamento', priority: 'high',
-    labels: [DEFAULT_LABELS[1], DEFAULT_LABELS[4]], assigneeIds: ['u1'], assigneeNames: ['Igor Garcia'],
-    dueDate: '2026-03-18', checklist: [
-      { id: 'ck5', text: 'Configurar Firebase Cloud Messaging', completed: true },
-      { id: 'ck6', text: 'Service Worker', completed: false },
-      { id: 'ck7', text: 'UI de permissão', completed: false },
-    ], commentsCount: 5, attachmentsCount: 0, order: 0, createdBy: 'u1',
-    createdAt: '2026-03-03T10:00:00Z', updatedAt: '2026-03-13T10:00:00Z',
-  },
-  {
-    id: 'c5', boardId: 'b1', columnId: 'col2', title: 'Relatório mensal de vendas em PDF',
-    priority: 'medium', labels: [DEFAULT_LABELS[1]], assigneeIds: ['u2', 'u4'],
-    assigneeNames: ['Ana Silva', 'Maria Oliveira'], dueDate: '2026-03-22',
-    commentsCount: 2, attachmentsCount: 0, order: 1, createdBy: 'u2',
-    createdAt: '2026-03-04T10:00:00Z', updatedAt: '2026-03-11T10:00:00Z',
-  },
-  {
-    id: 'c13', boardId: 'b1', columnId: 'col2', title: 'Migrar banco para PostgreSQL',
-    description: 'Migração gradual do Firestore para PostgreSQL com Supabase', priority: 'urgent',
-    labels: [DEFAULT_LABELS[4]], assigneeIds: ['u1', 'u3'], assigneeNames: ['Igor Garcia', 'Carlos Santos'],
-    dueDate: '2026-03-16', commentsCount: 12, attachmentsCount: 3, order: 2, createdBy: 'u1',
-    createdAt: '2026-03-06T10:00:00Z', updatedAt: '2026-03-14T10:00:00Z',
-  },
-  // Board 1 - Em Progresso
-  {
-    id: 'c6', boardId: 'b1', columnId: 'col3', title: 'Módulo Kanban',
-    description: 'Criar board Kanban para gestão de tarefas da equipe', priority: 'urgent',
-    labels: [DEFAULT_LABELS[1], DEFAULT_LABELS[5]], assigneeIds: ['u1'], assigneeNames: ['Igor Garcia'],
-    dueDate: '2026-03-14', checklist: [
-      { id: 'ck8', text: 'Layout do board', completed: true },
-      { id: 'ck9', text: 'Drag and drop', completed: true },
-      { id: 'ck10', text: 'CRUD de cards', completed: true },
-      { id: 'ck11', text: 'Filtros', completed: false },
-    ], commentsCount: 8, attachmentsCount: 1, coverColor: '#FEE2E2',
-    order: 0, createdBy: 'u1',
-    createdAt: '2026-03-08T10:00:00Z', updatedAt: '2026-03-14T10:00:00Z',
-  },
-  {
-    id: 'c7', boardId: 'b1', columnId: 'col3', title: 'API de relatórios fiscais',
-    priority: 'high', labels: [DEFAULT_LABELS[4], DEFAULT_LABELS[7]],
-    assigneeIds: ['u3'], assigneeNames: ['Carlos Santos'],
-    dueDate: '2026-03-19', commentsCount: 4, attachmentsCount: 2, order: 1, createdBy: 'u3',
-    createdAt: '2026-03-07T10:00:00Z', updatedAt: '2026-03-13T10:00:00Z',
-  },
-  // Board 1 - Revisão
-  {
-    id: 'c8', boardId: 'b1', columnId: 'col4', title: 'Tela de configurações do usuário',
-    description: 'Permitir que o usuário altere foto, nome e preferências', priority: 'medium',
-    labels: [DEFAULT_LABELS[3], DEFAULT_LABELS[5]], assigneeIds: ['u2'], assigneeNames: ['Ana Silva'],
-    checklist: [
-      { id: 'ck12', text: 'Upload de foto', completed: true },
-      { id: 'ck13', text: 'Edição de dados', completed: true },
-      { id: 'ck14', text: 'Testes E2E', completed: false },
-    ], commentsCount: 6, attachmentsCount: 0, order: 0, createdBy: 'u2',
-    createdAt: '2026-03-06T10:00:00Z', updatedAt: '2026-03-14T10:00:00Z',
-  },
-  // Board 1 - Concluído
-  {
-    id: 'c9', boardId: 'b1', columnId: 'col5', title: 'Setup do CI/CD',
-    priority: 'high', labels: [DEFAULT_LABELS[4]], assigneeIds: ['u1'], assigneeNames: ['Igor Garcia'],
-    commentsCount: 3, attachmentsCount: 1, order: 0, createdBy: 'u1',
-    createdAt: '2026-02-20T10:00:00Z', updatedAt: '2026-03-05T10:00:00Z',
-  },
-  {
-    id: 'c10', boardId: 'b1', columnId: 'col5', title: 'Autenticação com Google OAuth',
-    priority: 'high', labels: [DEFAULT_LABELS[1], DEFAULT_LABELS[4]], assigneeIds: ['u1', 'u3'],
-    assigneeNames: ['Igor Garcia', 'Carlos Santos'],
-    commentsCount: 9, attachmentsCount: 0, order: 1, createdBy: 'u1',
-    createdAt: '2026-02-15T10:00:00Z', updatedAt: '2026-03-01T10:00:00Z',
-  },
-  {
-    id: 'c11', boardId: 'b1', columnId: 'col5', title: 'Design system e tokens',
-    priority: 'medium', labels: [DEFAULT_LABELS[3]], assigneeIds: ['u2', 'u4'],
-    assigneeNames: ['Ana Silva', 'Maria Oliveira'],
-    commentsCount: 5, attachmentsCount: 4, order: 2, createdBy: 'u2',
-    createdAt: '2026-02-10T10:00:00Z', updatedAt: '2026-02-28T10:00:00Z',
-  },
-  // Board 2 cards
-  {
-    id: 'c20', boardId: 'b2', columnId: 'col6', title: 'Campanha de lançamento no Instagram',
-    priority: 'high', labels: [DEFAULT_LABELS[6]], assigneeIds: ['u4'], assigneeNames: ['Maria Oliveira'],
-    dueDate: '2026-03-30', commentsCount: 2, attachmentsCount: 3, order: 0, createdBy: 'u4',
-    createdAt: '2026-03-10T10:00:00Z', updatedAt: '2026-03-14T10:00:00Z',
-  },
-  {
-    id: 'c21', boardId: 'b2', columnId: 'col7', title: 'Landing page para promoção de março',
-    priority: 'medium', labels: [DEFAULT_LABELS[3], DEFAULT_LABELS[6]], assigneeIds: ['u2', 'u5'],
-    assigneeNames: ['Ana Silva', 'Pedro Lima'], dueDate: '2026-03-20',
-    commentsCount: 4, attachmentsCount: 1, order: 0, createdBy: 'u5',
-    createdAt: '2026-03-08T10:00:00Z', updatedAt: '2026-03-13T10:00:00Z',
-  },
-  {
-    id: 'c22', boardId: 'b2', columnId: 'col8', title: 'E-mail marketing - base de clientes',
-    priority: 'high', labels: [DEFAULT_LABELS[6]], assigneeIds: ['u5'], assigneeNames: ['Pedro Lima'],
-    checklist: [
-      { id: 'ck20', text: 'Segmentar base', completed: true },
-      { id: 'ck21', text: 'Criar template', completed: true },
-      { id: 'ck22', text: 'Testar envio', completed: false },
-      { id: 'ck23', text: 'Disparar campanha', completed: false },
-    ],
-    commentsCount: 6, attachmentsCount: 2, order: 0, createdBy: 'u5',
-    createdAt: '2026-03-05T10:00:00Z', updatedAt: '2026-03-14T10:00:00Z',
-  },
-];
-
-// ─── Helper: generate ID ──────────────────────────────────
-let idCounter = 100;
-const genId = () => `gen_${Date.now()}_${idCounter++}`;
+// ─── Member display type ──────────────────────────────────
+type MemberDisplay = Pick<User, 'id' | 'name'> & { photoURL?: string | null };
 
 // ─── Animations ───────────────────────────────────────────
 const containerVariants = {
@@ -292,8 +122,20 @@ const cardVariants = {
 // ═══════════════════════════════════════════════════════════
 // AVATAR STACK
 // ═══════════════════════════════════════════════════════════
-function AvatarStack({ userIds, size = 'sm', max = 3 }: { userIds: string[]; size?: 'sm' | 'md'; max?: number }) {
-  const members = userIds.map(id => MOCK_MEMBERS.find(m => m.id === id)).filter(Boolean);
+function AvatarStack({
+  userIds,
+  membersList,
+  size = 'sm',
+  max = 3,
+}: {
+  userIds: string[];
+  membersList: MemberDisplay[];
+  size?: 'sm' | 'md';
+  max?: number;
+}) {
+  const members = userIds
+    .map(id => membersList.find(m => m.id === id))
+    .filter(Boolean) as MemberDisplay[];
   const shown = members.slice(0, max);
   const remaining = members.length - max;
   const px = size === 'sm' ? 'w-6 h-6 text-[10px]' : 'w-7 h-7 text-xs';
@@ -303,7 +145,7 @@ function AvatarStack({ userIds, size = 'sm', max = 3 }: { userIds: string[]; siz
     <div className="flex items-center">
       {shown.map((member, i) => (
         <div
-          key={member!.id}
+          key={member.id}
           className={cn(
             px,
             'rounded-full flex items-center justify-center font-bold',
@@ -311,9 +153,9 @@ function AvatarStack({ userIds, size = 'sm', max = 3 }: { userIds: string[]; siz
             'border-2 border-white dark:border-gray-900 shadow-sm ring-1 ring-black/5 dark:ring-white/5',
             i > 0 && overlap
           )}
-          title={member!.name}
+          title={member.name}
         >
-          {getInitials(member!.name)}
+          {getInitials(member.name)}
         </div>
       ))}
       {remaining > 0 && (
@@ -383,11 +225,13 @@ function DueDateBadge({ date }: { date: string }) {
 // ═══════════════════════════════════════════════════════════
 function KanbanCardItem({
   card,
+  members,
   onOpen,
   onDragStart,
   isDragging,
 }: {
   card: KanbanCard;
+  members: MemberDisplay[];
   onOpen: () => void;
   onDragStart: (e: React.DragEvent, card: KanbanCard) => void;
   isDragging: boolean;
@@ -491,7 +335,7 @@ function KanbanCardItem({
 
           {/* Assignees */}
           {card.assigneeIds.length > 0 && (
-            <AvatarStack userIds={card.assigneeIds} size="sm" max={2} />
+            <AvatarStack userIds={card.assigneeIds} membersList={members} size="sm" max={2} />
           )}
         </div>
       </div>
@@ -510,6 +354,7 @@ function KanbanCardItem({
 function KanbanColumnComponent({
   column,
   cards,
+  members,
   onCardOpen,
   onAddCard,
   onDragStart,
@@ -520,6 +365,7 @@ function KanbanColumnComponent({
 }: {
   column: KanbanColumn;
   cards: KanbanCard[];
+  members: MemberDisplay[];
   onCardOpen: (card: KanbanCard) => void;
   onAddCard: (columnId: string) => void;
   onDragStart: (e: React.DragEvent, card: KanbanCard) => void;
@@ -534,7 +380,7 @@ function KanbanColumnComponent({
   return (
     <motion.div
       variants={itemVariants}
-      className="flex flex-col w-[300px] min-w-[300px] flex-shrink-0"
+      className="flex flex-col w-[300px] min-w-[300px] flex-shrink-0 h-full"
     >
       {/* Column header */}
       <div className="flex items-center justify-between mb-3 px-1">
@@ -577,7 +423,7 @@ function KanbanColumnComponent({
         onDragOver={(e) => onDragOver(e, column.id)}
         onDrop={(e) => onDrop(e, column.id)}
         className={cn(
-          'flex-1 space-y-2.5 p-1.5 rounded-xl min-h-[120px]',
+          'flex-1 overflow-y-auto space-y-2.5 p-1.5 rounded-xl min-h-[120px]',
           'transition-all duration-200',
           isDragTarget
             ? 'bg-blue-50/60 dark:bg-blue-500/10 ring-2 ring-blue-200/60 dark:ring-blue-500/30 ring-inset'
@@ -589,6 +435,7 @@ function KanbanColumnComponent({
             <KanbanCardItem
               key={card.id}
               card={card}
+              members={members}
               onOpen={() => onCardOpen(card)}
               onDragStart={onDragStart}
               isDragging={draggingCardId === card.id}
@@ -649,6 +496,13 @@ function CardDetailDialog({
   const checkTotal = checklist.length;
   const checkPercent = checkTotal > 0 ? Math.round((checkDone / checkTotal) * 100) : 0;
 
+  // Sync local state when card prop changes (other user updated it)
+  useEffect(() => {
+    if (!editingTitle) setTitle(card.title);
+    if (!editingDescription) setDescription(card.description || '');
+    setChecklist(card.checklist || []);
+  }, [card.title, card.description, card.checklist, editingTitle, editingDescription]);
+
   const handleSaveTitle = () => {
     if (title.trim()) {
       onUpdate({ ...card, title: title.trim() });
@@ -671,7 +525,7 @@ function CardDetailDialog({
 
   const handleAddCheckItem = () => {
     if (!newCheckItem.trim()) return;
-    const item: KanbanChecklistItem = { id: genId(), text: newCheckItem.trim(), completed: false };
+    const item: KanbanChecklistItem = { id: genLocalId(), text: newCheckItem.trim(), completed: false };
     const updated = [...checklist, item];
     setChecklist(updated);
     onUpdate({ ...card, checklist: updated });
@@ -1006,11 +860,13 @@ function CardDetailDialog({
 function NewCardDialog({
   columnId,
   columns,
+  members,
   onClose,
   onCreate,
 }: {
   columnId: string;
   columns: KanbanColumn[];
+  members: MemberDisplay[];
   onClose: () => void;
   onCreate: (card: Partial<KanbanCard>) => void;
 }) {
@@ -1050,7 +906,7 @@ function NewCardDialog({
       columnId: selectedColumn,
       labels: selectedLabels,
       assigneeIds: selectedAssignees,
-      assigneeNames: selectedAssignees.map(id => MOCK_MEMBERS.find(m => m.id === id)?.name || ''),
+      assigneeNames: selectedAssignees.map(id => members.find(m => m.id === id)?.name || ''),
       dueDate: dueDate || undefined,
     });
     onClose();
@@ -1168,33 +1024,35 @@ function NewCardDialog({
           </div>
 
           {/* Assignees */}
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">Responsáveis</label>
-            <div className="flex flex-wrap gap-1.5">
-              {MOCK_MEMBERS.map(member => (
-                <button
-                  key={member.id}
-                  onClick={() => toggleAssignee(member.id)}
-                  className={cn(
-                    'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all border',
-                    selectedAssignees.includes(member.id)
-                      ? 'bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-400 border-red-200 dark:border-red-500/20'
-                      : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-white/[0.04]'
-                  )}
-                >
-                  <div className={cn(
-                    'w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-bold',
-                    selectedAssignees.includes(member.id)
-                      ? 'bg-red-200 dark:bg-red-500/30 text-red-700 dark:text-red-400'
-                      : 'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400'
-                  )}>
-                    {getInitials(member.name)}
-                  </div>
-                  {member.name.split(' ')[0]}
-                </button>
-              ))}
+          {members.length > 0 && (
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">Responsáveis</label>
+              <div className="flex flex-wrap gap-1.5">
+                {members.map(member => (
+                  <button
+                    key={member.id}
+                    onClick={() => toggleAssignee(member.id)}
+                    className={cn(
+                      'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all border',
+                      selectedAssignees.includes(member.id)
+                        ? 'bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-400 border-red-200 dark:border-red-500/20'
+                        : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-white/[0.04]'
+                    )}
+                  >
+                    <div className={cn(
+                      'w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-bold',
+                      selectedAssignees.includes(member.id)
+                        ? 'bg-red-200 dark:bg-red-500/30 text-red-700 dark:text-red-400'
+                        : 'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400'
+                    )}>
+                      {getInitials(member.name)}
+                    </div>
+                    {member.name.split(' ')[0]}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Actions */}
           <div className="flex items-center justify-end gap-2 pt-2">
@@ -1224,7 +1082,7 @@ function NewCardDialog({
 }
 
 // ═══════════════════════════════════════════════════════════
-// NEW COLUMN DIALOG
+// NEW COLUMN INLINE
 // ═══════════════════════════════════════════════════════════
 function NewColumnInline({
   onAdd,
@@ -1245,7 +1103,7 @@ function NewColumnInline({
       initial={{ opacity: 0, scale: 0.95, x: 20 }}
       animate={{ opacity: 1, scale: 1, x: 0 }}
       exit={{ opacity: 0, scale: 0.95, x: 20 }}
-      className="w-[300px] min-w-[300px] flex-shrink-0 bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-700 shadow-lg p-4 space-y-3"
+      className="w-[300px] min-w-[300px] flex-shrink-0 self-start bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-700 shadow-lg p-4 space-y-3"
     >
       <input
         ref={inputRef}
@@ -1288,12 +1146,112 @@ function NewColumnInline({
 }
 
 // ═══════════════════════════════════════════════════════════
+// NEW BOARD DIALOG
+// ═══════════════════════════════════════════════════════════
+function NewBoardDialog({
+  onClose,
+  onCreate,
+}: {
+  onClose: () => void;
+  onCreate: (name: string, color: string) => void;
+}) {
+  const [name, setName] = useState('');
+  const [color, setColor] = useState('#DC2626');
+  const inputRef = useRef<HTMLInputElement>(null);
+  const BOARD_COLORS = ['#DC2626', '#8B5CF6', '#3B82F6', '#10B981', '#F59E0B', '#EC4899', '#06B6D4', '#84CC16'];
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const handleCreate = () => {
+    if (!name.trim()) return;
+    onCreate(name.trim(), color);
+    onClose();
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh] px-4 bg-black/40 backdrop-blur-[2px]"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <motion.div
+        initial={{ opacity: 0, y: 20, scale: 0.97 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 20, scale: 0.97 }}
+        transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+        className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-sm border border-gray-200/80 dark:border-gray-700/50 overflow-hidden"
+      >
+        <div className="p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">Novo Board</h3>
+            <button onClick={onClose} className="p-1.5 rounded-lg text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-all">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">Nome *</label>
+            <input
+              ref={inputRef}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && name.trim()) handleCreate(); if (e.key === 'Escape') onClose(); }}
+              placeholder="Nome do board..."
+              className="w-full px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30 focus:ring-2 focus:ring-red-100 dark:focus:ring-red-500/20"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">Cor</label>
+            <div className="flex items-center gap-2 flex-wrap">
+              {BOARD_COLORS.map(c => (
+                <button
+                  key={c}
+                  onClick={() => setColor(c)}
+                  className={cn('w-7 h-7 rounded-full transition-transform', color === c && 'outline outline-2 outline-offset-2 scale-110')}
+                  style={{ backgroundColor: c, outlineColor: c }}
+                />
+              ))}
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button
+              onClick={onClose}
+              className="px-4 py-2 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={handleCreate}
+              disabled={!name.trim()}
+              className={cn(
+                'px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all',
+                'bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700',
+                'shadow-md shadow-red-500/25 hover:shadow-lg hover:shadow-red-500/30',
+                'disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none'
+              )}
+            >
+              Criar Board
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
 // BOARD HEADER
 // ═══════════════════════════════════════════════════════════
 function BoardHeader({
   boards,
   activeBoard,
+  members,
   onSelectBoard,
+  onNewBoard,
   searchQuery,
   onSearchChange,
   filterPriority,
@@ -1305,7 +1263,9 @@ function BoardHeader({
 }: {
   boards: KanbanBoard[];
   activeBoard: KanbanBoard;
+  members: MemberDisplay[];
   onSelectBoard: (id: string) => void;
+  onNewBoard: () => void;
   searchQuery: string;
   onSearchChange: (q: string) => void;
   filterPriority: KanbanPriority | 'all';
@@ -1351,12 +1311,25 @@ function BoardHeader({
               </span>
             </button>
           ))}
+
+          {/* New board button */}
+          <button
+            onClick={onNewBoard}
+            className={cn(
+              'flex items-center justify-center w-8 h-8 rounded-lg ml-1',
+              'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300',
+              'hover:bg-white/50 dark:hover:bg-white/[0.06] transition-all duration-150 active:scale-90'
+            )}
+            title="Novo board"
+          >
+            <Plus className="w-3.5 h-3.5" />
+          </button>
         </div>
 
         {/* Right actions */}
         <div className="flex items-center gap-2">
           {/* Members */}
-          <AvatarStack userIds={activeBoard.memberIds} size="md" max={4} />
+          <AvatarStack userIds={activeBoard.memberIds} membersList={members} size="md" max={4} />
 
           {/* Search */}
           <div className="relative">
@@ -1429,7 +1402,7 @@ function BoardHeader({
                   className="px-2.5 py-1 rounded-lg text-xs font-medium border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30"
                 >
                   <option value="all">Todos</option>
-                  {MOCK_MEMBERS.map(m => (
+                  {members.map(m => (
                     <option key={m.id} value={m.id}>{m.name}</option>
                   ))}
                 </select>
@@ -1460,15 +1433,82 @@ function BoardHeader({
 }
 
 // ═══════════════════════════════════════════════════════════
+// LOADING SKELETON
+// ═══════════════════════════════════════════════════════════
+function KanbanSkeleton() {
+  return (
+    <div className="space-y-4 p-4 sm:p-6 lg:p-8">
+      <div className="flex items-center gap-3">
+        <div className="shimmer h-8 w-32 rounded-xl" />
+        <div className="shimmer h-8 w-28 rounded-xl" />
+      </div>
+      <div className="shimmer h-10 w-80 rounded-xl" />
+      <div className="flex gap-4 overflow-hidden">
+        {[1, 2, 3].map(i => (
+          <div key={i} className="w-[300px] min-w-[300px] flex-shrink-0 space-y-3">
+            <div className="shimmer h-6 w-28 rounded-lg" />
+            <div className="space-y-2.5 p-1.5">
+              {[1, 2, 3].map(j => (
+                <div key={j} className="shimmer rounded-xl" style={{ height: 80 + j * 10 }} />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// EMPTY STATE (no boards yet)
+// ═══════════════════════════════════════════════════════════
+function EmptyBoards({ onCreateBoard }: { onCreateBoard: () => void }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 16 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+      className="flex flex-col items-center justify-center py-20 text-center px-4"
+    >
+      <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-red-50 to-red-100 dark:from-red-500/10 dark:to-red-500/5 flex items-center justify-center mb-5 shadow-sm">
+        <LayoutGrid className="w-8 h-8 text-red-400 dark:text-red-500" />
+      </div>
+      <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display mb-2">
+        Nenhum board ainda
+      </h3>
+      <p className="text-sm text-gray-500 dark:text-gray-400 mb-6 max-w-xs">
+        Crie seu primeiro board para organizar as tarefas da sua equipe.
+      </p>
+      <button
+        onClick={onCreateBoard}
+        className={cn(
+          'inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white transition-all',
+          'bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700',
+          'shadow-md shadow-red-500/25 hover:shadow-lg hover:shadow-red-500/30 hover:-translate-y-0.5'
+        )}
+      >
+        <Plus className="w-4 h-4" />
+        Criar primeiro board
+      </button>
+    </motion.div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
 // MAIN MODULE
 // ═══════════════════════════════════════════════════════════
 export default function KanbanModule() {
-  const { user } = useAuth();
+  const { user, business } = useAuth();
 
-  // State
-  const [boards, setBoards] = useState<KanbanBoard[]>(MOCK_BOARDS);
-  const [cards, setCards] = useState<KanbanCard[]>(MOCK_CARDS);
-  const [activeBoardId, setActiveBoardId] = useState(MOCK_BOARDS[0].id);
+  // ─── Real-time state ──────────────────────────────────────
+  const [boards, setBoards] = useState<KanbanBoard[]>([]);
+  const [cards, setCards] = useState<KanbanCard[]>([]);
+  const [members, setMembers] = useState<MemberDisplay[]>([]);
+  const [loadingBoards, setLoadingBoards] = useState(true);
+  const [loadingCards, setLoadingCards] = useState(false);
+
+  // ─── UI state ─────────────────────────────────────────────
+  const [activeBoardId, setActiveBoardId] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterPriority, setFilterPriority] = useState<KanbanPriority | 'all'>('all');
   const [filterAssignee, setFilterAssignee] = useState<string | 'all'>('all');
@@ -1477,16 +1517,82 @@ export default function KanbanModule() {
   const [selectedCard, setSelectedCard] = useState<KanbanCard | null>(null);
   const [newCardColumnId, setNewCardColumnId] = useState<string | null>(null);
   const [showNewColumn, setShowNewColumn] = useState(false);
+  const [showNewBoard, setShowNewBoard] = useState(false);
 
   // Drag state
   const [draggingCard, setDraggingCard] = useState<KanbanCard | null>(null);
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
 
-  // Derived
-  const activeBoard = boards.find(b => b.id === activeBoardId)!;
-  const boardCards = cards.filter(c => c.boardId === activeBoardId);
+  // ─── Firestore: boards listener ───────────────────────────
+  useEffect(() => {
+    if (!business?.id) return;
+    const q = query(
+      collection(db, 'kanbanBoards'),
+      where('businessId', '==', business.id)
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      const data = snap.docs
+        .map(d => ({ ...d.data(), id: d.id } as KanbanBoard))
+        .filter(b => !b.isArchived)
+        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      setBoards(data);
+      setLoadingBoards(false);
+      // Auto-select first board if none selected or current is gone
+      if (data.length > 0) {
+        setActiveBoardId(prev => (!prev || !data.find(b => b.id === prev)) ? data[0].id : prev);
+      }
+    }, () => setLoadingBoards(false));
+    return () => unsub();
+  }, [business?.id]);
 
-  // Filter cards
+  // ─── Firestore: cards listener (scoped to active board) ───
+  useEffect(() => {
+    if (!business?.id || !activeBoardId) return;
+    setLoadingCards(true);
+    const q = query(
+      collection(db, 'kanbanCards'),
+      where('businessId', '==', business.id),
+      where('boardId', '==', activeBoardId)
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      setCards(snap.docs.map(d => ({ ...d.data(), id: d.id } as KanbanCard)));
+      setLoadingCards(false);
+    }, () => setLoadingCards(false));
+    return () => {
+      unsub();
+      setLoadingCards(false);
+    };
+  }, [business?.id, activeBoardId]);
+
+  // ─── Firestore: team members listener ─────────────────────
+  useEffect(() => {
+    if (!business?.id) return;
+    const q = query(collection(db, 'users'), where('businessId', '==', business.id));
+    const unsub = onSnapshot(q, (snap) => {
+      setMembers(snap.docs.map(d => {
+        const u = { ...d.data(), id: d.id } as User;
+        return { id: u.id, name: u.name, photoURL: u.photoURL };
+      }));
+    });
+    return () => unsub();
+  }, [business?.id]);
+
+  // ─── Sync selectedCard when cards update (multi-user) ─────
+  useEffect(() => {
+    if (!selectedCard) return;
+    const latest = cards.find(c => c.id === selectedCard.id);
+    if (!latest) {
+      setSelectedCard(null); // Deleted by another user
+    } else {
+      setSelectedCard(latest); // Updated by another user
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cards]);
+
+  // ─── Derived ──────────────────────────────────────────────
+  const activeBoard = boards.find(b => b.id === activeBoardId);
+  const boardCards = cards; // already filtered by boardId via Firestore
+
   const filteredCards = useMemo(() => {
     return boardCards.filter(card => {
       if (searchQuery.trim()) {
@@ -1501,9 +1607,9 @@ export default function KanbanModule() {
     });
   }, [boardCards, searchQuery, filterPriority, filterAssignee]);
 
-  const sortedColumns = [...activeBoard.columns].sort((a, b) => a.order - b.order);
+  const sortedColumns = activeBoard ? [...activeBoard.columns].sort((a, b) => a.order - b.order) : [];
 
-  // ─── Drag handlers ──────────────────────────────────────
+  // ─── Drag handlers ────────────────────────────────────────
   const handleDragStart = useCallback((e: React.DragEvent, card: KanbanCard) => {
     setDraggingCard(card);
     e.dataTransfer.effectAllowed = 'move';
@@ -1516,105 +1622,154 @@ export default function KanbanModule() {
     setDragOverColumn(columnId);
   }, []);
 
-  const handleDrop = useCallback((e: React.DragEvent, targetColumnId: string) => {
+  const handleDrop = useCallback(async (e: React.DragEvent, targetColumnId: string) => {
     e.preventDefault();
     setDragOverColumn(null);
-
-    if (!draggingCard) return;
+    if (!draggingCard || !business?.id) return;
     if (draggingCard.columnId === targetColumnId) {
       setDraggingCard(null);
       return;
     }
-
-    setCards(prev =>
-      prev.map(c =>
-        c.id === draggingCard.id
-          ? { ...c, columnId: targetColumnId, updatedAt: new Date().toISOString() }
-          : c
-      )
-    );
+    try {
+      await updateDoc(doc(db, 'kanbanCards', draggingCard.id), {
+        columnId: targetColumnId,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('Erro ao mover card:', err);
+    }
     setDraggingCard(null);
-  }, [draggingCard]);
+  }, [draggingCard, business?.id]);
 
   const handleDragEnd = useCallback(() => {
     setDraggingCard(null);
     setDragOverColumn(null);
   }, []);
 
-  // ─── Card CRUD ──────────────────────────────────────────
-  const handleCreateCard = useCallback((partial: Partial<KanbanCard>) => {
-    const columnCards = cards.filter(c => c.columnId === partial.columnId && c.boardId === activeBoardId);
-    const newCard: KanbanCard = {
-      id: genId(),
-      boardId: activeBoardId,
-      columnId: partial.columnId!,
-      title: partial.title!,
-      description: partial.description,
-      priority: partial.priority || 'medium',
-      labels: partial.labels || [],
-      assigneeIds: partial.assigneeIds || [],
-      assigneeNames: partial.assigneeNames || [],
-      dueDate: partial.dueDate,
-      checklist: [],
-      commentsCount: 0,
-      attachmentsCount: 0,
-      order: columnCards.length,
-      createdBy: user?.id || 'u1',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    setCards(prev => [...prev, newCard]);
-  }, [activeBoardId, cards, user]);
+  // ─── Card CRUD ────────────────────────────────────────────
+  const handleCreateCard = useCallback(async (partial: Partial<KanbanCard>) => {
+    if (!business?.id || !user || !activeBoardId) return;
+    const columnCards = cards.filter(c => c.columnId === partial.columnId);
+    try {
+      await addDoc(collection(db, 'kanbanCards'), {
+        businessId: business.id,
+        boardId: activeBoardId,
+        columnId: partial.columnId,
+        title: partial.title,
+        description: partial.description || null,
+        priority: partial.priority || 'medium',
+        labels: partial.labels || [],
+        assigneeIds: partial.assigneeIds || [],
+        assigneeNames: partial.assigneeNames || [],
+        dueDate: partial.dueDate || null,
+        checklist: [],
+        commentsCount: 0,
+        attachmentsCount: 0,
+        coverColor: null,
+        order: columnCards.length,
+        createdBy: user.uid,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('Erro ao criar card:', err);
+    }
+  }, [business?.id, user, activeBoardId, cards]);
 
-  const handleUpdateCard = useCallback((updated: KanbanCard) => {
-    setCards(prev =>
-      prev.map(c => c.id === updated.id ? { ...updated, updatedAt: new Date().toISOString() } : c)
-    );
-    setSelectedCard(updated);
-  }, []);
+  const handleUpdateCard = useCallback(async (updated: KanbanCard) => {
+    if (!business?.id) return;
+    const { id, ...data } = updated;
+    const now = new Date().toISOString();
+    // Optimistic update for responsive dialog UI
+    setSelectedCard({ ...updated, updatedAt: now });
+    try {
+      await updateDoc(doc(db, 'kanbanCards', id), {
+        ...data,
+        updatedAt: now,
+      });
+    } catch (err) {
+      console.error('Erro ao atualizar card:', err);
+    }
+  }, [business?.id]);
 
-  const handleDeleteCard = useCallback((cardId: string) => {
-    setCards(prev => prev.filter(c => c.id !== cardId));
-  }, []);
+  const handleDeleteCard = useCallback(async (cardId: string) => {
+    if (!business?.id) return;
+    try {
+      await deleteDoc(doc(db, 'kanbanCards', cardId));
+    } catch (err) {
+      console.error('Erro ao excluir card:', err);
+    }
+  }, [business?.id]);
 
-  // ─── Column CRUD ────────────────────────────────────────
-  const handleAddColumn = useCallback((title: string, color: string) => {
+  // ─── Column CRUD ──────────────────────────────────────────
+  const handleAddColumn = useCallback(async (title: string, color: string) => {
+    if (!business?.id || !activeBoard) return;
     const newCol: KanbanColumn = {
-      id: genId(),
+      id: genLocalId(),
       title,
       color,
       order: activeBoard.columns.length,
     };
-    setBoards(prev =>
-      prev.map(b =>
-        b.id === activeBoardId
-          ? { ...b, columns: [...b.columns, newCol] }
-          : b
-      )
-    );
+    try {
+      await updateDoc(doc(db, 'kanbanBoards', activeBoardId), {
+        columns: [...activeBoard.columns, newCol],
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('Erro ao adicionar coluna:', err);
+    }
     setShowNewColumn(false);
-  }, [activeBoardId, activeBoard]);
+  }, [business?.id, activeBoardId, activeBoard]);
 
-  // ─── Keyboard: close dialogs on Escape ──────────────────
+  // ─── Board CRUD ───────────────────────────────────────────
+  const handleCreateBoard = useCallback(async (name: string, color: string) => {
+    if (!business?.id || !user) return;
+    const defaultColumns: KanbanColumn[] = [
+      { id: genLocalId(), title: 'A Fazer',      color: '#3B82F6', order: 0 },
+      { id: genLocalId(), title: 'Em Progresso', color: '#F59E0B', order: 1 },
+      { id: genLocalId(), title: 'Concluído',    color: '#10B981', order: 2 },
+    ];
+    try {
+      const docRef = await addDoc(collection(db, 'kanbanBoards'), {
+        businessId: business.id,
+        name,
+        description: '',
+        color,
+        columns: defaultColumns,
+        memberIds: [user.uid],
+        createdBy: user.uid,
+        isArchived: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      setActiveBoardId(docRef.id);
+    } catch (err) {
+      console.error('Erro ao criar board:', err);
+    }
+  }, [business?.id, user]);
+
+  // ─── Keyboard shortcuts ───────────────────────────────────
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (selectedCard) setSelectedCard(null);
         else if (newCardColumnId) setNewCardColumnId(null);
         else if (showNewColumn) setShowNewColumn(false);
+        else if (showNewBoard) setShowNewBoard(false);
       }
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [selectedCard, newCardColumnId, showNewColumn]);
+  }, [selectedCard, newCardColumnId, showNewColumn, showNewBoard]);
 
-  // Body overflow lock
+  // Body overflow lock when dialogs are open
   useEffect(() => {
-    document.body.style.overflow = (selectedCard || newCardColumnId) ? 'hidden' : '';
+    const locked = !!(selectedCard || newCardColumnId || showNewBoard);
+    document.body.style.overflow = locked ? 'hidden' : '';
     return () => { document.body.style.overflow = ''; };
-  }, [selectedCard, newCardColumnId]);
+  }, [selectedCard, newCardColumnId, showNewBoard]);
 
-  // ─── Stats for header ───────────────────────────────────
+  // ─── Stats ────────────────────────────────────────────────
   const urgentCount = boardCards.filter(c => c.priority === 'urgent').length;
   const overdueCount = boardCards.filter(c => {
     if (!c.dueDate) return false;
@@ -1624,44 +1779,78 @@ export default function KanbanModule() {
     return d < today;
   }).length;
 
+  // ─── Loading ──────────────────────────────────────────────
+  if (loadingBoards) {
+    return <KanbanSkeleton />;
+  }
+
+  // ─── No boards yet ────────────────────────────────────────
+  if (boards.length === 0) {
+    return (
+      <>
+        <EmptyBoards onCreateBoard={() => setShowNewBoard(true)} />
+        <AnimatePresence>
+          {showNewBoard && (
+            <NewBoardDialog
+              key="new-board"
+              onClose={() => setShowNewBoard(false)}
+              onCreate={handleCreateBoard}
+            />
+          )}
+        </AnimatePresence>
+      </>
+    );
+  }
+
+  if (!activeBoard) return null;
+
   return (
     <motion.div
       variants={containerVariants}
       initial="hidden"
       animate="visible"
-      className="space-y-4"
+      className="flex flex-col h-full"
       onDragEnd={handleDragEnd}
     >
-      {/* Stats bar */}
-      <motion.div variants={itemVariants} className="flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 shadow-sm">
-            <LayoutGrid className="w-4 h-4 text-gray-400 dark:text-gray-500" />
-            <span className="text-sm text-gray-600 dark:text-gray-400">
-              <span className="font-bold text-gray-900 dark:text-gray-100">{boardCards.length}</span> cards
-            </span>
+      {/* Stats + Board header area */}
+      <motion.div variants={itemVariants} className="flex-shrink-0 px-4 sm:px-6 lg:px-8 pt-4 sm:pt-5 pb-2 space-y-3">
+        {/* Stats bar */}
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 shadow-sm">
+              <LayoutGrid className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+              <span className="text-sm text-gray-600 dark:text-gray-400">
+                <span className="font-bold text-gray-900 dark:text-gray-100">{boardCards.length}</span> cards
+              </span>
+            </div>
+            {loadingCards && (
+              <div className="flex items-center gap-1.5 text-xs text-gray-400 dark:text-gray-500">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Sincronizando...</span>
+              </div>
+            )}
+            {urgentCount > 0 && (
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20">
+                <Flame className="w-4 h-4 text-red-500 dark:text-red-400" />
+                <span className="text-sm text-red-600 dark:text-red-400 font-medium">{urgentCount} urgente{urgentCount > 1 ? 's' : ''}</span>
+              </div>
+            )}
+            {overdueCount > 0 && (
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20">
+                <AlertCircle className="w-4 h-4 text-amber-500 dark:text-amber-400" />
+                <span className="text-sm text-amber-600 dark:text-amber-400 font-medium">{overdueCount} atrasado{overdueCount > 1 ? 's' : ''}</span>
+              </div>
+            )}
           </div>
-          {urgentCount > 0 && (
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20">
-              <Flame className="w-4 h-4 text-red-500 dark:text-red-400" />
-              <span className="text-sm text-red-600 dark:text-red-400 font-medium">{urgentCount} urgente{urgentCount > 1 ? 's' : ''}</span>
-            </div>
-          )}
-          {overdueCount > 0 && (
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20">
-              <AlertCircle className="w-4 h-4 text-amber-500 dark:text-amber-400" />
-              <span className="text-sm text-amber-600 dark:text-amber-400 font-medium">{overdueCount} atrasado{overdueCount > 1 ? 's' : ''}</span>
-            </div>
-          )}
         </div>
-      </motion.div>
 
-      {/* Board header: tabs, search, filters */}
-      <motion.div variants={itemVariants}>
+        {/* Board header: tabs, search, filters */}
         <BoardHeader
           boards={boards}
           activeBoard={activeBoard}
+          members={members}
           onSelectBoard={setActiveBoardId}
+          onNewBoard={() => setShowNewBoard(true)}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
           filterPriority={filterPriority}
@@ -1673,17 +1862,17 @@ export default function KanbanModule() {
         />
       </motion.div>
 
-      {/* Columns container — horizontal scroll */}
+      {/* Columns container — fills remaining height, horizontal scroll */}
       <motion.div
         variants={itemVariants}
-        className="flex gap-4 overflow-x-auto pb-4 -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8"
+        className="flex-1 overflow-x-auto overflow-y-hidden px-4 sm:px-6 lg:px-8 pb-4"
         style={{ scrollbarWidth: 'thin' }}
       >
         <motion.div
           variants={containerVariants}
           initial="hidden"
           animate="visible"
-          className="flex gap-4"
+          className="flex gap-4 h-full"
         >
           {sortedColumns.map(column => {
             const columnCards = filteredCards
@@ -1695,6 +1884,7 @@ export default function KanbanModule() {
                 key={column.id}
                 column={column}
                 cards={columnCards}
+                members={members}
                 onCardOpen={setSelectedCard}
                 onAddCard={(colId) => setNewCardColumnId(colId)}
                 onDragStart={handleDragStart}
@@ -1722,7 +1912,7 @@ export default function KanbanModule() {
                 exit={{ opacity: 0 }}
                 onClick={() => setShowNewColumn(true)}
                 className={cn(
-                  'w-[300px] min-w-[300px] flex-shrink-0',
+                  'w-[300px] min-w-[300px] flex-shrink-0 self-start',
                   'flex items-center justify-center gap-2 py-4',
                   'rounded-xl border-2 border-dashed border-gray-200 dark:border-gray-700',
                   'text-sm font-medium text-gray-400 dark:text-gray-500',
@@ -1759,8 +1949,20 @@ export default function KanbanModule() {
             key="new-card"
             columnId={newCardColumnId}
             columns={sortedColumns}
+            members={members}
             onClose={() => setNewCardColumnId(null)}
             onCreate={handleCreateCard}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* New board dialog */}
+      <AnimatePresence>
+        {showNewBoard && (
+          <NewBoardDialog
+            key="new-board"
+            onClose={() => setShowNewBoard(false)}
+            onCreate={handleCreateBoard}
           />
         )}
       </AnimatePresence>
