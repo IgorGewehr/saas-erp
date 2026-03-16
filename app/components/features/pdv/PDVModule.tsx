@@ -503,7 +503,7 @@ export default function PDVModule() {
   // ==========================================
   if (isLoading) {
     return (
-      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full flex flex-col lg:flex-row gap-0 bg-slate-50 dark:bg-[#0B0F19]">
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-[calc(100vh-60px)] flex flex-col lg:flex-row gap-0 bg-slate-50 dark:bg-[#0B0F19]">
         <div className="w-full lg:w-[60%] flex flex-col border-r border-slate-200 dark:border-gray-800 bg-white dark:bg-[#0d1117] p-6 space-y-4">
           <div className="h-8 w-48 rounded-xl shimmer" />
           <div className="h-10 w-full rounded-xl shimmer" />
@@ -538,7 +538,7 @@ export default function PDVModule() {
   // ==========================================
   if (mainView === 'historico') {
     return (
-      <div className="h-full flex flex-col bg-slate-50 dark:bg-[#0B0F19]">
+      <div className="h-[calc(100vh-60px)] flex flex-col bg-slate-50 dark:bg-[#0B0F19]">
         {/* Header */}
         <div className="px-6 pt-6 pb-4 border-b border-slate-200 dark:border-gray-800 bg-white dark:bg-[#0d1117]">
           <div className="flex items-center justify-between mb-4">
@@ -769,7 +769,7 @@ export default function PDVModule() {
   // PDV MAIN VIEW
   // ==========================================
   return (
-    <div className="h-full flex flex-col lg:flex-row gap-0 bg-slate-50 dark:bg-[#0B0F19]">
+    <div className="h-[calc(100vh-60px)] flex flex-col lg:flex-row gap-0 bg-slate-50 dark:bg-[#0B0F19]">
       {/* ========== LEFT PANEL - Catalog ========== */}
       <div className="w-full lg:w-[60%] flex flex-col border-r border-slate-200 dark:border-gray-800 bg-white dark:bg-[#0d1117]">
         {/* Header */}
