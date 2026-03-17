@@ -257,7 +257,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
       }
 
       // Update document status in Firestore
-      await updateDoc(firestoreDoc(db, 'fiscal_documents', doc.id), {
+      await updateDoc(firestoreDoc(db, 'fiscalDocuments', doc.id), {
         status: 'cancelada' as const,
         canceledAt: new Date().toISOString(),
         cancelReason: cancelReason.trim(),
@@ -322,7 +322,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
         updateData.protocol = result.data.protocolo;
       }
 
-      await updateDoc(firestoreDoc(db, 'fiscal_documents', doc.id), updateData);
+      await updateDoc(firestoreDoc(db, 'fiscalDocuments', doc.id), updateData);
 
       toast.success('Status atualizado com sucesso!');
       onDocumentUpdated();
@@ -870,7 +870,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
 
     try {
       const q = query(
-        collection(db, 'fiscal_documents'),
+        collection(db, 'fiscalDocuments'),
         where('businessId', '==', business.id),
         where('type', '==', type),
         orderBy('createdAt', 'desc'),

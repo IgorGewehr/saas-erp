@@ -23,8 +23,11 @@ import type {
   KanbanLabel,
   KanbanPriority,
   KanbanChecklistItem,
+  KanbanVisibility,
   User,
+  Sector,
 } from '@/lib/types';
+import { ROLE_HIERARCHY } from '@/lib/types';
 import {
   Plus,
   MoreHorizontal,
@@ -1498,7 +1501,8 @@ function EmptyBoards({ onCreateBoard }: { onCreateBoard: () => void }) {
 // MAIN MODULE
 // ═══════════════════════════════════════════════════════════
 export default function KanbanModule() {
-  const { user, business } = useAuth();
+  const { user, business, sectors, userSectorIds } = useAuth();
+  const isAdmin = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['admin'];
 
   // ─── Real-time state ──────────────────────────────────────
   const [boards, setBoards] = useState<KanbanBoard[]>([]);
@@ -1531,10 +1535,24 @@ export default function KanbanModule() {
       where('businessId', '==', business.id)
     );
     const unsub = onSnapshot(q, (snap) => {
-      const data = snap.docs
+      const allBoards = snap.docs
         .map(d => ({ ...d.data(), id: d.id } as KanbanBoard))
         .filter(b => !b.isArchived)
         .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+      // Apply sector-based visibility filtering
+      const data = allBoards.filter(board => {
+        if (isAdmin) return true;
+        const visibility = board.visibility || 'all';
+        switch (visibility) {
+          case 'all': return true;
+          case 'members': return board.memberIds.includes(user?.uid || '');
+          case 'sectors':
+            return board.sectorIds?.some(s => userSectorIds.includes(s))
+                   || board.memberIds.includes(user?.uid || '');
+          default: return true;
+        }
+      });
       setBoards(data);
       setLoadingBoards(false);
       // Auto-select first board if none selected or current is gone
@@ -1737,6 +1755,7 @@ export default function KanbanModule() {
         color,
         columns: defaultColumns,
         memberIds: [user.uid],
+        visibility: 'all' as KanbanVisibility,
         createdBy: user.uid,
         isArchived: false,
         createdAt: new Date().toISOString(),

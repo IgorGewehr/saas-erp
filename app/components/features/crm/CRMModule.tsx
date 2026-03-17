@@ -100,7 +100,11 @@ import type {
   LeadStatus,
   LeadSource,
   User,
+  Broadcast,
+  BroadcastStatus,
+  Segment,
 } from '@/lib/types';
+import { LIFECYCLE_STAGE_LABELS, LIFECYCLE_STAGE_COLORS } from '@/lib/types';
 
 // ==========================================
 // CONSTANTS
@@ -157,12 +161,13 @@ const ACTIVITY_COLORS: Record<CRMActivityType, string> = {
   whatsapp: '#25D366', tarefa: '#10B981', nota: '#6B7280', proposta: '#DC2626',
 };
 
-type CRMTab = 'pipeline' | 'contatos' | 'atividades' | 'metricas';
+type CRMTab = 'pipeline' | 'contatos' | 'atividades' | 'campanhas' | 'metricas';
 
 const TABS: { key: CRMTab; label: string; icon: React.ReactNode }[] = [
   { key: 'pipeline', label: 'Pipeline', icon: <Layers size={16} /> },
   { key: 'contatos', label: 'Contatos', icon: <Users size={16} /> },
   { key: 'atividades', label: 'Atividades', icon: <Activity size={16} /> },
+  { key: 'campanhas', label: 'Campanhas', icon: <Send size={16} /> },
   { key: 'metricas', label: 'Dashboard', icon: <BarChart3 size={16} /> },
 ];
 
@@ -565,6 +570,9 @@ export default function CRMModule() {
                 onToggle={handleToggleActivity}
                 onNew={() => { setEditingActivity(null); setActivityDialogOpen(true); }}
               />
+            )}
+            {activeTab === 'campanhas' && (
+              <CampaignsTab businessId={business?.id || ''} />
             )}
             {activeTab === 'metricas' && (
               <MetricsTab deals={deals} contacts={contacts} activities={activities} stages={PIPELINE_STAGES} isDark={isDark} metrics={pipelineMetrics} />
@@ -1759,6 +1767,283 @@ function MetricsTab({
           </motion.div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ==========================================
+// CAMPAIGNS TAB
+// ==========================================
+
+const BROADCAST_STATUS_LABELS: Record<BroadcastStatus, { label: string; color: string; bg: string }> = {
+  draft: { label: 'Rascunho', color: 'text-gray-600 dark:text-gray-400', bg: 'bg-gray-100 dark:bg-gray-800' },
+  scheduled: { label: 'Agendada', color: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-50 dark:bg-blue-500/10' },
+  sending: { label: 'Enviando', color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-500/10' },
+  sent: { label: 'Enviada', color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
+  paused: { label: 'Pausada', color: 'text-orange-600 dark:text-orange-400', bg: 'bg-orange-50 dark:bg-orange-500/10' },
+  failed: { label: 'Falha', color: 'text-red-600 dark:text-red-400', bg: 'bg-red-50 dark:bg-red-500/10' },
+};
+
+function CampaignsTab({ businessId }: { businessId: string }) {
+  const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showNewCampaign, setShowNewCampaign] = useState(false);
+
+  // Form state
+  const [formName, setFormName] = useState('');
+  const [formChannel, setFormChannel] = useState<'whatsapp' | 'facebook' | 'instagram'>('whatsapp');
+  const [formAudienceType, setFormAudienceType] = useState<'all_contacts' | 'tags' | 'manual'>('all_contacts');
+  const [formTags, setFormTags] = useState('');
+  const [formMessageType, setFormMessageType] = useState<'template' | 'text'>('template');
+  const [formTemplateName, setFormTemplateName] = useState('');
+  const [formMessageContent, setFormMessageContent] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const { user } = useAuth();
+
+  useEffect(() => {
+    if (!businessId) return;
+    const q = query(
+      collection(db, 'broadcasts'),
+      where('businessId', '==', businessId),
+      orderBy('createdAt', 'desc'),
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      setBroadcasts(snap.docs.map(d => ({ ...d.data(), id: d.id } as Broadcast)));
+      setLoading(false);
+    });
+    return () => unsub();
+  }, [businessId]);
+
+  const handleCreateBroadcast = async () => {
+    if (!businessId || !user || !formName.trim()) return;
+    setSaving(true);
+    try {
+      const now = new Date().toISOString();
+      await addDoc(collection(db, 'broadcasts'), {
+        businessId,
+        name: formName.trim(),
+        channel: formChannel,
+        audienceType: formAudienceType,
+        audienceTags: formAudienceType === 'tags' ? formTags.split(',').map(t => t.trim()).filter(Boolean) : [],
+        messageType: formMessageType,
+        templateName: formMessageType === 'template' ? formTemplateName.trim() : undefined,
+        messageContent: formMessageType === 'text' ? formMessageContent.trim() : undefined,
+        status: 'draft' as BroadcastStatus,
+        stats: { total: 0, sent: 0, delivered: 0, read: 0, failed: 0, replied: 0 },
+        createdBy: user.uid,
+        createdByName: user.name,
+        createdAt: now,
+        updatedAt: now,
+      });
+      toast.success('Campanha criada');
+      setShowNewCampaign(false);
+      setFormName('');
+      setFormMessageContent('');
+      setFormTemplateName('');
+    } catch (err) {
+      console.error('Error creating broadcast:', err);
+      toast.error('Erro ao criar campanha');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="space-y-4">
+        {[0, 1, 2].map(i => (
+          <div key={i} className="h-24 rounded-2xl shimmer" />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-base font-bold text-gray-900 dark:text-gray-100 font-display">Campanhas</h3>
+          <p className="text-xs text-gray-500 dark:text-gray-400">{broadcasts.length} campanha{broadcasts.length !== 1 ? 's' : ''}</p>
+        </div>
+        <button
+          onClick={() => setShowNewCampaign(true)}
+          className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-red-600 to-red-500 hover:from-red-700 hover:to-red-600 shadow-lg shadow-red-500/25 transition-all"
+        >
+          <Plus size={16} />
+          Nova Campanha
+        </button>
+      </div>
+
+      {/* Broadcast List */}
+      {broadcasts.length === 0 ? (
+        <div className="text-center py-16 bg-white dark:bg-gray-900/50 rounded-2xl border border-gray-200 dark:border-gray-700/50">
+          <Send className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
+          <h4 className="text-sm font-semibold text-gray-600 dark:text-gray-400 mb-1">Nenhuma campanha</h4>
+          <p className="text-xs text-gray-400 dark:text-gray-500">Crie campanhas para enviar mensagens em massa via WhatsApp, Facebook ou Instagram</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {broadcasts.map((broadcast) => {
+            const statusCfg = BROADCAST_STATUS_LABELS[broadcast.status];
+            const deliveryRate = broadcast.stats.total > 0
+              ? Math.round((broadcast.stats.delivered / broadcast.stats.total) * 100)
+              : 0;
+            const readRate = broadcast.stats.delivered > 0
+              ? Math.round((broadcast.stats.read / broadcast.stats.delivered) * 100)
+              : 0;
+
+            return (
+              <motion.div
+                key={broadcast.id}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="bg-white dark:bg-gray-900/50 rounded-2xl border border-gray-200 dark:border-gray-700/50 p-5 hover:shadow-md transition-shadow"
+              >
+                <div className="flex items-start justify-between">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{broadcast.name}</h4>
+                      <span className={cn('text-[10px] font-semibold px-2 py-0.5 rounded-full', statusCfg.bg, statusCfg.color)}>
+                        {statusCfg.label}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3 mt-1.5 text-xs text-gray-400 dark:text-gray-500">
+                      <span className="capitalize">{broadcast.channel}</span>
+                      <span>·</span>
+                      <span>{broadcast.messageType === 'template' ? `Template: ${broadcast.templateName}` : 'Texto'}</span>
+                      <span>·</span>
+                      <span>{formatDate(broadcast.createdAt)}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Stats bar */}
+                {broadcast.stats.total > 0 && (
+                  <div className="mt-3 grid grid-cols-4 gap-3">
+                    <div>
+                      <p className="text-[10px] text-gray-400 dark:text-gray-500 uppercase tracking-wider">Total</p>
+                      <p className="text-sm font-bold text-gray-900 dark:text-gray-100">{broadcast.stats.total}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-gray-400 dark:text-gray-500 uppercase tracking-wider">Enviadas</p>
+                      <p className="text-sm font-bold text-emerald-600 dark:text-emerald-400">{broadcast.stats.sent}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-gray-400 dark:text-gray-500 uppercase tracking-wider">Entregues</p>
+                      <p className="text-sm font-bold text-blue-600 dark:text-blue-400">{deliveryRate}%</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-gray-400 dark:text-gray-500 uppercase tracking-wider">Lidas</p>
+                      <p className="text-sm font-bold text-purple-600 dark:text-purple-400">{readRate}%</p>
+                    </div>
+                  </div>
+                )}
+              </motion.div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* New Campaign Dialog */}
+      <Dialog
+        open={showNewCampaign}
+        onClose={() => setShowNewCampaign(false)}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: '1rem', bgcolor: 'inherit' } }}
+      >
+        <DialogTitle sx={{ fontWeight: 700, fontFamily: '"Plus Jakarta Sans", sans-serif' }}>
+          Nova Campanha
+        </DialogTitle>
+        <DialogContent className="space-y-4 !pt-2">
+          <TextField
+            label="Nome da Campanha"
+            value={formName}
+            onChange={(e) => setFormName(e.target.value)}
+            fullWidth
+            size="small"
+          />
+          <FormControl fullWidth size="small">
+            <InputLabel>Canal</InputLabel>
+            <Select
+              value={formChannel}
+              label="Canal"
+              onChange={(e) => setFormChannel(e.target.value as typeof formChannel)}
+            >
+              <MenuItem value="whatsapp">WhatsApp</MenuItem>
+              <MenuItem value="facebook">Facebook Messenger</MenuItem>
+              <MenuItem value="instagram">Instagram Direct</MenuItem>
+            </Select>
+          </FormControl>
+          <FormControl fullWidth size="small">
+            <InputLabel>Audiência</InputLabel>
+            <Select
+              value={formAudienceType}
+              label="Audiência"
+              onChange={(e) => setFormAudienceType(e.target.value as typeof formAudienceType)}
+            >
+              <MenuItem value="all_contacts">Todos os contatos</MenuItem>
+              <MenuItem value="tags">Por tags</MenuItem>
+              <MenuItem value="manual">Seleção manual</MenuItem>
+            </Select>
+          </FormControl>
+          {formAudienceType === 'tags' && (
+            <TextField
+              label="Tags (separadas por vírgula)"
+              value={formTags}
+              onChange={(e) => setFormTags(e.target.value)}
+              fullWidth
+              size="small"
+              placeholder="vip, lead-quente, demo"
+            />
+          )}
+          <FormControl fullWidth size="small">
+            <InputLabel>Tipo de Mensagem</InputLabel>
+            <Select
+              value={formMessageType}
+              label="Tipo de Mensagem"
+              onChange={(e) => setFormMessageType(e.target.value as typeof formMessageType)}
+            >
+              <MenuItem value="template">Template (WhatsApp)</MenuItem>
+              <MenuItem value="text">Texto livre</MenuItem>
+            </Select>
+          </FormControl>
+          {formMessageType === 'template' ? (
+            <TextField
+              label="Nome do Template"
+              value={formTemplateName}
+              onChange={(e) => setFormTemplateName(e.target.value)}
+              fullWidth
+              size="small"
+              placeholder="hello_world"
+              helperText="Nome do template aprovado no WhatsApp Business"
+            />
+          ) : (
+            <TextField
+              label="Conteúdo da Mensagem"
+              value={formMessageContent}
+              onChange={(e) => setFormMessageContent(e.target.value)}
+              fullWidth
+              multiline
+              rows={3}
+              size="small"
+            />
+          )}
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setShowNewCampaign(false)}>Cancelar</Button>
+          <Button
+            onClick={handleCreateBroadcast}
+            variant="contained"
+            disabled={saving || !formName.trim()}
+            sx={{ bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' }, borderRadius: '0.75rem' }}
+          >
+            {saving ? 'Criando...' : 'Criar Campanha'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </div>
   );
 }

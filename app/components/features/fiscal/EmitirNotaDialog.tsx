@@ -648,7 +648,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
     originalPayload: Record<string, unknown>,
   ) => {
     if (!business) return;
-    const docRef = doc(collection(db, 'fiscal_documents'));
+    const docRef = doc(collection(db, 'fiscalDocuments'));
     const sefazData = (sefazResponse as Record<string, unknown>).data as Record<string, unknown> | undefined;
 
     await setDoc(docRef, {

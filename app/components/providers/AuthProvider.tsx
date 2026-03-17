@@ -11,14 +11,16 @@ import {
   User as FirebaseUser,
   updateProfile,
 } from 'firebase/auth';
-import { doc, getDoc, setDoc, updateDoc, arrayUnion } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, arrayUnion, collection, query, where, getDocs } from 'firebase/firestore';
 import { auth, db } from '@/lib/config/firebase';
-import type { User, Business } from '@/lib/types';
+import type { User, Business, Sector } from '@/lib/types';
 
 interface AuthContextType {
   user: User | null;
   firebaseUser: FirebaseUser | null;
   business: Business | null;
+  sectors: Sector[];
+  userSectorIds: string[];
   isLoading: boolean;
   isAuthenticated: boolean;
   signIn: (email: string, password: string) => Promise<void>;
@@ -53,9 +55,18 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser]               = useState<User | null>(null);
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [business, setBusiness]       = useState<Business | null>(null);
+  const [sectors, setSectors]         = useState<Sector[]>([]);
   const [isLoading, setIsLoading]     = useState(true);
 
-  // ── Fetch user + business data from Firestore ──────────────────────────────
+  // Derived: sector IDs the current user belongs to
+  const userSectorIds = React.useMemo(() => {
+    if (!user) return [];
+    // Check user.sectorIds first, then fall back to scanning sectors
+    if (user.sectorIds?.length) return user.sectorIds;
+    return sectors.filter(s => s.memberIds.includes(user.uid)).map(s => s.id);
+  }, [user, sectors]);
+
+  // ── Fetch user + business + sectors data from Firestore ─────────────────────
   const fetchUserData = useCallback(async (fbUser: FirebaseUser) => {
     try {
       const userSnap = await getDoc(doc(db, 'users', fbUser.uid));
@@ -66,6 +77,18 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
           const bizSnap = await getDoc(doc(db, 'businesses', userData.businessId));
           if (bizSnap.exists()) {
             setBusiness({ ...bizSnap.data(), id: bizSnap.id } as Business);
+          }
+          // Fetch sectors for the business
+          try {
+            const sectorsQuery = query(
+              collection(db, 'sectors'),
+              where('businessId', '==', userData.businessId),
+              where('isActive', '==', true)
+            );
+            const sectorsSnap = await getDocs(sectorsQuery);
+            setSectors(sectorsSnap.docs.map(d => ({ ...d.data(), id: d.id } as Sector)));
+          } catch {
+            // Sectors are optional — fail silently
           }
         }
       }
@@ -281,6 +304,7 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
     await firebaseSignOut(auth);
     setUser(null);
     setBusiness(null);
+    setSectors([]);
   };
 
   // ── updateUserProfile ──────────────────────────────────────────────────────
@@ -297,7 +321,7 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider value={{
-      user, firebaseUser, business, isLoading,
+      user, firebaseUser, business, sectors, userSectorIds, isLoading,
       isAuthenticated: !!user,
       signIn, signUp, signInWithGoogle, signOut, updateUserProfile, refreshUser,
     }}>

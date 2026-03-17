@@ -42,13 +42,26 @@ import {
   Headphones,
   Video,
   RotateCcw,
+  Lock,
+  StickyNote,
+  Hash,
+  Tag,
+  Layers,
+  ArrowRightLeft,
+  Flag,
+  Slash,
 } from 'lucide-react';
+import { getDocs } from 'firebase/firestore';
 import type {
   Conversation,
   ConversationMessage,
   ConversationChannel,
   ConversationStatus,
+  Sector,
+  Snippet,
+  User,
 } from '@/lib/types';
+import { ROLE_HIERARCHY } from '@/lib/types';
 
 // ─── Timestamp helpers ───────────────────────────────────────────────────────
 
@@ -431,10 +444,14 @@ function ThreadHeader({
   conversation,
   onBack,
   onStatusChange,
+  onSectorAssign,
+  sectors: sectorsList,
 }: {
   conversation: Conversation;
   onBack: () => void;
   onStatusChange: (status: ConversationStatus) => void;
+  onSectorAssign?: () => void;
+  sectors?: Sector[];
 }) {
   const cfg = CHANNEL_CONFIG[conversation.channel];
   const initials = getInitials(conversation.contactName);
@@ -517,12 +534,59 @@ function ThreadHeader({
                 </span>
               </>
             )}
+            {/* Sector badge */}
+            {conversation.assignedToSectorId && sectorsList && (() => {
+              const sector = sectorsList.find(s => s.id === conversation.assignedToSectorId);
+              return sector ? (
+                <>
+                  <span className="text-gray-300 dark:text-gray-600">·</span>
+                  <span
+                    className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full text-white"
+                    style={{ backgroundColor: sector.color }}
+                  >
+                    {sector.name}
+                  </span>
+                </>
+              ) : null;
+            })()}
+            {/* Priority badge */}
+            {conversation.priority && conversation.priority !== 'medium' && (
+              <>
+                <span className="text-gray-300 dark:text-gray-600">·</span>
+                <span className={cn(
+                  'text-[10px] font-semibold px-1.5 py-0.5 rounded-full',
+                  conversation.priority === 'urgent' && 'bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-400',
+                  conversation.priority === 'high' && 'bg-orange-100 dark:bg-orange-500/20 text-orange-600 dark:text-orange-400',
+                  conversation.priority === 'low' && 'bg-blue-100 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400',
+                )}>
+                  {conversation.priority === 'urgent' ? 'Urgente' : conversation.priority === 'high' ? 'Alta' : 'Baixa'}
+                </span>
+              </>
+            )}
+            {conversation.isPrivate && (
+              <>
+                <span className="text-gray-300 dark:text-gray-600">·</span>
+                <Lock className="w-3 h-3 text-amber-500" />
+              </>
+            )}
           </div>
         </div>
       </div>
 
       {/* Actions */}
       <div className="flex items-center gap-1.5 flex-shrink-0">
+        {/* Sector assign button */}
+        {onSectorAssign && sectorsList && sectorsList.length > 0 && (
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={onSectorAssign}
+            className="w-8 h-8 rounded-xl bg-gray-100 dark:bg-white/[0.06] flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+            title="Atribuir setor"
+          >
+            <Layers className="w-4 h-4" />
+          </motion.button>
+        )}
         {conversation.channel === 'whatsapp' && (
           <motion.button
             whileHover={{ scale: 1.05 }}
@@ -700,11 +764,22 @@ function MessageBubble({
           <div
             className={cn(
               'relative px-3.5 py-2.5 text-sm leading-relaxed shadow-sm',
-              isOut
-                ? 'bg-gradient-to-br from-red-600 to-red-500 text-white rounded-2xl rounded-tr-sm'
-                : 'bg-white dark:bg-[#1e293b] border border-gray-100 dark:border-gray-700/50 text-gray-800 dark:text-gray-100 rounded-2xl rounded-tl-sm',
+              message.isInternal
+                ? 'bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-500/30 text-amber-900 dark:text-amber-100 rounded-2xl'
+                : isOut
+                  ? 'bg-gradient-to-br from-red-600 to-red-500 text-white rounded-2xl rounded-tr-sm'
+                  : 'bg-white dark:bg-[#1e293b] border border-gray-100 dark:border-gray-700/50 text-gray-800 dark:text-gray-100 rounded-2xl rounded-tl-sm',
             )}
           >
+            {message.isInternal && (
+              <div className="flex items-center gap-1 mb-1">
+                <Lock className="w-3 h-3 text-amber-500" />
+                <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400">Nota interna</span>
+                {message.senderName && (
+                  <span className="text-[10px] text-amber-500 dark:text-amber-400/70">· {message.senderName}</span>
+                )}
+              </div>
+            )}
             {message.content}
           </div>
         )}
@@ -817,6 +892,9 @@ function Composer({
   onAttachmentRemove,
   disabled,
   onTemplateClick,
+  isInternalNote,
+  onToggleInternalNote,
+  onSnippetClick,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -830,6 +908,9 @@ function Composer({
   onAttachmentRemove: () => void;
   disabled?: boolean;
   onTemplateClick?: () => void;
+  isInternalNote?: boolean;
+  onToggleInternalNote?: () => void;
+  onSnippetClick?: () => void;
 }) {
   const cfg = CHANNEL_CONFIG[channel];
   const hasContent = value.trim().length > 0 || !!attachment;
@@ -854,7 +935,27 @@ function Composer({
   };
 
   return (
-    <div className="flex-shrink-0 px-4 py-3 bg-white dark:bg-[#111827] border-t border-gray-100 dark:border-white/[0.06]">
+    <div className={cn(
+      'flex-shrink-0 px-4 py-3 border-t transition-colors',
+      isInternalNote
+        ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-500/20'
+        : 'bg-white dark:bg-[#111827] border-gray-100 dark:border-white/[0.06]'
+    )}>
+      {/* Internal Note Banner */}
+      {isInternalNote && (
+        <div className="flex items-center gap-2 mb-2 px-2">
+          <Lock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+          <span className="text-xs font-medium text-amber-700 dark:text-amber-300">
+            Nota interna — não será enviada ao contato
+          </span>
+          <button
+            onClick={onToggleInternalNote}
+            className="ml-auto text-xs text-amber-600 dark:text-amber-400 hover:text-amber-800 dark:hover:text-amber-200 font-medium"
+          >
+            Voltar para mensagem
+          </button>
+        </div>
+      )}
       {isDisabled ? (
         /* Template-only mode (24h window expired) */
         <div className="flex items-center gap-3">
@@ -926,6 +1027,33 @@ function Composer({
           >
             <Paperclip className="w-4 h-4" />
           </motion.button>
+          {onToggleInternalNote && (
+            <motion.button
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.9 }}
+              onClick={onToggleInternalNote}
+              className={cn(
+                'w-8 h-8 rounded-xl flex items-center justify-center transition-colors',
+                isInternalNote
+                  ? 'text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-500/20'
+                  : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06]'
+              )}
+              title="Nota interna"
+            >
+              <StickyNote className="w-4 h-4" />
+            </motion.button>
+          )}
+          {onSnippetClick && (
+            <motion.button
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.9 }}
+              onClick={onSnippetClick}
+              className="w-8 h-8 rounded-xl flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
+              title="Respostas rápidas"
+            >
+              <Slash className="w-4 h-4" />
+            </motion.button>
+          )}
           <input
             ref={fileInputRef}
             type="file"
@@ -1073,10 +1201,11 @@ function ConversationListSkeleton() {
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function ConversasModule() {
-  const { user, business } = useAuth();
+  const { user, business, sectors, userSectorIds } = useAuth();
 
   const [activeChannel, setActiveChannel] = useState<ConversationChannel | 'all'>('all');
   const [activeStatus, setActiveStatus] = useState<ConversationStatus | 'all'>('all');
+  const [activeSectorFilter, setActiveSectorFilter] = useState<string | 'all'>('all');
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [messageInput, setMessageInput] = useState('');
@@ -1086,6 +1215,17 @@ export default function ConversasModule() {
   const [showTemplateSelector, setShowTemplateSelector] = useState(false);
   const [attachment, setAttachment] = useState<File | null>(null);
 
+  // Internal notes mode
+  const [isInternalNote, setIsInternalNote] = useState(false);
+
+  // Quick replies / snippets
+  const [snippets, setSnippets] = useState<Snippet[]>([]);
+  const [showSnippets, setShowSnippets] = useState(false);
+  const [snippetSearch, setSnippetSearch] = useState('');
+
+  // Sector assignment
+  const [showSectorAssign, setShowSectorAssign] = useState(false);
+
   // Real-time data from Firestore
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
@@ -1094,6 +1234,8 @@ export default function ConversasModule() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  const isAdmin = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['admin'];
 
   // ── Real-time: Conversations list ──────────────────────────────────────────
 
@@ -1123,6 +1265,47 @@ export default function ConversasModule() {
 
     return () => unsub();
   }, [business?.id]);
+
+  // ── Load snippets ──────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (!business?.id) return;
+    const q = query(
+      collection(db, 'snippets'),
+      where('businessId', '==', business.id),
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      setSnippets(snap.docs.map((d) => ({ ...d.data(), id: d.id } as Snippet)));
+    });
+    return () => unsub();
+  }, [business?.id]);
+
+  // ── Sector visibility filter ──────────────────────────────────────────────
+
+  const getVisibleConversations = useCallback(
+    (convs: Conversation[]) => {
+      if (!user) return convs;
+      // Admins see everything
+      if (isAdmin) return convs;
+
+      return convs.filter((conv) => {
+        // No sector restriction = visible to all
+        if (!conv.sectorIds?.length && !conv.isPrivate) return true;
+        // Assigned to this user = always visible
+        if (conv.assignedTo === user.uid) return true;
+        // Private = only visible to members of assigned sectors
+        if (conv.isPrivate) {
+          return conv.sectorIds?.some((s) => userSectorIds.includes(s)) || false;
+        }
+        // Has sectors = check intersection
+        if (conv.sectorIds?.length) {
+          return conv.sectorIds.some((s) => userSectorIds.includes(s));
+        }
+        return true;
+      });
+    },
+    [user, isAdmin, userSectorIds],
+  );
 
   // ── Real-time: Messages for selected conversation ──────────────────────────
 
@@ -1503,47 +1686,67 @@ export default function ConversasModule() {
     const now = new Date().toISOString();
 
     try {
-      // 1. Save message to Firestore
-      await addDoc(collection(db, 'conversationMessages'), {
-        conversationId: selectedConversation.id,
-        businessId: business.id,
-        channel: selectedConversation.channel,
-        direction: 'outbound' as const,
-        content,
-        status: 'sending' as const,
-        senderName: user.name,
-        sentAt: now,
-      });
-
-      // 2. Update conversation metadata
-      await updateDoc(doc(db, 'conversations', selectedConversation.id), {
-        lastMessage: content,
-        lastMessageAt: now,
-        lastMessageDirection: 'outbound',
-        updatedAt: now,
-      });
-
-      // 3. Send via Meta API (fire-and-forget with error handling)
-      try {
-        const auth = getAuth();
-        const token = await auth.currentUser?.getIdToken();
-        await fetch('/api/conversations/send', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            businessId: business.id,
-            conversationId: selectedConversation.id,
-            channel: selectedConversation.channel,
-            recipientId: selectedConversation.contactExternalId,
-            content,
-          }),
+      // Internal notes are saved locally only — not sent to the contact
+      if (isInternalNote) {
+        await addDoc(collection(db, 'conversationMessages'), {
+          conversationId: selectedConversation.id,
+          businessId: business.id,
+          channel: selectedConversation.channel,
+          direction: 'outbound' as const,
+          content,
+          status: 'delivered' as const,
+          senderName: user.name,
+          isInternal: true,
+          sentAt: now,
         });
-      } catch {
-        // Message saved locally even if external send fails
-        console.warn('Failed to send message via API, saved locally');
+        // Update internal notes count
+        await updateDoc(doc(db, 'conversations', selectedConversation.id), {
+          internalNotes: (selectedConversation.internalNotes || 0) + 1,
+          updatedAt: now,
+        });
+      } else {
+        // 1. Save message to Firestore
+        await addDoc(collection(db, 'conversationMessages'), {
+          conversationId: selectedConversation.id,
+          businessId: business.id,
+          channel: selectedConversation.channel,
+          direction: 'outbound' as const,
+          content,
+          status: 'sending' as const,
+          senderName: user.name,
+          sentAt: now,
+        });
+
+        // 2. Update conversation metadata
+        await updateDoc(doc(db, 'conversations', selectedConversation.id), {
+          lastMessage: content,
+          lastMessageAt: now,
+          lastMessageDirection: 'outbound',
+          updatedAt: now,
+        });
+
+        // 3. Send via Meta API (fire-and-forget with error handling)
+        try {
+          const auth = getAuth();
+          const token = await auth.currentUser?.getIdToken();
+          await fetch('/api/conversations/send', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              businessId: business.id,
+              conversationId: selectedConversation.id,
+              channel: selectedConversation.channel,
+              recipientId: selectedConversation.contactExternalId,
+              content,
+            }),
+          });
+        } catch {
+          // Message saved locally even if external send fails
+          console.warn('Failed to send message via API, saved locally');
+        }
       }
     } catch (err) {
       console.error('Error sending message:', err);
@@ -1554,7 +1757,7 @@ export default function ConversasModule() {
       inputRef.current?.focus();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messageInput, attachment, selectedConversation, business?.id, user, isSending, sendMediaMessage]);
+  }, [messageInput, attachment, selectedConversation, business?.id, user, isSending, sendMediaMessage, isInternalNote]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1562,21 +1765,81 @@ export default function ConversasModule() {
         e.preventDefault();
         handleSend();
       }
+      // Trigger snippet autocomplete with /
+      if (e.key === '/' && messageInput === '') {
+        setShowSnippets(true);
+        setSnippetSearch('');
+      }
     },
-    [handleSend],
+    [handleSend, messageInput],
   );
+
+  // ── Snippet insertion ──────────────────────────────────────────────────────
+
+  const handleInsertSnippet = useCallback((snippet: Snippet) => {
+    let content = snippet.content;
+    // Replace {{contact.name}} with actual contact name
+    if (selectedConversation) {
+      content = content.replace(/\{\{contact\.name\}\}/g, selectedConversation.contactName);
+    }
+    setMessageInput(content);
+    setShowSnippets(false);
+    inputRef.current?.focus();
+  }, [selectedConversation]);
+
+  // ── Sector assignment ──────────────────────────────────────────────────────
+
+  const handleAssignSector = useCallback(async (sectorId: string) => {
+    if (!selectedConversation || !business?.id) return;
+    const sector = sectors.find(s => s.id === sectorId);
+    try {
+      await updateDoc(doc(db, 'conversations', selectedConversation.id), {
+        assignedToSectorId: sectorId,
+        sectorIds: [sectorId],
+        updatedAt: new Date().toISOString(),
+      });
+      setShowSectorAssign(false);
+    } catch (err) {
+      console.error('Error assigning sector:', err);
+    }
+  }, [selectedConversation, business?.id, sectors]);
+
+  const handleTogglePrivate = useCallback(async () => {
+    if (!selectedConversation || !business?.id) return;
+    try {
+      await updateDoc(doc(db, 'conversations', selectedConversation.id), {
+        isPrivate: !selectedConversation.isPrivate,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('Error toggling privacy:', err);
+    }
+  }, [selectedConversation, business?.id]);
+
+  // ── Filtered snippets ──────────────────────────────────────────────────────
+
+  const filteredSnippets = useMemo(() => {
+    return snippets.filter(s => {
+      // Filter by sector if user is not admin
+      if (s.sectorId && !isAdmin && !userSectorIds.includes(s.sectorId)) return false;
+      if (!snippetSearch) return true;
+      return s.shortcode.toLowerCase().includes(snippetSearch.toLowerCase()) ||
+             s.content.toLowerCase().includes(snippetSearch.toLowerCase());
+    });
+  }, [snippets, snippetSearch, isAdmin, userSectorIds]);
 
   // ── Filtered conversations ─────────────────────────────────────────────────
 
-  const filteredConversations = conversations.filter((c) => {
+  const filteredConversations = getVisibleConversations(conversations).filter((c) => {
     const matchesChannel = activeChannel === 'all' || c.channel === activeChannel;
     const matchesStatus = activeStatus === 'all' || c.status === activeStatus;
+    const matchesSector = activeSectorFilter === 'all' || c.sectorIds?.includes(activeSectorFilter) || c.assignedToSectorId === activeSectorFilter;
     const matchesSearch =
       !searchQuery ||
       c.contactName.toLowerCase().includes(searchQuery.toLowerCase()) ||
       c.lastMessage.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (c.contactPhone && c.contactPhone.includes(searchQuery));
-    return matchesChannel && matchesStatus && matchesSearch;
+    return matchesChannel && matchesStatus && matchesSector && matchesSearch;
   });
 
   // ── Unread counts per channel ──────────────────────────────────────────────
@@ -1722,6 +1985,42 @@ export default function ConversasModule() {
             onStatusChange={setActiveStatus}
             counts={countsByStatus}
           />
+
+          {/* Sector Filter */}
+          {sectors.length > 0 && (
+            <div className="px-4 pb-2 flex-shrink-0">
+              <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none">
+                <button
+                  onClick={() => setActiveSectorFilter('all')}
+                  className={cn(
+                    'px-2.5 py-1 rounded-lg text-[11px] font-medium whitespace-nowrap transition-colors',
+                    activeSectorFilter === 'all'
+                      ? 'bg-gray-900 dark:bg-gray-200 text-white dark:text-gray-900'
+                      : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06]'
+                  )}
+                >
+                  <Layers className="w-3 h-3 inline mr-1" />
+                  Todos
+                </button>
+                {sectors.filter(s => s.isActive).map((sector) => (
+                  <button
+                    key={sector.id}
+                    onClick={() => setActiveSectorFilter(sector.id)}
+                    className={cn(
+                      'px-2.5 py-1 rounded-lg text-[11px] font-medium whitespace-nowrap transition-colors flex items-center gap-1',
+                      activeSectorFilter === sector.id
+                        ? 'text-white'
+                        : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06]'
+                    )}
+                    style={activeSectorFilter === sector.id ? { backgroundColor: sector.color } : undefined}
+                  >
+                    <div className="w-2 h-2 rounded-full" style={{ backgroundColor: sector.color }} />
+                    {sector.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Conversation list */}
           <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-white/10">
@@ -1870,6 +2169,8 @@ export default function ConversasModule() {
                   onStatusChange={(status) => {
                     updateConversationStatus(selectedConversation.id, status);
                   }}
+                  onSectorAssign={() => setShowSectorAssign(prev => !prev)}
+                  sectors={sectors}
                 />
 
                 {/* Messages area */}
@@ -1964,7 +2265,111 @@ export default function ConversasModule() {
                   onAttachmentRemove={handleRemoveAttachment}
                   disabled={isWindowExpired(selectedConversation)}
                   onTemplateClick={() => setShowTemplateSelector(true)}
+                  isInternalNote={isInternalNote}
+                  onToggleInternalNote={() => setIsInternalNote(prev => !prev)}
+                  onSnippetClick={() => setShowSnippets(true)}
                 />
+
+                {/* Snippets Popup */}
+                <AnimatePresence>
+                  {showSnippets && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 8 }}
+                      className="absolute bottom-20 left-4 right-4 max-h-64 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-2xl overflow-hidden z-30"
+                    >
+                      <div className="p-3 border-b border-gray-100 dark:border-gray-800">
+                        <div className="flex items-center gap-2">
+                          <Slash className="w-4 h-4 text-gray-400" />
+                          <input
+                            type="text"
+                            placeholder="Buscar respostas rápidas..."
+                            value={snippetSearch}
+                            onChange={(e) => setSnippetSearch(e.target.value)}
+                            className="flex-1 text-sm bg-transparent text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none"
+                            autoFocus
+                          />
+                          <button onClick={() => setShowSnippets(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                      <div className="overflow-y-auto max-h-48">
+                        {filteredSnippets.length === 0 ? (
+                          <div className="p-4 text-center text-xs text-gray-400 dark:text-gray-500">
+                            {snippets.length === 0 ? 'Nenhuma resposta rápida cadastrada' : 'Nenhum resultado encontrado'}
+                          </div>
+                        ) : (
+                          filteredSnippets.map((s) => (
+                            <button
+                              key={s.id}
+                              onClick={() => handleInsertSnippet(s)}
+                              className="w-full text-left px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors border-b border-gray-50 dark:border-gray-800/50 last:border-0"
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-mono text-red-500 dark:text-red-400">/{s.shortcode}</span>
+                                {s.sectorId && (
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400">
+                                    setor
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{s.content}</p>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {/* Sector Assignment Popup */}
+                <AnimatePresence>
+                  {showSectorAssign && sectors.length > 0 && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 8 }}
+                      className="absolute top-14 right-4 w-56 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-2xl overflow-hidden z-30"
+                    >
+                      <div className="px-3 py-2 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+                        <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">Atribuir Setor</span>
+                        <button onClick={() => setShowSectorAssign(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      <div className="py-1">
+                        {sectors.filter(s => s.isActive).map((sector) => (
+                          <button
+                            key={sector.id}
+                            onClick={() => handleAssignSector(sector.id)}
+                            className={cn(
+                              'w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors',
+                              selectedConversation?.assignedToSectorId === sector.id && 'bg-red-50 dark:bg-red-500/10'
+                            )}
+                          >
+                            <div className="w-3 h-3 rounded-full" style={{ backgroundColor: sector.color }} />
+                            <span className="text-gray-700 dark:text-gray-300 truncate">{sector.name}</span>
+                            {selectedConversation?.assignedToSectorId === sector.id && (
+                              <Check className="w-3.5 h-3.5 text-red-500 ml-auto" />
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                      {/* Toggle private */}
+                      <div className="px-3 py-2 border-t border-gray-100 dark:border-gray-800">
+                        <button
+                          onClick={handleTogglePrivate}
+                          className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
+                        >
+                          <Lock className="w-3.5 h-3.5" />
+                          {selectedConversation?.isPrivate ? 'Tornar pública' : 'Tornar privada'}
+                        </button>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </motion.div>
             )}
           </AnimatePresence>

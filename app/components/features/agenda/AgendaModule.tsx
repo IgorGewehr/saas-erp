@@ -365,7 +365,7 @@ function AppointmentBlock({ appointment, onClick, compact = false }: Appointment
           {isShort && (
             <div className="text-[10px] text-gray-500 dark:text-gray-400 truncate leading-tight">
               {compact
-                ? `${appointment.startTime} ${appointment.serviceName.split(' ')[0]}`
+                ? `${appointment.startTime}${appointment.serviceName ? ` ${appointment.serviceName.split(' ')[0]}` : ''}`
                 : appointment.startTime}
             </div>
           )}
@@ -1024,7 +1024,7 @@ function AppointmentFormDialog({
   };
 
   const handleSubmit = () => {
-    if (!formData.clientName || !formData.serviceName || !formData.date || !formData.startTime) {
+    if (!formData.clientName || !formData.date || !formData.startTime) {
       return;
     }
     onSave(formData);
@@ -1349,7 +1349,7 @@ function AppointmentFormDialog({
           </button>
           <button
             onClick={handleSubmit}
-            disabled={!formData.clientName || !formData.serviceName || saving}
+            disabled={!formData.clientName || saving}
             className={cn(
               'px-5 py-2.5 rounded-xl text-sm font-semibold',
               'bg-red-600 text-white hover:bg-red-700',
@@ -1831,47 +1831,32 @@ export default function AgendaModule() {
       const endTime = addDurationToTime(data.startTime, data.duration);
       const serviceColor = services.find((s) => s.id === data.serviceId)?.color || data.color || '#3B82F6';
 
+      const payload: Record<string, any> = {
+        clientId: data.clientId || '',
+        clientName: data.clientName,
+        date: data.date,
+        startTime: data.startTime,
+        endTime,
+        duration: data.duration,
+        status: data.status,
+        price: data.price,
+        color: serviceColor,
+        updatedAt: new Date().toISOString(),
+      };
+      if (data.clientPhone) payload.clientPhone = data.clientPhone;
+      if (data.serviceId) payload.serviceId = data.serviceId;
+      if (data.serviceName) payload.serviceName = data.serviceName;
+      if (data.professionalId) payload.professionalId = data.professionalId;
+      if (data.professionalName) payload.professionalName = data.professionalName;
+      if (data.notes) payload.notes = data.notes;
+
       if (editingAppointment) {
-        await updateDoc(doc(db, 'appointments', editingAppointment.id), {
-          clientId: data.clientId,
-          clientName: data.clientName,
-          clientPhone: data.clientPhone || null,
-          serviceId: data.serviceId || null,
-          serviceName: data.serviceName,
-          date: data.date,
-          startTime: data.startTime,
-          endTime,
-          duration: data.duration,
-          professionalId: data.professionalId || null,
-          professionalName: data.professionalName || null,
-          notes: data.notes || null,
-          status: data.status,
-          price: data.price,
-          color: serviceColor,
-          updatedAt: new Date().toISOString(),
-        });
+        await updateDoc(doc(db, 'appointments', editingAppointment.id), payload);
         setSnackbar({ open: true, message: 'Agendamento atualizado com sucesso!', severity: 'success' });
       } else {
-        await addDoc(collection(db, 'appointments'), {
-          businessId: business.id,
-          clientId: data.clientId,
-          clientName: data.clientName,
-          clientPhone: data.clientPhone || null,
-          serviceId: data.serviceId || null,
-          serviceName: data.serviceName,
-          date: data.date,
-          startTime: data.startTime,
-          endTime,
-          duration: data.duration,
-          professionalId: data.professionalId || null,
-          professionalName: data.professionalName || null,
-          notes: data.notes || null,
-          status: data.status,
-          price: data.price,
-          color: serviceColor,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        });
+        payload.businessId = business.id;
+        payload.createdAt = new Date().toISOString();
+        await addDoc(collection(db, 'appointments'), payload);
         setSnackbar({ open: true, message: 'Agendamento criado com sucesso!', severity: 'success' });
       }
 

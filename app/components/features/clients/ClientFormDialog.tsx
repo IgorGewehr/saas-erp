@@ -20,12 +20,60 @@ import {
   Divider,
 } from '@mui/material';
 import { X, User, Building2, Plus, MapPin, Loader2 } from 'lucide-react';
-import InputMask from 'react-input-mask';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'react-toastify';
 import type { Client, Address } from '@/lib/types';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { validateCPF, validateCNPJ } from '@/lib/utils/validators';
+
+function applyMask(value: string, mask: string): string {
+  const digits = value.replace(/\D/g, '');
+  let result = '';
+  let digitIdx = 0;
+  for (let i = 0; i < mask.length && digitIdx < digits.length; i++) {
+    if (mask[i] === '9') {
+      result += digits[digitIdx++];
+    } else {
+      result += mask[i];
+    }
+  }
+  return result;
+}
+
+interface MaskedTextFieldProps {
+  mask: string;
+  value: string;
+  onChange: (value: string) => void;
+  label: string;
+  error?: boolean;
+  helperText?: string;
+  fullWidth?: boolean;
+  required?: boolean;
+  size?: 'small' | 'medium';
+  className?: string;
+  InputProps?: any;
+}
+
+function MaskedTextField({ mask, value, onChange, label, error, helperText, fullWidth, required, size, className, InputProps }: MaskedTextFieldProps) {
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    onChange(applyMask(e.target.value, mask));
+  };
+
+  return (
+    <TextField
+      label={label}
+      value={applyMask(value, mask)}
+      onChange={handleChange}
+      error={error}
+      helperText={helperText}
+      fullWidth={fullWidth}
+      required={required}
+      size={size}
+      className={className}
+      InputProps={InputProps}
+    />
+  );
+}
 
 interface ClientFormDialogProps {
   open: boolean;
@@ -154,26 +202,24 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
     }
 
     const cleanDoc = cpfCnpj.replace(/\D/g, '');
-    if (!cleanDoc) {
-      newErrors.cpfCnpj = tipo === 'pf' ? 'CPF obrigatorio' : 'CNPJ obrigatorio';
-    } else if (tipo === 'pf') {
-      if (cleanDoc.length !== 11) {
-        newErrors.cpfCnpj = 'CPF deve ter 11 digitos';
-      } else if (!validateCPF(cleanDoc)) {
-        newErrors.cpfCnpj = 'CPF invalido';
-      }
-    } else if (tipo === 'pj') {
-      if (cleanDoc.length !== 14) {
-        newErrors.cpfCnpj = 'CNPJ deve ter 14 digitos';
-      } else if (!validateCNPJ(cleanDoc)) {
-        newErrors.cpfCnpj = 'CNPJ invalido';
+    if (cleanDoc) {
+      if (tipo === 'pf') {
+        if (cleanDoc.length !== 11) {
+          newErrors.cpfCnpj = 'CPF deve ter 11 digitos';
+        } else if (!validateCPF(cleanDoc)) {
+          newErrors.cpfCnpj = 'CPF invalido';
+        }
+      } else if (tipo === 'pj') {
+        if (cleanDoc.length !== 14) {
+          newErrors.cpfCnpj = 'CNPJ deve ter 14 digitos';
+        } else if (!validateCNPJ(cleanDoc)) {
+          newErrors.cpfCnpj = 'CNPJ invalido';
+        }
       }
     }
 
     const cleanPhone = phone.replace(/\D/g, '');
-    if (!cleanPhone) {
-      newErrors.phone = 'Telefone obrigatorio';
-    } else if (cleanPhone.length < 10) {
+    if (cleanPhone && cleanPhone.length < 10) {
       newErrors.phone = 'Telefone invalido';
     }
 
@@ -209,23 +255,25 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
 
     setIsSaving(true);
     try {
-      await onSave({
+      const payload: Record<string, any> = {
         businessId: '',
         tipo,
         nome: nome.trim(),
-        cpfCnpj: cpfCnpj.replace(/\D/g, ''),
-        email: email.trim() || undefined,
-        phone: phone.replace(/\D/g, ''),
-        phone2: phone2.replace(/\D/g, '') || undefined,
-        birthDate: birthDate || undefined,
-        gender: (gender as 'M' | 'F' | 'O') || undefined,
-        endereco: endereco.cep ? endereco : undefined,
-        tags: tags.length > 0 ? tags : undefined,
-        notes: notes.trim() || undefined,
+        cpfCnpj: cpfCnpj.replace(/\D/g, '') || '',
+        phone: phone.replace(/\D/g, '') || '',
         isActive: client?.isActive ?? true,
-        inscricaoEstadual: tipo === 'pj' ? inscricaoEstadual.trim() || undefined : undefined,
-        indicadorIE: tipo === 'pj' ? indicadorIE : undefined,
-      });
+      };
+      if (email.trim()) payload.email = email.trim();
+      if (phone2.replace(/\D/g, '')) payload.phone2 = phone2.replace(/\D/g, '');
+      if (birthDate) payload.birthDate = birthDate;
+      if (gender) payload.gender = gender;
+      if (endereco.cep) payload.endereco = endereco;
+      if (tags.length > 0) payload.tags = tags;
+      if (notes.trim()) payload.notes = notes.trim();
+      if (tipo === 'pj' && inscricaoEstadual.trim()) payload.inscricaoEstadual = inscricaoEstadual.trim();
+      if (tipo === 'pj') payload.indicadorIE = indicadorIE;
+
+      await onSave(payload as any);
       toast.success(isEditing ? 'Cliente atualizado com sucesso!' : 'Cliente cadastrado com sucesso!');
       onClose();
     } catch (error) {
@@ -337,24 +385,16 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
                   required
                   size="small"
                 />
-                <InputMask
+                <MaskedTextField
                   mask={tipo === 'pf' ? cpfMask : cnpjMask}
                   value={cpfCnpj}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCpfCnpj(e.target.value)}
-                >
-                  {/* @ts-ignore react-input-mask children render prop typing */}
-                  {(inputProps: any) => (
-                    <TextField
-                      {...inputProps}
-                      label={tipo === 'pf' ? 'CPF' : 'CNPJ'}
-                      error={!!errors.cpfCnpj}
-                      helperText={errors.cpfCnpj}
-                      fullWidth
-                      required
-                      size="small"
-                    />
-                  )}
-                </InputMask>
+                  onChange={setCpfCnpj}
+                  label={tipo === 'pf' ? 'CPF' : 'CNPJ'}
+                  error={!!errors.cpfCnpj}
+                  helperText={errors.cpfCnpj}
+                  fullWidth
+                  size="small"
+                />
               </div>
 
               {/* Campos fiscais PJ */}
@@ -395,43 +435,28 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
                   fullWidth
                   size="small"
                 />
-                <InputMask
+                <MaskedTextField
                   mask={phoneMask}
                   value={phone}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPhone(e.target.value)}
-                >
-                  {/* @ts-ignore react-input-mask children render prop typing */}
-                  {(inputProps: any) => (
-                    <TextField
-                      {...inputProps}
-                      label="Telefone"
-                      error={!!errors.phone}
-                      helperText={errors.phone}
-                      fullWidth
-                      required
-                      size="small"
-                    />
-                  )}
-                </InputMask>
+                  onChange={setPhone}
+                  label="Telefone"
+                  error={!!errors.phone}
+                  helperText={errors.phone}
+                  fullWidth
+                  size="small"
+                />
               </div>
 
               {/* Telefone 2 + Data Nascimento + Genero */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <InputMask
+                <MaskedTextField
                   mask={phoneMask}
                   value={phone2}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPhone2(e.target.value)}
-                >
-                  {/* @ts-ignore react-input-mask children render prop typing */}
-                  {(inputProps: any) => (
-                    <TextField
-                      {...inputProps}
-                      label="Telefone 2"
-                      fullWidth
-                      size="small"
-                    />
-                  )}
-                </InputMask>
+                  onChange={setPhone2}
+                  label="Telefone 2"
+                  fullWidth
+                  size="small"
+                />
 
                 {tipo === 'pf' && (
                   <TextField
@@ -472,30 +497,20 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                   <div className="relative">
-                    <InputMask
+                    <MaskedTextField
                       mask={cepMask}
                       value={endereco.cep}
-                      onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                        handleCEPChange(e.target.value)
-                      }
-                    >
-                      {/* @ts-ignore react-input-mask children render prop typing */}
-                      {(inputProps: any) => (
-                        <TextField
-                          {...inputProps}
-                          label="CEP"
-                          fullWidth
-                          size="small"
-                          helperText="Preencha para buscar endereco automaticamente"
-                          InputProps={{
-                            ...inputProps.InputProps,
-                            endAdornment: isFetchingCEP ? (
-                              <Loader2 size={16} className="animate-spin text-red-500" />
-                            ) : null,
-                          }}
-                        />
-                      )}
-                    </InputMask>
+                      onChange={handleCEPChange}
+                      label="CEP"
+                      fullWidth
+                      size="small"
+                      helperText="Preencha para buscar endereco automaticamente"
+                      InputProps={{
+                        endAdornment: isFetchingCEP ? (
+                          <Loader2 size={16} className="animate-spin text-red-500" />
+                        ) : null,
+                      }}
+                    />
                   </div>
                   <TextField
                     label="Logradouro"

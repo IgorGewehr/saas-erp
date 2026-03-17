@@ -39,7 +39,12 @@ businesses/{businessId}   ← empresa/tenant
        ├── crmContacts/{id}     where('businessId', '==', businessId)
        ├── fiscalDocuments/{id} where('businessId', '==', businessId)
        ├── sales/{id}           where('businessId', '==', businessId)
-       └── inviteCodes/{code}   where('businessId', '==', businessId)
+       ├── inviteCodes/{code}   where('businessId', '==', businessId)
+       ├── sectors/{id}         where('businessId', '==', businessId)
+       ├── snippets/{id}        where('businessId', '==', businessId)
+       ├── segments/{id}        where('businessId', '==', businessId)
+       ├── broadcasts/{id}      where('businessId', '==', businessId)
+       └── broadcastMessages/{id} where('businessId','==',businessId) + broadcastId
 ```
 
 ### Regras obrigatórias para qualquer nova feature
@@ -187,43 +192,11 @@ await updateUserProfile({ userStatus: 'invisible' });
 ### Como exibir presença em qualquer módulo
 
 ```typescript
-// Padrão de 3 estados (online / busy / offline) — use sempre
 const displayStatus = getMemberDisplayStatus(member);
-
-// Dot colorido
-const dotClass = {
-  online:  'bg-emerald-400',
-  busy:    'bg-amber-400',
-  offline: 'bg-gray-300 dark:bg-gray-600',
-}[displayStatus];
-
-// Texto exibido
-const label = {
-  online:  'Online agora',
-  busy:    'Ocupado',
-  offline: relativeTime(member.lastSeenAt || member.lastLoginAt),
-}[displayStatus];
-
-// Para exibir tempo relativo:
-function relativeTime(dateStr?: string): string {
-  const diff = Date.now() - new Date(dateStr ?? 0).getTime();
-  if (diff < 60_000)         return 'Agora mesmo';
-  if (diff < 3_600_000)      return `${Math.floor(diff / 60_000)}min atrás`;
-  if (diff < 86_400_000)     return `${Math.floor(diff / 3_600_000)}h atrás`;
-  return new Date(dateStr!).toLocaleDateString('pt-BR');
-}
+const dotClass = { online: 'bg-emerald-400', busy: 'bg-amber-400', offline: 'bg-gray-300 dark:bg-gray-600' }[displayStatus];
 ```
 
-### Onde o status é exibido e controlado
-
-| Local | O que faz |
-|-------|-----------|
-| **Dashboard** → header | Card interativo para trocar status com dropdown (substitui "Ao vivo") |
-| **TopBar** → avatar do usuário | Dot colorido refletindo status atual |
-| **TopBar** → user dropdown | Mini picker de status inline (expande ao clicar) |
-| **TopBar** → `TeamPresencePanel` | Lista todos os membros com dot tricolor (verde/âmbar/cinza) |
-| **Settings → Meu Perfil** | Seletor de status com 4 botões |
-| **Settings → Usuários** | Dot indicator por membro |
+Status é exibido/controlado em: Dashboard header, TopBar avatar/dropdown/TeamPresencePanel, Settings perfil/usuários.
 
 ---
 
@@ -237,6 +210,8 @@ const {
   business,           // Business | null — empresa do usuário
   isLoading,          // boolean
   isAuthenticated,    // boolean = !!user
+  sectors,            // Sector[] — todos os setores do business (carregados no login)
+  userSectorIds,      // string[] — IDs dos setores do usuário atual
   signIn,
   signUp,             // aceita inviteCode opcional
   signInWithGoogle,
@@ -321,17 +296,23 @@ app/
 │       ├── dashboard/          ← KPIs, gráficos de receita
 │       ├── clients/            ← CRUD de clientes (PF/PJ)
 │       ├── agenda/             ← agendamentos
-│       ├── crm/                ← leads, deals, pipeline
-│       ├── kanban/             ← boards e cards
+│       ├── crm/                ← leads, deals, pipeline, campanhas (broadcasts)
+│       ├── kanban/             ← boards e cards (visibilidade por setor)
+│       ├── conversations/      ← omnichannel (WhatsApp, Facebook, Instagram), notas internas, quick replies
 │       ├── pdv/                ← ponto de venda
-│       ├── financial/          ← contas a pagar/receber
+│       ├── financial/          ← contas a pagar/receber, relatórios enterprise (receita por canal/setor, ROI campanhas, CLV)
 │       ├── inventory/          ← estoque e produtos
 │       ├── fiscal/             ← NF-e, NFC-e, NFSe
 │       ├── integrations/       ← dashboard Enterprise (tabs/, shared/)
 │       │   ├── IntegrationsModule.tsx  ← orquestrador
 │       │   ├── tabs/           ← OverviewTab, RevenueTab, AICostsTab, DevelopmentTab, CommunicationTab, TeamTab
 │       │   └── shared/         ← KPICard, ProgressBar, IntegrationSkeleton, utils
-│       └── settings/           ← empresa, fiscal, usuários/convites, enterprise
+│       └── settings/           ← empresa, fiscal, usuários/convites, setores, enterprise
+app/api/
+├── channels/meta-signup/route.ts  ← Token exchange para Embedded Signup (Meta)
+├── broadcasts/send/route.ts       ← Processador de campanhas em massa (WhatsApp/FB/IG)
+├── integrations/                  ← Proxy routes para APIs externas (Stripe, OpenAI, etc.)
+└── webhooks/                      ← Webhooks WhatsApp/Facebook/Instagram
 lib/
 ├── types/index.ts              ← TODOS os tipos TypeScript do sistema
 ├── config/firebase.ts          ← instâncias: auth, db, storage
@@ -350,17 +331,26 @@ lib/
 ```typescript
 UserStatus   → 'online' | 'busy' | 'invisible' | 'offline'  (status manual do usuário)
 User         → id, uid, email, name, role, businessId, isOnline, userStatus,
-               lastSeenAt, lastLoginAt, phone?, photoURL?, profileAddress?
+               lastSeenAt, lastLoginAt, phone?, photoURL?, profileAddress?, sectorIds?
 Business     → id, razaoSocial, cnpj, crt, ownerUserId, memberIds, fiscal?, settings?
-InviteCode   → businessId, code, role, createdBy, expiresAt, isActive, usedBy?
+InviteCode   → businessId, code, role, createdBy, expiresAt, isActive, usedBy?, sectorId?
 Client       → businessId, tipo (pf|pj), cpfCnpj, phone, totalSpent, visitCount
 Appointment  → businessId, clientId, date, startTime, status (6 estados)
-Sale         → businessId, items[], payments[], operatorId
-Transaction  → businessId, type (receita|despesa), amount, dueDate, status
+Sale         → businessId, items[], payments[], operatorId, channelType?, conversationId?, sectorId?
+Transaction  → businessId, type (receita|despesa), amount, dueDate, status, channelType?, conversationId?, contactId?, campaignId?, sectorId?
 Product      → businessId, sku, currentStock, minStock, salePrice
 FiscalDocument → businessId, type (nfse|nfce|nfe), status (6 estados)
-KanbanBoard  → businessId, columns[], memberIds
-CRMContact   → businessId, status (7 estados), source (7 tipos), assignedTo?
+KanbanBoard  → businessId, columns[], memberIds, sectorIds?, visibility ('all'|'members'|'sectors')
+CRMContact   → businessId, status (7 estados), source (7 tipos), assignedTo?,
+               lifecycleStage?, channelIdentities?, preferredChannel?, lastConversationId?,
+               customFields?, sectorId?, optInMarketing?
+Conversation → businessId, channel, sectorIds?, assignedToSectorId?, isPrivate?, priority?, labels?
+ConversationMessage → ... isInternal?, mentionedUserIds?
+Sector       → businessId, name, description?, color, icon?, leaderId?, memberIds, isActive
+Snippet      → businessId, shortcode, content, category?, sectorId?, createdBy
+Segment      → businessId, name, filters: SegmentFilter[], contactCount?, createdBy
+Broadcast    → businessId, name, channel, audienceType, status, stats{total,sent,delivered,read,failed,replied}
+BroadcastMessage → broadcastId, businessId, contactId, recipientId, status
 EnterpriseSettings → isEnabled, enabledAt, integrations[], apiKeys[]
 IntegrationConfig  → provider, apiKey, isActive, status, connectedAt
 SaasApiKey   → businessId, name, keyPrefix, keyHash, scopes[], status
@@ -474,43 +464,10 @@ initial: { opacity: 0, y: 12, filter: 'blur(4px)' }
 animate: { opacity: 1, y: 0, filter: 'blur(0px)' }
 ```
 
-### Classe `.shimmer` para skeletons
+### Skeletons e Loading
 
-Use sempre a classe `.shimmer` do `globals.css` para elementos de skeleton. Ela já inclui a animação de varredura e suporte a dark mode.
-
-```tsx
-// Skeleton estático simples
-<div className="h-7 w-48 rounded-xl shimmer" />
-
-// Skeleton com stagger via framer-motion (para grupos de cards)
-{[0, 1, 2, 3].map((i) => (
-  <motion.div
-    key={i}
-    initial={{ opacity: 0, y: 8 }}
-    animate={{ opacity: 1, y: 0 }}
-    transition={{ duration: 0.28, delay: i * 0.07 }}
-    className="h-[100px] rounded-2xl shimmer"
-  />
-))}
-```
-
-### Loading interno de dados (dentro do módulo)
-
-O `Suspense` em page.tsx só cobre o carregamento do JS chunk. Para dados do Firestore/React Query dentro do módulo, cada módulo deve ter seu próprio skeleton inline:
-
-```tsx
-// Dentro de qualquer módulo
-const { data, isLoading } = useQuery({ ... });
-
-if (isLoading) {
-  return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
-      <div className="h-8 w-48 rounded-xl shimmer" />
-      <div className="h-64 rounded-2xl shimmer" />
-    </motion.div>
-  );
-}
-```
+- Use classe `.shimmer` do `globals.css` para skeletons (já inclui animação + dark mode)
+- `Suspense` em page.tsx só cobre JS chunk. Para dados do Firestore, cada módulo deve ter skeleton inline com `isLoading` do useQuery
 
 ### Sidebar — padrões visuais obrigatórios
 
@@ -535,7 +492,7 @@ if (isLoading) {
 
 ## Módulo de Configurações — Controle de Acesso por Role
 
-O `SettingsModule` (`app/components/features/settings/SettingsModule.tsx`) possui **5 abas**, com visibilidade controlada por role.
+O `SettingsModule` (`app/components/features/settings/SettingsModule.tsx`) possui **6 abas**, com visibilidade controlada por role.
 
 ### Abas e quem pode ver
 
@@ -545,7 +502,8 @@ O `SettingsModule` (`app/components/features/settings/SettingsModule.tsx`) possu
 | **Empresa** | `empresa` | admin / founder | Dados da empresa, logo, CNPJ, endereço fiscal |
 | **Fiscal** | `fiscal` | admin / founder | Certificado digital, config NFe/NFCe/NFSe, ambiente |
 | **Usuários** | `usuarios` | admin / founder | Lista de membros, geração de códigos de convite |
-| **Enterprise** | `enterprise` | admin / founder | Toggle enterprise, integrações (accordion expandível), API keys do ServicePro |
+| **Setores** | `setores` | admin / founder | CRUD de setores, atribuição de membros, líder, cores |
+| **Enterprise** | `enterprise` | admin / founder | Toggle enterprise, integrações, API keys, Embedded Signup (Canais) |
 
 ### Implementação da restrição
 
@@ -575,6 +533,134 @@ A aba inicial é **sempre `'perfil'`** para todos os roles. Isso garante que ao 
 - **Email**: exibido como read-only (não editável via Auth)
 - **Endereço pessoal**: CEP com auto-fill via ViaCEP → salvo em `user.profileAddress`
 - **Status de presença**: 4 botões (Online / Ocupado / Invisível / Offline)
+
+---
+
+## Sistema de Setores/Departamentos
+
+### Conceito
+
+Setores são a base do sistema de permissões granulares. Um usuário pode pertencer a múltiplos setores. Conversas, boards Kanban, transações e contatos CRM podem ser associados a setores para controle de visibilidade.
+
+### Coleção `sectors/{id}`
+
+```typescript
+interface Sector {
+  id: string;
+  businessId: string;
+  name: string;              // "Comercial", "Suporte", "Marketing"
+  description?: string;
+  color: string;             // cor hex para badges
+  icon?: string;             // lucide icon name
+  leaderId?: string;         // uid do líder
+  leaderName?: string;
+  memberIds: string[];       // uids dos membros
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+```
+
+### Contexto via AuthProvider
+
+```typescript
+const { sectors, userSectorIds } = useAuth();
+// sectors: todos os setores do business
+// userSectorIds: IDs dos setores do usuário logado (derivado de user.sectorIds ou sector.memberIds)
+```
+
+### Filtragem por setor (padrão)
+
+```typescript
+// Admins/Founders veem tudo. Demais filtram por setor:
+if (isAdmin) return allItems;
+return allItems.filter(item => {
+  if (!item.sectorIds?.length) return true; // sem restrição
+  return item.sectorIds.some(s => userSectorIds.includes(s));
+});
+```
+
+### Onde setores são usados
+
+| Módulo | Campo | Efeito |
+|--------|-------|--------|
+| **Conversas** | `conversation.sectorIds`, `assignedToSectorId`, `isPrivate` | Filtra visibilidade de conversas por setor |
+| **Kanban** | `board.sectorIds`, `board.visibility` | Boards visíveis apenas para setores selecionados |
+| **CRM** | `crmContact.sectorId` | Contato atribuído a setor |
+| **Financeiro** | `transaction.sectorId` | Receita/despesa por departamento (enterprise) |
+| **Settings** | Tab "Setores" (admin/founder) | CRUD de setores, atribuição de membros |
+
+---
+
+## Conversas — Features Avançadas
+
+### Notas Internas
+- Mensagens com `isInternal: true` não são enviadas ao contato via Meta API
+- Renderizadas com fundo amber e ícone de cadeado
+- Toggle no composer para alternar entre "Mensagem" e "Nota interna"
+
+### Quick Replies (Snippets)
+- Coleção `snippets/{id}` com `shortcode` e `content`
+- Digitando `/` no composer abre autocomplete de snippets
+- Snippets podem ser globais ou restritos a um setor (`sectorId?`)
+
+### Prioridade e Labels
+- `conversation.priority`: 'low' | 'medium' | 'high' | 'urgent'
+- `conversation.labels`: string[] para tags personalizadas
+
+---
+
+## CRM — Campanhas e Segmentação
+
+### Lifecycle Stages
+
+```typescript
+type LifecycleStage = 'new_lead' | 'contacted' | 'qualified' | 'proposal' | 'negotiation' | 'customer' | 'churned';
+```
+
+### Segmentos Dinâmicos (`segments/{id}`)
+- Filtros AND/OR por campo do contato (status, tags, lifecycleStage, etc.)
+- Usado para selecionar audiência de broadcasts
+
+### Broadcasts (`broadcasts/{id}`)
+- Campanhas em massa via WhatsApp/Facebook/Instagram
+- Status: draft → scheduled → sending → sent (ou paused/failed)
+- API Route `/api/broadcasts/send` processa fila com throttle (`sendRate` msgs/seg)
+- Stats em tempo real: total, sent, delivered, read, failed, replied
+
+---
+
+## Financeiro Enterprise
+
+Quando `business.enterprise.isEnabled`, o módulo financeiro exibe cards adicionais:
+
+| Card | Fonte de dados |
+|------|---------------|
+| **Receita por Canal** | `transaction.channelType` (whatsapp/facebook/instagram) |
+| **Receita por Setor** | `transaction.sectorId` → nome/cor do setor |
+| **ROI de Campanhas** | `transaction.campaignId` → custo estimado vs receita |
+| **CLV Top 10** | `transaction.contactId` → valor acumulado por contato CRM |
+
+Transações com `sectorId` podem ser filtradas por departamento nos relatórios.
+
+---
+
+## Embedded Signup (Meta)
+
+### Fluxo
+1. Admin clica "Conectar com Meta" em Settings → Canais
+2. FB JS SDK carrega e abre `FB.login()` com scopes omnichannel
+3. Código é enviado para `/api/channels/meta-signup`
+4. Backend troca código por token de acesso via Graph API
+5. Retorna credenciais (WhatsApp WABA, Facebook Page, Instagram)
+6. Frontend salva em `businesses/{businessId}.channels`
+
+### Variáveis de ambiente necessárias
+```env
+NEXT_PUBLIC_META_APP_ID=         # FB SDK client-side
+META_APP_SECRET=                 # Token exchange server-side
+META_CONFIG_ID=                  # Login for Business config
+```
 
 ---
 
@@ -635,18 +721,10 @@ O user dropdown tem um picker interativo de status que substitui o antigo "Onlin
 - Persiste via `updateUserProfile({ userStatus: status })`
 - O `TeamPresencePanel` atualiza automaticamente via `onSnapshot` — sem polling
 
-### `STATUS_CFG` — configuração de cores por status (TopBar)
+### `STATUS_CFG` — cores por status
 
-Definido localmente em `TopBar.tsx`:
-```typescript
-const STATUS_CFG: Record<UserStatus, { label: string; dot: string; text: string; bg: string }> = {
-  online:    { label: 'Online',    dot: 'bg-emerald-400', text: 'text-emerald-700 ...', bg: 'bg-emerald-50 ...' },
-  busy:      { label: 'Ocupado',   dot: 'bg-amber-400',   text: 'text-amber-700 ...',   bg: 'bg-amber-50 ...'   },
-  invisible: { label: 'Invisível', dot: 'bg-gray-400',    text: 'text-gray-500 ...',    bg: 'bg-gray-100 ...'   },
-  offline:   { label: 'Offline',   dot: 'bg-gray-400',    text: 'text-gray-500 ...',    bg: 'bg-gray-100 ...'   },
-};
-```
-Existe uma cópia similar em `DashboardModule.tsx` (`STATUS_OPTIONS` array) e `SettingsModule.tsx` (`STATUS_OPTIONS` array). Se criar novos locais de exibição de status, mantenha o mesmo padrão de cores para consistência.
+Definido em `TopBar.tsx`, `DashboardModule.tsx` e `SettingsModule.tsx` (manter consistente):
+- online: emerald-400/50/700 | busy: amber-400/50/700 | invisible/offline: gray-400/100/500
 
 ---
 
@@ -683,6 +761,11 @@ Sem essas vars, o app usa valores demo (`demo-api-key` etc.) e não conecta ao F
 | `crmDeals` | `businessId` | auto |
 | `fiscalDocuments` | `businessId` | auto |
 | `saasApiKeys` | `businessId` | auto |
+| `sectors` | `businessId` | auto |
+| `snippets` | `businessId` | auto |
+| `segments` | `businessId` | auto |
+| `broadcasts` | `businessId` | auto |
+| `broadcastMessages` | `businessId` + `broadcastId` | auto |
 
 ---
 
@@ -799,75 +882,6 @@ app/api/integrations/
 
 Cada rota recebe a API key via header `x-api-key` e retorna dados estruturados para o dashboard.
 
-### Componentes — Arquitetura por Função
+### Arquitetura
 
-O módulo de integrações é organizado por **função** (não por provedor), pensado para a rotina de um time de 3-5 pessoas de SaaS:
-
-```
-app/components/features/
-├── integrations/
-│   ├── IntegrationsModule.tsx        ← Orquestrador principal com tabs por categoria
-│   ├── tabs/
-│   │   ├── OverviewTab.tsx           ← "Morning glance" — KPIs consolidados, activity feed, team snapshot
-│   │   ├── RevenueTab.tsx            ← Stripe — MRR multi-produto, churn, cash flow, projeções
-│   │   ├── AICostsTab.tsx            ← OpenAI + Anthropic — budget unificado, custo por produto/membro
-│   │   ├── DevelopmentTab.tsx        ← GitHub + Vercel — velocity, deploys, PRs por membro
-│   │   ├── CommunicationTab.tsx      ← Resend + Discord — email performance, community
-│   │   └── TeamTab.tsx               ← Per-member metrics, cost attribution, activity timeline
-│   └── shared/
-│       ├── KPICard.tsx               ← Card reutilizável com budget bar opcional
-│       ├── IntegrationSkeleton.tsx   ← Loading skeleton
-│       ├── DemoDataBanner.tsx        ← Banner de dados demo
-│       ├── ProgressBar.tsx           ← Barras de progresso animadas
-│       └── utils.ts                  ← formatCurrency, formatUSD, formatNumber, timeAgo, etc.
-└── settings/
-    └── SettingsModule.tsx            ← Aba Enterprise com toggle, config de API keys e geração de chaves
-```
-
-### Tabs do Dashboard Enterprise
-
-| Tab | Fontes | O que mostra |
-|-----|--------|--------------|
-| **Visão Geral** | Todas | KPIs consolidados, activity feed cross-integration, team snapshot, budget alerts |
-| **Receita** | Stripe | MRR por produto, ARR, churn rate, subscription funnel, cash flow, projeções |
-| **IA & Custos** | OpenAI + Anthropic | Budget unificado, custo por produto/membro, model usage matrix, insights de otimização |
-| **Desenvolvimento** | GitHub + Vercel | Sprint velocity, deploy pipeline, PRs, commits por membro, repo health |
-| **Comunicação** | Resend + Discord | Email funnel, delivery rate, community members, channels |
-| **Equipe** | Todas + Firestore | Per-member cards com stats semanais, cost attribution table, activity timeline |
-
-### Sidebar
-
-O item **Integrações** aparece na seção "Gestão" com badge "Pro" (gradiente violeta). O `MenuPage` type inclui `'Integrações'`.
-
-### Tipos Principais (em `lib/types/index.ts`)
-
-```typescript
-IntegrationProvider  → 'stripe' | 'openai' | 'anthropic' | 'github' | 'vercel' | 'resend' | 'discord'
-IntegrationConfig    → provider, apiKey, isActive, status, connectedAt, lastSyncAt
-EnterpriseSettings   → isEnabled, enabledAt, integrations[], apiKeys[]
-SaasApiKey           → id, name, keyPrefix, keyHash, scopes[], status, expiresAt
-ApiKeyScope          → 'read:clients' | 'write:clients' | ... | 'admin:all'
-INTEGRATION_PROVIDERS → constante com config visual de cada provedor (cor, ícone, campos)
-API_KEY_SCOPES       → constante com labels/descriptions de cada scope
-```
-
-### Team Context
-
-O IntegrationsModule busca membros do Firestore via `onSnapshot` para exibir dados de equipe em tempo real:
-```typescript
-const q = query(collection(db, 'users'), where('businessId', '==', business.id));
-const unsub = onSnapshot(q, (snap) => {
-  setMembers(snap.docs.map(d => ({ ...d.data(), id: d.id } as User)));
-});
-```
-Os membros são passados como prop para todos os tabs que precisam de contexto de equipe.
-
-### Módulo de Configurações — 5 Abas (atualizado)
-
-| Aba | ID | Quem vê | Conteúdo |
-|-----|----|---------|----------|
-| **Meu Perfil** | `perfil` | Todos | Foto, nome, telefone, endereço, status |
-| **Empresa** | `empresa` | admin / founder | Dados da empresa, logo, CNPJ |
-| **Fiscal** | `fiscal` | admin / founder | Certificado digital, config NFe/NFCe/NFSe |
-| **Usuários** | `usuarios` | admin / founder | Membros, códigos de convite |
-| **Enterprise** | `enterprise` | admin / founder | Toggle enterprise, API keys de integrações, API keys do ServicePro |
+Organizado por **função** em `integrations/tabs/` (OverviewTab, RevenueTab, AICostsTab, DevelopmentTab, CommunicationTab, TeamTab) + `integrations/shared/` (KPICard, ProgressBar, utils). O item "Integrações" aparece na sidebar com badge "Pro" (gradiente violeta). `MenuPage` inclui `'Integrações'`. O IntegrationsModule busca membros via `onSnapshot` e passa como prop para todos os tabs.

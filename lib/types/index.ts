@@ -24,6 +24,7 @@ export interface User {
   photoURL?: string;
   role: UserRole;
   businessId: string;
+  sectorIds?: string[];
   isActive: boolean;
   isOnline?: boolean;
   userStatus?: UserStatus;
@@ -109,6 +110,10 @@ export interface WhatsAppChannelConfig {
   businessAccountId: string;
   accessToken: string; // btoa encrypted
   isConnected: boolean;
+  wabaId?: string;
+  displayName?: string;
+  phoneNumber?: string;
+  tokenExpiresAt?: string;
 }
 
 export interface FacebookChannelConfig {
@@ -134,6 +139,7 @@ export interface ChannelCredentials {
   facebook?: FacebookChannelConfig;
   instagram?: InstagramChannelConfig;
   meta?: MetaAppConfig;
+  connectedVia?: 'embedded_signup' | 'manual';
 }
 
 export const COMPANY_TYPE_LABELS: Record<string, string> = {
@@ -212,6 +218,7 @@ export interface InviteCode {
   businessId: string;
   code: string;
   role: UserRole;
+  sectorId?: string;
   createdBy: string;       // uid
   createdByName: string;
   usedBy?: string;
@@ -375,6 +382,9 @@ export interface Sale {
   notes?: string;
   operatorId: string;
   operatorName: string;
+  channelType?: ConversationChannel;
+  conversationId?: string;
+  sectorId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -402,6 +412,11 @@ export interface Transaction {
   businessUnitId?: string;
   costCenter?: string;
   notes?: string;
+  channelType?: ConversationChannel;
+  conversationId?: string;
+  contactId?: string;
+  campaignId?: string;
+  sectorId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -605,6 +620,8 @@ export interface DashboardMetrics {
 // ---- Kanban ----
 export type KanbanPriority = 'urgent' | 'high' | 'medium' | 'low';
 
+export type KanbanVisibility = 'all' | 'members' | 'sectors';
+
 export interface KanbanBoard {
   id: string;
   businessId: string;
@@ -613,6 +630,8 @@ export interface KanbanBoard {
   color: string;
   columns: KanbanColumn[];
   memberIds: string[];
+  sectorIds?: string[];
+  visibility: KanbanVisibility;
   createdBy: string;
   isArchived: boolean;
   createdAt: string;
@@ -668,6 +687,8 @@ export type CRMActivityType = 'ligacao' | 'email' | 'reuniao' | 'whatsapp' | 'ta
 export type IntegrationStatus = 'connected' | 'disconnected' | 'error' | 'pending';
 export type IntegrationCategory = 'messaging' | 'social' | 'payment' | 'email' | 'analytics' | 'automation' | 'calendar';
 
+export type LifecycleStage = 'new_lead' | 'contacted' | 'qualified' | 'proposal' | 'negotiation' | 'customer' | 'churned';
+
 export interface CRMContact {
   id: string;
   businessId: string;
@@ -691,6 +712,19 @@ export interface CRMContact {
   notes?: string;
   lastContactDate?: string;
   clientId?: string;
+  lifecycleStage?: LifecycleStage;
+  channelIdentities?: {
+    whatsapp?: string;
+    facebook?: string;
+    instagram?: string;
+  };
+  preferredChannel?: ConversationChannel;
+  lastConversationId?: string;
+  lastConversationAt?: string;
+  customFields?: Record<string, string | number | boolean>;
+  sectorId?: string;
+  optInMarketing?: boolean;
+  optInAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -782,6 +816,12 @@ export interface Conversation {
   unreadCount: number;
   assignedTo?: string;
   assignedToName?: string;
+  sectorIds?: string[];
+  assignedToSectorId?: string;
+  isPrivate?: boolean;
+  priority?: 'low' | 'medium' | 'high' | 'urgent';
+  labels?: string[];
+  internalNotes?: number;
   tags?: string[];
   createdAt: string;
   updatedAt: string;
@@ -799,6 +839,8 @@ export interface ConversationMessage {
   senderName?: string;
   mediaUrl?: string;
   mediaType?: 'image' | 'audio' | 'video' | 'document';
+  isInternal?: boolean;
+  mentionedUserIds?: string[];
   sentAt: string;
   deliveredAt?: string;
   readAt?: string;
@@ -1005,4 +1047,157 @@ export const API_KEY_SCOPES: Record<ApiKeyScope, { label: string; description: s
   'read:sales': { label: 'Ler Vendas', description: 'Acessar histórico de vendas' },
   'write:sales': { label: 'Escrever Vendas', description: 'Criar e editar vendas' },
   'admin:all': { label: 'Administrador', description: 'Acesso total a todos os recursos' },
+};
+
+// ============================================
+// Sectors / Departments
+// ============================================
+
+export interface Sector {
+  id: string;
+  businessId: string;
+  name: string;
+  description?: string;
+  color: string;
+  icon?: string;
+  leaderId?: string;
+  leaderName?: string;
+  memberIds: string[];
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const SECTOR_COLORS = [
+  '#DC2626', '#EA580C', '#D97706', '#CA8A04',
+  '#65A30D', '#16A34A', '#0D9488', '#0891B2',
+  '#2563EB', '#4F46E5', '#7C3AED', '#9333EA',
+  '#C026D3', '#DB2777', '#E11D48', '#64748B',
+] as const;
+
+export const SECTOR_ICONS = [
+  'Briefcase', 'HeadphonesIcon', 'Megaphone', 'Code',
+  'DollarSign', 'Heart', 'Truck', 'ShoppingCart',
+  'Users', 'Settings', 'Shield', 'Zap',
+] as const;
+
+// ============================================
+// Quick Replies / Snippets
+// ============================================
+
+export interface Snippet {
+  id: string;
+  businessId: string;
+  shortcode: string;
+  content: string;
+  category?: string;
+  sectorId?: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ============================================
+// CRM Segments
+// ============================================
+
+export type SegmentFilterOperator = 'eq' | 'neq' | 'contains' | 'not_contains' | 'gt' | 'lt' | 'in' | 'not_in';
+
+export interface SegmentFilter {
+  field: string;
+  operator: SegmentFilterOperator;
+  value: string | string[] | number | boolean;
+}
+
+export interface Segment {
+  id: string;
+  businessId: string;
+  name: string;
+  description?: string;
+  filters: SegmentFilter[];
+  contactCount?: number;
+  lastCalculatedAt?: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ============================================
+// Broadcasts / Campaigns
+// ============================================
+
+export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent' | 'paused' | 'failed';
+export type BroadcastAudienceType = 'segment' | 'tags' | 'all_contacts' | 'manual';
+
+export interface BroadcastStats {
+  total: number;
+  sent: number;
+  delivered: number;
+  read: number;
+  failed: number;
+  replied: number;
+}
+
+export interface Broadcast {
+  id: string;
+  businessId: string;
+  name: string;
+  channel: ConversationChannel;
+  audienceType: BroadcastAudienceType;
+  audienceSegmentId?: string;
+  audienceTags?: string[];
+  audienceContactIds?: string[];
+  messageType: 'template' | 'text';
+  templateName?: string;
+  templateLanguage?: string;
+  templateParams?: unknown[];
+  messageContent?: string;
+  scheduledAt?: string;
+  sendRate?: number;
+  status: BroadcastStatus;
+  stats: BroadcastStats;
+  createdBy: string;
+  createdByName: string;
+  startedAt?: string;
+  completedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type BroadcastMessageStatus = 'pending' | 'sent' | 'delivered' | 'read' | 'failed';
+
+export interface BroadcastMessage {
+  id: string;
+  broadcastId: string;
+  businessId: string;
+  contactId: string;
+  contactName: string;
+  recipientId: string;
+  status: BroadcastMessageStatus;
+  externalMessageId?: string;
+  errorMessage?: string;
+  sentAt?: string;
+  deliveredAt?: string;
+  readAt?: string;
+  createdAt: string;
+}
+
+export const LIFECYCLE_STAGE_LABELS: Record<LifecycleStage, string> = {
+  new_lead: 'Novo Lead',
+  contacted: 'Contatado',
+  qualified: 'Qualificado',
+  proposal: 'Proposta',
+  negotiation: 'Negociação',
+  customer: 'Cliente',
+  churned: 'Perdido',
+};
+
+export const LIFECYCLE_STAGE_COLORS: Record<LifecycleStage, string> = {
+  new_lead: '#3B82F6',
+  contacted: '#8B5CF6',
+  qualified: '#F59E0B',
+  proposal: '#EC4899',
+  negotiation: '#F97316',
+  customer: '#10B981',
+  churned: '#EF4444',
 };

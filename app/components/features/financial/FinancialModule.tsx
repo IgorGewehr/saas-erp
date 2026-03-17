@@ -41,6 +41,11 @@ import {
   ArrowRightLeft,
   Eye,
   EyeOff,
+  Layers,
+  MessageSquare,
+  Target,
+  Users,
+  Crown,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -74,6 +79,10 @@ import type {
   PaymentMethod,
   BankAccount,
   BankAccountType,
+  Sector,
+  Broadcast,
+  ConversationChannel,
+  CRMContact,
 } from '@/lib/types';
 
 // ==========================================
@@ -121,8 +130,9 @@ const inputSx = { '& .MuiOutlinedInput-root': { borderRadius: '12px' } };
 
 export default function FinancialModule() {
   const { isDark } = useTheme();
-  const { business } = useAuth();
+  const { business, user, sectors } = useAuth();
   const queryClient = useQueryClient();
+  const isEnterprise = !!business?.enterprise?.isEnabled;
 
   const [activeTab, setActiveTab] = useState<FinancialTab>('visao-geral');
   const [showForm, setShowForm] = useState(false);
@@ -157,6 +167,9 @@ export default function FinancialModule() {
   const [bankBalance, setBankBalance] = useState('');
   const [bankColor, setBankColor] = useState('#3B82F6');
   const [bankIsMain, setBankIsMain] = useState(false);
+
+  // Sector form (enterprise)
+  const [formSectorId, setFormSectorId] = useState('');
 
   // Transactions tab state
   const [txFilterTab, setTxFilterTab] = useState<'todas' | 'receitas' | 'despesas' | 'pendentes' | 'atrasadas'>('todas');
@@ -195,6 +208,38 @@ export default function FinancialModule() {
     },
     enabled: !!business?.id,
     staleTime: 2 * 60 * 1000,
+  });
+
+  // ---- Enterprise Queries ----
+  const { data: broadcasts = [] } = useTanstackQuery({
+    queryKey: ['broadcasts', business?.id],
+    queryFn: async () => {
+      if (!business?.id) return [];
+      const q = query(
+        collection(db, 'broadcasts'),
+        where('businessId', '==', business.id),
+        orderBy('createdAt', 'desc')
+      );
+      const snap = await getDocs(q);
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Broadcast));
+    },
+    enabled: !!business?.id && isEnterprise,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const { data: crmContacts = [] } = useTanstackQuery({
+    queryKey: ['crmContacts', business?.id],
+    queryFn: async () => {
+      if (!business?.id) return [];
+      const q = query(
+        collection(db, 'crmContacts'),
+        where('businessId', '==', business.id)
+      );
+      const snap = await getDocs(q);
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as CRMContact));
+    },
+    enabled: !!business?.id && isEnterprise,
+    staleTime: 5 * 60 * 1000,
   });
 
   // ---- Computed ----
@@ -314,6 +359,7 @@ export default function FinancialModule() {
     setFormClientName('');
     setFormBankAccount('');
     setFormStatus('pendente');
+    setFormSectorId('');
     setShowForm(true);
   }, []);
 
@@ -330,6 +376,7 @@ export default function FinancialModule() {
     setFormClientName(transaction.clientName || '');
     setFormBankAccount(transaction.bankAccountId || '');
     setFormStatus(transaction.status);
+    setFormSectorId(transaction.sectorId || '');
     setShowForm(true);
   }, []);
 
@@ -356,6 +403,7 @@ export default function FinancialModule() {
         notes: formNotes || null,
         clientName: formClientName || null,
         bankAccountId: formBankAccount || null,
+        sectorId: formSectorId || null,
         updatedAt: now,
       };
 
@@ -379,7 +427,7 @@ export default function FinancialModule() {
     } finally {
       setIsSaving(false);
     }
-  }, [business?.id, formType, formDescription, formCategory, formAmount, formDueDate, formPaymentDate, formPaymentMethod, formNotes, formClientName, formBankAccount, formStatus, editingTransaction, queryClient]);
+  }, [business?.id, formType, formDescription, formCategory, formAmount, formDueDate, formPaymentDate, formPaymentMethod, formNotes, formClientName, formBankAccount, formStatus, formSectorId, editingTransaction, queryClient]);
 
   const handleDeleteTransaction = useCallback(async (id: string) => {
     if (!business?.id) return;
@@ -624,6 +672,10 @@ export default function FinancialModule() {
                 monthlyData={monthlyData}
                 expenseBreakdown={expenseBreakdown}
                 transactions={transactions}
+                isEnterprise={isEnterprise}
+                sectors={sectors}
+                broadcasts={broadcasts}
+                crmContacts={crmContacts}
               />
             )}
 
@@ -737,6 +789,23 @@ export default function FinancialModule() {
                 </Select>
               </FormControl>
             </div>
+
+            {isEnterprise && sectors.length > 0 && (
+              <FormControl fullWidth size="small">
+                <InputLabel>Setor (opcional)</InputLabel>
+                <Select value={formSectorId} onChange={(e) => setFormSectorId(e.target.value)} label="Setor (opcional)" sx={{ borderRadius: '12px' }}>
+                  <MenuItem value=""><em>Nenhum</em></MenuItem>
+                  {sectors.filter(s => s.isActive).map((s) => (
+                    <MenuItem key={s.id} value={s.id}>
+                      <div className="flex items-center gap-2">
+                        <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: s.color }} />
+                        {s.name}
+                      </div>
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            )}
 
             <TextField label="Observacoes" value={formNotes} onChange={(e) => setFormNotes(e.target.value)} fullWidth multiline rows={2} size="small" sx={inputSx} />
           </div>
@@ -916,6 +985,10 @@ function OverviewContent({
   monthlyData,
   expenseBreakdown,
   transactions,
+  isEnterprise,
+  sectors,
+  broadcasts,
+  crmContacts,
 }: {
   metrics: { receitas: number; despesas: number; lucro: number; aReceber: number; aPagar: number; totalContas: number };
   showBalances: boolean;
@@ -925,6 +998,10 @@ function OverviewContent({
   monthlyData: { month: string; receitas: number; despesas: number; saldo: number }[];
   expenseBreakdown: { name: string; amount: number; color: string; percentage: number }[];
   transactions: Transaction[];
+  isEnterprise: boolean;
+  sectors: Sector[];
+  broadcasts: Broadcast[];
+  crmContacts: CRMContact[];
 }) {
   const hiddenValue = '******';
 
@@ -1113,6 +1190,349 @@ function OverviewContent({
           </div>
         )}
       </motion.div>
+
+      {/* ===== ENTERPRISE SECTION ===== */}
+      {isEnterprise && (
+        <EnterpriseFinancialCards
+          transactions={transactions}
+          sectors={sectors}
+          broadcasts={broadcasts}
+          crmContacts={crmContacts}
+          showBalances={showBalances}
+          isDark={isDark}
+        />
+      )}
+    </div>
+  );
+}
+
+// ==========================================
+// ENTERPRISE FINANCIAL CARDS
+// ==========================================
+
+const CHANNEL_LABELS: Record<string, string> = {
+  whatsapp: 'WhatsApp',
+  facebook: 'Facebook',
+  instagram: 'Instagram',
+};
+const CHANNEL_COLORS: Record<string, string> = {
+  whatsapp: '#25D366',
+  facebook: '#1877F2',
+  instagram: '#E4405F',
+};
+
+function EnterpriseFinancialCards({
+  transactions,
+  sectors,
+  broadcasts,
+  crmContacts,
+  showBalances,
+  isDark,
+}: {
+  transactions: Transaction[];
+  sectors: Sector[];
+  broadcasts: Broadcast[];
+  crmContacts: CRMContact[];
+  showBalances: boolean;
+  isDark: boolean;
+}) {
+  const hiddenValue = '******';
+
+  // Revenue by Channel
+  const revenueByChannel = useMemo(() => {
+    const channels: Record<string, number> = {};
+    transactions
+      .filter(t => t.type === 'receita' && t.status === 'pago' && t.channelType)
+      .forEach(t => {
+        const ch = t.channelType!;
+        channels[ch] = (channels[ch] || 0) + t.amount;
+      });
+    const total = Object.values(channels).reduce((s, v) => s + v, 0);
+    return Object.entries(channels)
+      .sort(([, a], [, b]) => b - a)
+      .map(([channel, amount]) => ({
+        channel,
+        label: CHANNEL_LABELS[channel] || channel,
+        amount,
+        color: CHANNEL_COLORS[channel] || '#6B7280',
+        percentage: total > 0 ? parseFloat(((amount / total) * 100).toFixed(1)) : 0,
+      }));
+  }, [transactions]);
+
+  // Revenue by Sector
+  const revenueBySector = useMemo(() => {
+    const sectorMap: Record<string, number> = {};
+    transactions
+      .filter(t => t.type === 'receita' && t.status === 'pago' && t.sectorId)
+      .forEach(t => {
+        sectorMap[t.sectorId!] = (sectorMap[t.sectorId!] || 0) + t.amount;
+      });
+    return Object.entries(sectorMap)
+      .sort(([, a], [, b]) => b - a)
+      .map(([sectorId, amount]) => {
+        const sector = sectors.find(s => s.id === sectorId);
+        return {
+          sectorId,
+          name: sector?.name || 'Desconhecido',
+          color: sector?.color || '#6B7280',
+          amount,
+        };
+      });
+  }, [transactions, sectors]);
+
+  // Campaign ROI
+  const campaignROI = useMemo(() => {
+    const META_MSG_COST = 0.05; // approximate cost per WhatsApp template message in USD
+    return broadcasts
+      .filter(b => b.status === 'sent')
+      .slice(0, 5)
+      .map(b => {
+        const cost = b.stats.sent * META_MSG_COST;
+        // Revenue attributed to this campaign
+        const revenue = transactions
+          .filter(t => t.type === 'receita' && t.status === 'pago' && t.campaignId === b.id)
+          .reduce((s, t) => s + t.amount, 0);
+        const roi = cost > 0 ? ((revenue - cost) / cost) * 100 : 0;
+        return {
+          id: b.id,
+          name: b.name,
+          channel: b.channel,
+          sent: b.stats.sent,
+          delivered: b.stats.delivered,
+          read: b.stats.read,
+          cost,
+          revenue,
+          roi,
+        };
+      });
+  }, [broadcasts, transactions]);
+
+  // CLV Top 10
+  const clvTop10 = useMemo(() => {
+    const contactRevenue: Record<string, { name: string; total: number; count: number }> = {};
+    transactions
+      .filter(t => t.type === 'receita' && t.status === 'pago' && t.contactId)
+      .forEach(t => {
+        if (!contactRevenue[t.contactId!]) {
+          const contact = crmContacts.find(c => c.id === t.contactId);
+          contactRevenue[t.contactId!] = { name: contact?.name || t.clientName || 'Desconhecido', total: 0, count: 0 };
+        }
+        contactRevenue[t.contactId!].total += t.amount;
+        contactRevenue[t.contactId!].count += 1;
+      });
+    return Object.entries(contactRevenue)
+      .sort(([, a], [, b]) => b.total - a.total)
+      .slice(0, 10)
+      .map(([contactId, data]) => ({ contactId, ...data }));
+  }, [transactions, crmContacts]);
+
+  const hasAnyData = revenueByChannel.length > 0 || revenueBySector.length > 0 || campaignROI.length > 0 || clvTop10.length > 0;
+
+  if (!hasAnyData) return null;
+
+  return (
+    <div className="space-y-6 mt-6">
+      {/* Enterprise Section Header */}
+      <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6 }}
+        className="flex items-center gap-3"
+      >
+        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center">
+          <Crown size={16} className="text-white" />
+        </div>
+        <div>
+          <h2 className="text-lg font-display font-bold text-slate-900 dark:text-gray-100">Relatorios Enterprise</h2>
+          <p className="text-xs text-slate-400 dark:text-gray-500">Atribuicao de receita por canal, setor e campanha</p>
+        </div>
+      </motion.div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Revenue by Channel */}
+        {revenueByChannel.length > 0 && (
+          <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.65 }}
+            className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-6 hover:shadow-md transition-all"
+          >
+            <div className="flex items-center gap-2 mb-4">
+              <div className="w-8 h-8 rounded-lg bg-blue-50 dark:bg-blue-500/10 flex items-center justify-center">
+                <MessageSquare size={16} className="text-blue-600 dark:text-blue-400" />
+              </div>
+              <div>
+                <h3 className="text-sm font-display font-bold text-slate-900 dark:text-gray-100">Receita por Canal</h3>
+                <p className="text-[11px] text-slate-400 dark:text-gray-500">Origem omnichannel</p>
+              </div>
+            </div>
+            <div className="space-y-3">
+              {revenueByChannel.map((ch) => (
+                <div key={ch.channel} className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: ch.color }} />
+                    <span className="text-sm text-slate-700 dark:text-gray-300 truncate">{ch.label}</span>
+                  </div>
+                  <div className="flex items-center gap-3 flex-shrink-0">
+                    <span className="text-[11px] text-slate-400 dark:text-gray-500">{ch.percentage}%</span>
+                    <span className="text-sm font-bold text-slate-900 dark:text-gray-100 w-28 text-right">
+                      {showBalances ? formatCurrency(ch.amount) : hiddenValue}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {/* Mini bar chart */}
+            <div className="flex gap-1 mt-4 h-2 rounded-full overflow-hidden bg-slate-100 dark:bg-gray-800">
+              {revenueByChannel.map((ch) => (
+                <div key={ch.channel} className="h-full rounded-full transition-all" style={{ width: `${ch.percentage}%`, backgroundColor: ch.color }} />
+              ))}
+            </div>
+          </motion.div>
+        )}
+
+        {/* Revenue by Sector */}
+        {revenueBySector.length > 0 && (
+          <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.7 }}
+            className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-6 hover:shadow-md transition-all"
+          >
+            <div className="flex items-center gap-2 mb-4">
+              <div className="w-8 h-8 rounded-lg bg-violet-50 dark:bg-violet-500/10 flex items-center justify-center">
+                <Layers size={16} className="text-violet-600 dark:text-violet-400" />
+              </div>
+              <div>
+                <h3 className="text-sm font-display font-bold text-slate-900 dark:text-gray-100">Receita por Setor</h3>
+                <p className="text-[11px] text-slate-400 dark:text-gray-500">Performance por departamento</p>
+              </div>
+            </div>
+            <div className="space-y-3">
+              {revenueBySector.map((s, i) => {
+                const maxAmount = revenueBySector[0]?.amount || 1;
+                return (
+                  <div key={s.sectorId}>
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: s.color }} />
+                        <span className="text-sm text-slate-700 dark:text-gray-300">{s.name}</span>
+                      </div>
+                      <span className="text-sm font-bold text-slate-900 dark:text-gray-100">
+                        {showBalances ? formatCurrency(s.amount) : hiddenValue}
+                      </span>
+                    </div>
+                    <div className="w-full h-1.5 bg-slate-100 dark:bg-gray-800 rounded-full overflow-hidden">
+                      <motion.div
+                        initial={{ width: 0 }}
+                        animate={{ width: `${(s.amount / maxAmount) * 100}%` }}
+                        transition={{ duration: 0.6, delay: i * 0.1 }}
+                        className="h-full rounded-full"
+                        style={{ backgroundColor: s.color }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </motion.div>
+        )}
+      </div>
+
+      {/* Campaign ROI */}
+      {campaignROI.length > 0 && (
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.75 }}
+          className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl overflow-hidden"
+        >
+          <div className="px-6 py-4 border-b border-slate-100 dark:border-gray-800">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-emerald-50 dark:bg-emerald-500/10 flex items-center justify-center">
+                <Target size={16} className="text-emerald-600 dark:text-emerald-400" />
+              </div>
+              <div>
+                <h3 className="text-sm font-display font-bold text-slate-900 dark:text-gray-100">ROI de Campanhas</h3>
+                <p className="text-[11px] text-slate-400 dark:text-gray-500">Custo vs receita gerada pelas ultimas campanhas</p>
+              </div>
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="text-left">
+                  <th className="px-5 py-3 text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider">Campanha</th>
+                  <th className="px-5 py-3 text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider">Canal</th>
+                  <th className="px-5 py-3 text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider text-right">Enviadas</th>
+                  <th className="px-5 py-3 text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider text-right">Custo Est.</th>
+                  <th className="px-5 py-3 text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider text-right">Receita</th>
+                  <th className="px-5 py-3 text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider text-right">ROI</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50 dark:divide-gray-800">
+                {campaignROI.map((c) => (
+                  <tr key={c.id} className="hover:bg-slate-50/50 dark:hover:bg-white/[0.02] transition-colors">
+                    <td className="px-5 py-3 text-sm font-medium text-slate-800 dark:text-gray-200 truncate max-w-[200px]">{c.name}</td>
+                    <td className="px-5 py-3">
+                      <span className="text-[11px] font-medium px-2.5 py-1 rounded-full" style={{
+                        backgroundColor: (CHANNEL_COLORS[c.channel] || '#6B7280') + '15',
+                        color: CHANNEL_COLORS[c.channel] || '#6B7280',
+                      }}>
+                        {CHANNEL_LABELS[c.channel] || c.channel}
+                      </span>
+                    </td>
+                    <td className="px-5 py-3 text-sm text-slate-600 dark:text-gray-400 text-right">{c.sent.toLocaleString('pt-BR')}</td>
+                    <td className="px-5 py-3 text-sm text-slate-600 dark:text-gray-400 text-right">
+                      {showBalances ? `US$ ${c.cost.toFixed(2)}` : hiddenValue}
+                    </td>
+                    <td className="px-5 py-3 text-sm font-bold text-emerald-600 dark:text-emerald-400 text-right">
+                      {showBalances ? formatCurrency(c.revenue) : hiddenValue}
+                    </td>
+                    <td className="px-5 py-3 text-right">
+                      <span className={cn('text-sm font-bold', c.roi >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+                        {c.roi >= 0 ? '+' : ''}{c.roi.toFixed(0)}%
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </motion.div>
+      )}
+
+      {/* CLV Top 10 */}
+      {clvTop10.length > 0 && (
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.8 }}
+          className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl overflow-hidden"
+        >
+          <div className="px-6 py-4 border-b border-slate-100 dark:border-gray-800">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center">
+                <Users size={16} className="text-amber-600 dark:text-amber-400" />
+              </div>
+              <div>
+                <h3 className="text-sm font-display font-bold text-slate-900 dark:text-gray-100">CLV Top 10</h3>
+                <p className="text-[11px] text-slate-400 dark:text-gray-500">Contatos com maior valor acumulado</p>
+              </div>
+            </div>
+          </div>
+          <div className="divide-y divide-slate-50 dark:divide-gray-800">
+            {clvTop10.map((c, i) => {
+              const maxTotal = clvTop10[0]?.total || 1;
+              return (
+                <div key={c.contactId} className="flex items-center gap-4 px-6 py-3 hover:bg-slate-50/50 dark:hover:bg-white/[0.02] transition-colors">
+                  <span className="text-[11px] font-bold text-slate-400 dark:text-gray-500 w-5 text-center">{i + 1}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-slate-800 dark:text-gray-200 truncate">{c.name}</p>
+                    <p className="text-[11px] text-slate-400 dark:text-gray-500">{c.count} transac{c.count !== 1 ? 'oes' : 'ao'}</p>
+                  </div>
+                  <div className="w-24 h-1.5 bg-slate-100 dark:bg-gray-800 rounded-full overflow-hidden flex-shrink-0">
+                    <motion.div
+                      initial={{ width: 0 }}
+                      animate={{ width: `${(c.total / maxTotal) * 100}%` }}
+                      transition={{ duration: 0.5, delay: i * 0.05 }}
+                      className="h-full rounded-full bg-gradient-to-r from-amber-400 to-amber-500"
+                    />
+                  </div>
+                  <span className="text-sm font-bold text-slate-900 dark:text-gray-100 flex-shrink-0 w-28 text-right">
+                    {showBalances ? formatCurrency(c.total) : hiddenValue}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </motion.div>
+      )}
     </div>
   );
 }

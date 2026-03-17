@@ -64,9 +64,13 @@ import {
   MessageCircle,
   Camera,
   Plug2,
+  Layers,
+  Palette,
+  UserMinus,
+  Edit3,
 } from 'lucide-react';
-import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope } from '@/lib/types';
-import { ROLE_LABELS, ROLE_HIERARCHY, USER_STATUS_LABELS, INTEGRATION_PROVIDERS, API_KEY_SCOPES } from '@/lib/types';
+import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector } from '@/lib/types';
+import { ROLE_LABELS, ROLE_HIERARCHY, USER_STATUS_LABELS, INTEGRATION_PROVIDERS, API_KEY_SCOPES, SECTOR_COLORS } from '@/lib/types';
 import { formatDate } from '@/lib/utils/format';
 import { encryptToken, decryptToken } from '@/lib/utils/encryption';
 import {
@@ -82,7 +86,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'enterprise' | 'canais';
+type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'setores' | 'enterprise' | 'canais';
 
 interface CertStatus {
   hasCertificate: boolean;
@@ -2189,6 +2193,469 @@ function IntegrationRow({
   );
 }
 
+// ─── Sectors Tab ──────────────────────────────────────────────────────────────
+
+function SectorsTab() {
+  const { user, business, refreshUser } = useAuth();
+  const [sectors, setSectors] = useState<Sector[]>([]);
+  const [members, setMembers] = useState<UserType[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  // Form state
+  const [showForm, setShowForm] = useState(false);
+  const [editingSector, setEditingSector] = useState<Sector | null>(null);
+  const [formName, setFormName] = useState('');
+  const [formDescription, setFormDescription] = useState('');
+  const [formColor, setFormColor] = useState<string>(SECTOR_COLORS[0]);
+  const [formLeaderId, setFormLeaderId] = useState('');
+  const [formMemberIds, setFormMemberIds] = useState<string[]>([]);
+  const [deleteConfirm, setDeleteConfirm] = useState<Sector | null>(null);
+
+  // Load sectors and members
+  useEffect(() => {
+    if (!business?.id) return;
+    const qSectors = query(collection(db, 'sectors'), where('businessId', '==', business.id));
+    const unsub = onSnapshot(qSectors, (snap) => {
+      setSectors(snap.docs.map(d => ({ ...d.data(), id: d.id } as Sector)));
+      setLoading(false);
+    });
+    return () => unsub();
+  }, [business?.id]);
+
+  useEffect(() => {
+    if (!business?.id) return;
+    const qMembers = query(collection(db, 'users'), where('businessId', '==', business.id));
+    const unsub = onSnapshot(qMembers, (snap) => {
+      setMembers(snap.docs.map(d => ({ ...d.data(), id: d.id } as UserType)));
+    });
+    return () => unsub();
+  }, [business?.id]);
+
+  const resetForm = () => {
+    setFormName('');
+    setFormDescription('');
+    setFormColor(SECTOR_COLORS[0]);
+    setFormLeaderId('');
+    setFormMemberIds([]);
+    setEditingSector(null);
+    setShowForm(false);
+  };
+
+  const openEdit = (sector: Sector) => {
+    setEditingSector(sector);
+    setFormName(sector.name);
+    setFormDescription(sector.description || '');
+    setFormColor(sector.color);
+    setFormLeaderId(sector.leaderId || '');
+    setFormMemberIds(sector.memberIds || []);
+    setShowForm(true);
+  };
+
+  const handleSave = async () => {
+    if (!business?.id || !user || !formName.trim()) return;
+    setSaving(true);
+    try {
+      const now = new Date().toISOString();
+      const leader = members.find(m => m.uid === formLeaderId);
+      const sectorData = {
+        businessId: business.id,
+        name: formName.trim(),
+        description: formDescription.trim() || null,
+        color: formColor,
+        leaderId: formLeaderId || null,
+        leaderName: leader?.name || null,
+        memberIds: formMemberIds,
+        isActive: true,
+        updatedAt: now,
+      };
+
+      if (editingSector) {
+        await updateDoc(doc(db, 'sectors', editingSector.id), sectorData);
+        toast.success('Setor atualizado');
+      } else {
+        await addDoc(collection(db, 'sectors'), { ...sectorData, createdAt: now });
+        toast.success('Setor criado');
+      }
+
+      // Update sectorIds on each member
+      for (const memberId of formMemberIds) {
+        const memberDoc = members.find(m => m.uid === memberId || m.id === memberId);
+        if (memberDoc) {
+          const currentSectorIds = memberDoc.sectorIds || [];
+          const sectorId = editingSector?.id;
+          if (sectorId && !currentSectorIds.includes(sectorId)) {
+            await setDoc(doc(db, 'users', memberDoc.id), {
+              sectorIds: [...currentSectorIds, sectorId],
+              updatedAt: now,
+            }, { merge: true });
+          }
+        }
+      }
+
+      resetForm();
+      refreshUser();
+    } catch (err) {
+      console.error('Error saving sector:', err);
+      toast.error('Erro ao salvar setor');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (sector: Sector) => {
+    if (!business?.id) return;
+    setSaving(true);
+    try {
+      await deleteDoc(doc(db, 'sectors', sector.id));
+      // Remove sector from members' sectorIds
+      for (const memberId of sector.memberIds) {
+        const member = members.find(m => m.uid === memberId || m.id === memberId);
+        if (member?.sectorIds?.includes(sector.id)) {
+          await setDoc(doc(db, 'users', member.id), {
+            sectorIds: member.sectorIds.filter(s => s !== sector.id),
+            updatedAt: new Date().toISOString(),
+          }, { merge: true });
+        }
+      }
+      toast.success('Setor excluído');
+      setDeleteConfirm(null);
+      refreshUser();
+    } catch (err) {
+      console.error('Error deleting sector:', err);
+      toast.error('Erro ao excluir setor');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleMember = (uid: string) => {
+    setFormMemberIds(prev => prev.includes(uid) ? prev.filter(id => id !== uid) : [...prev, uid]);
+  };
+
+  const activeSectors = sectors.filter(s => s.isActive);
+
+  if (loading) {
+    return (
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
+        <div className="h-8 w-48 rounded-xl shimmer" />
+        <div className="h-64 rounded-2xl shimmer" />
+      </motion.div>
+    );
+  }
+
+  return (
+    <motion.div
+      key="setores"
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -4, transition: { duration: 0.15 } }}
+      transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+      className="space-y-6"
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">Setores / Departamentos</h3>
+          <p className="text-sm text-gray-500 dark:text-gray-400">Organize sua equipe em setores para controle de permissões</p>
+        </div>
+        <button
+          onClick={() => { resetForm(); setShowForm(true); }}
+          className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-red-600 to-red-500 hover:from-red-700 hover:to-red-600 shadow-lg shadow-red-500/25 transition-all"
+        >
+          <Plus className="w-4 h-4" />
+          Novo Setor
+        </button>
+      </div>
+
+      {/* Sector List */}
+      {activeSectors.length === 0 && !showForm ? (
+        <div className="text-center py-16 bg-white dark:bg-[#111827] rounded-2xl border border-gray-200 dark:border-gray-700/50">
+          <Layers className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
+          <h4 className="text-sm font-semibold text-gray-600 dark:text-gray-400 mb-1">Nenhum setor criado</h4>
+          <p className="text-xs text-gray-400 dark:text-gray-500">Crie setores para organizar sua equipe e controlar permissões</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {activeSectors.map((sector) => (
+            <div
+              key={sector.id}
+              className="bg-white dark:bg-[#111827] rounded-2xl border border-gray-200 dark:border-gray-700/50 p-5 hover:shadow-md transition-shadow"
+            >
+              <div className="flex items-start justify-between">
+                <div className="flex items-center gap-3">
+                  <div
+                    className="w-10 h-10 rounded-xl flex items-center justify-center text-white font-bold text-sm"
+                    style={{ backgroundColor: sector.color }}
+                  >
+                    {sector.name.charAt(0).toUpperCase()}
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{sector.name}</h4>
+                    {sector.description && (
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{sector.description}</p>
+                    )}
+                    <div className="flex items-center gap-3 mt-1.5">
+                      <span className="text-xs text-gray-400 dark:text-gray-500 flex items-center gap-1">
+                        <Users className="w-3 h-3" />
+                        {sector.memberIds.length} {sector.memberIds.length === 1 ? 'membro' : 'membros'}
+                      </span>
+                      {sector.leaderName && (
+                        <span className="text-xs text-gray-400 dark:text-gray-500 flex items-center gap-1">
+                          <Crown className="w-3 h-3 text-amber-500" />
+                          {sector.leaderName}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => openEdit(sector)}
+                    className="p-2 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-all"
+                  >
+                    <Edit3 className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => setDeleteConfirm(sector)}
+                    className="p-2 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-all"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Member avatars */}
+              {sector.memberIds.length > 0 && (
+                <div className="flex items-center gap-1 mt-3 flex-wrap">
+                  {sector.memberIds.slice(0, 8).map((uid) => {
+                    const member = members.find(m => m.uid === uid || m.id === uid);
+                    if (!member) return null;
+                    return (
+                      <div
+                        key={uid}
+                        className="w-7 h-7 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-[10px] font-semibold text-gray-600 dark:text-gray-300 border-2 border-white dark:border-[#111827]"
+                        title={member.name}
+                      >
+                        {member.photoURL ? (
+                          <img src={member.photoURL} alt={member.name} className="w-full h-full rounded-full object-cover" />
+                        ) : (
+                          member.name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
+                        )}
+                      </div>
+                    );
+                  })}
+                  {sector.memberIds.length > 8 && (
+                    <span className="text-xs text-gray-400 dark:text-gray-500 ml-1">+{sector.memberIds.length - 8}</span>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Create/Edit Form Dialog */}
+      <AnimatePresence>
+        {showForm && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-start justify-center pt-[8vh] px-4 bg-black/40 backdrop-blur-[2px]"
+            onClick={(e) => { if (e.target === e.currentTarget) resetForm(); }}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 20, scale: 0.97 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 20, scale: 0.97 }}
+              transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+              className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-lg border border-gray-200/80 dark:border-gray-700/50 overflow-hidden max-h-[80vh] flex flex-col"
+            >
+              <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between flex-shrink-0">
+                <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">
+                  {editingSector ? 'Editar Setor' : 'Novo Setor'}
+                </h3>
+                <button onClick={resetForm} className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-all">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-5 overflow-y-auto">
+                {/* Name */}
+                <FormField label="Nome do Setor" icon={Layers}>
+                  <input
+                    value={formName}
+                    onChange={(e) => setFormName(e.target.value)}
+                    placeholder="Ex: Comercial, Suporte, Marketing..."
+                    className={inputClasses}
+                  />
+                </FormField>
+
+                {/* Description */}
+                <FormField label="Descrição" icon={FileText}>
+                  <textarea
+                    value={formDescription}
+                    onChange={(e) => setFormDescription(e.target.value)}
+                    placeholder="Descrição opcional do setor..."
+                    rows={2}
+                    className={cn(inputClasses, 'resize-none')}
+                  />
+                </FormField>
+
+                {/* Color */}
+                <FormField label="Cor" icon={Palette}>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {SECTOR_COLORS.map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => setFormColor(c)}
+                        className={cn(
+                          'w-7 h-7 rounded-full transition-transform',
+                          formColor === c && 'outline outline-2 outline-offset-2 scale-110'
+                        )}
+                        style={{ backgroundColor: c, outlineColor: c }}
+                      />
+                    ))}
+                  </div>
+                </FormField>
+
+                {/* Leader */}
+                <FormField label="Líder do Setor" icon={Crown}>
+                  <select
+                    value={formLeaderId}
+                    onChange={(e) => setFormLeaderId(e.target.value)}
+                    className={selectClasses}
+                  >
+                    <option value="">Sem líder definido</option>
+                    {members.map((m) => (
+                      <option key={m.id} value={m.uid}>{m.name} ({ROLE_LABELS[m.role]})</option>
+                    ))}
+                  </select>
+                </FormField>
+
+                {/* Members */}
+                <FormField label="Membros" icon={Users}>
+                  <div className="space-y-1.5 max-h-48 overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700/50 p-2">
+                    {members.map((m) => (
+                      <label
+                        key={m.id}
+                        className={cn(
+                          'flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-colors',
+                          formMemberIds.includes(m.uid)
+                            ? 'bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20'
+                            : 'hover:bg-gray-50 dark:hover:bg-white/[0.04] border border-transparent'
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={formMemberIds.includes(m.uid)}
+                          onChange={() => toggleMember(m.uid)}
+                          className="sr-only"
+                        />
+                        <div className={cn(
+                          'w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all',
+                          formMemberIds.includes(m.uid)
+                            ? 'bg-red-500 border-red-500 text-white'
+                            : 'border-gray-300 dark:border-gray-600'
+                        )}>
+                          {formMemberIds.includes(m.uid) && <Check className="w-3 h-3" />}
+                        </div>
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <div className="w-7 h-7 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-[10px] font-semibold text-gray-600 dark:text-gray-300">
+                            {m.photoURL ? (
+                              <img src={m.photoURL} alt={m.name} className="w-full h-full rounded-full object-cover" />
+                            ) : (
+                              m.name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{m.name}</p>
+                            <p className="text-[10px] text-gray-400 dark:text-gray-500">{ROLE_LABELS[m.role]}</p>
+                          </div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5">
+                    {formMemberIds.length} {formMemberIds.length === 1 ? 'membro selecionado' : 'membros selecionados'}
+                  </p>
+                </FormField>
+              </div>
+
+              {/* Actions */}
+              <div className="px-6 py-4 border-t border-gray-100 dark:border-gray-800 flex items-center justify-end gap-2 flex-shrink-0">
+                <button
+                  onClick={resetForm}
+                  className="px-4 py-2 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
+                >
+                  Cancelar
+                </button>
+                <SaveButton
+                  onClick={handleSave}
+                  loading={saving}
+                  label={editingSector ? 'Salvar Alterações' : 'Criar Setor'}
+                  disabled={!formName.trim()}
+                />
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Delete Confirmation */}
+      <AnimatePresence>
+        {deleteConfirm && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center px-4 bg-black/40 backdrop-blur-[2px]"
+            onClick={(e) => { if (e.target === e.currentTarget) setDeleteConfirm(null); }}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-sm border border-gray-200/80 dark:border-gray-700/50 p-6"
+            >
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-xl bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
+                  <AlertTriangle className="w-5 h-5 text-red-500" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-gray-900 dark:text-gray-100">Excluir Setor</h4>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Esta ação não pode ser desfeita</p>
+                </div>
+              </div>
+              <p className="text-sm text-gray-600 dark:text-gray-300 mb-6">
+                Deseja excluir o setor <strong>{deleteConfirm.name}</strong> e remover todos os {deleteConfirm.memberIds.length} membros?
+              </p>
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  onClick={() => setDeleteConfirm(null)}
+                  className="px-4 py-2 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={() => handleDelete(deleteConfirm)}
+                  disabled={saving}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white bg-red-500 hover:bg-red-600 transition-colors disabled:opacity-60"
+                >
+                  {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                  Excluir
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+}
+
 function StatusBadge({ status }: { status: IntegrationStatus }) {
   const cfg = {
     connected: { label: 'Conectado', className: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' },
@@ -2937,9 +3404,129 @@ function CanaisTab() {
   const [testing, setTesting] = useState<string | null>(null);
   const [copiedWebhook, setCopiedWebhook] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [embeddedSignupLoading, setEmbeddedSignupLoading] = useState(false);
 
   const appUrl = typeof window !== 'undefined' ? window.location.origin : '';
   const webhookUrl = `${appUrl}/api/webhooks/meta`;
+
+  // ── Embedded Signup handler ──
+  const handleEmbeddedSignup = async () => {
+    const metaAppId = process.env.NEXT_PUBLIC_META_APP_ID;
+    const configId = process.env.NEXT_PUBLIC_META_CONFIG_ID;
+
+    if (!metaAppId) {
+      toast.error('Meta App ID não configurado. Defina NEXT_PUBLIC_META_APP_ID.');
+      return;
+    }
+
+    setEmbeddedSignupLoading(true);
+
+    try {
+      // Load FB SDK if not already loaded
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const win = window as any;
+      if (!win.FB) {
+        await new Promise<void>((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = 'https://connect.facebook.net/en_US/sdk.js';
+          script.async = true;
+          script.defer = true;
+          script.onload = () => {
+            win.FB.init({
+              appId: metaAppId,
+              cookie: true,
+              xfbml: true,
+              version: 'v21.0',
+            });
+            resolve();
+          };
+          script.onerror = () => reject(new Error('Failed to load FB SDK'));
+          document.body.appendChild(script);
+        });
+      }
+
+      const FB = win.FB as {
+        login: (
+          callback: (response: { authResponse?: { code?: string } }) => void,
+          options: Record<string, unknown>
+        ) => void;
+      };
+
+      FB.login(
+        async (response) => {
+          if (response.authResponse?.code) {
+            try {
+              const res = await fetch('/api/channels/meta-signup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  code: response.authResponse.code,
+                  businessId: business?.id,
+                }),
+              });
+              const data = await res.json();
+
+              if (data.success && data.channels) {
+                // Save to Firestore
+                const channelUpdates: Record<string, unknown> = { updatedAt: new Date().toISOString() };
+                if (data.channels.whatsapp) {
+                  channelUpdates['channels.whatsapp'] = data.channels.whatsapp;
+                  setWaPhoneNumberId(data.channels.whatsapp.phoneNumberId);
+                  setWaBusinessAccountId(data.channels.whatsapp.businessAccountId);
+                  setWaConnected(true);
+                }
+                if (data.channels.facebook) {
+                  channelUpdates['channels.facebook'] = data.channels.facebook;
+                  setFbPageId(data.channels.facebook.pageId);
+                  setFbConnected(true);
+                }
+                if (data.channels.instagram) {
+                  channelUpdates['channels.instagram'] = data.channels.instagram;
+                  setIgAccountId(data.channels.instagram.accountId);
+                  setIgConnected(true);
+                }
+                channelUpdates['channels.connectedVia'] = 'embedded_signup';
+
+                await updateDoc(doc(db, 'businesses', business!.id), channelUpdates);
+                await refreshUser();
+                toast.success('Canais conectados com sucesso via Embedded Signup!');
+              } else {
+                toast.error(data.error || 'Erro ao conectar canais');
+              }
+            } catch {
+              toast.error('Erro ao processar o Embedded Signup');
+            }
+          } else {
+            toast.info('Signup cancelado pelo usuário');
+          }
+          setEmbeddedSignupLoading(false);
+        },
+        {
+          ...(configId ? { config_id: configId } : {}),
+          response_type: 'code',
+          override_default_response_type: true,
+          scope: [
+            'whatsapp_business_management',
+            'whatsapp_business_messaging',
+            'pages_messaging',
+            'pages_manage_metadata',
+            'instagram_manage_messages',
+            'instagram_basic',
+            'business_management',
+          ].join(','),
+          extras: {
+            setup: {},
+            featureType: '',
+            sessionInfoVersion: '3',
+          },
+        }
+      );
+    } catch (err) {
+      console.error('Embedded signup error:', err);
+      toast.error('Erro ao iniciar o Embedded Signup');
+      setEmbeddedSignupLoading(false);
+    }
+  };
 
   // ── Load existing channel config ──
   useEffect(() => {
@@ -3223,11 +3810,42 @@ function CanaisTab() {
         </div>
       </div>
 
-      {/* ── Channel Cards ── */}
+      {/* ── Embedded Signup (Quick Connect) ── */}
+      <div className="rounded-2xl border border-blue-200 dark:border-blue-500/20 bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-950/20 dark:to-indigo-950/10 p-6">
+        <div className="flex items-start gap-4">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/25 flex-shrink-0">
+            <Zap className="w-5 h-5 text-white" />
+          </div>
+          <div className="flex-1">
+            <h4 className="text-sm font-bold text-gray-900 dark:text-gray-100">Conexão Rápida (Embedded Signup)</h4>
+            <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+              Conecte WhatsApp, Facebook e Instagram em poucos cliques usando sua conta Meta Business. Requer um Meta App configurado.
+            </p>
+            <button
+              onClick={handleEmbeddedSignup}
+              disabled={embeddedSignupLoading}
+              className={cn(
+                'mt-3 flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white transition-all',
+                'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700',
+                'shadow-md shadow-blue-500/25 hover:shadow-lg hover:shadow-blue-500/30',
+                'disabled:opacity-60 disabled:cursor-not-allowed'
+              )}
+            >
+              {embeddedSignupLoading ? (
+                <><Loader2 className="w-4 h-4 animate-spin" /> Conectando...</>
+              ) : (
+                <><Globe className="w-4 h-4" /> Conectar com Meta</>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Channel Cards (Manual) ── */}
       <div>
         <div className="flex items-center gap-2 mb-4">
           <Plug2 className="w-4 h-4 text-gray-400 dark:text-gray-500" />
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Canais</h3>
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Canais (Configuração Manual)</h3>
           <span className="text-[11px] text-gray-400 dark:text-gray-500 ml-1">
             {[waConnected, fbConnected, igConnected].filter(Boolean).length} de 3 conectados
           </span>
@@ -3583,6 +4201,7 @@ export default function SettingsModule() {
     { id: 'empresa'    as Tab, label: 'Empresa',     icon: Building2  },
     { id: 'fiscal'     as Tab, label: 'Fiscal',      icon: FileText   },
     { id: 'usuarios'   as Tab, label: 'Usuários',    icon: Users      },
+    { id: 'setores'    as Tab, label: 'Setores',     icon: Layers     },
     { id: 'enterprise' as Tab, label: 'Enterprise',  icon: Blocks     },
     { id: 'canais'     as Tab, label: 'Canais',      icon: Plug2      },
   ];
@@ -3648,6 +4267,7 @@ export default function SettingsModule() {
         {activeTab === 'empresa'    && <EmpresaTab key="empresa" />}
         {activeTab === 'fiscal'     && <FiscalTab key="fiscal" />}
         {activeTab === 'usuarios'   && <UsersTab key="usuarios" />}
+        {activeTab === 'setores'    && <SectorsTab key="setores" />}
         {activeTab === 'enterprise' && <EnterpriseTab key="enterprise" />}
         {activeTab === 'canais'     && <CanaisTab key="canais" />}
       </AnimatePresence>

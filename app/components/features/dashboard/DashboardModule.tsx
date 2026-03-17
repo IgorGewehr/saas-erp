@@ -96,12 +96,14 @@ export default function DashboardModule() {
     [appointments, todayStr]
   );
 
-  const nextAppointment = useMemo(
-    () => appointments.find(a =>
-      a.date >= todayStr && a.status !== 'cancelado' && a.status !== 'concluido'
-    ),
-    [appointments, todayStr]
-  );
+  const nextAppointment = useMemo(() => {
+    const nowStr = new Date().toTimeString().slice(0, 5); // "HH:mm"
+    return [...appointments]
+      .filter(a => a.status !== 'cancelado' && a.status !== 'concluido')
+      .filter(a => a.date > todayStr || (a.date === todayStr && a.startTime >= nowStr))
+      .sort((a, b) => a.date === b.date ? (a.startTime || '').localeCompare(b.startTime || '') : a.date.localeCompare(b.date))
+      [0] || null;
+  }, [appointments, todayStr]);
 
   const upcomingCount = useMemo(
     () => appointments.filter(a =>
@@ -492,7 +494,9 @@ export default function DashboardModule() {
                   {nextAppointment ? nextAppointment.clientName : 'Sem agendamentos próximos'}
                 </p>
                 <p className="text-sm text-white/70">
-                  {nextAppointment ? nextAppointment.serviceName : 'Sua agenda está livre'}
+                  {nextAppointment
+                    ? [nextAppointment.serviceName, nextAppointment.clientPhone || clients.find(c => c.id === nextAppointment.clientId)?.phone].filter(Boolean).join(' · ') || 'Sem detalhes'
+                    : 'Sua agenda está livre'}
                 </p>
               </div>
             </div>
