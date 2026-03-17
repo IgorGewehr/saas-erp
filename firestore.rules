@@ -546,6 +546,126 @@ service cloud.firestore {
     }
 
     // ============================================
+    // BROADCASTS COLLECTION
+    // ============================================
+    match /broadcasts/{broadcastId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isOperator();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator();
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isAdmin();
+    }
+
+    // ============================================
+    // BROADCAST MESSAGES COLLECTION
+    // ============================================
+    match /broadcastMessages/{messageId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isOperator();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator();
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator()
+                    && incomingBelongsToBusiness()
+                    && request.resource.data.broadcastId == resource.data.broadcastId;
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isAdmin();
+    }
+
+    // ============================================
+    // WEBHOOK FAILURES COLLECTION (Dead-letter queue)
+    // ============================================
+    match /webhookFailures/{docId} {
+      // Only admins can read failed webhook entries
+      allow read: if isAuthenticated() && isAdmin();
+
+      // Written by webhook handler (server-side, no auth context)
+      // HMAC signature verification on the webhook endpoint provides the security layer
+      allow create: if true;
+
+      // Only admins can update or delete
+      allow update, delete: if isAuthenticated() && isAdmin();
+    }
+
+    // ============================================
+    // SECTORS COLLECTION
+    // ============================================
+    match /sectors/{sectorId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isAdmin();
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isAdmin()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isAdmin();
+    }
+
+    // ============================================
+    // SNIPPETS COLLECTION (Quick replies)
+    // ============================================
+    match /snippets/{snippetId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator();
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isAdmin();
+    }
+
+    // ============================================
+    // SEGMENTS COLLECTION (CRM audience segments)
+    // ============================================
+    match /segments/{segmentId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator();
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isAdmin();
+    }
+
+    // ============================================
     // CATCH-ALL: Deny everything else
     // ============================================
     match /{document=**} {

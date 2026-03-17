@@ -112,20 +112,29 @@ export interface WhatsAppChannelConfig {
   isConnected: boolean;
   wabaId?: string;
   displayName?: string;
+  displayPhoneNumber?: string;
   phoneNumber?: string;
   tokenExpiresAt?: string;
+  connectedAt?: string;
+  disconnectedAt?: string;
 }
 
 export interface FacebookChannelConfig {
   pageId: string;
   pageAccessToken: string; // btoa encrypted
   isConnected: boolean;
+  pageName?: string;
+  connectedAt?: string;
+  disconnectedAt?: string;
 }
 
 export interface InstagramChannelConfig {
   accountId: string;
   isConnected: boolean;
   // Uses Facebook pageAccessToken
+  accountName?: string;
+  connectedAt?: string;
+  disconnectedAt?: string;
 }
 
 export interface MetaAppConfig {

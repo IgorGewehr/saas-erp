@@ -1,4 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { decryptToken } from '@/lib/utils/encryption';
+import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
+import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
+import { adminDb } from '@/lib/config/firebaseAdmin';
 
 /**
  * Broadcast Send API
@@ -17,7 +21,6 @@ import { NextRequest, NextResponse } from 'next/server';
  *   messageContent?: string;
  *   recipients: { contactId: string; contactName: string; recipientId: string }[];
  *   sendRate?: number; // msgs per second, default 10
- *   accessToken: string; // encrypted
  *   phoneNumberId?: string; // for WhatsApp
  * }
  */
@@ -29,6 +32,16 @@ function sleep(ms: number) {
 }
 
 export async function POST(req: NextRequest) {
+  // Rate limit: 5 broadcast sends per minute per IP (broadcasts are heavy operations)
+  const clientIp = getClientIp(req);
+  const { allowed } = checkRateLimit(`broadcast:${clientIp}`, 5, 60_000);
+  if (!allowed) {
+    return NextResponse.json(
+      { error: 'Rate limit exceeded. Aguarde antes de enviar outra campanha.' },
+      { status: 429 }
+    );
+  }
+
   try {
     const body = await req.json();
     const {
@@ -41,7 +54,6 @@ export async function POST(req: NextRequest) {
       messageContent,
       recipients,
       sendRate = 10,
-      accessToken,
       phoneNumberId,
     } = body;
 
@@ -49,8 +61,45 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    // Decode token
-    const token = Buffer.from(accessToken, 'base64').toString();
+    // Verify authentication and business ownership
+    const authResult = await verifyAuth(req, businessId);
+    if (isAuthError(authResult)) return authResult;
+
+    // Fetch access token server-side from the business document
+    const businessDoc = await adminDb.collection('businesses').doc(businessId).get();
+    if (!businessDoc.exists) {
+      return NextResponse.json({ error: 'Business not found' }, { status: 404 });
+    }
+
+    const businessData = businessDoc.data()!;
+    const channels = businessData.channels;
+    if (!channels) {
+      return NextResponse.json({ error: 'No channels configured' }, { status: 400 });
+    }
+
+    let token: string;
+    let resolvedPhoneNumberId = phoneNumberId;
+
+    if (channel === 'whatsapp') {
+      if (!channels.whatsapp?.isConnected || !channels.whatsapp?.accessToken) {
+        return NextResponse.json({ error: 'WhatsApp channel not connected' }, { status: 400 });
+      }
+      token = await decryptToken(channels.whatsapp.accessToken);
+      resolvedPhoneNumberId = resolvedPhoneNumberId || channels.whatsapp.phoneNumberId;
+    } else if (channel === 'facebook') {
+      if (!channels.facebook?.isConnected || !channels.facebook?.pageAccessToken) {
+        return NextResponse.json({ error: 'Facebook channel not connected' }, { status: 400 });
+      }
+      token = await decryptToken(channels.facebook.pageAccessToken);
+    } else if (channel === 'instagram') {
+      if (!channels.facebook?.pageAccessToken) {
+        return NextResponse.json({ error: 'Instagram channel not connected (requires Facebook)' }, { status: 400 });
+      }
+      token = await decryptToken(channels.facebook.pageAccessToken);
+    } else {
+      return NextResponse.json({ error: `Invalid channel: ${channel}` }, { status: 400 });
+    }
+
     const delayMs = Math.max(1000 / sendRate, 50); // minimum 50ms between messages
 
     const results: { contactId: string; status: string; externalMessageId?: string; error?: string }[] = [];
@@ -62,7 +111,7 @@ export async function POST(req: NextRequest) {
         if (channel === 'whatsapp') {
           if (templateName) {
             // Send template message
-            response = await fetch(`${META_GRAPH}/${phoneNumberId}/messages`, {
+            response = await fetch(`${META_GRAPH}/${resolvedPhoneNumberId}/messages`, {
               method: 'POST',
               headers: {
                 'Authorization': `Bearer ${token}`,
@@ -81,7 +130,7 @@ export async function POST(req: NextRequest) {
             });
           } else {
             // Send text message (only within 24h window)
-            response = await fetch(`${META_GRAPH}/${phoneNumberId}/messages`, {
+            response = await fetch(`${META_GRAPH}/${resolvedPhoneNumberId}/messages`, {
               method: 'POST',
               headers: {
                 'Authorization': `Bearer ${token}`,
@@ -106,8 +155,7 @@ export async function POST(req: NextRequest) {
             body: JSON.stringify({
               recipient: { id: recipient.recipientId },
               message: { text: messageContent || templateName },
-              messaging_type: 'MESSAGE_TAG',
-              tag: 'CONFIRMED_EVENT_UPDATE',
+              messaging_type: 'UPDATE',
             }),
           });
         } else if (channel === 'instagram') {
@@ -155,6 +203,19 @@ export async function POST(req: NextRequest) {
 
     const sent = results.filter(r => r.status === 'sent').length;
     const failed = results.filter(r => r.status === 'failed').length;
+
+    try {
+      await adminDb.collection('broadcasts').doc(broadcastId).update({
+        'stats.sent': sent,
+        'stats.failed': failed,
+        'stats.total': recipients.length,
+        status: failed === recipients.length ? 'failed' : 'sent',
+        completedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (statsErr) {
+      console.error('[Broadcast] Failed to update stats:', statsErr);
+    }
 
     return NextResponse.json({
       success: true,

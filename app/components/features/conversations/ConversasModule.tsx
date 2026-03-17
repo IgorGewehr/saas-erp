@@ -14,6 +14,8 @@ import {
   updateDoc,
   doc,
   onSnapshot,
+  limit,
+  startAfter,
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { getAuth } from 'firebase/auth';
@@ -50,6 +52,8 @@ import {
   ArrowRightLeft,
   Flag,
   Slash,
+  ChevronUp,
+  Loader2,
 } from 'lucide-react';
 import { getDocs } from 'firebase/firestore';
 import type {
@@ -819,11 +823,17 @@ function MessageList({
   conversation,
   messagesEndRef,
   onRetry,
+  hasMoreMessages,
+  loadingMoreMessages,
+  onLoadMore,
 }: {
   messages: ConversationMessage[];
   conversation: Conversation;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
   onRetry?: (msg: ConversationMessage) => void;
+  hasMoreMessages?: boolean;
+  loadingMoreMessages?: boolean;
+  onLoadMore?: () => void;
 }) {
   const items: Array<
     | { type: 'separator'; label: string }
@@ -847,6 +857,21 @@ function MessageList({
 
   return (
     <>
+      {hasMoreMessages && (
+        <div className="flex justify-center py-3">
+          <button
+            onClick={onLoadMore}
+            disabled={loadingMoreMessages}
+            className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors disabled:opacity-50"
+          >
+            {loadingMoreMessages ? (
+              <><Loader2 className="w-3 h-3 animate-spin" /> Carregando...</>
+            ) : (
+              <><ChevronUp className="w-3 h-3" /> Carregar mensagens anteriores</>
+            )}
+          </button>
+        </div>
+      )}
       {items.map((item, idx) => {
         if (item.type === 'separator') {
           return (
@@ -1231,8 +1256,13 @@ export default function ConversasModule() {
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [isLoadingConversations, setIsLoadingConversations] = useState(true);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  const [loadingMoreMessages, setLoadingMoreMessages] = useState(false);
+  const [oldestMessageTimestamp, setOldestMessageTimestamp] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const isLoadingOlderRef = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const isAdmin = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['admin'];
@@ -1307,24 +1337,47 @@ export default function ConversasModule() {
     [user, isAdmin, userSectorIds],
   );
 
-  // ── Real-time: Messages for selected conversation ──────────────────────────
+  // ── Real-time: Messages for selected conversation (paginated) ───────────────
 
   useEffect(() => {
     if (!selectedConversation?.id || !business?.id) return;
 
     setIsLoadingMessages(true);
+    setHasMoreMessages(false);
+    setOldestMessageTimestamp(null);
 
+    // Load latest 50 messages in real-time
     const q = query(
       collection(db, 'conversationMessages'),
       where('businessId', '==', business.id),
       where('conversationId', '==', selectedConversation.id),
-      orderBy('sentAt', 'asc'),
+      orderBy('sentAt', 'desc'),
+      limit(50),
     );
 
     const unsub = onSnapshot(q, (snap) => {
-      const data = snap.docs.map((d) => ({ ...d.data(), id: d.id } as ConversationMessage));
-      setMessages(data);
+      const data = snap.docs
+        .map((d) => ({ ...d.data(), id: d.id } as ConversationMessage))
+        .reverse(); // Reverse to show oldest first (chronological order)
+
+      setMessages((prev) => {
+        // If we had loaded older messages, preserve them and merge with real-time updates
+        if (prev.length > 50) {
+          const olderMessages = prev.slice(0, prev.length - 50);
+          // Deduplicate: remove any older messages that appear in the new batch
+          const newIds = new Set(data.map((m) => m.id));
+          const filteredOlder = olderMessages.filter((m) => !newIds.has(m.id));
+          return [...filteredOlder, ...data];
+        }
+        return data;
+      });
       setIsLoadingMessages(false);
+      setHasMoreMessages(snap.docs.length >= 50);
+
+      if (data.length > 0) {
+        // Only update oldest timestamp if we haven't loaded older messages yet
+        setOldestMessageTimestamp((prev) => prev ?? data[0].sentAt);
+      }
     });
 
     return () => unsub();
@@ -1343,10 +1396,61 @@ export default function ConversasModule() {
   }, [selectedConversation?.id, scrollToBottom]);
 
   useEffect(() => {
-    if (selectedConversation && messages.length > 0) {
+    if (selectedConversation && messages.length > 0 && !isLoadingOlderRef.current) {
       scrollToBottom();
     }
   }, [messages.length, selectedConversation, scrollToBottom]);
+
+  // ── Load more (older) messages ────────────────────────────────────────────
+
+  const loadMoreMessages = useCallback(async () => {
+    if (!selectedConversation?.id || !business?.id || !oldestMessageTimestamp || loadingMoreMessages) return;
+
+    setLoadingMoreMessages(true);
+    isLoadingOlderRef.current = true;
+
+    try {
+      const container = messagesContainerRef.current;
+      const previousScrollHeight = container?.scrollHeight || 0;
+
+      const q = query(
+        collection(db, 'conversationMessages'),
+        where('businessId', '==', business.id),
+        where('conversationId', '==', selectedConversation.id),
+        orderBy('sentAt', 'desc'),
+        startAfter(oldestMessageTimestamp),
+        limit(50),
+      );
+
+      const snap = await getDocs(q);
+      const olderMessages = snap.docs
+        .map((d) => ({ ...d.data(), id: d.id } as ConversationMessage))
+        .reverse();
+
+      if (olderMessages.length > 0) {
+        setMessages((prev) => [...olderMessages, ...prev]);
+        setOldestMessageTimestamp(olderMessages[0].sentAt);
+
+        // After DOM updates, restore scroll position
+        requestAnimationFrame(() => {
+          if (container) {
+            const newScrollHeight = container.scrollHeight;
+            container.scrollTop = newScrollHeight - previousScrollHeight;
+          }
+          isLoadingOlderRef.current = false;
+        });
+      } else {
+        isLoadingOlderRef.current = false;
+      }
+
+      setHasMoreMessages(snap.docs.length >= 50);
+    } catch (err) {
+      console.error('Error loading more messages:', err);
+      isLoadingOlderRef.current = false;
+    } finally {
+      setLoadingMoreMessages(false);
+    }
+  }, [selectedConversation?.id, business?.id, oldestMessageTimestamp, loadingMoreMessages]);
 
   // ── WhatsApp 24h window check ──────────────────────────────────────────────
 
@@ -2174,7 +2278,7 @@ export default function ConversasModule() {
                 />
 
                 {/* Messages area */}
-                <div className="flex-1 overflow-y-auto px-4 py-4 space-y-1 scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-white/10">
+                <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-1 scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-white/10">
                   {isLoadingMessages ? (
                     <div className="flex-1 flex items-center justify-center py-12">
                       <div className="flex flex-col items-center gap-3">
@@ -2198,6 +2302,9 @@ export default function ConversasModule() {
                       conversation={selectedConversation}
                       messagesEndRef={messagesEndRef}
                       onRetry={retryMessage}
+                      hasMoreMessages={hasMoreMessages}
+                      loadingMoreMessages={loadingMoreMessages}
+                      onLoadMore={loadMoreMessages}
                     />
                   )}
                 </div>

@@ -62,7 +62,6 @@ import {
   Database,
   Globe,
   MessageCircle,
-  Camera,
   Plug2,
   Layers,
   Palette,
@@ -72,7 +71,7 @@ import {
 import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector } from '@/lib/types';
 import { ROLE_LABELS, ROLE_HIERARCHY, USER_STATUS_LABELS, INTEGRATION_PROVIDERS, API_KEY_SCOPES, SECTOR_COLORS } from '@/lib/types';
 import { formatDate } from '@/lib/utils/format';
-import { encryptToken, decryptToken } from '@/lib/utils/encryption';
+// encryptToken/decryptToken no longer needed — channel credentials handled by Embedded Signup
 import {
   validateCNPJ,
   validateCPF,
@@ -3262,152 +3261,56 @@ function EnterpriseTab() {
 // CANAIS TAB
 // ═══════════════════════════════════════════════════════════════════════════════
 
-type ChannelType = 'whatsapp' | 'facebook' | 'instagram';
-
 interface ChannelConfig {
   whatsapp?: {
-    phoneNumberId: string;
-    businessAccountId: string;
-    accessToken: string;
+    phoneNumberId?: string;
+    businessAccountId?: string;
+    accessToken?: string;
+    displayPhoneNumber?: string;
     isConnected: boolean;
     connectedAt?: string;
+    disconnectedAt?: string;
   };
   facebook?: {
-    pageId: string;
-    pageAccessToken: string;
+    pageId?: string;
+    pageAccessToken?: string;
+    pageName?: string;
     isConnected: boolean;
     connectedAt?: string;
+    disconnectedAt?: string;
   };
   instagram?: {
-    accountId: string;
+    accountId?: string;
+    accountName?: string;
     isConnected: boolean;
     connectedAt?: string;
+    disconnectedAt?: string;
   };
   meta?: {
-    appId: string;
-    appSecret: string;
-    webhookVerifyToken: string;
+    appId?: string;
+    appSecret?: string;
+    webhookVerifyToken?: string;
   };
-}
-
-// encryptToken and decryptToken are imported from '@/lib/utils/encryption'
-
-const CHANNEL_INFO: Record<ChannelType, { name: string; icon: React.ElementType; color: string; description: string }> = {
-  whatsapp: { name: 'WhatsApp Business', icon: MessageCircle, color: '#25D366', description: 'Envie e receba mensagens pelo WhatsApp Business API' },
-  facebook: { name: 'Facebook Messenger', icon: Globe, color: '#0866FF', description: 'Conecte sua Página do Facebook para receber mensagens' },
-  instagram: { name: 'Instagram Direct', icon: Camera, color: '#E1306C', description: 'Receba mensagens do Instagram Direct via API' },
-};
-
-function ChannelRow({
-  channelId,
-  channel,
-  isConnected,
-  saving,
-  testing,
-  children,
-}: {
-  channelId: ChannelType;
-  channel: typeof CHANNEL_INFO[ChannelType];
-  isConnected: boolean;
-  saving: string | null;
-  testing: string | null;
-  children: React.ReactNode;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const IconComponent = channel.icon;
-
-  return (
-    <div>
-      <button
-        type="button"
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-4 px-5 py-4 hover:bg-gray-50/60 dark:hover:bg-white/[0.02] transition-colors text-left"
-      >
-        <div
-          className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
-          style={{ backgroundColor: `${channel.color}12` }}
-        >
-          <IconComponent className="w-[18px] h-[18px]" style={{ color: channel.color }} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-gray-900 dark:text-white">{channel.name}</span>
-            {isConnected ? (
-              <span className="flex items-center gap-1 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                Conectado
-              </span>
-            ) : (
-              <span className="flex items-center gap-1 text-[10px] font-medium text-gray-400 dark:text-gray-500">
-                <span className="w-1.5 h-1.5 rounded-full bg-gray-300 dark:bg-gray-600" />
-                Desconectado
-              </span>
-            )}
-          </div>
-          <p className="text-[12px] text-gray-400 dark:text-gray-500 truncate">{channel.description}</p>
-        </div>
-        <motion.div
-          animate={{ rotate: expanded ? 90 : 0 }}
-          transition={{ duration: 0.15 }}
-          className="text-gray-300 dark:text-gray-600 flex-shrink-0"
-        >
-          <ChevronRight className="w-4 h-4" />
-        </motion.div>
-      </button>
-
-      <AnimatePresence>
-        {expanded && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
-            className="overflow-hidden"
-          >
-            <div className="px-5 pb-5 pt-1 space-y-3">
-              {children}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
+  connectedVia?: string;
 }
 
 function CanaisTab() {
-  const { business, refreshUser } = useAuth();
+  const { business, refreshUser, firebaseUser } = useAuth();
 
-  // ── Channel form state ──
-  const [waPhoneNumberId, setWaPhoneNumberId] = useState('');
-  const [waBusinessAccountId, setWaBusinessAccountId] = useState('');
-  const [waAccessToken, setWaAccessToken] = useState('');
+  // ── Channel connection state ──
   const [waConnected, setWaConnected] = useState(false);
-
-  const [fbPageId, setFbPageId] = useState('');
-  const [fbPageAccessToken, setFbPageAccessToken] = useState('');
   const [fbConnected, setFbConnected] = useState(false);
-
-  const [igAccountId, setIgAccountId] = useState('');
   const [igConnected, setIgConnected] = useState(false);
 
-  const [metaAppId, setMetaAppId] = useState('');
-  const [metaAppSecret, setMetaAppSecret] = useState('');
-  const [webhookVerifyToken, setWebhookVerifyToken] = useState('');
+  const [waPhoneNumber, setWaPhoneNumber] = useState('');
+  const [fbPageName, setFbPageName] = useState('');
+  const [igAccountName, setIgAccountName] = useState('');
+  const [connectedAt, setConnectedAt] = useState('');
 
-  // ── Visibility state ──
-  const [showWaToken, setShowWaToken] = useState(false);
-  const [showFbToken, setShowFbToken] = useState(false);
-  const [showMetaSecret, setShowMetaSecret] = useState(false);
-
-  // ── Saving/testing state ──
-  const [saving, setSaving] = useState<string | null>(null);
-  const [testing, setTesting] = useState<string | null>(null);
-  const [copiedWebhook, setCopiedWebhook] = useState(false);
+  // ── UI state ──
   const [loading, setLoading] = useState(true);
   const [embeddedSignupLoading, setEmbeddedSignupLoading] = useState(false);
-
-  const appUrl = typeof window !== 'undefined' ? window.location.origin : '';
-  const webhookUrl = `${appUrl}/api/webhooks/meta`;
+  const [disconnecting, setDisconnecting] = useState<string | null>(null);
 
   // ── Embedded Signup handler ──
   const handleEmbeddedSignup = async () => {
@@ -3415,14 +3318,13 @@ function CanaisTab() {
     const configId = process.env.NEXT_PUBLIC_META_CONFIG_ID;
 
     if (!metaAppId) {
-      toast.error('Meta App ID não configurado. Defina NEXT_PUBLIC_META_APP_ID.');
+      toast.error('Meta App ID nao configurado. Contate o suporte.');
       return;
     }
 
     setEmbeddedSignupLoading(true);
 
     try {
-      // Load FB SDK if not already loaded
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const win = window as any;
       if (!win.FB) {
@@ -3456,9 +3358,13 @@ function CanaisTab() {
         async (response) => {
           if (response.authResponse?.code) {
             try {
+              const idToken = await firebaseUser?.getIdToken();
               const res = await fetch('/api/channels/meta-signup', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                  'Content-Type': 'application/json',
+                  ...(idToken ? { 'Authorization': `Bearer ${idToken}` } : {}),
+                },
                 body: JSON.stringify({
                   code: response.authResponse.code,
                   businessId: business?.id,
@@ -3467,37 +3373,30 @@ function CanaisTab() {
               const data = await res.json();
 
               if (data.success && data.channels) {
-                // Save to Firestore
-                const channelUpdates: Record<string, unknown> = { updatedAt: new Date().toISOString() };
+                // Server already saved encrypted tokens to Firestore — just update local state
                 if (data.channels.whatsapp) {
-                  channelUpdates['channels.whatsapp'] = data.channels.whatsapp;
-                  setWaPhoneNumberId(data.channels.whatsapp.phoneNumberId);
-                  setWaBusinessAccountId(data.channels.whatsapp.businessAccountId);
                   setWaConnected(true);
+                  setWaPhoneNumber(data.channels.whatsapp.displayPhoneNumber || data.channels.whatsapp.phoneNumberId || '');
                 }
                 if (data.channels.facebook) {
-                  channelUpdates['channels.facebook'] = data.channels.facebook;
-                  setFbPageId(data.channels.facebook.pageId);
                   setFbConnected(true);
+                  setFbPageName(data.channels.facebook.pageName || data.channels.facebook.pageId || '');
                 }
                 if (data.channels.instagram) {
-                  channelUpdates['channels.instagram'] = data.channels.instagram;
-                  setIgAccountId(data.channels.instagram.accountId);
                   setIgConnected(true);
+                  setIgAccountName(data.channels.instagram.accountName || data.channels.instagram.accountId || '');
                 }
-                channelUpdates['channels.connectedVia'] = 'embedded_signup';
-
-                await updateDoc(doc(db, 'businesses', business!.id), channelUpdates);
+                setConnectedAt(new Date().toISOString());
                 await refreshUser();
-                toast.success('Canais conectados com sucesso via Embedded Signup!');
+                toast.success('Canais conectados com sucesso!');
               } else {
                 toast.error(data.error || 'Erro ao conectar canais');
               }
             } catch {
-              toast.error('Erro ao processar o Embedded Signup');
+              toast.error('Erro ao processar a conexao');
             }
           } else {
-            toast.info('Signup cancelado pelo usuário');
+            toast.info('Conexao cancelada pelo usuario');
           }
           setEmbeddedSignupLoading(false);
         },
@@ -3523,8 +3422,30 @@ function CanaisTab() {
       );
     } catch (err) {
       console.error('Embedded signup error:', err);
-      toast.error('Erro ao iniciar o Embedded Signup');
+      toast.error('Erro ao iniciar a conexao');
       setEmbeddedSignupLoading(false);
+    }
+  };
+
+  // ── Disconnect channel ──
+  const handleDisconnect = async (channel: 'whatsapp' | 'facebook' | 'instagram') => {
+    if (!business) return;
+    setDisconnecting(channel);
+    try {
+      await updateDoc(doc(db, 'businesses', business.id), {
+        [`channels.${channel}.isConnected`]: false,
+        [`channels.${channel}.disconnectedAt`]: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      if (channel === 'whatsapp') { setWaConnected(false); setWaPhoneNumber(''); }
+      if (channel === 'facebook') { setFbConnected(false); setFbPageName(''); }
+      if (channel === 'instagram') { setIgConnected(false); setIgAccountName(''); }
+      await refreshUser();
+      toast.success(`${channel === 'whatsapp' ? 'WhatsApp' : channel === 'facebook' ? 'Facebook' : 'Instagram'} desconectado`);
+    } catch {
+      toast.error('Erro ao desconectar canal');
+    } finally {
+      setDisconnecting(null);
     }
   };
 
@@ -3533,232 +3454,30 @@ function CanaisTab() {
     if (!business) return;
     const channels = (business as Business & { channels?: ChannelConfig }).channels;
     if (channels) {
-      const loadChannels = async () => {
-        if (channels.whatsapp) {
-          setWaPhoneNumberId(channels.whatsapp.phoneNumberId || '');
-          setWaBusinessAccountId(channels.whatsapp.businessAccountId || '');
-          setWaAccessToken(channels.whatsapp.accessToken ? await decryptToken(channels.whatsapp.accessToken) : '');
-          setWaConnected(channels.whatsapp.isConnected || false);
-        }
-        if (channels.facebook) {
-          setFbPageId(channels.facebook.pageId || '');
-          setFbPageAccessToken(channels.facebook.pageAccessToken ? await decryptToken(channels.facebook.pageAccessToken) : '');
-          setFbConnected(channels.facebook.isConnected || false);
-        }
-        if (channels.instagram) {
-          setIgAccountId(channels.instagram.accountId || '');
-          setIgConnected(channels.instagram.isConnected || false);
-        }
-        if (channels.meta) {
-          setMetaAppId(channels.meta.appId || '');
-          setMetaAppSecret(channels.meta.appSecret ? await decryptToken(channels.meta.appSecret) : '');
-          setWebhookVerifyToken(channels.meta.webhookVerifyToken || '');
-        }
-        setLoading(false);
-      };
-      loadChannels();
-    } else {
-      setLoading(false);
+      if (channels.whatsapp) {
+        setWaConnected(channels.whatsapp.isConnected || false);
+        setWaPhoneNumber(channels.whatsapp.displayPhoneNumber || channels.whatsapp.phoneNumberId || '');
+      }
+      if (channels.facebook) {
+        setFbConnected(channels.facebook.isConnected || false);
+        setFbPageName(channels.facebook.pageName || channels.facebook.pageId || '');
+      }
+      if (channels.instagram) {
+        setIgConnected(channels.instagram.isConnected || false);
+        setIgAccountName(channels.instagram.accountName || channels.instagram.accountId || '');
+      }
+      const latestConnectedAt = [
+        channels.whatsapp?.connectedAt,
+        channels.facebook?.connectedAt,
+        channels.instagram?.connectedAt,
+      ].filter(Boolean).sort().pop();
+      if (latestConnectedAt) setConnectedAt(latestConnectedAt);
     }
+    setLoading(false);
   }, [business]);
 
-  // ── Save WhatsApp ──
-  const handleSaveWhatsApp = async () => {
-    if (!business) return;
-    setSaving('whatsapp');
-    try {
-      const currentChannels = (business as Business & { channels?: ChannelConfig }).channels || {};
-      const hasAllFields = !!waPhoneNumberId.trim() && !!waBusinessAccountId.trim() && !!waAccessToken.trim();
-      const encryptedAccessToken = await encryptToken(waAccessToken.trim());
-      await updateDoc(doc(db, 'businesses', business.id), {
-        'channels.whatsapp': {
-          phoneNumberId: waPhoneNumberId.trim(),
-          businessAccountId: waBusinessAccountId.trim(),
-          accessToken: encryptedAccessToken,
-          isConnected: hasAllFields,
-          connectedAt: hasAllFields ? new Date().toISOString() : (currentChannels.whatsapp?.connectedAt || null),
-        },
-        updatedAt: new Date().toISOString(),
-      });
-      setWaConnected(hasAllFields);
-      await refreshUser();
-      toast.success('WhatsApp Business salvo com sucesso!');
-    } catch {
-      toast.error('Erro ao salvar configurações do WhatsApp');
-    } finally {
-      setSaving(null);
-    }
-  };
-
-  // ── Exchange short-lived token for long-lived token ──
-  const exchangeForLongLivedToken = async (shortLivedToken: string): Promise<string> => {
-    const metaConfig = (business as Business & { channels?: ChannelConfig }).channels?.meta;
-    if (!metaConfig?.appId || !metaConfig?.appSecret) {
-      toast.warning('Configure o Meta App ID e App Secret primeiro na secao "Configuracao Meta"');
-      return shortLivedToken;
-    }
-
-    try {
-      const appSecret = await decryptToken(metaConfig.appSecret);
-      const res = await fetch(
-        `https://graph.facebook.com/v21.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${metaConfig.appId}&client_secret=${appSecret}&fb_exchange_token=${shortLivedToken}`
-      );
-      const data = await res.json();
-      if (data.access_token) {
-        toast.success('Token convertido para longa duracao (60 dias)');
-        return data.access_token;
-      }
-      toast.warning('Nao foi possivel converter o token. Usando o token fornecido.');
-      return shortLivedToken;
-    } catch {
-      toast.warning('Nao foi possivel converter o token. Usando o token fornecido.');
-      return shortLivedToken;
-    }
-  };
-
-  // ── Save Facebook ──
-  const handleSaveFacebook = async () => {
-    if (!business) return;
-    setSaving('facebook');
-    try {
-      const currentChannels = (business as Business & { channels?: ChannelConfig }).channels || {};
-      const hasAllFields = !!fbPageId.trim() && !!fbPageAccessToken.trim();
-      // Exchange for long-lived token before encrypting
-      const longLivedToken = hasAllFields ? await exchangeForLongLivedToken(fbPageAccessToken.trim()) : fbPageAccessToken.trim();
-      const encryptedPageToken = await encryptToken(longLivedToken);
-      await updateDoc(doc(db, 'businesses', business.id), {
-        'channels.facebook': {
-          pageId: fbPageId.trim(),
-          pageAccessToken: encryptedPageToken,
-          isConnected: hasAllFields,
-          connectedAt: hasAllFields ? new Date().toISOString() : (currentChannels.facebook?.connectedAt || null),
-        },
-        updatedAt: new Date().toISOString(),
-      });
-      setFbConnected(hasAllFields);
-      // Update the state with the long-lived token if it changed
-      if (longLivedToken !== fbPageAccessToken.trim()) {
-        setFbPageAccessToken(longLivedToken);
-      }
-      await refreshUser();
-
-      // Auto-subscribe the page to receive messages
-      if (hasAllFields) {
-        try {
-          const res = await fetch(
-            `https://graph.facebook.com/v21.0/${fbPageId.trim()}/subscribed_apps?subscribed_fields=messages,messaging_postbacks,message_deliveries,message_reads&access_token=${longLivedToken}`,
-            { method: 'POST' },
-          );
-          const data = await res.json();
-          if (data.success) {
-            toast.success('Pagina inscrita para receber mensagens!');
-          }
-        } catch {
-          toast.warning('Canal salvo, mas nao foi possivel inscrever automaticamente. Verifique o token.');
-        }
-      }
-
-      toast.success('Facebook Messenger salvo com sucesso!');
-    } catch {
-      toast.error('Erro ao salvar configurações do Facebook');
-    } finally {
-      setSaving(null);
-    }
-  };
-
-  // ── Save Instagram ──
-  const handleSaveInstagram = async () => {
-    if (!business) return;
-    setSaving('instagram');
-    try {
-      const currentChannels = (business as Business & { channels?: ChannelConfig }).channels || {};
-      const hasAllFields = !!igAccountId.trim();
-      await updateDoc(doc(db, 'businesses', business.id), {
-        'channels.instagram': {
-          accountId: igAccountId.trim(),
-          isConnected: hasAllFields,
-          connectedAt: hasAllFields ? new Date().toISOString() : (currentChannels.instagram?.connectedAt || null),
-        },
-        updatedAt: new Date().toISOString(),
-      });
-      setIgConnected(hasAllFields);
-      await refreshUser();
-
-      // Auto-subscribe Instagram to receive messages (requires Facebook page token)
-      if (hasAllFields && fbPageAccessToken) {
-        try {
-          const res = await fetch(
-            `https://graph.facebook.com/v21.0/${igAccountId.trim()}/subscribed_apps?subscribed_fields=messages,messaging_postbacks&access_token=${fbPageAccessToken.trim()}`,
-            { method: 'POST' },
-          );
-          const data = await res.json();
-          if (data.success) {
-            toast.success('Instagram inscrito para receber mensagens!');
-          }
-        } catch {
-          toast.warning('Canal salvo, mas nao foi possivel inscrever automaticamente. Verifique o token.');
-        }
-      }
-
-      toast.success('Instagram Direct salvo com sucesso!');
-    } catch {
-      toast.error('Erro ao salvar configurações do Instagram');
-    } finally {
-      setSaving(null);
-    }
-  };
-
-  // ── Save Meta shared config ──
-  const handleSaveMeta = async () => {
-    if (!business) return;
-    setSaving('meta');
-    try {
-      const encryptedAppSecret = metaAppSecret.trim() ? await encryptToken(metaAppSecret.trim()) : '';
-      await updateDoc(doc(db, 'businesses', business.id), {
-        'channels.meta': {
-          appId: metaAppId.trim(),
-          appSecret: encryptedAppSecret,
-          webhookVerifyToken: webhookVerifyToken.trim(),
-        },
-        updatedAt: new Date().toISOString(),
-      });
-      await refreshUser();
-      toast.success('Configuração Meta salva com sucesso!');
-    } catch {
-      toast.error('Erro ao salvar configuração Meta');
-    } finally {
-      setSaving(null);
-    }
-  };
-
-  // ── Test connection ──
-  const handleTestConnection = async (channelId: ChannelType) => {
-    setTesting(channelId);
-    try {
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      if (channelId === 'whatsapp' && waPhoneNumberId && waAccessToken) {
-        toast.success('Conexão com WhatsApp Business verificada!');
-      } else if (channelId === 'facebook' && fbPageId && fbPageAccessToken) {
-        toast.success('Conexão com Facebook Messenger verificada!');
-      } else if (channelId === 'instagram' && igAccountId && fbPageAccessToken) {
-        toast.success('Conexão com Instagram Direct verificada!');
-      } else {
-        toast.error('Preencha todos os campos obrigatórios para testar a conexão.');
-      }
-    } catch {
-      toast.error('Erro ao testar conexão');
-    } finally {
-      setTesting(null);
-    }
-  };
-
-  // ── Copy webhook URL ──
-  const handleCopyWebhook = () => {
-    navigator.clipboard.writeText(webhookUrl).then(() => {
-      setCopiedWebhook(true);
-      setTimeout(() => setCopiedWebhook(false), 2000);
-    });
-  };
+  const anyConnected = waConnected || fbConnected || igConnected;
+  const connectedCount = [waConnected, fbConnected, igConnected].filter(Boolean).length;
 
   if (loading) {
     return (
@@ -3778,7 +3497,7 @@ function CanaisTab() {
       transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
       className="space-y-6"
     >
-      {/* ── Header info ── */}
+      {/* ── Header ── */}
       <div className="relative overflow-hidden rounded-2xl border border-gray-200 dark:border-gray-700/50 shadow-sm dark:shadow-black/10">
         <div className="absolute inset-0 bg-gradient-to-br from-green-50 via-emerald-50 to-teal-50 dark:from-green-950/30 dark:via-emerald-950/20 dark:to-teal-950/10" />
         <div className="relative p-6 sm:p-8">
@@ -3787,9 +3506,9 @@ function CanaisTab() {
               <MessageCircle className="w-6 h-6 text-white" />
             </div>
             <div>
-              <h3 className="text-lg font-bold text-gray-900 dark:text-white font-display">Canais de Comunicação</h3>
+              <h3 className="text-lg font-bold text-gray-900 dark:text-white font-display">Canais de Comunicacao</h3>
               <p className="text-sm text-gray-600 dark:text-gray-400 mt-1 max-w-md">
-                Conecte seus canais do Meta (WhatsApp, Facebook e Instagram) para centralizar o atendimento ao cliente.
+                Conecte seus canais do Meta para centralizar o atendimento ao cliente em um unico lugar.
               </p>
             </div>
           </div>
@@ -3810,22 +3529,25 @@ function CanaisTab() {
         </div>
       </div>
 
-      {/* ── Embedded Signup (Quick Connect) ── */}
-      <div className="rounded-2xl border border-blue-200 dark:border-blue-500/20 bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-950/20 dark:to-indigo-950/10 p-6">
-        <div className="flex items-start gap-4">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/25 flex-shrink-0">
-            <Zap className="w-5 h-5 text-white" />
-          </div>
-          <div className="flex-1">
-            <h4 className="text-sm font-bold text-gray-900 dark:text-gray-100">Conexão Rápida (Embedded Signup)</h4>
-            <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
-              Conecte WhatsApp, Facebook e Instagram em poucos cliques usando sua conta Meta Business. Requer um Meta App configurado.
-            </p>
+      {/* ── Connect / Status ── */}
+      {!anyConnected ? (
+        /* No channels connected — show connect CTA */
+        <div className="rounded-2xl border border-blue-200 dark:border-blue-500/20 bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-950/20 dark:to-indigo-950/10 p-8">
+          <div className="flex flex-col items-center text-center gap-4">
+            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/25">
+              <Zap className="w-8 h-8 text-white" />
+            </div>
+            <div>
+              <h4 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">Conecte seus canais</h4>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mt-2 max-w-sm mx-auto">
+                Conecte WhatsApp, Facebook e Instagram em poucos cliques usando sua conta Meta Business.
+              </p>
+            </div>
             <button
               onClick={handleEmbeddedSignup}
               disabled={embeddedSignupLoading}
               className={cn(
-                'mt-3 flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white transition-all',
+                'flex items-center gap-2.5 px-6 py-3 rounded-xl text-sm font-semibold text-white transition-all',
                 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700',
                 'shadow-md shadow-blue-500/25 hover:shadow-lg hover:shadow-blue-500/30',
                 'disabled:opacity-60 disabled:cursor-not-allowed'
@@ -3837,352 +3559,170 @@ function CanaisTab() {
                 <><Globe className="w-4 h-4" /> Conectar com Meta</>
               )}
             </button>
+            <div className="flex items-center gap-6 mt-2 text-xs text-gray-400 dark:text-gray-500">
+              <div className="flex items-center gap-1.5">
+                <MessageCircle className="w-3.5 h-3.5" />
+                <span>WhatsApp Business</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <MessageCircle className="w-3.5 h-3.5" />
+                <span>Facebook Messenger</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <MessageCircle className="w-3.5 h-3.5" />
+                <span>Instagram Direct</span>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
-
-      {/* ── Channel Cards (Manual) ── */}
-      <div>
-        <div className="flex items-center gap-2 mb-4">
-          <Plug2 className="w-4 h-4 text-gray-400 dark:text-gray-500" />
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Canais (Configuração Manual)</h3>
-          <span className="text-[11px] text-gray-400 dark:text-gray-500 ml-1">
-            {[waConnected, fbConnected, igConnected].filter(Boolean).length} de 3 conectados
-          </span>
-        </div>
-        <div className="rounded-2xl border border-gray-200 dark:border-gray-700/50 bg-white dark:bg-[#111827] overflow-hidden divide-y divide-gray-100 dark:divide-gray-800/60">
-          {/* WhatsApp Business */}
-          <ChannelRow
-            channelId="whatsapp"
-            channel={CHANNEL_INFO.whatsapp}
-            isConnected={waConnected}
-            saving={saving}
-            testing={testing}
-          >
-            <div>
-              <label className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5 block">
-                Phone Number ID
-              </label>
-              <input
-                type="text"
-                placeholder="Ex: 123456789012345"
-                value={waPhoneNumberId}
-                onChange={(e) => setWaPhoneNumberId(e.target.value)}
-                className={inputClasses}
-              />
-              <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5 flex items-start gap-1">
-                <Info className="w-3 h-3 flex-shrink-0 mt-px" />
-                ID do número de telefone no Meta Business Suite
-              </p>
-            </div>
-            <div>
-              <label className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5 block">
-                WhatsApp Business Account ID
-              </label>
-              <input
-                type="text"
-                placeholder="Ex: 123456789012345"
-                value={waBusinessAccountId}
-                onChange={(e) => setWaBusinessAccountId(e.target.value)}
-                className={inputClasses}
-              />
-            </div>
-            <div>
-              <label className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5 block">
-                Access Token
-              </label>
-              <div className="relative">
-                <input
-                  type={showWaToken ? 'text' : 'password'}
-                  placeholder="Token permanente do Meta"
-                  value={waAccessToken}
-                  onChange={(e) => setWaAccessToken(e.target.value)}
-                  className={cn(inputClasses, 'pr-10 font-mono')}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowWaToken(v => !v)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 dark:text-gray-600 hover:text-gray-500 dark:hover:text-gray-400 transition-colors"
-                >
-                  {showWaToken ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                </button>
-              </div>
-              <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5 flex items-start gap-1">
-                <Info className="w-3 h-3 flex-shrink-0 mt-px" />
-                Token permanente gerado no painel do Meta Business
-              </p>
-            </div>
-            <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20">
-              <p className="text-[12px] text-amber-700 dark:text-amber-300 flex items-start gap-2">
-                <Info className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
-                O webhook do WhatsApp e registrado diretamente no Meta Developer Dashboard. Acesse seu App {'>'} WhatsApp {'>'} Configuration e configure a Callback URL com a URL de webhook acima.
-              </p>
-            </div>
-            <div className="flex items-center gap-2 pt-1">
-              <button
-                type="button"
-                onClick={handleSaveWhatsApp}
-                disabled={saving === 'whatsapp'}
-                className="px-5 py-2 text-xs font-semibold rounded-xl bg-gray-900 dark:bg-white text-white dark:text-gray-900 hover:bg-gray-800 dark:hover:bg-gray-100 transition-all disabled:opacity-50"
-              >
-                {saving === 'whatsapp' ? (
-                  <span className="flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" /> Salvando</span>
-                ) : 'Salvar'}
-              </button>
-              {waConnected && (
-                <button
-                  type="button"
-                  onClick={() => handleTestConnection('whatsapp')}
-                  disabled={testing === 'whatsapp'}
-                  className="px-4 py-2 text-xs font-medium rounded-xl text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-all"
-                >
-                  {testing === 'whatsapp' ? (
-                    <span className="flex items-center gap-1.5"><RefreshCw className="w-3 h-3 animate-spin" /> Testando</span>
-                  ) : 'Testar conexão'}
-                </button>
-              )}
-            </div>
-          </ChannelRow>
-
-          {/* Facebook Messenger */}
-          <ChannelRow
-            channelId="facebook"
-            channel={CHANNEL_INFO.facebook}
-            isConnected={fbConnected}
-            saving={saving}
-            testing={testing}
-          >
-            <div>
-              <label className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5 block">
-                Page ID
-              </label>
-              <input
-                type="text"
-                placeholder="Ex: 123456789012345"
-                value={fbPageId}
-                onChange={(e) => setFbPageId(e.target.value)}
-                className={inputClasses}
-              />
-              <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5 flex items-start gap-1">
-                <Info className="w-3 h-3 flex-shrink-0 mt-px" />
-                ID da sua Página do Facebook
-              </p>
-            </div>
-            <div>
-              <label className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5 block">
-                Page Access Token
-              </label>
-              <div className="relative">
-                <input
-                  type={showFbToken ? 'text' : 'password'}
-                  placeholder="Token de acesso da página"
-                  value={fbPageAccessToken}
-                  onChange={(e) => setFbPageAccessToken(e.target.value)}
-                  className={cn(inputClasses, 'pr-10 font-mono')}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowFbToken(v => !v)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 dark:text-gray-600 hover:text-gray-500 dark:hover:text-gray-400 transition-colors"
-                >
-                  {showFbToken ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                </button>
-              </div>
-              <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5 flex items-start gap-1">
-                <Info className="w-3 h-3 flex-shrink-0 mt-px" />
-                Este token tambem e usado pelo Instagram Direct
-              </p>
-              <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
-                O token sera automaticamente convertido para longa duracao (60 dias).
-                Apos expirar, cole um novo token aqui.
-              </p>
-            </div>
-            <div className="flex items-center gap-2 pt-1">
-              <button
-                type="button"
-                onClick={handleSaveFacebook}
-                disabled={saving === 'facebook'}
-                className="px-5 py-2 text-xs font-semibold rounded-xl bg-gray-900 dark:bg-white text-white dark:text-gray-900 hover:bg-gray-800 dark:hover:bg-gray-100 transition-all disabled:opacity-50"
-              >
-                {saving === 'facebook' ? (
-                  <span className="flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" /> Salvando</span>
-                ) : 'Salvar'}
-              </button>
-              {fbConnected && (
-                <button
-                  type="button"
-                  onClick={() => handleTestConnection('facebook')}
-                  disabled={testing === 'facebook'}
-                  className="px-4 py-2 text-xs font-medium rounded-xl text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-all"
-                >
-                  {testing === 'facebook' ? (
-                    <span className="flex items-center gap-1.5"><RefreshCw className="w-3 h-3 animate-spin" /> Testando</span>
-                  ) : 'Testar conexão'}
-                </button>
-              )}
-            </div>
-          </ChannelRow>
-
-          {/* Instagram Direct */}
-          <ChannelRow
-            channelId="instagram"
-            channel={CHANNEL_INFO.instagram}
-            isConnected={igConnected}
-            saving={saving}
-            testing={testing}
-          >
-            <div>
-              <label className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5 block">
-                Instagram Business Account ID
-              </label>
-              <input
-                type="text"
-                placeholder="Ex: 17841400123456789"
-                value={igAccountId}
-                onChange={(e) => setIgAccountId(e.target.value)}
-                className={inputClasses}
-              />
-              <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5 flex items-start gap-1">
-                <Info className="w-3 h-3 flex-shrink-0 mt-px" />
-                ID da conta comercial do Instagram vinculada a sua Pagina do Facebook
-              </p>
-            </div>
-            <div className="p-3 rounded-xl bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/20">
-              <p className="text-[12px] text-blue-700 dark:text-blue-300 flex items-start gap-2">
-                <Info className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
-                O Instagram Direct utiliza o Page Access Token configurado no Facebook Messenger. Certifique-se de que ele esteja configurado.
-              </p>
-            </div>
-            <div className="flex items-center gap-2 pt-1">
-              <button
-                type="button"
-                onClick={handleSaveInstagram}
-                disabled={saving === 'instagram'}
-                className="px-5 py-2 text-xs font-semibold rounded-xl bg-gray-900 dark:bg-white text-white dark:text-gray-900 hover:bg-gray-800 dark:hover:bg-gray-100 transition-all disabled:opacity-50"
-              >
-                {saving === 'instagram' ? (
-                  <span className="flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" /> Salvando</span>
-                ) : 'Salvar'}
-              </button>
-              {igConnected && (
-                <button
-                  type="button"
-                  onClick={() => handleTestConnection('instagram')}
-                  disabled={testing === 'instagram'}
-                  className="px-4 py-2 text-xs font-medium rounded-xl text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-all"
-                >
-                  {testing === 'instagram' ? (
-                    <span className="flex items-center gap-1.5"><RefreshCw className="w-3 h-3 animate-spin" /> Testando</span>
-                  ) : 'Testar conexão'}
-                </button>
-              )}
-            </div>
-          </ChannelRow>
-        </div>
-      </div>
-
-      {/* ── Meta Shared Configuration ── */}
-      <SectionCard title="Configuracao Meta (Compartilhada)" icon={Globe}>
+      ) : (
+        /* Channels connected — show status cards */
         <div className="space-y-4">
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            Configuracoes compartilhadas entre todos os canais Meta. Necessario para receber webhooks.
-          </p>
-
-          {/* Webhook URL (read-only) */}
-          <div>
-            <label className="flex items-center gap-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-              <Link2 className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
-              Webhook URL
-            </label>
+          <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <input
-                type="text"
-                value={webhookUrl}
-                readOnly
-                className={cn(inputClasses, 'bg-gray-50 dark:bg-gray-800/50 cursor-not-allowed opacity-80 font-mono text-xs flex-1')}
-              />
-              <button
-                type="button"
-                onClick={handleCopyWebhook}
-                className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700/50 text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors flex-shrink-0"
-              >
-                {copiedWebhook ? (
-                  <><Check className="w-3.5 h-3.5 text-emerald-500" /><span className="text-emerald-600 dark:text-emerald-400">Copiado</span></>
-                ) : (
-                  <><Copy className="w-3.5 h-3.5" />Copiar</>
-                )}
-              </button>
-            </div>
-            <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5">
-              Configure esta URL como Callback URL no painel de Webhooks do seu Meta App.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Webhook Verify Token */}
-            <FormField label="Webhook Verify Token" icon={Shield} tooltip="Token de verificacao configurado no Meta App">
-              <input
-                type="text"
-                placeholder="Seu token de verificacao"
-                value={webhookVerifyToken}
-                onChange={(e) => setWebhookVerifyToken(e.target.value)}
-                className={inputClasses}
-              />
-            </FormField>
-
-            {/* Meta App ID */}
-            <FormField label="Meta App ID" icon={Key} tooltip="ID do aplicativo no Meta for Developers">
-              <input
-                type="text"
-                placeholder="Ex: 1234567890123456"
-                value={metaAppId}
-                onChange={(e) => setMetaAppId(e.target.value)}
-                className={inputClasses}
-              />
-            </FormField>
-          </div>
-
-          {/* Meta App Secret */}
-          <FormField label="Meta App Secret" icon={Lock} tooltip="Chave secreta do aplicativo Meta">
-            <div className="relative">
-              <input
-                type={showMetaSecret ? 'text' : 'password'}
-                placeholder="App secret do Meta"
-                value={metaAppSecret}
-                onChange={(e) => setMetaAppSecret(e.target.value)}
-                className={cn(inputClasses, 'pr-10 font-mono')}
-              />
-              <button
-                type="button"
-                onClick={() => setShowMetaSecret(v => !v)}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
-                tabIndex={-1}
-              >
-                {showMetaSecret ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
-            </div>
-          </FormField>
-
-          <div className="flex justify-end">
-            <button
-              type="button"
-              onClick={handleSaveMeta}
-              disabled={saving === 'meta'}
-              className={cn(
-                'flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200',
-                'disabled:opacity-60 disabled:cursor-not-allowed',
-                'bg-gradient-to-r from-red-600 to-red-500 text-white hover:from-red-700 hover:to-red-600 shadow-lg shadow-red-500/25 focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-[#111827] focus:ring-red-500/40'
+              <CheckCircle className="w-4 h-4 text-emerald-500" />
+              <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                {connectedCount} {connectedCount === 1 ? 'canal conectado' : 'canais conectados'}
+              </h3>
+              {connectedAt && (
+                <span className="text-[11px] text-gray-400 dark:text-gray-500 ml-1">
+                  desde {formatDate(connectedAt)}
+                </span>
               )}
+            </div>
+            <button
+              onClick={handleEmbeddedSignup}
+              disabled={embeddedSignupLoading}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/10 transition-colors"
             >
-              {saving === 'meta' ? (
-                <><Loader2 className="w-4 h-4 animate-spin" /> Salvando...</>
+              {embeddedSignupLoading ? (
+                <><Loader2 className="w-3 h-3 animate-spin" /> Reconectando...</>
               ) : (
-                <><Save className="w-4 h-4" /> Salvar Configuracao Meta</>
+                <><RefreshCw className="w-3 h-3" /> Reconectar canais</>
               )}
             </button>
           </div>
+
+          <div className="rounded-2xl border border-gray-200 dark:border-gray-700/50 bg-white dark:bg-[#111827] overflow-hidden divide-y divide-gray-100 dark:divide-gray-800/60">
+            {/* WhatsApp */}
+            <div className="p-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className={cn(
+                  'w-10 h-10 rounded-xl flex items-center justify-center',
+                  waConnected
+                    ? 'bg-gradient-to-br from-green-500 to-emerald-600 shadow-sm shadow-green-500/20'
+                    : 'bg-gray-100 dark:bg-gray-800'
+                )}>
+                  <MessageCircle className={cn('w-5 h-5', waConnected ? 'text-white' : 'text-gray-400')} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">WhatsApp Business</span>
+                    {waConnected && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20">
+                        <Check className="w-2.5 h-2.5" /> Conectado
+                      </span>
+                    )}
+                  </div>
+                  {waConnected && waPhoneNumber && (
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{waPhoneNumber}</p>
+                  )}
+                  {!waConnected && (
+                    <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Nao conectado</p>
+                  )}
+                </div>
+              </div>
+              {waConnected && (
+                <button
+                  onClick={() => handleDisconnect('whatsapp')}
+                  disabled={disconnecting === 'whatsapp'}
+                  className="text-xs text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                >
+                  {disconnecting === 'whatsapp' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Desconectar'}
+                </button>
+              )}
+            </div>
+
+            {/* Facebook */}
+            <div className="p-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className={cn(
+                  'w-10 h-10 rounded-xl flex items-center justify-center',
+                  fbConnected
+                    ? 'bg-gradient-to-br from-blue-500 to-blue-600 shadow-sm shadow-blue-500/20'
+                    : 'bg-gray-100 dark:bg-gray-800'
+                )}>
+                  <MessageCircle className={cn('w-5 h-5', fbConnected ? 'text-white' : 'text-gray-400')} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">Facebook Messenger</span>
+                    {fbConnected && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20">
+                        <Check className="w-2.5 h-2.5" /> Conectado
+                      </span>
+                    )}
+                  </div>
+                  {fbConnected && fbPageName && (
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{fbPageName}</p>
+                  )}
+                  {!fbConnected && (
+                    <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Nao conectado</p>
+                  )}
+                </div>
+              </div>
+              {fbConnected && (
+                <button
+                  onClick={() => handleDisconnect('facebook')}
+                  disabled={disconnecting === 'facebook'}
+                  className="text-xs text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                >
+                  {disconnecting === 'facebook' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Desconectar'}
+                </button>
+              )}
+            </div>
+
+            {/* Instagram */}
+            <div className="p-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className={cn(
+                  'w-10 h-10 rounded-xl flex items-center justify-center',
+                  igConnected
+                    ? 'bg-gradient-to-br from-purple-500 to-pink-500 shadow-sm shadow-purple-500/20'
+                    : 'bg-gray-100 dark:bg-gray-800'
+                )}>
+                  <MessageCircle className={cn('w-5 h-5', igConnected ? 'text-white' : 'text-gray-400')} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">Instagram Direct</span>
+                    {igConnected && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20">
+                        <Check className="w-2.5 h-2.5" /> Conectado
+                      </span>
+                    )}
+                  </div>
+                  {igConnected && igAccountName && (
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{igAccountName}</p>
+                  )}
+                  {!igConnected && (
+                    <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Nao conectado</p>
+                  )}
+                </div>
+              </div>
+              {igConnected && (
+                <button
+                  onClick={() => handleDisconnect('instagram')}
+                  disabled={disconnecting === 'instagram'}
+                  className="text-xs text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                >
+                  {disconnecting === 'instagram' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Desconectar'}
+                </button>
+              )}
+            </div>
+          </div>
         </div>
-      </SectionCard>
+      )}
     </motion.div>
   );
 }

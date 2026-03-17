@@ -17,6 +17,7 @@ import crypto from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { decryptToken } from '@/lib/utils/encryption';
+import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import {
   getFirestore,
   collection,
@@ -70,12 +71,19 @@ interface MetaWhatsAppMessage {
   from: string;
   id: string;
   timestamp: string;
-  type: 'text' | 'image' | 'audio' | 'video' | 'document' | 'sticker' | 'location' | 'contacts' | 'interactive';
+  type: 'text' | 'image' | 'audio' | 'video' | 'document' | 'sticker' | 'location' | 'contacts' | 'interactive' | 'reaction' | 'button';
   text?: { body: string };
-  image?: { id: string; caption?: string; mime_type: string; sha256: string };
-  audio?: { id: string; mime_type: string };
-  video?: { id: string; caption?: string; mime_type: string };
-  document?: { id: string; caption?: string; filename: string; mime_type: string };
+  image?: { id: string; caption?: string; mime_type?: string; sha256?: string };
+  audio?: { id: string; mime_type?: string };
+  video?: { id: string; caption?: string; mime_type?: string };
+  document?: { id: string; caption?: string; filename?: string; mime_type?: string };
+  sticker?: { id: string; mime_type?: string };
+  location?: { latitude: number; longitude: number; name?: string; address?: string };
+  contacts?: Array<{ name?: { formatted_name?: string }; phones?: Array<{ phone?: string }> }>;
+  reaction?: { message_id: string; emoji: string };
+  button?: { text: string; payload: string };
+  interactive?: { button_reply?: { id: string; title: string }; list_reply?: { id: string; title: string } };
+  context?: { from: string; id: string };
 }
 
 interface MetaWhatsAppStatus {
@@ -102,6 +110,13 @@ interface MetaMessagingEvent {
   postback?: { title: string; payload: string; mid: string };
 }
 
+interface ExtractedContent {
+  content: string;
+  mediaId?: string;
+  mediaUrl?: string;
+  mediaMimeType?: string;
+}
+
 interface InboundMessageParams {
   channel: 'whatsapp' | 'facebook' | 'instagram';
   channelIdentifier: string; // phoneNumberId (whatsapp) or pageId (facebook/instagram)
@@ -110,6 +125,10 @@ interface InboundMessageParams {
   messageId: string;
   content: string;
   mediaType?: 'image' | 'audio' | 'video' | 'document';
+  mediaId?: string;
+  mediaUrl?: string;
+  mediaMimeType?: string;
+  replyToMessageId?: string;
   timestamp: string;
 }
 
@@ -170,14 +189,20 @@ async function verifySignature(req: NextRequest, body: string): Promise<boolean>
 
 export async function POST(req: NextRequest) {
   try {
+    const clientIp = getClientIp(req);
+    const { allowed } = checkRateLimit(`webhook:${clientIp}`, 200, 60_000);
+    if (!allowed) {
+      console.warn('[Meta Webhook] Rate limit exceeded, skipping processing for IP:', clientIp);
+      return NextResponse.json({ status: 'ok' }, { status: 200 }); // Always 200 for Meta
+    }
+
     const rawBody = await req.text();
 
-    // Verify signature (skip in development)
-    if (process.env.NODE_ENV === 'production') {
-      const isValid = await verifySignature(req, rawBody);
-      if (!isValid) {
-        return NextResponse.json({ error: 'Invalid signature' }, { status: 403 });
-      }
+    // Verify signature
+    const isValid = await verifySignature(req, rawBody);
+    if (!isValid) {
+      console.error('[Meta Webhook] Invalid signature');
+      return NextResponse.json({ error: 'Invalid signature' }, { status: 403 });
     }
 
     const body = JSON.parse(rawBody) as {
@@ -226,14 +251,19 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
     // Handle inbound messages
     if (value.messages) {
       for (const msg of value.messages) {
+        const extracted = extractMessageContent(msg);
         await saveInboundMessage({
           channel: 'whatsapp',
           channelIdentifier: phoneNumberId,
           externalId: msg.from,
           senderName: value.contacts?.find(c => c.wa_id === msg.from)?.profile.name,
           messageId: msg.id,
-          content: extractMessageContent(msg),
+          content: extracted.content,
           mediaType: msg.type !== 'text' ? msg.type as 'image' | 'audio' | 'video' | 'document' : undefined,
+          mediaId: extracted.mediaId,
+          mediaUrl: extracted.mediaUrl,
+          mediaMimeType: extracted.mediaMimeType,
+          replyToMessageId: msg.context?.id,
           timestamp: new Date(parseInt(msg.timestamp) * 1000).toISOString(),
         });
       }
@@ -241,13 +271,18 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
 
     // Handle status updates (sent -> delivered -> read)
     if (value.statuses) {
-      for (const status of value.statuses) {
-        await updateMessageStatus({
-          channel: 'whatsapp',
-          messageId: status.id,
-          status: status.status,
-          timestamp: new Date(parseInt(status.timestamp) * 1000).toISOString(),
-        });
+      const businessId = await resolveBusinessId(getDb(), 'whatsapp', phoneNumberId);
+      if (businessId) {
+        for (const status of value.statuses) {
+          await updateMessageStatus({
+            businessId,
+            channel: 'whatsapp',
+            messageId: status.id,
+            status: status.status,
+            timestamp: new Date(parseInt(status.timestamp) * 1000).toISOString(),
+            errors: status.errors,
+          });
+        }
       }
     }
   }
@@ -258,6 +293,7 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
 async function handleFacebookEvent(entry: MetaWebhookEntry) {
   if (!entry.messaging) return;
 
+  const db = getDb();
   const pageId = entry.id;
 
   for (const event of entry.messaging) {
@@ -266,23 +302,75 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
 
     // Handle delivery receipts
     if (event.delivery) {
-      for (const mid of event.delivery.mids ?? []) {
-        await updateMessageStatus({
-          channel: 'facebook',
-          messageId: mid,
-          status: 'delivered',
-          timestamp: new Date(event.delivery.watermark).toISOString(),
-        });
+      const businessId = await resolveBusinessId(db, 'facebook', String(entry.id));
+      if (businessId) {
+        for (const mid of event.delivery.mids ?? []) {
+          await updateMessageStatus({
+            businessId,
+            channel: 'facebook',
+            messageId: mid,
+            status: 'delivered',
+            timestamp: new Date(event.delivery.watermark).toISOString(),
+          });
+        }
       }
       continue;
     }
 
     // Handle read receipts
     if (event.read) {
-      // Watermark-based: all messages before this timestamp are read
-      // We mark any messages we can find with matching externalMessageId
-      // For now, log — full watermark-based read tracking requires storing mids
-      console.log('[Meta Webhook] Facebook read receipt, watermark:', event.read.watermark);
+      const businessId = await resolveBusinessId(db, 'facebook', String(entry.id));
+      if (businessId) {
+        const readTimestamp = new Date(event.read.watermark).toISOString();
+        // Find conversation for this contact
+        const convQuery = query(
+          collection(db, 'conversations'),
+          where('businessId', '==', businessId),
+          where('channel', '==', 'facebook'),
+          where('contactExternalId', '==', String(event.sender.id)),
+          firestoreLimit(1)
+        );
+        const convSnap = await getDocs(convQuery);
+        if (!convSnap.empty) {
+          // Mark all outbound messages before watermark as read
+          const msgsQuery = query(
+            collection(db, 'conversationMessages'),
+            where('businessId', '==', businessId),
+            where('conversationId', '==', convSnap.docs[0].id),
+            where('direction', '==', 'outbound'),
+            where('status', 'in', ['sent', 'delivered'])
+          );
+          const msgsSnap = await getDocs(msgsQuery);
+          const batch: Promise<void>[] = [];
+          for (const msgDoc of msgsSnap.docs) {
+            const msgData = msgDoc.data();
+            if (msgData.sentAt && msgData.sentAt <= readTimestamp) {
+              batch.push(
+                updateDoc(doc(db, 'conversationMessages', msgDoc.id), {
+                  status: 'read',
+                  readAt: readTimestamp,
+                  ...(!msgData.deliveredAt ? { deliveredAt: readTimestamp } : {}),
+                })
+              );
+            }
+          }
+          await Promise.all(batch);
+        }
+      }
+      continue;
+    }
+
+    // Handle postback events
+    if (event.postback) {
+      await saveInboundMessage({
+        channel: 'facebook',
+        channelIdentifier: String(entry.id),
+        externalId: String(event.sender.id),
+        senderName: undefined,
+        messageId: `postback_${event.timestamp}`,
+        content: event.postback.title || event.postback.payload || '[Postback]',
+        timestamp: new Date(event.timestamp).toISOString(),
+      });
       continue;
     }
 
@@ -295,6 +383,26 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
         content: event.message.text,
         timestamp: new Date(event.timestamp).toISOString(),
       });
+    } else if (event.message?.attachments && event.message.attachments.length > 0) {
+      const attachment = event.message.attachments[0]; // Primary attachment
+      const attachmentType = attachment.type; // 'image', 'video', 'audio', 'file', 'fallback'
+      const attachmentUrl = attachment.payload?.url;
+
+      const mediaTypeMap: Record<string, string> = {
+        image: 'image', video: 'video', audio: 'audio', file: 'document', fallback: 'document'
+      };
+
+      await saveInboundMessage({
+        channel: 'facebook',
+        channelIdentifier: String(entry.id),
+        externalId: String(event.sender.id),
+        senderName: undefined,
+        messageId: event.message.mid,
+        content: event.message.text || `[${attachmentType === 'file' ? 'Documento' : attachmentType === 'image' ? 'Imagem' : attachmentType === 'video' ? 'Video' : attachmentType === 'audio' ? 'Audio' : 'Anexo'}]`,
+        mediaType: (mediaTypeMap[attachmentType] || 'document') as 'image' | 'audio' | 'video' | 'document',
+        mediaUrl: attachmentUrl,
+        timestamp: new Date(event.timestamp).toISOString(),
+      });
     }
   }
 }
@@ -304,11 +412,85 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
 async function handleInstagramEvent(entry: MetaWebhookEntry) {
   if (!entry.messaging) return;
 
+  const db = getDb();
   const accountId = entry.id;
 
   for (const event of entry.messaging) {
     if (event.message?.is_echo) continue;
-    if (event.delivery || event.read) continue;
+
+    // Handle delivery receipts
+    if (event.delivery) {
+      const businessId = await resolveBusinessId(db, 'instagram', String(entry.id));
+      if (businessId && event.delivery.mids) {
+        for (const mid of event.delivery.mids) {
+          await updateMessageStatus({
+            businessId,
+            channel: 'instagram',
+            messageId: mid,
+            status: 'delivered',
+            timestamp: new Date(event.delivery.watermark || Date.now()).toISOString(),
+          });
+        }
+      }
+      continue;
+    }
+
+    // Handle read receipts
+    if (event.read) {
+      const businessId = await resolveBusinessId(db, 'instagram', String(entry.id));
+      if (businessId) {
+        const readTimestamp = new Date(event.read.watermark).toISOString();
+        // Find conversation for this contact
+        const convQuery = query(
+          collection(db, 'conversations'),
+          where('businessId', '==', businessId),
+          where('channel', '==', 'instagram'),
+          where('contactExternalId', '==', String(event.sender.id)),
+          firestoreLimit(1)
+        );
+        const convSnap = await getDocs(convQuery);
+        if (!convSnap.empty) {
+          // Mark all outbound messages before watermark as read
+          const msgsQuery = query(
+            collection(db, 'conversationMessages'),
+            where('businessId', '==', businessId),
+            where('conversationId', '==', convSnap.docs[0].id),
+            where('direction', '==', 'outbound'),
+            where('status', 'in', ['sent', 'delivered'])
+          );
+          const msgsSnap = await getDocs(msgsQuery);
+          const batch: Promise<void>[] = [];
+          for (const msgDoc of msgsSnap.docs) {
+            const msgData = msgDoc.data();
+            if (msgData.sentAt && msgData.sentAt <= readTimestamp) {
+              batch.push(
+                updateDoc(doc(db, 'conversationMessages', msgDoc.id), {
+                  status: 'read',
+                  readAt: readTimestamp,
+                  ...(!msgData.deliveredAt ? { deliveredAt: readTimestamp } : {}),
+                })
+              );
+            }
+          }
+          await Promise.all(batch);
+        }
+      }
+      continue;
+    }
+
+    // Handle postback events
+    if (event.postback) {
+      await saveInboundMessage({
+        channel: 'instagram',
+        channelIdentifier: String(entry.id),
+        externalId: String(event.sender.id),
+        senderName: undefined,
+        messageId: `postback_${event.timestamp}`,
+        content: event.postback.title || event.postback.payload || '[Postback]',
+        timestamp: new Date(event.timestamp).toISOString(),
+      });
+      continue;
+    }
 
     if (event.message?.text) {
       await saveInboundMessage({
@@ -317,6 +499,26 @@ async function handleInstagramEvent(entry: MetaWebhookEntry) {
         externalId: event.sender.id,
         messageId: event.message.mid,
         content: event.message.text,
+        timestamp: new Date(event.timestamp).toISOString(),
+      });
+    } else if (event.message?.attachments && event.message.attachments.length > 0) {
+      const attachment = event.message.attachments[0]; // Primary attachment
+      const attachmentType = attachment.type; // 'image', 'video', 'audio', 'file', 'fallback'
+      const attachmentUrl = attachment.payload?.url;
+
+      const mediaTypeMap: Record<string, string> = {
+        image: 'image', video: 'video', audio: 'audio', file: 'document', fallback: 'document'
+      };
+
+      await saveInboundMessage({
+        channel: 'instagram',
+        channelIdentifier: String(entry.id),
+        externalId: String(event.sender.id),
+        senderName: undefined,
+        messageId: event.message.mid,
+        content: event.message.text || `[${attachmentType === 'file' ? 'Documento' : attachmentType === 'image' ? 'Imagem' : attachmentType === 'video' ? 'Video' : attachmentType === 'audio' ? 'Audio' : 'Anexo'}]`,
+        mediaType: (mediaTypeMap[attachmentType] || 'document') as 'image' | 'audio' | 'video' | 'document',
+        mediaUrl: attachmentUrl,
         timestamp: new Date(event.timestamp).toISOString(),
       });
     }
@@ -377,9 +579,9 @@ async function resolveBusinessId(
  * Saves an inbound message to Firestore.
  *
  * 1. Resolves the businessId from the channel identifier
- * 2. Finds or creates a Conversation document
- * 3. Adds a ConversationMessage document
- * 4. Updates the conversation's lastMessage, lastMessageAt, unreadCount
+ * 2. Checks for duplicate message (by externalMessageId + businessId)
+ * 3. Finds or creates a Conversation document
+ * 4. Adds a ConversationMessage document
  */
 async function saveInboundMessage(params: InboundMessageParams) {
   console.log('[Meta Webhook] Inbound message received:', {
@@ -395,19 +597,46 @@ async function saveInboundMessage(params: InboundMessageParams) {
   const businessId = await resolveBusinessId(db, params.channel, params.channelIdentifier);
 
   if (!businessId) {
-    console.warn(
-      '[Meta Webhook] Could not resolve businessId for',
-      params.channel,
-      'identifier:',
-      params.channelIdentifier,
-    );
+    console.error('[Meta Webhook] Could not resolve businessId for', params.channel, 'identifier:', params.channelIdentifier);
+    try {
+      await addDoc(collection(db, 'webhookFailures'), {
+        reason: 'business_not_found',
+        channel: params.channel,
+        channelIdentifier: params.channelIdentifier,
+        externalId: params.externalId,
+        messageId: params.messageId,
+        content: params.content?.substring(0, 100),
+        timestamp: params.timestamp,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (dlqErr) {
+      console.error('[Meta Webhook] Failed to save to dead-letter queue:', dlqErr);
+    }
     return;
+  }
+
+  // 2. Check for duplicate message (before touching conversation)
+  try {
+    const dupQuery = query(
+      collection(db, 'conversationMessages'),
+      where('externalMessageId', '==', params.messageId),
+      where('businessId', '==', businessId),
+      firestoreLimit(1)
+    );
+    const dupSnap = await getDocs(dupQuery);
+    if (!dupSnap.empty) {
+      console.log('[Meta Webhook] Duplicate message skipped:', params.messageId);
+      return;
+    }
+  } catch (dupErr) {
+    console.error('[Meta Webhook] Error checking for duplicate:', dupErr);
+    // Continue processing — better to risk a duplicate than to lose a message
   }
 
   const now = new Date().toISOString();
 
   try {
-    // 2. Find or create conversation
+    // 3. Find or create conversation
     const convQuery = query(
       collection(db, 'conversations'),
       where('businessId', '==', businessId),
@@ -436,6 +665,71 @@ async function saveInboundMessage(params: InboundMessageParams) {
       });
       conversationId = newConvRef.id;
 
+      // Auto-link to CRM contact if one exists with matching channel identity
+      try {
+        const channelField = params.channel === 'whatsapp'
+          ? 'channelIdentities.whatsapp'
+          : params.channel === 'facebook'
+          ? 'channelIdentities.facebook'
+          : 'channelIdentities.instagram';
+
+        const contactQuery = query(
+          collection(db, 'crmContacts'),
+          where('businessId', '==', businessId),
+          where(channelField, '==', params.externalId),
+          firestoreLimit(1),
+        );
+        const contactSnap = await getDocs(contactQuery);
+
+        if (!contactSnap.empty) {
+          const contact = contactSnap.docs[0];
+          const contactData = contact.data();
+          // Update conversation with CRM contact reference
+          await updateDoc(doc(db, 'conversations', conversationId), {
+            crmContactId: contact.id,
+            contactName: contactData.name || params.senderName || params.externalId,
+            contactPhone: contactData.phone || (params.channel === 'whatsapp' ? params.externalId : null),
+          });
+          // Update CRM contact with last conversation reference
+          await updateDoc(doc(db, 'crmContacts', contact.id), {
+            lastConversationId: conversationId,
+            lastConversationAt: now,
+            updatedAt: now,
+          });
+          console.log('[Meta Webhook] Linked conversation to CRM contact:', contact.id);
+        } else {
+          // Also try matching by phone for WhatsApp
+          if (params.channel === 'whatsapp') {
+            const phoneQuery = query(
+              collection(db, 'crmContacts'),
+              where('businessId', '==', businessId),
+              where('phone', '==', params.externalId),
+              firestoreLimit(1),
+            );
+            const phoneSnap = await getDocs(phoneQuery);
+            if (!phoneSnap.empty) {
+              const contact = phoneSnap.docs[0];
+              const contactData = contact.data();
+              await updateDoc(doc(db, 'conversations', conversationId), {
+                crmContactId: contact.id,
+                contactName: contactData.name || params.senderName || params.externalId,
+                contactPhone: params.externalId,
+              });
+              await updateDoc(doc(db, 'crmContacts', contact.id), {
+                lastConversationId: conversationId,
+                lastConversationAt: now,
+                'channelIdentities.whatsapp': params.externalId,
+                updatedAt: now,
+              });
+              console.log('[Meta Webhook] Linked conversation to CRM contact by phone:', contact.id);
+            }
+          }
+        }
+      } catch (linkErr) {
+        // Non-fatal — don't break message processing if CRM link fails
+        console.warn('[Meta Webhook] Failed to auto-link CRM contact:', linkErr);
+      }
+
       console.log('[Meta Webhook] Created new conversation:', conversationId);
     } else {
       // Update existing conversation
@@ -453,9 +747,43 @@ async function saveInboundMessage(params: InboundMessageParams) {
       });
 
       console.log('[Meta Webhook] Updated conversation:', conversationId);
+
+      // Auto-link to CRM if not already linked
+      const existingConvData = convSnap.docs[0].data();
+      if (!existingConvData.crmContactId) {
+        try {
+          const channelField = params.channel === 'whatsapp'
+            ? 'channelIdentities.whatsapp'
+            : params.channel === 'facebook'
+            ? 'channelIdentities.facebook'
+            : 'channelIdentities.instagram';
+
+          const contactQuery = query(
+            collection(db, 'crmContacts'),
+            where('businessId', '==', businessId),
+            where(channelField, '==', params.externalId),
+            firestoreLimit(1),
+          );
+          const contactSnap = await getDocs(contactQuery);
+
+          if (!contactSnap.empty) {
+            const contact = contactSnap.docs[0];
+            await updateDoc(doc(db, 'conversations', conversationId), {
+              crmContactId: contact.id,
+            });
+            await updateDoc(doc(db, 'crmContacts', contact.id), {
+              lastConversationId: conversationId,
+              lastConversationAt: now,
+              updatedAt: now,
+            });
+          }
+        } catch {
+          // Non-fatal
+        }
+      }
     }
 
-    // 3. Save message document
+    // 4. Save message document
     await addDoc(collection(db, 'conversationMessages'), {
       conversationId,
       businessId,
@@ -466,6 +794,10 @@ async function saveInboundMessage(params: InboundMessageParams) {
       externalMessageId: params.messageId,
       senderName: params.senderName,
       mediaType: params.mediaType ?? null,
+      mediaId: params.mediaId ?? null,
+      mediaUrl: params.mediaUrl ?? null,
+      mediaMimeType: params.mediaMimeType ?? null,
+      replyToMessageId: params.replyToMessageId ?? null,
       sentAt: params.timestamp,
       createdAt: now,
     });
@@ -480,11 +812,15 @@ async function saveInboundMessage(params: InboundMessageParams) {
  * Updates an outbound message's status in Firestore.
  * Status flow: sending -> sent -> delivered -> read
  */
+const STATUS_ORDER: Record<string, number> = { sending: 0, sent: 1, delivered: 2, read: 3, failed: -1 };
+
 async function updateMessageStatus(params: {
+  businessId: string;
   channel: 'whatsapp' | 'facebook' | 'instagram';
   messageId: string;
   status: string;
   timestamp: string;
+  errors?: Array<{ code: number; title: string }>;
 }) {
   console.log('[Meta Webhook] Status update:', params);
 
@@ -494,6 +830,7 @@ async function updateMessageStatus(params: {
     const msgQuery = query(
       collection(db, 'conversationMessages'),
       where('externalMessageId', '==', params.messageId),
+      where('businessId', '==', params.businessId),
       firestoreLimit(1),
     );
 
@@ -506,9 +843,19 @@ async function updateMessageStatus(params: {
     }
 
     const msgDoc = msgSnap.docs[0];
+    const currentData = msgDoc.data();
     const msgRef = doc(db, 'conversationMessages', msgDoc.id);
 
-    const updateData: Record<string, string> = {
+    // Status regression guard — don't go backwards (except 'failed' which always applies)
+    const currentStatus = currentData.status;
+    const currentOrder = STATUS_ORDER[currentStatus] ?? -1;
+    const newOrder = STATUS_ORDER[params.status] ?? -1;
+
+    if (params.status !== 'failed' && newOrder <= currentOrder) {
+      return; // Skip — current status is already at or beyond new status
+    }
+
+    const updateData: Record<string, string | number> = {
       status: params.status,
     };
 
@@ -519,19 +866,23 @@ async function updateMessageStatus(params: {
     if (params.status === 'read') {
       updateData.readAt = params.timestamp;
       // Also set deliveredAt if not already set (read implies delivered)
-      const currentData = msgDoc.data();
       if (!currentData.deliveredAt) {
         updateData.deliveredAt = params.timestamp;
       }
+    }
+
+    // Save error details when status is 'failed'
+    if (params.status === 'failed' && params.errors?.length) {
+      updateData.failedReason = params.errors[0].title;
+      updateData.failedCode = params.errors[0].code;
     }
 
     await updateDoc(msgRef, updateData);
 
     console.log('[Meta Webhook] Updated message status:', msgDoc.id, '->', params.status);
 
-    // If the message was read, also reset the conversation's unread count
+    // If the message was read, also update the conversation timestamp
     if (params.status === 'read') {
-      const currentData = msgDoc.data();
       if (currentData.conversationId) {
         try {
           const convRef = doc(db, 'conversations', currentData.conversationId);
@@ -550,15 +901,48 @@ async function updateMessageStatus(params: {
 
 // ─── Content Extraction ──────────────────────────────────────────────────────
 
-function extractMessageContent(msg: MetaWhatsAppMessage): string {
+function extractMessageContent(msg: MetaWhatsAppMessage): ExtractedContent {
   switch (msg.type) {
-    case 'text':     return msg.text?.body ?? '';
-    case 'image':    return msg.image?.caption ?? '[Imagem]';
-    case 'audio':    return '[Audio]';
-    case 'video':    return msg.video?.caption ?? '[Video]';
-    case 'document': return msg.document?.caption ?? `[Documento: ${msg.document?.filename ?? 'arquivo'}]`;
-    case 'sticker':  return '[Sticker]';
-    case 'location': return '[Localizacao]';
-    default:         return `[${msg.type}]`;
+    case 'text':
+      return { content: msg.text?.body ?? '' };
+    case 'image':
+      return {
+        content: msg.image?.caption ?? '[Imagem]',
+        mediaId: msg.image?.id,
+        mediaMimeType: msg.image?.mime_type,
+      };
+    case 'audio':
+      return {
+        content: '[Audio]',
+        mediaId: msg.audio?.id,
+        mediaMimeType: msg.audio?.mime_type,
+      };
+    case 'video':
+      return {
+        content: msg.video?.caption ?? '[Video]',
+        mediaId: msg.video?.id,
+        mediaMimeType: msg.video?.mime_type,
+      };
+    case 'document':
+      return {
+        content: msg.document?.caption ?? msg.document?.filename ?? '[Documento]',
+        mediaId: msg.document?.id,
+        mediaMimeType: msg.document?.mime_type,
+        mediaUrl: undefined,
+      };
+    case 'sticker':
+      return { content: '[Sticker]', mediaId: msg.sticker?.id };
+    case 'location':
+      return { content: `[Localizacao: ${msg.location?.latitude}, ${msg.location?.longitude}]` };
+    case 'contacts':
+      return { content: '[Contato]' };
+    case 'reaction':
+      return { content: msg.reaction?.emoji ?? '[Reacao]' };
+    case 'button':
+      return { content: msg.button?.text ?? '[Botao]' };
+    case 'interactive':
+      return { content: msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || '[Interativo]' };
+    default:
+      return { content: `[${msg.type || 'unknown'}]` };
   }
 }

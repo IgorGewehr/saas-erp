@@ -11,8 +11,8 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
 import {
   getFirestore,
   doc,
@@ -24,6 +24,7 @@ import {
   updateDoc,
 } from 'firebase/firestore';
 import { decryptToken } from '@/lib/utils/encryption';
+import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import type {
   ConversationChannel,
   ChannelCredentials,
@@ -78,37 +79,72 @@ interface MetaApiResponse {
 const META_API_VERSION = 'v21.0';
 const META_BASE_URL = `https://graph.facebook.com/${META_API_VERSION}`;
 
+// ─── Meta Error Handling ─────────────────────────────────────────────────────
+
+function handleMetaApiError(
+  response: Response,
+  data: MetaApiResponse,
+  channelLabel: string,
+): never {
+  const errorCode = data.error?.code;
+  const errorMsg = data.error?.message ?? `API retornou status ${response.status}`;
+
+  // Map known Meta error codes to actionable messages
+  let userMessage: string;
+  let shouldRetry = false;
+
+  switch (errorCode) {
+    case 130429:
+      userMessage = 'Limite de envio atingido. Tente novamente em alguns segundos.';
+      shouldRetry = true;
+      break;
+    case 131047:
+      userMessage = 'Fora da janela de 24h. Use uma mensagem de template.';
+      break;
+    case 131051:
+      userMessage = 'Tipo de mensagem nao suportado para este canal.';
+      break;
+    case 131026:
+      userMessage = 'Numero invalido ou destinatario nao esta no WhatsApp.';
+      break;
+    case 190:
+      userMessage = 'Token de acesso expirado. Reconecte o canal em Configuracoes.';
+      break;
+    case 368:
+      userMessage = 'Conta temporariamente bloqueada por violacao de politicas.';
+      break;
+    case 10:
+      userMessage = 'Permissao negada. Verifique as permissoes do canal.';
+      break;
+    default:
+      userMessage = `Falha ao enviar via ${channelLabel}: ${errorMsg}`;
+  }
+
+  throw new Error(JSON.stringify({
+    message: userMessage,
+    code: errorCode,
+    shouldRetry,
+    originalError: errorMsg,
+  }));
+}
+
 // ─── POST Handler ────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
+  const clientIp = getClientIp(req);
+  const { allowed } = checkRateLimit(`send:${clientIp}`, 30, 60_000);
+  if (!allowed) {
+    return NextResponse.json({ error: 'Rate limit exceeded. Tente novamente em breve.' }, { status: 429 });
+  }
+
   try {
-    // Verify Firebase Auth token
-    const authHeader = req.headers.get('authorization');
-    if (!authHeader?.startsWith('Bearer ')) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
-    const idToken = authHeader.split('Bearer ')[1];
-    if (!idToken) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
-    // Verify the token with Firebase Auth
-    try {
-      const auth = getAuth();
-      // Use the client SDK to verify - in production, consider using Firebase Admin SDK
-      // The token presence confirms the request came from an authenticated client
-      if (!auth.currentUser && process.env.NODE_ENV === 'production') {
-        // In production without a current user session, reject
-        // The token is validated client-side before being sent
-        console.log('[Send Message] Auth token received, proceeding with request');
-      }
-    } catch {
-      return NextResponse.json({ error: 'Invalid auth token' }, { status: 401 });
-    }
-
+    // Parse body first so we can verify businessId ownership
     const body: SendRequestBody = await req.json();
     const { businessId, conversationId, messageId, messageDocId, channel, recipientId, content, type, templateName, templateLanguage, templateParams, mediaUrl, mediaType } = body;
+
+    // Verify authentication and business ownership
+    const authResult = await verifyAuth(req, businessId);
+    if (isAuthError(authResult)) return authResult;
 
     // Validate required fields
     const isMedia = type === 'media';
@@ -133,6 +169,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Fix S4: Template params validation
+    if (type === 'template') {
+      if (!templateName) {
+        return NextResponse.json({ error: 'templateName e obrigatorio para mensagens de template' }, { status: 400 });
+      }
+      // Validate templateParams is an array if provided
+      if (templateParams && !Array.isArray(templateParams)) {
+        return NextResponse.json({ error: 'templateParams deve ser um array' }, { status: 400 });
+      }
+    }
+
     // Fetch business document to get channel credentials
     const db = getDb();
     const businessRef = doc(db, 'businesses', businessId);
@@ -153,6 +200,21 @@ export async function POST(req: NextRequest) {
         { error: 'Nenhum canal de comunicação configurado para esta empresa' },
         { status: 400 },
       );
+    }
+
+    // Fix T2: Token expiry pre-check for WhatsApp
+    if (channel === 'whatsapp' && channels.whatsapp?.tokenExpiresAt) {
+      const expiresAt = new Date(channels.whatsapp.tokenExpiresAt).getTime();
+      if (Date.now() > expiresAt) {
+        return NextResponse.json({
+          error: 'Token do WhatsApp expirado. Reconecte o canal em Configuracoes > Canais.',
+          code: 'TOKEN_EXPIRED',
+        }, { status: 401 });
+      }
+      // Warn if expiring within 7 days
+      if (Date.now() > expiresAt - 7 * 24 * 60 * 60 * 1000) {
+        console.warn('[Send Message] WhatsApp token expiring soon for business:', businessId);
+      }
     }
 
     // Send via the appropriate Meta API
@@ -186,7 +248,7 @@ export async function POST(req: NextRequest) {
     // Update message status from 'sending' to 'sent' in Firestore
     const docIdToUpdate = messageDocId || messageId;
     if (docIdToUpdate) {
-      await updateMessageAfterSend(db, docIdToUpdate, result.externalMessageId);
+      await updateMessageAfterSend(db, docIdToUpdate, result.externalMessageId, businessId);
     }
 
     return NextResponse.json({
@@ -195,12 +257,23 @@ export async function POST(req: NextRequest) {
     });
 
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Erro desconhecido ao enviar mensagem';
-    console.error('[Send Message] Error:', message);
-    return NextResponse.json(
-      { error: message },
-      { status: 500 },
-    );
+    let message = 'Erro desconhecido ao enviar mensagem';
+    let statusCode = 500;
+    let errorDetails: Record<string, unknown> = {};
+
+    if (error instanceof Error) {
+      try {
+        errorDetails = JSON.parse(error.message);
+        message = errorDetails.message as string;
+        // If it's a token error, return 401
+        if (errorDetails.code === 190) statusCode = 401;
+      } catch {
+        message = error.message;
+      }
+    }
+
+    console.error('[Send Message] Error:', message, errorDetails);
+    return NextResponse.json({ error: message, ...errorDetails }, { status: statusCode });
   }
 }
 
@@ -268,7 +341,7 @@ async function sendWhatsApp(
       messaging_product: 'whatsapp',
       to: recipientId,
       type: 'text',
-      text: { body: content },
+      text: { body: content, preview_url: true },
     };
   }
 
@@ -287,8 +360,7 @@ async function sendWhatsApp(
   const data: MetaApiResponse = await response.json();
 
   if (!response.ok || data.error) {
-    const errorMsg = data.error?.message ?? `WhatsApp API retornou status ${response.status}`;
-    throw new Error(`Falha ao enviar via WhatsApp: ${errorMsg}`);
+    handleMetaApiError(response, data, 'WhatsApp');
   }
 
   const externalMessageId = data.messages?.[0]?.id;
@@ -339,6 +411,7 @@ async function sendFacebookMessenger(
       },
       body: JSON.stringify({
         recipient: { id: recipientId },
+        messaging_type: 'RESPONSE',
         message: messagePayload,
       }),
     },
@@ -347,8 +420,7 @@ async function sendFacebookMessenger(
   const data: MetaApiResponse = await response.json();
 
   if (!response.ok || data.error) {
-    const errorMsg = data.error?.message ?? `Facebook API retornou status ${response.status}`;
-    throw new Error(`Falha ao enviar via Facebook: ${errorMsg}`);
+    handleMetaApiError(response, data, 'Facebook');
   }
 
   const externalMessageId = data.message_id;
@@ -401,6 +473,7 @@ async function sendInstagram(
       },
       body: JSON.stringify({
         recipient: { id: recipientId },
+        messaging_type: 'RESPONSE',
         message: messagePayload,
       }),
     },
@@ -409,8 +482,7 @@ async function sendInstagram(
   const data: MetaApiResponse = await response.json();
 
   if (!response.ok || data.error) {
-    const errorMsg = data.error?.message ?? `Instagram API retornou status ${response.status}`;
-    throw new Error(`Falha ao enviar via Instagram: ${errorMsg}`);
+    handleMetaApiError(response, data, 'Instagram');
   }
 
   const externalMessageId = data.message_id;
@@ -427,6 +499,7 @@ async function updateMessageAfterSend(
   db: ReturnType<typeof getFirestore>,
   messageId: string,
   externalMessageId: string,
+  businessId: string,
 ) {
   try {
     // Try direct doc update first (if messageId is the Firestore document ID)
@@ -445,6 +518,7 @@ async function updateMessageAfterSend(
     const q = query(
       collection(db, 'conversationMessages'),
       where('id', '==', messageId),
+      where('businessId', '==', businessId),
     );
     const snap = await getDocs(q);
 
