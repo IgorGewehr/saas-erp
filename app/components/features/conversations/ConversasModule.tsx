@@ -2036,50 +2036,44 @@ export default function ConversasModule() {
           </div>
 
           {/* Channel Tabs */}
-          <div className="px-4 pb-1 flex-shrink-0">
-            <div className="relative">
-              <div
-                className="flex gap-0.5 overflow-x-auto"
-                style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-              >
-                {tabs.map((tab) => {
-                  const isActive = activeChannel === tab.id;
-                  const unread = tab.id === 'all' ? unreadByChannel.all : unreadByChannel[tab.id];
-                  const cfg = tab.id !== 'all' ? CHANNEL_CONFIG[tab.id as ConversationChannel] : null;
-                  return (
-                    <button
-                      key={tab.id}
-                      onClick={() => setActiveChannel(tab.id)}
-                      className={cn(
-                        'flex-shrink-0 flex items-center gap-1 px-2 py-1.5 rounded-lg text-[10.5px] font-semibold transition-all duration-150 whitespace-nowrap',
-                        isActive
-                          ? 'bg-gray-900 dark:bg-white/[0.12] text-white dark:text-white'
-                          : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] hover:text-gray-800 dark:hover:text-gray-200',
-                      )}
-                    >
-                      {tab.id !== 'all' && cfg && (
-                        <span className={cn(isActive ? 'text-current' : cfg.textColor)}>
-                          <ChannelIcon channel={tab.id as ConversationChannel} size="sm" />
-                        </span>
-                      )}
-                      {tab.label}
-                      {(unread ?? 0) > 0 && (
-                        <span
-                          className={cn(
-                            'min-w-[15px] h-[15px] rounded-full text-[9px] font-bold flex items-center justify-center px-0.5 leading-none',
-                            isActive
-                              ? 'bg-red-500 text-white'
-                              : 'bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-400',
-                          )}
-                        >
-                          {unread}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="absolute right-0 top-0 bottom-0 w-6 bg-gradient-to-l from-white dark:from-[#0a0e17] to-transparent pointer-events-none" />
+          <div className="px-3 pb-1 flex-shrink-0">
+            <div className="flex gap-0.5">
+              {tabs.map((tab) => {
+                const isActive = activeChannel === tab.id;
+                const unread = tab.id === 'all' ? unreadByChannel.all : unreadByChannel[tab.id];
+                const cfg = tab.id !== 'all' ? CHANNEL_CONFIG[tab.id as ConversationChannel] : null;
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveChannel(tab.id)}
+                    className={cn(
+                      'flex items-center gap-1 min-w-0 px-1.5 py-1.5 rounded-lg text-[10.5px] font-semibold transition-all duration-150 whitespace-nowrap',
+                      isActive
+                        ? 'bg-gray-900 dark:bg-white/[0.12] text-white dark:text-white'
+                        : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] hover:text-gray-800 dark:hover:text-gray-200',
+                    )}
+                  >
+                    {tab.id !== 'all' && cfg && (
+                      <span className={cn('flex-shrink-0', isActive ? 'text-current' : cfg.textColor)}>
+                        <ChannelIcon channel={tab.id as ConversationChannel} size="sm" />
+                      </span>
+                    )}
+                    <span className="truncate">{tab.label}</span>
+                    {(unread ?? 0) > 0 && (
+                      <span
+                        className={cn(
+                          'flex-shrink-0 min-w-[15px] h-[15px] rounded-full text-[9px] font-bold flex items-center justify-center px-0.5 leading-none',
+                          isActive
+                            ? 'bg-red-500 text-white'
+                            : 'bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-400',
+                        )}
+                      >
+                        {unread}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           </div>
 
