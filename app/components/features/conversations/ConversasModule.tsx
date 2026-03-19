@@ -1070,6 +1070,215 @@ function ConversationListSkeleton() {
   );
 }
 
+// ─── Mock Data for Meta API Screencast ────────────────────────────────────────
+
+const USE_MOCK_DATA = true; // Toggle to false to use real Firestore data
+
+const NOW = new Date();
+const minutesAgo = (m: number) => new Date(NOW.getTime() - m * 60_000).toISOString();
+const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3_600_000).toISOString();
+
+const MOCK_CONVERSATIONS: Conversation[] = [
+  {
+    id: 'mock-whatsapp-1',
+    businessId: 'mock-biz',
+    channel: 'whatsapp',
+    contactName: 'Maria Oliveira',
+    contactPhone: '+55 11 98765-4321',
+    contactExternalId: '5511987654321',
+    status: 'open',
+    lastMessage: 'Oi! Gostaria de agendar um horário para amanhã, vocês têm disponibilidade?',
+    lastMessageAt: minutesAgo(3),
+    lastMessageDirection: 'inbound',
+    unreadCount: 2,
+    assignedTo: '',
+    createdAt: hoursAgo(2),
+    updatedAt: minutesAgo(3),
+  },
+  {
+    id: 'mock-instagram-dm-1',
+    businessId: 'mock-biz',
+    channel: 'instagram',
+    contactName: 'Lucas Ferreira',
+    contactExternalId: '17841405793042',
+    status: 'open',
+    lastMessage: 'Boa tarde! Quanto custa o pacote completo? Vi no stories e fiquei interessado',
+    lastMessageAt: minutesAgo(12),
+    lastMessageDirection: 'inbound',
+    unreadCount: 1,
+    assignedTo: '',
+    createdAt: hoursAgo(1),
+    updatedAt: minutesAgo(12),
+  },
+  {
+    id: 'mock-instagram-comment-1',
+    businessId: 'mock-biz',
+    channel: 'instagram',
+    contactName: 'Ana Costa',
+    contactExternalId: '17841405793099',
+    status: 'waiting',
+    lastMessage: 'Amei o resultado! 😍 Onde consigo o link para agendar?',
+    lastMessageAt: minutesAgo(45),
+    lastMessageDirection: 'inbound',
+    unreadCount: 1,
+    assignedTo: '',
+    createdAt: hoursAgo(3),
+    updatedAt: minutesAgo(45),
+  },
+];
+
+const MOCK_MESSAGES: Record<string, ConversationMessage[]> = {
+  'mock-whatsapp-1': [
+    {
+      id: 'msg-w1',
+      conversationId: 'mock-whatsapp-1',
+      businessId: 'mock-biz',
+      channel: 'whatsapp',
+      direction: 'inbound',
+      content: 'Olá, boa tarde! Tudo bem?',
+      status: 'read',
+      sentAt: hoursAgo(2),
+      senderName: 'Maria Oliveira',
+    },
+    {
+      id: 'msg-w2',
+      conversationId: 'mock-whatsapp-1',
+      businessId: 'mock-biz',
+      channel: 'whatsapp',
+      direction: 'outbound',
+      content: 'Boa tarde, Maria! Tudo ótimo, como posso ajudar? 😊',
+      status: 'read',
+      sentAt: hoursAgo(2) > minutesAgo(118) ? hoursAgo(2) : minutesAgo(118),
+      senderName: 'Atendente',
+    },
+    {
+      id: 'msg-w3',
+      conversationId: 'mock-whatsapp-1',
+      businessId: 'mock-biz',
+      channel: 'whatsapp',
+      direction: 'inbound',
+      content: 'Gostaria de saber os horários disponíveis para amanhã',
+      status: 'read',
+      sentAt: minutesAgo(10),
+      senderName: 'Maria Oliveira',
+    },
+    {
+      id: 'msg-w4',
+      conversationId: 'mock-whatsapp-1',
+      businessId: 'mock-biz',
+      channel: 'whatsapp',
+      direction: 'outbound',
+      content: 'Claro! Amanhã temos disponibilidade às 9h, 14h e 16h. Qual horário prefere?',
+      status: 'delivered',
+      sentAt: minutesAgo(8),
+      senderName: 'Atendente',
+    },
+    {
+      id: 'msg-w5',
+      conversationId: 'mock-whatsapp-1',
+      businessId: 'mock-biz',
+      channel: 'whatsapp',
+      direction: 'inbound',
+      content: 'Oi! Gostaria de agendar um horário para amanhã, vocês têm disponibilidade?',
+      status: 'delivered',
+      sentAt: minutesAgo(3),
+      senderName: 'Maria Oliveira',
+    },
+    {
+      id: 'msg-w6',
+      conversationId: 'mock-whatsapp-1',
+      businessId: 'mock-biz',
+      channel: 'whatsapp',
+      direction: 'inbound',
+      content: 'O de 14h seria perfeito! Como faço para confirmar?',
+      status: 'delivered',
+      sentAt: minutesAgo(2),
+      senderName: 'Maria Oliveira',
+    },
+  ],
+  'mock-instagram-dm-1': [
+    {
+      id: 'msg-i1',
+      conversationId: 'mock-instagram-dm-1',
+      businessId: 'mock-biz',
+      channel: 'instagram',
+      direction: 'inbound',
+      content: 'Oi! Vi o post de vocês sobre o pacote premium',
+      status: 'read',
+      sentAt: hoursAgo(1),
+      senderName: 'Lucas Ferreira',
+    },
+    {
+      id: 'msg-i2',
+      conversationId: 'mock-instagram-dm-1',
+      businessId: 'mock-biz',
+      channel: 'instagram',
+      direction: 'outbound',
+      content: 'Olá Lucas! Obrigado pelo interesse! Nosso pacote premium inclui 5 sessões mensais com acompanhamento personalizado.',
+      status: 'read',
+      sentAt: minutesAgo(50),
+      senderName: 'Atendente',
+    },
+    {
+      id: 'msg-i3',
+      conversationId: 'mock-instagram-dm-1',
+      businessId: 'mock-biz',
+      channel: 'instagram',
+      direction: 'inbound',
+      content: 'Boa tarde! Quanto custa o pacote completo? Vi no stories e fiquei interessado',
+      status: 'delivered',
+      sentAt: minutesAgo(12),
+      senderName: 'Lucas Ferreira',
+    },
+  ],
+  'mock-instagram-comment-1': [
+    {
+      id: 'msg-c1',
+      conversationId: 'mock-instagram-comment-1',
+      businessId: 'mock-biz',
+      channel: 'instagram',
+      direction: 'inbound',
+      content: '📸 Comentário no post "Resultado incrível da cliente @patricia_m"',
+      status: 'read',
+      sentAt: hoursAgo(3),
+      senderName: 'Ana Costa',
+    },
+    {
+      id: 'msg-c2',
+      conversationId: 'mock-instagram-comment-1',
+      businessId: 'mock-biz',
+      channel: 'instagram',
+      direction: 'inbound',
+      content: 'Que trabalho lindo! Ficou maravilhoso!! 🔥✨',
+      status: 'read',
+      sentAt: hoursAgo(3),
+      senderName: 'Ana Costa',
+    },
+    {
+      id: 'msg-c3',
+      conversationId: 'mock-instagram-comment-1',
+      businessId: 'mock-biz',
+      channel: 'instagram',
+      direction: 'outbound',
+      content: 'Obrigado pelo carinho, Ana! 🥰 Fico feliz que gostou!',
+      status: 'read',
+      sentAt: hoursAgo(2),
+      senderName: 'Atendente',
+    },
+    {
+      id: 'msg-c4',
+      conversationId: 'mock-instagram-comment-1',
+      businessId: 'mock-biz',
+      channel: 'instagram',
+      direction: 'inbound',
+      content: 'Amei o resultado! 😍 Onde consigo o link para agendar?',
+      status: 'delivered',
+      sentAt: minutesAgo(45),
+      senderName: 'Ana Costa',
+    },
+  ],
+};
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function ConversasModule() {
@@ -1086,11 +1295,14 @@ export default function ConversasModule() {
   const [showTemplateSelector, setShowTemplateSelector] = useState(false);
   const [attachment, setAttachment] = useState<File | null>(null);
 
-  // Real-time data from Firestore
-  const [conversations, setConversations] = useState<Conversation[]>([]);
+  // Real-time data from Firestore (or mock data)
+  const [conversations, setConversations] = useState<Conversation[]>(USE_MOCK_DATA ? MOCK_CONVERSATIONS : []);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
-  const [isLoadingConversations, setIsLoadingConversations] = useState(true);
+  const [isLoadingConversations, setIsLoadingConversations] = useState(!USE_MOCK_DATA);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+
+  // Mock message counter for unique IDs
+  const mockMsgCounter = useRef(100);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -1098,6 +1310,7 @@ export default function ConversasModule() {
   // ── Real-time: Conversations list ──────────────────────────────────────────
 
   useEffect(() => {
+    if (USE_MOCK_DATA) return; // Skip Firestore when using mock data
     if (!business?.id) return;
 
     setIsLoadingConversations(true);
@@ -1127,6 +1340,13 @@ export default function ConversasModule() {
   // ── Real-time: Messages for selected conversation ──────────────────────────
 
   useEffect(() => {
+    if (USE_MOCK_DATA) {
+      // Load mock messages for the selected conversation
+      if (selectedConversation?.id) {
+        setMessages(MOCK_MESSAGES[selectedConversation.id] || []);
+      }
+      return;
+    }
     if (!selectedConversation?.id || !business?.id) return;
 
     setIsLoadingMessages(true);
@@ -1169,6 +1389,7 @@ export default function ConversasModule() {
 
   const isWindowExpired = useCallback(
     (conversation: Conversation): boolean => {
+      if (USE_MOCK_DATA) return false; // Mock data: never expired
       if (conversation.channel !== 'whatsapp') return false;
       if (!conversation.lastMessageAt) return true;
       // Check if last INBOUND message was more than 24h ago
@@ -1302,13 +1523,20 @@ export default function ConversasModule() {
       setShowMobileThread(true);
       setAttachment(null);
       if (conv.unreadCount > 0) {
-        markAsRead(conv.id);
-        // Send read receipt for the last inbound message
-        const lastInbound = messages
-          .filter((m) => m.direction === 'inbound' && m.externalMessageId)
-          .sort((a, b) => b.sentAt.localeCompare(a.sentAt))[0];
-        if (lastInbound?.externalMessageId) {
-          sendReadReceipt(conv, lastInbound.externalMessageId);
+        if (USE_MOCK_DATA) {
+          // Mock: just clear unread count locally
+          setConversations((prev) =>
+            prev.map((c) => (c.id === conv.id ? { ...c, unreadCount: 0 } : c)),
+          );
+        } else {
+          markAsRead(conv.id);
+          // Send read receipt for the last inbound message
+          const lastInbound = messages
+            .filter((m) => m.direction === 'inbound' && m.externalMessageId)
+            .sort((a, b) => b.sentAt.localeCompare(a.sentAt))[0];
+          if (lastInbound?.externalMessageId) {
+            sendReadReceipt(conv, lastInbound.externalMessageId);
+          }
         }
       }
     },
@@ -1460,6 +1688,15 @@ export default function ConversasModule() {
   // ── Update conversation status ─────────────────────────────────────────────
 
   const updateConversationStatus = useCallback(async (conversationId: string, status: ConversationStatus) => {
+    if (USE_MOCK_DATA) {
+      setConversations((prev) =>
+        prev.map((c) => (c.id === conversationId ? { ...c, status, updatedAt: new Date().toISOString() } : c)),
+      );
+      setSelectedConversation((prev) =>
+        prev?.id === conversationId ? { ...prev, status, updatedAt: new Date().toISOString() } : prev,
+      );
+      return;
+    }
     try {
       await updateDoc(doc(db, 'conversations', conversationId), {
         status,
@@ -1475,13 +1712,60 @@ export default function ConversasModule() {
   const handleSend = useCallback(async () => {
     const hasText = messageInput.trim().length > 0;
     const hasFile = !!attachment;
-    if ((!hasText && !hasFile) || !selectedConversation || !business?.id || !user || isSending) return;
+    if ((!hasText && !hasFile) || !selectedConversation || isSending) return;
 
     const content = messageInput.trim();
     const currentAttachment = attachment;
     setMessageInput('');
     setAttachment(null);
     setIsSending(true);
+
+    // ── Mock mode: append message locally ──────────────────────────────────
+    if (USE_MOCK_DATA) {
+      const now = new Date().toISOString();
+      mockMsgCounter.current += 1;
+      const newMsg: ConversationMessage = {
+        id: `mock-sent-${mockMsgCounter.current}`,
+        conversationId: selectedConversation.id,
+        businessId: 'mock-biz',
+        channel: selectedConversation.channel,
+        direction: 'outbound',
+        content: content || (currentAttachment ? currentAttachment.name : ''),
+        status: 'delivered',
+        senderName: user?.name || 'Atendente',
+        sentAt: now,
+      };
+      setMessages((prev) => [...prev, newMsg]);
+
+      // Update conversation list preview
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === selectedConversation.id
+            ? {
+                ...c,
+                lastMessage: newMsg.content,
+                lastMessageAt: now,
+                lastMessageDirection: 'outbound' as const,
+                unreadCount: 0,
+                updatedAt: now,
+              }
+            : c,
+        ),
+      );
+
+      // Simulate status progression: delivered → read after 1.5s
+      setTimeout(() => {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === newMsg.id ? { ...m, status: 'read' } : m)),
+        );
+      }, 1500);
+
+      setIsSending(false);
+      inputRef.current?.focus();
+      return;
+    }
+
+    // ── Real mode: send via Firestore + Meta API ───────────────────────────
 
     // If there is a media attachment, send it first
     if (currentAttachment) {
@@ -1497,6 +1781,11 @@ export default function ConversasModule() {
     if (!hasText) {
       setIsSending(false);
       inputRef.current?.focus();
+      return;
+    }
+
+    if (!business?.id || !user) {
+      setIsSending(false);
       return;
     }
 
