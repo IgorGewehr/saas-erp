@@ -1809,8 +1809,8 @@ export default function ConversasModule() {
           updatedAt: now,
         });
       } else {
-        // 1. Save message to Firestore
-        await addDoc(collection(db, 'conversationMessages'), {
+        // 1. Save message to Firestore — capture doc ID
+        const msgRef = await addDoc(collection(db, 'conversationMessages'), {
           conversationId: selectedConversation.id,
           businessId: business.id,
           channel: selectedConversation.channel,
@@ -1829,11 +1829,11 @@ export default function ConversasModule() {
           updatedAt: now,
         });
 
-        // 3. Send via Meta API (fire-and-forget with error handling)
+        // 3. Send via Meta API — pass messageDocId so backend updates sending → sent
         try {
           const auth = getAuth();
           const token = await auth.currentUser?.getIdToken();
-          await fetch('/api/conversations/send', {
+          const res = await fetch('/api/conversations/send', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -1842,14 +1842,19 @@ export default function ConversasModule() {
             body: JSON.stringify({
               businessId: business.id,
               conversationId: selectedConversation.id,
+              messageDocId: msgRef.id,
               channel: selectedConversation.channel,
               recipientId: selectedConversation.contactExternalId,
               content,
             }),
           });
+          if (!res.ok) {
+            console.error('[Conversas] API /api/conversations/send returned', res.status);
+            await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(() => {});
+          }
         } catch {
-          // Message saved locally even if external send fails
           console.warn('Failed to send message via API, saved locally');
+          await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(() => {});
         }
       }
     } catch (err) {

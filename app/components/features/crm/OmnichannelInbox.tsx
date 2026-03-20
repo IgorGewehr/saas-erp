@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Search, Send, MessageSquare, Inbox, Instagram, Facebook, Check, CheckCheck, Star } from 'lucide-react';
+import { Search, Send, MessageSquare, Inbox, Instagram, Facebook, Check, CheckCheck, Star, AlertCircle, Clock } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { getInitials } from '@/lib/utils/format';
@@ -104,8 +104,8 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
     setIsSending(true);
     const now = new Date().toISOString();
     try {
-      // 1. Persist message to Firestore
-      await addDoc(collection(db, 'conversationMessages'), {
+      // 1. Persist message to Firestore — capture the doc ID
+      const msgRef = await addDoc(collection(db, 'conversationMessages'), {
         conversationId: selectedConv.id,
         businessId,
         channel: selectedConv.channel,
@@ -124,7 +124,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
         updatedAt: now,
       });
 
-      // 3. Send via Meta API (fire-and-forget)
+      // 3. Send via Meta API — pass messageDocId so backend updates sending → sent
       try {
         const { getAuth } = await import('firebase/auth');
         const auth = getAuth();
@@ -138,6 +138,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
           body: JSON.stringify({
             businessId,
             conversationId: selectedConv.id,
+            messageDocId: msgRef.id,
             channel: selectedConv.channel,
             recipientId: selectedConv.contactExternalId,
             content,
@@ -145,9 +146,13 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
         });
         if (!res.ok) {
           console.error('[OmnichannelInbox] API /api/conversations/send returned', res.status, await res.text().catch(() => ''));
+          // API falhou — marcar como failed no Firestore
+          await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(() => {});
         }
       } catch (apiErr) {
         console.error('[OmnichannelInbox] Network error calling /api/conversations/send:', apiErr);
+        // Rede falhou — marcar como failed
+        await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(() => {});
       }
     } catch (err) {
       console.error('[OmnichannelInbox] Firestore write failed:', err);
@@ -260,9 +265,18 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
                   )}
                 >
                   <div className="relative shrink-0">
-                    <div className={cn('w-9 h-9 rounded-full flex items-center justify-center text-[10px] font-bold', cfg.bgColor, cfg.textColor)}>
-                      {getInitials(conv.contactName)}
-                    </div>
+                    {conv.contactAvatarUrl ? (
+                      <img
+                        src={conv.contactAvatarUrl}
+                        alt={conv.contactName}
+                        className="w-9 h-9 rounded-full object-cover"
+                        referrerPolicy="no-referrer"
+                      />
+                    ) : (
+                      <div className={cn('w-9 h-9 rounded-full flex items-center justify-center text-[10px] font-bold', cfg.bgColor, cfg.textColor)}>
+                        {getInitials(conv.contactName)}
+                      </div>
+                    )}
                     <div className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-white dark:bg-[#0a0e17] flex items-center justify-center">
                       {conv.channel === 'whatsapp' && <WhatsAppIcon className="w-2.5 h-2.5 text-[#25D366]" />}
                       {conv.channel === 'instagram' && <Instagram className="w-2.5 h-2.5 text-[#E1306C]" />}
@@ -312,9 +326,18 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
             {/* Thread header */}
             <div className="flex items-center justify-between px-4 py-3 bg-white dark:bg-[#111827] border-b border-gray-100 dark:border-white/[0.06] shrink-0">
               <div className="flex items-center gap-2.5 min-w-0">
-                <div className={cn('w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold', CHANNEL_CFG[selectedConv.channel].bgColor, CHANNEL_CFG[selectedConv.channel].textColor)}>
-                  {getInitials(selectedConv.contactName)}
-                </div>
+                {selectedConv.contactAvatarUrl ? (
+                  <img
+                    src={selectedConv.contactAvatarUrl}
+                    alt={selectedConv.contactName}
+                    className="w-8 h-8 rounded-full object-cover shrink-0"
+                    referrerPolicy="no-referrer"
+                  />
+                ) : (
+                  <div className={cn('w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold', CHANNEL_CFG[selectedConv.channel].bgColor, CHANNEL_CFG[selectedConv.channel].textColor)}>
+                    {getInitials(selectedConv.contactName)}
+                  </div>
+                )}
                 <div className="min-w-0">
                   <div className="flex items-center gap-1.5">
                     <span className="text-sm font-semibold text-gray-900 dark:text-white truncate">{selectedConv.contactName}</span>
@@ -355,9 +378,11 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
                       )}
                       <div className={cn('flex items-center gap-1 mt-0.5 px-1', isOut ? 'flex-row-reverse' : 'flex-row')}>
                         <span className="text-[9px] text-gray-400 dark:text-gray-500">{fullTime(msg.sentAt)}</span>
-                        {isOut && msg.status === 'read' && <CheckCheck className="w-3 h-3 text-sky-400" />}
-                        {isOut && msg.status === 'delivered' && <CheckCheck className="w-3 h-3 text-gray-400" />}
-                        {isOut && msg.status === 'sent' && <Check className="w-3 h-3 text-gray-400" />}
+                        {isOut && msg.status === 'sending' && <Clock className="w-3 h-3 text-white/50" />}
+                        {isOut && msg.status === 'sent' && <Check className="w-3 h-3 text-white/70" />}
+                        {isOut && msg.status === 'delivered' && <CheckCheck className="w-3 h-3 text-white/70" />}
+                        {isOut && msg.status === 'read' && <CheckCheck className="w-3 h-3 text-sky-300" />}
+                        {isOut && msg.status === 'failed' && <AlertCircle className="w-3 h-3 text-red-300" />}
                       </div>
                     </div>
                   </motion.div>

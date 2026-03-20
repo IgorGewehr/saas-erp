@@ -23,12 +23,14 @@ import {
   query,
   where,
   getDocs,
+  getDoc,
   addDoc,
   updateDoc,
   doc,
   increment,
   limit as firestoreLimit,
 } from 'firebase/firestore';
+import { decryptToken } from '@/lib/utils/encryption';
 
 // ─── Firebase init (server-side, client SDK) ─────────────────────────────────
 
@@ -199,12 +201,14 @@ async function processEntry(entry: WebhookEntry): Promise<void> {
       // ── Delivery receipts ────────────────────────────────────────────
       if (event.delivery) {
         await handleDeliveryReceipt(pageId, event.delivery);
+        console.log(`[FB Webhook] 📬 Delivery receipt processado | watermark: ${event.delivery.watermark} | mids: ${(event.delivery.mids ?? []).length}`);
         continue;
       }
 
       // ── Read receipts ────────────────────────────────────────────────
       if (event.read) {
         await handleReadReceipt(pageId, senderId, event.read);
+        console.log(`[FB Webhook] 👁️ Read receipt processado | sender: ${senderId} | watermark: ${event.read.watermark}`);
         continue;
       }
 
@@ -312,6 +316,7 @@ function logInboundMessage(senderId: string, text: string): void {
  * @param text - Texto da mensagem (máx. 2000 caracteres)
  */
 async function sendMessageToFacebook(senderId: string, text: string): Promise<void> {
+  // Fallback: usa .env direto (para auto-reply no webhook — não tem businessId aqui)
   const pageAccessToken = process.env.META_FACEBOOK_PAGE_ACCESS_TOKEN;
 
   if (!pageAccessToken) {
@@ -346,6 +351,71 @@ async function sendMessageToFacebook(senderId: string, text: string): Promise<vo
     });
   } catch (err) {
     console.error('[FB Webhook] Erro de rede ao enviar mensagem:', err);
+  }
+}
+
+// ─── Graph API: Buscar Perfil do Remetente ──────────────────────────────────
+
+interface SenderProfile {
+  name: string;
+  profilePic?: string;
+}
+
+/**
+ * Busca nome e foto do remetente via Graph API do Facebook.
+ * GET /{PSID}?fields=first_name,last_name,profile_pic&access_token={token}
+ */
+async function fetchSenderProfile(
+  senderId: string,
+  pageAccessToken: string,
+): Promise<SenderProfile | null> {
+  try {
+    const url = `https://graph.facebook.com/v19.0/${senderId}?fields=first_name,last_name,profile_pic&access_token=${pageAccessToken}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+
+    if (!res.ok) {
+      const body = await res.text();
+      console.warn('[FB Webhook] Graph API profile fetch falhou:', res.status, body);
+      return null;
+    }
+
+    const data = await res.json();
+    const firstName = data.first_name || '';
+    const lastName = data.last_name || '';
+    const name = `${firstName} ${lastName}`.trim() || senderId;
+
+    console.log('[FB Webhook] Perfil obtido:', { name, hasPic: !!data.profile_pic });
+
+    return {
+      name,
+      profilePic: data.profile_pic || undefined,
+    };
+  } catch (err) {
+    console.error('[FB Webhook] Erro ao buscar perfil do remetente:', err);
+    return null;
+  }
+}
+
+/**
+ * Obtém o page access token descriptografado do Firestore para um business.
+ */
+async function getDecryptedPageToken(businessId: string): Promise<string | null> {
+  try {
+    const db = getDb();
+    const businessDoc = await getDoc(doc(db, 'businesses', businessId));
+    if (!businessDoc.exists()) return null;
+
+    const data = businessDoc.data();
+    const encryptedToken = data?.channels?.facebook?.pageAccessToken;
+    if (!encryptedToken) {
+      console.warn('[FB Webhook] Nenhum pageAccessToken encontrado para business:', businessId);
+      return null;
+    }
+
+    return await decryptToken(encryptedToken);
+  } catch (err) {
+    console.error('[FB Webhook] Erro ao descriptografar pageAccessToken:', err);
+    return null;
   }
 }
 
@@ -427,6 +497,19 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
 
   const now = new Date().toISOString();
 
+  // 2.5. Buscar perfil do remetente via Graph API (nome + foto)
+  let senderName: string | null = null;
+  let senderAvatarUrl: string | null = null;
+
+  const pageToken = await getDecryptedPageToken(businessId);
+  if (pageToken) {
+    const profile = await fetchSenderProfile(params.senderId, pageToken);
+    if (profile) {
+      senderName = profile.name;
+      senderAvatarUrl = profile.profilePic ?? null;
+    }
+  }
+
   try {
     // 3. Encontrar ou criar conversa
     const convQuery = query(
@@ -440,11 +523,13 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
     let conversationId: string;
 
     if (convSnap.empty) {
+      // Nova conversa — já com nome e foto do perfil
       const newConvRef = await addDoc(collection(db, 'conversations'), {
         businessId,
         channel: 'facebook',
-        contactName: params.senderId, // Será atualizado quando tivermos o profile
+        contactName: senderName || params.senderId,
         contactExternalId: params.senderId,
+        ...(senderAvatarUrl ? { contactAvatarUrl: senderAvatarUrl } : {}),
         status: 'open',
         lastMessage: params.text,
         lastMessageAt: params.timestamp,
@@ -454,19 +539,34 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
         updatedAt: now,
       });
       conversationId = newConvRef.id;
-      console.log('[FB Webhook] Nova conversa criada:', conversationId);
+      console.log('[FB Webhook] Nova conversa criada:', conversationId, '| Contato:', senderName || params.senderId);
 
       // Auto-link com CRM contact
       await tryLinkCrmContact(db, businessId, params.senderId, conversationId, now);
     } else {
       conversationId = convSnap.docs[0].id;
-      await updateDoc(doc(db, 'conversations', conversationId), {
+      const existingConv = convSnap.docs[0].data();
+
+      // Atualizar conversa existente — e enriquecer com nome/foto se ainda não tem
+      const convUpdate: Record<string, unknown> = {
         lastMessage: params.text,
         lastMessageAt: params.timestamp,
         lastMessageDirection: 'inbound',
         unreadCount: increment(1),
         updatedAt: now,
-      });
+      };
+
+      // Atualiza nome se o atual é o PSID numérico e agora temos o nome real
+      if (senderName && (!existingConv.contactName || /^\d+$/.test(existingConv.contactName))) {
+        convUpdate.contactName = senderName;
+      }
+
+      // Atualiza foto se não existe
+      if (senderAvatarUrl && !existingConv.contactAvatarUrl) {
+        convUpdate.contactAvatarUrl = senderAvatarUrl;
+      }
+
+      await updateDoc(doc(db, 'conversations', conversationId), convUpdate);
       console.log('[FB Webhook] Conversa atualizada:', conversationId);
     }
 
@@ -479,7 +579,7 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
       content: params.text,
       status: 'delivered',
       externalMessageId: params.messageId,
-      senderName: null,
+      senderName: senderName || null,
       mediaType: params.mediaType ?? null,
       mediaUrl: params.mediaUrl ?? null,
       sentAt: params.timestamp,
