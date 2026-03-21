@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Search, Send, MessageSquare, Inbox, Instagram, Facebook, Check, CheckCheck, Star, AlertCircle, Clock } from 'lucide-react';
+import { Search, Send, MessageSquare, Inbox, Instagram, Facebook, Check, CheckCheck, Star, AlertCircle, Clock, Trash2, X, Loader2 } from 'lucide-react';
+import { AnimatePresence } from 'framer-motion';
 import { motion } from 'framer-motion';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
@@ -29,6 +30,8 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
   const [isLoading, setIsLoading] = useState(true);
   const [filter, setFilter] = useState<'all' | ConversationChannel | 'comments'>('all');
   const [search, setSearch] = useState('');
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -195,7 +198,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
       '\n  Contato Externo ID:', conv.contactExternalId ?? '(vazio)',
       '\n  Telefone:', conv.contactPhone ?? '(vazio)',
       '\n  Avatar URL:', conv.contactAvatarUrl ? '✓ presente' : '(vazio)',
-      '\n  CRM Contact ID:', (conv as Record<string, unknown>).crmContactId ?? '(não vinculado)',
+      '\n  CRM Contact ID:', (conv as unknown as Record<string, unknown>).crmContactId ?? '(não vinculado)',
       '\n  Status:', conv.status,
       '\n  Unread:', conv.unreadCount,
     );
@@ -205,6 +208,35 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
         .catch((err) => console.error('[OmnichannelInbox] Failed to mark as read:', err));
     }
   }, []);
+
+  const handleDeleteConversation = useCallback(async () => {
+    if (!selectedConv || isDeleting) return;
+    setIsDeleting(true);
+    try {
+      const { getAuth } = await import('firebase/auth');
+      const token = await getAuth().currentUser?.getIdToken();
+      const res = await fetch(
+        `/api/conversations/${selectedConv.id}?businessId=${encodeURIComponent(businessId)}`,
+        {
+          method: 'DELETE',
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        },
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erro ao excluir');
+      }
+      setIsDeleteModalOpen(false);
+      setSelectedConv(null);
+      setMessages([]);
+      toast.success('Conversa excluída com sucesso');
+    } catch (err) {
+      console.error('[OmnichannelInbox] Delete failed:', err);
+      toast.error('Erro ao excluir conversa');
+    } finally {
+      setIsDeleting(false);
+    }
+  }, [selectedConv, businessId, isDeleting]);
 
   return (
     <div className="flex flex-1 min-h-0 h-0 bg-white dark:bg-[#0a0e17] rounded-2xl border border-gray-100 dark:border-gray-700/50 overflow-hidden">
@@ -371,6 +403,15 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
                   )}
                 </div>
               </div>
+              <motion.button
+                whileHover={{ scale: 1.1 }}
+                whileTap={{ scale: 0.9 }}
+                onClick={() => setIsDeleteModalOpen(true)}
+                className="w-8 h-8 rounded-xl bg-gray-100 dark:bg-white/[0.06] flex items-center justify-center text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors shrink-0"
+                title="Excluir conversa"
+              >
+                <Trash2 size={14} />
+              </motion.button>
             </div>
 
             {/* Messages */}
@@ -449,6 +490,83 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
           </>
         )}
       </div>
+
+      {/* Delete Confirmation Modal */}
+      <AnimatePresence>
+        {isDeleteModalOpen && selectedConv && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            onClick={() => !isDeleting && setIsDeleteModalOpen(false)}
+          >
+            <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+              className="relative z-10 w-full max-w-sm bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-black/[0.06] dark:border-white/[0.08] overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-white/[0.06]">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
+                    <Trash2 size={18} className="text-red-500" />
+                  </div>
+                  <h3 className="font-display font-bold text-gray-900 dark:text-white text-sm">
+                    Excluir Conversa?
+                  </h3>
+                </div>
+                <button
+                  onClick={() => !isDeleting && setIsDeleteModalOpen(false)}
+                  disabled={isDeleting}
+                  className="w-7 h-7 rounded-lg bg-gray-100 dark:bg-white/[0.06] flex items-center justify-center text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors disabled:opacity-50"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="px-6 py-5">
+                <p className="text-sm text-gray-600 dark:text-gray-300 leading-relaxed">
+                  A conversa com <strong className="text-gray-900 dark:text-white">{selectedConv.contactName}</strong> e todas as suas mensagens serão excluídas permanentemente.
+                </p>
+                <div className="flex items-start gap-2 mt-3 p-3 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-100 dark:border-amber-500/20">
+                  <AlertCircle size={14} className="text-amber-500 shrink-0 mt-0.5" />
+                  <p className="text-xs text-amber-700 dark:text-amber-400 leading-relaxed">
+                    Esta ação é irreversível. O histórico de mensagens não poderá ser recuperado.
+                  </p>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="flex items-center justify-end gap-2 px-6 pb-5">
+                <button
+                  onClick={() => setIsDeleteModalOpen(false)}
+                  disabled={isDeleting}
+                  className="px-4 py-2 text-sm font-semibold text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-white/[0.06] rounded-xl hover:bg-gray-200 dark:hover:bg-white/[0.1] transition-colors disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleDeleteConversation}
+                  disabled={isDeleting}
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-gradient-to-br from-red-600 to-red-500 rounded-xl shadow-sm shadow-red-500/30 hover:shadow-md hover:shadow-red-500/40 transition-all disabled:opacity-50"
+                >
+                  {isDeleting ? (
+                    <><Loader2 size={14} className="animate-spin" /> Excluindo...</>
+                  ) : (
+                    <><Trash2 size={14} /> Excluir</>
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
