@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { getInitials } from '@/lib/utils/format';
@@ -1849,11 +1850,15 @@ export default function ConversasModule() {
             }),
           });
           if (!res.ok) {
-            console.error('[Conversas] API /api/conversations/send returned', res.status);
+            const errBody = await res.json().catch(() => ({ code: 'unknown' }));
+            if (errBody.code === 'disconnected' || errBody.code === 'token_expired') {
+              const names: Record<string, string> = { whatsapp: 'WhatsApp', facebook: 'Facebook Messenger', instagram: 'Instagram' };
+              toast.warn(`${names[selectedConversation.channel] || 'Canal'} está desconectado. Reconecte nas Configurações para enviar mensagens.`);
+            }
             await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(() => {});
           }
         } catch {
-          console.warn('Failed to send message via API, saved locally');
+          toast.error('Erro de conexão. Verifique sua internet e tente novamente.');
           await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(() => {});
         }
       }

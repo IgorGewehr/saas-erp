@@ -197,23 +197,56 @@ export async function POST(req: NextRequest) {
 
     if (!channels) {
       return NextResponse.json(
-        { error: 'Nenhum canal de comunicação configurado para esta empresa' },
+        { error: 'Nenhum canal de comunicação configurado para esta empresa', code: 'disconnected' },
         { status: 400 },
       );
     }
 
-    // Fix T2: Token expiry pre-check for WhatsApp
-    if (channel === 'whatsapp' && channels.whatsapp?.tokenExpiresAt) {
-      const expiresAt = new Date(channels.whatsapp.tokenExpiresAt).getTime();
+    // ── Channel connectivity pre-check ──────────────────────────────────────
+    const channelLabel: Record<string, string> = {
+      whatsapp: 'WhatsApp',
+      facebook: 'Facebook Messenger',
+      instagram: 'Instagram',
+    };
+
+    const channelConfig = channels[channel as keyof ChannelCredentials];
+    if (!channelConfig || typeof channelConfig !== 'object') {
+      return NextResponse.json({
+        error: `${channelLabel[channel] || channel} não está configurado. Conecte o canal em Configurações.`,
+        code: 'disconnected',
+      }, { status: 400 });
+    }
+
+    if ('isConnected' in channelConfig && !channelConfig.isConnected) {
+      return NextResponse.json({
+        error: `${channelLabel[channel] || channel} está desconectado. Reconecte nas Configurações.`,
+        code: 'disconnected',
+      }, { status: 400 });
+    }
+
+    // Token presence check
+    const tokenField = channel === 'whatsapp' ? 'accessToken'
+      : channel === 'facebook' ? 'pageAccessToken'
+      : 'accessToken';
+
+    if (tokenField in channelConfig && !channelConfig[tokenField as keyof typeof channelConfig]) {
+      return NextResponse.json({
+        error: `Token do ${channelLabel[channel] || channel} ausente. Reconecte o canal em Configurações.`,
+        code: 'disconnected',
+      }, { status: 400 });
+    }
+
+    // Token expiry pre-check
+    if ('tokenExpiresAt' in channelConfig && channelConfig.tokenExpiresAt) {
+      const expiresAt = new Date(channelConfig.tokenExpiresAt as string).getTime();
       if (Date.now() > expiresAt) {
         return NextResponse.json({
-          error: 'Token do WhatsApp expirado. Reconecte o canal em Configuracoes > Canais.',
-          code: 'TOKEN_EXPIRED',
-        }, { status: 401 });
+          error: `Token do ${channelLabel[channel] || channel} expirado. Reconecte o canal em Configurações.`,
+          code: 'token_expired',
+        }, { status: 400 });
       }
-      // Warn if expiring within 7 days
       if (Date.now() > expiresAt - 7 * 24 * 60 * 60 * 1000) {
-        console.warn('[Send Message] WhatsApp token expiring soon for business:', businessId);
+        console.warn('[Send Message] Token expiring soon for', channel, 'business:', businessId);
       }
     }
 
@@ -257,23 +290,29 @@ export async function POST(req: NextRequest) {
     });
 
   } catch (error: unknown) {
-    let message = 'Erro desconhecido ao enviar mensagem';
-    let statusCode = 500;
+    let message = 'Erro ao enviar mensagem';
+    let statusCode = 400;
     let errorDetails: Record<string, unknown> = {};
 
     if (error instanceof Error) {
+      const rawMsg = error.message;
+
+      // Check for disconnected/missing channel errors
+      if (rawMsg.includes('não está conectado') || rawMsg.includes('incompletas') || rawMsg.includes('ausente')) {
+        return NextResponse.json({ error: rawMsg, code: 'disconnected' }, { status: 400 });
+      }
+
       try {
-        errorDetails = JSON.parse(error.message);
+        errorDetails = JSON.parse(rawMsg);
         message = errorDetails.message as string;
-        // If it's a token error, return 401
         if (errorDetails.code === 190) statusCode = 401;
       } catch {
-        message = error.message;
+        message = rawMsg;
       }
     }
 
     console.error('[Send Message] Error:', message, errorDetails);
-    return NextResponse.json({ error: message, ...errorDetails }, { status: statusCode });
+    return NextResponse.json({ error: message, code: 'send_failed', ...errorDetails }, { status: statusCode });
   }
 }
 

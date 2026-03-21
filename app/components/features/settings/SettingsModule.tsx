@@ -3314,6 +3314,11 @@ function CanaisTab() {
   const [loading, setLoading] = useState(true);
   const [connectingChannel, setConnectingChannel] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
+  const [needsAttention, setNeedsAttention] = useState(false);
+  const [showQrModal, setShowQrModal] = useState(false);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [waConnecting, setWaConnecting] = useState(false);
+  const [waStatus, setWaStatus] = useState<'idle' | 'connecting' | 'scanning' | 'connected'>('idle');
 
   // ── FB SDK loader (shared) ──
   const ensureFbSdk = async (): Promise<{ login: (cb: (r: { authResponse?: { accessToken?: string; code?: string } }) => void, opts: Record<string, unknown>) => void }> => {
@@ -3429,20 +3434,27 @@ function CanaisTab() {
   useEffect(() => {
     if (!business) return;
     const channels = (business as Business & { channels?: ChannelConfig }).channels;
+    let attention = false;
     if (channels) {
       if (channels.whatsapp) {
         setWaConnected(channels.whatsapp.isConnected || false);
         setWaPhoneNumber(channels.whatsapp.displayPhoneNumber || channels.whatsapp.phoneNumberId || '');
       }
       if (channels.facebook) {
-        setFbConnected(channels.facebook.isConnected || false);
-        setFbPageName(channels.facebook.pageName || channels.facebook.pageId || '');
+        const fb = channels.facebook;
+        setFbConnected(fb.isConnected || false);
+        setFbPageName(fb.pageName || fb.pageId || '');
+        // Detect expired or missing token
+        if (fb.isConnected && !fb.pageAccessToken) attention = true;
+        const fbExpiry = (fb as unknown as Record<string, unknown>).tokenExpiresAt as string | undefined;
+        if (fb.isConnected && fbExpiry && Date.now() > new Date(fbExpiry).getTime()) attention = true;
       }
       if (channels.instagram) {
         setIgConnected(channels.instagram.isConnected || false);
         setIgAccountName(channels.instagram.accountName || channels.instagram.accountId || '');
       }
     }
+    setNeedsAttention(attention);
     setLoading(false);
   }, [business]);
 
@@ -3496,6 +3508,25 @@ function CanaisTab() {
         </div>
       </div>
 
+      {/* ── Attention Banner ── */}
+      {needsAttention && (
+        <motion.div
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex items-start gap-3 p-4 rounded-2xl border border-amber-200 dark:border-amber-500/20 bg-amber-50 dark:bg-amber-500/[0.06]"
+        >
+          <div className="w-9 h-9 rounded-xl bg-amber-100 dark:bg-amber-500/15 flex items-center justify-center shrink-0 mt-0.5">
+            <AlertTriangle className="w-4.5 h-4.5 text-amber-600 dark:text-amber-400" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">Conexao precisa de atencao</p>
+            <p className="text-xs text-amber-700/80 dark:text-amber-400/70 mt-0.5 leading-relaxed">
+              Sua conexao com o Meta expirou ou esta incompleta. Clique em <strong>Reconectar</strong> no canal afetado para garantir o envio de mensagens.
+            </p>
+          </div>
+        </motion.div>
+      )}
+
       {/* ── Facebook Messenger Card ── */}
       <div className="rounded-2xl border border-gray-200 dark:border-gray-700/50 bg-white dark:bg-[#111827] overflow-hidden">
         <div className="p-5 flex items-center justify-between">
@@ -3511,9 +3542,14 @@ function CanaisTab() {
             <div>
               <div className="flex items-center gap-2">
                 <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">Facebook Messenger</span>
-                {fbConnected && (
+                {fbConnected && !needsAttention && (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20">
                     <Check className="w-2.5 h-2.5" /> Conectado
+                  </span>
+                )}
+                {fbConnected && needsAttention && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-500/20">
+                    <AlertTriangle className="w-2.5 h-2.5" /> Requer atencao
                   </span>
                 )}
               </div>
@@ -3524,7 +3560,24 @@ function CanaisTab() {
               )}
             </div>
           </div>
-          {fbConnected ? (
+          {fbConnected && needsAttention ? (
+            <button
+              onClick={() => handleConnectChannel('facebook')}
+              disabled={connectingChannel === 'facebook'}
+              className={cn(
+                'flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold text-white transition-all',
+                'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600',
+                'shadow-sm shadow-amber-500/20 hover:shadow-md animate-pulse hover:animate-none',
+                'disabled:opacity-60 disabled:cursor-not-allowed',
+              )}
+            >
+              {connectingChannel === 'facebook' ? (
+                <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Reconectando...</>
+              ) : (
+                <><RefreshCw className="w-3.5 h-3.5" /> Reconectar</>
+              )}
+            </button>
+          ) : fbConnected ? (
             <button
               onClick={() => handleDisconnect('facebook')}
               disabled={disconnecting === 'facebook'}
@@ -3681,37 +3734,246 @@ function CanaisTab() {
               </div>
 
               {/* Baileys / QR Code */}
-              <div className="relative group rounded-xl border-2 border-dashed border-gray-200 dark:border-gray-700 hover:border-[#25D366]/40 dark:hover:border-[#25D366]/30 p-4 transition-colors cursor-default">
+              <div className="rounded-xl border-2 border-dashed border-gray-200 dark:border-gray-700 hover:border-[#25D366]/40 dark:hover:border-[#25D366]/30 p-4 transition-colors">
                 <div className="flex items-center gap-2.5 mb-2.5">
                   <div className="w-8 h-8 rounded-lg bg-[#25D366]/10 flex items-center justify-center">
                     <QrCode className="w-4 h-4 text-[#25D366]" />
                   </div>
                   <div>
                     <span className="text-xs font-semibold text-gray-900 dark:text-gray-100">WhatsApp Web</span>
-                    <span className="ml-1.5 text-[9px] font-semibold px-1.5 py-0.5 rounded bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400">QR Code</span>
+                    <span className="ml-1.5 text-[9px] font-semibold px-1.5 py-0.5 rounded bg-[#25D366]/10 text-[#25D366]">QR Code</span>
                   </div>
                 </div>
                 <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed mb-3">
                   Conexao via QR Code (Baileys). Rapido de configurar, ideal para testes e pequenos volumes.
                 </p>
-                <div className="relative">
-                  <button
-                    disabled
-                    className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-[11px] font-semibold text-white/60 bg-[#25D366]/40 cursor-not-allowed"
-                  >
-                    <QrCode className="w-3.5 h-3.5" /> Escanear QR Code
-                  </button>
-                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 rounded-lg bg-gray-900 dark:bg-gray-700 text-[10px] text-white font-medium whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none shadow-lg">
-                    Em desenvolvimento
-                    <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-gray-900 dark:border-t-gray-700" />
-                  </div>
-                </div>
+                <button
+                  onClick={() => {
+                    setShowQrModal(true);
+                    setQrDataUrl(null);
+                    setWaStatus('connecting');
+                    setWaConnecting(true);
+                  }}
+                  disabled={waConnecting}
+                  className={cn(
+                    'w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-[11px] font-semibold text-white transition-all',
+                    'bg-[#25D366] hover:bg-[#128C7E] shadow-sm shadow-green-500/20 hover:shadow-md',
+                    'disabled:opacity-60 disabled:cursor-not-allowed',
+                  )}
+                >
+                  {waConnecting ? (
+                    <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Conectando...</>
+                  ) : (
+                    <><QrCode className="w-3.5 h-3.5" /> Escanear QR Code</>
+                  )}
+                </button>
               </div>
             </div>
           )}
         </div>
       </div>
+
+      {/* ── WhatsApp QR Code Modal ── */}
+      {showQrModal && (
+        <WhatsAppQrModal
+          businessId={business?.id || ''}
+          onClose={() => {
+            setShowQrModal(false);
+            setWaConnecting(false);
+            setWaStatus('idle');
+            setQrDataUrl(null);
+          }}
+          onConnected={(phoneNumber) => {
+            setWaConnected(true);
+            setWaPhoneNumber(phoneNumber || '');
+            setShowQrModal(false);
+            setWaConnecting(false);
+            setWaStatus('connected');
+            refreshUser();
+            toast.success('WhatsApp conectado com sucesso!');
+          }}
+        />
+      )}
     </motion.div>
+  );
+}
+
+// ─── WhatsApp QR Code Modal ──────────────────────────────────────────────────
+
+function WhatsAppQrModal({
+  businessId,
+  onClose,
+  onConnected,
+}: {
+  businessId: string;
+  onClose: () => void;
+  onConnected: (phoneNumber: string | null) => void;
+}) {
+  const { firebaseUser } = useAuth();
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [status, setStatus] = useState<'connecting' | 'scanning' | 'connected' | 'error'>('connecting');
+  const [errorMsg, setErrorMsg] = useState('');
+  const eventSourceRef = useRef<EventSource | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const connect = async () => {
+      try {
+        const token = await firebaseUser?.getIdToken();
+        if (!token || cancelled) return;
+
+        const url = `/api/whatsapp/connect?businessId=${encodeURIComponent(businessId)}`;
+
+        // Use fetch with streaming for SSE (EventSource doesn't support custom headers)
+        const response = await fetch(url, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        if (!response.ok || !response.body) {
+          setStatus('error');
+          setErrorMsg('Falha ao conectar com o servidor');
+          return;
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (!cancelled) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const data = JSON.parse(line.slice(6));
+
+              if (data.type === 'qr') {
+                setQrDataUrl(data.qr);
+                setStatus('scanning');
+              } else if (data.type === 'connected') {
+                setStatus('connected');
+                setTimeout(() => onConnected(data.phoneNumber), 800);
+              } else if (data.type === 'error') {
+                setStatus('error');
+                setErrorMsg(data.message || 'Erro desconhecido');
+              } else if (data.type === 'disconnected') {
+                if (data.reason === 'logged_out') {
+                  setStatus('error');
+                  setErrorMsg('Sessao revogada. Tente novamente.');
+                }
+              }
+            } catch {
+              // Skip malformed SSE lines
+            }
+          }
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setStatus('error');
+          setErrorMsg('Erro de conexao com o servidor');
+          console.error('[WA QR Modal] SSE error:', err);
+        }
+      }
+    };
+
+    connect();
+
+    return () => {
+      cancelled = true;
+      eventSourceRef.current?.close();
+    };
+  }, [businessId, firebaseUser, onConnected]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      <div
+        className="relative z-10 w-full max-w-sm bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-black/[0.06] dark:border-white/[0.08] overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-white/[0.06]">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-[#25D366]/15 flex items-center justify-center">
+              <QrCode className="w-4.5 h-4.5 text-[#25D366]" />
+            </div>
+            <div>
+              <h3 className="font-display font-bold text-gray-900 dark:text-white text-sm">WhatsApp Web</h3>
+              <p className="text-[10px] text-gray-400 dark:text-gray-500">Escaneie com seu celular</p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="w-7 h-7 rounded-lg bg-gray-100 dark:bg-white/[0.06] flex items-center justify-center text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {/* QR Area */}
+        <div className="px-6 py-6 flex flex-col items-center">
+          {status === 'connecting' && (
+            <div className="w-[240px] h-[240px] rounded-2xl bg-gray-50 dark:bg-white/[0.03] border border-gray-200 dark:border-white/[0.06] flex flex-col items-center justify-center gap-3">
+              <Loader2 className="w-8 h-8 text-[#25D366] animate-spin" />
+              <p className="text-xs text-gray-500 dark:text-gray-400">Gerando QR Code...</p>
+            </div>
+          )}
+
+          {status === 'scanning' && qrDataUrl && (
+            <div className="flex flex-col items-center gap-4">
+              <div className="p-3 bg-white rounded-2xl shadow-lg border border-gray-100">
+                <img src={qrDataUrl} alt="WhatsApp QR Code" className="w-[220px] h-[220px]" />
+              </div>
+              <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                <div className="w-1.5 h-1.5 rounded-full bg-[#25D366] animate-pulse" />
+                Aguardando leitura do QR Code...
+              </div>
+            </div>
+          )}
+
+          {status === 'connected' && (
+            <div className="w-[240px] h-[240px] rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 flex flex-col items-center justify-center gap-3">
+              <div className="w-14 h-14 rounded-full bg-[#25D366] flex items-center justify-center">
+                <Check className="w-7 h-7 text-white" />
+              </div>
+              <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">Conectado!</p>
+            </div>
+          )}
+
+          {status === 'error' && (
+            <div className="w-[240px] h-[240px] rounded-2xl bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 flex flex-col items-center justify-center gap-3 px-4">
+              <AlertCircle className="w-8 h-8 text-red-500" />
+              <p className="text-xs text-red-600 dark:text-red-400 text-center leading-relaxed">{errorMsg}</p>
+              <button
+                onClick={onClose}
+                className="text-xs font-semibold text-red-600 dark:text-red-400 hover:underline"
+              >
+                Fechar e tentar novamente
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Instructions */}
+        {status === 'scanning' && (
+          <div className="px-6 pb-5">
+            <div className="p-3 rounded-xl bg-gray-50 dark:bg-white/[0.03] border border-gray-100 dark:border-white/[0.06]">
+              <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                <strong className="text-gray-700 dark:text-gray-300">1.</strong> Abra o WhatsApp no celular{' '}
+                <strong className="text-gray-700 dark:text-gray-300">2.</strong> Toque em <strong className="text-gray-700 dark:text-gray-300">Dispositivos conectados</strong>{' '}
+                <strong className="text-gray-700 dark:text-gray-300">3.</strong> Escaneie este QR Code
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

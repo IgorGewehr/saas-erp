@@ -9,9 +9,9 @@
  *  3. Assinaturas: messages, messaging_postbacks, message_deliveries, message_reads
  *
  * Variáveis de ambiente necessárias:
- *  - META_FACEBOOK_VERIFY_TOKEN      (verificação do webhook)
- *  - META_FACEBOOK_PAGE_ACCESS_TOKEN  (envio de mensagens)
- *  - META_APP_SECRET                  (validação de assinatura HMAC)
+ *  - META_FACEBOOK_VERIFY_TOKEN  (verificação do webhook)
+ *  - META_APP_SECRET             (validação de assinatura HMAC)
+ *  - ENCRYPTION_KEY              (descriptografar pageAccessToken do Firestore)
  */
 
 import crypto from 'crypto';
@@ -103,9 +103,6 @@ export async function GET(req: NextRequest) {
   }
 
   if (mode === 'subscribe' && token === verifyToken) {
-    console.log('╔══════════════════════════════════════════════════╗');
-    console.log('║  ✅  Facebook Webhook — Verificação OK          ║');
-    console.log('╚══════════════════════════════════════════════════╝');
     // Retorna o challenge como texto puro (não JSON) — requisito da Meta
     return new NextResponse(challenge, {
       status: 200,
@@ -201,20 +198,17 @@ async function processEntry(entry: WebhookEntry): Promise<void> {
       // ── Delivery receipts ────────────────────────────────────────────
       if (event.delivery) {
         await handleDeliveryReceipt(pageId, event.delivery);
-        console.log(`[FB Webhook] 📬 Delivery receipt processado | watermark: ${event.delivery.watermark} | mids: ${(event.delivery.mids ?? []).length}`);
         continue;
       }
 
       // ── Read receipts ────────────────────────────────────────────────
       if (event.read) {
         await handleReadReceipt(pageId, senderId, event.read);
-        console.log(`[FB Webhook] 👁️ Read receipt processado | sender: ${senderId} | watermark: ${event.read.watermark}`);
         continue;
       }
 
       // ── Postback ─────────────────────────────────────────────────────
       if (event.postback) {
-        logInboundMessage(senderId, event.postback.title || event.postback.payload);
         await saveInboundMessage({
           pageId,
           senderId,
@@ -229,7 +223,6 @@ async function processEntry(entry: WebhookEntry): Promise<void> {
       if (event.message?.text) {
         const text = event.message.text;
 
-        logInboundMessage(senderId, text);
 
         await saveInboundMessage({
           pageId,
@@ -239,11 +232,6 @@ async function processEntry(entry: WebhookEntry): Promise<void> {
           timestamp,
         });
 
-        // Resposta automática de teste
-        await sendMessageToFacebook(
-          senderId,
-          `Olá! Mensagem recebida no saas-erp: ${text}`,
-        );
         continue;
       }
 
@@ -267,7 +255,6 @@ async function processEntry(entry: WebhookEntry): Promise<void> {
         const mediaType = typeMap[att.type] || 'document';
         const label = labelMap[att.type] || 'Anexo';
 
-        logInboundMessage(senderId, `[${label}]`);
 
         await saveInboundMessage({
           pageId,
@@ -284,73 +271,6 @@ async function processEntry(entry: WebhookEntry): Promise<void> {
       console.error('[FB Webhook] Erro ao processar evento de messaging:', err);
       // Continua com o próximo evento — não quebra o loop
     }
-  }
-}
-
-// ─── Log Formatado ───────────────────────────────────────────────────────────
-
-function logInboundMessage(senderId: string, text: string): void {
-  console.log('');
-  console.log('╔══════════════════════════════════════════════════╗');
-  console.log('║  💬  NOVA MENSAGEM — Facebook Messenger         ║');
-  console.log('╠══════════════════════════════════════════════════╣');
-  console.log(`║  👤 Sender ID:  ${senderId.padEnd(32)}║`);
-  console.log(`║  📝 Mensagem:   ${text.slice(0, 32).padEnd(32)}║`);
-  if (text.length > 32) {
-    console.log(`║                 ${text.slice(32, 64).padEnd(32)}║`);
-  }
-  console.log(`║  🕐 Horário:    ${new Date().toLocaleTimeString('pt-BR').padEnd(32)}║`);
-  console.log('╚══════════════════════════════════════════════════╝');
-  console.log('');
-}
-
-// ─── Envio de Mensagem (Função Bônus) ────────────────────────────────────────
-
-/**
- * Envia uma mensagem de texto para um usuário do Facebook Messenger.
- *
- * Usa a Send API v19.0 do Facebook:
- * https://developers.facebook.com/docs/messenger-platform/send-messages
- *
- * @param senderId - PSID (Page-Scoped User ID) do destinatário
- * @param text - Texto da mensagem (máx. 2000 caracteres)
- */
-async function sendMessageToFacebook(senderId: string, text: string): Promise<void> {
-  // Fallback: usa .env direto (para auto-reply no webhook — não tem businessId aqui)
-  const pageAccessToken = process.env.META_FACEBOOK_PAGE_ACCESS_TOKEN;
-
-  if (!pageAccessToken) {
-    console.error('[FB Webhook] META_FACEBOOK_PAGE_ACCESS_TOKEN not configured — mensagem não enviada');
-    return;
-  }
-
-  try {
-    const response = await fetch('https://graph.facebook.com/v19.0/me/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${pageAccessToken}`,
-      },
-      body: JSON.stringify({
-        recipient: { id: senderId },
-        message: { text },
-        messaging_type: 'RESPONSE',
-      }),
-    });
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      console.error('[FB Webhook] Erro ao enviar mensagem:', response.status, errorBody);
-      return;
-    }
-
-    const result = await response.json();
-    console.log('[FB Webhook] ✅ Mensagem enviada com sucesso:', {
-      recipientId: result.recipient_id,
-      messageId: result.message_id,
-    });
-  } catch (err) {
-    console.error('[FB Webhook] Erro de rede ao enviar mensagem:', err);
   }
 }
 
@@ -383,8 +303,6 @@ async function fetchSenderProfile(
     const firstName = data.first_name || '';
     const lastName = data.last_name || '';
     const name = `${firstName} ${lastName}`.trim() || senderId;
-
-    console.log('[FB Webhook] Perfil obtido:', { name, hasPic: !!data.profile_pic });
 
     return {
       name,
@@ -487,7 +405,6 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
     );
     const dupSnap = await getDocs(dupQuery);
     if (!dupSnap.empty) {
-      console.log('[FB Webhook] Mensagem duplicada ignorada:', params.messageId);
       return;
     }
   } catch (dupErr) {
@@ -539,7 +456,6 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
         updatedAt: now,
       });
       conversationId = newConvRef.id;
-      console.log('[FB Webhook] Nova conversa criada:', conversationId, '| Contato:', senderName || params.senderId);
 
       // Auto-link com CRM contact
       await tryLinkCrmContact(db, businessId, params.senderId, conversationId, now);
@@ -567,7 +483,6 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
       }
 
       await updateDoc(doc(db, 'conversations', conversationId), convUpdate);
-      console.log('[FB Webhook] Conversa atualizada:', conversationId);
     }
 
     // 4. Salvar mensagem
@@ -586,7 +501,6 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
       createdAt: now,
     });
 
-    console.log('[FB Webhook] Mensagem salva na conversa:', conversationId);
   } catch (err) {
     console.error('[FB Webhook] Erro ao salvar mensagem inbound:', err);
   }
@@ -679,9 +593,6 @@ async function handleReadReceipt(
 
     await Promise.all(updates);
 
-    if (updates.length > 0) {
-      console.log(`[FB Webhook] ${updates.length} mensagem(ns) marcada(s) como lida(s)`);
-    }
   } catch (err) {
     console.error('[FB Webhook] Erro ao processar read receipt:', err);
   }
@@ -719,10 +630,8 @@ async function tryLinkCrmContact(
         updatedAt: now,
       });
 
-      console.log('[FB Webhook] Conversa linkada ao CRM contact:', contact.id);
     }
   } catch (err) {
-    // Não é fatal — não quebra o fluxo
     console.warn('[FB Webhook] Falha ao linkar CRM contact:', err);
   }
 }

@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Search, Send, MessageSquare, Inbox, Instagram, Facebook, Check, CheckCheck, Star, AlertCircle, Clock } from 'lucide-react';
 import { motion } from 'framer-motion';
+import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
 import { getInitials } from '@/lib/utils/format';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -145,13 +146,18 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
           }),
         });
         if (!res.ok) {
-          console.error('[OmnichannelInbox] API /api/conversations/send returned', res.status, await res.text().catch(() => ''));
-          // API falhou — marcar como failed no Firestore
+          const errBody = await res.json().catch(() => ({ code: 'unknown' }));
+          if (errBody.code === 'disconnected' || errBody.code === 'token_expired') {
+            const channelNames: Record<string, string> = { whatsapp: 'WhatsApp', facebook: 'Facebook Messenger', instagram: 'Instagram' };
+            toast.warn(`${channelNames[selectedConv.channel] || 'Canal'} está desconectado. Reconecte nas Configurações para enviar mensagens.`);
+          } else {
+            console.error('[OmnichannelInbox] Send failed:', errBody);
+          }
           await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(() => {});
         }
       } catch (apiErr) {
-        console.error('[OmnichannelInbox] Network error calling /api/conversations/send:', apiErr);
-        // Rede falhou — marcar como failed
+        console.error('[OmnichannelInbox] Network error:', apiErr);
+        toast.error('Erro de conexão. Verifique sua internet e tente novamente.');
         await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(() => {});
       }
     } catch (err) {
@@ -193,7 +199,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
       <div className="w-[320px] shrink-0 border-r border-gray-100 dark:border-white/[0.06] flex flex-col">
         {/* Filter tabs */}
         <div className="px-3 pt-3 pb-2 shrink-0">
-          <div className="flex gap-1 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
+          <div className="flex flex-wrap gap-1">
             {([
               { id: 'all' as const, label: 'Todos' },
               { id: 'whatsapp' as const, label: 'WhatsApp' },
@@ -203,7 +209,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
             ] as const).map((tab) => (
               <button key={tab.id} onClick={() => setFilter(tab.id)}
                 className={cn(
-                  'px-2.5 py-1 rounded-lg text-[10px] font-semibold whitespace-nowrap transition-all',
+                  'px-2 py-1 rounded-lg text-[10px] font-semibold whitespace-nowrap transition-all',
                   filter === tab.id
                     ? 'bg-gray-900 dark:bg-white/[0.12] text-white'
                     : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06]',

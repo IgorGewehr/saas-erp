@@ -56,7 +56,6 @@ export async function POST(req: NextRequest) {
     if (shortLivedToken) {
       // JS SDK flow — token already provided by frontend
       accessToken = shortLivedToken;
-      console.log('[Meta Signup] Using access token from JS SDK');
     } else {
       // Legacy code flow (fallback)
       const origin = process.env.NEXT_PUBLIC_APP_URL || 'https://localhost:3000';
@@ -98,7 +97,7 @@ export async function POST(req: NextRequest) {
           if (exchangeData.expires_in) {
             tokenExpiresAt = new Date(Date.now() + exchangeData.expires_in * 1000).toISOString();
           }
-          console.log('[Meta Signup] Long-lived token obtained, expires:', tokenExpiresAt);
+          // Token de longa duração obtido
         }
       } else {
         const errBody = await exchangeRes.text();
