@@ -113,7 +113,7 @@ function ModuleLoadingFallback() {
 }
 
 // ─── Full-height pages (use all vertical space, no padding wrapper) ───────────
-const FULL_HEIGHT_PAGES = new Set(['Agenda', 'PDV', 'Kanban', 'Conversas']);
+const FULL_HEIGHT_PAGES = new Set(['Agenda', 'PDV', 'Kanban', 'Conversas', 'CRM']);
 
 export default function AppPage() {
   const { activePage, sidebarCollapsed } = useAppContext();

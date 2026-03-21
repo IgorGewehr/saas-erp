@@ -89,7 +89,7 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
   const wonLeads = filtered.filter((c) => c.status === 'ganho').length;
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col flex-1 min-h-0 gap-4">
       {/* KPI strip */}
       <div className="flex gap-3 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
         {[
@@ -112,8 +112,8 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
       </div>
 
       {/* Kanban Board */}
-      <div className="overflow-x-auto pb-4" style={{ scrollbarWidth: 'thin' }}>
-        <div className="flex gap-3 min-w-max" onDragEnd={handleDragEnd}>
+      <div className="flex-1 overflow-x-auto overflow-y-auto pb-4 min-h-0" style={{ scrollbarWidth: 'thin' }}>
+        <div className="flex gap-3 min-w-max h-full" onDragEnd={handleDragEnd}>
           {KANBAN_COLUMNS.map((col, ci) => {
             const columnContacts = filtered
               .filter((c) => c.status === col.status)
@@ -126,7 +126,7 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
                 initial={{ opacity: 0, y: 16 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: ci * 0.05 }}
-                className="w-[260px] shrink-0 flex flex-col"
+                className="w-[260px] shrink-0 flex flex-col h-full"
                 onDragOver={(e) => handleDragOver(e, col.status)}
                 onDragLeave={handleDragLeave}
                 onDrop={(e) => handleDrop(e, col.status)}
@@ -145,7 +145,7 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
                 {/* Cards area */}
                 <div
                   className={cn(
-                    'flex-1 space-y-2 min-h-[180px] rounded-xl p-2 transition-all duration-200',
+                    'flex-1 space-y-2 rounded-xl p-2 transition-all duration-200 overflow-y-auto',
                     isDragOver
                       ? 'bg-red-50/50 dark:bg-red-500/[0.06] border-2 border-dashed border-red-400/50 dark:border-red-500/30'
                       : 'bg-gray-50/50 dark:bg-white/[0.015] border-2 border-transparent',

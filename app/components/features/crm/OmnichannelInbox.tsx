@@ -194,7 +194,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
   }, []);
 
   return (
-    <div className="flex h-[calc(100vh-280px)] min-h-[500px] bg-white dark:bg-[#0a0e17] rounded-2xl border border-gray-100 dark:border-gray-700/50 overflow-hidden">
+    <div className="flex flex-1 min-h-0 bg-white dark:bg-[#0a0e17] rounded-2xl border border-gray-100 dark:border-gray-700/50 overflow-hidden">
       {/* Conversation list */}
       <div className="w-[320px] shrink-0 border-r border-gray-100 dark:border-white/[0.06] flex flex-col">
         {/* Filter tabs */}

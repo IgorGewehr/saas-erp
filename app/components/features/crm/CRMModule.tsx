@@ -68,15 +68,20 @@ const ACTIVITY_ICONS: Record<CRMActivityType, React.ReactNode> = {
 
 function CRMSkeleton() {
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-      <div className="flex items-center gap-3">
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full flex flex-col p-4 sm:p-5 lg:p-7 gap-4">
+      <div className="flex items-center gap-3 shrink-0">
         <div className="w-10 h-10 rounded-xl shimmer" />
         <div><div className="h-7 w-24 rounded-lg shimmer mb-1" /><div className="h-4 w-48 rounded-lg shimmer" /></div>
       </div>
-      <div className="h-12 rounded-2xl shimmer" />
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="h-12 rounded-2xl shimmer shrink-0" />
+      <div className="flex gap-3 shrink-0">
         {[0, 1, 2, 3].map((i) => (
-          <motion.div key={i} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.07 }} className="h-[100px] rounded-2xl shimmer" />
+          <motion.div key={i} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.07 }} className="h-10 w-32 rounded-xl shimmer" />
+        ))}
+      </div>
+      <div className="flex-1 flex gap-3 min-h-0">
+        {[0, 1, 2, 3, 4, 5].map((i) => (
+          <div key={i} className="w-[260px] shrink-0 flex-1 rounded-xl shimmer" />
         ))}
       </div>
     </motion.div>
@@ -503,10 +508,10 @@ export default function CRMModule() {
   if (isLoading) return <CRMSkeleton />;
 
   return (
-    <div>
-      <div className="max-w-[1440px] mx-auto">
+    <div className="h-full flex flex-col p-4 sm:p-5 lg:p-7">
+      <div className="flex-1 flex flex-col min-h-0">
         {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4 shrink-0">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-red-500 to-red-700 flex items-center justify-center shadow-sm shadow-red-200 dark:shadow-red-900/30"><Target size={22} className="text-white" /></div>
             <div><h1 className="text-2xl font-display font-bold text-gray-900 dark:text-gray-100">CRM Omnichannel</h1><p className="text-sm text-gray-500 dark:text-gray-400">Gestão de leads, conversas e vendas</p></div>
@@ -532,20 +537,22 @@ export default function CRMModule() {
         )}</AnimatePresence>
 
         {/* Tab Nav */}
-        <div className="flex gap-1 p-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl mb-6 overflow-x-auto shadow-sm">
+        <div className="flex gap-1 p-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl mb-4 overflow-x-auto shadow-sm shrink-0">
           {TABS.map((tab) => <button key={tab.key} onClick={() => setActiveTab(tab.key)} className={cn('flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium whitespace-nowrap transition-all', activeTab === tab.key ? 'bg-gray-900 dark:bg-gray-700 text-white shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 hover:bg-gray-50 dark:hover:bg-white/[0.04]')}>{tab.icon}{tab.label}</button>)}
         </div>
 
         {/* Tab Content */}
+        <div className="flex-1 flex flex-col min-h-0">
         <AnimatePresence mode="wait">
-          <motion.div key={activeTab} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4, transition: { duration: 0.15 } }} transition={{ duration: 0.2 }}>
+          <motion.div key={activeTab} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4, transition: { duration: 0.15 } }} transition={{ duration: 0.2 }} className="flex-1 flex flex-col min-h-0">
             {activeTab === 'kanban' && <KanbanBoard contacts={contacts} onSelectContact={(c) => { setSelectedContact(c); setDetailOpen(true); }} selectedContactId={selectedContact?.id || null} onStatusChange={handleStatusChange} onNewContact={() => { setEditingContact(null); setContactDialogOpen(true); }} searchQuery={searchQuery} filterTags={filterTags} filterSource={filterSource} />}
             {activeTab === 'inbox' && <OmnichannelInbox businessId={business?.id || ''} contacts={contacts} />}
-            {activeTab === 'atividades' && <ActivitiesTab activities={activities} onEdit={(a) => { setEditingActivity(a); setActivityDialogOpen(true); }} onDelete={(a) => setDeleteActivityConfirm(a)} onToggle={handleToggleActivity} onNew={() => { setEditingActivity(null); setActivityDialogOpen(true); }} />}
-            {activeTab === 'campanhas' && <CampaignsTab businessId={business?.id || ''} />}
-            {activeTab === 'metricas' && <MetricsTab deals={deals} contacts={contacts} activities={activities} stages={PIPELINE_STAGES} isDark={isDark} metrics={pipelineMetrics} />}
+            {activeTab === 'atividades' && <div className="flex-1 overflow-y-auto min-h-0"><ActivitiesTab activities={activities} onEdit={(a) => { setEditingActivity(a); setActivityDialogOpen(true); }} onDelete={(a) => setDeleteActivityConfirm(a)} onToggle={handleToggleActivity} onNew={() => { setEditingActivity(null); setActivityDialogOpen(true); }} /></div>}
+            {activeTab === 'campanhas' && <div className="flex-1 overflow-y-auto min-h-0"><CampaignsTab businessId={business?.id || ''} /></div>}
+            {activeTab === 'metricas' && <div className="flex-1 overflow-y-auto min-h-0"><MetricsTab deals={deals} contacts={contacts} activities={activities} stages={PIPELINE_STAGES} isDark={isDark} metrics={pipelineMetrics} /></div>}
           </motion.div>
         </AnimatePresence>
+        </div>
       </div>
 
       {/* Lead Detail Panel */}
