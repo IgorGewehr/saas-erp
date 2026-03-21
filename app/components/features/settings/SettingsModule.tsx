@@ -67,6 +67,10 @@ import {
   Palette,
   UserMinus,
   Edit3,
+  Instagram,
+  Facebook,
+  Smartphone,
+  QrCode,
 } from 'lucide-react';
 import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector } from '@/lib/types';
 import { ROLE_LABELS, ROLE_HIERARCHY, USER_STATUS_LABELS, INTEGRATION_PROVIDERS, API_KEY_SCOPES, SECTOR_COLORS } from '@/lib/types';
@@ -3305,125 +3309,97 @@ function CanaisTab() {
   const [waPhoneNumber, setWaPhoneNumber] = useState('');
   const [fbPageName, setFbPageName] = useState('');
   const [igAccountName, setIgAccountName] = useState('');
-  const [connectedAt, setConnectedAt] = useState('');
 
   // ── UI state ──
   const [loading, setLoading] = useState(true);
-  const [embeddedSignupLoading, setEmbeddedSignupLoading] = useState(false);
+  const [connectingChannel, setConnectingChannel] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
 
-  // ── Embedded Signup handler ──
-  const handleEmbeddedSignup = async () => {
+  // ── FB SDK loader (shared) ──
+  const ensureFbSdk = async (): Promise<{ login: (cb: (r: { authResponse?: { accessToken?: string; code?: string } }) => void, opts: Record<string, unknown>) => void }> => {
     const metaAppId = process.env.NEXT_PUBLIC_META_APP_ID;
-    const configId = process.env.NEXT_PUBLIC_META_CONFIG_ID;
-
-    if (!metaAppId) {
-      toast.error('Meta App ID nao configurado. Contate o suporte.');
-      return;
+    if (!metaAppId) throw new Error('Meta App ID nao configurado');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const win = window as any;
+    if (!win.FB) {
+      await new Promise<void>((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://connect.facebook.net/en_US/sdk.js';
+        script.async = true;
+        script.defer = true;
+        script.onload = () => {
+          win.FB.init({ appId: metaAppId, cookie: true, xfbml: true, version: 'v21.0' });
+          resolve();
+        };
+        script.onerror = () => reject(new Error('Failed to load FB SDK'));
+        document.body.appendChild(script);
+      });
     }
+    return win.FB;
+  };
 
-    setEmbeddedSignupLoading(true);
-
+  // ── Channel-specific OAuth ──
+  const handleConnectChannel = async (channel: 'facebook' | 'instagram') => {
+    setConnectingChannel(channel);
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const win = window as any;
-      if (!win.FB) {
-        await new Promise<void>((resolve, reject) => {
-          const script = document.createElement('script');
-          script.src = 'https://connect.facebook.net/en_US/sdk.js';
-          script.async = true;
-          script.defer = true;
-          script.onload = () => {
-            win.FB.init({
-              appId: metaAppId,
-              cookie: true,
-              xfbml: true,
-              version: 'v21.0',
-            });
-            resolve();
-          };
-          script.onerror = () => reject(new Error('Failed to load FB SDK'));
-          document.body.appendChild(script);
-        });
-      }
+      const FB = await ensureFbSdk();
 
-      const FB = win.FB as {
-        login: (
-          callback: (response: { authResponse?: { code?: string } }) => void,
-          options: Record<string, unknown>
-        ) => void;
+      const scopes: Record<string, string[]> = {
+        facebook: ['pages_show_list', 'pages_messaging', 'pages_manage_metadata'],
+        instagram: ['instagram_basic', 'instagram_manage_messages', 'pages_show_list', 'pages_manage_metadata'],
       };
 
       FB.login(
-        async (response) => {
-          if (response.authResponse?.code) {
-            try {
-              const idToken = await firebaseUser?.getIdToken();
-              const res = await fetch('/api/channels/meta-signup', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  ...(idToken ? { 'Authorization': `Bearer ${idToken}` } : {}),
-                },
-                body: JSON.stringify({
-                  code: response.authResponse.code,
-                  businessId: business?.id,
-                }),
-              });
-              const data = await res.json();
+        (response) => {
+          (async () => {
+            const accessToken = response.authResponse?.accessToken;
+            if (accessToken) {
+              try {
+                const idToken = await firebaseUser?.getIdToken();
+                const res = await fetch('/api/channels/meta-signup', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    ...(idToken ? { 'Authorization': `Bearer ${idToken}` } : {}),
+                  },
+                  body: JSON.stringify({
+                    accessToken,
+                    businessId: business?.id,
+                  }),
+                });
+                const data = await res.json();
 
-              if (data.success && data.channels) {
-                // Server already saved encrypted tokens to Firestore — just update local state
-                if (data.channels.whatsapp) {
-                  setWaConnected(true);
-                  setWaPhoneNumber(data.channels.whatsapp.displayPhoneNumber || data.channels.whatsapp.phoneNumberId || '');
+                if (data.success && data.channels) {
+                  if (data.channels.facebook) {
+                    setFbConnected(true);
+                    setFbPageName(data.channels.facebook.pageName || data.channels.facebook.pageId || '');
+                  }
+                  if (data.channels.instagram) {
+                    setIgConnected(true);
+                    setIgAccountName(data.channels.instagram.accountName || data.channels.instagram.accountId || '');
+                  }
+                  await refreshUser();
+                  toast.success(`${channel === 'facebook' ? 'Facebook Messenger' : 'Instagram'} conectado!`);
+                } else {
+                  toast.error(data.error || 'Erro ao conectar canal');
                 }
-                if (data.channels.facebook) {
-                  setFbConnected(true);
-                  setFbPageName(data.channels.facebook.pageName || data.channels.facebook.pageId || '');
-                }
-                if (data.channels.instagram) {
-                  setIgConnected(true);
-                  setIgAccountName(data.channels.instagram.accountName || data.channels.instagram.accountId || '');
-                }
-                setConnectedAt(new Date().toISOString());
-                await refreshUser();
-                toast.success('Canais conectados com sucesso!');
-              } else {
-                toast.error(data.error || 'Erro ao conectar canais');
+              } catch {
+                toast.error('Erro ao processar a conexao');
               }
-            } catch {
-              toast.error('Erro ao processar a conexao');
+            } else {
+              toast.info('Conexao cancelada pelo usuario');
             }
-          } else {
-            toast.info('Conexao cancelada pelo usuario');
-          }
-          setEmbeddedSignupLoading(false);
+            setConnectingChannel(null);
+          })();
         },
         {
-          ...(configId ? { config_id: configId } : {}),
-          response_type: 'code',
-          override_default_response_type: true,
-          scope: [
-            'whatsapp_business_management',
-            'whatsapp_business_messaging',
-            'pages_messaging',
-            'pages_manage_metadata',
-            'instagram_manage_messages',
-            'instagram_basic',
-            'business_management',
-          ].join(','),
-          extras: {
-            setup: {},
-            featureType: '',
-            sessionInfoVersion: '3',
-          },
-        }
+          scope: scopes[channel].join(','),
+        },
       );
     } catch (err) {
-      console.error('Embedded signup error:', err);
+      console.error('Channel connect error:', err);
       toast.error('Erro ao iniciar a conexao');
-      setEmbeddedSignupLoading(false);
+      setConnectingChannel(null);
     }
   };
 
@@ -3466,18 +3442,9 @@ function CanaisTab() {
         setIgConnected(channels.instagram.isConnected || false);
         setIgAccountName(channels.instagram.accountName || channels.instagram.accountId || '');
       }
-      const latestConnectedAt = [
-        channels.whatsapp?.connectedAt,
-        channels.facebook?.connectedAt,
-        channels.instagram?.connectedAt,
-      ].filter(Boolean).sort().pop();
-      if (latestConnectedAt) setConnectedAt(latestConnectedAt);
     }
     setLoading(false);
   }, [business]);
-
-  const anyConnected = waConnected || fbConnected || igConnected;
-  const connectedCount = [waConnected, fbConnected, igConnected].filter(Boolean).length;
 
   if (loading) {
     return (
@@ -3499,230 +3466,251 @@ function CanaisTab() {
     >
       {/* ── Header ── */}
       <div className="relative overflow-hidden rounded-2xl border border-gray-200 dark:border-gray-700/50 shadow-sm dark:shadow-black/10">
-        <div className="absolute inset-0 bg-gradient-to-br from-green-50 via-emerald-50 to-teal-50 dark:from-green-950/30 dark:via-emerald-950/20 dark:to-teal-950/10" />
+        <div className="absolute inset-0 bg-gradient-to-br from-red-50 via-rose-50 to-orange-50 dark:from-red-950/30 dark:via-rose-950/20 dark:to-orange-950/10" />
         <div className="relative p-6 sm:p-8">
           <div className="flex items-start gap-4">
-            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center shadow-lg shadow-green-500/25">
+            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-red-600 to-red-500 flex items-center justify-center shadow-lg shadow-red-500/25">
               <MessageCircle className="w-6 h-6 text-white" />
             </div>
             <div>
               <h3 className="text-lg font-bold text-gray-900 dark:text-white font-display">Canais de Comunicacao</h3>
               <p className="text-sm text-gray-600 dark:text-gray-400 mt-1 max-w-md">
-                Conecte seus canais do Meta para centralizar o atendimento ao cliente em um unico lugar.
+                Conecte cada canal individualmente para centralizar o atendimento ao cliente.
               </p>
             </div>
           </div>
           <div className="mt-4 flex items-center gap-4 text-sm">
             <div className="flex items-center gap-1.5">
-              <span className={cn('w-2 h-2 rounded-full', waConnected ? 'bg-emerald-400' : 'bg-gray-300 dark:bg-gray-600')} />
-              <span className="text-gray-600 dark:text-gray-400">WhatsApp</span>
-            </div>
-            <div className="flex items-center gap-1.5">
               <span className={cn('w-2 h-2 rounded-full', fbConnected ? 'bg-emerald-400' : 'bg-gray-300 dark:bg-gray-600')} />
-              <span className="text-gray-600 dark:text-gray-400">Facebook</span>
+              <span className="text-gray-600 dark:text-gray-400">Messenger</span>
             </div>
             <div className="flex items-center gap-1.5">
               <span className={cn('w-2 h-2 rounded-full', igConnected ? 'bg-emerald-400' : 'bg-gray-300 dark:bg-gray-600')} />
               <span className="text-gray-600 dark:text-gray-400">Instagram</span>
             </div>
+            <div className="flex items-center gap-1.5">
+              <span className={cn('w-2 h-2 rounded-full', waConnected ? 'bg-emerald-400' : 'bg-gray-300 dark:bg-gray-600')} />
+              <span className="text-gray-600 dark:text-gray-400">WhatsApp</span>
+            </div>
           </div>
         </div>
       </div>
 
-      {/* ── Connect / Status ── */}
-      {!anyConnected ? (
-        /* No channels connected — show connect CTA */
-        <div className="rounded-2xl border border-blue-200 dark:border-blue-500/20 bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-950/20 dark:to-indigo-950/10 p-8">
-          <div className="flex flex-col items-center text-center gap-4">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/25">
-              <Zap className="w-8 h-8 text-white" />
+      {/* ── Facebook Messenger Card ── */}
+      <div className="rounded-2xl border border-gray-200 dark:border-gray-700/50 bg-white dark:bg-[#111827] overflow-hidden">
+        <div className="p-5 flex items-center justify-between">
+          <div className="flex items-center gap-3.5">
+            <div className={cn(
+              'w-11 h-11 rounded-xl flex items-center justify-center',
+              fbConnected
+                ? 'bg-gradient-to-br from-[#0866FF] to-[#0052CC] shadow-sm shadow-blue-500/20'
+                : 'bg-[#0866FF]/10'
+            )}>
+              <Facebook className={cn('w-5 h-5', fbConnected ? 'text-white' : 'text-[#0866FF]')} />
             </div>
             <div>
-              <h4 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">Conecte seus canais</h4>
-              <p className="text-sm text-gray-600 dark:text-gray-400 mt-2 max-w-sm mx-auto">
-                Conecte WhatsApp, Facebook e Instagram em poucos cliques usando sua conta Meta Business.
-              </p>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">Facebook Messenger</span>
+                {fbConnected && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20">
+                    <Check className="w-2.5 h-2.5" /> Conectado
+                  </span>
+                )}
+              </div>
+              {fbConnected && fbPageName ? (
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Pagina: {fbPageName}</p>
+              ) : (
+                <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Receba e responda mensagens do Messenger</p>
+              )}
             </div>
+          </div>
+          {fbConnected ? (
             <button
-              onClick={handleEmbeddedSignup}
-              disabled={embeddedSignupLoading}
+              onClick={() => handleDisconnect('facebook')}
+              disabled={disconnecting === 'facebook'}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+            >
+              {disconnecting === 'facebook' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Desconectar'}
+            </button>
+          ) : (
+            <button
+              onClick={() => handleConnectChannel('facebook')}
+              disabled={connectingChannel === 'facebook'}
               className={cn(
-                'flex items-center gap-2.5 px-6 py-3 rounded-xl text-sm font-semibold text-white transition-all',
-                'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700',
-                'shadow-md shadow-blue-500/25 hover:shadow-lg hover:shadow-blue-500/30',
-                'disabled:opacity-60 disabled:cursor-not-allowed'
+                'flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold text-white transition-all',
+                'bg-[#0866FF] hover:bg-[#0052CC] shadow-sm shadow-blue-500/20 hover:shadow-md',
+                'disabled:opacity-60 disabled:cursor-not-allowed',
               )}
             >
-              {embeddedSignupLoading ? (
-                <><Loader2 className="w-4 h-4 animate-spin" /> Conectando...</>
+              {connectingChannel === 'facebook' ? (
+                <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Conectando...</>
               ) : (
-                <><Globe className="w-4 h-4" /> Conectar com Meta</>
+                <><Facebook className="w-3.5 h-3.5" /> Conectar Messenger</>
               )}
             </button>
-            <div className="flex items-center gap-6 mt-2 text-xs text-gray-400 dark:text-gray-500">
-              <div className="flex items-center gap-1.5">
-                <MessageCircle className="w-3.5 h-3.5" />
-                <span>WhatsApp Business</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <MessageCircle className="w-3.5 h-3.5" />
-                <span>Facebook Messenger</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <MessageCircle className="w-3.5 h-3.5" />
-                <span>Instagram Direct</span>
-              </div>
-            </div>
-          </div>
+          )}
         </div>
-      ) : (
-        /* Channels connected — show status cards */
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <CheckCircle className="w-4 h-4 text-emerald-500" />
-              <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                {connectedCount} {connectedCount === 1 ? 'canal conectado' : 'canais conectados'}
-              </h3>
-              {connectedAt && (
-                <span className="text-[11px] text-gray-400 dark:text-gray-500 ml-1">
-                  desde {formatDate(connectedAt)}
-                </span>
+      </div>
+
+      {/* ── Instagram Direct Card ── */}
+      <div className="rounded-2xl border border-gray-200 dark:border-gray-700/50 bg-white dark:bg-[#111827] overflow-hidden relative">
+        <div className="p-5 flex items-center justify-between">
+          <div className="flex items-center gap-3.5">
+            <div className={cn(
+              'w-11 h-11 rounded-xl flex items-center justify-center',
+              igConnected
+                ? 'bg-gradient-to-br from-[#E1306C] to-[#C13584] shadow-sm shadow-pink-500/20'
+                : 'bg-[#E1306C]/10'
+            )}>
+              <Instagram className={cn('w-5 h-5', igConnected ? 'text-white' : 'text-[#E1306C]')} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">Instagram Direct</span>
+                {igConnected ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20">
+                    <Check className="w-2.5 h-2.5" /> Conectado
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-500/20">
+                    <Clock className="w-2.5 h-2.5" /> Em Breve
+                  </span>
+                )}
+              </div>
+              {igConnected && igAccountName ? (
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Conta: {igAccountName}</p>
+              ) : (
+                <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">DMs e comentarios do Instagram</p>
               )}
             </div>
+          </div>
+          {igConnected ? (
             <button
-              onClick={handleEmbeddedSignup}
-              disabled={embeddedSignupLoading}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/10 transition-colors"
+              onClick={() => handleDisconnect('instagram')}
+              disabled={disconnecting === 'instagram'}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
             >
-              {embeddedSignupLoading ? (
-                <><Loader2 className="w-3 h-3 animate-spin" /> Reconectando...</>
-              ) : (
-                <><RefreshCw className="w-3 h-3" /> Reconectar canais</>
-              )}
+              {disconnecting === 'instagram' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Desconectar'}
             </button>
-          </div>
-
-          <div className="rounded-2xl border border-gray-200 dark:border-gray-700/50 bg-white dark:bg-[#111827] overflow-hidden divide-y divide-gray-100 dark:divide-gray-800/60">
-            {/* WhatsApp */}
-            <div className="p-4 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className={cn(
-                  'w-10 h-10 rounded-xl flex items-center justify-center',
-                  waConnected
-                    ? 'bg-gradient-to-br from-green-500 to-emerald-600 shadow-sm shadow-green-500/20'
-                    : 'bg-gray-100 dark:bg-gray-800'
-                )}>
-                  <MessageCircle className={cn('w-5 h-5', waConnected ? 'text-white' : 'text-gray-400')} />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">WhatsApp Business</span>
-                    {waConnected && (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20">
-                        <Check className="w-2.5 h-2.5" /> Conectado
-                      </span>
-                    )}
-                  </div>
-                  {waConnected && waPhoneNumber && (
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{waPhoneNumber}</p>
-                  )}
-                  {!waConnected && (
-                    <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Nao conectado</p>
-                  )}
-                </div>
+          ) : (
+            <div className="relative group">
+              <button
+                disabled
+                className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold text-white/60 bg-gradient-to-r from-[#E1306C]/40 to-[#C13584]/40 cursor-not-allowed"
+              >
+                <Instagram className="w-3.5 h-3.5" /> Conectar Instagram
+              </button>
+              <div className="absolute bottom-full right-0 mb-2 px-3 py-1.5 rounded-lg bg-gray-900 dark:bg-gray-700 text-[10px] text-white font-medium whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none shadow-lg">
+                Disponivel em breve — aguardando aprovacao da Meta
+                <div className="absolute top-full right-4 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-gray-900 dark:border-t-gray-700" />
               </div>
-              {waConnected && (
-                <button
-                  onClick={() => handleDisconnect('whatsapp')}
-                  disabled={disconnecting === 'whatsapp'}
-                  className="text-xs text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 transition-colors"
-                >
-                  {disconnecting === 'whatsapp' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Desconectar'}
-                </button>
-              )}
             </div>
-
-            {/* Facebook */}
-            <div className="p-4 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className={cn(
-                  'w-10 h-10 rounded-xl flex items-center justify-center',
-                  fbConnected
-                    ? 'bg-gradient-to-br from-blue-500 to-blue-600 shadow-sm shadow-blue-500/20'
-                    : 'bg-gray-100 dark:bg-gray-800'
-                )}>
-                  <MessageCircle className={cn('w-5 h-5', fbConnected ? 'text-white' : 'text-gray-400')} />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">Facebook Messenger</span>
-                    {fbConnected && (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20">
-                        <Check className="w-2.5 h-2.5" /> Conectado
-                      </span>
-                    )}
-                  </div>
-                  {fbConnected && fbPageName && (
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{fbPageName}</p>
-                  )}
-                  {!fbConnected && (
-                    <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Nao conectado</p>
-                  )}
-                </div>
-              </div>
-              {fbConnected && (
-                <button
-                  onClick={() => handleDisconnect('facebook')}
-                  disabled={disconnecting === 'facebook'}
-                  className="text-xs text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 transition-colors"
-                >
-                  {disconnecting === 'facebook' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Desconectar'}
-                </button>
-              )}
-            </div>
-
-            {/* Instagram */}
-            <div className="p-4 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className={cn(
-                  'w-10 h-10 rounded-xl flex items-center justify-center',
-                  igConnected
-                    ? 'bg-gradient-to-br from-purple-500 to-pink-500 shadow-sm shadow-purple-500/20'
-                    : 'bg-gray-100 dark:bg-gray-800'
-                )}>
-                  <MessageCircle className={cn('w-5 h-5', igConnected ? 'text-white' : 'text-gray-400')} />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">Instagram Direct</span>
-                    {igConnected && (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20">
-                        <Check className="w-2.5 h-2.5" /> Conectado
-                      </span>
-                    )}
-                  </div>
-                  {igConnected && igAccountName && (
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{igAccountName}</p>
-                  )}
-                  {!igConnected && (
-                    <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Nao conectado</p>
-                  )}
-                </div>
-              </div>
-              {igConnected && (
-                <button
-                  onClick={() => handleDisconnect('instagram')}
-                  disabled={disconnecting === 'instagram'}
-                  className="text-xs text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 transition-colors"
-                >
-                  {disconnecting === 'instagram' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Desconectar'}
-                </button>
-              )}
-            </div>
-          </div>
+          )}
         </div>
-      )}
+      </div>
+
+      {/* ── WhatsApp Card ── */}
+      <div className="rounded-2xl border border-gray-200 dark:border-gray-700/50 bg-white dark:bg-[#111827] overflow-hidden">
+        <div className="p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3.5">
+              <div className={cn(
+                'w-11 h-11 rounded-xl flex items-center justify-center',
+                waConnected
+                  ? 'bg-gradient-to-br from-[#25D366] to-[#128C7E] shadow-sm shadow-green-500/20'
+                  : 'bg-[#25D366]/10'
+              )}>
+                <MessageCircle className={cn('w-5 h-5', waConnected ? 'text-white' : 'text-[#25D366]')} />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">WhatsApp</span>
+                  {waConnected && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20">
+                      <Check className="w-2.5 h-2.5" /> Conectado
+                    </span>
+                  )}
+                </div>
+                {waConnected && waPhoneNumber ? (
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{waPhoneNumber}</p>
+                ) : (
+                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Escolha o metodo de conexao</p>
+                )}
+              </div>
+            </div>
+            {waConnected && (
+              <button
+                onClick={() => handleDisconnect('whatsapp')}
+                disabled={disconnecting === 'whatsapp'}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+              >
+                {disconnecting === 'whatsapp' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Desconectar'}
+              </button>
+            )}
+          </div>
+
+          {/* Two connection methods */}
+          {!waConnected && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Cloud API */}
+              <div className="relative group rounded-xl border-2 border-dashed border-gray-200 dark:border-gray-700 hover:border-[#25D366]/40 dark:hover:border-[#25D366]/30 p-4 transition-colors cursor-default">
+                <div className="flex items-center gap-2.5 mb-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-[#25D366]/10 flex items-center justify-center">
+                    <Cloud className="w-4 h-4 text-[#25D366]" />
+                  </div>
+                  <div>
+                    <span className="text-xs font-semibold text-gray-900 dark:text-gray-100">Cloud API</span>
+                    <span className="ml-1.5 text-[9px] font-semibold px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">Oficial</span>
+                  </div>
+                </div>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed mb-3">
+                  API oficial da Meta. Requer conta Business verificada. Ilimitado e com suporte a templates.
+                </p>
+                <div className="relative">
+                  <button
+                    disabled
+                    className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-[11px] font-semibold text-white/60 bg-[#25D366]/40 cursor-not-allowed"
+                  >
+                    <Smartphone className="w-3.5 h-3.5" /> Configurar Cloud API
+                  </button>
+                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 rounded-lg bg-gray-900 dark:bg-gray-700 text-[10px] text-white font-medium whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none shadow-lg">
+                    Em desenvolvimento
+                    <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-gray-900 dark:border-t-gray-700" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Baileys / QR Code */}
+              <div className="relative group rounded-xl border-2 border-dashed border-gray-200 dark:border-gray-700 hover:border-[#25D366]/40 dark:hover:border-[#25D366]/30 p-4 transition-colors cursor-default">
+                <div className="flex items-center gap-2.5 mb-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-[#25D366]/10 flex items-center justify-center">
+                    <QrCode className="w-4 h-4 text-[#25D366]" />
+                  </div>
+                  <div>
+                    <span className="text-xs font-semibold text-gray-900 dark:text-gray-100">WhatsApp Web</span>
+                    <span className="ml-1.5 text-[9px] font-semibold px-1.5 py-0.5 rounded bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400">QR Code</span>
+                  </div>
+                </div>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed mb-3">
+                  Conexao via QR Code (Baileys). Rapido de configurar, ideal para testes e pequenos volumes.
+                </p>
+                <div className="relative">
+                  <button
+                    disabled
+                    className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-[11px] font-semibold text-white/60 bg-[#25D366]/40 cursor-not-allowed"
+                  >
+                    <QrCode className="w-3.5 h-3.5" /> Escanear QR Code
+                  </button>
+                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 rounded-lg bg-gray-900 dark:bg-gray-700 text-[10px] text-white font-medium whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none shadow-lg">
+                    Em desenvolvimento
+                    <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-gray-900 dark:border-t-gray-700" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </motion.div>
   );
 }

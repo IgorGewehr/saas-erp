@@ -24,17 +24,17 @@ const META_GRAPH = 'https://graph.facebook.com/v21.0';
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { code, businessId } = body;
+    // Support both flows: accessToken (JS SDK) or code (server-side)
+    const { accessToken: shortLivedToken, code, businessId } = body;
 
-    if (!code || !businessId) {
-      return NextResponse.json({ error: 'Missing code or businessId' }, { status: 400 });
+    if ((!shortLivedToken && !code) || !businessId) {
+      return NextResponse.json({ error: 'Missing accessToken/code or businessId' }, { status: 400 });
     }
 
     // Verify user is authenticated and belongs to this business
     const authResult = await verifyAuth(req, businessId);
     if (isAuthError(authResult)) return authResult;
 
-    // authResult.uid, authResult.businessId, authResult.role are now available
     const ROLE_HIERARCHY: Record<string, number> = { founder: 100, admin: 80, manager: 60, operator: 40, viewer: 20 };
     if ((ROLE_HIERARCHY[authResult.role] || 0) < ROLE_HIERARCHY['admin']) {
       return NextResponse.json({ error: 'Forbidden — admin role required' }, { status: 403 });
@@ -50,51 +50,59 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ── Step 1: Exchange code for access token ──────────────────────────────
-    const tokenRes = await fetch(
-      `${META_GRAPH}/oauth/access_token?` +
-        new URLSearchParams({
-          client_id: appId,
-          client_secret: appSecret,
-          code,
-        }),
-      { method: 'GET' }
-    );
+    // ── Step 1: Get short-lived access token ────────────────────────────────
+    let accessToken: string;
 
-    if (!tokenRes.ok) {
-      const err = await tokenRes.json();
-      console.error('Token exchange failed:', err);
-      return NextResponse.json(
-        { error: 'Token exchange failed', details: err?.error?.message },
-        { status: 400 }
+    if (shortLivedToken) {
+      // JS SDK flow — token already provided by frontend
+      accessToken = shortLivedToken;
+      console.log('[Meta Signup] Using access token from JS SDK');
+    } else {
+      // Legacy code flow (fallback)
+      const origin = process.env.NEXT_PUBLIC_APP_URL || 'https://localhost:3000';
+      const redirectUri = origin.endsWith('/') ? origin : `${origin}/`;
+      const tokenRes = await fetch(
+        `${META_GRAPH}/oauth/access_token?` +
+          new URLSearchParams({ client_id: appId, client_secret: appSecret, redirect_uri: redirectUri, code: code! }),
+        { method: 'GET' },
       );
+      if (!tokenRes.ok) {
+        const err = await tokenRes.json();
+        console.error('Token exchange failed:', err);
+        return NextResponse.json({ error: 'Token exchange failed', details: err?.error?.message }, { status: 400 });
+      }
+      const tokenData = await tokenRes.json();
+      accessToken = tokenData.access_token;
     }
 
-    const tokenData = await tokenRes.json();
-    const accessToken: string = tokenData.access_token;
-
-    // Exchange short-lived token for long-lived token (60 days)
+    // ── Step 2: Exchange short-lived → long-lived token (60 days) ───────────
+    // Uses fb_exchange_token grant — NO redirect_uri needed
     let longLivedToken = accessToken;
     let tokenExpiresAt: string | null = null;
 
     try {
       const exchangeRes = await fetch(
-        `${META_GRAPH}/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${accessToken}`
+        `${META_GRAPH}/oauth/access_token?` +
+          new URLSearchParams({
+            grant_type: 'fb_exchange_token',
+            client_id: appId,
+            client_secret: appSecret,
+            fb_exchange_token: accessToken,
+          }),
       );
 
       if (exchangeRes.ok) {
         const exchangeData = await exchangeRes.json();
         if (exchangeData.access_token) {
           longLivedToken = exchangeData.access_token;
-          // Meta returns expires_in in seconds (typically 5184000 = 60 days)
           if (exchangeData.expires_in) {
             tokenExpiresAt = new Date(Date.now() + exchangeData.expires_in * 1000).toISOString();
           }
-          console.log('[Meta Signup] Exchanged for long-lived token, expires:', tokenExpiresAt);
+          console.log('[Meta Signup] Long-lived token obtained, expires:', tokenExpiresAt);
         }
       } else {
-        console.warn('[Meta Signup] Could not exchange for long-lived token, using short-lived');
-        // Short-lived token expires in ~1 hour
+        const errBody = await exchangeRes.text();
+        console.warn('[Meta Signup] Could not exchange for long-lived token:', errBody);
         tokenExpiresAt = new Date(Date.now() + 3600 * 1000).toISOString();
       }
     } catch (exchangeErr) {
