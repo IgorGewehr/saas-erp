@@ -1,0 +1,529 @@
+/**
+ * Baileys Session Manager — Singleton module
+ *
+ * Shared between /api/whatsapp/connect (SSE QR) and /api/whatsapp/restore (auto-restore).
+ * Manages one Baileys socket per businessId in a global Map.
+ */
+
+import path from 'path';
+import fs from 'fs';
+import makeWASocket, {
+  useMultiFileAuthState,
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+  Browsers,
+  proto,
+  WAMessage,
+  MessageUpsertType,
+} from '@whiskeysockets/baileys';
+import QRCode from 'qrcode';
+import pino from 'pino';
+import { initializeApp, getApps, getApp } from 'firebase/app';
+import {
+  getFirestore,
+  collection,
+  query,
+  where,
+  getDocs,
+  addDoc,
+  updateDoc,
+  doc,
+  increment,
+  limit as firestoreLimit,
+} from 'firebase/firestore';
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+
+export const SESSIONS_DIR = path.join(process.cwd(), 'whatsapp-sessions');
+
+const RESTARTABLE_CODES = new Set([
+  DisconnectReason.restartRequired,
+  DisconnectReason.timedOut,
+  DisconnectReason.connectionClosed,
+  DisconnectReason.connectionReplaced,
+]);
+
+const MAX_AUTO_RESTARTS = 5;
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+export interface BaileysSession {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sock: any;
+  listeners: Set<(data: Record<string, unknown>) => void>;
+  isConnected: boolean;
+  lastQr: string | null;
+}
+
+// ─── Global Singleton Map ────────────────────────────────────────────────────
+
+// Attach to globalThis to survive HMR in dev
+const globalSessions = (globalThis as Record<string, unknown>);
+if (!globalSessions.__baileySessions) {
+  globalSessions.__baileySessions = new Map<string, BaileysSession>();
+}
+export const sessions = globalSessions.__baileySessions as Map<string, BaileysSession>;
+
+// ─── Firebase ────────────────────────────────────────────────────────────────
+
+const firebaseConfig = {
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
+  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
+};
+
+function getDb() {
+  const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
+  return getFirestore(app);
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function clearSessionDir(sessionDir: string) {
+  try {
+    if (fs.existsSync(sessionDir)) {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+  } catch (err) {
+    console.error('[Baileys] Erro ao limpar sessao:', err);
+  }
+  fs.mkdirSync(sessionDir, { recursive: true });
+}
+
+export function broadcast(session: BaileysSession, data: Record<string, unknown>) {
+  for (const listener of session.listeners) {
+    try {
+      listener(data);
+    } catch {
+      session.listeners.delete(listener);
+    }
+  }
+}
+
+function formatPhone(phone: string): string {
+  if (phone.length === 13 && phone.startsWith('55')) {
+    return `+${phone.slice(0, 2)} ${phone.slice(2, 4)} ${phone.slice(4, 9)}-${phone.slice(9)}`;
+  }
+  if (phone.length === 12 && phone.startsWith('55')) {
+    return `+${phone.slice(0, 2)} ${phone.slice(2, 4)} ${phone.slice(4, 8)}-${phone.slice(8)}`;
+  }
+  return `+${phone}`;
+}
+
+// ─── Message extraction ──────────────────────────────────────────────────────
+
+function extractMessageText(msg: proto.IMessage | null | undefined): string | null {
+  if (!msg) return null;
+  return (
+    msg.conversation ||
+    msg.extendedTextMessage?.text ||
+    msg.imageMessage?.caption ||
+    msg.videoMessage?.caption ||
+    msg.documentMessage?.caption ||
+    null
+  );
+}
+
+function extractMediaType(msg: proto.IMessage | null | undefined): 'image' | 'video' | 'audio' | 'document' | null {
+  if (!msg) return null;
+  if (msg.imageMessage) return 'image';
+  if (msg.videoMessage) return 'video';
+  if (msg.audioMessage) return 'audio';
+  if (msg.documentMessage) return 'document';
+  if (msg.stickerMessage) return 'image';
+  return null;
+}
+
+function getMediaLabel(type: string | null): string {
+  switch (type) {
+    case 'image': return '[Imagem]';
+    case 'video': return '[Vídeo]';
+    case 'audio': return '[Áudio]';
+    case 'document': return '[Documento]';
+    default: return '[Mídia]';
+  }
+}
+
+// ─── Firestore: update connection status ─────────────────────────────────────
+
+async function updateFirestoreConnection(businessId: string, phoneNumber: string | null) {
+  try {
+    const db = getDb();
+    await updateDoc(doc(db, 'businesses', businessId), {
+      'channels.whatsapp': {
+        isConnected: true,
+        connectedAt: new Date().toISOString(),
+        connectedVia: 'baileys',
+        displayPhoneNumber: phoneNumber,
+        phoneNumberId: phoneNumber,
+      },
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[Baileys] Firestore connection update error:', err);
+  }
+}
+
+// ─── Firestore: save inbound message ─────────────────────────────────────────
+
+async function handleInboundMessage(
+  businessId: string,
+  waMessage: WAMessage,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sock: any,
+): Promise<void> {
+  const rawJid = waMessage.key.remoteJid;
+  if (!rawJid) return;
+
+  // ── Resolve phone number from JID ──
+  // Baileys can send @lid (Linked Device ID) instead of @s.whatsapp.net.
+  // When that happens, the real phone is NOT in remoteJid — we must
+  // extract it from the participant field or fall back to the key.participant.
+  let senderPhone = '';
+  let jidForProfile = rawJid; // JID to use for profile picture lookup
+
+  if (rawJid.endsWith('@s.whatsapp.net')) {
+    // Normal case: "5521999999999@s.whatsapp.net"
+    senderPhone = rawJid.replace('@s.whatsapp.net', '');
+  } else if (rawJid.endsWith('@lid')) {
+    // LID (Linked Device ID) — the real phone is in key.remoteJidAlt
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const altJid = (waMessage.key as any).remoteJidAlt as string | undefined;
+
+    if (altJid && altJid.includes('@s.whatsapp.net')) {
+      senderPhone = altJid.replace('@s.whatsapp.net', '');
+      jidForProfile = altJid;
+    } else {
+      // Fallback chain: participant fields
+      const keyParticipant = waMessage.key.participant;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const msgParticipant = (waMessage as any).participant;
+
+      if (keyParticipant && keyParticipant.includes('@s.whatsapp.net')) {
+        senderPhone = keyParticipant.replace('@s.whatsapp.net', '');
+        jidForProfile = keyParticipant;
+      } else if (msgParticipant && msgParticipant.includes('@s.whatsapp.net')) {
+        senderPhone = msgParticipant.replace('@s.whatsapp.net', '');
+        jidForProfile = msgParticipant;
+      } else {
+        console.warn('[Baileys] @lid sem remoteJidAlt ou participant. Ignorando:', rawJid);
+        return;
+      }
+    }
+  } else if (rawJid.endsWith('@g.us')) {
+    // Group message — should already be filtered but just in case
+    return;
+  } else {
+    // Unknown suffix — extract digits
+    senderPhone = rawJid.replace(/@.*$/, '');
+  }
+
+  // Validate: senderPhone must look like a phone number (10-15 digits)
+  if (!/^\d{10,15}$/.test(senderPhone)) {
+    console.warn('[Baileys] Invalid phone extracted from JID:', { rawJid, senderPhone });
+    return;
+  }
+
+  const messageId = waMessage.key.id || `wa_${Date.now()}`;
+  const timestamp = waMessage.messageTimestamp
+    ? new Date(Number(waMessage.messageTimestamp) * 1000).toISOString()
+    : new Date().toISOString();
+
+  const msgContent = waMessage.message;
+  const text = extractMessageText(msgContent);
+  const mediaType = extractMediaType(msgContent);
+  if (!text && !mediaType) return;
+
+  const displayText = text || getMediaLabel(mediaType);
+  const now = new Date().toISOString();
+  const db = getDb();
+
+  // Deduplicate
+  try {
+    const dupQuery = query(
+      collection(db, 'conversationMessages'),
+      where('externalMessageId', '==', messageId),
+      where('businessId', '==', businessId),
+      firestoreLimit(1),
+    );
+    const dupSnap = await getDocs(dupQuery);
+    if (!dupSnap.empty) return;
+  } catch (err) {
+    console.error('[Baileys] Erro ao verificar duplicata:', err);
+  }
+
+  const pushName = waMessage.pushName || null;
+  let contactName = pushName || formatPhone(senderPhone);
+
+  let avatarUrl: string | null = null;
+  try {
+    avatarUrl = await sock.profilePictureUrl(jidForProfile, 'image');
+  } catch {
+    // Not all contacts have profile pictures
+  }
+
+  try {
+    const convQuery = query(
+      collection(db, 'conversations'),
+      where('businessId', '==', businessId),
+      where('channel', '==', 'whatsapp'),
+      where('contactExternalId', '==', senderPhone),
+      firestoreLimit(1),
+    );
+    const convSnap = await getDocs(convQuery);
+    let conversationId: string;
+
+    if (convSnap.empty) {
+      const newConvRef = await addDoc(collection(db, 'conversations'), {
+        businessId,
+        channel: 'whatsapp',
+        contactName,
+        contactPhone: formatPhone(senderPhone),
+        contactExternalId: senderPhone,
+        ...(avatarUrl ? { contactAvatarUrl: avatarUrl } : {}),
+        status: 'open',
+        lastMessage: displayText,
+        lastMessageAt: timestamp,
+        lastMessageDirection: 'inbound',
+        unreadCount: 1,
+        createdAt: now,
+        updatedAt: now,
+      });
+      conversationId = newConvRef.id;
+
+      // Auto-link CRM contact
+      try {
+        const crmQuery = query(
+          collection(db, 'crmContacts'),
+          where('businessId', '==', businessId),
+          where('channelIdentities.whatsapp', '==', senderPhone),
+          firestoreLimit(1),
+        );
+        const crmSnap = await getDocs(crmQuery);
+        if (!crmSnap.empty) {
+          const crmContact = crmSnap.docs[0];
+          await updateDoc(doc(db, 'conversations', conversationId), {
+            crmContactId: crmContact.id,
+            contactName: crmContact.data().name || contactName,
+          });
+          await updateDoc(doc(db, 'crmContacts', crmContact.id), {
+            lastConversationId: conversationId,
+            lastConversationAt: now,
+            updatedAt: now,
+          });
+        }
+      } catch { /* non-critical */ }
+    } else {
+      conversationId = convSnap.docs[0].id;
+      const existingConv = convSnap.docs[0].data();
+
+      const convUpdate: Record<string, unknown> = {
+        lastMessage: displayText,
+        lastMessageAt: timestamp,
+        lastMessageDirection: 'inbound',
+        unreadCount: increment(1),
+        updatedAt: now,
+      };
+
+      if (pushName && (!existingConv.contactName || /^\+?\d[\d\s-]+$/.test(existingConv.contactName))) {
+        convUpdate.contactName = pushName;
+        contactName = pushName;
+      }
+      if (avatarUrl && !existingConv.contactAvatarUrl) {
+        convUpdate.contactAvatarUrl = avatarUrl;
+      }
+
+      await updateDoc(doc(db, 'conversations', conversationId), convUpdate);
+    }
+
+    await addDoc(collection(db, 'conversationMessages'), {
+      conversationId,
+      businessId,
+      channel: 'whatsapp',
+      direction: 'inbound',
+      content: displayText,
+      status: 'delivered',
+      externalMessageId: messageId,
+      senderName: contactName,
+      mediaType: mediaType ?? null,
+      mediaUrl: null,
+      sentAt: timestamp,
+      createdAt: now,
+    });
+  } catch (err) {
+    console.error('[Baileys] Erro ao salvar mensagem inbound:', err);
+  }
+}
+
+// ─── Session lifecycle ───────────────────────────────────────────────────────
+
+export function destroySession(businessId: string) {
+  const session = sessions.get(businessId);
+  if (!session) return;
+
+  for (const listener of session.listeners) {
+    try { listener({ type: 'stream_end' }); } catch { /* ignore */ }
+  }
+  session.listeners.clear();
+
+  if (session.sock) {
+    try { session.sock.end(undefined); } catch { /* ignore */ }
+  }
+
+  sessions.delete(businessId);
+}
+
+/**
+ * Create or restore a Baileys session for a businessId.
+ *
+ * @param businessId  The tenant ID
+ * @param mode
+ *   - 'fresh': clear session dir, show QR (used when user clicks "Connect")
+ *   - 'restore': reuse existing session files (used on server restart)
+ */
+export async function createBaileysSession(
+  businessId: string,
+  mode: 'fresh' | 'restore' = 'fresh',
+): Promise<BaileysSession> {
+  // Already running? Return existing
+  const existing = sessions.get(businessId);
+  if (existing) return existing;
+
+  const sessionDir = path.join(SESSIONS_DIR, businessId);
+
+  let version: [number, number, number] | undefined;
+  try {
+    const v = await fetchLatestBaileysVersion();
+    version = v.version;
+  } catch {
+    console.warn('[Baileys] Usando versao padrao');
+  }
+
+  const session: BaileysSession = {
+    sock: null,
+    listeners: new Set(),
+    isConnected: false,
+    lastQr: null,
+  };
+
+  sessions.set(businessId, session);
+
+  let restartCount = 0;
+
+  async function startSocket(clearFirst: boolean) {
+    if (clearFirst) {
+      clearSessionDir(sessionDir);
+    } else {
+      if (!fs.existsSync(sessionDir)) {
+        fs.mkdirSync(sessionDir, { recursive: true });
+      }
+    }
+
+    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+
+    const sock = makeWASocket({
+      version,
+      auth: state,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      logger: pino({ level: 'silent' }) as any,
+      browser: Browsers.macOS('Desktop'),
+      printQRInTerminal: false,
+      syncFullHistory: false,
+      generateHighQualityLinkPreview: false,
+      markOnlineOnConnect: false,
+      defaultQueryTimeoutMs: 60_000,
+    });
+
+    session.sock = sock;
+
+    sock.ev.on('creds.update', saveCreds);
+
+    // ── Message listener ──
+    sock.ev.on('messages.upsert', async ({ messages: waMessages, type }: { messages: WAMessage[]; type: MessageUpsertType }) => {
+      if (type !== 'notify') return;
+
+      for (const waMsg of waMessages) {
+        try {
+          if (waMsg.key.fromMe) continue;
+          if (waMsg.key.remoteJid === 'status@broadcast') continue;
+          if (waMsg.key.remoteJid?.endsWith('@g.us')) continue;
+          if (!waMsg.message) continue;
+          if (waMsg.message.protocolMessage || waMsg.message.reactionMessage) continue;
+
+          await handleInboundMessage(businessId, waMsg, sock);
+        } catch (err) {
+          console.error('[Baileys] Erro ao processar mensagem:', err);
+        }
+      }
+    });
+
+    // ── Connection lifecycle ──
+    sock.ev.on('connection.update', async (update: { connection?: string; lastDisconnect?: { error?: Error }; qr?: string }) => {
+      const { connection, lastDisconnect, qr } = update;
+
+      if (qr) {
+        try {
+          const qrDataUrl = await QRCode.toDataURL(qr, { width: 280, margin: 2 });
+          session.lastQr = qrDataUrl;
+          broadcast(session, { type: 'qr', qr: qrDataUrl });
+        } catch (err) {
+          console.error('[Baileys] QR generation error:', err);
+        }
+      }
+
+      if (connection === 'open') {
+        session.isConnected = true;
+        restartCount = 0;
+        const phoneNumber = sock.user?.id?.split(':')[0] || sock.user?.id?.split('@')[0] || null;
+        console.log('[Baileys] Conectado! Tel:', phoneNumber, '| business:', businessId);
+
+        broadcast(session, { type: 'connected', phoneNumber, status: 'connected' });
+        await updateFirestoreConnection(businessId, phoneNumber);
+      }
+
+      if (connection === 'close') {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
+
+        console.warn('[Baileys] Conexao fechada:', { statusCode, message: lastDisconnect?.error?.message });
+
+        if (statusCode === DisconnectReason.loggedOut) {
+          broadcast(session, { type: 'disconnected', reason: 'logged_out' });
+          clearSessionDir(sessionDir);
+          destroySession(businessId);
+          return;
+        }
+
+        if (RESTARTABLE_CODES.has(statusCode) && restartCount < MAX_AUTO_RESTARTS) {
+          restartCount++;
+          const delay = Math.min(1000 * restartCount, 5000);
+          console.log(`[Baileys] Auto-restart ${restartCount}/${MAX_AUTO_RESTARTS} em ${delay}ms (code: ${statusCode})`);
+
+          broadcast(session, { type: 'status', status: 'reconnecting', attempt: restartCount });
+
+          setTimeout(() => {
+            const keepSession = statusCode === DisconnectReason.restartRequired;
+            startSocket(!keepSession).catch((err) => {
+              console.error('[Baileys] Auto-restart falhou:', err);
+              broadcast(session, { type: 'error', message: 'Falha ao reconectar. Tente novamente.' });
+              destroySession(businessId);
+            });
+          }, delay);
+          return;
+        }
+
+        broadcast(session, { type: 'error', message: 'Conexao fechada pelo WhatsApp. Tente novamente.' });
+        destroySession(businessId);
+      }
+    });
+  }
+
+  // First start
+  const isFresh = mode === 'fresh';
+  await startSocket(isFresh);
+
+  return session;
+}

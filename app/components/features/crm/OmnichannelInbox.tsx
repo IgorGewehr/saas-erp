@@ -186,6 +186,19 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
 
   // Mark conversation as read
   const handleSelectConversation = useCallback((conv: Conversation) => {
+    console.log(
+      `%c[AUDITORIA] Conversa selecionada`,
+      'color: #25D366; font-weight: bold; font-size: 13px;',
+      '\n  Canal:', conv.channel,
+      '\n  Conversa ID:', conv.id,
+      '\n  Contato Nome:', conv.contactName,
+      '\n  Contato Externo ID:', conv.contactExternalId ?? '(vazio)',
+      '\n  Telefone:', conv.contactPhone ?? '(vazio)',
+      '\n  Avatar URL:', conv.contactAvatarUrl ? '✓ presente' : '(vazio)',
+      '\n  CRM Contact ID:', (conv as Record<string, unknown>).crmContactId ?? '(não vinculado)',
+      '\n  Status:', conv.status,
+      '\n  Unread:', conv.unreadCount,
+    );
     setSelectedConv(conv);
     if (conv.unreadCount > 0) {
       updateDoc(doc(db, 'conversations', conv.id), { unreadCount: 0, updatedAt: new Date().toISOString() })
@@ -194,9 +207,9 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
   }, []);
 
   return (
-    <div className="flex flex-1 min-h-0 bg-white dark:bg-[#0a0e17] rounded-2xl border border-gray-100 dark:border-gray-700/50 overflow-hidden">
+    <div className="flex flex-1 min-h-0 h-0 bg-white dark:bg-[#0a0e17] rounded-2xl border border-gray-100 dark:border-gray-700/50 overflow-hidden">
       {/* Conversation list */}
-      <div className="w-[320px] shrink-0 border-r border-gray-100 dark:border-white/[0.06] flex flex-col">
+      <div className="w-[320px] shrink-0 border-r border-gray-100 dark:border-white/[0.06] flex flex-col min-h-0">
         {/* Filter tabs */}
         <div className="px-3 pt-3 pb-2 shrink-0">
           <div className="flex flex-wrap gap-1">
@@ -316,7 +329,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
       </div>
 
       {/* Thread */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0">
         {!selectedConv ? (
           <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6">
             <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-red-600/15 to-red-500/10 flex items-center justify-center border border-red-500/20">
@@ -361,7 +374,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
             </div>
 
             {/* Messages */}
-            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-1 scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-white/10">
+            <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-1 scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-white/10">
               {messages.map((msg) => {
                 const isOut = msg.direction === 'outbound';
                 return (

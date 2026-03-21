@@ -508,8 +508,8 @@ export default function CRMModule() {
   if (isLoading) return <CRMSkeleton />;
 
   return (
-    <div className="h-full flex flex-col p-4 sm:p-5 lg:p-7">
-      <div className="flex-1 flex flex-col min-h-0">
+    <div className="h-full flex flex-col p-4 sm:p-5 lg:p-7 overflow-hidden">
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4 shrink-0">
           <div className="flex items-center gap-3">
@@ -542,9 +542,9 @@ export default function CRMModule() {
         </div>
 
         {/* Tab Content */}
-        <div className="flex-1 flex flex-col min-h-0">
+        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
         <AnimatePresence mode="wait">
-          <motion.div key={activeTab} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4, transition: { duration: 0.15 } }} transition={{ duration: 0.2 }} className="flex-1 flex flex-col min-h-0">
+          <motion.div key={activeTab} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4, transition: { duration: 0.15 } }} transition={{ duration: 0.2 }} className="flex-1 flex flex-col min-h-0 h-full">
             {activeTab === 'kanban' && <KanbanBoard contacts={contacts} onSelectContact={(c) => { setSelectedContact(c); setDetailOpen(true); }} selectedContactId={selectedContact?.id || null} onStatusChange={handleStatusChange} onNewContact={() => { setEditingContact(null); setContactDialogOpen(true); }} searchQuery={searchQuery} filterTags={filterTags} filterSource={filterSource} />}
             {activeTab === 'inbox' && <OmnichannelInbox businessId={business?.id || ''} contacts={contacts} />}
             {activeTab === 'atividades' && <div className="flex-1 overflow-y-auto min-h-0"><ActivitiesTab activities={activities} onEdit={(a) => { setEditingActivity(a); setActivityDialogOpen(true); }} onDelete={(a) => setDeleteActivityConfirm(a)} onToggle={handleToggleActivity} onNew={() => { setEditingActivity(null); setActivityDialogOpen(true); }} /></div>}

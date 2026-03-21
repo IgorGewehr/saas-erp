@@ -154,17 +154,46 @@ const pageVariants: import('framer-motion').Variants = {
 // ─── Layout ───────────────────────────────────────────────────────────────────
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading, business, firebaseUser } = useAuth();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [activePage, setActivePage] = useState<MenuPage>('Dashboard');
   const prevPageRef = useRef<MenuPage>('Dashboard');
+  const waRestored = useRef(false);
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
       router.replace('/login');
     }
   }, [isAuthenticated, isLoading, router]);
+
+  // ── Auto-restore WhatsApp Baileys session after server restart ──
+  useEffect(() => {
+    if (!isAuthenticated || !business?.id || !firebaseUser || waRestored.current) return;
+
+    // Only restore if WhatsApp is marked as connected in Firestore
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const waChannel = (business as any)?.channels?.whatsapp as { isConnected?: boolean; connectedVia?: string } | undefined;
+    if (!waChannel?.isConnected || waChannel.connectedVia !== 'baileys') return;
+
+    waRestored.current = true;
+
+    (async () => {
+      try {
+        const token = await firebaseUser.getIdToken();
+        await fetch('/api/whatsapp/restore', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ businessId: business.id }),
+        });
+      } catch {
+        // Silent — restore is best-effort
+      }
+    })();
+  }, [isAuthenticated, business, firebaseUser]);
 
   const handleMenuSelect = (page: MenuPage) => {
     prevPageRef.current = activePage;
@@ -180,7 +209,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     <AppContext.Provider value={{ activePage, setActivePage: handleMenuSelect, sidebarCollapsed }}>
       <AmbientBackground />
 
-      <div className="relative min-h-screen flex bg-gradient-to-br from-gray-50/90 to-gray-100/90 dark:from-[#0B0F19]/95 dark:to-[#0d1117]/95 z-10">
+      <div className="relative h-screen flex overflow-hidden bg-gradient-to-br from-gray-50/90 to-gray-100/90 dark:from-[#0B0F19]/95 dark:to-[#0d1117]/95 z-10">
         <Sidebar
           activePage={activePage}
           onMenuSelect={handleMenuSelect}
@@ -191,13 +220,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         />
 
         {/* Main content — expands smoothly as sidebar collapses */}
-        <div className="flex-1 flex flex-col min-w-0">
+        <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
           <TopBar
             onMobileMenuToggle={() => setMobileMenuOpen(!mobileMenuOpen)}
             onNavigate={handleMenuSelect}
           />
 
-          <main className="relative flex-1 overflow-x-hidden">
+          <main className="relative flex-1 min-h-0 overflow-hidden">
             {/* Page transition progress line */}
             <NavProgress trigger={activePage} />
 

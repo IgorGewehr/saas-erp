@@ -3813,10 +3813,11 @@ function WhatsAppQrModal({
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [status, setStatus] = useState<'connecting' | 'scanning' | 'connected' | 'error'>('connecting');
   const [errorMsg, setErrorMsg] = useState('');
-  const eventSourceRef = useRef<EventSource | null>(null);
+  const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    const abortController = new AbortController();
 
     const connect = async () => {
       try {
@@ -3825,18 +3826,21 @@ function WhatsAppQrModal({
 
         const url = `/api/whatsapp/connect?businessId=${encodeURIComponent(businessId)}`;
 
-        // Use fetch with streaming for SSE (EventSource doesn't support custom headers)
         const response = await fetch(url, {
           headers: { Authorization: `Bearer ${token}` },
+          signal: abortController.signal,
         });
 
         if (!response.ok || !response.body) {
-          setStatus('error');
-          setErrorMsg('Falha ao conectar com o servidor');
+          if (!cancelled) {
+            setStatus('error');
+            setErrorMsg('Falha ao conectar com o servidor');
+          }
           return;
         }
 
         const reader = response.body.getReader();
+        readerRef.current = reader;
         const decoder = new TextDecoder();
         let buffer = '';
 
@@ -3874,7 +3878,7 @@ function WhatsAppQrModal({
           }
         }
       } catch (err) {
-        if (!cancelled) {
+        if (!cancelled && !(err instanceof DOMException && (err as DOMException).name === 'AbortError')) {
           setStatus('error');
           setErrorMsg('Erro de conexao com o servidor');
           console.error('[WA QR Modal] SSE error:', err);
@@ -3886,9 +3890,13 @@ function WhatsAppQrModal({
 
     return () => {
       cancelled = true;
-      eventSourceRef.current?.close();
+      // Cancel the reader (triggers stream cancel on backend → cleanup)
+      readerRef.current?.cancel().catch(() => {});
+      readerRef.current = null;
+      abortController.abort();
     };
-  }, [businessId, firebaseUser, onConnected]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [businessId]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>

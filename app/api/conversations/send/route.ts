@@ -25,6 +25,7 @@ import {
 } from 'firebase/firestore';
 import { decryptToken } from '@/lib/utils/encryption';
 import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
+import { sessions } from '@/app/api/whatsapp/baileys-manager';
 import type {
   ConversationChannel,
   ChannelCredentials,
@@ -224,16 +225,23 @@ export async function POST(req: NextRequest) {
       }, { status: 400 });
     }
 
-    // Token presence check
-    const tokenField = channel === 'whatsapp' ? 'accessToken'
-      : channel === 'facebook' ? 'pageAccessToken'
-      : 'accessToken';
+    // Skip token checks for Baileys connections (no token needed)
+    const isBaileysChannel = channel === 'whatsapp' &&
+      'connectedVia' in channelConfig &&
+      channelConfig.connectedVia === 'baileys';
 
-    if (tokenField in channelConfig && !channelConfig[tokenField as keyof typeof channelConfig]) {
-      return NextResponse.json({
-        error: `Token do ${channelLabel[channel] || channel} ausente. Reconecte o canal em Configurações.`,
-        code: 'disconnected',
-      }, { status: 400 });
+    if (!isBaileysChannel) {
+      // Token presence check
+      const tokenField = channel === 'whatsapp' ? 'accessToken'
+        : channel === 'facebook' ? 'pageAccessToken'
+        : 'accessToken';
+
+      if (tokenField in channelConfig && !channelConfig[tokenField as keyof typeof channelConfig]) {
+        return NextResponse.json({
+          error: `Token do ${channelLabel[channel] || channel} ausente. Reconecte o canal em Configurações.`,
+          code: 'disconnected',
+        }, { status: 400 });
+      }
     }
 
     // Token expiry pre-check
@@ -256,15 +264,24 @@ export async function POST(req: NextRequest) {
     const mediaOpts = isMedia ? { mediaUrl: mediaUrl!, mediaType: mediaType || 'document' as const } : undefined;
 
     switch (channel) {
-      case 'whatsapp':
-        result = await sendWhatsApp(channels, recipientId, content, {
-          type: type || 'text',
-          templateName,
-          templateLanguage,
-          templateParams,
-          media: mediaOpts,
-        });
+      case 'whatsapp': {
+        // Check if this business uses Baileys (WhatsApp Web) or Cloud API
+        const waConfig = channels.whatsapp;
+        const isBaileys = waConfig && 'connectedVia' in waConfig && waConfig.connectedVia === 'baileys';
+
+        if (isBaileys) {
+          result = await sendWhatsAppBaileys(businessId, recipientId, content, conversationId, db);
+        } else {
+          result = await sendWhatsApp(channels, recipientId, content, {
+            type: type || 'text',
+            templateName,
+            templateLanguage,
+            templateParams,
+            media: mediaOpts,
+          });
+        }
         break;
+      }
       case 'facebook':
         result = await sendFacebookMessenger(channels, recipientId, content, mediaOpts);
         break;
@@ -313,6 +330,122 @@ export async function POST(req: NextRequest) {
 
     console.error('[Send Message] Error:', message, errorDetails);
     return NextResponse.json({ error: message, code: 'send_failed', ...errorDetails }, { status: statusCode });
+  }
+}
+
+// ─── WhatsApp via Baileys (WhatsApp Web) ─────────────────────────────────────
+
+async function sendWhatsAppBaileys(
+  businessId: string,
+  recipientId: string,
+  content: string,
+  conversationId: string,
+  db: ReturnType<typeof getFirestore>,
+): Promise<{ externalMessageId: string }> {
+  const session = sessions.get(businessId);
+
+  if (!session || !session.sock) {
+    throw new Error('WhatsApp Web não está conectado. Reconecte escaneando o QR Code em Configurações.');
+  }
+
+  if (!session.isConnected) {
+    throw new Error('WhatsApp Web está reconectando. Tente novamente em alguns segundos.');
+  }
+
+  // ── Resolve the REAL phone number from the conversation document ──
+  // The frontend sends contactExternalId as recipientId, but for Facebook
+  // conversations that's a PSID (not a phone number). We MUST read the
+  // conversation doc and extract the actual phone.
+  let phoneNumber: string | null = null;
+
+  if (conversationId) {
+    try {
+      const convSnap = await getDoc(doc(db, 'conversations', conversationId));
+      if (convSnap.exists()) {
+        const convData = convSnap.data();
+
+        // Priority 1: contactPhone is always a real phone (formatted by our listener)
+        // e.g. "+55 21 99999-9999" → strip to "5521999999999"
+        if (convData.contactPhone) {
+          const stripped = convData.contactPhone.replace(/[^0-9]/g, '');
+          if (stripped.length >= 10 && stripped.length <= 13) {
+            phoneNumber = stripped;
+          }
+        }
+
+        // Priority 2: contactExternalId — but ONLY if it looks like a BR phone
+        // (starts with country code 55 and has 12-13 digits).
+        // PSIDs and Facebook IDs are 15-17 digits and never start with 55.
+        if (!phoneNumber && convData.contactExternalId) {
+          const ext = convData.contactExternalId.replace(/[^0-9]/g, '');
+          if (/^55\d{10,11}$/.test(ext)) {
+            phoneNumber = ext;
+          }
+        }
+
+        console.log('[Baileys Send] Resolved phone from conversation:', {
+          contactPhone: convData.contactPhone,
+          contactExternalId: convData.contactExternalId,
+          resolved: phoneNumber,
+        });
+      }
+    } catch (err) {
+      console.warn('[Baileys Send] Erro ao buscar conversa:', err);
+    }
+  }
+
+  // Fallback: try recipientId itself if it looks like a phone number
+  if (!phoneNumber) {
+    const fallback = recipientId.replace(/[^0-9]/g, '');
+    if (/^55\d{10,11}$/.test(fallback)) {
+      phoneNumber = fallback;
+    }
+  }
+
+  if (!phoneNumber) {
+    throw new Error(
+      `Nao foi possivel identificar o numero de telefone do destinatario. ` +
+      `recipientId recebido: ${recipientId}. Verifique os dados da conversa.`
+    );
+  }
+
+  // ── Validate number and resolve correct JID ──
+  const candidateJid = `${phoneNumber}@s.whatsapp.net`;
+
+  let targetJid = candidateJid;
+
+  try {
+    // onWhatsApp validates the number and returns the canonical JID
+    // (handles Brazil's 9th digit ambiguity automatically)
+    const [result] = await session.sock.onWhatsApp(candidateJid);
+    if (result?.exists && result.jid) {
+      targetJid = result.jid;
+    } else {
+      throw new Error(`Numero ${phoneNumber} nao possui WhatsApp.`);
+    }
+  } catch (err) {
+    // If onWhatsApp itself throws (network issue), log and try sending anyway
+    if (err instanceof Error && err.message.includes('nao possui')) {
+      throw err; // Re-throw our own user-friendly error
+    }
+    console.warn('[Baileys Send] onWhatsApp falhou, tentando envio direto:', (err as Error).message);
+  }
+
+  // ── Send message ──
+  try {
+    const sent = await session.sock.sendMessage(targetJid, { text: content });
+    const externalMessageId = sent?.key?.id || `baileys_${Date.now()}`;
+
+    return { externalMessageId };
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    const errorStack = err instanceof Error ? err.stack?.split('\n').slice(0, 3).join(' | ') : '';
+    console.error('[Baileys Send] Erro ao enviar mensagem:', {
+      jid: targetJid,
+      error: errorMsg,
+      stack: errorStack,
+    });
+    throw new Error('Falha ao enviar mensagem via WhatsApp Web. Verifique a conexão.');
   }
 }
 
