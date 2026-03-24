@@ -362,13 +362,33 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
       continue;
     }
 
+    // Fetch sender profile (name + avatar) for any message/postback event
+    let senderName: string | undefined;
+    let senderAvatarUrl: string | undefined;
+
+    if (event.message || event.postback) {
+      const businessId = await resolveBusinessId(db, 'facebook', String(pageId));
+      if (businessId) {
+        const pageToken = await getDecryptedPageToken(db, businessId);
+        if (pageToken) {
+          const profile = await fetchSenderProfile(String(event.sender.id), pageToken);
+          if (profile) {
+            senderName = profile.name;
+            senderAvatarUrl = profile.profilePic;
+          }
+        }
+      }
+      if (!senderName) senderName = 'Usuário do Facebook';
+    }
+
     // Handle postback events
     if (event.postback) {
       await saveInboundMessage({
         channel: 'facebook',
         channelIdentifier: String(entry.id),
         externalId: String(event.sender.id),
-        senderName: undefined,
+        senderName,
+        senderAvatarUrl,
         messageId: `postback_${event.timestamp}`,
         content: event.postback.title || event.postback.payload || '[Postback]',
         timestamp: new Date(event.timestamp).toISOString(),
@@ -381,13 +401,15 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
         channel: 'facebook',
         channelIdentifier: pageId,
         externalId: event.sender.id,
+        senderName,
+        senderAvatarUrl,
         messageId: event.message.mid,
         content: event.message.text,
         timestamp: new Date(event.timestamp).toISOString(),
       });
     } else if (event.message?.attachments && event.message.attachments.length > 0) {
-      const attachment = event.message.attachments[0]; // Primary attachment
-      const attachmentType = attachment.type; // 'image', 'video', 'audio', 'file', 'fallback'
+      const attachment = event.message.attachments[0];
+      const attachmentType = attachment.type;
       const attachmentUrl = attachment.payload?.url;
 
       const mediaTypeMap: Record<string, string> = {
@@ -398,7 +420,8 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
         channel: 'facebook',
         channelIdentifier: String(entry.id),
         externalId: String(event.sender.id),
-        senderName: undefined,
+        senderName,
+        senderAvatarUrl,
         messageId: event.message.mid,
         content: event.message.text || `[${attachmentType === 'file' ? 'Documento' : attachmentType === 'image' ? 'Imagem' : attachmentType === 'video' ? 'Video' : attachmentType === 'audio' ? 'Audio' : 'Anexo'}]`,
         mediaType: (mediaTypeMap[attachmentType] || 'document') as 'image' | 'audio' | 'video' | 'document',
@@ -480,25 +503,11 @@ async function handleInstagramEvent(entry: MetaWebhookEntry) {
       continue;
     }
 
-    // Handle postback events
-    if (event.postback) {
-      await saveInboundMessage({
-        channel: 'instagram',
-        channelIdentifier: String(entry.id),
-        externalId: String(event.sender.id),
-        senderName: undefined,
-        messageId: `postback_${event.timestamp}`,
-        content: event.postback.title || event.postback.payload || '[Postback]',
-        timestamp: new Date(event.timestamp).toISOString(),
-      });
-      continue;
-    }
-
-    // Fetch Instagram sender profile (name + avatar) using Facebook page token
+    // Fetch Instagram sender profile (name + avatar) for any message/postback
     let senderName: string | undefined;
     let senderAvatarUrl: string | undefined;
 
-    if (event.message) {
+    if (event.message || event.postback) {
       const businessId = await resolveBusinessId(db, 'instagram', String(accountId));
       if (businessId) {
         const pageToken = await getDecryptedPageToken(db, businessId);
@@ -510,6 +519,22 @@ async function handleInstagramEvent(entry: MetaWebhookEntry) {
           }
         }
       }
+      if (!senderName) senderName = 'Usuário do Instagram';
+    }
+
+    // Handle postback events
+    if (event.postback) {
+      await saveInboundMessage({
+        channel: 'instagram',
+        channelIdentifier: String(entry.id),
+        externalId: String(event.sender.id),
+        senderName,
+        senderAvatarUrl,
+        messageId: `postback_${event.timestamp}`,
+        content: event.postback.title || event.postback.payload || '[Postback]',
+        timestamp: new Date(event.timestamp).toISOString(),
+      });
+      continue;
     }
 
     if (event.message?.text) {

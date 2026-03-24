@@ -237,7 +237,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 initial="initial"
                 animate="animate"
                 exit="exit"
-                className="h-full will-change-transform"
+                className="h-full overflow-y-auto will-change-transform"
               >
                 {children}
               </motion.div>

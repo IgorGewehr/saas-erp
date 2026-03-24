@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Search, Send, MessageSquare, Inbox, Instagram, Facebook, Check, CheckCheck, Star, AlertCircle, Clock, Trash2, X, Loader2 } from 'lucide-react';
+import { Search, Send, MessageSquare, Inbox, Instagram, Facebook, Check, CheckCheck, Star, AlertCircle, Clock, Trash2, X, Loader2, RefreshCw } from 'lucide-react';
 import { AnimatePresence } from 'framer-motion';
 import { motion } from 'framer-motion';
 import { toast } from 'react-toastify';
@@ -32,6 +32,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
   const [search, setSearch] = useState('');
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -238,6 +239,37 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
     }
   }, [selectedConv, businessId, isDeleting]);
 
+  const handleSync = useCallback(async () => {
+    if (isSyncing) return;
+    setIsSyncing(true);
+    try {
+      const { getAuth } = await import('firebase/auth');
+      const token = await getAuth().currentUser?.getIdToken();
+      const res = await fetch('/api/conversations/sync', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ businessId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        const { stats } = data;
+        toast.success(
+          `Sincronizado: ${stats.messagesImported} mensagens novas, ${stats.conversationsSynced} conversas`,
+        );
+      } else {
+        toast.error(data.error || 'Erro ao sincronizar');
+      }
+    } catch (err) {
+      console.error('[OmnichannelInbox] Sync failed:', err);
+      toast.error('Erro ao sincronizar com a Meta');
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [businessId, isSyncing]);
+
   return (
     <div className="flex flex-1 min-h-0 h-0 bg-white dark:bg-[#0a0e17] rounded-2xl border border-gray-100 dark:border-gray-700/50 overflow-hidden">
       {/* Conversation list */}
@@ -266,14 +298,28 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
           </div>
         </div>
 
-        {/* Search */}
-        <div className="px-3 pb-2">
-          <div className="relative">
+        {/* Search + Sync */}
+        <div className="px-3 pb-2 flex gap-1.5">
+          <div className="relative flex-1">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
             <input type="text" placeholder="Buscar..." value={search} onChange={(e) => setSearch(e.target.value)}
               className="w-full pl-8 pr-3 py-1.5 text-xs bg-gray-100 dark:bg-white/[0.04] border border-transparent dark:border-white/[0.06] rounded-lg text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:border-red-500/50 transition-colors"
             />
           </div>
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={handleSync}
+            disabled={isSyncing}
+            className={cn(
+              'w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors',
+              'bg-gray-100 dark:bg-white/[0.06] text-gray-400 hover:text-red-500 dark:hover:text-red-400',
+              isSyncing && 'opacity-60 cursor-not-allowed',
+            )}
+            title="Sincronizar mensagens da Meta"
+          >
+            <RefreshCw size={13} className={isSyncing ? 'animate-spin' : ''} />
+          </motion.button>
         </div>
 
         {/* Conversations */}
