@@ -122,6 +122,7 @@ interface InboundMessageParams {
   channelIdentifier: string; // phoneNumberId (whatsapp) or pageId (facebook/instagram)
   externalId: string;
   senderName?: string;
+  senderAvatarUrl?: string;
   messageId: string;
   content: string;
   mediaType?: 'image' | 'audio' | 'video' | 'document';
@@ -147,7 +148,7 @@ export async function GET(req: NextRequest) {
   const token     = searchParams.get('hub.verify_token');
   const challenge = searchParams.get('hub.challenge');
 
-  const verifyToken = process.env.META_WHATSAPP_WEBHOOK_VERIFY_TOKEN;
+  const verifyToken = process.env.META_FACEBOOK_VERIFY_TOKEN || process.env.META_WHATSAPP_WEBHOOK_VERIFY_TOKEN;
 
   if (mode === 'subscribe' && token === verifyToken) {
     console.log('[Meta Webhook] Verification successful');
@@ -160,25 +161,24 @@ export async function GET(req: NextRequest) {
 
 // ─── Webhook Signature Verification ──────────────────────────────────────────
 
-async function verifySignature(req: NextRequest, body: string): Promise<boolean> {
-  const signature = req.headers.get('x-hub-signature-256');
-  if (!signature) return false;
-
+function verifySignatureFromBuffer(rawBuffer: Buffer, signature: string): boolean {
   const appSecret = process.env.META_APP_SECRET;
   if (!appSecret) return false;
 
   const expectedHash = crypto
     .createHmac('sha256', appSecret)
-    .update(body)
+    .update(rawBuffer)
     .digest('hex');
 
   const expected = `sha256=${expectedHash}`;
 
-  // Timing-safe comparison
+  // Timing-safe comparison (must be same length)
+  if (signature.length !== expected.length) return false;
+
   try {
     return crypto.timingSafeEqual(
-      Buffer.from(signature),
-      Buffer.from(expected),
+      Buffer.from(signature, 'utf8'),
+      Buffer.from(expected, 'utf8'),
     );
   } catch {
     return false;
@@ -192,14 +192,16 @@ export async function POST(req: NextRequest) {
     const clientIp = getClientIp(req);
     const { allowed } = checkRateLimit(`webhook:${clientIp}`, 200, 60_000);
     if (!allowed) {
-      console.warn('[Meta Webhook] Rate limit exceeded, skipping processing for IP:', clientIp);
-      return NextResponse.json({ status: 'ok' }, { status: 200 }); // Always 200 for Meta
+      return NextResponse.json({ status: 'ok' }, { status: 200 });
     }
 
-    const rawBody = await req.text();
+    // Read raw bytes — arrayBuffer preserves exact bytes Meta signed
+    const rawBuffer = Buffer.from(await req.arrayBuffer());
+    const rawBody = rawBuffer.toString('utf8');
 
-    // Verify signature
-    const isValid = await verifySignature(req, rawBody);
+    // Verify HMAC-SHA256 signature
+    const signature = req.headers.get('x-hub-signature-256') || '';
+    const isValid = verifySignatureFromBuffer(rawBuffer, signature);
     if (!isValid) {
       console.error('[Meta Webhook] Invalid signature');
       return NextResponse.json({ error: 'Invalid signature' }, { status: 403 });
@@ -492,18 +494,38 @@ async function handleInstagramEvent(entry: MetaWebhookEntry) {
       continue;
     }
 
+    // Fetch Instagram sender profile (name + avatar) using Facebook page token
+    let senderName: string | undefined;
+    let senderAvatarUrl: string | undefined;
+
+    if (event.message) {
+      const businessId = await resolveBusinessId(db, 'instagram', String(accountId));
+      if (businessId) {
+        const pageToken = await getDecryptedPageToken(db, businessId);
+        if (pageToken) {
+          const profile = await fetchSenderProfile(String(event.sender.id), pageToken);
+          if (profile) {
+            senderName = profile.name;
+            senderAvatarUrl = profile.profilePic;
+          }
+        }
+      }
+    }
+
     if (event.message?.text) {
       await saveInboundMessage({
         channel: 'instagram',
         channelIdentifier: accountId,
         externalId: event.sender.id,
+        senderName,
+        senderAvatarUrl,
         messageId: event.message.mid,
         content: event.message.text,
         timestamp: new Date(event.timestamp).toISOString(),
       });
     } else if (event.message?.attachments && event.message.attachments.length > 0) {
-      const attachment = event.message.attachments[0]; // Primary attachment
-      const attachmentType = attachment.type; // 'image', 'video', 'audio', 'file', 'fallback'
+      const attachment = event.message.attachments[0];
+      const attachmentType = attachment.type;
       const attachmentUrl = attachment.payload?.url;
 
       const mediaTypeMap: Record<string, string> = {
@@ -514,7 +536,8 @@ async function handleInstagramEvent(entry: MetaWebhookEntry) {
         channel: 'instagram',
         channelIdentifier: String(entry.id),
         externalId: String(event.sender.id),
-        senderName: undefined,
+        senderName,
+        senderAvatarUrl,
         messageId: event.message.mid,
         content: event.message.text || `[${attachmentType === 'file' ? 'Documento' : attachmentType === 'image' ? 'Imagem' : attachmentType === 'video' ? 'Video' : attachmentType === 'audio' ? 'Audio' : 'Anexo'}]`,
         mediaType: (mediaTypeMap[attachmentType] || 'document') as 'image' | 'audio' | 'video' | 'document',
@@ -569,6 +592,64 @@ async function resolveBusinessId(
     return snap.docs[0].id;
   } catch (err) {
     console.error('[Meta Webhook] Error resolving businessId:', err);
+    return null;
+  }
+}
+
+// ─── Profile Fetching ─────────────────────────────────────────────────────────
+
+/**
+ * Fetches sender profile (name + avatar) from Facebook/Instagram Graph API.
+ * Instagram DMs use the same endpoint as Facebook — /{PSID}?fields=name,profile_pic
+ */
+async function fetchSenderProfile(
+  senderId: string,
+  pageAccessToken: string,
+): Promise<{ name: string; profilePic?: string } | null> {
+  try {
+    const url = `https://graph.facebook.com/v21.0/${senderId}?fields=name,profile_pic&access_token=${pageAccessToken}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+
+    if (!res.ok) {
+      console.warn('[Meta Webhook] Profile fetch failed:', res.status, await res.text().catch(() => ''));
+      return null;
+    }
+
+    const data = await res.json();
+    return {
+      name: data.name || data.first_name || senderId,
+      profilePic: data.profile_pic || undefined,
+    };
+  } catch (err) {
+    console.error('[Meta Webhook] Error fetching sender profile:', err);
+    return null;
+  }
+}
+
+/**
+ * Gets the decrypted Facebook page access token for a business.
+ * Instagram uses the same token as Facebook Messenger.
+ */
+async function getDecryptedPageToken(
+  db: ReturnType<typeof getFirestore>,
+  businessId: string,
+): Promise<string | null> {
+  try {
+    const bizQuery = query(
+      collection(db, 'businesses'),
+      where('__name__', '==', businessId),
+      firestoreLimit(1),
+    );
+    const bizSnap = await getDocs(bizQuery);
+    if (bizSnap.empty) return null;
+
+    const bizData = bizSnap.docs[0].data();
+    const encryptedToken = bizData?.channels?.facebook?.pageAccessToken;
+    if (!encryptedToken) return null;
+
+    return decryptToken(encryptedToken);
+  } catch (err) {
+    console.error('[Meta Webhook] Error getting page token:', err);
     return null;
   }
 }
@@ -655,6 +736,7 @@ async function saveInboundMessage(params: InboundMessageParams) {
         channel: params.channel,
         contactName: params.senderName ?? params.externalId,
         contactExternalId: params.externalId,
+        ...(params.senderAvatarUrl ? { contactAvatarUrl: params.senderAvatarUrl } : {}),
         status: 'open',
         lastMessage: params.content,
         lastMessageAt: params.timestamp,
@@ -736,15 +818,23 @@ async function saveInboundMessage(params: InboundMessageParams) {
       conversationId = convSnap.docs[0].id;
       const convRef = doc(db, 'conversations', conversationId);
 
-      await updateDoc(convRef, {
+      const existingData = convSnap.docs[0].data();
+      const enrichUpdate: Record<string, unknown> = {
         lastMessage: params.content,
         lastMessageAt: params.timestamp,
         lastMessageDirection: 'inbound',
         unreadCount: increment(1),
         updatedAt: now,
-        // Update contact name if we got a better one (profile name vs phone number)
-        ...(params.senderName && { contactName: params.senderName }),
-      });
+      };
+      // Enrich name if current is just the numeric ID
+      if (params.senderName && (!existingData.contactName || /^\d+$/.test(existingData.contactName))) {
+        enrichUpdate.contactName = params.senderName;
+      }
+      // Enrich avatar if missing
+      if (params.senderAvatarUrl && !existingData.contactAvatarUrl) {
+        enrichUpdate.contactAvatarUrl = params.senderAvatarUrl;
+      }
+      await updateDoc(convRef, enrichUpdate);
 
       console.log('[Meta Webhook] Updated conversation:', conversationId);
 
@@ -783,8 +873,8 @@ async function saveInboundMessage(params: InboundMessageParams) {
       }
     }
 
-    // 4. Save message document
-    await addDoc(collection(db, 'conversationMessages'), {
+    // 4. Save message document (Firestore rejects undefined values)
+    const msgDoc: Record<string, unknown> = {
       conversationId,
       businessId,
       channel: params.channel,
@@ -792,15 +882,17 @@ async function saveInboundMessage(params: InboundMessageParams) {
       content: params.content,
       status: 'delivered',
       externalMessageId: params.messageId,
-      senderName: params.senderName,
-      mediaType: params.mediaType ?? null,
-      mediaId: params.mediaId ?? null,
-      mediaUrl: params.mediaUrl ?? null,
-      mediaMimeType: params.mediaMimeType ?? null,
-      replyToMessageId: params.replyToMessageId ?? null,
+      senderName: params.senderName || params.externalId,
       sentAt: params.timestamp,
       createdAt: now,
-    });
+    };
+    if (params.mediaType) msgDoc.mediaType = params.mediaType;
+    if (params.mediaId) msgDoc.mediaId = params.mediaId;
+    if (params.mediaUrl) msgDoc.mediaUrl = params.mediaUrl;
+    if (params.mediaMimeType) msgDoc.mediaMimeType = params.mediaMimeType;
+    if (params.replyToMessageId) msgDoc.replyToMessageId = params.replyToMessageId;
+    if (params.senderAvatarUrl) msgDoc.senderAvatarUrl = params.senderAvatarUrl;
+    await addDoc(collection(db, 'conversationMessages'), msgDoc);
 
     console.log('[Meta Webhook] Saved inbound message for conversation:', conversationId);
   } catch (err) {

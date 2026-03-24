@@ -203,6 +203,38 @@ export async function POST(req: NextRequest) {
       // Pages are optional if the user only connected WhatsApp
     }
 
+    // ── Step 5b: Subscribe page to webhooks (Messenger + Instagram DM) ─────
+    if (pageId && pageAccessToken) {
+      try {
+        const subRes = await fetch(
+          `${META_GRAPH}/${pageId}/subscribed_apps`,
+          {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${pageAccessToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              subscribed_fields: [
+                'messages',
+                'messaging_postbacks',
+                'message_deliveries',
+                'message_reads',
+                'feed',
+              ].join(','),
+            }),
+          },
+        );
+
+        if (!subRes.ok) {
+          const errText = await subRes.text();
+          console.error('[Meta Signup] Page subscription failed:', errText);
+        }
+      } catch (subErr) {
+        console.warn('[Meta Signup] Page subscription error (non-fatal):', subErr);
+      }
+    }
+
     // ── Step 6: Get Instagram Business Account ──────────────────────────────
     let igAccountId = '';
     let igAccountName = '';
@@ -210,18 +242,47 @@ export async function POST(req: NextRequest) {
     if (pageId) {
       try {
         const igRes = await fetch(
-          `${META_GRAPH}/${pageId}?fields=instagram_business_account`,
-          { headers: { Authorization: `Bearer ${longLivedToken}` } }
+          `${META_GRAPH}/${pageId}?fields=instagram_business_account{id,name,username,profile_picture_url}`,
+          { headers: { Authorization: `Bearer ${pageAccessToken || longLivedToken}` } }
         );
 
         if (!igRes.ok) {
           console.error('[Meta Signup] Instagram fetch failed:', await igRes.text());
         } else {
           const igData = await igRes.json();
-          igAccountId = igData?.instagram_business_account?.id || '';
+          const igAccount = igData?.instagram_business_account;
+          igAccountId = igAccount?.id || '';
+          igAccountName = igAccount?.username || igAccount?.name || '';
         }
       } catch {
         // Instagram is optional
+      }
+    }
+
+    // ── Step 6b: Subscribe Instagram account to webhooks (DMs) ──────────────
+    if (igAccountId && pageAccessToken) {
+      try {
+        const igSubRes = await fetch(
+          `${META_GRAPH}/${igAccountId}/subscribed_apps`,
+          {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${pageAccessToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              subscribed_fields: 'messages',
+            }),
+          },
+        );
+
+        if (!igSubRes.ok) {
+          const errText = await igSubRes.text();
+          console.warn('[Meta Signup] Instagram subscription failed:', errText);
+          // Fallback: some apps need it via the page subscription only
+        }
+      } catch (igSubErr) {
+        console.warn('[Meta Signup] Instagram subscription error (non-fatal):', igSubErr);
       }
     }
 
@@ -304,6 +365,14 @@ export async function POST(req: NextRequest) {
           error: `Esta conta do Instagram ja esta conectada a outra empresa. Desconecte-a primeiro.`,
         }, { status: 409 });
       }
+    }
+
+    // Guard: if no channel was discovered, the token is invalid or session expired
+    const hasAnyChannel = !!(wabaId || pageId || igAccountId);
+    if (!hasAnyChannel) {
+      return NextResponse.json({
+        error: 'Nenhum canal encontrado. O token pode ter expirado ou a sessao do Facebook foi invalidada. Tente novamente.',
+      }, { status: 401 });
     }
 
     // Save to Firestore server-side
