@@ -3274,6 +3274,7 @@ interface ChannelConfig {
     isConnected: boolean;
     connectedAt?: string;
     disconnectedAt?: string;
+    connectedVia?: string;
   };
   facebook?: {
     pageId?: string;
@@ -3344,7 +3345,7 @@ function CanaisTab() {
   };
 
   // ── Channel-specific OAuth ──
-  const handleConnectChannel = async (channel: 'facebook' | 'instagram') => {
+  const handleConnectChannel = async (channel: 'facebook' | 'instagram' | 'whatsapp') => {
     setConnectingChannel(channel);
     try {
       const FB = await ensureFbSdk();
@@ -3352,6 +3353,13 @@ function CanaisTab() {
       const scopes: Record<string, string[]> = {
         facebook: ['pages_show_list', 'pages_messaging', 'pages_manage_metadata'],
         instagram: ['instagram_basic', 'instagram_manage_messages', 'pages_show_list', 'pages_manage_metadata', 'pages_read_engagement'],
+        whatsapp: ['whatsapp_business_management', 'whatsapp_business_messaging', 'business_management'],
+      };
+
+      const channelLabels: Record<string, string> = {
+        facebook: 'Facebook Messenger',
+        instagram: 'Instagram',
+        whatsapp: 'WhatsApp Cloud API',
       };
 
       FB.login(
@@ -3383,8 +3391,12 @@ function CanaisTab() {
                     setIgConnected(true);
                     setIgAccountName(data.channels.instagram.accountName || data.channels.instagram.accountId || '');
                   }
+                  if (data.channels.whatsapp) {
+                    setWaConnected(true);
+                    setWaPhoneNumber(data.channels.whatsapp.displayPhoneNumber || data.channels.whatsapp.phoneNumberId || '');
+                  }
                   await refreshUser();
-                  toast.success(`${channel === 'facebook' ? 'Facebook Messenger' : 'Instagram'} conectado!`);
+                  toast.success(`${channelLabels[channel]} conectado!`);
                 } else {
                   toast.error(data.error || 'Erro ao conectar canal');
                 }
@@ -3661,116 +3673,142 @@ function CanaisTab() {
         </div>
       </div>
 
-      {/* ── WhatsApp Card ── */}
-      <div className="rounded-2xl border border-gray-200 dark:border-gray-700/50 bg-white dark:bg-[#111827] overflow-hidden">
-        <div className="p-5">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-3.5">
-              <div className={cn(
-                'w-11 h-11 rounded-xl flex items-center justify-center',
-                waConnected
-                  ? 'bg-gradient-to-br from-[#25D366] to-[#128C7E] shadow-sm shadow-green-500/20'
-                  : 'bg-[#25D366]/10'
-              )}>
-                <MessageCircle className={cn('w-5 h-5', waConnected ? 'text-white' : 'text-[#25D366]')} />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">WhatsApp</span>
-                  {waConnected && (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20">
-                      <Check className="w-2.5 h-2.5" /> Conectado
-                    </span>
+      {/* ── WhatsApp Cloud API (Oficial) ── */}
+      {(() => {
+        const channels = (business as Business & { channels?: ChannelConfig }).channels;
+        const waChannel = channels?.whatsapp;
+        const isCloudApi = waChannel?.isConnected && !waChannel?.connectedVia;
+        const isBaileys = waChannel?.isConnected && waChannel?.connectedVia === 'baileys';
+        return (
+          <>
+            <div className={cn(
+              'rounded-2xl border overflow-hidden bg-white dark:bg-[#111827]',
+              isCloudApi ? 'border-emerald-200 dark:border-emerald-500/20' : 'border-gray-200 dark:border-gray-700/50',
+            )}>
+              <div className="p-5">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-3.5">
+                    <div className={cn(
+                      'w-11 h-11 rounded-xl flex items-center justify-center',
+                      isCloudApi
+                        ? 'bg-gradient-to-br from-[#25D366] to-[#128C7E] shadow-sm shadow-green-500/20'
+                        : 'bg-[#25D366]/10',
+                    )}>
+                      <Cloud className={cn('w-5 h-5', isCloudApi ? 'text-white' : 'text-[#25D366]')} />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">WhatsApp Oficial</span>
+                        <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">Cloud API</span>
+                        {isCloudApi && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20">
+                            <Check className="w-2.5 h-2.5" /> Conectado
+                          </span>
+                        )}
+                      </div>
+                      {isCloudApi && waPhoneNumber ? (
+                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{waPhoneNumber}</p>
+                      ) : (
+                        <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">API oficial da Meta com suporte a templates e volume ilimitado</p>
+                      )}
+                    </div>
+                  </div>
+                  {isCloudApi && (
+                    <button
+                      onClick={() => handleDisconnect('whatsapp')}
+                      disabled={disconnecting === 'whatsapp'}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+                    >
+                      {disconnecting === 'whatsapp' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Desconectar'}
+                    </button>
                   )}
                 </div>
-                {waConnected && waPhoneNumber ? (
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{waPhoneNumber}</p>
-                ) : (
-                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Escolha o metodo de conexao</p>
+                {!isCloudApi && (
+                  <button
+                    onClick={() => handleConnectChannel('whatsapp')}
+                    disabled={connectingChannel === 'whatsapp'}
+                    className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold text-white bg-[#25D366] hover:bg-[#22c55e] transition-colors disabled:opacity-60"
+                  >
+                    {connectingChannel === 'whatsapp' ? (
+                      <><div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Conectando...</>
+                    ) : (
+                      <><Smartphone className="w-3.5 h-3.5" /> Conectar via Meta Business</>
+                    )}
+                  </button>
                 )}
               </div>
             </div>
-            {waConnected && (
-              <button
-                onClick={() => handleDisconnect('whatsapp')}
-                disabled={disconnecting === 'whatsapp'}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
-              >
-                {disconnecting === 'whatsapp' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Desconectar'}
-              </button>
-            )}
-          </div>
 
-          {/* Two connection methods */}
-          {!waConnected && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {/* Cloud API */}
-              <div className="relative group rounded-xl border-2 border-dashed border-gray-200 dark:border-gray-700 hover:border-[#25D366]/40 dark:hover:border-[#25D366]/30 p-4 transition-colors cursor-default">
-                <div className="flex items-center gap-2.5 mb-2.5">
-                  <div className="w-8 h-8 rounded-lg bg-[#25D366]/10 flex items-center justify-center">
-                    <Cloud className="w-4 h-4 text-[#25D366]" />
+            {/* ── WhatsApp Web (QR Code / Baileys) ── */}
+            <div className={cn(
+              'rounded-2xl border overflow-hidden bg-white dark:bg-[#111827]',
+              isBaileys ? 'border-emerald-200 dark:border-emerald-500/20' : 'border-gray-200 dark:border-gray-700/50',
+            )}>
+              <div className="p-5">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-3.5">
+                    <div className={cn(
+                      'w-11 h-11 rounded-xl flex items-center justify-center',
+                      isBaileys
+                        ? 'bg-gradient-to-br from-[#25D366] to-[#128C7E] shadow-sm shadow-green-500/20'
+                        : 'bg-[#25D366]/10',
+                    )}>
+                      <QrCode className={cn('w-5 h-5', isBaileys ? 'text-white' : 'text-[#25D366]')} />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">WhatsApp Web</span>
+                        <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-[#25D366]/10 text-[#25D366]">QR Code</span>
+                        {isBaileys && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20">
+                            <Check className="w-2.5 h-2.5" /> Conectado
+                          </span>
+                        )}
+                      </div>
+                      {isBaileys && waPhoneNumber ? (
+                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{waPhoneNumber}</p>
+                      ) : (
+                        <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Conexao rapida via QR Code, ideal para testes</p>
+                      )}
+                    </div>
                   </div>
-                  <div>
-                    <span className="text-xs font-semibold text-gray-900 dark:text-gray-100">Cloud API</span>
-                    <span className="ml-1.5 text-[9px] font-semibold px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">Oficial</span>
-                  </div>
+                  {isBaileys && (
+                    <button
+                      onClick={() => handleDisconnect('whatsapp')}
+                      disabled={disconnecting === 'whatsapp'}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+                    >
+                      {disconnecting === 'whatsapp' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Desconectar'}
+                    </button>
+                  )}
                 </div>
-                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed mb-3">
-                  API oficial da Meta. Requer conta Business verificada. Ilimitado e com suporte a templates.
-                </p>
-                <div className="relative">
+                {!isBaileys && (
                   <button
-                    disabled
-                    className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-[11px] font-semibold text-white/60 bg-[#25D366]/40 cursor-not-allowed"
+                    onClick={() => {
+                      setShowQrModal(true);
+                      setQrDataUrl(null);
+                      setWaStatus('connecting');
+                      setWaConnecting(true);
+                    }}
+                    disabled={waConnecting}
+                    className={cn(
+                      'w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold text-white transition-all',
+                      'bg-[#25D366] hover:bg-[#128C7E] shadow-sm shadow-green-500/20 hover:shadow-md',
+                      'disabled:opacity-60 disabled:cursor-not-allowed',
+                    )}
                   >
-                    <Smartphone className="w-3.5 h-3.5" /> Configurar Cloud API
+                    {waConnecting ? (
+                      <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Conectando...</>
+                    ) : (
+                      <><QrCode className="w-3.5 h-3.5" /> Escanear QR Code</>
+                    )}
                   </button>
-                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 rounded-lg bg-gray-900 dark:bg-gray-700 text-[10px] text-white font-medium whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none shadow-lg">
-                    Em desenvolvimento
-                    <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-gray-900 dark:border-t-gray-700" />
-                  </div>
-                </div>
-              </div>
-
-              {/* Baileys / QR Code */}
-              <div className="rounded-xl border-2 border-dashed border-gray-200 dark:border-gray-700 hover:border-[#25D366]/40 dark:hover:border-[#25D366]/30 p-4 transition-colors">
-                <div className="flex items-center gap-2.5 mb-2.5">
-                  <div className="w-8 h-8 rounded-lg bg-[#25D366]/10 flex items-center justify-center">
-                    <QrCode className="w-4 h-4 text-[#25D366]" />
-                  </div>
-                  <div>
-                    <span className="text-xs font-semibold text-gray-900 dark:text-gray-100">WhatsApp Web</span>
-                    <span className="ml-1.5 text-[9px] font-semibold px-1.5 py-0.5 rounded bg-[#25D366]/10 text-[#25D366]">QR Code</span>
-                  </div>
-                </div>
-                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed mb-3">
-                  Conexao via QR Code (Baileys). Rapido de configurar, ideal para testes e pequenos volumes.
-                </p>
-                <button
-                  onClick={() => {
-                    setShowQrModal(true);
-                    setQrDataUrl(null);
-                    setWaStatus('connecting');
-                    setWaConnecting(true);
-                  }}
-                  disabled={waConnecting}
-                  className={cn(
-                    'w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-[11px] font-semibold text-white transition-all',
-                    'bg-[#25D366] hover:bg-[#128C7E] shadow-sm shadow-green-500/20 hover:shadow-md',
-                    'disabled:opacity-60 disabled:cursor-not-allowed',
-                  )}
-                >
-                  {waConnecting ? (
-                    <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Conectando...</>
-                  ) : (
-                    <><QrCode className="w-3.5 h-3.5" /> Escanear QR Code</>
-                  )}
-                </button>
+                )}
               </div>
             </div>
-          )}
-        </div>
-      </div>
+          </>
+        );
+      })()}
 
       {/* ── WhatsApp QR Code Modal ── */}
       {showQrModal && (
