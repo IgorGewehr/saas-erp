@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -71,10 +72,11 @@ import {
   Facebook,
   Smartphone,
   QrCode,
+  Calendar,
 } from 'lucide-react';
-import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector } from '@/lib/types';
-import { ROLE_LABELS, ROLE_HIERARCHY, USER_STATUS_LABELS, INTEGRATION_PROVIDERS, API_KEY_SCOPES, SECTOR_COLORS } from '@/lib/types';
-import { formatDate } from '@/lib/utils/format';
+import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector, Service, WorkingHours, DaySchedule } from '@/lib/types';
+import { ROLE_LABELS, ROLE_HIERARCHY, USER_STATUS_LABELS, INTEGRATION_PROVIDERS, API_KEY_SCOPES, API_KEY_SCOPE_GROUPS, SECTOR_COLORS, DEFAULT_WORKING_HOURS } from '@/lib/types';
+import { formatDate, formatCurrency } from '@/lib/utils/format';
 // encryptToken/decryptToken no longer needed — channel credentials handled by Embedded Signup
 import {
   validateCNPJ,
@@ -229,7 +231,7 @@ const STATUS_OPTIONS: { value: UserStatus; label: string; dot: string; text: str
 ];
 
 function ProfileTab() {
-  const { user, updateUserProfile } = useAuth();
+  const { user, business, updateUserProfile } = useAuth();
   const [isSaving, setIsSaving]                 = useState(false);
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [name, setName]                         = useState('');
@@ -242,6 +244,40 @@ function ProfileTab() {
   const [bairro, setBairro]                     = useState('');
   const [municipio, setMunicipio]               = useState('');
   const [uf, setUf]                             = useState('');
+
+  // ─── Minha Agenda state ───
+  const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>([]);
+  const [workingHours, setWorkingHours] = useState<WorkingHours>(DEFAULT_WORKING_HOURS);
+  const [isSavingSchedule, setIsSavingSchedule] = useState(false);
+
+  // Fetch active services for this business
+  const { data: services = [], isLoading: isLoadingServices } = useQuery({
+    queryKey: ['services', business?.id],
+    queryFn: async () => {
+      if (!business?.id) return [];
+      const q = query(
+        collection(db, 'services'),
+        where('businessId', '==', business.id),
+        where('isActive', '==', true)
+      );
+      const snap = await getDocs(q);
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Service));
+    },
+    enabled: !!business?.id,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Time slot options from 06:00 to 22:00 in 30-min intervals
+  const timeSlots = useMemo(() => {
+    const slots: string[] = [];
+    for (let h = 6; h <= 22; h++) {
+      slots.push(`${String(h).padStart(2, '0')}:00`);
+      if (h < 22) slots.push(`${String(h).padStart(2, '0')}:30`);
+    }
+    return slots;
+  }, []);
+
+  const DAY_NAMES = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 
   useEffect(() => {
     if (user) {
@@ -258,6 +294,9 @@ function ProfileTab() {
         setMunicipio(pa.municipio || '');
         setUf(pa.uf || '');
       }
+      // Schedule data
+      setSelectedServiceIds(user.serviceIds || []);
+      setWorkingHours(user.workingHours || DEFAULT_WORKING_HOURS);
     }
   }, [user]);
 
@@ -331,6 +370,35 @@ function ProfileTab() {
 
   const handleSetStatus = async (status: UserStatus) => {
     await updateUserProfile({ userStatus: status });
+  };
+
+  const toggleServiceId = (serviceId: string) => {
+    setSelectedServiceIds(prev =>
+      prev.includes(serviceId) ? prev.filter(id => id !== serviceId) : [...prev, serviceId]
+    );
+  };
+
+  const updateDaySchedule = (day: number, field: keyof DaySchedule, value: string | boolean) => {
+    setWorkingHours(prev => ({
+      ...prev,
+      [day]: { ...prev[day], [field]: value },
+    }));
+  };
+
+  const handleSaveSchedule = async () => {
+    if (!user) return;
+    setIsSavingSchedule(true);
+    try {
+      await updateUserProfile({
+        serviceIds: selectedServiceIds,
+        workingHours,
+      });
+      toast.success('Agenda atualizada com sucesso!');
+    } catch {
+      toast.error('Erro ao salvar a agenda');
+    } finally {
+      setIsSavingSchedule(false);
+    }
   };
 
   const currentStatus = (user?.userStatus || 'online') as UserStatus;
@@ -502,7 +570,169 @@ function ProfileTab() {
         </div>
       </SectionCard>
 
-      {/* Save */}
+      {/* ─── Minha Agenda ─────────────────────────────────────────────────── */}
+
+      {/* Services Selection */}
+      <SectionCard title="Meus Serviços" icon={Briefcase}>
+        <div className="space-y-3">
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            Selecione os serviços que você realiza. Eles aparecerão como opção na agenda.
+          </p>
+
+          {isLoadingServices ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {[1, 2, 3].map(i => (
+                <div key={i} className="h-[72px] rounded-xl shimmer" />
+              ))}
+            </div>
+          ) : services.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-8 text-center">
+              <Briefcase className="w-8 h-8 text-gray-300 dark:text-gray-600 mb-2" />
+              <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Nenhum serviço cadastrado</p>
+              <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Cadastre serviços no módulo de Agenda.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {services.map(service => {
+                const isSelected = selectedServiceIds.includes(service.id);
+                return (
+                  <button
+                    key={service.id}
+                    type="button"
+                    onClick={() => toggleServiceId(service.id)}
+                    className={cn(
+                      'flex items-start gap-3 p-3.5 rounded-xl border text-left transition-all duration-200',
+                      isSelected
+                        ? 'border-red-300 dark:border-red-500/40 bg-red-50/60 dark:bg-red-500/10 shadow-sm'
+                        : 'border-gray-200 dark:border-gray-700/50 bg-white dark:bg-white/[0.03] hover:border-gray-300 dark:hover:border-gray-600'
+                    )}
+                  >
+                    <div
+                      className={cn(
+                        'w-5 h-5 rounded-lg border-2 flex items-center justify-center flex-shrink-0 mt-0.5 transition-all duration-200',
+                        isSelected
+                          ? 'bg-red-600 border-red-600'
+                          : 'border-gray-300 dark:border-gray-600'
+                      )}
+                    >
+                      {isSelected && <Check className="w-3 h-3 text-white" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className={cn(
+                        'text-sm font-medium truncate',
+                        isSelected ? 'text-gray-900 dark:text-gray-100' : 'text-gray-700 dark:text-gray-300'
+                      )}>
+                        {service.name}
+                      </p>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <span className="text-xs text-gray-500 dark:text-gray-400">
+                          {service.duration}min
+                        </span>
+                        <span className="text-xs text-gray-300 dark:text-gray-600">·</span>
+                        <span className="text-xs font-medium text-gray-600 dark:text-gray-300">
+                          {formatCurrency(service.price)}
+                        </span>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </SectionCard>
+
+      {/* Working Hours */}
+      <SectionCard title="Horários de Trabalho" icon={Calendar}>
+        <div className="space-y-3">
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            Configure seus horários de disponibilidade para cada dia da semana.
+          </p>
+
+          <div className="space-y-2">
+            {DAY_NAMES.map((dayName, dayIndex) => {
+              const day = workingHours[dayIndex];
+              const isWeekend = dayIndex === 0 || dayIndex === 6;
+              return (
+                <div
+                  key={dayIndex}
+                  className={cn(
+                    'flex flex-col sm:flex-row sm:items-center gap-3 p-3.5 rounded-xl border transition-all duration-200',
+                    day.enabled
+                      ? 'border-gray-200 dark:border-gray-700/50 bg-white dark:bg-white/[0.03]'
+                      : 'border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-white/[0.01]'
+                  )}
+                >
+                  {/* Day toggle */}
+                  <div className="flex items-center gap-3 sm:w-36 flex-shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => updateDaySchedule(dayIndex, 'enabled', !day.enabled)}
+                      className={cn(
+                        'relative w-10 h-[22px] rounded-full transition-all duration-200 flex-shrink-0',
+                        day.enabled
+                          ? 'bg-red-600'
+                          : 'bg-gray-300 dark:bg-gray-600'
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          'absolute top-[2px] w-[18px] h-[18px] rounded-full bg-white shadow-sm transition-all duration-200',
+                          day.enabled ? 'left-[20px]' : 'left-[2px]'
+                        )}
+                      />
+                    </button>
+                    <span className={cn(
+                      'text-sm font-medium',
+                      day.enabled
+                        ? 'text-gray-900 dark:text-gray-100'
+                        : 'text-gray-400 dark:text-gray-500',
+                      isWeekend && 'text-gray-500 dark:text-gray-400'
+                    )}>
+                      {dayName}
+                    </span>
+                  </div>
+
+                  {/* Time selects */}
+                  {day.enabled ? (
+                    <div className="flex items-center gap-2 flex-1">
+                      <div className="flex items-center gap-2">
+                        <Clock className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500 flex-shrink-0 hidden sm:block" />
+                        <select
+                          value={day.start}
+                          onChange={e => updateDaySchedule(dayIndex, 'start', e.target.value)}
+                          className={cn(selectClasses, 'w-[110px] h-9 text-xs')}
+                        >
+                          {timeSlots.map(t => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                      </div>
+                      <span className="text-xs text-gray-400 dark:text-gray-500 font-medium">até</span>
+                      <select
+                        value={day.end}
+                        onChange={e => updateDaySchedule(dayIndex, 'end', e.target.value)}
+                        className={cn(selectClasses, 'w-[110px] h-9 text-xs')}
+                      >
+                        {timeSlots.map(t => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                    </div>
+                  ) : (
+                    <span className="text-xs text-gray-400 dark:text-gray-500 italic">
+                      Indisponível
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </SectionCard>
+
+      {/* Save Schedule */}
+      <div className="flex justify-end">
+        <SaveButton onClick={handleSaveSchedule} loading={isSavingSchedule} label="Salvar Agenda" />
+      </div>
+
+      {/* Save Profile */}
       <div className="flex justify-end">
         <SaveButton onClick={handleSave} loading={isSaving} label="Salvar Perfil" />
       </div>
@@ -1009,6 +1239,12 @@ function FiscalTab() {
   const [cfopPurchases, setCfopPurchases] = useState('1102');
   const [isSavingCfop, setIsSavingCfop] = useState(false);
 
+  // ── Accounting state ──
+  const [accountingEmail, setAccountingEmail] = useState('');
+  const [notificationServerUrl, setNotificationServerUrl] = useState('');
+  const [notificationServerKey, setNotificationServerKey] = useState('');
+  const [isSavingAccounting, setIsSavingAccounting] = useState(false);
+
   // ── Certificate state ──
   const certFileRef = useRef<HTMLInputElement>(null);
   const [certFile, setCertFile] = useState<File | null>(null);
@@ -1046,6 +1282,9 @@ function FiscalTab() {
       setCfopSales(f.cfops.defaultSales || '5102');
       setCfopPurchases(f.cfops.defaultPurchases || '1102');
     }
+    if (f.accountingEmail) setAccountingEmail(f.accountingEmail);
+    if (f.notificationServerUrl) setNotificationServerUrl(f.notificationServerUrl);
+    if (f.notificationServerKey) setNotificationServerKey(f.notificationServerKey);
   }, [business]);
 
   // ── Fiscal save helpers ──
@@ -1136,6 +1375,19 @@ function FiscalTab() {
       toast.success('CFOPs salvos!');
     } catch { toast.error('Erro ao salvar CFOPs'); }
     finally { setIsSavingCfop(false); }
+  };
+
+  const handleSaveAccounting = async () => {
+    setIsSavingAccounting(true);
+    try {
+      await saveFiscalField({
+        accountingEmail: accountingEmail.trim(),
+        notificationServerUrl: notificationServerUrl.trim(),
+        notificationServerKey: notificationServerKey.trim(),
+      });
+      toast.success('Configurações de contabilidade salvas!');
+    } catch { toast.error('Erro ao salvar'); }
+    finally { setIsSavingAccounting(false); }
   };
 
   // ── Certificate handlers ──
@@ -1579,6 +1831,53 @@ function FiscalTab() {
           {canEditFiscal && (
             <div className="flex justify-end">
               <SaveButton onClick={handleSaveCfop} loading={isSavingCfop} label="Salvar CFOPs" variant="secondary" />
+            </div>
+          )}
+        </div>
+      </SectionCard>
+
+      {/* ── Contabilidade ── */}
+      <SectionCard title="Contabilidade" icon={FileText}>
+        <div className="space-y-4">
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Configure o envio automatico de XMLs e SPED para seu contador.
+          </p>
+          <div className="grid grid-cols-1 gap-4">
+            <FormField label="Email do Contador" tooltip="Email para envio dos documentos fiscais">
+              <input
+                type="email"
+                value={accountingEmail}
+                onChange={(e) => setAccountingEmail(e.target.value)}
+                placeholder="contador@escritorio.com.br"
+                className={inputClasses}
+                disabled={!canEditFiscal}
+              />
+            </FormField>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <FormField label="URL Servidor de Notificação" tooltip="URL da API de envio de emails">
+              <input
+                value={notificationServerUrl}
+                onChange={(e) => setNotificationServerUrl(e.target.value)}
+                placeholder="https://notification.example.com"
+                className={inputClasses}
+                disabled={!canEditFiscal}
+              />
+            </FormField>
+            <FormField label="API Key Notificação" tooltip="Chave de autenticação do servidor">
+              <input
+                type="password"
+                value={notificationServerKey}
+                onChange={(e) => setNotificationServerKey(e.target.value)}
+                placeholder="API key..."
+                className={inputClasses}
+                disabled={!canEditFiscal}
+              />
+            </FormField>
+          </div>
+          {canEditFiscal && (
+            <div className="flex justify-end">
+              <SaveButton onClick={handleSaveAccounting} loading={isSavingAccounting} label="Salvar Contabilidade" variant="secondary" />
             </div>
           )}
         </div>
@@ -3021,7 +3320,7 @@ function EnterpriseTab() {
                   <Key className="w-4.5 h-4.5 text-gray-500 dark:text-gray-400" />
                   <div>
                     <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">API Keys do ServicePro</h3>
-                    <p className="text-xs text-gray-500 dark:text-gray-400">Gere chaves para acessar a API do ServicePro externamente</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">Gere chaves para agentes de IA operarem o sistema via REST API</p>
                   </div>
                 </div>
                 <button
@@ -3112,6 +3411,56 @@ function EnterpriseTab() {
                   </AnimatePresence>
                 </div>
               )}
+
+              {/* API Documentation Reference */}
+              <div className="mt-6 p-4 rounded-2xl bg-gradient-to-br from-gray-50 to-gray-100/50 dark:from-gray-800/50 dark:to-gray-900/30 border border-gray-200 dark:border-gray-700/50">
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center">
+                    <Zap className="w-3.5 h-3.5 text-white" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-semibold text-gray-900 dark:text-white">REST API para Agentes de IA</h4>
+                    <p className="text-[11px] text-gray-500 dark:text-gray-400">Base URL: <code className="font-mono text-violet-600 dark:text-violet-400">/api/v1/</code></p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-[11px]">
+                  {[
+                    { method: 'GET/POST/PUT/DEL', path: '/clients', desc: 'Clientes' },
+                    { method: 'GET/POST/PUT/DEL', path: '/appointments', desc: 'Agenda' },
+                    { method: 'GET/POST/PUT/DEL', path: '/services', desc: 'Serviços' },
+                    { method: 'GET/POST/PUT/DEL', path: '/products', desc: 'Produtos' },
+                    { method: 'GET/POST', path: '/stock-movements', desc: 'Estoque' },
+                    { method: 'GET/POST', path: '/sales', desc: 'Vendas (PDV)' },
+                    { method: 'GET/POST/PUT/DEL', path: '/transactions', desc: 'Financeiro' },
+                    { method: 'GET/POST/PUT/DEL', path: '/bank-accounts', desc: 'Contas' },
+                    { method: 'GET/POST/PUT/DEL', path: '/kanban/boards', desc: 'Kanban Boards' },
+                    { method: 'GET/POST/PUT/DEL', path: '/kanban/cards', desc: 'Kanban Cards' },
+                    { method: 'GET/POST/PUT/DEL', path: '/crm/contacts', desc: 'CRM Contatos' },
+                    { method: 'GET/POST/PUT/DEL', path: '/crm/deals', desc: 'CRM Deals' },
+                    { method: 'GET/POST/PUT/DEL', path: '/crm/activities', desc: 'CRM Atividades' },
+                    { method: 'GET/PUT', path: '/conversations', desc: 'Conversas' },
+                    { method: 'GET', path: '/conversations/messages', desc: 'Mensagens' },
+                    { method: 'POST', path: '/conversations/send', desc: 'Enviar msg' },
+                    { method: 'GET', path: '/fiscal/documents', desc: 'Fiscal' },
+                    { method: 'GET/POST/PUT/DEL', path: '/broadcasts', desc: 'Campanhas' },
+                    { method: 'GET/POST/PUT/DEL', path: '/segments', desc: 'Segmentos' },
+                    { method: 'GET/POST/PUT/DEL', path: '/snippets', desc: 'Respostas' },
+                    { method: 'GET/POST/PUT/DEL', path: '/sectors', desc: 'Setores' },
+                    { method: 'GET/PUT', path: '/users', desc: 'Usuários' },
+                  ].map(ep => (
+                    <div key={ep.path} className="px-2 py-1.5 rounded-lg bg-white dark:bg-white/[0.03] border border-gray-200 dark:border-gray-700/50">
+                      <code className="font-mono text-violet-600 dark:text-violet-400">{ep.path}</code>
+                      <p className="text-gray-500 dark:text-gray-400">{ep.desc}</p>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-3 p-3 rounded-xl bg-gray-900 dark:bg-gray-800 border border-gray-700">
+                  <p className="text-[10px] font-semibold text-gray-400 mb-1.5">Exemplo de uso (cURL):</p>
+                  <code className="text-[11px] font-mono text-emerald-400 leading-relaxed break-all">
+                    {`curl -H "Authorization: Bearer sp_live_..." /api/v1/clients?limit=10`}
+                  </code>
+                </div>
+              </div>
             </div>
           </motion.div>
         )}
@@ -3200,26 +3549,48 @@ function EnterpriseTab() {
 
                     {/* Scopes */}
                     <div>
-                      <label className="flex items-center gap-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                        <Lock className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
-                        Escopos de acesso
-                      </label>
-                      <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
-                        {(Object.entries(API_KEY_SCOPES) as [ApiKeyScope, { label: string; description: string }][]).map(([scope, info]) => (
-                          <button
-                            key={scope}
-                            type="button"
-                            onClick={() => toggleScope(scope)}
-                            className={cn(
-                              'text-left px-3 py-2 rounded-xl border text-xs transition-all',
-                              newKeyScopes.includes(scope)
-                                ? 'border-violet-400 dark:border-violet-500/50 bg-violet-50 dark:bg-violet-500/10 text-violet-700 dark:text-violet-300'
-                                : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-white/[0.03] text-gray-600 dark:text-gray-400 hover:border-gray-300 dark:hover:border-gray-600',
-                            )}
-                          >
-                            <span className="font-semibold">{info.label}</span>
-                            <p className="text-[10px] opacity-70 mt-0.5">{info.description}</p>
-                          </button>
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="flex items-center gap-1.5 text-sm font-medium text-gray-700 dark:text-gray-300">
+                          <Lock className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
+                          Escopos de acesso
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const allScopes = Object.keys(API_KEY_SCOPES) as ApiKeyScope[];
+                            setNewKeyScopes(newKeyScopes.length === allScopes.length ? [] : allScopes);
+                          }}
+                          className="text-[11px] font-medium text-violet-600 dark:text-violet-400 hover:underline"
+                        >
+                          {newKeyScopes.length === Object.keys(API_KEY_SCOPES).length ? 'Desmarcar todos' : 'Selecionar todos'}
+                        </button>
+                      </div>
+                      <div className="max-h-56 overflow-y-auto pr-1 space-y-3">
+                        {API_KEY_SCOPE_GROUPS.map(group => (
+                          <div key={group.label}>
+                            <p className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1.5">{group.label}</p>
+                            <div className="grid grid-cols-2 gap-1.5">
+                              {group.scopes.map(scope => {
+                                const info = API_KEY_SCOPES[scope];
+                                return (
+                                  <button
+                                    key={scope}
+                                    type="button"
+                                    onClick={() => toggleScope(scope)}
+                                    className={cn(
+                                      'text-left px-3 py-2 rounded-xl border text-xs transition-all',
+                                      newKeyScopes.includes(scope)
+                                        ? 'border-violet-400 dark:border-violet-500/50 bg-violet-50 dark:bg-violet-500/10 text-violet-700 dark:text-violet-300'
+                                        : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-white/[0.03] text-gray-600 dark:text-gray-400 hover:border-gray-300 dark:hover:border-gray-600',
+                                    )}
+                                  >
+                                    <span className="font-semibold">{info?.label || scope}</span>
+                                    <p className="text-[10px] opacity-70 mt-0.5">{info?.description || ''}</p>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
                         ))}
                       </div>
                     </div>
@@ -4037,7 +4408,7 @@ export default function SettingsModule() {
     { id: 'fiscal'     as Tab, label: 'Fiscal',      icon: FileText   },
     { id: 'usuarios'   as Tab, label: 'Usuários',    icon: Users      },
     { id: 'setores'    as Tab, label: 'Setores',     icon: Layers     },
-    { id: 'enterprise' as Tab, label: 'Enterprise',  icon: Blocks     },
+
     { id: 'canais'     as Tab, label: 'Canais',      icon: Plug2      },
   ];
 
@@ -4103,7 +4474,7 @@ export default function SettingsModule() {
         {activeTab === 'fiscal'     && <FiscalTab key="fiscal" />}
         {activeTab === 'usuarios'   && <UsersTab key="usuarios" />}
         {activeTab === 'setores'    && <SectorsTab key="setores" />}
-        {activeTab === 'enterprise' && <EnterpriseTab key="enterprise" />}
+
         {activeTab === 'canais'     && <CanaisTab key="canais" />}
       </AnimatePresence>
     </motion.div>

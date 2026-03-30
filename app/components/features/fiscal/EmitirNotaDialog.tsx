@@ -74,6 +74,10 @@ interface NFCeItemForm {
   unit: string;
   quantity: number;
   unitPrice: number;
+  cest?: string;
+  gtin?: string;
+  icmsOrigem?: string;
+  productId?: string;
 }
 
 interface PaymentForm {
@@ -423,15 +427,16 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
           numero: idx + 1,
           produto: {
             codigo: String(idx + 1),
-            cEAN: 'SEM GTIN',
+            cEAN: item.gtin || 'SEM GTIN',
             descricao: item.description,
             ncm: item.ncm || '00000000',
+            cest: item.cest || undefined,
             cfop: item.cfop || fiscalConfig?.cfops?.defaultSales || '5102',
             unidade: item.unit || 'UN',
             quantidade: item.quantity,
             valorUnitario: item.unitPrice,
             valorTotal: parseFloat((item.quantity * item.unitPrice).toFixed(2)),
-            cEANTrib: 'SEM GTIN',
+            cEANTrib: item.gtin || 'SEM GTIN',
             unidadeTrib: item.unit || 'UN',
             quantidadeTrib: item.quantity,
             valorUnitarioTrib: item.unitPrice,
@@ -439,8 +444,8 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
           },
           imposto: {
             icms: isSimples
-              ? { orig: '0', csosn: fiscalConfig?.taxation?.icms?.cstCsosn || '400' }
-              : { orig: '0', cst: fiscalConfig?.taxation?.icms?.cstCsosn || '40', modBC: '3', valorBC: parseFloat((item.quantity * item.unitPrice).toFixed(2)), aliquota: fiscalConfig?.taxation?.icms?.rate || 0, valor: 0 },
+              ? { orig: item.icmsOrigem || '0', csosn: fiscalConfig?.taxation?.icms?.cstCsosn || '400' }
+              : { orig: item.icmsOrigem || '0', cst: fiscalConfig?.taxation?.icms?.cstCsosn || '40', modBC: '3', valorBC: parseFloat((item.quantity * item.unitPrice).toFixed(2)), aliquota: fiscalConfig?.taxation?.icms?.rate || 0, valor: 0 },
             pis: { cst: fiscalConfig?.taxation?.pis?.cst || '07' },
             cofins: { cst: fiscalConfig?.taxation?.cofins?.cst || '07' },
           },
@@ -573,15 +578,16 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
           numero: idx + 1,
           produto: {
             codigo: String(idx + 1),
-            cEAN: 'SEM GTIN',
+            cEAN: item.gtin || 'SEM GTIN',
             descricao: item.description,
             ncm: item.ncm || '00000000',
+            cest: item.cest || undefined,
             cfop: item.cfop || fiscalConfig?.cfops?.defaultSales || '5102',
             unidade: item.unit || 'UN',
             quantidade: item.quantity,
             valorUnitario: item.unitPrice,
             valorTotal: parseFloat((item.quantity * item.unitPrice).toFixed(2)),
-            cEANTrib: 'SEM GTIN',
+            cEANTrib: item.gtin || 'SEM GTIN',
             unidadeTrib: item.unit || 'UN',
             quantidadeTrib: item.quantity,
             valorUnitarioTrib: item.unitPrice,
@@ -589,8 +595,8 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
           },
           imposto: {
             icms: isSimples
-              ? { orig: '0', csosn: fiscalConfig?.taxation?.icms?.cstCsosn || '400' }
-              : { orig: '0', cst: fiscalConfig?.taxation?.icms?.cstCsosn || '40', modBC: '3', valorBC: parseFloat((item.quantity * item.unitPrice).toFixed(2)), aliquota: fiscalConfig?.taxation?.icms?.rate || 0, valor: 0 },
+              ? { orig: item.icmsOrigem || '0', csosn: fiscalConfig?.taxation?.icms?.cstCsosn || '400' }
+              : { orig: item.icmsOrigem || '0', cst: fiscalConfig?.taxation?.icms?.cstCsosn || '40', modBC: '3', valorBC: parseFloat((item.quantity * item.unitPrice).toFixed(2)), aliquota: fiscalConfig?.taxation?.icms?.rate || 0, valor: 0 },
             pis: { cst: fiscalConfig?.taxation?.pis?.cst || '07' },
             cofins: { cst: fiscalConfig?.taxation?.cofins?.cst || '07' },
           },
@@ -662,7 +668,9 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
       statusMessage: sefazData?.motivoStatus || null,
       totalValue: docType === 'nfse'
         ? (originalPayload as { valores?: { valorServicos?: number } }).valores?.valorServicos || 0
-        : 0,
+        : (originalPayload as { itens?: { produto?: { valorTotal?: number } }[] }).itens?.reduce(
+            (sum: number, i: { produto?: { valorTotal?: number } }) => sum + (i.produto?.valorTotal || 0), 0
+          ) || 0,
       clientName: docType === 'nfse'
         ? (originalPayload as { tomador?: { nome?: string } }).tomador?.nome
         : (originalPayload as { destinatario?: { nome?: string } }).destinatario?.nome

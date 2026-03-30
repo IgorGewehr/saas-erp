@@ -1055,8 +1055,9 @@ export default function PDVModule() {
           />
         </div>
 
-        {/* Cart Items */}
-        <div className="flex-1 overflow-y-auto px-6 py-4">
+        {/* Cart Items + Checkout (scrollable) */}
+        <div className="flex-1 overflow-y-auto min-h-0">
+          <div className="px-6 py-4">
           <AnimatePresence mode="popLayout">
             {cart.length === 0 ? (
               <motion.div
@@ -1116,14 +1117,12 @@ export default function PDVModule() {
               </div>
             )}
           </AnimatePresence>
-        </div>
+          </div>
 
         {/* Checkout Section */}
         {cart.length > 0 && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="border-t border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-800/50 px-6 py-4"
+          <div
+            className="border-t border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-800/50 px-6 py-4 sticky bottom-0"
           >
             {/* Subtotal & Discount */}
             <div className="space-y-2 mb-4">
@@ -1371,8 +1370,9 @@ export default function PDVModule() {
                 Finalizar Venda
               </Button>
             </div>
-          </motion.div>
+          </div>
         )}
+        </div>
       </div>
 
       {/* ========== CONFIRMATION DIALOG ========== */}

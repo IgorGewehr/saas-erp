@@ -36,10 +36,16 @@ import {
   FileCode,
   Printer,
   Loader2,
+  FileDown,
+  AlertCircle,
+  BookOpen,
+  Hash,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { collection, query, where, orderBy, getDocs, doc as firestoreDoc, updateDoc } from 'firebase/firestore';
-import { db } from '@/lib/config/firebase';
+import { ref as storageRef, getDownloadURL } from 'firebase/storage';
+import { db, storage } from '@/lib/config/firebase';
+import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import type { FiscalDocument, FiscalDocType, FiscalDocStatus, FiscalItem } from '@/lib/types';
 import { cn } from '@/lib/utils';
@@ -179,9 +185,11 @@ interface DocumentDetailDialogProps {
   document: FiscalDocument | null;
   onDocumentUpdated: () => void;
   business: { razaoSocial: string; cnpj: string } | null;
+  onPrintDanfe?: (document: FiscalDocument) => void;
+  onCartaCorrecao?: (document: FiscalDocument) => void;
 }
 
-function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated, business }: DocumentDetailDialogProps) {
+function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated, business, onPrintDanfe, onCartaCorrecao }: DocumentDetailDialogProps) {
   const [showXml, setShowXml] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
@@ -667,6 +675,15 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
               Baixar XML
             </Button>
           )}
+          {doc.xml && onPrintDanfe && (
+            <button
+              onClick={() => onPrintDanfe(doc)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900/30 transition-colors"
+            >
+              <Printer className="w-3.5 h-3.5" />
+              Imprimir DANFE
+            </button>
+          )}
           {doc.status === 'autorizada' && (
             <Button
               onClick={() => setCancelOpen(true)}
@@ -677,7 +694,16 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
               Cancelar
             </Button>
           )}
-          {doc.type === 'nfe' && doc.status === 'autorizada' && (
+          {doc.type === 'nfe' && doc.status === 'autorizada' && onCartaCorrecao && (
+            <button
+              onClick={() => onCartaCorrecao(doc)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors"
+            >
+              <BookOpen className="w-3.5 h-3.5" />
+              Carta de Correcao
+            </button>
+          )}
+          {doc.type === 'nfe' && doc.status === 'autorizada' && !onCartaCorrecao && (
             <Button
               onClick={() => setCcOpen(true)}
               startIcon={<FileText size={16} />}
@@ -857,7 +883,22 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
   const [certOpen, setCertOpen] = useState(false);
   const [selectedDoc, setSelectedDoc] = useState<FiscalDocument | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [cartaCorrecaoOpen, setCartaCorrecaoOpen] = useState(false);
+  const [cartaCorrecaoDoc, setCartaCorrecaoDoc] = useState<FiscalDocument | null>(null);
+  const [cartaCorrecaoText, setCartaCorrecaoText] = useState('');
+  const [isCartaCorrecaoSending, setIsCartaCorrecaoSending] = useState(false);
+  const [inutilizarOpen, setInutilizarOpen] = useState(false);
+  const [inutilizarNumInicial, setInutilizarNumInicial] = useState('');
+  const [inutilizarNumFinal, setInutilizarNumFinal] = useState('');
+  const [inutilizarJustificativa, setInutilizarJustificativa] = useState('');
+  const [inutilizarModelo, setInutilizarModelo] = useState<'55' | '65'>('55');
+  const [isInutilizarSending, setIsInutilizarSending] = useState(false);
+  const [accountingOpen, setAccountingOpen] = useState(false);
+  const [accountingMonth, setAccountingMonth] = useState(new Date().getMonth() + 1);
+  const [accountingYear, setAccountingYear] = useState(new Date().getFullYear());
+  const [isAccountingSending, setIsAccountingSending] = useState(false);
 
+  const queryClient = useQueryClient();
   const typeConfig = TYPE_CONFIG[type];
 
   // Fetch documents from Firestore
@@ -959,6 +1000,194 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
     fetchDocuments(true);
   }, [fetchDocuments]);
 
+  // ── DANFE Print ──
+  const handlePrintDanfe = async (document: FiscalDocument) => {
+    if (!document.xml) {
+      toast.error('XML nao disponivel para gerar DANFE.');
+      return;
+    }
+    try {
+      const res = await fetch('/api/fiscal/danfe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ xml: document.xml, type: document.type }),
+      });
+      if (!res.ok) { toast.error('Erro ao gerar DANFE.'); return; }
+      const html = await res.text();
+      const win = window.open('', '_blank');
+      if (win) { win.document.write(html); win.document.close(); }
+    } catch { toast.error('Erro ao gerar DANFE.'); }
+  };
+
+  // ── Carta de Correção ──
+  const handleCartaCorrecao = async () => {
+    if (!cartaCorrecaoDoc || !business) return;
+    if (cartaCorrecaoText.trim().length < 15) {
+      toast.error('Texto da correcao deve ter no minimo 15 caracteres.');
+      return;
+    }
+    setIsCartaCorrecaoSending(true);
+    try {
+      const certificado = await getCertificate();
+      const sequencia = (cartaCorrecaoDoc.cartaCorrecao?.length || 0) + 1;
+      const res = await fetch('/api/fiscal/carta-correcao', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chaveAcesso: cartaCorrecaoDoc.accessKey,
+          sequencia,
+          textoCorrecao: cartaCorrecaoText.trim(),
+          certificado,
+        }),
+      });
+      const result = await res.json();
+      if (!res.ok || !result.success) {
+        toast.error(result.details?.motivoStatus || result.error || 'Erro na carta de correcao');
+        return;
+      }
+      // Save to Firestore
+      const existingCartas = cartaCorrecaoDoc.cartaCorrecao || [];
+      await updateDoc(firestoreDoc(db, 'fiscalDocuments', cartaCorrecaoDoc.id), {
+        cartaCorrecao: [...existingCartas, {
+          sequencia,
+          texto: cartaCorrecaoText.trim(),
+          protocolo: result.data?.protocolo || null,
+          dataEvento: new Date().toISOString(),
+        }],
+        updatedAt: new Date().toISOString(),
+      });
+      toast.success('Carta de correcao enviada com sucesso!');
+      setCartaCorrecaoOpen(false);
+      setCartaCorrecaoText('');
+      queryClient.invalidateQueries({ queryKey: ['fiscalDocs'] });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Erro ao enviar carta de correcao');
+    } finally {
+      setIsCartaCorrecaoSending(false);
+    }
+  };
+
+  // ── Inutilização ──
+  const handleInutilizar = async () => {
+    if (!business) return;
+    const numInicial = parseInt(inutilizarNumInicial);
+    const numFinal = parseInt(inutilizarNumFinal);
+    if (!numInicial || !numFinal || numInicial > numFinal) {
+      toast.error('Numeros invalidos.');
+      return;
+    }
+    if (inutilizarJustificativa.trim().length < 15) {
+      toast.error('Justificativa deve ter no minimo 15 caracteres.');
+      return;
+    }
+    setIsInutilizarSending(true);
+    try {
+      const certificado = await getCertificate();
+      const res = await fetch('/api/fiscal/inutilizar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ano: new Date().getFullYear(),
+          serie: inutilizarModelo === '55'
+            ? (business.fiscal?.nfeConfig?.series || '1')
+            : (business.fiscal?.nfceConfig?.series || '1'),
+          numeroInicial: numInicial,
+          numeroFinal: numFinal,
+          justificativa: inutilizarJustificativa.trim(),
+          ufEmitente: business.endereco?.uf || 'SP',
+          cnpj: business.cnpj || '',
+          modelo: inutilizarModelo,
+          certificado,
+        }),
+      });
+      const result = await res.json();
+      if (!res.ok || !result.success) {
+        toast.error(result.details?.motivoStatus || result.error || 'Erro na inutilizacao');
+        return;
+      }
+      toast.success('Numeracao inutilizada com sucesso!');
+      setInutilizarOpen(false);
+      setInutilizarNumInicial('');
+      setInutilizarNumFinal('');
+      setInutilizarJustificativa('');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Erro ao inutilizar');
+    } finally {
+      setIsInutilizarSending(false);
+    }
+  };
+
+  // ── Export to Accounting ──
+  const handleAccountingSend = async () => {
+    if (!business) return;
+    const accountingEmail = business.fiscal?.accountingEmail;
+    const notificationServerUrl = business.fiscal?.notificationServerUrl;
+    const notificationServerKey = business.fiscal?.notificationServerKey;
+    if (!accountingEmail) { toast.error('Email do contador nao configurado. Acesse Configuracoes > Fiscal.'); return; }
+    if (!notificationServerUrl || !notificationServerKey) { toast.error('Servidor de notificacao nao configurado.'); return; }
+
+    setIsAccountingSending(true);
+    try {
+      // Filter docs for the selected month/year
+      const monthDocs = (documents || []).filter((d: FiscalDocument) => {
+        if (d.status !== 'autorizada') return false;
+        const date = new Date(d.issueDate || d.createdAt);
+        return date.getMonth() + 1 === accountingMonth && date.getFullYear() === accountingYear;
+      });
+
+      const res = await fetch('/api/fiscal/accounting/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          businessId: business.id,
+          businessName: business.razaoSocial || business.nomeFantasia,
+          businessCnpj: business.cnpj,
+          month: accountingMonth,
+          year: accountingYear,
+          accountingEmail,
+          notificationServerUrl,
+          notificationServerKey,
+          documents: monthDocs.map((d: FiscalDocument) => ({
+            type: d.type,
+            number: d.number,
+            series: d.series,
+            accessKey: d.accessKey,
+            totalValue: d.totalValue,
+            issueDate: d.issueDate,
+            clientName: d.clientName,
+            xml: d.xml,
+          })),
+        }),
+      });
+      const result = await res.json();
+      if (!res.ok || !result.success) {
+        toast.error(result.error || 'Erro ao enviar para contabilidade');
+        return;
+      }
+      toast.success(`Documentos enviados para ${accountingEmail} (${result.attachmentsCount} anexos)`);
+      setAccountingOpen(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Erro ao enviar');
+    } finally {
+      setIsAccountingSending(false);
+    }
+  };
+
+  // ── Get Certificate ──
+  const getCertificate = async (): Promise<{ pfxBase64: string; password: string }> => {
+    const cert = business?.fiscal?.certificate;
+    const pwdEncoded = business?.fiscal?.certPasswordEncrypted;
+    if (!cert?.storagePath || !pwdEncoded) throw new Error('Certificado digital nao configurado.');
+    const fileRef = storageRef(storage, cert.storagePath);
+    const downloadUrl = await getDownloadURL(fileRef);
+    const response = await fetch(downloadUrl);
+    const buffer = await response.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+    return { pfxBase64: btoa(binary), password: atob(pwdEncoded) };
+  };
+
   // Certificate warning
   const hasCertificate = !!business?.fiscal?.certificate?.serialNumber;
   const certExpired = business?.fiscal?.certificate?.expiresAt
@@ -1053,6 +1282,20 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
               >
                 Certificado
               </Button>
+              <button
+                onClick={() => setInutilizarOpen(true)}
+                className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-gray-600 dark:text-gray-400 bg-gray-100 dark:bg-gray-800 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+              >
+                <Hash className="w-3.5 h-3.5" />
+                Inutilizar
+              </button>
+              <button
+                onClick={() => setAccountingOpen(true)}
+                className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/20 rounded-xl hover:bg-purple-100 dark:hover:bg-purple-900/30 transition-colors"
+              >
+                <Send className="w-3.5 h-3.5" />
+                Contabilidade
+              </button>
               <Button
                 onClick={() => setEmitirOpen(true)}
                 variant="contained"
@@ -1373,7 +1616,190 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
         document={selectedDoc}
         onDocumentUpdated={handleRefresh}
         business={business ? { razaoSocial: business.razaoSocial, cnpj: business.cnpj } : null}
+        onPrintDanfe={handlePrintDanfe}
+        onCartaCorrecao={(doc) => { setCartaCorrecaoDoc(doc); setCartaCorrecaoOpen(true); }}
       />
+
+      {/* Carta de Correção Dialog */}
+      <Dialog open={cartaCorrecaoOpen} onClose={() => setCartaCorrecaoOpen(false)} maxWidth="sm" fullWidth PaperProps={{ className: 'dark:!bg-gray-900', sx: { borderRadius: '16px' } }}>
+        <DialogTitle className="dark:!text-gray-100">
+          <div className="flex items-center gap-2">
+            <BookOpen className="w-5 h-5 text-amber-500" />
+            Carta de Correcao
+          </div>
+        </DialogTitle>
+        <DialogContent>
+          <div className="space-y-4 pt-2">
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              NF-e: {cartaCorrecaoDoc?.number} | Chave: {cartaCorrecaoDoc?.accessKey?.substring(0, 20)}...
+            </p>
+            {cartaCorrecaoDoc?.cartaCorrecao?.length ? (
+              <div className="bg-amber-50 dark:bg-amber-900/10 p-3 rounded-lg text-xs text-amber-700 dark:text-amber-400">
+                {cartaCorrecaoDoc.cartaCorrecao.length} carta(s) anteriores registrada(s). Proxima sequencia: {cartaCorrecaoDoc.cartaCorrecao.length + 1}
+              </div>
+            ) : null}
+            <textarea
+              value={cartaCorrecaoText}
+              onChange={(e) => setCartaCorrecaoText(e.target.value)}
+              placeholder="Descreva a correcao (min. 15 caracteres, max. 1000)..."
+              rows={4}
+              maxLength={1000}
+              className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-amber-500/20 resize-none"
+            />
+            <p className="text-xs text-gray-400">{cartaCorrecaoText.length}/1000 caracteres</p>
+          </div>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <button onClick={() => setCartaCorrecaoOpen(false)} className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400">Cancelar</button>
+          <button
+            onClick={handleCartaCorrecao}
+            disabled={isCartaCorrecaoSending || cartaCorrecaoText.trim().length < 15}
+            className="px-4 py-2 text-sm font-medium text-white bg-amber-500 hover:bg-amber-600 rounded-lg disabled:opacity-50 flex items-center gap-2"
+          >
+            {isCartaCorrecaoSending && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+            Enviar Carta
+          </button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Inutilização Dialog */}
+      <Dialog open={inutilizarOpen} onClose={() => setInutilizarOpen(false)} maxWidth="sm" fullWidth PaperProps={{ className: 'dark:!bg-gray-900', sx: { borderRadius: '16px' } }}>
+        <DialogTitle className="dark:!text-gray-100">
+          <div className="flex items-center gap-2">
+            <Hash className="w-5 h-5 text-gray-500" />
+            Inutilizar Numeracao
+          </div>
+        </DialogTitle>
+        <DialogContent>
+          <div className="space-y-4 pt-2">
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              Declare faixas de numeracao que nao serao utilizadas.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Modelo</label>
+                <select
+                  value={inutilizarModelo}
+                  onChange={(e) => setInutilizarModelo(e.target.value as '55' | '65')}
+                  className="w-full h-10 px-3 rounded-xl border text-sm bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100"
+                >
+                  <option value="55">NF-e (mod. 55)</option>
+                  <option value="65">NFC-e (mod. 65)</option>
+                </select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Numero Inicial</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={inutilizarNumInicial}
+                  onChange={(e) => setInutilizarNumInicial(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Numero Final</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={inutilizarNumFinal}
+                  onChange={(e) => setInutilizarNumFinal(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Justificativa (min. 15 caracteres)</label>
+              <textarea
+                value={inutilizarJustificativa}
+                onChange={(e) => setInutilizarJustificativa(e.target.value)}
+                placeholder="Justifique a inutilizacao..."
+                rows={3}
+                maxLength={255}
+                className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 resize-none"
+              />
+            </div>
+          </div>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <button onClick={() => setInutilizarOpen(false)} className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400">Cancelar</button>
+          <button
+            onClick={handleInutilizar}
+            disabled={isInutilizarSending || inutilizarJustificativa.trim().length < 15}
+            className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg disabled:opacity-50 flex items-center gap-2"
+          >
+            {isInutilizarSending && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+            Inutilizar
+          </button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Contabilidade Dialog */}
+      <Dialog open={accountingOpen} onClose={() => setAccountingOpen(false)} maxWidth="sm" fullWidth PaperProps={{ className: 'dark:!bg-gray-900', sx: { borderRadius: '16px' } }}>
+        <DialogTitle className="dark:!text-gray-100">
+          <div className="flex items-center gap-2">
+            <Send className="w-5 h-5 text-purple-500" />
+            Enviar para Contabilidade
+          </div>
+        </DialogTitle>
+        <DialogContent>
+          <div className="space-y-4 pt-2">
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              Envie XMLs e SPED do periodo selecionado para o email do contador.
+            </p>
+            {!business?.fiscal?.accountingEmail && (
+              <div className="bg-amber-50 dark:bg-amber-900/10 p-3 rounded-lg text-xs text-amber-700 dark:text-amber-400 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                Email do contador nao configurado. Acesse Configuracoes &gt; Fiscal.
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Mes</label>
+                <select
+                  value={accountingMonth}
+                  onChange={(e) => setAccountingMonth(Number(e.target.value))}
+                  className="w-full h-10 px-3 rounded-xl border text-sm bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100"
+                >
+                  {['Janeiro','Fevereiro','Marco','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'].map((m, i) => (
+                    <option key={i+1} value={i+1}>{m}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Ano</label>
+                <select
+                  value={accountingYear}
+                  onChange={(e) => setAccountingYear(Number(e.target.value))}
+                  className="w-full h-10 px-3 rounded-xl border text-sm bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100"
+                >
+                  {[2024, 2025, 2026].map(y => (
+                    <option key={y} value={y}>{y}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            {business?.fiscal?.accountingEmail && (
+              <p className="text-xs text-gray-400">
+                Enviar para: <span className="font-medium text-gray-600 dark:text-gray-300">{business.fiscal.accountingEmail}</span>
+              </p>
+            )}
+          </div>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <button onClick={() => setAccountingOpen(false)} className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400">Cancelar</button>
+          <button
+            onClick={handleAccountingSend}
+            disabled={isAccountingSending || !business?.fiscal?.accountingEmail}
+            className="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg disabled:opacity-50 flex items-center gap-2"
+          >
+            {isAccountingSending && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+            Enviar
+          </button>
+        </DialogActions>
+      </Dialog>
     </>
   );
 }

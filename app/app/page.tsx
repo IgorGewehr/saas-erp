@@ -17,7 +17,7 @@ const KanbanModule     = lazy(() => import('@/app/components/features/kanban/Kan
 const CRMModule        = lazy(() => import('@/app/components/features/crm/CRMModule'));
 const SettingsModule   = lazy(() => import('@/app/components/features/settings/SettingsModule'));
 const ConversasModule  = lazy(() => import('@/app/components/features/conversations/ConversasModule'));
-const IntegrationsModule = lazy(() => import('@/app/components/features/integrations/IntegrationsModule'));
+
 
 // ─── Full-height page loading fallback (Agenda, PDV, Kanban, Conversas) ───────
 function FullHeightFallback() {
@@ -136,7 +136,7 @@ export default function AppPage() {
       case 'NFSe':         return <Suspense fallback={fallback}><FiscalModule type="nfse" /></Suspense>;
       case 'NFCe':         return <Suspense fallback={fallback}><FiscalModule type="nfce" /></Suspense>;
       case 'NFe':          return <Suspense fallback={fallback}><FiscalModule type="nfe" /></Suspense>;
-      case 'Integrações':   return <Suspense fallback={fallback}><IntegrationsModule /></Suspense>;
+
       case 'Configurações': return <Suspense fallback={fallback}><SettingsModule /></Suspense>;
       default:             return <Suspense fallback={fallback}><DashboardModule /></Suspense>;
     }

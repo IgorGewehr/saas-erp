@@ -98,6 +98,9 @@ interface ProductFormData {
   maxStock: string;
   ncm: string;
   cfop: string;
+  cest: string;
+  icmsOrigem: string;
+  gtin: string;
   isActive: boolean;
   imageFile: File | null;
   imagePreview: string;
@@ -153,6 +156,9 @@ const EMPTY_PRODUCT_FORM: ProductFormData = {
   maxStock: '',
   ncm: '',
   cfop: '',
+  cest: '',
+  icmsOrigem: '0',
+  gtin: '',
   isActive: true,
   imageFile: null,
   imagePreview: '',
@@ -1169,6 +1175,9 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
           maxStock: product.maxStock ? String(product.maxStock) : '',
           ncm: product.ncm || '',
           cfop: product.cfop || '',
+          cest: product.cest || '',
+          icmsOrigem: product.icmsOrigem || '0',
+          gtin: product.gtin || '',
           isActive: product.isActive,
           imageFile: null,
           imagePreview: '',
@@ -1433,13 +1442,16 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
             {/* Fiscal */}
             <div>
               <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">Fiscal (Opcional)</p>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-3 -mt-1">
+                Campos opcionais. Obrigatorios para emissao de NF-e/NFC-e.
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <TextField
                   label="NCM"
                   value={form.ncm}
                   onChange={(e) => updateField('ncm', e.target.value)}
                   error={!!errors.ncm}
-                  helperText={errors.ncm}
+                  helperText={errors.ncm || 'Nomenclatura Comum do Mercosul'}
                   fullWidth
                   size="small"
                   placeholder="00000000"
@@ -1451,9 +1463,51 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
                   onChange={(e) => updateField('cfop', e.target.value)}
                   fullWidth
                   size="small"
-                  placeholder="0000"
+                  placeholder="5102"
+                  helperText="Cod. Fiscal de Operacoes"
                   slotProps={{ htmlInput: { maxLength: 4 } }}
                 />
+                <TextField
+                  label="CEST"
+                  value={form.cest}
+                  onChange={(e) => updateField('cest', e.target.value)}
+                  fullWidth
+                  size="small"
+                  placeholder="0000000"
+                  helperText="Substituicao Tributaria"
+                  slotProps={{ htmlInput: { maxLength: 7 } }}
+                />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                <TextField
+                  label="GTIN/EAN"
+                  value={form.gtin}
+                  onChange={(e) => updateField('gtin', e.target.value)}
+                  fullWidth
+                  size="small"
+                  placeholder="7891234567890"
+                  helperText="Codigo de barras fiscal"
+                  slotProps={{ htmlInput: { maxLength: 14 } }}
+                />
+                <TextField
+                  label="Origem ICMS"
+                  value={form.icmsOrigem}
+                  onChange={(e) => updateField('icmsOrigem', e.target.value)}
+                  fullWidth
+                  size="small"
+                  select
+                  SelectProps={{ native: true }}
+                  helperText="Origem da mercadoria"
+                >
+                  <option value="0">0 - Nacional</option>
+                  <option value="1">1 - Estrangeira (importacao direta)</option>
+                  <option value="2">2 - Estrangeira (adq. mercado interno)</option>
+                  <option value="3">3 - Nacional (40-70% conteudo import.)</option>
+                  <option value="4">4 - Nacional (proc. basicos)</option>
+                  <option value="5">5 - Nacional (conteudo import. &lt;= 40%)</option>
+                  <option value="6">6 - Estrangeira (import. direta, sem similar)</option>
+                  <option value="7">7 - Estrangeira (adq. interno, sem similar)</option>
+                </TextField>
               </div>
             </div>
 
@@ -1744,6 +1798,9 @@ export default function InventoryModule() {
         maxStock: maxStock ?? null,
         ncm: data.ncm.trim() || undefined,
         cfop: data.cfop.trim() || undefined,
+        cest: data.cest.trim() || undefined,
+        icmsOrigem: data.icmsOrigem || undefined,
+        gtin: data.gtin.trim() || undefined,
         isActive: data.isActive,
         imageUrl: imageUrl || null,
         updatedAt: new Date().toISOString(),
@@ -1773,6 +1830,9 @@ export default function InventoryModule() {
         maxStock: maxStock ?? null,
         ncm: data.ncm.trim() || '',
         cfop: data.cfop.trim() || '',
+        cest: data.cest.trim() || '',
+        icmsOrigem: data.icmsOrigem || '0',
+        gtin: data.gtin.trim() || '',
         isActive: data.isActive,
         imageUrl: '',
         createdAt: new Date().toISOString(),

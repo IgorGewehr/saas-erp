@@ -36,6 +36,7 @@ import {
   Calendar as CalendarIcon,
   Clock,
   User as UserIcon,
+  Users as UsersIcon,
   Phone,
   Mail,
   X,
@@ -917,6 +918,8 @@ interface AppointmentDialogProps {
   clients: Client[];
   members: User[];
   saving?: boolean;
+  checkConflicts?: (professionalId: string, date: string, startTime: string, endTime: string, excludeId?: string) => { hasConflict: boolean; message: string };
+  editingAppointmentId?: string;
 }
 
 function AppointmentFormDialog({
@@ -930,6 +933,8 @@ function AppointmentFormDialog({
   clients,
   members,
   saving = false,
+  checkConflicts,
+  editingAppointmentId,
 }: AppointmentDialogProps) {
   const [formData, setFormData] = useState<AppointmentFormData>({
     clientId: '',
@@ -997,6 +1002,28 @@ function AppointmentFormDialog({
   }, [clientSearch, clients]);
 
   const activeServices = useMemo(() => services.filter((s) => s.isActive), [services]);
+
+  // Filter members by selected service (if they have serviceIds configured)
+  const availableMembers = useMemo(() => {
+    if (!formData.serviceId) return members;
+    // Check if any member has serviceIds configured
+    const anyHasServiceIds = members.some((m) => m.serviceIds && m.serviceIds.length > 0);
+    if (!anyHasServiceIds) return members;
+    return members.filter((m) => {
+      // If member has no serviceIds, show them (backwards compatible)
+      if (!m.serviceIds || m.serviceIds.length === 0) return true;
+      return m.serviceIds.includes(formData.serviceId);
+    });
+  }, [members, formData.serviceId]);
+
+  // Conflict detection for the current form state
+  const formConflict = useMemo(() => {
+    if (!checkConflicts || !formData.professionalId || !formData.date || !formData.startTime) {
+      return { hasConflict: false, message: '' };
+    }
+    const endTime = addDurationToTime(formData.startTime, formData.duration);
+    return checkConflicts(formData.professionalId, formData.date, formData.startTime, endTime, editingAppointmentId);
+  }, [checkConflicts, formData.professionalId, formData.date, formData.startTime, formData.duration, editingAppointmentId]);
 
   const handleServiceChange = (serviceId: string) => {
     const service = services.find((s) => s.id === serviceId);
@@ -1222,6 +1249,11 @@ function AppointmentFormDialog({
           <div>
             <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
               Profissional
+              {formData.serviceId && availableMembers.length < members.length && (
+                <span className="ml-1.5 text-[10px] text-gray-400 dark:text-gray-500 font-normal">
+                  ({availableMembers.length} disponiveis para este servico)
+                </span>
+              )}
             </label>
             <select
               value={formData.professionalId}
@@ -1234,18 +1266,44 @@ function AppointmentFormDialog({
                 }));
               }}
               className={cn(
-                'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800',
+                'w-full px-4 py-2.5 rounded-xl border bg-white dark:bg-gray-800',
                 'text-sm text-gray-900 dark:text-gray-100 appearance-none',
                 'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
                 'transition-all duration-200',
+                formConflict.hasConflict
+                  ? 'border-amber-300 dark:border-amber-500/40'
+                  : 'border-gray-200 dark:border-gray-700',
               )}
             >
               <option value="">Selecionar profissional</option>
-              {members.map((m) => (
+              {availableMembers.map((m) => (
                 <option key={m.id} value={m.id}>{m.name}</option>
               ))}
             </select>
           </div>
+
+          {/* Conflict warning */}
+          <AnimatePresence>
+            {formConflict.hasConflict && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.2 }}
+              >
+                <div className={cn(
+                  'flex items-start gap-2.5 px-3.5 py-2.5 rounded-xl border',
+                  'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30',
+                )}>
+                  <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <div className="text-xs font-semibold text-amber-700 dark:text-amber-300">Conflito de Agenda</div>
+                    <div className="text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">{formConflict.message}</div>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* Status and Price */}
           <div className="grid grid-cols-2 gap-3">
@@ -1673,7 +1731,8 @@ export default function AgendaModule() {
   const [statusChanging, setStatusChanging] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [members, setMembers] = useState<User[]>([]);
-  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' }>({
+  const [selectedProfessional, setSelectedProfessional] = useState<string>('all');
+  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' | 'warning' }>({
     open: false,
     message: '',
     severity: 'success',
@@ -1776,6 +1835,61 @@ export default function AgendaModule() {
   }, [isMobile]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ==========================================
+  // PROFESSIONAL FILTERING & CONFLICT DETECTION
+  // ==========================================
+
+  // Filter appointments by selected professional
+  const filteredAppointments = useMemo(() => {
+    if (!appointments) return [];
+    if (selectedProfessional === 'all') return appointments;
+    return appointments.filter((a) => a.professionalId === selectedProfessional);
+  }, [appointments, selectedProfessional]);
+
+  // Group appointments by date (using filtered)
+  const appointmentsByDate = useMemo(() => {
+    const map = new Map<string, Appointment[]>();
+    filteredAppointments.forEach((a) => {
+      const existing = map.get(a.date) || [];
+      existing.push(a);
+      map.set(a.date, existing);
+    });
+    return map;
+  }, [filteredAppointments]);
+
+  // Conflict detection for professional scheduling
+  const checkConflicts = useCallback((professionalId: string, date: string, startTime: string, endTime: string, excludeId?: string) => {
+    if (!professionalId || !appointments) return { hasConflict: false, message: '' };
+
+    // Check 1: Working hours
+    const professional = members.find((m) => m.id === professionalId);
+    if (professional?.workingHours) {
+      const dayOfWeek = new Date(date + 'T12:00:00').getDay();
+      const daySchedule = professional.workingHours[dayOfWeek];
+      if (!daySchedule?.enabled) {
+        return { hasConflict: true, message: `${professional.name} nao trabalha neste dia` };
+      }
+      if (startTime < daySchedule.start || endTime > daySchedule.end) {
+        return { hasConflict: true, message: `Fora do horario de trabalho (${daySchedule.start} - ${daySchedule.end})` };
+      }
+    }
+
+    // Check 2: Overlapping appointments
+    const existing = appointments.filter((a) =>
+      a.professionalId === professionalId &&
+      a.date === date &&
+      a.status !== 'cancelado' &&
+      a.id !== excludeId &&
+      !(endTime <= a.startTime || startTime >= a.endTime)
+    );
+
+    if (existing.length > 0) {
+      return { hasConflict: true, message: `Conflito com ${existing[0].clientName} (${existing[0].startTime} - ${existing[0].endTime})` };
+    }
+
+    return { hasConflict: false, message: '' };
+  }, [appointments, members]);
+
+  // ==========================================
   // SERVICE CRUD HANDLERS
   // ==========================================
 
@@ -1831,6 +1945,24 @@ export default function AgendaModule() {
       const endTime = addDurationToTime(data.startTime, data.duration);
       const serviceColor = services.find((s) => s.id === data.serviceId)?.color || data.color || '#3B82F6';
 
+      // Soft conflict warning (does not block saving)
+      if (data.professionalId) {
+        const conflictResult = checkConflicts(
+          data.professionalId,
+          data.date,
+          data.startTime,
+          endTime,
+          editingAppointment?.id
+        );
+        if (conflictResult.hasConflict) {
+          setSnackbar({
+            open: true,
+            message: `Aviso: ${conflictResult.message}`,
+            severity: 'warning',
+          });
+        }
+      }
+
       const payload: Record<string, any> = {
         clientId: data.clientId || '',
         clientName: data.clientName,
@@ -1869,7 +2001,7 @@ export default function AgendaModule() {
     } finally {
       setSaving(false);
     }
-  }, [business?.id, editingAppointment, services, queryClient]);
+  }, [business?.id, editingAppointment, services, queryClient, checkConflicts]);
 
   const handleDeleteAppointment = useCallback(async () => {
     if (!editingAppointment || !business?.id) return;
@@ -1946,38 +2078,27 @@ export default function AgendaModule() {
     return eachDayOfInterval({ start, end });
   }, [monthStartVal, monthEndVal]);
 
-  // Appointments for current view
+  // Appointments for current view (using filtered)
   const visibleAppointments = useMemo(() => {
     switch (viewMode) {
       case 'day':
-        return appointments.filter((a) =>
+        return filteredAppointments.filter((a) =>
           isSameDay(parseISO(a.date), currentDate)
         );
       case 'week':
-        return appointments.filter((a) => {
+        return filteredAppointments.filter((a) => {
           const d = parseISO(a.date);
           return !isBefore(d, weekStart) && !isAfter(d, weekEnd);
         });
       case 'month':
-        return appointments.filter((a) => {
+        return filteredAppointments.filter((a) => {
           const d = parseISO(a.date);
           return isSameMonth(d, currentDate);
         });
       default:
         return [];
     }
-  }, [appointments, viewMode, currentDate, weekStart, weekEnd]);
-
-  // Group appointments by date
-  const appointmentsByDate = useMemo(() => {
-    const map = new Map<string, Appointment[]>();
-    appointments.forEach((a) => {
-      const existing = map.get(a.date) || [];
-      existing.push(a);
-      map.set(a.date, existing);
-    });
-    return map;
-  }, [appointments]);
+  }, [filteredAppointments, viewMode, currentDate, weekStart, weekEnd]);
 
   // ---- Navigation ----
   const navigatePrev = useCallback(() => {
@@ -2138,7 +2259,7 @@ export default function AgendaModule() {
   // RENDER: DAY VIEW
   // ==========================================
   const renderDayView = () => {
-    const dayAppointments = appointments.filter((a) =>
+    const dayAppointments = filteredAppointments.filter((a) =>
       isSameDay(parseISO(a.date), currentDate)
     );
 
@@ -2614,6 +2735,58 @@ export default function AgendaModule() {
         ))}
       </div>
 
+      {/* ========== PROFESSIONAL FILTER BAR ========== */}
+      {members.length > 1 && (
+        <div className="flex items-center gap-2 px-4 sm:px-6 py-2 bg-white dark:bg-gray-900 border-b border-gray-100 dark:border-gray-800 overflow-x-auto">
+          <UsersIcon className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500 flex-shrink-0" />
+          <button
+            onClick={() => setSelectedProfessional('all')}
+            className={cn(
+              'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all duration-200 whitespace-nowrap flex-shrink-0',
+              selectedProfessional === 'all'
+                ? 'bg-red-50 dark:bg-red-500/10 border-red-300 dark:border-red-500/30 text-red-600 dark:text-red-400'
+                : 'bg-white dark:bg-gray-800 border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:border-slate-300 dark:hover:border-gray-600',
+            )}
+          >
+            Todos
+          </button>
+          {members.map((member) => {
+            const initials = member.name
+              .split(' ')
+              .map((n) => n[0])
+              .filter(Boolean)
+              .slice(0, 2)
+              .join('')
+              .toUpperCase();
+            const isActive = selectedProfessional === member.id;
+            return (
+              <button
+                key={member.id}
+                onClick={() => setSelectedProfessional(isActive ? 'all' : member.id)}
+                className={cn(
+                  'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all duration-200 whitespace-nowrap flex-shrink-0',
+                  isActive
+                    ? 'bg-red-50 dark:bg-red-500/10 border-red-300 dark:border-red-500/30 text-red-600 dark:text-red-400'
+                    : 'bg-white dark:bg-gray-800 border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:border-slate-300 dark:hover:border-gray-600',
+                )}
+              >
+                <span
+                  className={cn(
+                    'w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0',
+                    isActive
+                      ? 'bg-red-600 text-white'
+                      : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
+                  )}
+                >
+                  {initials}
+                </span>
+                <span className="hidden sm:inline">{member.name.split(' ')[0]}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* ========== CALENDAR VIEW AREA ========== */}
       <div className="flex-1 overflow-hidden">
         <AnimatePresence mode="wait">
@@ -2650,6 +2823,8 @@ export default function AgendaModule() {
         clients={clients}
         members={members}
         saving={saving}
+        checkConflicts={checkConflicts}
+        editingAppointmentId={editingAppointment?.id}
       />
 
       <ServiceManagementDialog

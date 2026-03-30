@@ -114,6 +114,9 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
   const [notes, setNotes] = useState('');
   const [inscricaoEstadual, setInscricaoEstadual] = useState('');
   const [indicadorIE, setIndicadorIE] = useState<'1' | '2' | '9'>('9');
+  const [inscricaoMunicipal, setInscricaoMunicipal] = useState('');
+  const [suframa, setSuframa] = useState('');
+  const [nomeFantasia, setNomeFantasia] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [isFetchingCEP, setIsFetchingCEP] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -135,6 +138,9 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
       setNotes(client.notes || '');
       setInscricaoEstadual(client.inscricaoEstadual || '');
       setIndicadorIE((client.indicadorIE as '1' | '2' | '9') || '9');
+      setInscricaoMunicipal((client as any).inscricaoMunicipal || '');
+      setSuframa((client as any).suframa || '');
+      setNomeFantasia((client as any).nomeFantasia || '');
     } else {
       resetForm();
     }
@@ -156,6 +162,9 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
     setNotes('');
     setInscricaoEstadual('');
     setIndicadorIE('9');
+    setInscricaoMunicipal('');
+    setSuframa('');
+    setNomeFantasia('');
   }
 
   // ---- ViaCEP Integration ----
@@ -272,6 +281,9 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
       if (notes.trim()) payload.notes = notes.trim();
       if (tipo === 'pj' && inscricaoEstadual.trim()) payload.inscricaoEstadual = inscricaoEstadual.trim();
       if (tipo === 'pj') payload.indicadorIE = indicadorIE;
+      if (inscricaoMunicipal) payload.inscricaoMunicipal = inscricaoMunicipal;
+      if (suframa) payload.suframa = suframa;
+      if (nomeFantasia.trim()) payload.nomeFantasia = nomeFantasia.trim();
 
       await onSave(payload as any);
       toast.success(isEditing ? 'Cliente atualizado com sucesso!' : 'Cliente cadastrado com sucesso!');
@@ -399,28 +411,57 @@ export function ClientFormDialog({ open, onClose, onSave, client }: ClientFormDi
 
               {/* Campos fiscais PJ */}
               {tipo === 'pj' && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <TextField
-                    label="Inscricao Estadual (IE)"
-                    value={inscricaoEstadual}
-                    onChange={(e) => setInscricaoEstadual(e.target.value)}
-                    placeholder="Ex: 123456789012"
-                    fullWidth
-                    size="small"
-                  />
-                  <FormControl fullWidth size="small">
-                    <InputLabel>Indicador IE</InputLabel>
-                    <Select
-                      value={indicadorIE}
-                      onChange={(e) => setIndicadorIE(e.target.value as '1' | '2' | '9')}
-                      label="Indicador IE"
-                    >
-                      <MenuItem value="9">9 - Nao Contribuinte</MenuItem>
-                      <MenuItem value="1">1 - Contribuinte ICMS</MenuItem>
-                      <MenuItem value="2">2 - Contribuinte Isento</MenuItem>
-                    </Select>
-                  </FormControl>
-                </div>
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <TextField
+                      label="Inscricao Estadual (IE)"
+                      value={inscricaoEstadual}
+                      onChange={(e) => setInscricaoEstadual(e.target.value)}
+                      placeholder="Ex: 123456789012"
+                      fullWidth
+                      size="small"
+                    />
+                    <FormControl fullWidth size="small">
+                      <InputLabel>Indicador IE</InputLabel>
+                      <Select
+                        value={indicadorIE}
+                        onChange={(e) => setIndicadorIE(e.target.value as '1' | '2' | '9')}
+                        label="Indicador IE"
+                      >
+                        <MenuItem value="9">9 - Nao Contribuinte</MenuItem>
+                        <MenuItem value="1">1 - Contribuinte ICMS</MenuItem>
+                        <MenuItem value="2">2 - Contribuinte Isento</MenuItem>
+                      </Select>
+                    </FormControl>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <TextField
+                      label="Inscricao Municipal"
+                      value={inscricaoMunicipal}
+                      onChange={(e) => setInscricaoMunicipal(e.target.value)}
+                      placeholder="Inscricao Municipal"
+                      fullWidth
+                      size="small"
+                    />
+                    <TextField
+                      label="SUFRAMA"
+                      value={suframa}
+                      onChange={(e) => setSuframa(e.target.value)}
+                      placeholder="Codigo SUFRAMA"
+                      fullWidth
+                      size="small"
+                      slotProps={{ htmlInput: { maxLength: 9 } }}
+                    />
+                    <TextField
+                      label="Nome Fantasia"
+                      value={nomeFantasia}
+                      onChange={(e) => setNomeFantasia(e.target.value)}
+                      placeholder="Nome Fantasia"
+                      fullWidth
+                      size="small"
+                    />
+                  </div>
+                </>
               )}
 
               {/* Email + Telefone */}

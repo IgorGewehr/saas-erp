@@ -15,6 +15,27 @@ export const USER_STATUS_LABELS: Record<UserStatus, string> = {
   offline: 'Offline',
 };
 
+// ---- Working Hours (professional scheduling) ----
+export interface DaySchedule {
+  enabled: boolean;
+  start: string;  // "08:00"
+  end: string;    // "18:00"
+}
+
+export type WorkingHours = {
+  [day: number]: DaySchedule;  // 0=Dom, 1=Seg, ..., 6=Sáb
+};
+
+export const DEFAULT_WORKING_HOURS: WorkingHours = {
+  0: { enabled: false, start: '09:00', end: '18:00' },
+  1: { enabled: true,  start: '09:00', end: '18:00' },
+  2: { enabled: true,  start: '09:00', end: '18:00' },
+  3: { enabled: true,  start: '09:00', end: '18:00' },
+  4: { enabled: true,  start: '09:00', end: '18:00' },
+  5: { enabled: true,  start: '09:00', end: '18:00' },
+  6: { enabled: false, start: '09:00', end: '18:00' },
+};
+
 export interface User {
   id: string;
   uid: string;
@@ -25,6 +46,8 @@ export interface User {
   role: UserRole;
   businessId: string;
   sectorIds?: string[];
+  serviceIds?: string[];            // Service IDs this professional offers
+  workingHours?: WorkingHours;      // Weekly availability schedule
   isActive: boolean;
   isOnline?: boolean;
   userStatus?: UserStatus;
@@ -210,6 +233,10 @@ export interface FiscalConfig {
     defaultSales: string;
     defaultPurchases: string;
   };
+  // Accounting export
+  accountingEmail?: string;       // Email do contador
+  notificationServerUrl?: string; // URL do servidor de notificação
+  notificationServerKey?: string; // API key do servidor de notificação
 }
 
 export interface CertificateConfig {
@@ -284,6 +311,9 @@ export interface Client {
   endereco?: Address;
   inscricaoEstadual?: string;  // IE - required for B2B NF-e
   indicadorIE?: '1' | '2' | '9'; // 1=Contribuinte, 2=Isento, 9=Nao Contribuinte
+  inscricaoMunicipal?: string;  // IM - required for NFSe
+  suframa?: string;             // SUFRAMA code (Zona Franca de Manaus)
+  nomeFantasia?: string;        // Trade name for PJ
   notes?: string;
   tags?: string[];
   isActive: boolean;
@@ -527,6 +557,18 @@ export interface Product {
   maxStock?: number;
   ncm?: string;
   cfop?: string;
+  cest?: string;              // Código Especificador da Substituição Tributária
+  icmsOrigem?: '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7'; // Origem da mercadoria
+  gtin?: string;              // GTIN/EAN barcode
+  gtinTrib?: string;          // GTIN tributável
+  unidadeTrib?: string;       // Unidade tributável
+  // Per-product tax overrides (when different from business defaults)
+  fiscalTax?: {
+    icms?: { cst?: string; csosn?: string; rate?: number };
+    pis?: { cst?: string; rate?: number };
+    cofins?: { cst?: string; rate?: number };
+    ipi?: { cst?: string; rate?: number; cEnq?: string };
+  };
   isActive: boolean;
   imageUrl?: string;
   createdAt: string;
@@ -581,6 +623,15 @@ export interface FiscalDocument {
   pdfUrl?: string;
   canceledAt?: string;
   cancelReason?: string;
+  naturezaOperacao?: string;  // Natureza da operação
+  informacoesAdicionais?: string; // Additional info
+  xml?: string;               // Signed XML content
+  cartaCorrecao?: {           // Correction letter history
+    sequencia: number;
+    texto: string;
+    protocolo?: string;
+    dataEvento: string;
+  }[];
   createdAt: string;
   updatedAt: string;
 }
@@ -593,6 +644,10 @@ export interface FiscalItem {
   ncm?: string;
   cfop?: string;
   unit: string;
+  codigo?: string;            // Product code
+  cest?: string;              // CEST
+  gtin?: string;              // GTIN/EAN
+  icmsOrigem?: string;        // Origin code
   taxes?: {
     icms?: { cst?: string; csosn?: string; aliquota?: number; valor?: number };
     pis?: { cst?: string; aliquota?: number; valor?: number };
@@ -926,6 +981,8 @@ export type ApiKeyScope =
   | 'write:clients'
   | 'read:appointments'
   | 'write:appointments'
+  | 'read:services'
+  | 'write:services'
   | 'read:financial'
   | 'write:financial'
   | 'read:products'
@@ -936,7 +993,74 @@ export type ApiKeyScope =
   | 'write:crm'
   | 'read:sales'
   | 'write:sales'
+  | 'read:conversations'
+  | 'write:conversations'
+  | 'read:fiscal'
+  | 'write:fiscal'
+  | 'read:broadcasts'
+  | 'write:broadcasts'
+  | 'read:segments'
+  | 'write:segments'
+  | 'read:snippets'
+  | 'write:snippets'
+  | 'read:sectors'
+  | 'write:sectors'
+  | 'read:users'
+  | 'write:users'
   | 'admin:all';
+
+export const API_KEY_SCOPE_LABELS: Record<ApiKeyScope, string> = {
+  'read:clients': 'Ler clientes',
+  'write:clients': 'Criar/editar clientes',
+  'read:appointments': 'Ler agendamentos',
+  'write:appointments': 'Criar/editar agendamentos',
+  'read:services': 'Ler serviços',
+  'write:services': 'Criar/editar serviços',
+  'read:financial': 'Ler transações financeiras',
+  'write:financial': 'Criar/editar transações',
+  'read:products': 'Ler produtos/estoque',
+  'write:products': 'Criar/editar produtos',
+  'read:kanban': 'Ler boards e cards',
+  'write:kanban': 'Criar/editar boards e cards',
+  'read:crm': 'Ler contatos, deals e atividades CRM',
+  'write:crm': 'Criar/editar contatos, deals e atividades',
+  'read:sales': 'Ler vendas',
+  'write:sales': 'Criar vendas',
+  'read:conversations': 'Ler conversas e mensagens',
+  'write:conversations': 'Enviar mensagens',
+  'read:fiscal': 'Ler documentos fiscais',
+  'write:fiscal': 'Emitir/cancelar documentos fiscais',
+  'read:broadcasts': 'Ler campanhas',
+  'write:broadcasts': 'Criar/enviar campanhas',
+  'read:segments': 'Ler segmentos',
+  'write:segments': 'Criar/editar segmentos',
+  'read:snippets': 'Ler respostas rápidas',
+  'write:snippets': 'Criar/editar respostas rápidas',
+  'read:sectors': 'Ler setores',
+  'write:sectors': 'Criar/editar setores',
+  'read:users': 'Ler membros da equipe',
+  'write:users': 'Editar membros da equipe',
+  'admin:all': 'Acesso total a todos os recursos',
+};
+
+export const API_KEY_SCOPE_GROUPS: { label: string; scopes: ApiKeyScope[] }[] = [
+  { label: 'Clientes', scopes: ['read:clients', 'write:clients'] },
+  { label: 'Agenda', scopes: ['read:appointments', 'write:appointments'] },
+  { label: 'Serviços', scopes: ['read:services', 'write:services'] },
+  { label: 'Financeiro', scopes: ['read:financial', 'write:financial'] },
+  { label: 'Produtos & Estoque', scopes: ['read:products', 'write:products'] },
+  { label: 'Vendas (PDV)', scopes: ['read:sales', 'write:sales'] },
+  { label: 'Kanban', scopes: ['read:kanban', 'write:kanban'] },
+  { label: 'CRM', scopes: ['read:crm', 'write:crm'] },
+  { label: 'Conversas', scopes: ['read:conversations', 'write:conversations'] },
+  { label: 'Fiscal', scopes: ['read:fiscal', 'write:fiscal'] },
+  { label: 'Campanhas', scopes: ['read:broadcasts', 'write:broadcasts'] },
+  { label: 'Segmentos', scopes: ['read:segments', 'write:segments'] },
+  { label: 'Respostas Rápidas', scopes: ['read:snippets', 'write:snippets'] },
+  { label: 'Setores', scopes: ['read:sectors', 'write:sectors'] },
+  { label: 'Usuários', scopes: ['read:users', 'write:users'] },
+  { label: 'Admin Total', scopes: ['admin:all'] },
+];
 
 export const INTEGRATION_PROVIDERS: Record<IntegrationProvider, {
   name: string;
@@ -1045,17 +1169,33 @@ export const API_KEY_SCOPES: Record<ApiKeyScope, { label: string; description: s
   'write:clients': { label: 'Escrever Clientes', description: 'Criar e editar clientes' },
   'read:appointments': { label: 'Ler Agenda', description: 'Acessar agendamentos' },
   'write:appointments': { label: 'Escrever Agenda', description: 'Criar e editar agendamentos' },
-  'read:financial': { label: 'Ler Financeiro', description: 'Acessar transações financeiras' },
-  'write:financial': { label: 'Escrever Financeiro', description: 'Criar e editar transações' },
-  'read:products': { label: 'Ler Produtos', description: 'Acessar catálogo de produtos' },
-  'write:products': { label: 'Escrever Produtos', description: 'Criar e editar produtos' },
+  'read:services': { label: 'Ler Serviços', description: 'Acessar serviços cadastrados' },
+  'write:services': { label: 'Escrever Serviços', description: 'Criar e editar serviços' },
+  'read:financial': { label: 'Ler Financeiro', description: 'Acessar transações e contas bancárias' },
+  'write:financial': { label: 'Escrever Financeiro', description: 'Criar e editar transações e contas' },
+  'read:products': { label: 'Ler Produtos', description: 'Acessar catálogo e estoque' },
+  'write:products': { label: 'Escrever Produtos', description: 'Criar/editar produtos e movimentar estoque' },
   'read:kanban': { label: 'Ler Kanban', description: 'Acessar boards e cards' },
   'write:kanban': { label: 'Escrever Kanban', description: 'Criar e editar boards e cards' },
-  'read:crm': { label: 'Ler CRM', description: 'Acessar contatos e deals' },
-  'write:crm': { label: 'Escrever CRM', description: 'Criar e editar contatos e deals' },
+  'read:crm': { label: 'Ler CRM', description: 'Acessar contatos, deals e atividades' },
+  'write:crm': { label: 'Escrever CRM', description: 'Criar/editar contatos, deals e atividades' },
   'read:sales': { label: 'Ler Vendas', description: 'Acessar histórico de vendas' },
-  'write:sales': { label: 'Escrever Vendas', description: 'Criar e editar vendas' },
-  'admin:all': { label: 'Administrador', description: 'Acesso total a todos os recursos' },
+  'write:sales': { label: 'Escrever Vendas', description: 'Criar vendas (PDV)' },
+  'read:conversations': { label: 'Ler Conversas', description: 'Acessar conversas e mensagens omnichannel' },
+  'write:conversations': { label: 'Enviar Mensagens', description: 'Enviar mensagens via WhatsApp/FB/IG' },
+  'read:fiscal': { label: 'Ler Fiscal', description: 'Acessar NF-e, NFC-e e NFSe' },
+  'write:fiscal': { label: 'Escrever Fiscal', description: 'Emitir e cancelar documentos fiscais' },
+  'read:broadcasts': { label: 'Ler Campanhas', description: 'Acessar broadcasts e campanhas' },
+  'write:broadcasts': { label: 'Escrever Campanhas', description: 'Criar e enviar campanhas em massa' },
+  'read:segments': { label: 'Ler Segmentos', description: 'Acessar segmentos de audiência' },
+  'write:segments': { label: 'Escrever Segmentos', description: 'Criar e editar segmentos' },
+  'read:snippets': { label: 'Ler Respostas Rápidas', description: 'Acessar snippets/respostas rápidas' },
+  'write:snippets': { label: 'Escrever Respostas', description: 'Criar e editar respostas rápidas' },
+  'read:sectors': { label: 'Ler Setores', description: 'Acessar setores/departamentos' },
+  'write:sectors': { label: 'Escrever Setores', description: 'Criar e editar setores' },
+  'read:users': { label: 'Ler Usuários', description: 'Acessar membros da equipe' },
+  'write:users': { label: 'Escrever Usuários', description: 'Editar membros da equipe' },
+  'admin:all': { label: 'Admin Total', description: 'Acesso total a todos os recursos' },
 };
 
 // ============================================

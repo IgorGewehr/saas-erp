@@ -22,7 +22,7 @@ import {
   Kanban,
   Target,
   MessageSquare,
-  Plug,
+
 } from 'lucide-react';
 
 export type MenuPage =
@@ -32,7 +32,7 @@ export type MenuPage =
   | 'Agenda'
   | 'Conversas'
   | 'Kanban'
-  | 'Integrações'
+
   | 'PDV'
   | 'Financeiro'
   | 'Estoque'
@@ -70,7 +70,7 @@ const menuSections: MenuSection[] = [
     title: 'Gestão',
     items: [
       { id: 'Kanban', label: 'Kanban', icon: Kanban, enterpriseOnly: true },
-      { id: 'Integrações', label: 'Integrações', icon: Plug, enterpriseOnly: true },
+
       { id: 'Financeiro', label: 'Financeiro', icon: DollarSign },
       { id: 'Estoque', label: 'Estoque', icon: Package },
     ],
