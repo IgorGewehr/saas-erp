@@ -700,7 +700,7 @@ async function handleInstagramEvent(entry: MetaWebhookEntry) {
     if (event.postback) {
       await saveInboundMessage({
         channel: 'instagram',
-        channelIdentifier: String(entry.id),
+        channelIdentifier: accountId,
         externalId: String(event.sender.id),
         senderName,
         senderAvatarUrl,
@@ -715,7 +715,7 @@ async function handleInstagramEvent(entry: MetaWebhookEntry) {
       await saveInboundMessage({
         channel: 'instagram',
         channelIdentifier: accountId,
-        externalId: event.sender.id,
+        externalId: String(event.sender.id),
         senderName,
         senderAvatarUrl,
         messageId: event.message.mid,
@@ -733,12 +733,13 @@ async function handleInstagramEvent(entry: MetaWebhookEntry) {
 
       await saveInboundMessage({
         channel: 'instagram',
-        channelIdentifier: String(entry.id),
+        channelIdentifier: accountId,
         externalId: String(event.sender.id),
         senderName,
         senderAvatarUrl,
         messageId: event.message.mid,
-        content: event.message.text || `[${attachmentType === 'file' ? 'Documento' : attachmentType === 'image' ? 'Imagem' : attachmentType === 'video' ? 'Video' : attachmentType === 'audio' ? 'Audio' : 'Anexo'}]`,
+        content: event.message.text || '',
+        conversationPreview: event.message.text || `[${attachmentType === 'file' ? 'Documento' : attachmentType === 'image' ? 'Imagem' : attachmentType === 'video' ? 'Video' : attachmentType === 'audio' ? 'Audio' : 'Anexo'}]`,
         mediaType: (mediaTypeMap[attachmentType] || 'document') as 'image' | 'audio' | 'video' | 'document',
         mediaUrl: attachmentUrl,
         timestamp: new Date(event.timestamp).toISOString(),
@@ -1043,12 +1044,28 @@ async function saveInboundMessage(params: InboundMessageParams) {
       const convRef = doc(db, 'conversations', conversationId);
 
       const existingData = convSnap.docs[0].data();
+
+      // Soft-delete guard: only resurrect if the new message is newer than deletedAt
+      if (existingData.isDeleted) {
+        const deletedAt = existingData.deletedAt ? new Date(existingData.deletedAt).getTime() : 0;
+        const messageAt = new Date(params.timestamp).getTime();
+        if (messageAt <= deletedAt) {
+          // Message is older than delete — skip silently
+          return;
+        }
+        // New message after delete — resurrect the conversation
+        console.log('[Meta Webhook] Resurrecting soft-deleted conversation:', conversationId);
+      }
+
       const enrichUpdate: Record<string, unknown> = {
         lastMessage: params.conversationPreview || params.content || '[Midia]',
         lastMessageAt: params.timestamp,
         lastMessageDirection: 'inbound',
         unreadCount: increment(1),
         updatedAt: now,
+        // Clear soft-delete flags on resurrect
+        isDeleted: false,
+        deletedAt: null,
       };
       // Enrich name if current is just the numeric ID
       if (params.senderName && (!existingData.contactName || /^\d+$/.test(existingData.contactName))) {

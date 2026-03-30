@@ -58,7 +58,11 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
     const unsub = onSnapshot(
       q,
       (snap) => {
-        setConversations(snap.docs.map((d) => ({ ...d.data(), id: d.id } as Conversation)));
+        // Filter out soft-deleted conversations
+        const docs = snap.docs
+          .map((d) => ({ ...d.data(), id: d.id } as Conversation & { isDeleted?: boolean }))
+          .filter((c) => !c.isDeleted);
+        setConversations(docs);
         setIsLoading(false);
       },
       (err) => {
@@ -373,6 +377,9 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || 'Erro ao excluir');
       }
+      // Remove from local state immediately (optimistic update)
+      const deletedId = selectedConv.id;
+      setConversations((prev) => prev.filter((c) => c.id !== deletedId));
       setIsDeleteModalOpen(false);
       setSelectedConv(null);
       setMessages([]);

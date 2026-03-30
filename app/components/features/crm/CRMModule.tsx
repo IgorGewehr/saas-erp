@@ -514,7 +514,7 @@ export default function CRMModule() {
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4 shrink-0">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-red-500 to-red-700 flex items-center justify-center shadow-sm shadow-red-200 dark:shadow-red-900/30"><Target size={22} className="text-white" /></div>
-            <div><h1 className="text-2xl font-display font-bold text-gray-900 dark:text-gray-100">CRM Omnichannel</h1><p className="text-sm text-gray-500 dark:text-gray-400">Gestão de leads, conversas e vendas</p></div>
+            <div><h1 className="text-2xl font-display font-bold text-gray-900 dark:text-gray-100">CRM Aevo</h1><p className="text-sm text-gray-500 dark:text-gray-400">Gestão de leads, conversas e vendas</p></div>
           </div>
           <div className="flex items-center gap-2">
             <div className="relative hidden sm:block"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" /><input type="text" placeholder="Buscar lead..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-8 pr-3 py-2 w-48 bg-white dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700/50 rounded-xl text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400 transition-all" /></div>

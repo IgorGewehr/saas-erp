@@ -156,7 +156,7 @@ export function ScheduleActionDialog({ open, onClose, contact, businessId, userI
             <div className="flex items-start gap-2 p-2.5 rounded-xl bg-blue-50 dark:bg-blue-500/10 border border-blue-100 dark:border-blue-500/20">
               <Calendar size={14} className="text-blue-500 shrink-0 mt-0.5" />
               <p className="text-[11px] text-blue-700 dark:text-blue-400 leading-relaxed">
-                Um agendamento será criado na Agenda do ServicePro e uma atividade será registrada no CRM.
+                Um agendamento será criado na Agenda do Aevo e uma atividade será registrada no CRM.
               </p>
             </div>
           )}

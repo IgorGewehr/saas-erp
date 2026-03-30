@@ -146,7 +146,7 @@ export async function POST(request: NextRequest) {
           </div>
         </div>
         <div style="padding: 16px; text-align: center; font-size: 12px; color: #9ca3af;">
-          Enviado automaticamente pelo ServicePro
+          Enviado automaticamente pelo Aevo
         </div>
       </div>
     `;

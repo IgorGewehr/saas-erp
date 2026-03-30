@@ -3319,7 +3319,7 @@ function EnterpriseTab() {
                 <div className="flex items-center gap-2">
                   <Key className="w-4.5 h-4.5 text-gray-500 dark:text-gray-400" />
                   <div>
-                    <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">API Keys do ServicePro</h3>
+                    <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">API Keys do Aevo</h3>
                     <p className="text-xs text-gray-500 dark:text-gray-400">Gere chaves para agentes de IA operarem o sistema via REST API</p>
                   </div>
                 </div>

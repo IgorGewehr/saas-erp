@@ -14,12 +14,7 @@ import {
   getFirestore,
   doc,
   getDoc,
-  deleteDoc,
-  collection,
-  query,
-  where,
-  getDocs,
-  writeBatch,
+  updateDoc,
 } from 'firebase/firestore';
 
 const firebaseConfig = {
@@ -69,33 +64,18 @@ export async function DELETE(
   }
 
   try {
-    // 2. Delete all messages in this conversation (batch delete, max 500 per batch)
-    const msgsQuery = query(
-      collection(db, 'conversationMessages'),
-      where('conversationId', '==', conversationId),
-      where('businessId', '==', businessId),
-    );
-    const msgsSnap = await getDocs(msgsQuery);
-
-    if (!msgsSnap.empty) {
-      // Firestore batch limit is 500 operations
-      const batchSize = 450;
-      for (let i = 0; i < msgsSnap.docs.length; i += batchSize) {
-        const batch = writeBatch(db);
-        const chunk = msgsSnap.docs.slice(i, i + batchSize);
-        for (const msgDoc of chunk) {
-          batch.delete(msgDoc.ref);
-        }
-        await batch.commit();
-      }
-    }
-
-    // 3. Delete the conversation document
-    await deleteDoc(convRef);
+    // 2. Soft delete — mark as deleted instead of removing from Firestore
+    //    This prevents the sync engine from recreating the conversation
+    const now = new Date().toISOString();
+    await updateDoc(convRef, {
+      isDeleted: true,
+      deletedAt: now,
+      updatedAt: now,
+    });
 
     return NextResponse.json({
       success: true,
-      deletedMessages: msgsSnap.size,
+      softDeleted: true,
     });
   } catch (err) {
     console.error('[Conversations] Erro ao excluir conversa:', err);

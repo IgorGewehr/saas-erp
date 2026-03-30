@@ -287,17 +287,14 @@ function SidebarContent({
         /* Expanded: logo + collapse button */
         <div className="flex items-center justify-between h-[60px] px-4 border-b border-gray-100 dark:border-gray-800/80 flex-shrink-0">
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="relative w-8 h-8 rounded-xl bg-gradient-to-br from-red-500 to-red-700 flex items-center justify-center flex-shrink-0 shadow-md shadow-red-500/30">
-              <span className="text-white font-bold text-sm font-display leading-none">S</span>
-              <div className="absolute inset-0 rounded-xl bg-gradient-to-b from-white/20 to-transparent" />
-            </div>
+            <img src="/icon.png" alt="Aevo" className="w-8 h-8 rounded-xl object-contain flex-shrink-0" />
             <motion.div
               initial={{ opacity: 0, x: -6 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.18 }}
               className="min-w-0"
             >
-              <p className="text-[14px] font-bold text-gray-900 dark:text-gray-100 font-display tracking-tight leading-tight">ServicePro</p>
+              <p className="text-[14px] font-bold text-gray-900 dark:text-gray-100 font-display tracking-tight leading-tight">Aevo</p>
               <p className="text-[10.5px] text-gray-400 dark:text-gray-500 font-medium leading-tight">Gestão Inteligente</p>
             </motion.div>
           </div>

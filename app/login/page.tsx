@@ -150,13 +150,7 @@ export default function LoginPage() {
           transition={{ duration: 0.6, delay: 0.1 }}
           className="relative z-10 flex items-center gap-3"
         >
-          <div className="w-10 h-10 rounded-2xl bg-white/15 backdrop-blur-sm border border-white/20 flex items-center justify-center shadow-lg">
-            <span className="text-white font-bold text-lg font-display">S</span>
-          </div>
-          <div>
-            <p className="text-white font-bold text-lg font-display tracking-tight">ServicePro</p>
-            <p className="text-white/60 text-xs">Gestão Inteligente</p>
-          </div>
+          <img src="/logo-completa.png" alt="Aevo" className="h-12 object-contain" />
         </motion.div>
 
         {/* Hero text */}
@@ -232,11 +226,8 @@ export default function LoginPage() {
           className="relative z-10 w-full max-w-[400px]"
         >
           {/* Mobile logo */}
-          <div className="lg:hidden flex items-center gap-2.5 mb-8">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-500 to-red-700 flex items-center justify-center shadow-lg shadow-red-500/25">
-              <span className="text-white font-bold font-display">S</span>
-            </div>
-            <span className="font-bold text-gray-900 dark:text-gray-100 font-display text-lg">ServicePro</span>
+          <div className="lg:hidden flex items-center justify-center mb-8">
+            <img src="/logo-completa.png" alt="Aevo" className="h-14 object-contain" />
           </div>
 
           {/* Heading */}

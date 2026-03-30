@@ -31,7 +31,7 @@ interface EmailEntry {
 // DEMO DATA
 // ============================================
 const DEMO_EMAILS: EmailEntry[] = [
-  { id: 'e1', to: 'cliente@empresa.com', subject: 'Bem-vindo ao ServicePro!', status: 'delivered', sentAt: Date.now() - 1_200_000 },
+  { id: 'e1', to: 'cliente@empresa.com', subject: 'Bem-vindo ao Aevo!', status: 'delivered', sentAt: Date.now() - 1_200_000 },
   { id: 'e2', to: 'admin@contoso.com.br', subject: 'Relatorio Semanal - Marco 2026', status: 'delivered', sentAt: Date.now() - 3_600_000 },
   { id: 'e3', to: 'lead@startup.io', subject: 'Proposta Comercial - Plano Enterprise', status: 'delivered', sentAt: Date.now() - 7_200_000 },
   { id: 'e4', to: 'bounce@invalid.com', subject: 'Confirmacao de Agendamento', status: 'bounced', sentAt: Date.now() - 14_400_000 },

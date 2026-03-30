@@ -298,8 +298,25 @@ async function syncSingleConversation(
     conversationId = convSnap.docs[0].id;
     const existingData = convSnap.docs[0].data();
 
+    // Soft-delete guard: skip conversations deleted after the latest synced message
+    if (existingData.isDeleted) {
+      const deletedAt = existingData.deletedAt ? new Date(existingData.deletedAt).getTime() : 0;
+      const latestMsgAt = new Date(latestMsg.created_time).getTime();
+      if (latestMsgAt <= deletedAt) {
+        // All synced messages are older than delete — skip
+        return;
+      }
+      // Newer message exists — resurrect
+      console.log('[Sync] Resurrecting soft-deleted conversation:', conversationId);
+    }
+
     // Enrich name/avatar if still numeric ID
-    const enrichUpdate: Record<string, unknown> = { updatedAt: now };
+    const enrichUpdate: Record<string, unknown> = {
+      updatedAt: now,
+      // Always clear soft-delete flags during sync (if new msgs exist)
+      isDeleted: false,
+      deletedAt: null,
+    };
     if (contactName !== externalId && (!existingData.contactName || /^\d+$/.test(existingData.contactName))) {
       enrichUpdate.contactName = contactName;
     }

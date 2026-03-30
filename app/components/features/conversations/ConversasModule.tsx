@@ -335,7 +335,7 @@ function IntegrationSettingsDialog({ onClose }: { onClose: () => void }) {
     {
       channel: 'instagram' as ConversationChannel,
       name: 'Instagram Business',
-      description: 'Responda DMs do Instagram direto pelo ServicePro',
+      description: 'Responda DMs do Instagram direto pelo Aevo',
       isConnected: false,
     },
   ];
@@ -1282,7 +1282,9 @@ export default function ConversasModule() {
     );
 
     const unsub = onSnapshot(q, (snap) => {
-      const data = snap.docs.map((d) => ({ ...d.data(), id: d.id } as Conversation));
+      const data = snap.docs
+        .map((d) => ({ ...d.data(), id: d.id } as Conversation & { isDeleted?: boolean }))
+        .filter((c) => !c.isDeleted);
       setConversations(data);
       setIsLoadingConversations(false);
 
