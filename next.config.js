@@ -8,6 +8,8 @@ const nextConfig = {
     'qrcode',
     'bufferutil',
     'utf-8-validate',
+    'fluent-ffmpeg',
+    '@ffmpeg-installer/ffmpeg',
   ],
   experimental: {
     serverActions: {

@@ -26,6 +26,7 @@ import {
 import { decryptToken } from '@/lib/utils/encryption';
 import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { sessions } from '@/app/api/whatsapp/baileys-manager';
+import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import type {
   ConversationChannel,
   ChannelCredentials,
@@ -285,9 +286,11 @@ export async function POST(req: NextRequest) {
       case 'facebook':
         result = await sendFacebookMessenger(channels, recipientId, content, mediaOpts);
         break;
-      case 'instagram':
-        result = await sendInstagram(channels, recipientId, content, mediaOpts);
+      case 'instagram': {
+        const igMediaOpts = await prepareMediaForInstagram(mediaOpts, businessId);
+        result = await sendInstagram(channels, recipientId, content, igMediaOpts);
         break;
+      }
       default:
         return NextResponse.json(
           { error: `Canal não suportado: ${channel}` },
@@ -604,6 +607,84 @@ async function sendFacebookMessenger(
 }
 
 // ─── Instagram Messaging ─────────────────────────────────────────────────────
+
+// ─── Audio Conversion (OGG → M4A for Instagram) ─────────────────────────────
+
+/**
+ * Instagram Direct only accepts AAC audio (.m4a / .mp4).
+ * When sending OGG/Opus (from WhatsApp or browser recordings),
+ * we convert to M4A via ffmpeg before uploading.
+ */
+async function convertOggToM4a(oggUrl: string, businessId: string): Promise<string> {
+  const ffmpegInstaller = await import('@ffmpeg-installer/ffmpeg');
+  const ffmpeg = (await import('fluent-ffmpeg')).default;
+  const { Readable, PassThrough } = await import('stream');
+  const { tmpdir } = await import('os');
+  const { join } = await import('path');
+  const { writeFile, readFile, unlink } = await import('fs/promises');
+
+  ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+
+  // 1. Download OGG from Firebase Storage
+  const res = await fetch(oggUrl, { signal: AbortSignal.timeout(30000) });
+  if (!res.ok) throw new Error(`Failed to download OGG: ${res.status}`);
+  const oggBuffer = Buffer.from(await res.arrayBuffer());
+
+  // 2. Convert via temp files (ffmpeg needs seekable I/O for M4A)
+  const inputPath = join(tmpdir(), `input_${Date.now()}.ogg`);
+  const outputPath = join(tmpdir(), `output_${Date.now()}.m4a`);
+
+  await writeFile(inputPath, oggBuffer);
+
+  await new Promise<void>((resolve, reject) => {
+    ffmpeg(inputPath)
+      .audioCodec('aac')
+      .audioBitrate('128k')
+      .audioChannels(1)
+      .format('ipod') // M4A container
+      .on('error', reject)
+      .on('end', () => resolve())
+      .save(outputPath);
+  });
+
+  const m4aBuffer = await readFile(outputPath);
+
+  // 3. Cleanup temp files
+  await unlink(inputPath).catch(() => {});
+  await unlink(outputPath).catch(() => {});
+
+  // 4. Upload converted file to Firebase Storage
+  const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
+  const storage = getStorage(app);
+  const storagePath = `conversations/${businessId}/converted/${Date.now()}_audio.m4a`;
+  const storageRef = ref(storage, storagePath);
+  await uploadBytes(storageRef, m4aBuffer, { contentType: 'audio/mp4' });
+
+  return getDownloadURL(storageRef);
+}
+
+/**
+ * Pre-processes media options for Instagram.
+ * Converts unsupported audio formats (OGG) to M4A (AAC).
+ */
+async function prepareMediaForInstagram(
+  media: MediaOptions | undefined,
+  businessId: string,
+): Promise<MediaOptions | undefined> {
+  if (!media) return media;
+  if (media.mediaType !== 'audio') return media;
+
+  // Check if the URL points to an OGG file
+  const url = media.mediaUrl.toLowerCase();
+  const isOgg = url.includes('.ogg') || url.includes('.opus') || url.includes('.webm');
+  if (!isOgg) return media;
+
+  console.warn('[Send] Converting OGG audio to M4A for Instagram compatibility');
+  const convertedUrl = await convertOggToM4a(media.mediaUrl, businessId);
+  return { ...media, mediaUrl: convertedUrl };
+}
+
+// ─── Instagram Messaging API ────────────────────────────────────────────────
 
 async function sendInstagram(
   channels: ChannelCredentials,

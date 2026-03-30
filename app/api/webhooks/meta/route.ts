@@ -545,7 +545,7 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
       if (businessId) {
         const pageToken = await getDecryptedPageToken(db, businessId);
         if (pageToken) {
-          const profile = await fetchSenderProfile(String(event.sender.id), pageToken);
+          const profile = await fetchSenderProfile(String(event.sender.id), pageToken, 'facebook');
           if (profile) {
             senderName = profile.name;
             senderAvatarUrl = profile.profilePic;
@@ -686,7 +686,7 @@ async function handleInstagramEvent(entry: MetaWebhookEntry) {
       if (businessId) {
         const pageToken = await getDecryptedPageToken(db, businessId);
         if (pageToken) {
-          const profile = await fetchSenderProfile(String(event.sender.id), pageToken);
+          const profile = await fetchSenderProfile(String(event.sender.id), pageToken, 'instagram');
           if (profile) {
             senderName = profile.name;
             senderAvatarUrl = profile.profilePic;
@@ -799,28 +799,53 @@ async function resolveBusinessId(
 
 /**
  * Fetches sender profile (name + avatar) from Facebook/Instagram Graph API.
- * Instagram DMs use the same endpoint as Facebook — /{PSID}?fields=name,profile_pic
+ *
+ * Instagram: fields=name,username,profile_pic (username is the @handle)
+ * Facebook:  fields=first_name,last_name,name,profile_pic
  */
 async function fetchSenderProfile(
   senderId: string,
   pageAccessToken: string,
+  channel: 'facebook' | 'instagram' = 'facebook',
 ): Promise<{ name: string; profilePic?: string } | null> {
   try {
-    const url = `https://graph.facebook.com/v21.0/${senderId}?fields=name,profile_pic&access_token=${pageAccessToken}`;
+    const fields = channel === 'instagram'
+      ? 'name,username,profile_pic'
+      : 'first_name,last_name,name,profile_pic';
+
+    const url = `https://graph.facebook.com/v21.0/${senderId}?fields=${fields}&access_token=${pageAccessToken}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
 
     if (!res.ok) {
-      console.warn('[Meta Webhook] Profile fetch failed:', res.status, await res.text().catch(() => ''));
+      const errorText = await res.text().catch(() => '');
+      console.warn(`[Meta Webhook] Profile fetch failed (${channel}):`, res.status, errorText);
       return null;
     }
 
     const data = await res.json();
+
+    // Build name with best available data
+    let name: string;
+    if (channel === 'instagram') {
+      // Prefer name, then @username, then senderId as last resort
+      name = data.name || (data.username ? `@${data.username}` : senderId);
+    } else {
+      // Facebook: prefer full name, then combine first+last
+      if (data.name) {
+        name = data.name;
+      } else if (data.first_name) {
+        name = data.last_name ? `${data.first_name} ${data.last_name}` : data.first_name;
+      } else {
+        name = senderId;
+      }
+    }
+
     return {
-      name: data.name || data.first_name || senderId,
+      name,
       profilePic: data.profile_pic || undefined,
     };
   } catch (err) {
-    console.error('[Meta Webhook] Error fetching sender profile:', err);
+    console.error(`[Meta Webhook] Error fetching ${channel} sender profile:`, err);
     return null;
   }
 }
