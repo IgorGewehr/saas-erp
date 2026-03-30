@@ -1,14 +1,15 @@
 'use client';
 
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Search, Send, MessageSquare, Inbox, Instagram, Facebook, Check, CheckCheck, Star, AlertCircle, Clock, Trash2, X, Loader2, RefreshCw } from 'lucide-react';
+import { Search, Send, MessageSquare, Inbox, Instagram, Facebook, Check, CheckCheck, Star, AlertCircle, Clock, Trash2, X, Loader2, RefreshCw, FileText, Headphones, Play, Paperclip, Mic, Square, Image as ImageIcon } from 'lucide-react';
 import { AnimatePresence } from 'framer-motion';
 import { motion } from 'framer-motion';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
 import { getInitials } from '@/lib/utils/format';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import { db } from '@/lib/config/firebase';
+import { db, storage } from '@/lib/config/firebase';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { collection, query, where, orderBy, addDoc, updateDoc, doc, onSnapshot } from 'firebase/firestore';
 import { relativeTime, fullTime } from './shared';
 import { WhatsAppIcon } from './SourceIcon';
@@ -33,9 +34,17 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [attachment, setAttachment] = useState<File | null>(null);
+  const [attachmentPreview, setAttachmentPreview] = useState<string | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragCounterRef = useRef(0);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
 
   // Fetch conversations with error handling
   useEffect(() => {
@@ -101,53 +110,190 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
     return result;
   }, [conversations, filter, search]);
 
-  // Send message with robust error handling
+  // ── File attachment helpers ──────────────────────────────────────────────────
+
+  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 16 * 1024 * 1024) {
+      toast.warn('Arquivo muito grande. Máximo 16MB.');
+      return;
+    }
+    setAttachment(file);
+    if (file.type.startsWith('image/')) {
+      const url = URL.createObjectURL(file);
+      setAttachmentPreview(url);
+    } else {
+      setAttachmentPreview(null);
+    }
+    e.target.value = '';
+  }, []);
+
+  const clearAttachment = useCallback(() => {
+    if (attachmentPreview) URL.revokeObjectURL(attachmentPreview);
+    setAttachment(null);
+    setAttachmentPreview(null);
+  }, [attachmentPreview]);
+
+  const detectMediaType = (file: File): 'image' | 'video' | 'audio' | 'document' => {
+    if (file.type.startsWith('image/')) return 'image';
+    if (file.type.startsWith('video/')) return 'video';
+    if (file.type.startsWith('audio/')) return 'audio';
+    return 'document';
+  };
+
+  // ── Audio recording ────────────────────────────────────────────────────────
+
+  const startRecording = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+      audioChunksRef.current = [];
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      recorder.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(audioChunksRef.current, { type: 'audio/ogg; codecs=opus' });
+        const file = new File([blob], `audio_${Date.now()}.ogg`, { type: 'audio/ogg' });
+        setAttachment(file);
+        setAttachmentPreview(null);
+        setIsRecording(false);
+      };
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setIsRecording(true);
+    } catch {
+      toast.error('Não foi possível acessar o microfone.');
+    }
+  }, []);
+
+  const stopRecording = useCallback(() => {
+    mediaRecorderRef.current?.stop();
+    mediaRecorderRef.current = null;
+  }, []);
+
+  // ── Drag & Drop handlers ──────────────────────────────────────────────────
+
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current += 1;
+    if (dragCounterRef.current === 1) setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current === 0) setIsDragging(false);
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+    if (file.size > 16 * 1024 * 1024) {
+      toast.warn('Arquivo muito grande. Máximo 16MB.');
+      return;
+    }
+    setAttachment(file);
+    if (file.type.startsWith('image/')) {
+      setAttachmentPreview(URL.createObjectURL(file));
+    } else {
+      setAttachmentPreview(null);
+    }
+  }, []);
+
+  // ── Send message (text and/or media) ───────────────────────────────────────
+
   const handleSend = useCallback(async () => {
     const content = messageInput.trim();
-    if (!content || !selectedConv || !businessId || !user || isSending) return;
+    const hasText = content.length > 0;
+    const hasFile = !!attachment;
+    if ((!hasText && !hasFile) || !selectedConv || !businessId || !user || isSending) return;
+
     setMessageInput('');
+    const currentFile = attachment;
+    clearAttachment();
     setIsSending(true);
     const now = new Date().toISOString();
+
     try {
-      // 1. Persist message to Firestore — capture the doc ID
-      const msgRef = await addDoc(collection(db, 'conversationMessages'), {
+      // Determine media info
+      let mediaUrl: string | undefined;
+      let mediaType: 'image' | 'video' | 'audio' | 'document' | undefined;
+      // For the chat bubble: show only real text from the user (empty string for media-only)
+      const bubbleContent = hasText ? content : '';
+      // For conversation sidebar preview: show media type label when no text
+      const MEDIA_LABELS: Record<string, string> = { image: '[Imagem]', video: '[Video]', audio: '[Audio]', document: '[Documento]' };
+      const previewContent = hasText ? content : (currentFile ? MEDIA_LABELS[detectMediaType(currentFile)] || '[Midia]' : '');
+
+      // Upload file to Firebase Storage first
+      if (currentFile) {
+        mediaType = detectMediaType(currentFile);
+        const storagePath = `conversations/${businessId}/${selectedConv.id}/${Date.now()}_${currentFile.name}`;
+        const storageRef = ref(storage, storagePath);
+        await uploadBytes(storageRef, currentFile, { contentType: currentFile.type });
+        mediaUrl = await getDownloadURL(storageRef);
+      }
+
+      // 1. Persist message to Firestore
+      const msgData: Record<string, unknown> = {
         conversationId: selectedConv.id,
         businessId,
         channel: selectedConv.channel,
-        direction: 'outbound' as const,
-        content,
-        status: 'sending' as const,
+        direction: 'outbound',
+        content: bubbleContent,
+        status: 'sending',
         senderName: user.name,
         sentAt: now,
-      });
+      };
+      if (mediaUrl) msgData.mediaUrl = mediaUrl;
+      if (mediaType) msgData.mediaType = mediaType;
+      const msgRef = await addDoc(collection(db, 'conversationMessages'), msgData);
 
       // 2. Update conversation metadata
       await updateDoc(doc(db, 'conversations', selectedConv.id), {
-        lastMessage: content,
+        lastMessage: previewContent,
         lastMessageAt: now,
         lastMessageDirection: 'outbound',
         updatedAt: now,
       });
 
-      // 3. Send via Meta API — pass messageDocId so backend updates sending → sent
+      // 3. Send via backend API
       try {
         const { getAuth } = await import('firebase/auth');
         const auth = getAuth();
         const token = await auth.currentUser?.getIdToken();
+
+        const sendBody: Record<string, unknown> = {
+          businessId,
+          conversationId: selectedConv.id,
+          messageDocId: msgRef.id,
+          channel: selectedConv.channel,
+          recipientId: selectedConv.contactExternalId,
+          content: hasText ? content : '',
+        };
+        if (mediaUrl && mediaType) {
+          sendBody.type = 'media';
+          sendBody.mediaUrl = mediaUrl;
+          sendBody.mediaType = mediaType;
+        }
+
         const res = await fetch('/api/conversations/send', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
-          body: JSON.stringify({
-            businessId,
-            conversationId: selectedConv.id,
-            messageDocId: msgRef.id,
-            channel: selectedConv.channel,
-            recipientId: selectedConv.contactExternalId,
-            content,
-          }),
+          body: JSON.stringify(sendBody),
         });
         if (!res.ok) {
           const errBody = await res.json().catch(() => ({ code: 'unknown' }));
@@ -166,12 +312,12 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
       }
     } catch (err) {
       console.error('[OmnichannelInbox] Firestore write failed:', err);
-      setMessageInput(content);
+      if (hasText) setMessageInput(content);
     } finally {
       setIsSending(false);
       inputRef.current?.focus();
     }
-  }, [messageInput, selectedConv, businessId, user, isSending]);
+  }, [messageInput, attachment, selectedConv, businessId, user, isSending, clearAttachment]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
@@ -460,8 +606,36 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
               </motion.button>
             </div>
 
-            {/* Messages */}
-            <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-1 scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-white/10">
+            {/* Messages (drop zone) */}
+            <div
+              onDragEnter={handleDragEnter}
+              onDragLeave={handleDragLeave}
+              onDragOver={handleDragOver}
+              onDrop={handleDrop}
+              className={cn(
+                'flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-1 scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-white/10 relative transition-colors duration-200',
+                isDragging && 'bg-red-50/50 dark:bg-red-500/[0.04]',
+              )}
+            >
+              {/* Drag overlay */}
+              <AnimatePresence>
+                {isDragging && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="absolute inset-0 z-10 flex items-center justify-center bg-white/80 dark:bg-[#0a0e17]/80 backdrop-blur-sm rounded-xl border-2 border-dashed border-red-400 dark:border-red-500/50 pointer-events-none"
+                  >
+                    <div className="flex flex-col items-center gap-2">
+                      <div className="w-12 h-12 rounded-2xl bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
+                        <Paperclip size={22} className="text-red-500" />
+                      </div>
+                      <p className="text-sm font-semibold text-red-600 dark:text-red-400">Solte o arquivo aqui</p>
+                      <p className="text-[10px] text-gray-400">Imagem, vídeo, áudio ou documento (max 16MB)</p>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
               {messages.map((msg) => {
                 const isOut = msg.direction === 'outbound';
                 return (
@@ -471,8 +645,36 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
                     animate={{ opacity: 1, y: 0 }}
                     className={cn('flex', isOut ? 'justify-end' : 'justify-start', 'mt-2')}
                   >
-                    <div className="max-w-[70%]">
-                      {msg.content && (
+                    <div className={cn('max-w-[70%] flex flex-col', isOut ? 'items-end' : 'items-start')}>
+                      {/* Media attachment */}
+                      {msg.mediaUrl && msg.mediaType === 'image' && (
+                        <div className="mb-1 rounded-xl overflow-hidden max-w-[240px]">
+                          <img src={msg.mediaUrl} alt="Imagem" className="w-full h-auto object-cover rounded-xl" loading="lazy" />
+                        </div>
+                      )}
+                      {msg.mediaUrl && msg.mediaType === 'video' && (
+                        <div className="mb-1 rounded-xl overflow-hidden max-w-[240px] bg-black/10 dark:bg-white/5">
+                          <video src={msg.mediaUrl} className="w-full h-auto rounded-xl max-h-[200px]" controls preload="metadata" />
+                        </div>
+                      )}
+                      {msg.mediaUrl && msg.mediaType === 'audio' && (
+                        <div className="mb-1 flex items-center gap-2 px-3 py-2 rounded-xl bg-black/5 dark:bg-white/5 min-w-[200px]">
+                          <Headphones className="w-4 h-4 text-gray-400 shrink-0" />
+                          <audio src={msg.mediaUrl} controls className="h-8 flex-1" preload="metadata" style={{ maxWidth: '220px' }} />
+                        </div>
+                      )}
+                      {msg.mediaUrl && msg.mediaType === 'document' && (
+                        <a href={msg.mediaUrl} target="_blank" rel="noopener noreferrer"
+                          className="mb-1 flex items-center gap-2 px-3 py-2 rounded-xl bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 transition-colors min-w-[160px]">
+                          <FileText className="w-4 h-4 text-gray-400 shrink-0" />
+                          <span className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                            {msg.content?.replace(/^\[(Documento|Audio|Video|Imagem)\]\s?/, '') || 'Documento'}
+                          </span>
+                        </a>
+                      )}
+
+                      {/* Text content (skip placeholder texts for pure media messages) */}
+                      {msg.content && !(/^\[(Imagem|Audio|Video|Sticker|Documento)\]$/.test(msg.content)) && (
                         <div className={cn(
                           'px-3 py-2 text-sm leading-relaxed shadow-sm',
                           isOut
@@ -482,6 +684,8 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
                           {msg.content}
                         </div>
                       )}
+
+                      {/* Timestamp + status */}
                       <div className={cn('flex items-center gap-1 mt-0.5 px-1', isOut ? 'flex-row-reverse' : 'flex-row')}>
                         <span className="text-[9px] text-gray-400 dark:text-gray-500">{fullTime(msg.sentAt)}</span>
                         {isOut && msg.status === 'sending' && <Clock className="w-3 h-3 text-white/50" />}
@@ -499,38 +703,115 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
 
             {/* Composer */}
             <div className="px-4 py-3 bg-white dark:bg-[#111827] border-t border-gray-100 dark:border-white/[0.06] shrink-0">
+              {/* Attachment preview */}
+              <AnimatePresence>
+                {attachment && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="mb-2 overflow-hidden"
+                  >
+                    <div className="flex items-center gap-3 p-2.5 rounded-xl bg-gray-50 dark:bg-white/[0.04] border border-gray-200/60 dark:border-white/[0.08]">
+                      {attachmentPreview ? (
+                        <img src={attachmentPreview} alt="Preview" className="w-12 h-12 rounded-lg object-cover shrink-0" />
+                      ) : (
+                        <div className="w-12 h-12 rounded-lg bg-gray-100 dark:bg-white/[0.06] flex items-center justify-center shrink-0">
+                          {attachment.type.startsWith('audio/') ? <Headphones className="w-5 h-5 text-gray-400" /> :
+                           attachment.type.startsWith('video/') ? <Play className="w-5 h-5 text-gray-400" /> :
+                           <FileText className="w-5 h-5 text-gray-400" />}
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-medium text-gray-700 dark:text-gray-200 truncate">{attachment.name}</p>
+                        <p className="text-[10px] text-gray-400">{(attachment.size / 1024).toFixed(1)} KB</p>
+                      </div>
+                      <button onClick={clearAttachment} className="w-6 h-6 rounded-lg bg-gray-200 dark:bg-white/[0.08] flex items-center justify-center text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition-colors shrink-0">
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* Input row */}
               <div className="flex items-end gap-2">
+                {/* Left actions: clip + mic */}
+                <div className="flex items-center gap-0.5 pb-1">
+                  <motion.button
+                    whileHover={{ scale: 1.1 }}
+                    whileTap={{ scale: 0.9 }}
+                    onClick={() => fileInputRef.current?.click()}
+                    className="w-8 h-8 rounded-xl flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
+                    title="Anexar arquivo"
+                  >
+                    <Paperclip className="w-4 h-4" />
+                  </motion.button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*,video/*,audio/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    onChange={handleFileSelect}
+                    className="hidden"
+                  />
+                  <motion.button
+                    whileHover={{ scale: 1.1 }}
+                    whileTap={{ scale: 0.9 }}
+                    onClick={isRecording ? stopRecording : startRecording}
+                    className={cn(
+                      'w-8 h-8 rounded-xl flex items-center justify-center transition-colors',
+                      isRecording
+                        ? 'text-red-500 bg-red-50 dark:bg-red-500/10 animate-pulse'
+                        : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06]',
+                    )}
+                    title={isRecording ? 'Parar gravação' : 'Gravar áudio'}
+                  >
+                    {isRecording ? <Square className="w-3.5 h-3.5" /> : <Mic className="w-4 h-4" />}
+                  </motion.button>
+                </div>
+
+                {/* Textarea */}
                 <textarea
                   ref={inputRef}
                   value={messageInput}
                   onChange={(e) => setMessageInput(e.target.value)}
                   onKeyDown={handleKeyDown}
                   rows={1}
-                  placeholder="Digite uma mensagem..."
-                  disabled={isSending}
+                  placeholder={isRecording ? 'Gravando áudio...' : 'Digite uma mensagem...'}
+                  disabled={isSending || isRecording}
                   className="flex-1 resize-none bg-gray-100 dark:bg-white/[0.04] border border-transparent dark:border-white/[0.06] rounded-2xl px-4 py-2.5 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:border-red-500/50 transition-colors max-h-28 overflow-y-auto disabled:opacity-50"
                   style={{ minHeight: '40px' }}
                 />
+
+                {/* Send button */}
                 <motion.button
                   onClick={handleSend}
-                  whileHover={messageInput.trim() ? { scale: 1.05 } : undefined}
-                  whileTap={messageInput.trim() ? { scale: 0.95 } : undefined}
-                  disabled={!messageInput.trim() || isSending}
+                  whileHover={(messageInput.trim() || attachment) ? { scale: 1.05 } : undefined}
+                  whileTap={(messageInput.trim() || attachment) ? { scale: 0.95 } : undefined}
+                  disabled={(!messageInput.trim() && !attachment) || isSending}
                   className={cn(
                     'w-9 h-9 rounded-2xl flex items-center justify-center shrink-0 transition-all shadow-sm mb-0.5',
-                    messageInput.trim() && !isSending
+                    (messageInput.trim() || attachment) && !isSending
                       ? 'bg-gradient-to-br from-red-600 to-red-500 text-white shadow-red-500/30 shadow-md'
                       : 'bg-gray-100 dark:bg-white/[0.06] text-gray-400 cursor-not-allowed',
                   )}
                 >
-                  <Send className={cn('w-4 h-4', messageInput.trim() && 'translate-x-0.5 -translate-y-0.5')} />
+                  {isSending ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Send className={cn('w-4 h-4', (messageInput.trim() || attachment) && 'translate-x-0.5 -translate-y-0.5')} />
+                  )}
                 </motion.button>
               </div>
+
+              {/* Footer hints */}
               <div className="flex items-center gap-1 mt-1 px-1">
                 <span className={cn('text-[9px] font-medium', CHANNEL_CFG[selectedConv.channel].textColor)}>
                   {CHANNEL_CFG[selectedConv.channel].label}
                 </span>
-                <span className="text-[9px] text-gray-400 dark:text-gray-600 ml-auto">Enter para enviar</span>
+                <span className="text-[9px] text-gray-400 dark:text-gray-600 ml-auto">
+                  {isRecording ? 'Clique no quadrado para parar' : 'Enter para enviar'}
+                </span>
               </div>
             </div>
           </>

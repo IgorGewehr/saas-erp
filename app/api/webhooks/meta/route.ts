@@ -47,6 +47,143 @@ function getDb() {
   return getFirestore(app);
 }
 
+// ─── Firebase Storage for media uploads ──────────────────────────────────────
+
+import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+
+function getStorageBucket() {
+  const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
+  return getStorage(app);
+}
+
+// ─── Media Download & Upload ─────────────────────────────────────────────────
+
+/**
+ * Downloads media from Meta's servers and uploads to Firebase Storage.
+ *
+ * Flow:
+ * 1. GET https://graph.facebook.com/v21.0/{mediaId} → returns { url }
+ * 2. GET {url} with Bearer token → returns binary media data
+ * 3. Upload to Firebase Storage → returns public download URL
+ */
+async function downloadAndUploadMedia(params: {
+  mediaId: string;
+  accessToken: string;
+  businessId: string;
+  conversationId: string;
+  mimeType?: string;
+  channel: 'whatsapp' | 'facebook' | 'instagram';
+}): Promise<string | null> {
+  try {
+    // 1. Get the media URL from Meta
+    const metaRes = await fetch(
+      `https://graph.facebook.com/v21.0/${params.mediaId}`,
+      {
+        headers: { Authorization: `Bearer ${params.accessToken}` },
+        signal: AbortSignal.timeout(10000),
+      },
+    );
+
+    if (!metaRes.ok) {
+      console.error('[Media] Failed to get media URL:', metaRes.status, await metaRes.text().catch(() => ''));
+      return null;
+    }
+
+    const metaData = await metaRes.json();
+    const mediaUrl = metaData.url;
+    if (!mediaUrl) {
+      console.error('[Media] No URL in Meta response:', metaData);
+      return null;
+    }
+
+    // 2. Download the actual binary from Meta's CDN
+    const mediaRes = await fetch(mediaUrl, {
+      headers: { Authorization: `Bearer ${params.accessToken}` },
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!mediaRes.ok) {
+      console.error('[Media] Failed to download media:', mediaRes.status);
+      return null;
+    }
+
+    const buffer = Buffer.from(await mediaRes.arrayBuffer());
+
+    // 3. Determine real content type — prefer the actual HTTP header over what Meta declared
+    const realContentType = mediaRes.headers.get('content-type')?.split(';')[0]?.trim()
+      || params.mimeType
+      || 'application/octet-stream';
+    const ext = mimeToExtension(realContentType);
+    const fileName = `${Date.now()}_${params.mediaId.slice(-8)}${ext}`;
+    const storagePath = `conversations/${params.businessId}/${params.conversationId}/${fileName}`;
+
+    // 4. Upload to Firebase Storage with correct contentType
+    const storage = getStorageBucket();
+    const storageRef = ref(storage, storagePath);
+    await uploadBytes(storageRef, buffer, {
+      contentType: realContentType,
+    });
+
+    const downloadUrl = await getDownloadURL(storageRef);
+    return downloadUrl;
+  } catch (err) {
+    console.error('[Media] Error downloading/uploading media:', err);
+    return null;
+  }
+}
+
+function mimeToExtension(mime: string): string {
+  const map: Record<string, string> = {
+    'image/jpeg': '.jpg',
+    'image/png': '.png',
+    'image/gif': '.gif',
+    'image/webp': '.webp',
+    'video/mp4': '.mp4',
+    'video/3gpp': '.3gp',
+    'audio/aac': '.aac',
+    'audio/amr': '.amr',
+    'audio/mpeg': '.mp3',
+    'audio/mp4': '.m4a',
+    'audio/ogg': '.ogg',
+    'audio/opus': '.opus',
+    'application/pdf': '.pdf',
+    'application/vnd.ms-powerpoint': '.ppt',
+    'application/msword': '.doc',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+    'image/webp; codecs=vp8': '.webp',
+  };
+  return map[mime] || '.bin';
+}
+
+/**
+ * Gets the access token for a WhatsApp channel (Cloud API).
+ * Different from Facebook/Instagram which use pageAccessToken.
+ */
+async function getWhatsAppAccessToken(
+  db: ReturnType<typeof getFirestore>,
+  businessId: string,
+): Promise<string | null> {
+  try {
+    const bizQuery = query(
+      collection(db, 'businesses'),
+      where('__name__', '==', businessId),
+      firestoreLimit(1),
+    );
+    const bizSnap = await getDocs(bizQuery);
+    if (bizSnap.empty) return null;
+
+    const bizData = bizSnap.docs[0].data();
+    const encryptedToken = bizData?.channels?.whatsapp?.accessToken;
+    if (!encryptedToken) return null;
+
+    return decryptToken(encryptedToken);
+  } catch (err) {
+    console.error('[Media] Error getting WhatsApp access token:', err);
+    return null;
+  }
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface MetaWebhookEntry {
@@ -124,7 +261,8 @@ interface InboundMessageParams {
   senderName?: string;
   senderAvatarUrl?: string;
   messageId: string;
-  content: string;
+  content: string; // Text shown inside the chat bubble (empty for media-only messages)
+  conversationPreview?: string; // Short text for conversation list sidebar (e.g. "[Imagem]", "[Audio]")
   mediaType?: 'image' | 'audio' | 'video' | 'document';
   mediaId?: string;
   mediaUrl?: string;
@@ -243,6 +381,8 @@ export async function POST(req: NextRequest) {
 async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
   if (!entry.changes) return;
 
+  const db = getDb();
+
   for (const change of entry.changes) {
     if (change.field !== 'messages') continue;
 
@@ -254,6 +394,39 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
     if (value.messages) {
       for (const msg of value.messages) {
         const extracted = extractMessageContent(msg);
+
+        // Determine media type for Firestore (only real media types, not text/location/etc.)
+        const MEDIA_TYPES = new Set(['image', 'audio', 'video', 'document', 'sticker']);
+        const hasMedia = MEDIA_TYPES.has(msg.type) && !!extracted.mediaId;
+        const mediaType = hasMedia ? (msg.type === 'sticker' ? 'image' : msg.type) as 'image' | 'audio' | 'video' | 'document' : undefined;
+
+        // Download media from Meta and upload to Firebase Storage
+        let firebaseMediaUrl: string | undefined;
+        if (hasMedia && extracted.mediaId) {
+          const businessId = await resolveBusinessId(db, 'whatsapp', phoneNumberId);
+          if (businessId) {
+            const accessToken = await getWhatsAppAccessToken(db, businessId);
+            if (accessToken) {
+              const url = await downloadAndUploadMedia({
+                mediaId: extracted.mediaId,
+                accessToken,
+                businessId,
+                conversationId: `wa_${msg.from}`, // Temp path; actual conv ID resolved inside saveInboundMessage
+                mimeType: extracted.mediaMimeType,
+                channel: 'whatsapp',
+              });
+              if (url) firebaseMediaUrl = url;
+            }
+          }
+        }
+
+        // Build conversation preview for sidebar (short label when content is empty)
+        const MEDIA_PREVIEW: Record<string, string> = {
+          image: '[Imagem]', audio: '[Audio]', video: '[Video]', document: '[Documento]', sticker: '[Sticker]',
+        };
+        const conversationPreview = extracted.content
+          || (hasMedia ? MEDIA_PREVIEW[msg.type] || '[Midia]' : '');
+
         await saveInboundMessage({
           channel: 'whatsapp',
           channelIdentifier: phoneNumberId,
@@ -261,9 +434,10 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
           senderName: value.contacts?.find(c => c.wa_id === msg.from)?.profile.name,
           messageId: msg.id,
           content: extracted.content,
-          mediaType: msg.type !== 'text' ? msg.type as 'image' | 'audio' | 'video' | 'document' : undefined,
+          conversationPreview,
+          mediaType,
           mediaId: extracted.mediaId,
-          mediaUrl: extracted.mediaUrl,
+          mediaUrl: firebaseMediaUrl,
           mediaMimeType: extracted.mediaMimeType,
           replyToMessageId: msg.context?.id,
           timestamp: new Date(parseInt(msg.timestamp) * 1000).toISOString(),
@@ -273,7 +447,7 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
 
     // Handle status updates (sent -> delivered -> read)
     if (value.statuses) {
-      const businessId = await resolveBusinessId(getDb(), 'whatsapp', phoneNumberId);
+      const businessId = await resolveBusinessId(db, 'whatsapp', phoneNumberId);
       if (businessId) {
         for (const status of value.statuses) {
           await updateMessageStatus({
@@ -763,7 +937,7 @@ async function saveInboundMessage(params: InboundMessageParams) {
         contactExternalId: params.externalId,
         ...(params.senderAvatarUrl ? { contactAvatarUrl: params.senderAvatarUrl } : {}),
         status: 'open',
-        lastMessage: params.content,
+        lastMessage: params.conversationPreview || params.content || '[Midia]',
         lastMessageAt: params.timestamp,
         lastMessageDirection: 'inbound',
         unreadCount: 1,
@@ -845,7 +1019,7 @@ async function saveInboundMessage(params: InboundMessageParams) {
 
       const existingData = convSnap.docs[0].data();
       const enrichUpdate: Record<string, unknown> = {
-        lastMessage: params.content,
+        lastMessage: params.conversationPreview || params.content || '[Midia]',
         lastMessageAt: params.timestamp,
         lastMessageDirection: 'inbound',
         unreadCount: increment(1),
@@ -1024,31 +1198,32 @@ function extractMessageContent(msg: MetaWhatsAppMessage): ExtractedContent {
       return { content: msg.text?.body ?? '' };
     case 'image':
       return {
-        content: msg.image?.caption ?? '[Imagem]',
+        // Only use the real caption from the user — never a filename or placeholder as bubble text
+        content: msg.image?.caption || '',
         mediaId: msg.image?.id,
         mediaMimeType: msg.image?.mime_type,
       };
     case 'audio':
       return {
-        content: '[Audio]',
+        content: '',
         mediaId: msg.audio?.id,
         mediaMimeType: msg.audio?.mime_type,
       };
     case 'video':
       return {
-        content: msg.video?.caption ?? '[Video]',
+        content: msg.video?.caption || '',
         mediaId: msg.video?.id,
         mediaMimeType: msg.video?.mime_type,
       };
     case 'document':
       return {
-        content: msg.document?.caption ?? msg.document?.filename ?? '[Documento]',
+        // For documents, use caption if present; otherwise leave empty (filename goes in conversation preview only)
+        content: msg.document?.caption || '',
         mediaId: msg.document?.id,
         mediaMimeType: msg.document?.mime_type,
-        mediaUrl: undefined,
       };
     case 'sticker':
-      return { content: '[Sticker]', mediaId: msg.sticker?.id };
+      return { content: '', mediaId: msg.sticker?.id };
     case 'location':
       return { content: `[Localizacao: ${msg.location?.latitude}, ${msg.location?.longitude}]` };
     case 'contacts':
