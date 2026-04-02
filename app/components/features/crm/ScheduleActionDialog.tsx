@@ -49,7 +49,7 @@ export function ScheduleActionDialog({ open, onClose, contact, businessId, userI
         try {
           await addDoc(collection(db, 'appointments'), {
             businessId,
-            clientId: contact.clientId || '',
+            clientId: contact.id,
             clientName: contact.name,
             clientPhone: contact.phone || contact.whatsapp || '',
             serviceName: 'Consulta CRM',

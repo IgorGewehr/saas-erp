@@ -1121,8 +1121,8 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
   const handleAccountingSend = async () => {
     if (!business) return;
     const accountingEmail = business.fiscal?.accountingEmail;
-    const notificationServerUrl = business.fiscal?.notificationServerUrl;
-    const notificationServerKey = business.fiscal?.notificationServerKey;
+    const notificationServerUrl = (business.fiscal as Record<string, unknown>)?.notificationServerUrl as string | undefined;
+    const notificationServerKey = (business.fiscal as Record<string, unknown>)?.notificationServerKey as string | undefined;
     if (!accountingEmail) { toast.error('Email do contador nao configurado. Acesse Configuracoes > Fiscal.'); return; }
     if (!notificationServerUrl || !notificationServerKey) { toast.error('Servidor de notificacao nao configurado.'); return; }
 

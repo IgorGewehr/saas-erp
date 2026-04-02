@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-
-const SEFAZ_API_URL = process.env.SEFAZ_API_URL;
-const SEFAZ_API_KEY = process.env.SEFAZ_API_KEY;
+import { statusSefaz } from '@/lib/services/sefaz-gateway';
 
 interface StatusBody {
   ufEmitente: string;
@@ -13,38 +11,14 @@ interface StatusBody {
 
 export async function POST(request: NextRequest) {
   try {
-    if (!SEFAZ_API_URL || !SEFAZ_API_KEY) {
-      return NextResponse.json(
-        { error: 'SEFAZ_API_URL ou SEFAZ_API_KEY nao configurada.' },
-        { status: 500 },
-      );
-    }
-
     const body: StatusBody = await request.json();
 
-    const url = `${SEFAZ_API_URL}/nfe/status`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${SEFAZ_API_KEY}`,
-      },
-      body: JSON.stringify({
-        ufEmitente: body.ufEmitente,
-        certificado: body.certificado,
-      }),
+    const result = await statusSefaz({
+      ufEmitente: body.ufEmitente,
+      certificado: body.certificado,
     });
 
-    const responseData = await response.json();
-
-    if (!response.ok) {
-      return NextResponse.json(
-        { error: 'Erro ao consultar status SEFAZ.', details: responseData, statusCode: response.status },
-        { status: response.status },
-      );
-    }
-
-    return NextResponse.json({ success: true, data: responseData });
+    return NextResponse.json({ success: true, data: result });
   } catch (error) {
     console.error('[Fiscal Status] Erro:', error);
     return NextResponse.json(

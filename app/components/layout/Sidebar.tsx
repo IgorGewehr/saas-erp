@@ -6,7 +6,6 @@ import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import {
   LayoutDashboard,
-  Users,
   Calendar,
   ShoppingCart,
   DollarSign,
@@ -27,7 +26,6 @@ import {
 
 export type MenuPage =
   | 'Dashboard'
-  | 'Clientes'
   | 'CRM'
   | 'Agenda'
   | 'Conversas'
@@ -59,7 +57,6 @@ const menuSections: MenuSection[] = [
     title: 'Principal',
     items: [
       { id: 'Dashboard', label: 'Dashboard', icon: LayoutDashboard },
-      { id: 'Clientes', label: 'Clientes', icon: Users },
       { id: 'CRM', label: 'CRM', icon: Target, enterpriseOnly: true },
       { id: 'Agenda', label: 'Agenda', icon: Calendar },
       { id: 'Conversas', label: 'Conversas', icon: MessageSquare },

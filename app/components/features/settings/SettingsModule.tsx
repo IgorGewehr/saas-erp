@@ -1257,10 +1257,10 @@ function FiscalTab() {
     if (!business?.fiscal) return;
     const f = business.fiscal;
 
-    setEnvironment(f.environment || 'homologation');
+    setEnvironment(((f.nfeConfig?.environment || (f as Record<string, unknown>).environment) || 'homologacao') as typeof environment);
     setTaxRegime(f.taxRegime || 'simples_nacional');
-    setOperationType(f.operationType || 'saida');
-    setSellsInterstate(f.sellsInterstate || false);
+    setOperationType(((f as Record<string, unknown>).operationType as string) || 'saida');
+    setSellsInterstate(!!((f as Record<string, unknown>).sellsInterstate));
     setIbgeCode(f.ibgeCodigoMunicipio || business.endereco?.codigoMunicipio || '');
 
     if (f.nfeConfig) {
@@ -1273,18 +1273,21 @@ function FiscalTab() {
       setCscId(f.nfceConfig.cscId || '');
       setCscToken(f.nfceConfig.cscToken || '');
     }
-    if (f.taxation) {
-      if (f.taxation.icms) { setIcmsCst(f.taxation.icms.cstCsosn || '102'); setIcmsRate(String(f.taxation.icms.rate || 0)); }
-      if (f.taxation.pis) { setPisCst(f.taxation.pis.cst || '49'); setPisRate(String(f.taxation.pis.rate || 0.65)); }
-      if (f.taxation.cofins) { setCofinsCst(f.taxation.cofins.cst || '49'); setCofinsRate(String(f.taxation.cofins.rate || 3)); }
+    const fAny = f as Record<string, unknown>;
+    const taxation = fAny.taxation as Record<string, Record<string, unknown>> | undefined;
+    if (taxation) {
+      if (taxation.icms) { setIcmsCst(String(taxation.icms.cstCsosn || '102')); setIcmsRate(String(taxation.icms.rate || 0)); }
+      if (taxation.pis) { setPisCst(String(taxation.pis.cst || '49')); setPisRate(String(taxation.pis.rate || 0.65)); }
+      if (taxation.cofins) { setCofinsCst(String(taxation.cofins.cst || '49')); setCofinsRate(String(taxation.cofins.rate || 3)); }
     }
-    if (f.cfops) {
-      setCfopSales(f.cfops.defaultSales || '5102');
-      setCfopPurchases(f.cfops.defaultPurchases || '1102');
+    const cfops = fAny.cfops as Record<string, string> | undefined;
+    if (cfops) {
+      setCfopSales(cfops.defaultSales || '5102');
+      setCfopPurchases(cfops.defaultPurchases || '1102');
     }
     if (f.accountingEmail) setAccountingEmail(f.accountingEmail);
-    if (f.notificationServerUrl) setNotificationServerUrl(f.notificationServerUrl);
-    if (f.notificationServerKey) setNotificationServerKey(f.notificationServerKey);
+    if (fAny.notificationServerUrl) setNotificationServerUrl(fAny.notificationServerUrl as string);
+    if (fAny.notificationServerKey) setNotificationServerKey(fAny.notificationServerKey as string);
   }, [business]);
 
   // ── Fiscal save helpers ──

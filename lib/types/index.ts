@@ -191,54 +191,51 @@ export interface BusinessSettings {
 }
 
 // ---- Fiscal Configuration ----
-export interface FiscalConfig {
-  // Certificate
-  certificate?: CertificateConfig;
-  certPasswordEncrypted?: string;
-  // Environment
-  environment?: 'homologation' | 'production';
-  // Tax Regime
-  taxRegime?: 'simples_nacional' | 'simples_nacional_excesso' | 'lucro_presumido' | 'lucro_real';
-  operationType?: 'saida' | 'entrada';
-  sellsInterstate?: boolean;
-  ibgeCodigoMunicipio?: string;
-  inscricaoEstadual?: string;
-  // NF-e Config
-  nfeConfig?: {
-    series: string;
-    nextNumber: number;
-    environment?: 'homologation' | 'production';
-  };
-  // NFC-e Config
-  nfceConfig?: {
-    series: string;
-    nextNumber: number;
-    cscId?: string;
-    cscToken?: string;
-    environment?: 'homologation' | 'production';
-  };
-  // NFSe Config
-  nfseConfig?: {
-    series: string;
-    nextNumber: number;
-  };
-  // Default Taxation
-  taxation?: {
-    icms: { cstCsosn: string; rate: number };
-    pis: { cst: string; rate: number };
-    cofins: { cst: string; rate: number };
-  };
-  // Default CFOPs
-  cfops?: {
-    defaultSales: string;
-    defaultPurchases: string;
-  };
-  // Accounting export
-  accountingEmail?: string;       // Email do contador
-  notificationServerUrl?: string; // URL do servidor de notificação
-  notificationServerKey?: string; // API key do servidor de notificação
+export type TaxRegime = 'simples_nacional' | 'simples_nacional_excesso' | 'lucro_presumido' | 'lucro_real';
+
+export interface FiscalCertificate {
+  serialNumber: string;
+  subject: string;
+  validFrom: string;
+  expiresAt: string;
+  storagePath: string;
+  uploadedAt: string;
 }
 
+export interface NFeConfig {
+  series: string;
+  nextNumber: number;
+  environment: 'producao' | 'homologacao';
+}
+
+export interface NFCeConfig {
+  series: string;
+  nextNumber: number;
+  cscId: string;
+  cscToken: string;
+  environment: 'producao' | 'homologacao';
+}
+
+export interface NFSeConfig {
+  series: string;
+  nextNumber: number;
+  environment: 'producao' | 'homologacao';
+}
+
+export interface FiscalConfig {
+  certificate?: FiscalCertificate;
+  certPasswordEncrypted?: string;
+  nfeConfig?: NFeConfig;
+  nfceConfig?: NFCeConfig;
+  nfseConfig?: NFSeConfig;
+  inscricaoEstadual?: string;
+  inscricaoMunicipal?: string;
+  ibgeCodigoMunicipio?: string;
+  taxRegime?: TaxRegime;
+  accountingEmail?: string;
+}
+
+/** @deprecated Use FiscalCertificate instead */
 export interface CertificateConfig {
   serialNumber: string;
   expiresAt: string;
@@ -297,32 +294,8 @@ export interface Address {
 }
 
 // ---- Clients ----
-export interface Client {
-  id: string;
-  businessId: string;
-  tipo: 'pf' | 'pj';
-  nome: string;
-  cpfCnpj: string;
-  email?: string;
-  phone: string;
-  phone2?: string;
-  birthDate?: string;
-  gender?: 'M' | 'F' | 'O';
-  endereco?: Address;
-  inscricaoEstadual?: string;  // IE - required for B2B NF-e
-  indicadorIE?: '1' | '2' | '9'; // 1=Contribuinte, 2=Isento, 9=Nao Contribuinte
-  inscricaoMunicipal?: string;  // IM - required for NFSe
-  suframa?: string;             // SUFRAMA code (Zona Franca de Manaus)
-  nomeFantasia?: string;        // Trade name for PJ
-  notes?: string;
-  tags?: string[];
-  isActive: boolean;
-  totalSpent: number;
-  visitCount: number;
-  lastVisit?: string;
-  createdAt: string;
-  updatedAt: string;
-}
+// Client interface removed — unified into CRMContact
+// The `Client` type alias above provides backward compatibility
 
 // ---- Appointments / Agenda ----
 export type AppointmentStatus =
@@ -359,6 +332,8 @@ export interface Appointment {
 export interface Service {
   id: string;
   businessId: string;
+  userId?: string;      // uid do usuario dono (opcional — sem userId = servico global do tenant)
+  userName?: string;     // nome do dono
   name: string;
   description?: string;
   duration: number; // minutes
@@ -752,6 +727,46 @@ export type IntegrationStatus = 'connected' | 'disconnected' | 'error' | 'pendin
 export type IntegrationCategory = 'messaging' | 'social' | 'payment' | 'email' | 'analytics' | 'automation' | 'calendar';
 
 export type LifecycleStage = 'new_lead' | 'contacted' | 'qualified' | 'proposal' | 'negotiation' | 'customer' | 'churned';
+export type ContactProfile = 'vip' | 'regular' | 'sporadic' | 'new' | 'at_risk' | 'churned';
+export type ConversationTone = 'satisfied' | 'neutral' | 'irritated';
+export type PriceSensitivity = 'low' | 'medium' | 'high';
+
+export interface RelationshipHistory {
+  firstContactDate?: string;
+  totalAppointments?: number;
+  completedAppointments?: number;
+  cancelledAppointments?: number;
+  noShowCount?: number;
+  attendanceRate?: number;
+  avgDaysBetweenVisits?: number;
+  lastVisitDate?: string;
+  lastServiceName?: string;
+  totalSpent?: number;
+  servicesContracted?: string[];
+  avgTicket?: number;
+}
+
+export interface BehavioralInsights {
+  cancellationReasons?: string[];
+  recurringObjections?: string[];
+  priceSensitivity?: PriceSensitivity;
+  preferredTimes?: string[];
+  preferredProfessional?: string;
+  uncontractedServices?: string[];
+  conversationTone?: ConversationTone;
+  preferences?: string[];
+  inquiredButNotBooked?: string[];
+  lastToneDate?: string;
+}
+
+export interface ContactScores {
+  loyalty: number;
+  value: number;
+  churnRisk: number;
+  engagement: number;
+  overall: number;
+  lastCalculatedAt?: string;
+}
 
 export interface CRMContact {
   id: string;
@@ -775,7 +790,6 @@ export interface CRMContact {
   };
   notes?: string;
   lastContactDate?: string;
-  clientId?: string;
   lifecycleStage?: LifecycleStage;
   channelIdentities?: {
     whatsapp?: string;
@@ -789,9 +803,38 @@ export interface CRMContact {
   sectorId?: string;
   optInMarketing?: boolean;
   optInAt?: string;
+
+  // ── Dados Cadastrais / Fiscal (ex-Client) ──────────
+  tipo?: 'pf' | 'pj';
+  cpfCnpj?: string;
+  phone2?: string;
+  birthDate?: string;
+  gender?: 'M' | 'F' | 'O';
+  endereco?: Address;
+  inscricaoEstadual?: string;
+  indicadorIE?: '1' | '2' | '9';
+  inscricaoMunicipal?: string;
+  suframa?: string;
+  nomeFantasia?: string;
+  isActive?: boolean;
+  totalSpent?: number;
+  visitCount?: number;
+  lastVisit?: string;
+
+  // ── Inteligência & AI Agent ────────────────────────
+  profile?: ContactProfile;
+  relationshipHistory?: RelationshipHistory;
+  behavioralInsights?: BehavioralInsights;
+  scores?: ContactScores;
+  suggestedAction?: string;
+  aiSummary?: string;
+
   createdAt: string;
   updatedAt: string;
 }
+
+/** @deprecated Use CRMContact instead — unified contact model */
+export type Client = CRMContact;
 
 export interface CRMDeal {
   id: string;

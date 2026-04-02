@@ -35,6 +35,11 @@ export async function GET(req: NextRequest) {
       query = query.where('category', '==', category);
     }
 
+    const userId = searchParams.get('userId');
+    if (userId) {
+      query = query.where('userId', '==', userId);
+    }
+
     query = query.orderBy('name', 'asc');
 
     const snapshot = await query.get();
@@ -84,7 +89,7 @@ export async function POST(req: NextRequest) {
 
     const now = new Date().toISOString();
 
-    const serviceData = {
+    const serviceData: Record<string, unknown> = {
       businessId: auth.businessId,
       name: name.trim(),
       duration,
@@ -96,6 +101,10 @@ export async function POST(req: NextRequest) {
       createdAt: now,
       updatedAt: now,
     };
+
+    // Optional owner fields
+    if (body.userId) serviceData.userId = body.userId;
+    if (body.userName) serviceData.userName = body.userName;
 
     const docRef = await adminDb.collection('services').add(serviceData);
 
@@ -134,7 +143,7 @@ export async function PUT(req: NextRequest) {
     }
 
     // Build update payload — only allow known fields
-    const allowedFields = ['name', 'description', 'duration', 'price', 'category', 'color', 'isActive'];
+    const allowedFields = ['name', 'description', 'duration', 'price', 'category', 'color', 'isActive', 'userId', 'userName'];
     const updateData: Record<string, unknown> = { updatedAt: new Date().toISOString() };
 
     for (const field of allowedFields) {
@@ -156,6 +165,8 @@ export async function PUT(req: NextRequest) {
           updateData.price = fields.price;
         } else if (field === 'isActive') {
           updateData.isActive = Boolean(fields.isActive);
+        } else if (field === 'userId' || field === 'userName') {
+          updateData[field] = typeof fields[field] === 'string' ? fields[field].trim() : fields[field];
         } else if (field === 'description' || field === 'category' || field === 'color') {
           updateData[field] = typeof fields[field] === 'string' ? fields[field].trim() : fields[field];
         }

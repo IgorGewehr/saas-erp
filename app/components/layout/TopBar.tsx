@@ -9,7 +9,7 @@ import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { collection, query, where, orderBy, getDocs, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useQuery } from '@tanstack/react-query';
-import type { User as UserType, Client, Product, Appointment, CRMContact } from '@/lib/types';
+import type { User as UserType, Product, Appointment, CRMContact } from '@/lib/types';
 import {
   Search,
   Bell,
@@ -25,7 +25,6 @@ import {
   WifiOff,
   Clock,
   Check,
-  UserCircle,
   Package,
   Calendar,
   Contact,
@@ -382,17 +381,6 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
 
   // ── Global Search Data ──
 
-  const { data: searchClients = [] } = useQuery({
-    queryKey: ['search-clients', businessId],
-    queryFn: async () => {
-      const q = query(collection(db, 'clients'), where('businessId', '==', businessId), orderBy('nome', 'asc'));
-      const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Client));
-    },
-    enabled: !!businessId,
-    staleTime: 2 * 60 * 1000,
-  });
-
   const { data: searchProducts = [] } = useQuery({
     queryKey: ['search-products', businessId],
     queryFn: async () => {
@@ -432,17 +420,6 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
     const results: SearchResult[] = [];
     const limit = 12;
 
-    for (const c of searchClients) {
-      if (results.length >= limit) break;
-      const match = c.nome?.toLowerCase().includes(term)
-        || c.cpfCnpj?.includes(term)
-        || c.email?.toLowerCase().includes(term)
-        || c.phone?.includes(term);
-      if (match) {
-        results.push({ id: c.id, type: 'client', title: c.nome, subtitle: c.cpfCnpj || c.phone || '', page: 'Clientes', icon: UserCircle });
-      }
-    }
-
     for (const p of searchProducts) {
       if (results.length >= limit) break;
       const match = p.name?.toLowerCase().includes(term)
@@ -466,16 +443,17 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
     for (const ct of searchContacts) {
       if (results.length >= limit) break;
       const match = ct.name?.toLowerCase().includes(term)
+        || ct.cpfCnpj?.includes(term)
         || ct.email?.toLowerCase().includes(term)
         || ct.phone?.includes(term)
         || ct.company?.toLowerCase().includes(term);
       if (match) {
-        results.push({ id: ct.id, type: 'contact', title: ct.name, subtitle: ct.company || ct.email || '', page: 'CRM', icon: Contact });
+        results.push({ id: ct.id, type: 'contact', title: ct.name, subtitle: ct.company || ct.cpfCnpj || ct.email || '', page: 'CRM', icon: Contact });
       }
     }
 
     return results;
-  }, [searchValue, searchClients, searchProducts, searchAppointments, searchContacts]);
+  }, [searchValue, searchProducts, searchAppointments, searchContacts]);
 
   const handleSelectResult = useCallback((result: SearchResult) => {
     setSearchValue('');

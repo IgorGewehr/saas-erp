@@ -4,7 +4,7 @@ import { useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
-import type { Appointment, Client, Sale, Transaction } from '@/lib/types';
+import type { Appointment, CRMContact, Sale, Transaction } from '@/lib/types';
 import {
   Users,
   CalendarCheck,
@@ -49,11 +49,11 @@ export default function DashboardModule() {
 
   // ── Firestore queries ──
   const { data: clients = [], isLoading: loadingClients } = useQuery({
-    queryKey: ['clients', business?.id],
+    queryKey: ['crmContacts', business?.id],
     queryFn: async () => {
-      const q = query(collection(db, 'clients'), where('businessId', '==', business!.id), orderBy('nome', 'asc'));
+      const q = query(collection(db, 'crmContacts'), where('businessId', '==', business!.id), orderBy('name', 'asc'));
       const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Client));
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as CRMContact));
     },
     enabled: !!business?.id,
   });
@@ -235,7 +235,7 @@ export default function DashboardModule() {
     const term = clientSearch.toLowerCase().trim();
     const list = term.length >= 1
       ? clients.filter(c =>
-          c.nome?.toLowerCase().includes(term) ||
+          c.name?.toLowerCase().includes(term) ||
           c.cpfCnpj?.includes(term) ||
           c.email?.toLowerCase().includes(term) ||
           c.phone?.includes(term)
@@ -285,7 +285,7 @@ export default function DashboardModule() {
         </div>
         <div className="flex items-center gap-2">
           {([
-            { label: 'Novo Cliente', icon: UserPlus, page: 'Clientes' as const },
+            { label: 'Novo Cliente', icon: UserPlus, page: 'CRM' as const },
             { label: 'Agendar', icon: CalendarPlus, page: 'Agenda' as const },
             { label: 'Nova Venda', icon: ShoppingBag, page: 'PDV' as const },
           ] as const).map((action) => (
@@ -729,10 +729,10 @@ export default function DashboardModule() {
                         <td className="px-5 py-3">
                           <div className="flex items-center gap-3">
                             <div className="w-8 h-8 rounded-full bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-700 dark:to-gray-600 flex items-center justify-center text-[11px] font-bold text-gray-500 dark:text-gray-300 flex-shrink-0">
-                              {getInitials(client.nome)}
+                              {getInitials(client.name)}
                             </div>
                             <span className="text-sm font-medium text-gray-800 dark:text-gray-100 truncate max-w-[160px]">
-                              {client.nome}
+                              {client.name}
                             </span>
                           </div>
                         </td>
@@ -780,7 +780,7 @@ export default function DashboardModule() {
                 Mostrando {filteredClients.length} de {clients.length} clientes
               </span>
               <button
-                onClick={() => setActivePage('Clientes')}
+                onClick={() => setActivePage('CRM')}
                 className="flex items-center gap-1 text-xs font-medium text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors"
               >
                 Ver todos
@@ -972,7 +972,7 @@ export default function DashboardModule() {
               <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Acesso Rápido</h3>
               <div className="grid grid-cols-2 gap-2">
                 {([
-                  { label: 'Clientes', icon: Users, page: 'Clientes' as const, color: 'text-red-500 dark:text-red-400' },
+                  { label: 'CRM', icon: Users, page: 'CRM' as const, color: 'text-red-500 dark:text-red-400' },
                   { label: 'Agenda', icon: CalendarCheck, page: 'Agenda' as const, color: 'text-amber-500 dark:text-amber-400' },
                   { label: 'PDV', icon: ShoppingBag, page: 'PDV' as const, color: 'text-emerald-500 dark:text-emerald-400' },
                   { label: 'Financeiro', icon: Wallet, page: 'Financeiro' as const, color: 'text-blue-500 dark:text-blue-400' },

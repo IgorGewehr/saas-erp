@@ -85,7 +85,7 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
 
   const totalLeads = filtered.length;
   const hotLeads = filtered.filter((c) => c.tags?.includes('quente')).length;
-  const avgScore = totalLeads > 0 ? Math.round(filtered.reduce((s, c) => s + c.score, 0) / totalLeads) : 0;
+  const avgScore = totalLeads > 0 ? Math.round(filtered.reduce((s, c) => s + (c.scores?.overall ?? c.score), 0) / totalLeads) : 0;
   const wonLeads = filtered.filter((c) => c.status === 'ganho').length;
 
   return (
@@ -103,10 +103,10 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: i * 0.05 }}
-            className="flex items-center gap-2.5 px-3.5 py-2 bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-xl shrink-0"
+            className="flex items-center gap-3 px-4 py-2.5 bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-xl shrink-0"
           >
-            <span className={cn('text-lg font-display font-bold', kpi.color)}>{kpi.value}</span>
-            <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium whitespace-nowrap">{kpi.label}</span>
+            <span className={cn('text-xl font-display font-bold', kpi.color)}>{kpi.value}</span>
+            <span className="text-xs text-gray-400 dark:text-gray-500 font-medium whitespace-nowrap">{kpi.label}</span>
           </motion.div>
         ))}
       </div>
@@ -117,7 +117,7 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
           {KANBAN_COLUMNS.map((col, ci) => {
             const columnContacts = filtered
               .filter((c) => c.status === col.status)
-              .sort((a, b) => b.score - a.score);
+              .sort((a, b) => (b.scores?.overall ?? b.score) - (a.scores?.overall ?? a.score));
             const isDragOver = dragOverStatus === col.status;
 
             return (
@@ -126,17 +126,17 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
                 initial={{ opacity: 0, y: 16 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: ci * 0.05 }}
-                className="w-[260px] shrink-0 flex flex-col h-full"
+                className="w-[280px] shrink-0 flex flex-col h-full"
                 onDragOver={(e) => handleDragOver(e, col.status)}
                 onDragLeave={handleDragLeave}
                 onDrop={(e) => handleDrop(e, col.status)}
               >
                 {/* Column header */}
-                <div className="flex items-center justify-between mb-2 px-1">
+                <div className="flex items-center justify-between mb-2.5 px-1">
                   <div className="flex items-center gap-2">
-                    <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: col.color }} />
-                    <h3 className="text-xs font-bold text-gray-800 dark:text-gray-200">{col.label}</h3>
-                    <span className="text-[10px] font-bold bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 px-1.5 py-0.5 rounded-full">
+                    <div className="w-3 h-3 rounded-full" style={{ backgroundColor: col.color }} />
+                    <h3 className="text-sm font-bold text-gray-800 dark:text-gray-200">{col.label}</h3>
+                    <span className="text-xs font-bold bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 px-2 py-0.5 rounded-full">
                       {columnContacts.length}
                     </span>
                   </div>
@@ -145,7 +145,7 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
                 {/* Cards area */}
                 <div
                   className={cn(
-                    'flex-1 space-y-2 rounded-xl p-2 transition-all duration-200 overflow-y-auto',
+                    'flex-1 space-y-2.5 rounded-xl p-2.5 transition-all duration-200 overflow-y-auto',
                     isDragOver
                       ? 'bg-red-50/50 dark:bg-red-500/[0.06] border-2 border-dashed border-red-400/50 dark:border-red-500/30'
                       : 'bg-gray-50/50 dark:bg-white/[0.015] border-2 border-transparent',
@@ -162,11 +162,11 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
                   ))}
 
                   {columnContacts.length === 0 && (
-                    <div className="flex flex-col items-center justify-center h-28 text-gray-300 dark:text-gray-600">
-                      <Layers size={18} strokeWidth={1.5} />
-                      <p className="text-[10px] mt-1.5">Nenhum lead</p>
+                    <div className="flex flex-col items-center justify-center h-32 text-gray-300 dark:text-gray-600">
+                      <Layers size={22} strokeWidth={1.5} />
+                      <p className="text-xs mt-2">Nenhum lead</p>
                       {col.status === 'novo' && (
-                        <button onClick={onNewContact} className="mt-1.5 text-[10px] font-semibold text-red-500 dark:text-red-400 hover:text-red-600 transition-colors">
+                        <button onClick={onNewContact} className="mt-2 text-xs font-semibold text-red-500 dark:text-red-400 hover:text-red-600 transition-colors">
                           + Adicionar
                         </button>
                       )}

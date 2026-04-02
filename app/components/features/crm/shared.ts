@@ -1,4 +1,4 @@
-import type { CRMPipelineStage, CRMActivityType, LeadStatus, LeadSource, BroadcastStatus } from '@/lib/types';
+import type { CRMPipelineStage, CRMActivityType, LeadStatus, LeadSource, BroadcastStatus, ContactProfile, ConversationTone, PriceSensitivity } from '@/lib/types';
 import { formatDate } from '@/lib/utils/format';
 
 // Pipeline
@@ -92,6 +92,60 @@ export function getTagConfig(tag: string): TagConfig {
   const preset = TAG_PRESETS[tag.toLowerCase()];
   if (preset) return preset;
   return { label: tag, bg: 'bg-gray-500/15 dark:bg-gray-500/20', text: 'text-gray-500 dark:text-gray-300', dot: 'bg-gray-500' };
+}
+
+// ── Profile & Scoring ──────────────────────────────────────────────────────
+
+export const PROFILE_CONFIG: Record<ContactProfile, { label: string; emoji: string; bg: string; text: string; border: string }> = {
+  vip:      { label: 'VIP',        emoji: '👑', bg: 'bg-amber-500/15 dark:bg-amber-500/20',   text: 'text-amber-600 dark:text-amber-400',   border: 'border-amber-400/30' },
+  regular:  { label: 'Regular',    emoji: '●',  bg: 'bg-blue-500/15 dark:bg-blue-500/20',     text: 'text-blue-600 dark:text-blue-400',     border: 'border-blue-400/30' },
+  sporadic: { label: 'Esporádico', emoji: '◌',  bg: 'bg-gray-500/15 dark:bg-gray-500/20',     text: 'text-gray-600 dark:text-gray-400',     border: 'border-gray-400/30' },
+  new:      { label: 'Novo',       emoji: '✦',  bg: 'bg-emerald-500/15 dark:bg-emerald-500/20', text: 'text-emerald-600 dark:text-emerald-400', border: 'border-emerald-400/30' },
+  at_risk:  { label: 'Em Risco',   emoji: '⚠',  bg: 'bg-orange-500/15 dark:bg-orange-500/20', text: 'text-orange-600 dark:text-orange-400', border: 'border-orange-400/30' },
+  churned:  { label: 'Perdido',    emoji: '✕',  bg: 'bg-red-500/15 dark:bg-red-500/20',       text: 'text-red-600 dark:text-red-400',       border: 'border-red-400/30' },
+};
+
+export const TONE_CONFIG: Record<ConversationTone, { label: string; emoji: string; color: string }> = {
+  satisfied: { label: 'Satisfeito', emoji: '😊', color: 'text-emerald-500' },
+  neutral:   { label: 'Neutro',     emoji: '😐', color: 'text-gray-400' },
+  irritated: { label: 'Irritado',   emoji: '😤', color: 'text-red-500' },
+};
+
+export const SENSITIVITY_CONFIG: Record<PriceSensitivity, { label: string; color: string; bg: string }> = {
+  low:    { label: 'Baixa',  color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-500/10' },
+  medium: { label: 'Média',  color: 'text-amber-600 dark:text-amber-400',     bg: 'bg-amber-500/10' },
+  high:   { label: 'Alta',   color: 'text-red-600 dark:text-red-400',         bg: 'bg-red-500/10' },
+};
+
+export function getScoreColor(score: number): { text: string; bg: string; fill: string } {
+  if (score >= 80) return { text: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-500/15', fill: '#10B981' };
+  if (score >= 60) return { text: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-500/15', fill: '#3B82F6' };
+  if (score >= 40) return { text: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-500/15', fill: '#F59E0B' };
+  if (score >= 20) return { text: 'text-orange-600 dark:text-orange-400', bg: 'bg-orange-500/15', fill: '#EA580C' };
+  return { text: 'text-red-600 dark:text-red-400', bg: 'bg-red-500/15', fill: '#EF4444' };
+}
+
+export function getChurnLabel(risk: number): { label: string; color: string; bg: string } {
+  if (risk >= 80) return { label: 'Crítico', color: 'text-red-600 dark:text-red-400', bg: 'bg-red-500/15' };
+  if (risk >= 60) return { label: 'Alto', color: 'text-orange-600 dark:text-orange-400', bg: 'bg-orange-500/15' };
+  if (risk >= 40) return { label: 'Moderado', color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-500/15' };
+  if (risk >= 20) return { label: 'Baixo', color: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-500/15' };
+  return { label: 'Mínimo', color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-500/15' };
+}
+
+export function daysSince(isoStr?: string): number | null {
+  if (!isoStr) return null;
+  return Math.floor((Date.now() - new Date(isoStr).getTime()) / 86_400_000);
+}
+
+export function formatDaysSince(isoStr?: string): string {
+  const d = daysSince(isoStr);
+  if (d === null) return '-';
+  if (d === 0) return 'Hoje';
+  if (d === 1) return 'Ontem';
+  if (d < 30) return `${d} dias`;
+  if (d < 365) return `${Math.floor(d / 30)} meses`;
+  return `${Math.floor(d / 365)}a ${Math.floor((d % 365) / 30)}m`;
 }
 
 // CRM Tab type

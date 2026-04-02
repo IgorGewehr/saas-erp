@@ -6,10 +6,11 @@ import {
   TextField, Button, IconButton, Chip, Select, MenuItem, FormControl, InputLabel, Tooltip, Slider,
 } from '@mui/material';
 import {
-  Target, Plus, Search, X, Phone, Mail, MessageSquare, Calendar, Clock, Edit3, Trash2,
+  Plus, Search, X, Phone, Mail, MessageSquare, Calendar, Clock, Edit3, Trash2,
   Users, DollarSign, TrendingUp, MoreVertical, Globe, Instagram, Facebook, Linkedin, Send,
   CheckCircle2, PhoneCall, Video, FileText, MessageCircle, BarChart3, Activity, Layers, Gauge,
-  UserPlus, Briefcase, Tag, Hash, AlertTriangle, Inbox,
+  UserPlus, Briefcase, Tag, Hash, AlertTriangle, Inbox, Heart, Shield, Zap, Brain,
+  Sparkles, Filter,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -27,7 +28,7 @@ import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDo
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   CRMContact, CRMDeal, CRMPipelineStage, CRMActivity, CRMActivityType,
-  LeadStatus, LeadSource, User, Broadcast, BroadcastStatus,
+  LeadStatus, LeadSource, User, Broadcast, BroadcastStatus, ContactProfile,
 } from '@/lib/types';
 
 // ── Extracted sub-components ────────────────────────────────────────────────
@@ -36,6 +37,7 @@ import {
   ACTIVITY_LABELS, ACTIVITY_COLORS, ALL_SOURCES, ALL_STATUSES, ALL_ACTIVITY_TYPES,
   BROADCAST_STATUS_LABELS, ALL_PRESET_TAGS, getTagConfig, relativeTime,
   applyPhoneMask, stripPhoneMask, parseCurrencyInput, formatCurrencyInput,
+  PROFILE_CONFIG, getScoreColor, getChurnLabel,
   type CRMTab,
 } from './shared';
 import { KanbanBoard } from './KanbanBoard';
@@ -46,12 +48,12 @@ import { SourceIcon } from './SourceIcon';
 
 // ── Tab Config ──────────────────────────────────────────────────────────────
 
-const TABS: { key: CRMTab; label: string; icon: React.ReactNode }[] = [
-  { key: 'kanban', label: 'Leads', icon: <Layers size={16} /> },
-  { key: 'inbox', label: 'Inbox', icon: <Inbox size={16} /> },
-  { key: 'atividades', label: 'Atividades', icon: <Activity size={16} /> },
-  { key: 'campanhas', label: 'Campanhas', icon: <Send size={16} /> },
-  { key: 'metricas', label: 'Dashboard', icon: <BarChart3 size={16} /> },
+const TABS: { key: CRMTab; label: string; icon: React.ReactNode; desc: string }[] = [
+  { key: 'kanban', label: 'Pipeline', icon: <Layers size={15} />, desc: 'Kanban de leads' },
+  { key: 'inbox', label: 'Inbox', icon: <Inbox size={15} />, desc: 'Conversas' },
+  { key: 'atividades', label: 'Atividades', icon: <Activity size={15} />, desc: 'Tarefas e follow-ups' },
+  { key: 'campanhas', label: 'Campanhas', icon: <Send size={15} />, desc: 'Broadcasts' },
+  { key: 'metricas', label: 'Inteligência', icon: <Brain size={15} />, desc: 'Scores e insights' },
 ];
 
 // ── Activity Icons (JSX — can't live in shared.ts) ─────────────────────────
@@ -68,20 +70,29 @@ const ACTIVITY_ICONS: Record<CRMActivityType, React.ReactNode> = {
 
 function CRMSkeleton() {
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full flex flex-col p-4 sm:p-5 lg:p-7 gap-4">
-      <div className="flex items-center gap-3 shrink-0">
-        <div className="w-10 h-10 rounded-xl shimmer" />
-        <div><div className="h-7 w-24 rounded-lg shimmer mb-1" /><div className="h-4 w-48 rounded-lg shimmer" /></div>
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full flex flex-col gap-4 p-4 sm:p-5 lg:p-6">
+      {/* Header skeleton */}
+      <div className="flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-3">
+          <div className="h-8 w-14 rounded-lg shimmer" />
+          <div className="h-4 w-32 rounded-lg shimmer" />
+        </div>
+        <div className="flex gap-2">
+          <div className="h-9 w-36 rounded-xl shimmer" />
+          <div className="h-9 w-28 rounded-xl shimmer" />
+        </div>
       </div>
-      <div className="h-12 rounded-2xl shimmer shrink-0" />
-      <div className="flex gap-3 shrink-0">
-        {[0, 1, 2, 3].map((i) => (
-          <motion.div key={i} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.07 }} className="h-10 w-32 rounded-xl shimmer" />
+      {/* Nav skeleton */}
+      <div className="flex gap-1 shrink-0">
+        {[0, 1, 2, 3, 4].map((i) => (
+          <motion.div key={i} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}
+            className="h-9 w-28 rounded-lg shimmer" />
         ))}
       </div>
-      <div className="flex-1 flex gap-3 min-h-0">
-        {[0, 1, 2, 3, 4, 5].map((i) => (
-          <div key={i} className="w-[260px] shrink-0 flex-1 rounded-xl shimmer" />
+      {/* Content skeleton */}
+      <div className="flex-1 grid grid-cols-7 gap-3 min-h-0">
+        {[0, 1, 2, 3, 4, 5, 6].map((i) => (
+          <div key={i} className="rounded-xl shimmer" />
         ))}
       </div>
     </motion.div>
@@ -107,6 +118,11 @@ function ContactFormDialog({ open, onClose, onSave, contact, members }: {
   const [assignedTo, setAssignedTo] = useState('');
   const [tags, setTags] = useState('');
   const [notes, setNotes] = useState('');
+  const [preferredChannel, setPreferredChannel] = useState<string>('');
+  const [profile, setProfile] = useState<string>('');
+  const [suggestedAction, setSuggestedAction] = useState('');
+  const [aiSummary, setAiSummary] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -118,6 +134,11 @@ function ContactFormDialog({ open, onClose, onSave, contact, members }: {
       setSource(contact?.source ?? 'outro'); setStatus(contact?.status ?? 'novo');
       setScore(contact?.score ?? 0); setAssignedTo(contact?.assignedTo ?? '');
       setTags(contact?.tags?.join(', ') ?? ''); setNotes(contact?.notes ?? '');
+      setPreferredChannel(contact?.preferredChannel ?? '');
+      setProfile(contact?.profile ?? '');
+      setSuggestedAction(contact?.suggestedAction ?? '');
+      setAiSummary(contact?.aiSummary ?? '');
+      setShowAdvanced(!!(contact?.profile || contact?.suggestedAction || contact?.aiSummary || contact?.preferredChannel));
     }
   }, [open, contact]);
 
@@ -127,9 +148,20 @@ function ContactFormDialog({ open, onClose, onSave, contact, members }: {
     try {
       const member = members.find((m) => m.id === assignedTo);
       const tagsList = tags.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean);
-      await onSave({ name: name.trim(), email: email.trim() || undefined, phone: stripPhoneMask(phone) || undefined, whatsapp: stripPhoneMask(whatsapp) || undefined, company: company.trim() || undefined, role: role.trim() || undefined, source, status, score, assignedTo: assignedTo || undefined, assignedToName: member?.name || undefined, tags: tagsList.length > 0 ? tagsList : undefined, notes: notes.trim() || undefined });
+      await onSave({
+        name: name.trim(), email: email.trim() || undefined, phone: stripPhoneMask(phone) || undefined,
+        whatsapp: stripPhoneMask(whatsapp) || undefined, company: company.trim() || undefined, role: role.trim() || undefined,
+        source, status, score, assignedTo: assignedTo || undefined, assignedToName: member?.name || undefined,
+        tags: tagsList.length > 0 ? tagsList : undefined, notes: notes.trim() || undefined,
+        preferredChannel: (preferredChannel as CRMContact['preferredChannel']) || undefined,
+        profile: (profile as CRMContact['profile']) || undefined,
+        suggestedAction: suggestedAction.trim() || undefined,
+        aiSummary: aiSummary.trim() || undefined,
+      });
     } finally { setSaving(false); }
   };
+
+  const inputSx = { '& .MuiOutlinedInput-root': { borderRadius: '10px' } };
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: '16px' } }}>
@@ -144,26 +176,46 @@ function ContactFormDialog({ open, onClose, onSave, contact, members }: {
       </DialogTitle>
       <DialogContent sx={{ pt: '12px !important' }}>
         <div className="space-y-4">
-          <TextField label="Nome *" value={name} onChange={(e) => setName(e.target.value)} fullWidth size="small" sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
+          {/* ── Dados Base ──────────────────────────── */}
+          <TextField label="Nome *" value={name} onChange={(e) => setName(e.target.value)} fullWidth size="small" sx={inputSx} />
           <div className="grid grid-cols-2 gap-3">
-            <TextField label="E-mail" value={email} onChange={(e) => setEmail(e.target.value)} fullWidth size="small" type="email" sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
-            <TextField label="Telefone" value={phone} onChange={(e) => setPhone(applyPhoneMask(e.target.value))} fullWidth size="small" sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
+            <TextField label="E-mail" value={email} onChange={(e) => setEmail(e.target.value)} fullWidth size="small" type="email" sx={inputSx} />
+            <TextField label="Telefone" value={phone} onChange={(e) => setPhone(applyPhoneMask(e.target.value))} fullWidth size="small" sx={inputSx} />
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <TextField label="WhatsApp" value={whatsapp} onChange={(e) => setWhatsapp(applyPhoneMask(e.target.value))} fullWidth size="small" sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
-            <TextField label="Empresa" value={company} onChange={(e) => setCompany(e.target.value)} fullWidth size="small" sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
+            <TextField label="WhatsApp" value={whatsapp} onChange={(e) => setWhatsapp(applyPhoneMask(e.target.value))} fullWidth size="small" sx={inputSx} />
+            <TextField label="Empresa" value={company} onChange={(e) => setCompany(e.target.value)} fullWidth size="small" sx={inputSx} />
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <TextField label="Cargo" value={role} onChange={(e) => setRole(e.target.value)} fullWidth size="small" sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
+            <TextField label="Cargo" value={role} onChange={(e) => setRole(e.target.value)} fullWidth size="small" sx={inputSx} />
             <FormControl size="small" fullWidth><InputLabel>Origem</InputLabel><Select value={source} onChange={(e) => setSource(e.target.value as LeadSource)} label="Origem" sx={{ borderRadius: '10px' }}>{ALL_SOURCES.map((s) => <MenuItem key={s} value={s}>{SOURCE_LABELS[s]}</MenuItem>)}</Select></FormControl>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <FormControl size="small" fullWidth><InputLabel>Status</InputLabel><Select value={status} onChange={(e) => setStatus(e.target.value as LeadStatus)} label="Status" sx={{ borderRadius: '10px' }}>{ALL_STATUSES.map((s) => <MenuItem key={s} value={s}>{STATUS_LABELS[s]}</MenuItem>)}</Select></FormControl>
             <FormControl size="small" fullWidth><InputLabel>Responsável</InputLabel><Select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} label="Responsável" sx={{ borderRadius: '10px' }}><MenuItem value="">Nenhum</MenuItem>{members.map((m) => <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>)}</Select></FormControl>
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <FormControl size="small" fullWidth><InputLabel>Canal Preferido</InputLabel><Select value={preferredChannel} onChange={(e) => setPreferredChannel(e.target.value)} label="Canal Preferido" sx={{ borderRadius: '10px' }}><MenuItem value="">Nenhum</MenuItem><MenuItem value="whatsapp">WhatsApp</MenuItem><MenuItem value="facebook">Messenger</MenuItem><MenuItem value="instagram">Instagram</MenuItem></Select></FormControl>
+            <FormControl size="small" fullWidth><InputLabel>Perfil</InputLabel><Select value={profile} onChange={(e) => setProfile(e.target.value)} label="Perfil" sx={{ borderRadius: '10px' }}><MenuItem value="">Auto</MenuItem><MenuItem value="vip">👑 VIP</MenuItem><MenuItem value="regular">● Regular</MenuItem><MenuItem value="sporadic">◌ Esporádico</MenuItem><MenuItem value="new">✦ Novo</MenuItem><MenuItem value="at_risk">⚠ Em Risco</MenuItem><MenuItem value="churned">✕ Perdido</MenuItem></Select></FormControl>
+          </div>
           <div><p className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">Score: {score}</p><Slider value={score} onChange={(_, v) => setScore(v as number)} min={0} max={100} step={5} sx={{ color: score >= 80 ? '#10B981' : score >= 50 ? '#F59E0B' : '#94A3B8' }} /></div>
-          <TextField label="Tags (separadas por vírgula)" value={tags} onChange={(e) => setTags(e.target.value)} fullWidth size="small" placeholder="quente, tem interesse" sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
-          <TextField label="Observações" value={notes} onChange={(e) => setNotes(e.target.value)} fullWidth size="small" multiline rows={3} sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
+          <TextField label="Tags (separadas por vírgula)" value={tags} onChange={(e) => setTags(e.target.value)} fullWidth size="small" placeholder="quente, tem interesse" sx={inputSx} />
+          <TextField label="Observações" value={notes} onChange={(e) => setNotes(e.target.value)} fullWidth size="small" multiline rows={2} sx={inputSx} />
+
+          {/* ── Inteligência (toggle) ──────────────── */}
+          <button type="button" onClick={() => setShowAdvanced(!showAdvanced)}
+            className="flex items-center gap-2 text-xs font-semibold text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors">
+            <Zap size={13} />
+            {showAdvanced ? 'Ocultar campos de inteligência ▲' : 'Campos de inteligência ▼'}
+          </button>
+          {showAdvanced && (
+            <div className="space-y-3 p-3 rounded-xl bg-gray-50 dark:bg-white/[0.02] border border-gray-100 dark:border-white/[0.06]">
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Dados para Agente IA</p>
+              <TextField label="Próxima ação sugerida" value={suggestedAction} onChange={(e) => setSuggestedAction(e.target.value)} fullWidth size="small" placeholder="Ligar para reativar, oferecer desconto..." sx={inputSx} />
+              <TextField label="Resumo IA" value={aiSummary} onChange={(e) => setAiSummary(e.target.value)} fullWidth size="small" multiline rows={3}
+                placeholder="Ex: Cliente há 8 meses, sempre agenda corte + barba, cancelou 2x nos últimos 3 meses, score de churn alto" sx={inputSx} />
+            </div>
+          )}
         </div>
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2.5 }}>
@@ -342,7 +394,7 @@ function ActivitiesTab({ activities, onEdit, onDelete, onToggle, onNew }: {
 }
 
 // ==========================================
-// METRICS TAB (kept inline — uses recharts JSX)
+// METRICS TAB — Intelligence Dashboard
 // ==========================================
 
 function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
@@ -352,31 +404,199 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
   const funnelData = useMemo(() => stages.map((s) => { const sd = deals.filter((d) => d.stage === s.id); return { name: s.name, value: sd.length, dealValue: sd.reduce((a, d) => a + d.value, 0), fill: s.color }; }), [deals, stages]);
   const sourceData = useMemo(() => { const c: Record<string, number> = {}; contacts.forEach((ct) => { c[ct.source] = (c[ct.source] || 0) + 1; }); return Object.entries(c).map(([s, v]) => ({ name: SOURCE_LABELS[s as LeadSource] || s, value: v, color: SOURCE_COLORS[s as LeadSource] || '#6B7280' })).sort((a, b) => b.value - a.value); }, [contacts]);
   const convRate = contacts.length > 0 ? ((contacts.filter((c) => c.status === 'ganho').length / contacts.length) * 100).toFixed(1) : '0';
-  const avgScore = contacts.length > 0 ? (contacts.reduce((s, c) => s + c.score, 0) / contacts.length).toFixed(0) : '0';
+  const avgScore = contacts.length > 0 ? (contacts.reduce((s, c) => s + (c.scores?.overall ?? c.score), 0) / contacts.length).toFixed(0) : '0';
   const tooltipStyle = { borderRadius: '12px', border: isDark ? '1px solid #374151' : '1px solid #E2E8F0', backgroundColor: isDark ? '#111827' : '#fff', color: isDark ? '#F1F5F9' : '#0F172A' };
+
+  // ── Scoring analytics ─────────────────────────────────────
+  const profileDistribution = useMemo(() => {
+    const dist: Record<string, number> = {};
+    contacts.forEach((c) => { const p = c.profile || 'new'; dist[p] = (dist[p] || 0) + 1; });
+    return Object.entries(dist).map(([profile, count]) => {
+      const cfg = PROFILE_CONFIG[profile as ContactProfile] || PROFILE_CONFIG.new;
+      return { profile, label: cfg.label, emoji: cfg.emoji, count, pct: contacts.length > 0 ? Math.round((count / contacts.length) * 100) : 0 };
+    }).sort((a, b) => b.count - a.count);
+  }, [contacts]);
+
+  const churnRiskContacts = useMemo(() =>
+    contacts.filter((c) => c.scores && c.scores.churnRisk >= 60)
+      .sort((a, b) => (b.scores?.churnRisk ?? 0) - (a.scores?.churnRisk ?? 0))
+      .slice(0, 5),
+  [contacts]);
+
+  const topValueContacts = useMemo(() =>
+    contacts.filter((c) => c.relationshipHistory?.totalSpent)
+      .sort((a, b) => (b.relationshipHistory?.totalSpent ?? 0) - (a.relationshipHistory?.totalSpent ?? 0))
+      .slice(0, 5),
+  [contacts]);
+
+  const pendingActions = useMemo(() =>
+    contacts.filter((c) => c.suggestedAction).slice(0, 6),
+  [contacts]);
+
+  const avgChurn = contacts.length > 0
+    ? (contacts.reduce((s, c) => s + (c.scores?.churnRisk ?? 0), 0) / contacts.length).toFixed(0)
+    : '0';
+
+  const avgLoyalty = contacts.length > 0
+    ? (contacts.reduce((s, c) => s + (c.scores?.loyalty ?? 0), 0) / contacts.length).toFixed(0)
+    : '0';
+
   if (deals.length === 0 && contacts.length === 0) return <div className="flex flex-col items-center justify-center py-20 text-gray-400"><BarChart3 size={28} className="mb-4" /><p className="text-sm font-medium">Sem dados para exibir</p></div>;
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {[{ label: 'Taxa de Conversão', value: `${convRate}%`, icon: <TrendingUp size={18} />, c: 'emerald' }, { label: 'Score Médio', value: avgScore, icon: <Gauge size={18} />, c: 'amber' }, { label: 'Total de Leads', value: String(contacts.length), icon: <Users size={18} />, c: 'blue' }, { label: 'Valor Ganho', value: formatCurrency(metrics.wonValue), icon: <DollarSign size={18} />, c: 'red' }].map((card, i) => {
-          const cm: Record<string, { bg: string; txt: string }> = { emerald: { bg: 'bg-emerald-50 dark:bg-emerald-500/10', txt: 'text-emerald-600 dark:text-emerald-400' }, amber: { bg: 'bg-amber-50 dark:bg-amber-500/10', txt: 'text-amber-600 dark:text-amber-400' }, blue: { bg: 'bg-blue-50 dark:bg-blue-500/10', txt: 'text-blue-600 dark:text-blue-400' }, red: { bg: 'bg-red-50 dark:bg-red-500/10', txt: 'text-red-600 dark:text-red-400' } };
+      {/* ── KPI Cards ─────────────────────────────────────────── */}
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+        {[
+          { label: 'Conversão', value: `${convRate}%`, icon: <TrendingUp size={18} />, c: 'emerald' },
+          { label: 'Score Médio', value: avgScore, icon: <Gauge size={18} />, c: 'amber' },
+          { label: 'Total Leads', value: String(contacts.length), icon: <Users size={18} />, c: 'blue' },
+          { label: 'Valor Ganho', value: formatCurrency(metrics.wonValue), icon: <DollarSign size={18} />, c: 'red' },
+          { label: 'Fidelidade Média', value: `${avgLoyalty}%`, icon: <Heart size={18} />, c: 'purple' },
+          { label: 'Risco Churn Médio', value: `${avgChurn}%`, icon: <AlertTriangle size={18} />, c: 'orange' },
+        ].map((card, i) => {
+          const cm: Record<string, { bg: string; txt: string }> = {
+            emerald: { bg: 'bg-emerald-50 dark:bg-emerald-500/10', txt: 'text-emerald-600 dark:text-emerald-400' },
+            amber: { bg: 'bg-amber-50 dark:bg-amber-500/10', txt: 'text-amber-600 dark:text-amber-400' },
+            blue: { bg: 'bg-blue-50 dark:bg-blue-500/10', txt: 'text-blue-600 dark:text-blue-400' },
+            red: { bg: 'bg-red-50 dark:bg-red-500/10', txt: 'text-red-600 dark:text-red-400' },
+            purple: { bg: 'bg-purple-50 dark:bg-purple-500/10', txt: 'text-purple-600 dark:text-purple-400' },
+            orange: { bg: 'bg-orange-50 dark:bg-orange-500/10', txt: 'text-orange-600 dark:text-orange-400' },
+          };
           const cc = cm[card.c] || cm.blue;
-          return <motion.div key={card.label} initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.06 }} className="bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl p-4"><div className={cn('w-9 h-9 rounded-xl flex items-center justify-center mb-3', cc.bg, cc.txt)}>{card.icon}</div><p className="text-[11px] text-gray-400 dark:text-gray-500 font-medium mb-0.5">{card.label}</p><p className="text-lg font-display font-bold text-gray-900 dark:text-gray-100">{card.value}</p></motion.div>;
+          return (
+            <motion.div key={card.label} initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}
+              className="bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl p-4">
+              <div className={cn('w-9 h-9 rounded-xl flex items-center justify-center mb-2.5', cc.bg, cc.txt)}>{card.icon}</div>
+              <p className="text-xs text-gray-400 dark:text-gray-500 font-medium mb-0.5">{card.label}</p>
+              <p className="text-lg font-display font-bold text-gray-900 dark:text-gray-100">{card.value}</p>
+            </motion.div>
+          );
         })}
       </div>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl p-6">
+
+      {/* ── Row 2: Funnel + Source ─────────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <div className="bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl p-5">
           <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100 mb-4">Funil de Vendas</h3>
-          <div className="space-y-3">{funnelData.map((s, i) => { const mx = Math.max(...funnelData.map((x) => x.value), 1); return <div key={s.name} className="flex items-center gap-3"><span className="text-xs text-gray-600 dark:text-gray-400 font-medium w-24 shrink-0">{s.name}</span><div className="flex-1 h-8 bg-gray-50 dark:bg-white/[0.02] rounded-lg overflow-hidden"><motion.div initial={{ width: 0 }} animate={{ width: `${(s.value / mx) * 100}%` }} transition={{ duration: 0.6, delay: 0.3 + i * 0.1 }} className="h-full rounded-lg flex items-center px-3" style={{ backgroundColor: s.fill }}>{s.value > 0 && <span className="text-[11px] font-bold text-white">{s.value}</span>}</motion.div></div><span className="text-xs text-gray-400 font-medium w-20 text-right">{formatCurrency(s.dealValue)}</span></div>; })}</div>
+          <div className="space-y-3">{funnelData.map((s, i) => { const mx = Math.max(...funnelData.map((x) => x.value), 1); return <div key={s.name} className="flex items-center gap-3"><span className="text-sm text-gray-600 dark:text-gray-400 font-medium w-28 shrink-0">{s.name}</span><div className="flex-1 h-8 bg-gray-50 dark:bg-white/[0.02] rounded-lg overflow-hidden"><motion.div initial={{ width: 0 }} animate={{ width: `${(s.value / mx) * 100}%` }} transition={{ duration: 0.6, delay: 0.3 + i * 0.1 }} className="h-full rounded-lg flex items-center px-3" style={{ backgroundColor: s.fill }}>{s.value > 0 && <span className="text-xs font-bold text-white">{s.value}</span>}</motion.div></div><span className="text-xs text-gray-400 font-medium w-20 text-right">{formatCurrency(s.dealValue)}</span></div>; })}</div>
         </div>
         {sourceData.length > 0 && (
-          <div className="bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl p-6">
+          <div className="bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl p-5">
             <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100 mb-4">Origem dos Leads</h3>
-            <div className="flex items-center gap-6"><ResponsiveContainer width={150} height={150}><PieChart><Pie data={sourceData} cx="50%" cy="50%" innerRadius={40} outerRadius={68} paddingAngle={2} dataKey="value">{sourceData.map((e, i) => <Cell key={i} fill={e.color} />)}</Pie><RechartsTooltip contentStyle={tooltipStyle} /></PieChart></ResponsiveContainer><div className="flex-1 space-y-2">{sourceData.map((s) => <div key={s.name} className="flex items-center justify-between"><div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: s.color }} /><span className="text-xs text-gray-600 dark:text-gray-400">{s.name}</span></div><span className="text-xs font-semibold text-gray-800 dark:text-gray-200">{s.value}</span></div>)}</div></div>
+            <div className="flex items-center gap-6"><ResponsiveContainer width={150} height={150}><PieChart><Pie data={sourceData} cx="50%" cy="50%" innerRadius={40} outerRadius={68} paddingAngle={2} dataKey="value">{sourceData.map((e, i) => <Cell key={i} fill={e.color} />)}</Pie><RechartsTooltip contentStyle={tooltipStyle} /></PieChart></ResponsiveContainer><div className="flex-1 space-y-2">{sourceData.map((s) => <div key={s.name} className="flex items-center justify-between"><div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: s.color }} /><span className="text-sm text-gray-600 dark:text-gray-400">{s.name}</span></div><span className="text-sm font-semibold text-gray-800 dark:text-gray-200">{s.value}</span></div>)}</div></div>
           </div>
         )}
       </div>
+
+      {/* ── Row 3: Segmentation + Churn Risk + Top Value ────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        {/* Profile Distribution */}
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}
+          className="bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl p-5">
+          <div className="flex items-center gap-2.5 mb-4">
+            <div className="w-8 h-8 rounded-xl bg-purple-500/10 flex items-center justify-center"><Shield size={16} className="text-purple-500" /></div>
+            <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100">Segmentação</h3>
+          </div>
+          <div className="space-y-3">
+            {profileDistribution.map((p) => (
+              <div key={p.profile} className="flex items-center gap-3">
+                <span className="text-base w-6 text-center">{p.emoji}</span>
+                <span className="text-sm text-gray-600 dark:text-gray-400 w-24">{p.label}</span>
+                <div className="flex-1 h-5 bg-gray-50 dark:bg-white/[0.02] rounded-md overflow-hidden">
+                  <motion.div initial={{ width: 0 }} animate={{ width: `${p.pct}%` }} transition={{ duration: 0.5 }}
+                    className="h-full rounded-md bg-gradient-to-r from-red-500/70 to-red-500/40" />
+                </div>
+                <span className="text-sm font-semibold text-gray-700 dark:text-gray-300 w-8 text-right">{p.count}</span>
+              </div>
+            ))}
+            {profileDistribution.length === 0 && <p className="text-xs text-gray-400 py-4 text-center">Sem dados de perfil</p>}
+          </div>
+        </motion.div>
+
+        {/* Churn Risk Alerts */}
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.35 }}
+          className="bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl p-5">
+          <div className="flex items-center gap-2.5 mb-4">
+            <div className="w-8 h-8 rounded-xl bg-orange-500/10 flex items-center justify-center"><AlertTriangle size={16} className="text-orange-500" /></div>
+            <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100">Risco de Churn</h3>
+          </div>
+          <div className="space-y-2.5">
+            {churnRiskContacts.map((c) => {
+              const cl = getChurnLabel(c.scores!.churnRisk);
+              return (
+                <div key={c.id} className="flex items-center gap-3 p-2.5 rounded-xl bg-gray-50 dark:bg-white/[0.02] border border-gray-100 dark:border-white/[0.04]">
+                  <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-gray-200 to-gray-300 dark:from-gray-700 dark:to-gray-600 flex items-center justify-center text-[10px] font-bold text-gray-600 dark:text-gray-300">
+                    {getInitials(c.name)}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">{c.name}</p>
+                    <p className="text-xs text-gray-400">{c.suggestedAction || 'Reativar contato'}</p>
+                  </div>
+                  <span className={cn('text-xs font-bold px-2 py-1 rounded-md shrink-0', cl.bg, cl.color)}>
+                    {c.scores!.churnRisk}%
+                  </span>
+                </div>
+              );
+            })}
+            {churnRiskContacts.length === 0 && <p className="text-xs text-gray-400 py-4 text-center">Nenhum contato em risco</p>}
+          </div>
+        </motion.div>
+
+        {/* Top Value Clients */}
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}
+          className="bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl p-5">
+          <div className="flex items-center gap-2.5 mb-4">
+            <div className="w-8 h-8 rounded-xl bg-emerald-500/10 flex items-center justify-center"><DollarSign size={16} className="text-emerald-500" /></div>
+            <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100">Top Clientes (Valor)</h3>
+          </div>
+          <div className="space-y-2.5">
+            {topValueContacts.map((c, i) => (
+              <div key={c.id} className="flex items-center gap-3 p-2.5 rounded-xl bg-gray-50 dark:bg-white/[0.02] border border-gray-100 dark:border-white/[0.04]">
+                <div className={cn('w-6 h-6 rounded-md flex items-center justify-center text-xs font-bold',
+                  i === 0 ? 'bg-amber-500/15 text-amber-600' : i === 1 ? 'bg-gray-300/30 text-gray-500' : i === 2 ? 'bg-orange-500/15 text-orange-500' : 'bg-gray-100 dark:bg-gray-800 text-gray-400')}>
+                  {i + 1}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">{c.name}</p>
+                  {c.relationshipHistory?.servicesContracted?.[0] && (
+                    <p className="text-xs text-gray-400 truncate">{c.relationshipHistory.servicesContracted[0]}</p>
+                  )}
+                </div>
+                <span className="text-sm font-bold text-emerald-600 dark:text-emerald-400 shrink-0">
+                  {formatCurrency(c.relationshipHistory?.totalSpent ?? 0)}
+                </span>
+              </div>
+            ))}
+            {topValueContacts.length === 0 && <p className="text-xs text-gray-400 py-4 text-center">Sem dados de valor</p>}
+          </div>
+        </motion.div>
+      </div>
+
+      {/* ── Row 4: Pending Actions ─────────────────────────────── */}
+      {pendingActions.length > 0 && (
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.45 }}
+          className="bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl p-5">
+          <div className="flex items-center gap-2.5 mb-4">
+            <div className="w-8 h-8 rounded-xl bg-amber-500/10 flex items-center justify-center"><Zap size={16} className="text-amber-500" /></div>
+            <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100">Ações Sugeridas Pendentes</h3>
+            <span className="text-xs font-semibold text-amber-600 dark:text-amber-400 bg-amber-500/10 px-2.5 py-0.5 rounded-full">{pendingActions.length}</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {pendingActions.map((c) => (
+              <div key={c.id} className="flex items-center gap-3 p-3 rounded-xl bg-amber-500/5 dark:bg-amber-500/5 border border-amber-200/30 dark:border-amber-500/15">
+                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-gray-200 to-gray-300 dark:from-gray-700 dark:to-gray-600 flex items-center justify-center text-[10px] font-bold text-gray-600 dark:text-gray-300 shrink-0">
+                  {getInitials(c.name)}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">{c.name}</p>
+                  <p className="text-xs text-amber-700 dark:text-amber-400 font-medium truncate">{c.suggestedAction}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </motion.div>
+      )}
     </div>
   );
 }
@@ -484,9 +704,22 @@ export default function CRMModule() {
 
   // CRUD handlers with hardened error logging
   const handleSaveContact = useCallback(async (data: Partial<CRMContact>) => {
-    if (!business?.id || !user) return; const now = new Date().toISOString();
-    try { if (editingContact) { await updateDoc(doc(db, 'crmContacts', editingContact.id), { ...data, updatedAt: now }); toast.success('Contato atualizado!'); } else { await addDoc(collection(db, 'crmContacts'), { ...data, businessId: business.id, score: data.score ?? 0, status: data.status ?? 'novo', source: data.source ?? 'outro', createdAt: now, updatedAt: now }); toast.success('Contato criado!'); } queryClient.invalidateQueries({ queryKey: ['crmContacts', business.id] }); setContactDialogOpen(false); setEditingContact(null); }
-    catch (err) { console.error('[CRM] Error saving contact:', err); toast.error('Erro ao salvar contato'); }
+    if (!business?.id || !user) return;
+    const now = new Date().toISOString();
+    // Firestore rejects undefined values — strip them
+    const clean: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(data)) { if (v !== undefined) clean[k] = v; }
+    try {
+      if (editingContact) {
+        await updateDoc(doc(db, 'crmContacts', editingContact.id), { ...clean, updatedAt: now });
+        toast.success('Contato atualizado!');
+      } else {
+        await addDoc(collection(db, 'crmContacts'), { ...clean, businessId: business.id, score: data.score ?? 0, status: data.status ?? 'novo', source: data.source ?? 'outro', createdAt: now, updatedAt: now });
+        toast.success('Contato criado!');
+      }
+      queryClient.invalidateQueries({ queryKey: ['crmContacts', business.id] });
+      setContactDialogOpen(false); setEditingContact(null);
+    } catch (err) { console.error('[CRM] Error saving contact:', err); toast.error('Erro ao salvar contato'); }
   }, [business?.id, user, editingContact, queryClient]);
 
   const handleDeleteContact = useCallback(async () => { if (!deleteContactConfirm || !business?.id) return; try { await deleteDoc(doc(db, 'crmContacts', deleteContactConfirm.id)); toast.success('Contato excluído'); queryClient.invalidateQueries({ queryKey: ['crmContacts', business.id] }); setDeleteContactConfirm(null); } catch (err) { console.error('[CRM] Error deleting contact:', err); toast.error('Erro ao excluir'); } }, [deleteContactConfirm, business?.id, queryClient]);
@@ -505,61 +738,222 @@ export default function CRMModule() {
 
   const handleTagsChange = useCallback(async (contactId: string, tags: string[]) => { if (!business?.id) return; try { await updateDoc(doc(db, 'crmContacts', contactId), { tags, updatedAt: new Date().toISOString() }); queryClient.invalidateQueries({ queryKey: ['crmContacts', business.id] }); } catch (err) { console.error('[CRM] Error updating tags:', err); toast.error('Erro ao atualizar tags'); } }, [business?.id, queryClient]);
 
+  // Quick stats for header
+  const hotLeads = contacts.filter((c) => c.scores?.churnRisk && c.scores.churnRisk >= 60).length;
+  const activeDealsCount = deals.filter((d) => d.stage !== 'fechamento').length;
+
   if (isLoading) return <CRMSkeleton />;
 
   return (
-    <div className="h-full flex flex-col p-4 sm:p-5 lg:p-7 overflow-hidden">
-      <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4 shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-red-500 to-red-700 flex items-center justify-center shadow-sm shadow-red-200 dark:shadow-red-900/30"><Target size={22} className="text-white" /></div>
-            <div><h1 className="text-2xl font-display font-bold text-gray-900 dark:text-gray-100">CRM Aevo</h1><p className="text-sm text-gray-500 dark:text-gray-400">Gestão de leads, conversas e vendas</p></div>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="relative hidden sm:block"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" /><input type="text" placeholder="Buscar lead..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-8 pr-3 py-2 w-48 bg-white dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700/50 rounded-xl text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400 transition-all" /></div>
-            <Tooltip title="Filtrar por tags" arrow><motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={() => setShowTagFilter(!showTagFilter)} className={cn('inline-flex items-center gap-1.5 px-3 py-2.5 border rounded-xl font-semibold text-sm transition-all', showTagFilter || filterTags.length > 0 ? 'bg-red-50 dark:bg-red-500/10 border-red-300 dark:border-red-500/30 text-red-600 dark:text-red-400' : 'bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300')}><Tag size={14} />{filterTags.length > 0 && <span className="text-xs bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center">{filterTags.length}</span>}</motion.button></Tooltip>
-            <FormControl size="small" sx={{ minWidth: 100 }} className="hidden sm:block"><Select value={filterSource} onChange={(e) => setFilterSource(e.target.value as typeof filterSource)} displayEmpty sx={{ borderRadius: '12px', fontSize: '0.8rem', height: 40 }}><MenuItem value="all">Origem</MenuItem>{ALL_SOURCES.map((s) => <MenuItem key={s} value={s}>{SOURCE_LABELS[s]}</MenuItem>)}</Select></FormControl>
-            <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={() => { setEditingContact(null); setContactDialogOpen(true); }} className="inline-flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl font-semibold text-sm"><UserPlus size={16} /> Contato</motion.button>
-            <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={() => { setEditingDeal(null); setDealDialogOpen(true); }} className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-red-600 to-red-500 text-white rounded-xl font-semibold text-sm shadow-sm shadow-red-200 dark:shadow-red-900/30"><Plus size={18} /> Novo Deal</motion.button>
-          </div>
-        </div>
+    <div className="h-full flex flex-col overflow-hidden">
 
-        {/* Tag filter bar */}
-        <AnimatePresence>{showTagFilter && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden mb-4">
-            <div className="flex items-center gap-2 flex-wrap p-3 bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-xl">
-              <span className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mr-1">Filtrar:</span>
-              {ALL_PRESET_TAGS.map((tag) => { const cfg = getTagConfig(tag); const isActive = filterTags.includes(tag); return <button key={tag} onClick={() => setFilterTags(isActive ? filterTags.filter((t) => t !== tag) : [...filterTags, tag])} className={cn('flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full border transition-all', isActive ? cn(cfg.bg, cfg.text, 'border-current/20') : 'bg-transparent border-gray-200 dark:border-gray-700 text-gray-400')}><span className={cn('w-1.5 h-1.5 rounded-full', isActive ? cfg.dot : 'bg-gray-400')} />{cfg.label}</button>; })}
-              {filterTags.length > 0 && <button onClick={() => setFilterTags([])} className="text-[10px] font-semibold text-gray-400 hover:text-red-500 ml-2">Limpar filtros</button>}
+      {/* ═══════════════════════════════════════════════════════════
+          HEADER — clean, no icon, integrated stats
+          ═══════════════════════════════════════════════════════════ */}
+      <div className="shrink-0 px-5 sm:px-6 lg:px-8 pt-5 sm:pt-6 lg:pt-7 pb-0">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-5">
+          {/* Title + quick stats */}
+          <div className="flex items-center gap-5">
+            <h1 className="text-3xl font-display font-bold text-gray-900 dark:text-gray-100 tracking-tight">CRM</h1>
+            <div className="hidden sm:flex items-center gap-4 pl-5 border-l border-gray-200 dark:border-gray-700/50">
+              <div className="flex items-center gap-1.5 text-sm">
+                <span className="font-semibold text-gray-800 dark:text-gray-200">{contacts.length}</span>
+                <span className="text-gray-400">contatos</span>
+              </div>
+              {activeDealsCount > 0 && (
+                <div className="flex items-center gap-1.5 text-sm">
+                  <span className="font-semibold text-blue-600 dark:text-blue-400">{activeDealsCount}</span>
+                  <span className="text-gray-400">deals ativos</span>
+                </div>
+              )}
+              {hotLeads > 0 && (
+                <div className="flex items-center gap-1.5 text-sm">
+                  <AlertTriangle size={14} className="text-orange-500" />
+                  <span className="font-semibold text-orange-600 dark:text-orange-400">{hotLeads}</span>
+                  <span className="text-gray-400">em risco</span>
+                </div>
+              )}
             </div>
-          </motion.div>
-        )}</AnimatePresence>
+          </div>
 
-        {/* Tab Nav */}
-        <div className="flex gap-1 p-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl mb-4 overflow-x-auto shadow-sm shrink-0">
-          {TABS.map((tab) => <button key={tab.key} onClick={() => setActiveTab(tab.key)} className={cn('flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium whitespace-nowrap transition-all', activeTab === tab.key ? 'bg-gray-900 dark:bg-gray-700 text-white shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 hover:bg-gray-50 dark:hover:bg-white/[0.04]')}>{tab.icon}{tab.label}</button>)}
+          {/* Actions */}
+          <div className="flex items-center gap-2.5">
+            {/* Search — only on pipeline/activities tabs */}
+            {(activeTab === 'kanban' || activeTab === 'atividades') && (
+              <div className="relative hidden sm:block">
+                <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input type="text" placeholder="Buscar..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-10 pr-4 py-2.5 w-52 bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700/50 rounded-xl text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400 focus:bg-white dark:focus:bg-white/[0.06] transition-all" />
+              </div>
+            )}
+
+            {/* Filter — only on pipeline */}
+            {activeTab === 'kanban' && (
+              <>
+                <Tooltip title="Filtrar por tags" arrow>
+                  <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
+                    onClick={() => setShowTagFilter(!showTagFilter)}
+                    className={cn('inline-flex items-center gap-1.5 px-3 py-2.5 border rounded-xl text-sm font-medium transition-all',
+                      showTagFilter || filterTags.length > 0
+                        ? 'bg-red-50 dark:bg-red-500/10 border-red-300 dark:border-red-500/30 text-red-600 dark:text-red-400'
+                        : 'bg-gray-50 dark:bg-white/[0.04] border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400')}>
+                    <Filter size={15} />
+                    {filterTags.length > 0 && <span className="text-xs bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center leading-none">{filterTags.length}</span>}
+                  </motion.button>
+                </Tooltip>
+                <FormControl size="small" sx={{ minWidth: 110 }} className="hidden sm:block">
+                  <Select value={filterSource} onChange={(e) => setFilterSource(e.target.value as typeof filterSource)}
+                    displayEmpty sx={{ borderRadius: '12px', fontSize: '0.875rem', height: 42, bgcolor: isDark ? 'rgba(255,255,255,0.04)' : '#F9FAFB' }}>
+                    <MenuItem value="all"><span className="text-gray-400">Origem</span></MenuItem>
+                    {ALL_SOURCES.map((s) => <MenuItem key={s} value={s}>{SOURCE_LABELS[s]}</MenuItem>)}
+                  </Select>
+                </FormControl>
+              </>
+            )}
+
+            <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
+              onClick={() => { setEditingContact(null); setContactDialogOpen(true); }}
+              className="inline-flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-white/[0.06] border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl font-semibold text-sm hover:border-gray-300 dark:hover:border-gray-600 transition-colors">
+              <UserPlus size={16} /> Contato
+            </motion.button>
+            <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
+              onClick={() => { setEditingDeal(null); setDealDialogOpen(true); }}
+              className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-red-600 to-red-500 text-white rounded-xl font-semibold text-sm shadow-sm shadow-red-500/20 dark:shadow-red-900/30">
+              <Plus size={17} /> Novo Deal
+            </motion.button>
+          </div>
         </div>
 
-        {/* Tab Content */}
-        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-        <AnimatePresence mode="wait">
-          <motion.div key={activeTab} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4, transition: { duration: 0.15 } }} transition={{ duration: 0.2 }} className="flex-1 flex flex-col min-h-0 h-full">
-            {activeTab === 'kanban' && <KanbanBoard contacts={contacts} onSelectContact={(c) => { setSelectedContact(c); setDetailOpen(true); }} selectedContactId={selectedContact?.id || null} onStatusChange={handleStatusChange} onNewContact={() => { setEditingContact(null); setContactDialogOpen(true); }} searchQuery={searchQuery} filterTags={filterTags} filterSource={filterSource} />}
-            {activeTab === 'inbox' && <OmnichannelInbox businessId={business?.id || ''} contacts={contacts} />}
-            {activeTab === 'atividades' && <div className="flex-1 overflow-y-auto min-h-0"><ActivitiesTab activities={activities} onEdit={(a) => { setEditingActivity(a); setActivityDialogOpen(true); }} onDelete={(a) => setDeleteActivityConfirm(a)} onToggle={handleToggleActivity} onNew={() => { setEditingActivity(null); setActivityDialogOpen(true); }} /></div>}
-            {activeTab === 'campanhas' && <div className="flex-1 overflow-y-auto min-h-0"><CampaignsTab businessId={business?.id || ''} /></div>}
-            {activeTab === 'metricas' && <div className="flex-1 overflow-y-auto min-h-0"><MetricsTab deals={deals} contacts={contacts} activities={activities} stages={PIPELINE_STAGES} isDark={isDark} metrics={pipelineMetrics} /></div>}
-          </motion.div>
-        </AnimatePresence>
+        {/* ═══════════════════════════════════════════════════════════
+            NAVIGATION — underline tabs, clean and minimal
+            ═══════════════════════════════════════════════════════════ */}
+        <div className="flex items-center gap-1 border-b border-gray-200 dark:border-gray-700/50 -mx-1">
+          {TABS.map((tab) => {
+            const isActive = activeTab === tab.key;
+            return (
+              <button key={tab.key} onClick={() => setActiveTab(tab.key)}
+                className={cn(
+                  'relative flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors whitespace-nowrap rounded-t-lg',
+                  isActive
+                    ? 'text-red-600 dark:text-red-400'
+                    : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300',
+                )}>
+                <span className={cn(isActive ? 'text-red-500 dark:text-red-400' : 'text-gray-400 dark:text-gray-500')}>{tab.icon}</span>
+                {tab.label}
+                {isActive && (
+                  <motion.div layoutId="crm-tab-underline"
+                    className="absolute bottom-0 left-2 right-2 h-[2px] bg-red-500 dark:bg-red-400 rounded-full"
+                    transition={{ type: 'spring', stiffness: 400, damping: 30 }} />
+                )}
+              </button>
+            );
+          })}
         </div>
       </div>
 
+      {/* ═══════════════════════════════════════════════════════════
+          TAG FILTER BAR — collapsible
+          ═══════════════════════════════════════════════════════════ */}
+      <AnimatePresence>{showTagFilter && (
+        <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden shrink-0 px-5 sm:px-6 lg:px-8">
+          <div className="flex items-center gap-2.5 flex-wrap py-3 mt-2">
+            <span className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mr-1">Tags:</span>
+            {ALL_PRESET_TAGS.map((tag) => {
+              const cfg = getTagConfig(tag);
+              const isActiveTag = filterTags.includes(tag);
+              return (
+                <button key={tag} onClick={() => setFilterTags(isActiveTag ? filterTags.filter((t) => t !== tag) : [...filterTags, tag])}
+                  className={cn('flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-full border transition-all',
+                    isActiveTag ? cn(cfg.bg, cfg.text, 'border-current/20') : 'bg-transparent border-gray-200 dark:border-gray-700 text-gray-400')}>
+                  <span className={cn('w-2 h-2 rounded-full', isActiveTag ? cfg.dot : 'bg-gray-400')} />
+                  {cfg.label}
+                </button>
+              );
+            })}
+            {filterTags.length > 0 && <button onClick={() => setFilterTags([])} className="text-xs font-semibold text-gray-400 hover:text-red-500 ml-1">Limpar</button>}
+          </div>
+        </motion.div>
+      )}</AnimatePresence>
+
+      {/* ═══════════════════════════════════════════════════════════
+          CONTENT — full remaining height
+          ═══════════════════════════════════════════════════════════ */}
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden px-5 sm:px-6 lg:px-8 pt-4 pb-5">
+        <AnimatePresence mode="wait">
+          <motion.div key={activeTab}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4, transition: { duration: 0.12 } }}
+            transition={{ duration: 0.18 }}
+            className="flex-1 flex flex-col min-h-0 h-full">
+
+            {activeTab === 'kanban' && (
+              <KanbanBoard contacts={contacts}
+                onSelectContact={(c) => { setSelectedContact(c); setDetailOpen(true); }}
+                selectedContactId={selectedContact?.id || null}
+                onStatusChange={handleStatusChange}
+                onNewContact={() => { setEditingContact(null); setContactDialogOpen(true); }}
+                searchQuery={searchQuery} filterTags={filterTags} filterSource={filterSource} />
+            )}
+
+            {activeTab === 'inbox' && (
+              <OmnichannelInbox businessId={business?.id || ''} contacts={contacts} />
+            )}
+
+            {activeTab === 'atividades' && (
+              <div className="flex-1 overflow-y-auto min-h-0">
+                <ActivitiesTab activities={activities}
+                  onEdit={(a) => { setEditingActivity(a); setActivityDialogOpen(true); }}
+                  onDelete={(a) => setDeleteActivityConfirm(a)}
+                  onToggle={handleToggleActivity}
+                  onNew={() => { setEditingActivity(null); setActivityDialogOpen(true); }} />
+              </div>
+            )}
+
+            {activeTab === 'campanhas' && (
+              <div className="flex-1 overflow-y-auto min-h-0">
+                <CampaignsTab businessId={business?.id || ''} />
+              </div>
+            )}
+
+            {activeTab === 'metricas' && (
+              <div className="flex-1 overflow-y-auto min-h-0">
+                <MetricsTab deals={deals} contacts={contacts} activities={activities}
+                  stages={PIPELINE_STAGES} isDark={isDark} metrics={pipelineMetrics} />
+              </div>
+            )}
+          </motion.div>
+        </AnimatePresence>
+      </div>
+
+      {/* ═══════════════════════════════════════════════════════════
+          OVERLAYS & DIALOGS
+          ═══════════════════════════════════════════════════════════ */}
+
       {/* Lead Detail Panel */}
-      <AnimatePresence>{detailOpen && selectedContact && (<><motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/30 backdrop-blur-sm z-30" onClick={() => setDetailOpen(false)} /><LeadDetailPanel contact={selectedContact} activities={activities} onClose={() => setDetailOpen(false)} onEdit={() => { setEditingContact(selectedContact); setContactDialogOpen(true); setDetailOpen(false); }} onDelete={() => { setDeleteContactConfirm(selectedContact); setDetailOpen(false); }} onTagsChange={(tags) => handleTagsChange(selectedContact.id, tags)} onSchedule={() => { setScheduleContact(selectedContact); setScheduleDialogOpen(true); }} onOpenInbox={() => { setActiveTab('inbox'); setDetailOpen(false); }} /></>)}</AnimatePresence>
+      <AnimatePresence>
+        {detailOpen && selectedContact && (
+          <>
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/30 backdrop-blur-sm z-30" onClick={() => setDetailOpen(false)} />
+            <LeadDetailPanel contact={selectedContact} activities={activities}
+              onClose={() => setDetailOpen(false)}
+              onEdit={() => { setEditingContact(selectedContact); setContactDialogOpen(true); setDetailOpen(false); }}
+              onDelete={() => { setDeleteContactConfirm(selectedContact); setDetailOpen(false); }}
+              onTagsChange={(tags) => handleTagsChange(selectedContact.id, tags)}
+              onSchedule={() => { setScheduleContact(selectedContact); setScheduleDialogOpen(true); }}
+              onOpenInbox={() => { setActiveTab('inbox'); setDetailOpen(false); }} />
+          </>
+        )}
+      </AnimatePresence>
 
       {/* Schedule Dialog */}
-      {scheduleContact && <ScheduleActionDialog open={scheduleDialogOpen} onClose={() => { setScheduleDialogOpen(false); setScheduleContact(null); }} contact={scheduleContact} businessId={business?.id || ''} userId={user?.uid || ''} userName={user?.name || ''} onCreated={() => queryClient.invalidateQueries({ queryKey: ['crmActivities', business?.id] })} />}
+      {scheduleContact && (
+        <ScheduleActionDialog open={scheduleDialogOpen}
+          onClose={() => { setScheduleDialogOpen(false); setScheduleContact(null); }}
+          contact={scheduleContact} businessId={business?.id || ''} userId={user?.uid || ''} userName={user?.name || ''}
+          onCreated={() => queryClient.invalidateQueries({ queryKey: ['crmActivities', business?.id] })} />
+      )}
 
       {/* Form Dialogs */}
       <ContactFormDialog open={contactDialogOpen} onClose={() => { setContactDialogOpen(false); setEditingContact(null); }} onSave={handleSaveContact} contact={editingContact} members={members} />

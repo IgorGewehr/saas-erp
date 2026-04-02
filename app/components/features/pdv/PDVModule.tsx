@@ -53,7 +53,7 @@ import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, doc } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
-import type { Product, Service, Client, Sale, SaleItem, Payment, PaymentMethod } from '@/lib/types';
+import type { Product, Service, CRMContact, Sale, SaleItem, Payment, PaymentMethod } from '@/lib/types';
 
 // ==========================================
 // TYPES & CONSTANTS
@@ -129,7 +129,7 @@ export default function PDVModule() {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState('Todos');
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [selectedClient, setSelectedClient] = useState<Client | null>(null);
+  const [selectedClient, setSelectedClient] = useState<CRMContact | null>(null);
   const [discountValue, setDiscountValue] = useState('');
   const [discountType, setDiscountType] = useState<'reais' | 'percent'>('reais');
   const [payments, setPayments] = useState<Payment[]>([]);
@@ -187,16 +187,16 @@ export default function PDVModule() {
   });
 
   const { data: clients = [], isLoading: loadingClients } = useQuery({
-    queryKey: ['clients', business?.id],
+    queryKey: ['crmContacts', business?.id],
     queryFn: async () => {
       const q = query(
-        collection(db, 'clients'),
+        collection(db, 'crmContacts'),
         where('businessId', '==', business!.id),
         where('isActive', '==', true),
-        orderBy('nome', 'asc'),
+        orderBy('name', 'asc'),
       );
       const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Client));
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as CRMContact));
     },
     enabled: !!business?.id,
   });
@@ -380,7 +380,7 @@ export default function PDVModule() {
       const saleData = {
         businessId: business.id,
         clientId: selectedClient?.id || null,
-        clientName: selectedClient?.nome || null,
+        clientName: selectedClient?.name || null,
         items: cart.map(item => ({
           id: generateId(),
           productId: item.productId || null,
@@ -436,13 +436,13 @@ export default function PDVModule() {
         businessId: business.id,
         type: 'receita',
         category: 'Vendas',
-        description: `Venda ${selectedClient?.nome ? `- ${selectedClient.nome}` : ''}`,
+        description: `Venda ${selectedClient?.name ? `- ${selectedClient.name}` : ''}`,
         amount: total,
         dueDate: now.split('T')[0],
         paymentDate: now.split('T')[0],
         status: 'pago',
         clientId: selectedClient?.id || null,
-        clientName: selectedClient?.nome || null,
+        clientName: selectedClient?.name || null,
         saleId: docRef.id,
         paymentMethod: payments[0]?.method || 'dinheiro',
         createdAt: now,
@@ -451,7 +451,7 @@ export default function PDVModule() {
 
       // Update client stats
       if (selectedClient) {
-        await updateDoc(doc(db, 'clients', selectedClient.id), {
+        await updateDoc(doc(db, 'crmContacts', selectedClient.id), {
           totalSpent: (selectedClient.totalSpent || 0) + total,
           visitCount: (selectedClient.visitCount || 0) + 1,
           lastVisit: now,
@@ -463,7 +463,7 @@ export default function PDVModule() {
       queryClient.invalidateQueries({ queryKey: ['sales'] });
       queryClient.invalidateQueries({ queryKey: ['products'] });
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
-      queryClient.invalidateQueries({ queryKey: ['clients'] });
+      queryClient.invalidateQueries({ queryKey: ['crmContacts'] });
 
       setLastSaleId(docRef.id);
       setSaleComplete(true);
@@ -1004,7 +1004,7 @@ export default function PDVModule() {
           {/* Client Selector */}
           <Autocomplete
             options={clients}
-            getOptionLabel={(option) => option.nome}
+            getOptionLabel={(option) => option.name}
             value={selectedClient}
             onChange={(_, value) => setSelectedClient(value)}
             size="small"
@@ -1042,10 +1042,10 @@ export default function PDVModule() {
               <li {...props} key={option.id}>
                 <div className="flex items-center gap-3 py-1">
                   <div className="w-8 h-8 rounded-full bg-red-50 dark:bg-red-500/10 flex items-center justify-center text-xs font-bold text-red-600 dark:text-red-400">
-                    {option.nome.split(' ').map(n => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()}
+                    {option.name.split(' ').map(n => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()}
                   </div>
                   <div>
-                    <p className="text-sm font-medium text-slate-900 dark:text-gray-100">{option.nome}</p>
+                    <p className="text-sm font-medium text-slate-900 dark:text-gray-100">{option.name}</p>
                     <p className="text-xs text-slate-400 dark:text-gray-500">{option.visitCount} visitas</p>
                   </div>
                 </div>
@@ -1470,7 +1470,7 @@ export default function PDVModule() {
                       <p className="text-xs text-slate-400 dark:text-gray-500 uppercase tracking-widest">Resumo da Venda</p>
                       {selectedClient && (
                         <p className="text-xs text-slate-500 dark:text-gray-400 mt-1">
-                          Cliente: {selectedClient.nome}
+                          Cliente: {selectedClient.name}
                         </p>
                       )}
                     </div>

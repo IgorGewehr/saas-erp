@@ -31,7 +31,7 @@ import { collection, getDocs, query, where, doc, setDoc, updateDoc, increment } 
 import { db, storage } from '@/lib/config/firebase';
 import { ref as storageRef, getDownloadURL } from 'firebase/storage';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import type { FiscalDocType, PaymentMethod, Client } from '@/lib/types';
+import type { FiscalDocType, PaymentMethod, CRMContact } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatCPFCNPJ } from '@/lib/utils/format';
 
@@ -143,7 +143,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
   const { business, user } = useAuth();
   const config = getTypeConfig(type);
   const [isEmitting, setIsEmitting] = useState(false);
-  const [clients, setClients] = useState<Client[]>([]);
+  const [clients, setClients] = useState<CRMContact[]>([]);
 
   // ── NFSe State ──
   const [nfseForm, setNfseForm] = useState<NFSeFormData>({
@@ -195,9 +195,9 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
     if (!open || !business) return;
     const loadClients = async () => {
       try {
-        const q = query(collection(db, 'clients'), where('businessId', '==', business.id));
+        const q = query(collection(db, 'crmContacts'), where('businessId', '==', business.id));
         const snapshot = await getDocs(q);
-        setClients(snapshot.docs.map(d => ({ ...d.data(), id: d.id }) as Client));
+        setClients(snapshot.docs.map(d => ({ ...d.data(), id: d.id }) as CRMContact));
       } catch { /* silent */ }
     };
     loadClients();
@@ -223,23 +223,23 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
   const paymentsTotal = (payments: PaymentForm[]) => payments.reduce((sum, p) => sum + p.amount, 0);
 
   // ── Client Selection ──
-  const handleClientSelect = (client: Client | null) => {
+  const handleClientSelect = (client: CRMContact | null) => {
     if (!client) return;
     if (type === 'nfse') {
       setNfseForm(prev => ({
         ...prev,
         tomadorTipo: client.tipo === 'pj' ? 'cnpj' : 'cpf',
-        tomadorDocumento: client.cpfCnpj,
-        tomadorNome: client.nome,
+        tomadorDocumento: client.cpfCnpj || '',
+        tomadorNome: client.name,
         tomadorEmail: client.email || '',
         tomadorPhone: client.phone || '',
       }));
     } else if (type === 'nfce') {
-      setNfceConsumidorCpf(client.cpfCnpj);
-      setNfceConsumidorNome(client.nome);
+      setNfceConsumidorCpf(client.cpfCnpj || '');
+      setNfceConsumidorNome(client.name);
     } else {
-      setNfeRecipientDoc(client.cpfCnpj);
-      setNfeRecipientName(client.nome);
+      setNfeRecipientDoc(client.cpfCnpj || '');
+      setNfeRecipientName(client.name);
       setNfeRecipientIE(client.inscricaoEstadual || '');
       setNfeRecipientIndicadorIE(client.indicadorIE || (client.tipo === 'pj' ? '1' : '9'));
       if (client.endereco) {
@@ -431,7 +431,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
             descricao: item.description,
             ncm: item.ncm || '00000000',
             cest: item.cest || undefined,
-            cfop: item.cfop || fiscalConfig?.cfops?.defaultSales || '5102',
+            cfop: item.cfop || '5102',
             unidade: item.unit || 'UN',
             quantidade: item.quantity,
             valorUnitario: item.unitPrice,
@@ -444,10 +444,10 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
           },
           imposto: {
             icms: isSimples
-              ? { orig: item.icmsOrigem || '0', csosn: fiscalConfig?.taxation?.icms?.cstCsosn || '400' }
-              : { orig: item.icmsOrigem || '0', cst: fiscalConfig?.taxation?.icms?.cstCsosn || '40', modBC: '3', valorBC: parseFloat((item.quantity * item.unitPrice).toFixed(2)), aliquota: fiscalConfig?.taxation?.icms?.rate || 0, valor: 0 },
-            pis: { cst: fiscalConfig?.taxation?.pis?.cst || '07' },
-            cofins: { cst: fiscalConfig?.taxation?.cofins?.cst || '07' },
+              ? { orig: item.icmsOrigem || '0', csosn: '400' }
+              : { orig: item.icmsOrigem || '0', cst: '00', modBC: '3', valorBC: parseFloat((item.quantity * item.unitPrice).toFixed(2)), aliquota: 18, valor: 0 },
+            pis: { cst: isSimples ? '07' : '01' },
+            cofins: { cst: isSimples ? '07' : '01' },
           },
         })),
         pagamento: {
@@ -582,7 +582,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
             descricao: item.description,
             ncm: item.ncm || '00000000',
             cest: item.cest || undefined,
-            cfop: item.cfop || fiscalConfig?.cfops?.defaultSales || '5102',
+            cfop: item.cfop || '5102',
             unidade: item.unit || 'UN',
             quantidade: item.quantity,
             valorUnitario: item.unitPrice,
@@ -595,10 +595,10 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
           },
           imposto: {
             icms: isSimples
-              ? { orig: item.icmsOrigem || '0', csosn: fiscalConfig?.taxation?.icms?.cstCsosn || '400' }
-              : { orig: item.icmsOrigem || '0', cst: fiscalConfig?.taxation?.icms?.cstCsosn || '40', modBC: '3', valorBC: parseFloat((item.quantity * item.unitPrice).toFixed(2)), aliquota: fiscalConfig?.taxation?.icms?.rate || 0, valor: 0 },
-            pis: { cst: fiscalConfig?.taxation?.pis?.cst || '07' },
-            cofins: { cst: fiscalConfig?.taxation?.cofins?.cst || '07' },
+              ? { orig: item.icmsOrigem || '0', csosn: '400' }
+              : { orig: item.icmsOrigem || '0', cst: '00', modBC: '3', valorBC: parseFloat((item.quantity * item.unitPrice).toFixed(2)), aliquota: 18, valor: 0 },
+            pis: { cst: isSimples ? '07' : '01' },
+            cofins: { cst: isSimples ? '07' : '01' },
           },
         })),
         transporte: { modFrete: '9' },
@@ -741,7 +741,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
                 {/* Client search */}
                 <Autocomplete
                   options={clients}
-                  getOptionLabel={(opt) => `${opt.nome} — ${formatCPFCNPJ(opt.cpfCnpj)}`}
+                  getOptionLabel={(opt) => `${opt.name}${opt.cpfCnpj ? ` — ${formatCPFCNPJ(opt.cpfCnpj)}` : ''}`}
                   onChange={(_, val) => handleClientSelect(val)}
                   size="small"
                   noOptionsText="Nenhum cliente encontrado"
@@ -1026,7 +1026,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
                 </div>
                 <Autocomplete
                   options={clients}
-                  getOptionLabel={(opt) => `${opt.nome} — ${formatCPFCNPJ(opt.cpfCnpj)}`}
+                  getOptionLabel={(opt) => `${opt.name}${opt.cpfCnpj ? ` — ${formatCPFCNPJ(opt.cpfCnpj)}` : ''}`}
                   onChange={(_, val) => handleClientSelect(val)}
                   size="small"
                   noOptionsText="Nenhum cliente encontrado"

@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-
-const SEFAZ_API_URL = process.env.SEFAZ_API_URL;
-const SEFAZ_API_KEY = process.env.SEFAZ_API_KEY;
+import { inutilizarNFe } from '@/lib/services/sefaz-gateway';
 
 interface InutilizarBody {
   ano: number;
@@ -20,13 +18,6 @@ interface InutilizarBody {
 
 export async function POST(request: NextRequest) {
   try {
-    if (!SEFAZ_API_URL || !SEFAZ_API_KEY) {
-      return NextResponse.json(
-        { error: 'SEFAZ_API_URL ou SEFAZ_API_KEY nao configurada.' },
-        { status: 500 },
-      );
-    }
-
     const body: InutilizarBody = await request.json();
 
     if (!body.justificativa || body.justificativa.trim().length < 15) {
@@ -50,36 +41,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const url = `${SEFAZ_API_URL}/nfe/inutilizar`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${SEFAZ_API_KEY}`,
-      },
-      body: JSON.stringify({
-        ano: body.ano,
-        serie: body.serie,
-        numeroInicial: body.numeroInicial,
-        numeroFinal: body.numeroFinal,
-        justificativa: body.justificativa.trim(),
-        ufEmitente: body.ufEmitente,
-        cnpj: body.cnpj.replace(/\D/g, ''),
-        modelo: body.modelo || '55',
-        certificado: body.certificado,
-      }),
+    const result = await inutilizarNFe({
+      cnpj: body.cnpj.replace(/\D/g, ''),
+      serie: body.serie,
+      numeroInicial: body.numeroInicial,
+      numeroFinal: body.numeroFinal,
+      justificativa: body.justificativa.trim(),
+      modelo: body.modelo || '55',
+      ano: body.ano?.toString().slice(-2) || new Date().getFullYear().toString().slice(-2),
+      ufEmitente: body.ufEmitente,
+      certificado: body.certificado,
     });
 
-    const responseData = await response.json();
-
-    if (!response.ok) {
-      return NextResponse.json(
-        { error: 'Erro ao inutilizar numeracao.', details: responseData, statusCode: response.status },
-        { status: response.status },
-      );
-    }
-
-    return NextResponse.json({ success: true, data: responseData });
+    return NextResponse.json({ success: true, data: result });
   } catch (error) {
     console.error('[Fiscal Inutilizar] Erro:', error);
     return NextResponse.json(

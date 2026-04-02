@@ -7,7 +7,6 @@ import { cn } from '@/lib/utils';
 
 // Lazy-loaded modules
 const DashboardModule  = lazy(() => import('@/app/components/features/dashboard/DashboardModule'));
-const ClientsModule    = lazy(() => import('@/app/components/features/clients/ClientsModule'));
 const AgendaModule     = lazy(() => import('@/app/components/features/agenda/AgendaModule'));
 const PDVModule        = lazy(() => import('@/app/components/features/pdv/PDVModule'));
 const FinancialModule  = lazy(() => import('@/app/components/features/financial/FinancialModule'));
@@ -125,7 +124,6 @@ export default function AppPage() {
   const renderModule = () => {
     switch (activePage) {
       case 'Dashboard':    return <Suspense fallback={fallback}><DashboardModule /></Suspense>;
-      case 'Clientes':     return <Suspense fallback={fallback}><ClientsModule /></Suspense>;
       case 'CRM':          return <Suspense fallback={fallback}><CRMModule /></Suspense>;
       case 'Agenda':       return <Suspense fallback={fallback}><AgendaModule /></Suspense>;
       case 'Conversas':    return <Suspense fallback={fallback}><ConversasModule /></Suspense>;
