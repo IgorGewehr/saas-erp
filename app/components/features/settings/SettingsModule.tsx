@@ -1,5 +1,7 @@
 'use client';
 
+import { useTranslation } from 'react-i18next';
+
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -231,6 +233,7 @@ const STATUS_OPTIONS: { value: UserStatus; label: string; dot: string; text: str
 ];
 
 function ProfileTab() {
+  const { t } = useTranslation();
   const { user, business, updateUserProfile } = useAuth();
   const [isSaving, setIsSaving]                 = useState(false);
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
@@ -393,9 +396,9 @@ function ProfileTab() {
         serviceIds: selectedServiceIds,
         workingHours,
       });
-      toast.success('Agenda atualizada com sucesso!');
+      toast.success(t('settings.profile.scheduleSaved', 'Agenda atualizada com sucesso!'));
     } catch {
-      toast.error('Erro ao salvar a agenda');
+      toast.error(t('settings.profile.scheduleError', 'Erro ao salvar a agenda'));
     } finally {
       setIsSavingSchedule(false);
     }
@@ -414,7 +417,7 @@ function ProfileTab() {
       className="space-y-6"
     >
       {/* Avatar & Status */}
-      <SectionCard title="Foto de Perfil" icon={UserCircle}>
+      <SectionCard title={t('settings.profile.photoTitle', 'Foto de Perfil')} icon={UserCircle}>
         <div className="flex flex-col sm:flex-row items-start sm:items-center gap-6">
           {/* Avatar */}
           <div className="relative group flex-shrink-0">
@@ -467,9 +470,9 @@ function ProfileTab() {
       </SectionCard>
 
       {/* Status */}
-      <SectionCard title="Status de Presença" icon={Wifi}>
+      <SectionCard title={t('settings.profile.statusTitle', 'Status de Presença')} icon={Wifi}>
         <div className="space-y-3">
-          <p className="text-sm text-gray-500 dark:text-gray-400">Controle como você aparece para os outros membros da equipe.</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400">{t('settings.profile.statusDesc', 'Controle como você aparece para os outros membros da equipe.')}</p>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             {STATUS_OPTIONS.map((opt) => {
               const isActive = currentStatus === opt.value;
@@ -501,18 +504,18 @@ function ProfileTab() {
       </SectionCard>
 
       {/* Personal Info */}
-      <SectionCard title="Informações Pessoais" icon={UserCircle}>
+      <SectionCard title={t('settings.profile.personalInfo', 'Informações Pessoais')} icon={UserCircle}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <FormField label="Nome completo" icon={UserCircle}>
+          <FormField label={t('settings.profile.fullName', 'Nome completo')} icon={UserCircle}>
             <input
               type="text"
               value={name}
               onChange={e => setName(e.target.value)}
-              placeholder="Seu nome completo"
+              placeholder={t('settings.profile.fullNamePlaceholder', 'Seu nome completo')}
               className={inputClasses}
             />
           </FormField>
-          <FormField label="Telefone" icon={Phone}>
+          <FormField label={t('settings.profile.phone', 'Telefone')} icon={Phone}>
             <input
               type="tel"
               value={phone}
@@ -522,7 +525,7 @@ function ProfileTab() {
               className={inputClasses}
             />
           </FormField>
-          <FormField label="E-mail" icon={Mail} className="md:col-span-2">
+          <FormField label={t('settings.profile.email', 'E-mail')} icon={Mail} className="md:col-span-2">
             <input
               type="email"
               value={user?.email || ''}
@@ -534,9 +537,9 @@ function ProfileTab() {
       </SectionCard>
 
       {/* Address */}
-      <SectionCard title="Endereço" icon={MapPin}>
+      <SectionCard title={t('settings.profile.address', 'Endereço')} icon={MapPin}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <FormField label="CEP" tooltip="Busca automática do endereço">
+          <FormField label={t('settings.profile.zipCode', 'CEP')} tooltip={t('settings.profile.zipTooltip', 'Busca automática do endereço')}>
             <input
               type="text"
               value={cep}
@@ -546,24 +549,24 @@ function ProfileTab() {
               className={inputClasses}
             />
           </FormField>
-          <FormField label="Logradouro">
-            <input type="text" value={logradouro} onChange={e => setLogradouro(e.target.value)} placeholder="Rua, Avenida, etc." className={inputClasses} />
+          <FormField label={t('settings.profile.street', 'Logradouro')}>
+            <input type="text" value={logradouro} onChange={e => setLogradouro(e.target.value)} placeholder={t('settings.profile.streetPlaceholder', 'Rua, Avenida, etc.')} className={inputClasses} />
           </FormField>
-          <FormField label="Número">
-            <input type="text" value={numero} onChange={e => setNumero(e.target.value)} placeholder="Nº" className={inputClasses} />
+          <FormField label={t('settings.profile.number', 'Número')}>
+            <input type="text" value={numero} onChange={e => setNumero(e.target.value)} placeholder={t('settings.profile.numberPlaceholder', 'Nº')} className={inputClasses} />
           </FormField>
-          <FormField label="Complemento">
-            <input type="text" value={complemento} onChange={e => setComplemento(e.target.value)} placeholder="Sala, Andar, etc." className={inputClasses} />
+          <FormField label={t('settings.profile.complement', 'Complemento')}>
+            <input type="text" value={complemento} onChange={e => setComplemento(e.target.value)} placeholder={t('settings.profile.complementPlaceholder', 'Sala, Andar, etc.')} className={inputClasses} />
           </FormField>
-          <FormField label="Bairro">
-            <input type="text" value={bairro} onChange={e => setBairro(e.target.value)} placeholder="Bairro" className={inputClasses} />
+          <FormField label={t('settings.profile.neighborhood', 'Bairro')}>
+            <input type="text" value={bairro} onChange={e => setBairro(e.target.value)} placeholder={t('settings.profile.neighborhood', 'Bairro')} className={inputClasses} />
           </FormField>
-          <FormField label="Município">
-            <input type="text" value={municipio} onChange={e => setMunicipio(e.target.value)} placeholder="Cidade" className={inputClasses} />
+          <FormField label={t('settings.profile.city', 'Município')}>
+            <input type="text" value={municipio} onChange={e => setMunicipio(e.target.value)} placeholder={t('settings.profile.cityPlaceholder', 'Cidade')} className={inputClasses} />
           </FormField>
-          <FormField label="UF">
+          <FormField label={t('settings.profile.state', 'UF')}>
             <select value={uf} onChange={e => setUf(e.target.value)} className={selectClasses}>
-              <option value="">Selecione...</option>
+              <option value="">{t('settings.profile.select', 'Selecione...')}</option>
               {UF_LIST.map(u => <option key={u} value={u}>{u}</option>)}
             </select>
           </FormField>
@@ -573,7 +576,7 @@ function ProfileTab() {
       {/* ─── Minha Agenda ─────────────────────────────────────────────────── */}
 
       {/* Services Selection */}
-      <SectionCard title="Meus Serviços" icon={Briefcase}>
+      <SectionCard title={t('settings.profile.servicesTitle', 'Meus Serviços')} icon={Briefcase}>
         <div className="space-y-3">
           <p className="text-sm text-gray-500 dark:text-gray-400">
             Selecione os serviços que você realiza. Eles aparecerão como opção na agenda.
@@ -588,8 +591,8 @@ function ProfileTab() {
           ) : services.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-8 text-center">
               <Briefcase className="w-8 h-8 text-gray-300 dark:text-gray-600 mb-2" />
-              <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Nenhum serviço cadastrado</p>
-              <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Cadastre serviços no módulo de Agenda.</p>
+              <p className="text-sm font-medium text-gray-500 dark:text-gray-400">{t('settings.profile.noServices', 'Nenhum serviço cadastrado')}</p>
+              <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{t('settings.profile.noServicesDesc', 'Cadastre serviços no módulo de Agenda.')}</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -643,7 +646,7 @@ function ProfileTab() {
       </SectionCard>
 
       {/* Working Hours */}
-      <SectionCard title="Horários de Trabalho" icon={Calendar}>
+      <SectionCard title={t('settings.profile.workingHours', 'Horários de Trabalho')} icon={Calendar}>
         <div className="space-y-3">
           <p className="text-sm text-gray-500 dark:text-gray-400">
             Configure seus horários de disponibilidade para cada dia da semana.
@@ -706,7 +709,7 @@ function ProfileTab() {
                           {timeSlots.map(t => <option key={t} value={t}>{t}</option>)}
                         </select>
                       </div>
-                      <span className="text-xs text-gray-400 dark:text-gray-500 font-medium">até</span>
+                      <span className="text-xs text-gray-400 dark:text-gray-500 font-medium">{t('settings.profile.until', 'até')}</span>
                       <select
                         value={day.end}
                         onChange={e => updateDaySchedule(dayIndex, 'end', e.target.value)}
@@ -729,12 +732,12 @@ function ProfileTab() {
 
       {/* Save Schedule */}
       <div className="flex justify-end">
-        <SaveButton onClick={handleSaveSchedule} loading={isSavingSchedule} label="Salvar Agenda" />
+        <SaveButton onClick={handleSaveSchedule} loading={isSavingSchedule} label={t('settings.profile.saveSchedule', 'Salvar Agenda')} />
       </div>
 
       {/* Save Profile */}
       <div className="flex justify-end">
-        <SaveButton onClick={handleSave} loading={isSaving} label="Salvar Perfil" />
+        <SaveButton onClick={handleSave} loading={isSaving} label={t('settings.profile.saveProfile', 'Salvar Perfil')} />
       </div>
     </motion.div>
   );
@@ -745,6 +748,7 @@ function ProfileTab() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function EmpresaTab() {
+  const { t } = useTranslation();
   const { business, refreshUser } = useAuth();
   const canEditSettings = true;
   const [isSaving, setIsSaving] = useState(false);
@@ -826,7 +830,7 @@ function EmpresaTab() {
     if (!file || !business) return;
     if (!file.type.startsWith('image/')) return;
     if (file.size > 2 * 1024 * 1024) {
-      toast.error('Logo deve ter no máximo 2MB');
+      toast.error(t('settings.company.logoMaxSize', 'Logo deve ter no máximo 2MB'));
       return;
     }
     const reader = new FileReader();
@@ -840,24 +844,24 @@ function EmpresaTab() {
       setLogoPreview(url);
       await setDoc(doc(db, 'businesses', business.id), { logo: url, updatedAt: new Date().toISOString() }, { merge: true });
       await refreshUser();
-      toast.success('Logo atualizada!');
+      toast.success(t('settings.company.logoSuccess', 'Logo atualizada!'));
     } catch {
-      toast.error('Erro ao fazer upload da logo');
+      toast.error(t('settings.company.logoError', 'Erro ao fazer upload da logo'));
     }
   };
 
   const validate = (): boolean => {
     const errs: Record<string, string> = {};
-    if (!nomeFantasia.trim()) errs.nomeFantasia = 'Nome Fantasia é obrigatório';
+    if (!nomeFantasia.trim()) errs.nomeFantasia = t('settings.company.errorTradeName', 'Nome Fantasia é obrigatório');
 
     const isMEI = companyType === 'mei';
     if (isMEI) {
-      if (cpf && !validateCPF(cpf)) errs.cpf = 'CPF inválido';
+      if (cpf && !validateCPF(cpf)) errs.cpf = t('settings.company.errorCpf', 'CPF inválido');
     } else {
-      if (cnpj && !validateCNPJ(cnpj)) errs.cnpj = 'CNPJ inválido';
+      if (cnpj && !validateCNPJ(cnpj)) errs.cnpj = t('settings.company.errorCnpj', 'CNPJ inválido');
     }
 
-    if (email && !validateEmail(email)) errs.email = 'Email inválido';
+    if (email && !validateEmail(email)) errs.email = t('settings.company.errorEmail', 'Email inválido');
     setErrors(errs);
     return Object.keys(errs).length === 0;
   };
@@ -897,10 +901,10 @@ function EmpresaTab() {
       );
 
       await refreshUser();
-      toast.success('Dados da empresa salvos com sucesso!');
+      toast.success(t('settings.company.saveSuccess', 'Dados da empresa salvos com sucesso!'));
     } catch (error) {
       console.error('Error saving:', error);
-      toast.error('Erro ao salvar. Tente novamente.');
+      toast.error(t('settings.company.saveError', 'Erro ao salvar. Tente novamente.'));
     } finally {
       setIsSaving(false);
     }
@@ -917,7 +921,7 @@ function EmpresaTab() {
     >
       <form onSubmit={handleSave} className="space-y-6">
         {/* Logo & Type */}
-        <SectionCard title="Identificação" icon={Briefcase}>
+        <SectionCard title={t('settings.company.identification', 'Identificação')} icon={Briefcase}>
           <div className="space-y-5">
             {/* Logo Upload */}
             <div>
@@ -941,44 +945,44 @@ function EmpresaTab() {
                 ) : (
                   <label className="w-20 h-20 rounded-xl border-2 border-dashed border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800/30 flex flex-col items-center justify-center cursor-pointer hover:border-red-400 dark:hover:border-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors duration-200">
                     <ImagePlus className="w-5 h-5 text-gray-400 dark:text-gray-500" />
-                    <span className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">Upload</span>
+                    <span className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">{t('settings.company.upload', 'Upload')}</span>
                     <input type="file" accept="image/*" onChange={handleLogoUpload} className="hidden" />
                   </label>
                 )}
-                <p className="text-xs text-gray-400 dark:text-gray-500">PNG ou JPG, max 2MB.</p>
+                <p className="text-xs text-gray-400 dark:text-gray-500">{t('settings.company.logoHelp', 'PNG ou JPG, max 2MB.')}</p>
               </div>
             </div>
 
             {/* Company Type */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <FormField label="Tipo de Empresa" icon={Briefcase} tooltip="Natureza jurídica da empresa">
+              <FormField label={t('settings.company.companyType', 'Tipo de Empresa')} icon={Briefcase} tooltip={t('settings.company.companyTypeTooltip', 'Natureza jurídica da empresa')}>
                 <select
                   value={companyType}
                   onChange={(e) => setCompanyType(e.target.value)}
                   className={selectClasses}
                   disabled={!canEditSettings}
                 >
-                  <option value="mei">MEI - Microempreendedor Individual</option>
-                  <option value="me">ME - Microempresa</option>
-                  <option value="epp">EPP - Empresa de Pequeno Porte</option>
-                  <option value="individual">Empresário Individual</option>
-                  <option value="ltda">LTDA - Sociedade Limitada</option>
-                  <option value="eireli">EIRELI</option>
-                  <option value="sa">S/A - Sociedade Anônima</option>
+                  <option value="mei">{t('settings.company.types.mei', 'MEI - Microempreendedor Individual')}</option>
+                  <option value="me">{t('settings.company.types.me', 'ME - Microempresa')}</option>
+                  <option value="epp">{t('settings.company.types.epp', 'EPP - Empresa de Pequeno Porte')}</option>
+                  <option value="individual">{t('settings.company.types.individual', 'Empresário Individual')}</option>
+                  <option value="ltda">{t('settings.company.types.ltda', 'LTDA - Sociedade Limitada')}</option>
+                  <option value="eireli">{t('settings.company.types.eireli', 'EIRELI')}</option>
+                  <option value="sa">{t('settings.company.types.sa', 'S/A - Sociedade Anônima')}</option>
                 </select>
               </FormField>
 
-              <FormField label="Regime Tributário (CRT)" icon={FileText} tooltip="Código de Regime Tributário">
+              <FormField label={t('settings.company.crt', 'Regime Tributário (CRT)')} icon={FileText} tooltip={t('settings.company.crtTooltip', 'Código de Regime Tributário')}>
                 <select
                   value={crt}
                   onChange={(e) => setCrt(e.target.value)}
                   className={selectClasses}
                   disabled={!canEditSettings}
                 >
-                  <option value="1">1 - Simples Nacional</option>
-                  <option value="2">2 - Simples Nacional - Excesso</option>
-                  <option value="3">3 - Regime Normal (Lucro Presumido/Real)</option>
-                  <option value="4">4 - MEI</option>
+                  <option value="1">{t('settings.company.crtOptions.1', '1 - Simples Nacional')}</option>
+                  <option value="2">{t('settings.company.crtOptions.2', '2 - Simples Nacional - Excesso')}</option>
+                  <option value="3">{t('settings.company.crtOptions.3', '3 - Regime Normal (Lucro Presumido/Real)')}</option>
+                  <option value="4">{t('settings.company.crtOptions.4', '4 - MEI')}</option>
                 </select>
               </FormField>
             </div>
@@ -986,25 +990,25 @@ function EmpresaTab() {
         </SectionCard>
 
         {/* Business Data */}
-        <SectionCard title="Dados da Empresa" icon={Store}>
+        <SectionCard title={t('settings.company.dataTitle', 'Dados da Empresa')} icon={Store}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <FormField label="Nome Fantasia" icon={Store} error={errors.nomeFantasia}>
+            <FormField label={t('settings.company.tradeName', 'Nome Fantasia')} icon={Store} error={errors.nomeFantasia}>
               <input
                 type="text"
                 value={nomeFantasia}
                 onChange={(e) => { setNomeFantasia(e.target.value); setErrors(p => ({ ...p, nomeFantasia: '' })); }}
-                placeholder="Nome fantasia da empresa"
+                placeholder={t('settings.company.tradeNamePlaceholder', 'Nome fantasia da empresa')}
                 className={inputClasses}
                 disabled={!canEditSettings}
               />
             </FormField>
 
-            <FormField label="Razão Social" icon={Building2}>
+            <FormField label={t('settings.company.companyName', 'Razão Social')} icon={Building2}>
               <input
                 type="text"
                 value={razaoSocial}
                 onChange={(e) => setRazaoSocial(e.target.value)}
-                placeholder="Razão social completa"
+                placeholder={t('settings.company.companyNamePlaceholder', 'Razão social completa')}
                 className={inputClasses}
                 disabled={!canEditSettings}
               />
@@ -1036,7 +1040,7 @@ function EmpresaTab() {
               </FormField>
             )}
 
-            <FormField label="Inscrição Estadual (IE)" icon={Hash}>
+            <FormField label={t('settings.company.stateRegistration', 'Inscrição Estadual (IE)')} icon={Hash}>
               <input
                 type="text"
                 value={inscricaoEstadual}
@@ -1047,12 +1051,12 @@ function EmpresaTab() {
               />
             </FormField>
 
-            <FormField label="Inscrição Municipal (IM)" icon={Hash}>
+            <FormField label={t('settings.company.municipalRegistration', 'Inscrição Municipal (IM)')} icon={Hash}>
               <input
                 type="text"
                 value={inscricaoMunicipal}
                 onChange={(e) => setInscricaoMunicipal(e.target.value)}
-                placeholder="Inscrição Municipal"
+                placeholder={t('settings.company.municipalRegistrationPlaceholder', 'Inscrição Municipal')}
                 className={inputClasses}
                 disabled={!canEditSettings}
               />
@@ -1061,9 +1065,9 @@ function EmpresaTab() {
         </SectionCard>
 
         {/* Contact */}
-        <SectionCard title="Contato" icon={Phone}>
+        <SectionCard title={t('settings.company.contact', 'Contato')} icon={Phone}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <FormField label="Telefone" icon={Phone}>
+            <FormField label={t('settings.profile.phone', 'Telefone')} icon={Phone}>
               <input
                 type="tel"
                 value={phone}
@@ -1075,12 +1079,12 @@ function EmpresaTab() {
               />
             </FormField>
 
-            <FormField label="E-mail" icon={Mail} error={errors.email}>
+            <FormField label={t('settings.profile.email', 'E-mail')} icon={Mail} error={errors.email}>
               <input
                 type="email"
                 value={email}
                 onChange={(e) => { setEmail(e.target.value); setErrors(p => ({ ...p, email: '' })); }}
-                placeholder="contato@empresa.com"
+                placeholder={t('settings.company.emailPlaceholder', 'contato@empresa.com')}
                 className={inputClasses}
                 disabled={!canEditSettings}
               />
@@ -1089,9 +1093,9 @@ function EmpresaTab() {
         </SectionCard>
 
         {/* Address */}
-        <SectionCard title="Endereço" icon={MapPin}>
+        <SectionCard title={t('settings.profile.address', 'Endereço')} icon={MapPin}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <FormField label="CEP" tooltip="Busca automática do endereço" error={errors.cep}>
+            <FormField label={t('settings.profile.zipCode', 'CEP')} tooltip={t('settings.profile.zipTooltip', 'Busca automática do endereço')} error={errors.cep}>
               <input
                 type="text"
                 value={cep}
@@ -1103,62 +1107,62 @@ function EmpresaTab() {
               />
             </FormField>
 
-            <FormField label="Logradouro">
+            <FormField label={t('settings.profile.street', 'Logradouro')}>
               <input
                 type="text"
                 value={logradouro}
                 onChange={(e) => setLogradouro(e.target.value)}
-                placeholder="Rua, Avenida, etc."
+                placeholder={t('settings.profile.streetPlaceholder', 'Rua, Avenida, etc.')}
                 className={inputClasses}
                 disabled={!canEditSettings}
               />
             </FormField>
 
-            <FormField label="Número">
+            <FormField label={t('settings.profile.number', 'Número')}>
               <input
                 type="text"
                 value={numero}
                 onChange={(e) => setNumero(e.target.value)}
-                placeholder="Nº"
+                placeholder={t('settings.profile.numberPlaceholder', 'Nº')}
                 className={inputClasses}
                 disabled={!canEditSettings}
               />
             </FormField>
 
-            <FormField label="Complemento">
+            <FormField label={t('settings.profile.complement', 'Complemento')}>
               <input
                 type="text"
                 value={complemento}
                 onChange={(e) => setComplemento(e.target.value)}
-                placeholder="Sala, Andar, etc."
+                placeholder={t('settings.profile.complementPlaceholder', 'Sala, Andar, etc.')}
                 className={inputClasses}
                 disabled={!canEditSettings}
               />
             </FormField>
 
-            <FormField label="Bairro">
+            <FormField label={t('settings.profile.neighborhood', 'Bairro')}>
               <input
                 type="text"
                 value={bairro}
                 onChange={(e) => setBairro(e.target.value)}
-                placeholder="Bairro"
+                placeholder={t('settings.profile.neighborhood', 'Bairro')}
                 className={inputClasses}
                 disabled={!canEditSettings}
               />
             </FormField>
 
-            <FormField label="Município">
+            <FormField label={t('settings.profile.city', 'Município')}>
               <input
                 type="text"
                 value={municipio}
                 onChange={(e) => setMunicipio(e.target.value)}
-                placeholder="Cidade"
+                placeholder={t('settings.profile.cityPlaceholder', 'Cidade')}
                 className={inputClasses}
                 disabled={!canEditSettings}
               />
             </FormField>
 
-            <FormField label="UF">
+            <FormField label={t('settings.profile.state', 'UF')}>
               <select
                 value={uf}
                 onChange={(e) => setUf(e.target.value)}
@@ -1172,7 +1176,7 @@ function EmpresaTab() {
               </select>
             </FormField>
 
-            <FormField label="Cód. Município IBGE" tooltip="Preenchido automaticamente pelo CEP">
+            <FormField label={t('settings.company.ibgeCode', 'Cód. Município IBGE')} tooltip={t('settings.company.ibgeTooltip', 'Preenchido automaticamente pelo CEP')}>
               <input
                 type="text"
                 value={codigoMunicipio}
@@ -1189,7 +1193,7 @@ function EmpresaTab() {
         {/* Save */}
         {canEditSettings && (
           <div className="flex justify-end pt-2">
-            <SaveButton loading={isSaving} label="Salvar Dados da Empresa" />
+            <SaveButton loading={isSaving} label={t('settings.company.saveButton', 'Salvar Dados da Empresa')} />
           </div>
         )}
       </form>
@@ -1202,7 +1206,8 @@ function EmpresaTab() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function FiscalTab() {
-  const { business, refreshUser } = useAuth();
+  const { t } = useTranslation();
+  const { user, business, refreshUser } = useAuth();
   const canEditFiscal = true;
 
   // ── Fiscal state ──
@@ -1306,8 +1311,8 @@ function FiscalTab() {
     setIsSavingEnv(true);
     try {
       await saveFiscalField({ environment });
-      toast.success('Ambiente fiscal salvo!');
-    } catch { toast.error('Erro ao salvar ambiente'); }
+      toast.success(t('settings.fiscal.envSaved', 'Ambiente fiscal salvo!'));
+    } catch { toast.error(t('settings.fiscal.envError', 'Erro ao salvar ambiente')); }
     finally { setIsSavingEnv(false); }
   };
 
@@ -1315,8 +1320,8 @@ function FiscalTab() {
     setIsSavingRegime(true);
     try {
       await saveFiscalField({ taxRegime, operationType, sellsInterstate, ibgeCodigoMunicipio: ibgeCode || null });
-      toast.success('Regime e operação salvos!');
-    } catch { toast.error('Erro ao salvar regime'); }
+      toast.success(t('settings.fiscal.regimeSaved', 'Regime e operação salvos!'));
+    } catch { toast.error(t('settings.fiscal.regimeError', 'Erro ao salvar regime')); }
     finally { setIsSavingRegime(false); }
   };
 
@@ -1324,8 +1329,8 @@ function FiscalTab() {
     setIsSavingNfe(true);
     try {
       await saveFiscalField({ nfeConfig: { series: nfeSeries, nextNumber: Number(nfeNextNumber) || 1, environment } });
-      toast.success('Configurações NF-e salvas!');
-    } catch { toast.error('Erro ao salvar NF-e'); }
+      toast.success(t('settings.fiscal.nfeSaved', 'Configurações NF-e salvas!'));
+    } catch { toast.error(t('settings.fiscal.nfeError', 'Erro ao salvar NF-e')); }
     finally { setIsSavingNfe(false); }
   };
 
@@ -1341,8 +1346,8 @@ function FiscalTab() {
           environment,
         },
       });
-      toast.success('Configurações NFC-e salvas!');
-    } catch { toast.error('Erro ao salvar NFC-e'); }
+      toast.success(t('settings.fiscal.nfceSaved', 'Configurações NFC-e salvas!'));
+    } catch { toast.error(t('settings.fiscal.nfceError', 'Erro ao salvar NFC-e')); }
     finally { setIsSavingNfce(false); }
   };
 
@@ -1351,8 +1356,8 @@ function FiscalTab() {
     try {
       const currentNfce = business?.fiscal?.nfceConfig || {};
       await saveFiscalField({ nfceConfig: { ...currentNfce, cscId, cscToken } });
-      toast.success('CSC salvo!');
-    } catch { toast.error('Erro ao salvar CSC'); }
+      toast.success(t('settings.fiscal.cscSaved', 'CSC salvo!'));
+    } catch { toast.error(t('settings.fiscal.cscError', 'Erro ao salvar CSC')); }
     finally { setIsSavingCsc(false); }
   };
 
@@ -1366,8 +1371,8 @@ function FiscalTab() {
           cofins: { cst: cofinsCst, rate: Number(cofinsRate) || 0 },
         },
       });
-      toast.success('Tributação salva!');
-    } catch { toast.error('Erro ao salvar tributação'); }
+      toast.success(t('settings.fiscal.taxationSaved', 'Tributação salva!'));
+    } catch { toast.error(t('settings.fiscal.taxationError', 'Erro ao salvar tributação')); }
     finally { setIsSavingTax(false); }
   };
 
@@ -1375,8 +1380,8 @@ function FiscalTab() {
     setIsSavingCfop(true);
     try {
       await saveFiscalField({ cfops: { defaultSales: cfopSales, defaultPurchases: cfopPurchases } });
-      toast.success('CFOPs salvos!');
-    } catch { toast.error('Erro ao salvar CFOPs'); }
+      toast.success(t('settings.fiscal.cfopsSaved', 'CFOPs salvos!'));
+    } catch { toast.error(t('settings.fiscal.cfopsError', 'Erro ao salvar CFOPs')); }
     finally { setIsSavingCfop(false); }
   };
 
@@ -1388,8 +1393,8 @@ function FiscalTab() {
         notificationServerUrl: notificationServerUrl.trim(),
         notificationServerKey: notificationServerKey.trim(),
       });
-      toast.success('Configurações de contabilidade salvas!');
-    } catch { toast.error('Erro ao salvar'); }
+      toast.success(t('settings.fiscal.accountingSaved', 'Configurações de contabilidade salvas!'));
+    } catch { toast.error(t('settings.fiscal.accountSaveError', 'Erro ao salvar')); }
     finally { setIsSavingAccounting(false); }
   };
 
@@ -1398,12 +1403,12 @@ function FiscalTab() {
     const file = e.target.files?.[0];
     if (!file) return;
     if (!file.name.endsWith('.pfx') && !file.name.endsWith('.p12')) {
-      toast.error('Formato inválido. Envie um arquivo .pfx ou .p12');
+      toast.error(t('settings.fiscal.invalidFormat', 'Formato inválido. Envie um arquivo .pfx ou .p12'));
       e.target.value = '';
       return;
     }
     if (file.size > 256 * 1024) {
-      toast.error('Certificado muito grande. Máximo 256KB.');
+      toast.error(t('settings.fiscal.certTooLarge', 'Certificado muito grande. Máximo 256KB.'));
       e.target.value = '';
       return;
     }
@@ -1431,12 +1436,12 @@ function FiscalTab() {
         },
       });
 
-      toast.success('Certificado digital enviado com sucesso!');
+      toast.success(t('settings.fiscal.certUploadSuccess', 'Certificado digital enviado com sucesso!'));
       setCertFile(null);
       setCertPassword('');
     } catch (error) {
       console.error('Error uploading cert:', error);
-      toast.error('Erro ao enviar certificado');
+      toast.error(t('settings.fiscal.certUploadError', 'Erro ao enviar certificado'));
     } finally {
       setIsUploadingCert(false);
     }
@@ -1507,7 +1512,7 @@ function FiscalTab() {
       className="space-y-6"
     >
       {/* ── Certificate ── */}
-      <SectionCard title="Certificado Digital A1" icon={Key}>
+      <SectionCard title={t('settings.fiscal.certificateTitle', 'Certificado Digital A1')} icon={Key}>
         {hasCert ? (
           <div className="space-y-4">
             <div className={cn(
@@ -1583,8 +1588,8 @@ function FiscalTab() {
           <div className="space-y-4">
             <div className="border-2 border-dashed border-gray-200 dark:border-gray-700/50 rounded-xl p-6 text-center">
               <Upload className="h-10 w-10 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
-              <h3 className="font-medium text-gray-900 dark:text-gray-100">Nenhum certificado cadastrado</h3>
-              <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Faça upload do seu certificado A1 (.pfx ou .p12)</p>
+              <h3 className="font-medium text-gray-900 dark:text-gray-100">{t('settings.fiscal.noCert', 'Nenhum certificado cadastrado')}</h3>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">{t('settings.fiscal.uploadInstruction', 'Faça upload do seu certificado A1 (.pfx ou .p12)')}</p>
             </div>
             {canEditFiscal && (
               <CertificateUploadInline
@@ -1605,7 +1610,7 @@ function FiscalTab() {
       </SectionCard>
 
       {/* ── Emission Environment ── */}
-      <SectionCard title="Ambiente de Emissão" icon={Shield}>
+      <SectionCard title={t('settings.fiscal.environmentTitle', 'Ambiente de Emissão')} icon={Shield}>
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4 max-w-sm">
             {([
@@ -1634,7 +1639,7 @@ function FiscalTab() {
             <div className="p-4 bg-red-50 dark:bg-red-900/20 rounded-xl flex items-start gap-3">
               <AlertTriangle className="h-5 w-5 text-red-500 dark:text-red-400 flex-shrink-0" />
               <div>
-                <p className="font-medium text-red-600 dark:text-red-400">Atenção!</p>
+                <p className="font-medium text-red-600 dark:text-red-400">{t('settings.fiscal.attention', 'Atenção!')}</p>
                 <p className="text-sm text-gray-600 dark:text-gray-400">
                   Em produção, todas as notas têm validade fiscal e efeito legal perante a SEFAZ.
                 </p>
@@ -1643,59 +1648,59 @@ function FiscalTab() {
           )}
           {canEditFiscal && (
             <div className="flex justify-end">
-              <SaveButton onClick={handleSaveEnv} loading={isSavingEnv} label="Salvar Ambiente" variant="secondary" />
+              <SaveButton onClick={handleSaveEnv} loading={isSavingEnv} label={t('settings.fiscal.saveEnv', 'Salvar Ambiente')} variant="secondary" />
             </div>
           )}
         </div>
       </SectionCard>
 
       {/* ── Tax Regime ── */}
-      <SectionCard title="Regime e Operação" icon={Building2}>
+      <SectionCard title={t('settings.fiscal.regimeTitle', 'Regime e Operação')} icon={Building2}>
         <div className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <FormField label="Regime Tributário" tooltip="Regime fiscal da empresa">
+            <FormField label={t('settings.fiscal.taxRegime', 'Regime Tributário')} tooltip={t('settings.fiscal.taxRegimeTooltip', 'Regime fiscal da empresa')}>
               <select value={taxRegime} onChange={(e) => setTaxRegime(e.target.value)} className={selectClasses} disabled={!canEditFiscal}>
-                <option value="simples_nacional">Simples Nacional</option>
-                <option value="simples_nacional_excesso">Simples Nacional — Excesso</option>
-                <option value="lucro_presumido">Lucro Presumido</option>
-                <option value="lucro_real">Lucro Real</option>
+                <option value="simples_nacional">{t('settings.fiscal.regimeSimples', 'Simples Nacional')}</option>
+                <option value="simples_nacional_excesso">{t('settings.fiscal.regimeSimplesExcess', 'Simples Nacional — Excesso')}</option>
+                <option value="lucro_presumido">{t('settings.fiscal.regimeLucroPresumido', 'Lucro Presumido')}</option>
+                <option value="lucro_real">{t('settings.fiscal.regimeLucroReal', 'Lucro Real')}</option>
               </select>
             </FormField>
-            <FormField label="Tipo de Operação" tooltip="Tipo principal de operação">
+            <FormField label={t('settings.fiscal.operationType', 'Tipo de Operação')} tooltip={t('settings.fiscal.opTypeTooltip', 'Tipo principal de operação')}>
               <select value={operationType} onChange={(e) => setOperationType(e.target.value)} className={selectClasses} disabled={!canEditFiscal}>
-                <option value="saida">Saída (venda)</option>
-                <option value="entrada">Entrada (compra)</option>
+                <option value="saida">{t('settings.fiscal.opOutput', 'Saída (venda)')}</option>
+                <option value="entrada">{t('settings.fiscal.opInput', 'Entrada (compra)')}</option>
               </select>
             </FormField>
-            <FormField label="Vende Interestadual?" tooltip="Se vende para outros estados">
+            <FormField label={t('settings.fiscal.interstate', 'Vende Interestadual?')} tooltip={t('settings.fiscal.interstateTooltip', 'Se vende para outros estados')}>
               <select value={sellsInterstate ? 'true' : 'false'} onChange={(e) => setSellsInterstate(e.target.value === 'true')} className={selectClasses} disabled={!canEditFiscal}>
                 <option value="false">Não</option>
                 <option value="true">Sim</option>
               </select>
             </FormField>
-            <FormField label="Cód. IBGE Município" tooltip="Código IBGE de 7 dígitos">
+            <FormField label={t('settings.fiscal.ibgeCode', 'Cód. IBGE Município')} tooltip={t('settings.fiscal.ibgeCodeTooltip', 'Código IBGE de 7 dígitos')}>
               <input value={ibgeCode} onChange={(e) => setIbgeCode(e.target.value)} placeholder="3550308" maxLength={7} className={inputClasses} disabled={!canEditFiscal} />
             </FormField>
           </div>
           {canEditFiscal && (
             <div className="flex justify-end">
-              <SaveButton onClick={handleSaveRegime} loading={isSavingRegime} label="Salvar Regime" variant="secondary" />
+              <SaveButton onClick={handleSaveRegime} loading={isSavingRegime} label={t('settings.fiscal.saveRegime', 'Salvar Regime')} variant="secondary" />
             </div>
           )}
         </div>
       </SectionCard>
 
       {/* ── CSC NFC-e ── */}
-      <SectionCard title="CSC — NFC-e" icon={Shield}>
+      <SectionCard title={t('settings.fiscal.cscTitle', 'CSC — NFC-e')} icon={Shield}>
         <div className="space-y-4">
           <p className="text-sm text-gray-500 dark:text-gray-400">
             O CSC (Código de Segurança do Contribuinte) é gerado na SEFAZ estadual e obrigatório para emissão de NFC-e.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <FormField label="ID do CSC" tooltip="Identificador fornecido pela SEFAZ">
+            <FormField label={t('settings.fiscal.cscId', 'ID do CSC')} tooltip={t('settings.fiscal.cscIdTooltip', 'Identificador fornecido pela SEFAZ')}>
               <input value={cscId} onChange={(e) => setCscId(e.target.value)} placeholder="000001" className={inputClasses} disabled={!canEditFiscal} />
             </FormField>
-            <FormField label="Token do CSC" tooltip="Token fornecido pela SEFAZ">
+            <FormField label={t('settings.fiscal.cscToken', 'Token do CSC')} tooltip={t('settings.fiscal.cscTokenTooltip', 'Token fornecido pela SEFAZ')}>
               <div className="relative">
                 <input
                   type={showCscToken ? 'text' : 'password'}
@@ -1718,29 +1723,29 @@ function FiscalTab() {
           </div>
           {canEditFiscal && (
             <div className="flex justify-end">
-              <SaveButton onClick={handleSaveCsc} loading={isSavingCsc} label="Salvar CSC" variant="secondary" disabled={!cscId.trim() || !cscToken.trim()} />
+              <SaveButton onClick={handleSaveCsc} loading={isSavingCsc} label={t('settings.fiscal.saveCsc', 'Salvar CSC')} variant="secondary" disabled={!cscId.trim() || !cscToken.trim()} />
             </div>
           )}
         </div>
       </SectionCard>
 
       {/* ── Series & Numbering ── */}
-      <SectionCard title="Séries e Numeração" icon={Receipt}>
+      <SectionCard title={t('settings.fiscal.seriesTitle', 'Séries e Numeração')} icon={Receipt}>
         <div className="space-y-6">
           {/* NF-e */}
           <div>
             <p className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">NF-e</p>
             <div className="grid grid-cols-2 gap-4 max-w-sm mb-3">
-              <FormField label="Série" tooltip="Série da NF-e (geralmente 1)">
+              <FormField label={t('settings.fiscal.series', 'Série')} tooltip={t('settings.fiscal.nfeSeriesTooltip', 'Série da NF-e (geralmente 1)')}>
                 <input value={nfeSeries} onChange={(e) => setNfeSeries(e.target.value)} className={inputClasses} disabled={!canEditFiscal} />
               </FormField>
-              <FormField label="Próximo Nº" tooltip="Número da próxima NF-e">
+              <FormField label={t('settings.fiscal.nextNumber', 'Próximo Nº')} tooltip={t('settings.fiscal.nfeNextTooltip', 'Número da próxima NF-e')}>
                 <input type="number" min={1} value={nfeNextNumber} onChange={(e) => setNfeNextNumber(e.target.value)} className={inputClasses} disabled={!canEditFiscal} />
               </FormField>
             </div>
             {canEditFiscal && (
               <div className="flex justify-end">
-                <SaveButton onClick={handleSaveNfe} loading={isSavingNfe} label="Salvar NF-e" variant="secondary" />
+                <SaveButton onClick={handleSaveNfe} loading={isSavingNfe} label={t('settings.fiscal.saveNfe', 'Salvar NF-e')} variant="secondary" />
               </div>
             )}
           </div>
@@ -1751,16 +1756,16 @@ function FiscalTab() {
           <div>
             <p className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">NFC-e</p>
             <div className="grid grid-cols-2 gap-4 max-w-sm mb-3">
-              <FormField label="Série" tooltip="Série da NFC-e (geralmente 1)">
+              <FormField label={t('settings.fiscal.series', 'Série')} tooltip={t('settings.fiscal.nfceSeriesTooltip', 'Série da NFC-e (geralmente 1)')}>
                 <input value={nfceSeries} onChange={(e) => setNfceSeries(e.target.value)} className={inputClasses} disabled={!canEditFiscal} />
               </FormField>
-              <FormField label="Próximo Nº" tooltip="Número da próxima NFC-e">
+              <FormField label={t('settings.fiscal.nextNumber', 'Próximo Nº')} tooltip={t('settings.fiscal.nfceNextTooltip', 'Número da próxima NFC-e')}>
                 <input type="number" min={1} value={nfceNextNumber} onChange={(e) => setNfceNextNumber(e.target.value)} className={inputClasses} disabled={!canEditFiscal} />
               </FormField>
             </div>
             {canEditFiscal && (
               <div className="flex justify-end">
-                <SaveButton onClick={handleSaveNfce} loading={isSavingNfce} label="Salvar NFC-e" variant="secondary" />
+                <SaveButton onClick={handleSaveNfce} loading={isSavingNfce} label={t('settings.fiscal.saveNfce', 'Salvar NFC-e')} variant="secondary" />
               </div>
             )}
           </div>
@@ -1768,18 +1773,18 @@ function FiscalTab() {
       </SectionCard>
 
       {/* ── Default Taxation ── */}
-      <SectionCard title="Tributação Padrão" icon={DollarSign}>
+      <SectionCard title={t('settings.fiscal.taxationTitle', 'Tributação Padrão')} icon={DollarSign}>
         <div className="space-y-5">
           {/* ICMS */}
           <div>
             <p className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">ICMS</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <FormField label={isSimples ? 'CSOSN' : 'CST ICMS'} tooltip="Código de Situação Tributária do ICMS">
+              <FormField label={isSimples ? 'CSOSN' : 'CST ICMS'} tooltip={t('settings.fiscal.cstIcmsTooltip', 'Código de Situação Tributária do ICMS')}>
                 <select value={icmsCst} onChange={(e) => setIcmsCst(e.target.value)} className={selectClasses} disabled={!canEditFiscal}>
                   {icmsCstOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               </FormField>
-              <FormField label="Alíquota ICMS (%)" tooltip="Percentual de ICMS padrão">
+              <FormField label={t('settings.fiscal.icmsRate', 'Alíquota ICMS (%)')} tooltip={t('settings.fiscal.icmsRateTooltip', 'Percentual de ICMS padrão')}>
                 <input type="number" step="0.01" min={0} value={icmsRate} onChange={(e) => setIcmsRate(e.target.value)} className={inputClasses} disabled={!canEditFiscal} />
               </FormField>
             </div>
@@ -1788,12 +1793,12 @@ function FiscalTab() {
           <div>
             <p className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">PIS</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <FormField label="CST PIS" tooltip="Código de Situação Tributária do PIS">
+              <FormField label={t('settings.fiscal.cstPis', 'CST PIS')} tooltip={t('settings.fiscal.cstPisTooltip', 'Código de Situação Tributária do PIS')}>
                 <select value={pisCst} onChange={(e) => setPisCst(e.target.value)} className={selectClasses} disabled={!canEditFiscal}>
                   {pisCofinsOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               </FormField>
-              <FormField label="Alíquota PIS (%)" tooltip="Percentual de PIS padrão">
+              <FormField label={t('settings.fiscal.pisRate', 'Alíquota PIS (%)')} tooltip={t('settings.fiscal.pisRateTooltip', 'Percentual de PIS padrão')}>
                 <input type="number" step="0.01" min={0} value={pisRate} onChange={(e) => setPisRate(e.target.value)} className={inputClasses} disabled={!canEditFiscal} />
               </FormField>
             </div>
@@ -1802,51 +1807,51 @@ function FiscalTab() {
           <div>
             <p className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">COFINS</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <FormField label="CST COFINS" tooltip="Código de Situação Tributária do COFINS">
+              <FormField label={t('settings.fiscal.cstCofins', 'CST COFINS')} tooltip={t('settings.fiscal.cstCofinsTooltip', 'Código de Situação Tributária do COFINS')}>
                 <select value={cofinsCst} onChange={(e) => setCofinsCst(e.target.value)} className={selectClasses} disabled={!canEditFiscal}>
                   {pisCofinsOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               </FormField>
-              <FormField label="Alíquota COFINS (%)" tooltip="Percentual de COFINS padrão">
+              <FormField label={t('settings.fiscal.cofinsRate', 'Alíquota COFINS (%)')} tooltip={t('settings.fiscal.cofinsRateTooltip', 'Percentual de COFINS padrão')}>
                 <input type="number" step="0.01" min={0} value={cofinsRate} onChange={(e) => setCofinsRate(e.target.value)} className={inputClasses} disabled={!canEditFiscal} />
               </FormField>
             </div>
           </div>
           {canEditFiscal && (
             <div className="flex justify-end">
-              <SaveButton onClick={handleSaveTax} loading={isSavingTax} label="Salvar Tributação" />
+              <SaveButton onClick={handleSaveTax} loading={isSavingTax} label={t('settings.fiscal.saveTaxation', 'Salvar Tributação')} />
             </div>
           )}
         </div>
       </SectionCard>
 
       {/* ── Default CFOPs ── */}
-      <SectionCard title="CFOPs Padrão" icon={FileText}>
+      <SectionCard title={t('settings.fiscal.cfopTitle', 'CFOPs Padrão')} icon={FileText}>
         <div className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <FormField label="CFOP Venda" tooltip="CFOP padrão para operações de saída">
+            <FormField label={t('settings.fiscal.cfopSales', 'CFOP Venda')} tooltip={t('settings.fiscal.cfopSalesTooltip', 'CFOP padrão para operações de saída')}>
               <input value={cfopSales} onChange={(e) => setCfopSales(e.target.value)} placeholder="5102" className={inputClasses} disabled={!canEditFiscal} />
             </FormField>
-            <FormField label="CFOP Compra" tooltip="CFOP padrão para operações de entrada">
+            <FormField label={t('settings.fiscal.cfopPurchases', 'CFOP Compra')} tooltip={t('settings.fiscal.cfopPurchasesTooltip', 'CFOP padrão para operações de entrada')}>
               <input value={cfopPurchases} onChange={(e) => setCfopPurchases(e.target.value)} placeholder="1102" className={inputClasses} disabled={!canEditFiscal} />
             </FormField>
           </div>
           {canEditFiscal && (
             <div className="flex justify-end">
-              <SaveButton onClick={handleSaveCfop} loading={isSavingCfop} label="Salvar CFOPs" variant="secondary" />
+              <SaveButton onClick={handleSaveCfop} loading={isSavingCfop} label={t('settings.fiscal.saveCfops', 'Salvar CFOPs')} variant="secondary" />
             </div>
           )}
         </div>
       </SectionCard>
 
       {/* ── Contabilidade ── */}
-      <SectionCard title="Contabilidade" icon={FileText}>
+      <SectionCard title={t('settings.fiscal.accountingTitle', 'Contabilidade')} icon={FileText}>
         <div className="space-y-4">
           <p className="text-xs text-gray-500 dark:text-gray-400">
             Configure o envio automatico de XMLs e SPED para seu contador.
           </p>
           <div className="grid grid-cols-1 gap-4">
-            <FormField label="Email do Contador" tooltip="Email para envio dos documentos fiscais">
+            <FormField label={t('settings.fiscal.accountantEmail', 'Email do Contador')} tooltip={t('settings.fiscal.accountantEmailTooltip', 'Email para envio dos documentos fiscais')}>
               <input
                 type="email"
                 value={accountingEmail}
@@ -1858,7 +1863,7 @@ function FiscalTab() {
             </FormField>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <FormField label="URL Servidor de Notificação" tooltip="URL da API de envio de emails">
+            <FormField label={t('settings.fiscal.webhookUrl', 'URL Servidor de Notificação')} tooltip={t('settings.fiscal.webhookUrlTooltip', 'URL da API de envio de emails')}>
               <input
                 value={notificationServerUrl}
                 onChange={(e) => setNotificationServerUrl(e.target.value)}
@@ -1867,7 +1872,7 @@ function FiscalTab() {
                 disabled={!canEditFiscal}
               />
             </FormField>
-            <FormField label="API Key Notificação" tooltip="Chave de autenticação do servidor">
+            <FormField label={t('settings.fiscal.webhookKey', 'API Key Notificação')} tooltip={t('settings.fiscal.webhookKeyTooltip', 'Chave de autenticação do servidor')}>
               <input
                 type="password"
                 value={notificationServerKey}
@@ -1880,7 +1885,7 @@ function FiscalTab() {
           </div>
           {canEditFiscal && (
             <div className="flex justify-end">
-              <SaveButton onClick={handleSaveAccounting} loading={isSavingAccounting} label="Salvar Contabilidade" variant="secondary" />
+              <SaveButton onClick={handleSaveAccounting} loading={isSavingAccounting} label={t('settings.fiscal.saveAccounting', 'Salvar Contabilidade')} variant="secondary" />
             </div>
           )}
         </div>
@@ -1913,6 +1918,7 @@ function CertificateUploadInline({
   onTogglePassword: () => void;
   onSubmit: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-3">
       <input ref={fileRef} type="file" accept=".pfx,.p12" onChange={onFileChange} className="hidden" />
@@ -1939,13 +1945,13 @@ function CertificateUploadInline({
       </div>
 
       <div className="relative max-w-sm">
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Senha do certificado</label>
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t('settings.fiscal.certPassword', 'Senha do certificado')}</label>
         <div className="relative">
           <input
             type={showPassword ? 'text' : 'password'}
             value={certPassword}
             onChange={(e) => onPasswordChange(e.target.value)}
-            placeholder="Senha do arquivo .pfx"
+            placeholder={t('settings.fiscal.certPasswordPlaceholder', 'Senha do arquivo .pfx')}
             disabled={uploading}
             autoComplete="new-password"
             className={cn(inputClasses, 'pr-10', uploading && 'opacity-50 cursor-not-allowed')}
@@ -1959,7 +1965,7 @@ function CertificateUploadInline({
             {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
           </button>
         </div>
-        <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">A senha é usada apenas durante o upload.</p>
+        <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">{t('settings.fiscal.certPasswordHelp', 'A senha é usada apenas durante o upload.')}</p>
       </div>
 
       <button
@@ -2019,6 +2025,7 @@ function daysUntil(dateStr: string): number {
 }
 
 function UsersTab() {
+  const { t } = useTranslation();
   const { user, business } = useAuth();
   const [members, setMembers]           = useState<UserType[]>([]);
   const [inviteCodes, setInviteCodes]   = useState<InviteCode[]>([]);
@@ -2083,7 +2090,7 @@ function UsersTab() {
       });
       toast.success(`Código ${code} gerado! Válido por 7 dias.`);
     } catch {
-      toast.error('Erro ao gerar código. Tente novamente.');
+      toast.error(t('settings.users.codeGenerateError', 'Erro ao gerar código. Tente novamente.'));
     } finally {
       setGeneratingCode(false);
     }
@@ -2102,9 +2109,9 @@ function UsersTab() {
     setRevokingCode(code);
     try {
       await updateDoc(doc(db, 'inviteCodes', code), { isActive: false });
-      toast.success('Código revogado.');
+      toast.success(t('settings.users.codeRevoked', 'Código revogado.'));
     } catch {
-      toast.error('Erro ao revogar código.');
+      toast.error(t('settings.users.codeRevokeError', 'Erro ao revogar código.'));
     } finally {
       setRevokingCode(null);
     }
@@ -2120,7 +2127,7 @@ function UsersTab() {
       className="space-y-6"
     >
       {/* ── Team members ─────────────────────────────────────────────────── */}
-      <SectionCard title="Equipe" icon={Users}>
+      <SectionCard title={t('settings.users.team', 'Equipe')} icon={Users}>
         {loadingMembers ? (
           <div className="space-y-3">
             {[1, 2, 3].map(i => (
@@ -2134,7 +2141,7 @@ function UsersTab() {
             ))}
           </div>
         ) : members.length === 0 ? (
-          <p className="text-sm text-gray-400 dark:text-gray-500 text-center py-8">Nenhum membro encontrado.</p>
+          <p className="text-sm text-gray-400 dark:text-gray-500 text-center py-8">{t('settings.users.noMembers', 'Nenhum membro encontrado.')}</p>
         ) : (
           <div className="divide-y divide-gray-100 dark:divide-gray-800/80 -mx-6 -mb-6">
             {members.map((member, i) => {
@@ -2211,7 +2218,7 @@ function UsersTab() {
 
       {/* ── Invite codes (admin/founder only) ────────────────────────────── */}
       {isOwner && (
-        <SectionCard title="Códigos de Convite" icon={Link2}>
+        <SectionCard title={t('settings.users.inviteCodes', 'Códigos de Convite')} icon={Link2}>
           <div className="space-y-5">
             {/* Generator */}
             <div className="flex flex-col sm:flex-row items-start sm:items-end gap-3 p-4 rounded-xl bg-gray-50 dark:bg-white/[0.02] border border-gray-100 dark:border-gray-800/60">
@@ -2247,8 +2254,8 @@ function UsersTab() {
                 className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-red-500 text-white text-[13px] font-semibold shadow-md shadow-red-500/25 hover:from-red-700 hover:to-red-600 transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed flex-shrink-0"
               >
                 {generatingCode
-                  ? <><Loader2 className="w-4 h-4 animate-spin" />Gerando...</>
-                  : <><Plus className="w-4 h-4" />Gerar Código</>
+                  ? <><Loader2 className="w-4 h-4 animate-spin" />{t('common.generating', 'Gerando...')}</>
+                  : <><Plus className="w-4 h-4" />{t('settings.users.generateCode', 'Gerar Código')}</>
                 }
               </button>
             </div>
@@ -2259,7 +2266,7 @@ function UsersTab() {
                 <div className="w-12 h-12 rounded-2xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center mb-3">
                   <UserPlus className="w-5 h-5 text-gray-400 dark:text-gray-500" />
                 </div>
-                <p className="text-[13px] text-gray-400 dark:text-gray-500">Nenhum código ativo. Gere um acima.</p>
+                <p className="text-[13px] text-gray-400 dark:text-gray-500">{t('settings.users.noCodes', 'Nenhum código ativo. Gere um acima.')}</p>
               </div>
             ) : (
               <div className="space-y-2.5">
@@ -2312,12 +2319,12 @@ function UsersTab() {
                           <button
                             type="button"
                             onClick={() => handleCopy(ic.code)}
-                            title="Copiar código"
+                            title={t('settings.users.copyTitle', 'Copiar código')}
                             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] font-medium bg-gray-100 dark:bg-white/[0.06] text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/[0.1] transition-colors"
                           >
                             {isCopied
-                              ? <><Check className="w-3.5 h-3.5 text-green-500" /><span className="text-green-600 dark:text-green-400">Copiado</span></>
-                              : <><Copy className="w-3.5 h-3.5" />Copiar</>
+                              ? <><Check className="w-3.5 h-3.5 text-green-500" /><span className="text-green-600 dark:text-green-400">{t('settings.users.copied', 'Copiado')}</span></>
+                              : <><Copy className="w-3.5 h-3.5" />{t('settings.users.copy', 'Copiar')}</>
                             }
                           </button>
                           <button
@@ -2387,6 +2394,7 @@ function IntegrationRow({
   onSave: (providerId: string) => void;
   onTest: (providerId: string) => void;
 }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const IconComponent = ICON_MAP[provider.icon] || Plug;
   const isConnected = config?.isActive;
@@ -2501,6 +2509,7 @@ function IntegrationRow({
 // ─── Sectors Tab ──────────────────────────────────────────────────────────────
 
 function SectorsTab() {
+  const { t } = useTranslation();
   const { user, business, refreshUser } = useAuth();
   const [sectors, setSectors] = useState<Sector[]>([]);
   const [members, setMembers] = useState<UserType[]>([]);
@@ -2577,10 +2586,10 @@ function SectorsTab() {
 
       if (editingSector) {
         await updateDoc(doc(db, 'sectors', editingSector.id), sectorData);
-        toast.success('Setor atualizado');
+        toast.success(t('settings.sectors.updatedSuccess', 'Setor atualizado'));
       } else {
         await addDoc(collection(db, 'sectors'), { ...sectorData, createdAt: now });
-        toast.success('Setor criado');
+        toast.success(t('settings.sectors.savedSuccess', 'Setor criado'));
       }
 
       // Update sectorIds on each member
@@ -2602,7 +2611,7 @@ function SectorsTab() {
       refreshUser();
     } catch (err) {
       console.error('Error saving sector:', err);
-      toast.error('Erro ao salvar setor');
+      toast.error(t('settings.sectors.saveError', 'Erro ao salvar setor'));
     } finally {
       setSaving(false);
     }
@@ -2623,12 +2632,12 @@ function SectorsTab() {
           }, { merge: true });
         }
       }
-      toast.success('Setor excluído');
+      toast.success(t('settings.sectors.deletedSuccess', 'Setor excluído'));
       setDeleteConfirm(null);
       refreshUser();
     } catch (err) {
       console.error('Error deleting sector:', err);
-      toast.error('Erro ao excluir setor');
+      toast.error(t('settings.sectors.deleteError', 'Erro ao excluir setor'));
     } finally {
       setSaving(false);
     }
@@ -2662,7 +2671,7 @@ function SectorsTab() {
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">Setores / Departamentos</h3>
-          <p className="text-sm text-gray-500 dark:text-gray-400">Organize sua equipe em setores para controle de permissões</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400">{t('settings.sectors.description', 'Organize sua equipe em setores para controle de permissões')}</p>
         </div>
         <button
           onClick={() => { resetForm(); setShowForm(true); }}
@@ -2677,8 +2686,8 @@ function SectorsTab() {
       {activeSectors.length === 0 && !showForm ? (
         <div className="text-center py-16 bg-white dark:bg-[#111827] rounded-2xl border border-gray-200 dark:border-gray-700/50">
           <Layers className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
-          <h4 className="text-sm font-semibold text-gray-600 dark:text-gray-400 mb-1">Nenhum setor criado</h4>
-          <p className="text-xs text-gray-400 dark:text-gray-500">Crie setores para organizar sua equipe e controlar permissões</p>
+          <h4 className="text-sm font-semibold text-gray-600 dark:text-gray-400 mb-1">{t('settings.sectors.noSectors', 'Nenhum setor criado')}</h4>
+          <p className="text-xs text-gray-400 dark:text-gray-500">{t('settings.sectors.noSectorsDesc', 'Crie setores para organizar sua equipe e controlar permissões')}</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -2788,28 +2797,28 @@ function SectorsTab() {
 
               <div className="p-6 space-y-5 overflow-y-auto">
                 {/* Name */}
-                <FormField label="Nome do Setor" icon={Layers}>
+                <FormField label={t('settings.sectors.sectorName', 'Nome do Setor')} icon={Layers}>
                   <input
                     value={formName}
                     onChange={(e) => setFormName(e.target.value)}
-                    placeholder="Ex: Comercial, Suporte, Marketing..."
+                    placeholder={t('settings.sectors.sectorNamePlaceholder', 'Ex: Comercial, Suporte, Marketing...')}
                     className={inputClasses}
                   />
                 </FormField>
 
                 {/* Description */}
-                <FormField label="Descrição" icon={FileText}>
+                <FormField label={t('settings.sectors.sectorDesc', 'Descrição')} icon={FileText}>
                   <textarea
                     value={formDescription}
                     onChange={(e) => setFormDescription(e.target.value)}
-                    placeholder="Descrição opcional do setor..."
+                    placeholder={t('settings.sectors.sectorDescPlaceholder', 'Descrição opcional do setor...')}
                     rows={2}
                     className={cn(inputClasses, 'resize-none')}
                   />
                 </FormField>
 
                 {/* Color */}
-                <FormField label="Cor" icon={Palette}>
+                <FormField label={t('settings.sectors.color', 'Cor')} icon={Palette}>
                   <div className="flex items-center gap-2 flex-wrap">
                     {SECTOR_COLORS.map((c) => (
                       <button
@@ -2827,13 +2836,13 @@ function SectorsTab() {
                 </FormField>
 
                 {/* Leader */}
-                <FormField label="Líder do Setor" icon={Crown}>
+                <FormField label={t('settings.sectors.leader', 'Líder do Setor')} icon={Crown}>
                   <select
                     value={formLeaderId}
                     onChange={(e) => setFormLeaderId(e.target.value)}
                     className={selectClasses}
                   >
-                    <option value="">Sem líder definido</option>
+                    <option value="">{t('settings.sectors.noLeader', 'Sem líder definido')}</option>
                     {members.map((m) => (
                       <option key={m.id} value={m.uid}>{m.name} ({ROLE_LABELS[m.role]})</option>
                     ))}
@@ -2841,7 +2850,7 @@ function SectorsTab() {
                 </FormField>
 
                 {/* Members */}
-                <FormField label="Membros" icon={Users}>
+                <FormField label={t('settings.sectors.members', 'Membros')} icon={Users}>
                   <div className="space-y-1.5 max-h-48 overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700/50 p-2">
                     {members.map((m) => (
                       <label
@@ -2931,7 +2940,7 @@ function SectorsTab() {
                 </div>
                 <div>
                   <h4 className="text-sm font-bold text-gray-900 dark:text-gray-100">Excluir Setor</h4>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">Esta ação não pode ser desfeita</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">{t('settings.sectors.deleteWarning', 'Esta ação não pode ser desfeita')}</p>
                 </div>
               </div>
               <p className="text-sm text-gray-600 dark:text-gray-300 mb-6">
@@ -2973,6 +2982,7 @@ function StatusBadge({ status }: { status: IntegrationStatus }) {
 }
 
 function EnterpriseTab() {
+  const { t } = useTranslation();
   const { user, business, refreshUser } = useAuth();
 
   // ── Enterprise mode state ──
@@ -3051,7 +3061,7 @@ function EnterpriseTab() {
       toast.success(newValue ? 'Modo Enterprise ativado!' : 'Modo Enterprise desativado');
     } catch {
       setIsEnterprise(!newValue);
-      toast.error('Erro ao alterar modo Enterprise');
+      toast.error(t('settings.enterprise.toggleError', 'Erro ao alterar modo Enterprise'));
     }
   };
 
@@ -3119,7 +3129,7 @@ function EnterpriseTab() {
         toast.error('Falha na conexão. Verifique a API Key.');
       }
     } catch {
-      toast.error('Erro ao testar conexão');
+      toast.error(t('settings.enterprise.testFatal', 'Erro ao testar conexão'));
     } finally {
       setTesting(null);
     }
@@ -3143,7 +3153,7 @@ function EnterpriseTab() {
 
   const handleGenerateApiKey = async () => {
     if (!business || !user || !newKeyName.trim() || newKeyScopes.length === 0) {
-      toast.error('Preencha o nome e selecione pelo menos um escopo');
+      toast.error(t('settings.enterprise.validationError', 'Preencha o nome e selecione pelo menos um escopo'));
       return;
     }
     setGeneratingKey(true);
@@ -3172,22 +3182,22 @@ function EnterpriseTab() {
       });
 
       setGeneratedKey(fullKey);
-      toast.success('API Key gerada com sucesso!');
+      toast.success(t('settings.enterprise.keySuccess', 'API Key gerada com sucesso!'));
     } catch {
-      toast.error('Erro ao gerar API Key');
+      toast.error(t('settings.enterprise.keyError', 'Erro ao gerar API Key'));
     } finally {
       setGeneratingKey(false);
     }
   };
 
   const handleRevokeKey = async (keyId: string) => {
-    if (!confirm('Tem certeza que deseja revogar esta API Key? Esta ação não pode ser desfeita.')) return;
+    if (!confirm(t('settings.enterprise.revokeConfirm', 'Tem certeza que deseja revogar esta API Key? Esta ação não pode ser desfeita.'))) return;
     setRevokingKeyId(keyId);
     try {
       await deleteDoc(doc(db, 'saasApiKeys', keyId));
-      toast.success('API Key revogada com sucesso');
+      toast.success(t('settings.enterprise.revokeSuccess', 'API Key revogada com sucesso'));
     } catch {
-      toast.error('Erro ao revogar API Key');
+      toast.error(t('settings.enterprise.revokeErrorMsg', 'Erro ao revogar API Key'));
     } finally {
       setRevokingKeyId(null);
     }
@@ -3269,7 +3279,7 @@ function EnterpriseTab() {
               className="mt-4 flex items-center gap-2 text-sm"
             >
               <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-              <span className="text-emerald-700 dark:text-emerald-400 font-medium">Modo Enterprise ativo</span>
+              <span className="text-emerald-700 dark:text-emerald-400 font-medium">{t('settings.enterprise.active', 'Modo Enterprise ativo')}</span>
             </motion.div>
           )}
         </div>
@@ -3323,7 +3333,7 @@ function EnterpriseTab() {
                   <Key className="w-4.5 h-4.5 text-gray-500 dark:text-gray-400" />
                   <div>
                     <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">API Keys do Aevo</h3>
-                    <p className="text-xs text-gray-500 dark:text-gray-400">Gere chaves para agentes de IA operarem o sistema via REST API</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">{t('settings.enterprise.apiKeysDesc', 'Gere chaves para agentes de IA operarem o sistema via REST API')}</p>
                   </div>
                 </div>
                 <button
@@ -3341,8 +3351,8 @@ function EnterpriseTab() {
                   <div className="w-12 h-12 rounded-2xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center mb-3">
                     <Key className="w-5 h-5 text-gray-400 dark:text-gray-500" />
                   </div>
-                  <p className="text-sm text-gray-400 dark:text-gray-500">Nenhuma API Key gerada.</p>
-                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">Clique em &quot;Nova API Key&quot; para criar uma.</p>
+                  <p className="text-sm text-gray-400 dark:text-gray-500">{t('settings.enterprise.noApiKeys', 'Nenhuma API Key gerada.')}</p>
+                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">{t('settings.enterprise.noApiKeysDesc', 'Clique em "Nova API Key" para criar uma.')}</p>
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -3458,7 +3468,7 @@ function EnterpriseTab() {
                   ))}
                 </div>
                 <div className="mt-3 p-3 rounded-xl bg-gray-900 dark:bg-gray-800 border border-gray-700">
-                  <p className="text-[10px] font-semibold text-gray-400 mb-1.5">Exemplo de uso (cURL):</p>
+                  <p className="text-[10px] font-semibold text-gray-400 mb-1.5">{t('settings.enterprise.apiDocDesc', 'Exemplo de uso (cURL):')}</p>
                   <code className="text-[11px] font-mono text-emerald-400 leading-relaxed break-all">
                     {`curl -H "Authorization: Bearer sp_live_..." /api/v1/clients?limit=10`}
                   </code>
@@ -3540,12 +3550,12 @@ function EnterpriseTab() {
                   // ── Key creation form ──
                   <>
                     {/* Name */}
-                    <FormField label="Nome da chave" icon={Key}>
+                    <FormField label={t('settings.enterprise.keyName', 'Nome da chave')} icon={Key}>
                       <input
                         type="text"
                         value={newKeyName}
                         onChange={e => setNewKeyName(e.target.value)}
-                        placeholder="Ex: Integração ERP, App Mobile..."
+                        placeholder={t('settings.enterprise.keyNamePlaceholder', 'Ex: Integração ERP, App Mobile...')}
                         className={inputClasses}
                       />
                     </FormField>
@@ -3599,16 +3609,16 @@ function EnterpriseTab() {
                     </div>
 
                     {/* Expiration */}
-                    <FormField label="Expiração" icon={Clock}>
+                    <FormField label={t('settings.enterprise.expiration', 'Expiração')} icon={Clock}>
                       <select
                         value={newKeyExpiration}
                         onChange={e => setNewKeyExpiration(e.target.value)}
                         className={selectClasses}
                       >
-                        <option value="30">30 dias</option>
-                        <option value="90">90 dias</option>
-                        <option value="180">180 dias</option>
-                        <option value="never">Nunca expira</option>
+                        <option value="30">{t('settings.enterprise.exp30', '30 dias')}</option>
+                        <option value="90">{t('settings.enterprise.exp90', '90 dias')}</option>
+                        <option value="180">{t('settings.enterprise.exp180', '180 dias')}</option>
+                        <option value="never">{t('settings.enterprise.expNever', 'Nunca expira')}</option>
                       </select>
                     </FormField>
 
@@ -3621,7 +3631,7 @@ function EnterpriseTab() {
                       {generatingKey ? (
                         <><Loader2 className="w-4 h-4 animate-spin" /> Gerando...</>
                       ) : (
-                        <><Zap className="w-4 h-4" /> Gerar API Key</>
+                        <><Zap className="w-4 h-4" />{t('settings.enterprise.generateKey', 'Gerar API Key')}</>
                       )}
                     </button>
                   </>
@@ -3674,6 +3684,7 @@ interface ChannelConfig {
 }
 
 function CanaisTab() {
+  const { t } = useTranslation();
   const { business, refreshUser, firebaseUser } = useAuth();
 
   // ── Channel connection state ──
@@ -3905,7 +3916,7 @@ function CanaisTab() {
             <AlertTriangle className="w-4.5 h-4.5 text-amber-600 dark:text-amber-400" />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">Conexao precisa de atencao</p>
+            <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">{t('settings.channelsTab.attention', 'Conexão precisa de atenção')}</p>
             <p className="text-xs text-amber-700/80 dark:text-amber-400/70 mt-0.5 leading-relaxed">
               Sua conexao com o Meta expirou ou esta incompleta. Clique em <strong>Reconectar</strong> no canal afetado para garantir o envio de mensagens.
             </p>
@@ -3942,7 +3953,7 @@ function CanaisTab() {
               {fbConnected && fbPageName ? (
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Pagina: {fbPageName}</p>
               ) : (
-                <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Receba e responda mensagens do Messenger</p>
+                <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{t('settings.channelsTab.fbDesc', 'Receba e responda mensagens do Messenger')}</p>
               )}
             </div>
           </div>
@@ -3958,9 +3969,9 @@ function CanaisTab() {
               )}
             >
               {connectingChannel === 'facebook' ? (
-                <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Reconectando...</>
+                <><Loader2 className="w-3.5 h-3.5 animate-spin" /> {t('settings.channelsTab.reconnecting', 'Reconectando...')}</>
               ) : (
-                <><RefreshCw className="w-3.5 h-3.5" /> Reconectar</>
+                <><RefreshCw className="w-3.5 h-3.5" /> {t('settings.channelsTab.reconnect', 'Reconectar')}</>
               )}
             </button>
           ) : fbConnected ? (
@@ -3982,9 +3993,9 @@ function CanaisTab() {
               )}
             >
               {connectingChannel === 'facebook' ? (
-                <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Conectando...</>
+                <><Loader2 className="w-3.5 h-3.5 animate-spin" /> {t('settings.channelsTab.connecting', 'Conectando...')}</>
               ) : (
-                <><Facebook className="w-3.5 h-3.5" /> Conectar Messenger</>
+                <><Facebook className="w-3.5 h-3.5" /> {t('settings.channelsTab.connectMessenger', 'Conectar Messenger')}</>
               )}
             </button>
           )}
@@ -4019,7 +4030,7 @@ function CanaisTab() {
               {igConnected && igAccountName ? (
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Conta: {igAccountName}</p>
               ) : (
-                <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">DMs e comentarios do Instagram</p>
+                <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{t('settings.channelsTab.igDesc', 'DMs e comentários do Instagram')}</p>
               )}
             </div>
           </div>
@@ -4038,9 +4049,9 @@ function CanaisTab() {
               className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-gradient-to-r from-[#E1306C] to-[#C13584] hover:shadow-lg hover:shadow-[#E1306C]/25 transition-all disabled:opacity-60"
             >
               {connectingChannel === 'instagram' ? (
-                <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Conectando...</>
+                <><Loader2 className="w-3.5 h-3.5 animate-spin" /> {t('settings.channelsTab.connecting', 'Conectando...')}</>
               ) : (
-                <><Instagram className="w-3.5 h-3.5" /> Conectar Instagram</>
+                <><Instagram className="w-3.5 h-3.5" /> {t('settings.channelsTab.connectIg', 'Conectar Instagram')}</>
               )}
             </button>
           )}
@@ -4083,7 +4094,7 @@ function CanaisTab() {
                       {isCloudApi && waPhoneNumber ? (
                         <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{waPhoneNumber}</p>
                       ) : (
-                        <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">API oficial da Meta com suporte a templates e volume ilimitado</p>
+                        <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{t('settings.channelsTab.waCloudApiDesc', 'API oficial da Meta com suporte a templates e volume ilimitado')}</p>
                       )}
                     </div>
                   </div>
@@ -4104,9 +4115,9 @@ function CanaisTab() {
                     className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold text-white bg-[#25D366] hover:bg-[#22c55e] transition-colors disabled:opacity-60"
                   >
                     {connectingChannel === 'whatsapp' ? (
-                      <><div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Conectando...</>
+                      <><div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('settings.channelsTab.connecting', 'Conectando...')}</>
                     ) : (
-                      <><Smartphone className="w-3.5 h-3.5" /> Conectar via Meta Business</>
+                      <><Smartphone className="w-3.5 h-3.5" /> {t('settings.channelsTab.waConnectMeta', 'Conectar via Meta Business')}</>
                     )}
                   </button>
                 )}
@@ -4131,8 +4142,8 @@ function CanaisTab() {
                     </div>
                     <div>
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">WhatsApp Web</span>
-                        <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-[#25D366]/10 text-[#25D366]">QR Code</span>
+                        <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">{t('settings.channelsTab.waWeb', 'WhatsApp Web')}</span>
+                        <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-[#25D366]/10 text-[#25D366]">{t('settings.channelsTab.qrCode', 'QR Code')}</span>
                         {isBaileys && (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20">
                             <Check className="w-2.5 h-2.5" /> Conectado
@@ -4142,7 +4153,7 @@ function CanaisTab() {
                       {isBaileys && waPhoneNumber ? (
                         <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{waPhoneNumber}</p>
                       ) : (
-                        <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Conexao rapida via QR Code, ideal para testes</p>
+                        <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{t('settings.channelsTab.qrCodeDesc', 'Conexão rápida via QR Code, ideal para testes')}</p>
                       )}
                     </div>
                   </div>
@@ -4172,9 +4183,9 @@ function CanaisTab() {
                     )}
                   >
                     {waConnecting ? (
-                      <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Conectando...</>
+                      <><Loader2 className="w-3.5 h-3.5 animate-spin" /> {t('settings.channelsTab.connecting', 'Conectando...')}</>
                     ) : (
-                      <><QrCode className="w-3.5 h-3.5" /> Escanear QR Code</>
+                      <><QrCode className="w-3.5 h-3.5" /> {t('settings.channelsTab.scanQr', 'Escanear QR Code')}</>
                     )}
                   </button>
                 )}
@@ -4201,7 +4212,7 @@ function CanaisTab() {
             setWaConnecting(false);
             setWaStatus('connected');
             refreshUser();
-            toast.success('WhatsApp conectado com sucesso!');
+            toast.success(t('settings.channelsTab.connected', 'WhatsApp conectado com sucesso!'));
           }}
         />
       )}
@@ -4220,6 +4231,7 @@ function WhatsAppQrModal({
   onClose: () => void;
   onConnected: (phoneNumber: string | null) => void;
 }) {
+  const { t } = useTranslation();
   const { firebaseUser } = useAuth();
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [status, setStatus] = useState<'connecting' | 'scanning' | 'connected' | 'error'>('connecting');
@@ -4245,7 +4257,7 @@ function WhatsAppQrModal({
         if (!response.ok || !response.body) {
           if (!cancelled) {
             setStatus('error');
-            setErrorMsg('Falha ao conectar com o servidor');
+            setErrorMsg(t('settings.channelsTab.serverError', 'Falha ao conectar com o servidor'));
           }
           return;
         }
@@ -4280,7 +4292,7 @@ function WhatsAppQrModal({
               } else if (data.type === 'disconnected') {
                 if (data.reason === 'logged_out') {
                   setStatus('error');
-                  setErrorMsg('Sessao revogada. Tente novamente.');
+                  setErrorMsg(t('settings.channelsTab.sessionRevoked', 'Sessão revogada. Tente novamente.'));
                 }
               }
             } catch {
@@ -4291,7 +4303,7 @@ function WhatsAppQrModal({
       } catch (err) {
         if (!cancelled && !(err instanceof DOMException && (err as DOMException).name === 'AbortError')) {
           setStatus('error');
-          setErrorMsg('Erro de conexao com o servidor');
+          setErrorMsg(t('settings.channelsTab.connectionError', 'Erro de conexão com o servidor'));
           console.error('[WA QR Modal] SSE error:', err);
         }
       }
@@ -4323,8 +4335,8 @@ function WhatsAppQrModal({
               <QrCode className="w-4.5 h-4.5 text-[#25D366]" />
             </div>
             <div>
-              <h3 className="font-display font-bold text-gray-900 dark:text-white text-sm">WhatsApp Web</h3>
-              <p className="text-[10px] text-gray-400 dark:text-gray-500">Escaneie com seu celular</p>
+              <h3 className="font-display font-bold text-gray-900 dark:text-white text-sm">{t('settings.channelsTab.waWeb', 'WhatsApp Web')}</h3>
+              <p className="text-[10px] text-gray-400 dark:text-gray-500">{t('settings.channelsTab.waModalSubtitle', 'Escaneie com seu celular')}</p>
             </div>
           </div>
           <button
@@ -4340,7 +4352,7 @@ function WhatsAppQrModal({
           {status === 'connecting' && (
             <div className="w-[240px] h-[240px] rounded-2xl bg-gray-50 dark:bg-white/[0.03] border border-gray-200 dark:border-white/[0.06] flex flex-col items-center justify-center gap-3">
               <Loader2 className="w-8 h-8 text-[#25D366] animate-spin" />
-              <p className="text-xs text-gray-500 dark:text-gray-400">Gerando QR Code...</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">{t('settings.channelsTab.generatingQr', 'Gerando QR Code...')}</p>
             </div>
           )}
 
@@ -4361,7 +4373,7 @@ function WhatsAppQrModal({
               <div className="w-14 h-14 rounded-full bg-[#25D366] flex items-center justify-center">
                 <Check className="w-7 h-7 text-white" />
               </div>
-              <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">Conectado!</p>
+              <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">{t('settings.channelsTab.connected', 'Conectado!')}</p>
             </div>
           )}
 
@@ -4401,6 +4413,7 @@ function WhatsAppQrModal({
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export default function SettingsModule() {
+  const { t } = useTranslation();
   const { user } = useAuth();
   const isAdmin = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['admin'];
   const [activeTab, setActiveTab] = useState<Tab>('perfil');

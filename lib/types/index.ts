@@ -51,6 +51,7 @@ export interface User {
   isActive: boolean;
   isOnline?: boolean;
   userStatus?: UserStatus;
+  language?: string;           // i18n preference, e.g. 'pt-BR' | 'en-US'
   lastLoginAt?: string;
   lastSeenAt?: string;
   invitedBy?: string;

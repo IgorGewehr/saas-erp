@@ -4,6 +4,7 @@ import './globals.css';
 import ThemeProvider from './components/providers/ThemeProvider';
 import QueryProvider from './components/providers/QueryProvider';
 import AuthProvider from './components/providers/AuthProvider';
+import I18nProvider from './components/providers/I18nProvider';
 import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 
@@ -53,8 +54,9 @@ export default function RootLayout({
         <ThemeProvider>
           <QueryProvider>
             <AuthProvider>
-              {children}
-              <ToastContainer
+              <I18nProvider>
+                {children}
+                <ToastContainer
                 position="top-right"
                 autoClose={4000}
                 hideProgressBar={false}
@@ -66,6 +68,7 @@ export default function RootLayout({
                 pauseOnHover
                 theme="colored"
               />
+              </I18nProvider>
             </AuthProvider>
           </QueryProvider>
         </ThemeProvider>

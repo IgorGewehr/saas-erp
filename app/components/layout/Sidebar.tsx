@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
+import { useTranslation } from 'react-i18next';
 import {
   LayoutDashboard,
   Calendar,
@@ -52,41 +53,43 @@ interface MenuSection {
   items: MenuItemConfig[];
 }
 
-const menuSections: MenuSection[] = [
-  {
-    title: 'Principal',
-    items: [
-      { id: 'Dashboard', label: 'Dashboard', icon: LayoutDashboard },
-      { id: 'CRM', label: 'CRM', icon: Target, enterpriseOnly: true },
-      { id: 'Agenda', label: 'Agenda', icon: Calendar },
-      { id: 'Conversas', label: 'Conversas', icon: MessageSquare },
-      { id: 'PDV', label: 'Ponto de Venda', icon: ShoppingCart },
-    ],
-  },
-  {
-    title: 'Gestão',
-    items: [
-      { id: 'Kanban', label: 'Kanban', icon: Kanban, enterpriseOnly: true },
-
-      { id: 'Financeiro', label: 'Financeiro', icon: DollarSign },
-      { id: 'Estoque', label: 'Estoque', icon: Package },
-    ],
-  },
-  {
-    title: 'Fiscal',
-    items: [
-      { id: 'NFSe', label: 'NFSe', icon: FileCheck2 },
-      { id: 'NFCe', label: 'NFCe', icon: Receipt },
-      { id: 'NFe', label: 'NFe', icon: FileText },
-    ],
-  },
-  {
-    title: 'Sistema',
-    items: [
-      { id: 'Configurações', label: 'Configurações', icon: Settings },
-    ],
-  },
-];
+function useMenuSections(): MenuSection[] {
+  const { t } = useTranslation();
+  return [
+    {
+      title: t('sidebar.sections.principal'),
+      items: [
+        { id: 'Dashboard', label: t('sidebar.dashboard'), icon: LayoutDashboard },
+        { id: 'CRM', label: t('sidebar.crm'), icon: Target, enterpriseOnly: true },
+        { id: 'Agenda', label: t('sidebar.agenda'), icon: Calendar },
+        { id: 'Conversas', label: t('sidebar.conversas'), icon: MessageSquare },
+        { id: 'PDV', label: t('sidebar.pdv'), icon: ShoppingCart },
+      ],
+    },
+    {
+      title: t('sidebar.sections.gestao'),
+      items: [
+        { id: 'Kanban', label: t('sidebar.kanban'), icon: Kanban, enterpriseOnly: true },
+        { id: 'Financeiro', label: t('sidebar.financeiro'), icon: DollarSign },
+        { id: 'Estoque', label: t('sidebar.estoque'), icon: Package },
+      ],
+    },
+    {
+      title: t('sidebar.sections.fiscal'),
+      items: [
+        { id: 'NFSe', label: t('sidebar.nfse'), icon: FileCheck2 },
+        { id: 'NFCe', label: t('sidebar.nfce'), icon: Receipt },
+        { id: 'NFe', label: t('sidebar.nfe'), icon: FileText },
+      ],
+    },
+    {
+      title: t('sidebar.sections.sistema'),
+      items: [
+        { id: 'Configurações', label: t('sidebar.configuracoes'), icon: Settings },
+      ],
+    },
+  ];
+}
 
 interface SidebarProps {
   activePage: MenuPage;
@@ -256,6 +259,8 @@ function SidebarContent({
   onMobileClose,
 }: SidebarProps & { isMobile?: boolean }) {
   const { signOut, business } = useAuth();
+  const { t } = useTranslation();
+  const menuSections = useMenuSections();
   const collapsed = isCollapsed && !isMobile;
   const isEnterprise = !!business?.enterprise?.isEnabled;
 
@@ -276,7 +281,7 @@ function SidebarContent({
           whileTap={{ scale: 0.88 }}
           onClick={onToggleCollapse}
           className="group flex items-center justify-center h-[60px] w-full border-b border-gray-100 dark:border-gray-800/80 flex-shrink-0 hover:bg-red-50/60 dark:hover:bg-red-500/[0.07] transition-all duration-200"
-          title="Expandir menu"
+          title={t('sidebar.expandMenu')}
         >
           <ChevronRight className="w-5 h-5 text-red-500 dark:text-red-400 group-hover:translate-x-0.5 transition-transform duration-200" />
         </motion.button>
@@ -292,7 +297,7 @@ function SidebarContent({
               className="min-w-0"
             >
               <p className="text-[14px] font-bold text-gray-900 dark:text-gray-100 font-display tracking-tight leading-tight">Aevo</p>
-              <p className="text-[10.5px] text-gray-400 dark:text-gray-500 font-medium leading-tight">Gestão Inteligente</p>
+              <p className="text-[10.5px] text-gray-400 dark:text-gray-500 font-medium leading-tight">{t('sidebar.smartManagement')}</p>
             </motion.div>
           </div>
 
@@ -309,7 +314,7 @@ function SidebarContent({
                 whileTap={{ scale: 0.85 }}
                 onClick={onToggleCollapse}
                 className="group p-1.5 rounded-lg hover:bg-red-50/60 dark:hover:bg-red-500/[0.07] transition-all duration-150"
-                title="Recolher menu"
+                title={t('sidebar.collapseMenu')}
               >
                 <ChevronLeft className="w-4 h-4 text-red-500 dark:text-red-400 group-hover:-translate-x-0.5 transition-transform duration-200" />
               </motion.button>
@@ -362,7 +367,7 @@ function SidebarContent({
             'transition-all duration-200',
             collapsed ? 'justify-center' : 'gap-3'
           )}
-          title={collapsed ? 'Sair' : undefined}
+          title={collapsed ? t('sidebar.logout') : undefined}
         >
           <LogOut className="w-[17px] h-[17px] group-hover:translate-x-0.5 transition-transform duration-150 flex-shrink-0" />
           <AnimatePresence initial={false}>
@@ -375,7 +380,7 @@ function SidebarContent({
                 transition={{ duration: 0.14 }}
                 className="text-[15px] font-medium"
               >
-                Sair
+                {t('sidebar.logout')}
               </motion.span>
             )}
           </AnimatePresence>

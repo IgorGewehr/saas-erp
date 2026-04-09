@@ -102,6 +102,17 @@
     background-color: rgba(220, 38, 38, 0.15);
     color: #7f1d1d;
   }
+
+  /* Fix native <select> <option> contrast in dark mode */
+  .dark select option {
+    background-color: #1e293b;
+    color: #f1f5f9;
+  }
+  .dark select option:hover,
+  .dark select option:checked {
+    background-color: #334155;
+    color: #ffffff;
+  }
   .dark ::selection {
     background-color: rgba(239, 68, 68, 0.25);
     color: #fef2f2;
