@@ -4,6 +4,7 @@ import { useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
+import { useTranslation } from 'react-i18next';
 import type { Appointment, CRMContact, Sale, Transaction } from '@/lib/types';
 import {
   Users,
@@ -12,6 +13,7 @@ import {
   Search,
   ChevronRight,
   User as UserIcon,
+  MessageSquare,
   DollarSign,
   TrendingUp,
   TrendingDown,
@@ -25,6 +27,7 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
+import { enUS as enUSLocale } from 'date-fns/locale';
 import { collection, query, where, orderBy, getDocs } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useQuery } from '@tanstack/react-query';
@@ -43,9 +46,11 @@ const fadeUp = {
 
 // ─── Main Component ────────────────────────────────────
 export default function DashboardModule() {
+  const { t, i18n } = useTranslation();
   const { user, business } = useAuth();
   const { setActivePage } = useAppContext();
   const [clientSearch, setClientSearch] = useState('');
+  const dateLocale = i18n.language === 'en-US' ? enUSLocale : ptBR;
 
   // ── Firestore queries ──
   const { data: clients = [], isLoading: loadingClients } = useQuery({
@@ -258,7 +263,11 @@ export default function DashboardModule() {
 
   // ── Header data ──
   const hour = new Date().getHours();
-  const greeting = hour < 12 ? 'Bom dia' : hour < 18 ? 'Boa tarde' : 'Boa noite';
+  const greeting = hour < 12
+    ? t('dashboard.goodMorning', 'Bom dia')
+    : hour < 18
+      ? t('dashboard.goodAfternoon', 'Boa tarde')
+      : t('dashboard.goodEvening', 'Boa noite');
   const firstName = user?.name?.split(' ')[0] || '';
   const isLoading = loadingClients || loadingAppointments || loadingSales || loadingTransactions;
 
@@ -280,15 +289,17 @@ export default function DashboardModule() {
             </span>
           </h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5 capitalize">
-            {format(new Date(), "EEEE, d 'de' MMMM", { locale: ptBR })}
+            {i18n.language === 'en-US'
+              ? format(new Date(), 'EEEE, MMMM d', { locale: dateLocale })
+              : format(new Date(), "EEEE, d 'de' MMMM", { locale: dateLocale })}
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {([
-            { label: 'Novo Cliente', icon: UserPlus, page: 'CRM' as const },
-            { label: 'Agendar', icon: CalendarPlus, page: 'Agenda' as const },
-            { label: 'Nova Venda', icon: ShoppingBag, page: 'PDV' as const },
-          ] as const).map((action) => (
+          {[
+            { label: t('dashboard.newClient', 'Novo Cliente'), icon: UserPlus, page: 'CRM' as const },
+            { label: t('dashboard.schedule', 'Agendar'), icon: CalendarPlus, page: 'Agenda' as const },
+            { label: t('dashboard.newSale', 'Nova Venda'), icon: ShoppingBag, page: 'PDV' as const },
+          ].map((action) => (
             <motion.button
               key={action.label}
               whileHover={{ scale: 1.02 }}
@@ -337,7 +348,7 @@ export default function DashboardModule() {
           ) : (
             <div className="flex flex-col justify-between h-full">
               <div className="flex items-center justify-between">
-                <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Receita hoje</p>
+                <p className="text-sm font-medium text-gray-500 dark:text-gray-400">{t('dashboard.revenueToday', 'Receita hoje')}</p>
                 <div className="w-9 h-9 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 flex items-center justify-center">
                   <DollarSign className="w-[18px] h-[18px] text-emerald-600 dark:text-emerald-400" />
                 </div>
@@ -375,7 +386,7 @@ export default function DashboardModule() {
                       />
                     </div>
                     <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5">
-                      Meta diária: {formatCurrency(dailyAvg)}
+                      {t('dashboard.dailyGoal', 'Meta diária')}: {formatCurrency(dailyAvg)}
                     </p>
                   </div>
                 )}
@@ -384,12 +395,12 @@ export default function DashboardModule() {
                   <div className="flex items-center gap-1.5">
                     <Receipt className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
                     <span className="text-xs text-gray-500 dark:text-gray-400">
-                      {todaySales.length} venda{todaySales.length !== 1 ? 's' : ''}
+                      {todaySales.length} {todaySales.length !== 1 ? t('dashboard.sales', 'vendas') : t('dashboard.sale', 'venda')}
                     </span>
                   </div>
                   {ticketMedio > 0 && (
                     <div className="flex items-center gap-1.5">
-                      <span className="text-xs text-gray-400 dark:text-gray-500">Ticket:</span>
+                      <span className="text-xs text-gray-400 dark:text-gray-500">{t('dashboard.ticket', 'Ticket')}:</span>
                       <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">
                         {formatCurrency(ticketMedio)}
                       </span>
@@ -423,7 +434,7 @@ export default function DashboardModule() {
           ) : (
             <div className="flex flex-col justify-between h-full">
               <div className="flex items-center justify-between">
-                <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Receita do mês</p>
+                <p className="text-sm font-medium text-gray-500 dark:text-gray-400">{t('dashboard.revenueMonth', 'Receita do mês')}</p>
                 <div className="w-9 h-9 rounded-xl bg-blue-50 dark:bg-blue-500/10 flex items-center justify-center">
                   <Wallet className="w-[18px] h-[18px] text-blue-600 dark:text-blue-400" />
                 </div>
@@ -447,7 +458,7 @@ export default function DashboardModule() {
                   )}
                 </div>
                 <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">
-                  vs. mês anterior
+                  {t('dashboard.vsPrevMonth', 'vs. mês anterior')}
                 </p>
               </div>
 
@@ -455,7 +466,7 @@ export default function DashboardModule() {
                 <div className="flex items-center gap-1.5">
                   <Receipt className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
                   <span className="text-xs text-gray-500 dark:text-gray-400">
-                    {monthlySales.length} venda{monthlySales.length !== 1 ? 's' : ''}
+                    {monthlySales.length} {monthlySales.length !== 1 ? t('dashboard.sales', 'vendas') : t('dashboard.sale', 'venda')}
                   </span>
                 </div>
               </div>
@@ -474,10 +485,10 @@ export default function DashboardModule() {
         >
           <div className="relative z-10">
             <div className="flex items-center justify-between">
-              <p className="text-sm font-medium text-white/80">Próximo agendamento</p>
+              <p className="text-sm font-medium text-white/80">{t('dashboard.nextAppointment', 'Próximo agendamento')}</p>
               {nextAppointment && (
                 <span className="text-xs font-medium text-red-900 bg-white/90 px-2.5 py-1 rounded-full">
-                  {nextAppointment.date === todayStr ? 'Hoje' : format(new Date(nextAppointment.date + 'T12:00:00'), "dd/MM", { locale: ptBR })}, {nextAppointment.startTime}
+                  {nextAppointment.date === todayStr ? t('dashboard.today', 'Hoje') : format(new Date(nextAppointment.date + 'T12:00:00'), "dd/MM", { locale: dateLocale })}, {nextAppointment.startTime}
                 </span>
               )}
             </div>
@@ -491,12 +502,12 @@ export default function DashboardModule() {
               </div>
               <div>
                 <p className="text-lg font-bold text-white">
-                  {nextAppointment ? nextAppointment.clientName : 'Sem agendamentos próximos'}
+                  {nextAppointment ? nextAppointment.clientName : t('dashboard.noUpcoming', 'Sem agendamentos próximos')}
                 </p>
                 <p className="text-sm text-white/70">
                   {nextAppointment
-                    ? [nextAppointment.serviceName, nextAppointment.clientPhone || clients.find(c => c.id === nextAppointment.clientId)?.phone].filter(Boolean).join(' · ') || 'Sem detalhes'
-                    : 'Sua agenda está livre'}
+                    ? [nextAppointment.serviceName, nextAppointment.clientPhone || clients.find(c => c.id === nextAppointment.clientId)?.phone].filter(Boolean).join(' · ') || t('dashboard.noDetails', 'Sem detalhes')
+                    : t('dashboard.calendarFree', 'Sua agenda está livre')}
                 </p>
               </div>
             </div>
@@ -509,7 +520,7 @@ export default function DashboardModule() {
                   onClick={() => setActivePage('Agenda')}
                   className="text-sm font-medium text-red-700 bg-white hover:bg-white/90 px-4 py-2 rounded-xl transition-colors duration-150"
                 >
-                  Ver Detalhes
+                  {t('dashboard.viewDetails', 'Ver Detalhes')}
                 </motion.button>
               </div>
             )}
@@ -535,7 +546,7 @@ export default function DashboardModule() {
         >
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-red-600 dark:text-red-400">Total Clientes</p>
+              <p className="text-sm font-medium text-red-600 dark:text-red-400">{t('dashboard.totalClients', 'Total Clientes')}</p>
               {isLoading ? (
                 <div className="h-9 w-16 rounded-lg shimmer mt-1" />
               ) : (
@@ -561,7 +572,7 @@ export default function DashboardModule() {
         >
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Agendamentos Hoje</p>
+              <p className="text-sm font-medium text-gray-600 dark:text-gray-400">{t('dashboard.todayAppointments', 'Agendamentos Hoje')}</p>
               {isLoading ? (
                 <div className="h-9 w-16 rounded-lg shimmer mt-1" />
               ) : (
@@ -587,7 +598,7 @@ export default function DashboardModule() {
         >
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Próximos</p>
+              <p className="text-sm font-medium text-gray-600 dark:text-gray-400">{t('dashboard.upcoming', 'Próximos')}</p>
               {isLoading ? (
                 <div className="h-9 w-16 rounded-lg shimmer mt-1" />
               ) : (
@@ -620,7 +631,7 @@ export default function DashboardModule() {
                   ? 'text-red-600 dark:text-red-400'
                   : 'text-gray-600 dark:text-gray-400'
               )}>
-                {overdueTransactions.length > 0 ? 'Contas Atrasadas' : 'Contas Pendentes'}
+                {overdueTransactions.length > 0 ? t('dashboard.overdueAccounts', 'Contas Atrasadas') : t('dashboard.pendingAccounts', 'Contas Pendentes')}
               </p>
               {isLoading ? (
                 <div className="h-9 w-16 rounded-lg shimmer mt-1" />
@@ -663,7 +674,7 @@ export default function DashboardModule() {
               <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500 pointer-events-none" />
               <input
                 type="text"
-                placeholder="Buscar clientes por nome, e-mail ou CPF..."
+                placeholder={t('dashboard.searchClients', 'Buscar clientes por nome, e-mail ou CPF...')}
                 value={clientSearch}
                 onChange={(e) => setClientSearch(e.target.value)}
                 className={cn(
@@ -686,11 +697,11 @@ export default function DashboardModule() {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-gray-100 dark:border-gray-700/40">
-                  <th className="text-left text-xs font-semibold text-red-600 dark:text-red-400 px-5 py-3">Cliente</th>
-                  <th className="text-left text-xs font-semibold text-gray-500 dark:text-gray-400 px-4 py-3 hidden sm:table-cell">Tipo</th>
-                  <th className="text-left text-xs font-semibold text-gray-500 dark:text-gray-400 px-4 py-3 hidden md:table-cell">Telefone</th>
-                  <th className="text-left text-xs font-semibold text-gray-500 dark:text-gray-400 px-4 py-3 hidden xl:table-cell">Próx. Agend.</th>
-                  <th className="text-left text-xs font-semibold text-gray-500 dark:text-gray-400 px-4 py-3">Status</th>
+                  <th className="text-left text-xs font-semibold text-red-600 dark:text-red-400 px-5 py-3">{t('dashboard.colClient', 'Cliente')}</th>
+                  <th className="text-left text-xs font-semibold text-gray-500 dark:text-gray-400 px-4 py-3 hidden sm:table-cell">{t('dashboard.colType', 'Tipo')}</th>
+                  <th className="text-left text-xs font-semibold text-gray-500 dark:text-gray-400 px-4 py-3 hidden md:table-cell">{t('dashboard.colPhone', 'Telefone')}</th>
+                  <th className="text-left text-xs font-semibold text-gray-500 dark:text-gray-400 px-4 py-3 hidden xl:table-cell">{t('dashboard.colNextAppt', 'Próx. Agend.')}</th>
+                  <th className="text-left text-xs font-semibold text-gray-500 dark:text-gray-400 px-4 py-3">{t('dashboard.colStatus', 'Status')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -714,7 +725,7 @@ export default function DashboardModule() {
                     <td colSpan={5} className="text-center py-12">
                       <Users className="w-8 h-8 text-gray-300 dark:text-gray-600 mx-auto mb-2" />
                       <p className="text-sm text-gray-400 dark:text-gray-500">
-                        {clientSearch ? 'Nenhum cliente encontrado' : 'Nenhum cliente cadastrado'}
+                        {clientSearch ? t('dashboard.noClientFound', 'Nenhum cliente encontrado') : t('dashboard.noClients', 'Nenhum cliente cadastrado')}
                       </p>
                     </td>
                   </tr>
@@ -757,11 +768,11 @@ export default function DashboardModule() {
                         <td className="px-4 py-3">
                           {nextAppt ? (
                             <span className="inline-flex items-center text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-500/20">
-                              Agendado
+                              {t('dashboard.scheduled', 'Agendado')}
                             </span>
                           ) : (
                             <span className="inline-flex items-center text-xs font-medium px-2.5 py-1 rounded-full bg-gray-50 dark:bg-gray-700/40 text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-gray-600/50">
-                              Sem consulta
+                              {t('dashboard.noAppointment', 'Sem consulta')}
                             </span>
                           )}
                         </td>
@@ -777,13 +788,13 @@ export default function DashboardModule() {
           {!isLoading && clients.length > 8 && (
             <div className="px-5 py-3 border-t border-gray-100 dark:border-gray-700/40 flex items-center justify-between">
               <span className="text-xs text-gray-400 dark:text-gray-500">
-                Mostrando {filteredClients.length} de {clients.length} clientes
+                {t('dashboard.showing', 'Mostrando')} {filteredClients.length} {t('dashboard.of', 'de')} {clients.length} {t('dashboard.clients', 'clientes')}
               </span>
               <button
                 onClick={() => setActivePage('CRM')}
                 className="flex items-center gap-1 text-xs font-medium text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors"
               >
-                Ver todos
+                {t('dashboard.viewAll', 'Ver todos')}
                 <ChevronRight className="w-3.5 h-3.5" />
               </button>
             </div>
@@ -805,13 +816,13 @@ export default function DashboardModule() {
             <div className="px-5 py-3.5 border-b border-gray-100 dark:border-gray-700/40 flex items-center justify-between">
               <h3 className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2">
                 <Clock className="w-4 h-4 text-red-500 dark:text-red-400" />
-                Agenda de Hoje
+                {t('dashboard.todaySchedule', 'Agenda de Hoje')}
               </h3>
               <button
                 onClick={() => setActivePage('Agenda')}
                 className="flex items-center gap-1 text-xs font-medium text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors"
               >
-                Ver agenda
+                {t('dashboard.viewSchedule', 'Ver agenda')}
                 <ChevronRight className="w-3.5 h-3.5" />
               </button>
             </div>
@@ -833,14 +844,14 @@ export default function DashboardModule() {
               ) : todaySchedule.length === 0 ? (
                 <div className="text-center py-8">
                   <CalendarCheck className="w-8 h-8 text-gray-300 dark:text-gray-600 mx-auto mb-2" />
-                  <p className="text-sm text-gray-400 dark:text-gray-500">Nenhum agendamento hoje</p>
+                  <p className="text-sm text-gray-400 dark:text-gray-500">{t('dashboard.noTodayAppts', 'Nenhum agendamento hoje')}</p>
                   <motion.button
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.97 }}
                     onClick={() => setActivePage('Agenda')}
                     className="mt-3 text-xs font-medium text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors"
                   >
-                    Agendar agora
+                    {t('dashboard.scheduleNow', 'Agendar agora')}
                   </motion.button>
                 </div>
               ) : (
@@ -917,13 +928,13 @@ export default function DashboardModule() {
               <div className="px-5 py-3.5 border-b border-gray-100 dark:border-gray-700/40 flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2">
                   <AlertTriangle className="w-4 h-4 text-amber-500" />
-                  Alertas Financeiros
+                  {t('dashboard.financialAlerts', 'Alertas Financeiros')}
                 </h3>
                 <button
                   onClick={() => setActivePage('Financeiro')}
                   className="flex items-center gap-1 text-xs font-medium text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors"
                 >
-                  Ver tudo
+                  {t('dashboard.viewAll', 'Ver todos')}
                   <ChevronRight className="w-3.5 h-3.5" />
                 </button>
               </div>
@@ -933,7 +944,7 @@ export default function DashboardModule() {
                     <div className="flex items-center gap-2.5">
                       <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
                       <span className="text-sm font-medium text-red-700 dark:text-red-400">
-                        {overdueTransactions.length} atrasada{overdueTransactions.length > 1 ? 's' : ''}
+                        {overdueTransactions.length} {overdueTransactions.length > 1 ? t('dashboard.overdueMulti', 'atrasadas') : t('dashboard.overdueSingle', 'atrasada')}
                       </span>
                     </div>
                     <span className="text-sm font-bold text-red-700 dark:text-red-400">
@@ -946,7 +957,7 @@ export default function DashboardModule() {
                     <div className="flex items-center gap-2.5">
                       <div className="w-2 h-2 rounded-full bg-amber-500" />
                       <span className="text-sm font-medium text-amber-700 dark:text-amber-400">
-                        {pendingTransactions.length} pendente{pendingTransactions.length > 1 ? 's' : ''}
+                        {pendingTransactions.length} {pendingTransactions.length > 1 ? t('dashboard.pendingMulti', 'pendentes') : t('dashboard.pendingSingle', 'pendente')}
                       </span>
                     </div>
                     <span className="text-sm font-bold text-amber-700 dark:text-amber-400">
@@ -969,18 +980,18 @@ export default function DashboardModule() {
             )}
           >
             <div className="p-5">
-              <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Acesso Rápido</h3>
+              <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">{t('dashboard.quickAccess', 'Acesso Rápido')}</h3>
               <div className="grid grid-cols-2 gap-2">
                 {([
-                  { label: 'CRM', icon: Users, page: 'CRM' as const, color: 'text-red-500 dark:text-red-400' },
-                  { label: 'Agenda', icon: CalendarCheck, page: 'Agenda' as const, color: 'text-amber-500 dark:text-amber-400' },
-                  { label: 'PDV', icon: ShoppingBag, page: 'PDV' as const, color: 'text-emerald-500 dark:text-emerald-400' },
-                  { label: 'Financeiro', icon: Wallet, page: 'Financeiro' as const, color: 'text-blue-500 dark:text-blue-400' },
-                  { label: 'Estoque', icon: Receipt, page: 'Estoque' as const, color: 'text-violet-500 dark:text-violet-400' },
-                  { label: 'CRM', icon: UserIcon, page: 'CRM' as const, color: 'text-pink-500 dark:text-pink-400' },
-                ] as const).map((item) => (
+                  { label: t('sidebar.crm', 'CRM'), icon: Users, page: 'CRM' as const, color: 'text-red-500 dark:text-red-400' },
+                  { label: t('sidebar.agenda', 'Agenda'), icon: CalendarCheck, page: 'Agenda' as const, color: 'text-amber-500 dark:text-amber-400' },
+                  { label: t('sidebar.pdv', 'PDV'), icon: ShoppingBag, page: 'PDV' as const, color: 'text-emerald-500 dark:text-emerald-400' },
+                  { label: t('sidebar.financeiro', 'Financeiro'), icon: Wallet, page: 'Financeiro' as const, color: 'text-blue-500 dark:text-blue-400' },
+                  { label: t('sidebar.estoque', 'Estoque'), icon: Receipt, page: 'Estoque' as const, color: 'text-violet-500 dark:text-violet-400' },
+                  { label: t('sidebar.conversas', 'Conversas'), icon: MessageSquare, page: 'Conversas' as const, color: 'text-pink-500 dark:text-pink-400' },
+                ]).map((item) => (
                   <motion.button
-                    key={item.label}
+                    key={item.page}
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.96 }}
                     onClick={() => setActivePage(item.page)}

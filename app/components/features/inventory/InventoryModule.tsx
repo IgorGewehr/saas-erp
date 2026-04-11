@@ -63,6 +63,7 @@ import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Product, StockMovement } from '@/lib/types';
 import { toast } from 'react-toastify';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatDateTime } from '@/lib/utils/format';
 
@@ -381,6 +382,7 @@ interface ProductCardProps {
 }
 
 function ProductCard({ product, onEdit, onDelete, onMovement }: ProductCardProps) {
+  const { t } = useTranslation();
   const catColor = CATEGORY_COLORS[product.category] || CATEGORY_COLORS.Produto;
   const catIcon = CATEGORY_ICONS[product.category] || CATEGORY_ICONS.Produto;
   const stockPct = getStockPercentage(product.currentStock, product.maxStock);
@@ -403,7 +405,7 @@ function ProductCard({ product, onEdit, onDelete, onMovement }: ProductCardProps
         <div className="absolute top-3 right-3 z-10">
           <div className="flex items-center gap-1 px-2 py-1 rounded-full bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20">
             <AlertTriangle className="w-3 h-3 text-amber-600 dark:text-amber-400" />
-            <span className="text-[10px] font-semibold text-amber-700 dark:text-amber-400">Estoque Baixo</span>
+            <span className="text-[10px] font-semibold text-amber-700 dark:text-amber-400">{t('inventory.lowStock', 'Estoque Baixo')}</span>
           </div>
         </div>
       )}
@@ -433,7 +435,7 @@ function ProductCard({ product, onEdit, onDelete, onMovement }: ProductCardProps
         {/* Stock Level */}
         <div>
           <div className="flex items-center justify-between mb-1.5">
-            <span className="text-xs text-muted-foreground">Estoque</span>
+            <span className="text-xs text-muted-foreground">{t('inventory.stock', 'Estoque')}</span>
             <span className={cn('text-sm font-bold', getStockTextColor(product.currentStock, product.minStock))}>
               {product.currentStock} {product.unit}
             </span>
@@ -457,11 +459,11 @@ function ProductCard({ product, onEdit, onDelete, onMovement }: ProductCardProps
         {/* Prices */}
         <div className="flex items-center justify-between pt-2 border-t border-border/40">
           <div>
-            <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Custo</p>
+            <p className="text-[10px] text-muted-foreground uppercase tracking-wider">{t('inventory.cost', 'Custo')}</p>
             <p className="text-xs font-medium text-foreground">{formatCurrency(product.costPrice)}</p>
           </div>
           <div className="text-right">
-            <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Venda</p>
+            <p className="text-[10px] text-muted-foreground uppercase tracking-wider">{t('inventory.salePrice', 'Venda')}</p>
             <p className="text-xs font-semibold text-foreground">{formatCurrency(product.salePrice)}</p>
           </div>
         </div>
@@ -473,7 +475,7 @@ function ProductCard({ product, onEdit, onDelete, onMovement }: ProductCardProps
           </span>
           {!product.isActive && (
             <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400">
-              Inativo
+              {t('inventory.inactive', 'Inativo')}
             </span>
           )}
         </div>
@@ -485,26 +487,26 @@ function ProductCard({ product, onEdit, onDelete, onMovement }: ProductCardProps
             className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 transition-colors"
           >
             <Plus className="w-3.5 h-3.5" />
-            Entrada
+            {t('inventory.movement.entry', 'Entrada')}
           </button>
           <button
             onClick={() => onMovement(product, 'saida')}
             className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-500/10 hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors"
           >
             <Minus className="w-3.5 h-3.5" />
-            Saida
+            {t('inventory.movement.exit', 'Saída')}
           </button>
           <button
             onClick={() => onEdit(product)}
             className="flex items-center justify-center p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
-            title="Editar"
+            title={t('inventory.edit', 'Editar')}
           >
             <Edit3 className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={() => onDelete(product)}
             className="flex items-center justify-center p-1.5 rounded-lg text-muted-foreground hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
-            title="Excluir"
+            title={t('inventory.delete', 'Excluir')}
           >
             <Trash2 className="w-3.5 h-3.5" />
           </button>
@@ -563,6 +565,7 @@ interface ProductRowProps {
 }
 
 function ProductRow({ product, onEdit, onDelete, onMovement }: ProductRowProps) {
+  const { t } = useTranslation();
   const catColor = CATEGORY_COLORS[product.category] || CATEGORY_COLORS.Produto;
   const low = isLowStock(product);
   const stockPct = getStockPercentage(product.currentStock, product.maxStock);
@@ -592,7 +595,7 @@ function ProductRow({ product, onEdit, onDelete, onMovement }: ProductRowProps) 
           {low && (
             <div className="flex items-center gap-1 mt-0.5">
               <AlertTriangle className="w-3 h-3 text-amber-500" />
-              <span className="text-[10px] font-medium text-amber-600 dark:text-amber-400">Abaixo do minimo</span>
+              <span className="text-[10px] font-medium text-amber-600 dark:text-amber-400">{t('inventory.belowMinimum', 'Abaixo do mínimo')}</span>
             </div>
           )}
         </div>
@@ -631,7 +634,7 @@ function ProductRow({ product, onEdit, onDelete, onMovement }: ProductRowProps) 
             : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400',
         )}>
           <span className={cn('w-1.5 h-1.5 rounded-full', product.isActive ? 'bg-emerald-500' : 'bg-gray-400')} />
-          {product.isActive ? 'Ativo' : 'Inativo'}
+          {product.isActive ? t('inventory.active', 'Ativo') : t('inventory.inactive', 'Inativo')}
         </span>
       </td>
       {/* Actions */}
@@ -640,28 +643,28 @@ function ProductRow({ product, onEdit, onDelete, onMovement }: ProductRowProps) 
           <button
             onClick={() => onMovement(product, 'entrada')}
             className="p-1.5 rounded-md text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 transition-colors"
-            title="Entrada"
+            title={t('inventory.movement.entry', 'Entrada')}
           >
             <Plus className="w-4 h-4" />
           </button>
           <button
             onClick={() => onMovement(product, 'saida')}
             className="p-1.5 rounded-md text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
-            title="Saida"
+            title={t('inventory.movement.exit', 'Saída')}
           >
             <Minus className="w-4 h-4" />
           </button>
           <button
             onClick={() => onEdit(product)}
             className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
-            title="Editar"
+            title={t('inventory.edit', 'Editar')}
           >
             <Edit3 className="w-4 h-4" />
           </button>
           <button
             onClick={() => onDelete(product)}
             className="p-1.5 rounded-md text-muted-foreground hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
-            title="Excluir"
+            title={t('inventory.delete', 'Excluir')}
           >
             <Trash2 className="w-4 h-4" />
           </button>
@@ -684,6 +687,7 @@ interface ImageDropZoneProps {
 }
 
 function ImageDropZone({ preview, existingUrl, onFileSelect, onRemove, error }: ImageDropZoneProps) {
+  const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
 
@@ -733,7 +737,7 @@ function ImageDropZone({ preview, existingUrl, onFileSelect, onRemove, error }: 
                 className="px-3 py-1.5 rounded-lg bg-white/90 text-sm font-medium text-gray-700 hover:bg-white transition-colors"
               >
                 <Camera className="w-4 h-4 inline mr-1" />
-                Trocar
+                {t('inventory.image.change', 'Trocar')}
               </button>
               <button
                 type="button"
@@ -741,7 +745,7 @@ function ImageDropZone({ preview, existingUrl, onFileSelect, onRemove, error }: 
                 className="px-3 py-1.5 rounded-lg bg-red-500/90 text-sm font-medium text-white hover:bg-red-500 transition-colors"
               >
                 <Trash2 className="w-4 h-4 inline mr-1" />
-                Remover
+                {t('inventory.image.remove', 'Remover')}
               </button>
             </div>
           </div>
@@ -774,10 +778,10 @@ function ImageDropZone({ preview, existingUrl, onFileSelect, onRemove, error }: 
       >
         <Upload className="w-8 h-8 text-muted-foreground/60 mb-2" />
         <p className="text-sm font-medium text-muted-foreground">
-          Arraste uma imagem ou clique para selecionar
+          {t('inventory.image.dragOrClick', 'Arraste uma imagem ou clique para selecionar')}
         </p>
         <p className="text-xs text-muted-foreground/60 mt-1">
-          JPG, PNG ou WebP - Max 5MB
+          {t('inventory.image.formats', 'JPG, PNG ou WebP - Max 5MB')}
         </p>
       </div>
       {error && <p className="text-xs text-red-500 mt-1">{error}</p>}
@@ -845,6 +849,7 @@ interface DeleteDialogProps {
 }
 
 function DeleteDialog({ open, onClose, onConfirm, productName, isDeleting }: DeleteDialogProps) {
+  const { t } = useTranslation();
   return (
     <Dialog
       open={open}
@@ -860,7 +865,7 @@ function DeleteDialog({ open, onClose, onConfirm, productName, isDeleting }: Del
           pb: 1,
         }}
       >
-        Excluir Produto
+        {t('inventory.deleteDialog.title', 'Excluir Produto')}
       </DialogTitle>
       <Divider />
       <DialogContent sx={{ pt: 3 }}>
@@ -869,18 +874,18 @@ function DeleteDialog({ open, onClose, onConfirm, productName, isDeleting }: Del
             <Trash2 className="w-7 h-7 text-red-600 dark:text-red-400" />
           </div>
           <p className="text-sm text-foreground">
-            Tem certeza que deseja excluir o produto{' '}
+            {t('inventory.deleteDialog.confirm', 'Tem certeza que deseja excluir o produto')}{' '}
             <span className="font-semibold">{productName}</span>?
           </p>
           <p className="text-xs text-muted-foreground mt-2">
-            Esta acao nao pode ser desfeita.
+            {t('inventory.deleteDialog.irreversible', 'Esta ação não pode ser desfeita.')}
           </p>
         </div>
       </DialogContent>
       <Divider />
       <DialogActions sx={{ px: 3, py: 2 }}>
         <Button onClick={onClose} disabled={isDeleting} sx={{ color: '#64748B' }}>
-          Cancelar
+          {t('inventory.cancel', 'Cancelar')}
         </Button>
         <Button
           onClick={onConfirm}
@@ -895,7 +900,7 @@ function DeleteDialog({ open, onClose, onConfirm, productName, isDeleting }: Del
           {isDeleting ? (
             <CircularProgress size={20} sx={{ color: 'white' }} />
           ) : (
-            'Excluir'
+            t('inventory.delete', 'Excluir')
           )}
         </Button>
       </DialogActions>
@@ -924,6 +929,7 @@ function StockMovementDialog({
   initialProduct,
   initialType,
 }: StockMovementDialogProps) {
+  const { t } = useTranslation();
   const [form, setForm] = useState<MovementFormData>({
     ...EMPTY_MOVEMENT_FORM,
     type: initialType || 'entrada',
@@ -959,7 +965,7 @@ function StockMovementDialog({
       onClose();
     } catch (err) {
       console.error('Error saving movement:', err);
-      toast.error('Erro ao registrar movimentacao');
+      toast.error(t('inventory.toast.movementError', 'Erro ao registrar movimentação'));
     } finally {
       setIsSaving(false);
     }
@@ -989,7 +995,7 @@ function StockMovementDialog({
           fontWeight: 700,
         }}
       >
-        <span>Movimentacao de Estoque</span>
+        <span>{t('inventory.movement.title', 'Movimentação de Estoque')}</span>
         <IconButton onClick={onClose} disabled={isSaving} size="small">
           <X size={20} />
         </IconButton>
@@ -1001,7 +1007,7 @@ function StockMovementDialog({
         <div className="space-y-5">
           {/* Movement Type */}
           <div>
-            <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Tipo de Movimentacao</p>
+            <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">{t('inventory.movement.typeLabel', 'Tipo de Movimentação')}</p>
             <div className="grid grid-cols-3 gap-2">
               {(['entrada', 'saida', 'ajuste'] as MovementType[]).map((type) => {
                 const style = typeStyles[type];
@@ -1017,7 +1023,7 @@ function StockMovementDialog({
                         : 'bg-white dark:bg-gray-800 border-border/60 text-muted-foreground hover:bg-muted/30',
                     )}
                   >
-                    {type === 'entrada' ? 'Entrada' : type === 'saida' ? 'Saida' : 'Ajuste'}
+                    {type === 'entrada' ? t('inventory.movement.entry', 'Entrada') : type === 'saida' ? t('inventory.movement.exit', 'Saída') : t('inventory.movement.adjustment', 'Ajuste')}
                   </button>
                 );
               })}
@@ -1026,11 +1032,11 @@ function StockMovementDialog({
 
           {/* Product */}
           <FormControl fullWidth size="small">
-            <InputLabel>Produto</InputLabel>
+            <InputLabel>{t('inventory.movement.product', 'Produto')}</InputLabel>
             <Select
               value={form.productId}
               onChange={(e) => setForm((f) => ({ ...f, productId: e.target.value }))}
-              label="Produto"
+              label={t('inventory.movement.product', 'Produto')}
             >
               {products.filter((p) => p.isActive).map((p) => (
                 <MenuItem key={p.id} value={p.id}>
@@ -1044,7 +1050,7 @@ function StockMovementDialog({
           {selectedProduct && (
             <div className="flex items-center gap-4 p-3 rounded-lg bg-muted/40 border border-border/40">
               <div className="flex-1">
-                <p className="text-xs text-muted-foreground">Estoque Atual</p>
+                <p className="text-xs text-muted-foreground">{t('inventory.movement.currentStock', 'Estoque Atual')}</p>
                 <p className={cn('text-lg font-bold', getStockTextColor(selectedProduct.currentStock, selectedProduct.minStock))}>
                   {selectedProduct.currentStock} {selectedProduct.unit}
                 </p>
@@ -1055,7 +1061,7 @@ function StockMovementDialog({
                     {form.type === 'entrada' ? <Plus className="w-5 h-5 text-emerald-500" /> : form.type === 'saida' ? <Minus className="w-5 h-5 text-red-500" /> : <ArrowUpDown className="w-5 h-5 text-blue-500" />}
                   </div>
                   <div className="flex-1 text-right">
-                    <p className="text-xs text-muted-foreground">Novo Estoque</p>
+                    <p className="text-xs text-muted-foreground">{t('inventory.movement.newStock', 'Novo Estoque')}</p>
                     <p className="text-lg font-bold text-foreground">
                       {form.type === 'ajuste' ? qty : newStock} {selectedProduct.unit}
                     </p>
@@ -1067,7 +1073,7 @@ function StockMovementDialog({
 
           {/* Quantity */}
           <TextField
-            label={form.type === 'ajuste' ? 'Novo Estoque' : 'Quantidade'}
+            label={form.type === 'ajuste' ? t('inventory.movement.newStock', 'Novo Estoque') : t('inventory.movement.quantity', 'Quantidade')}
             type="number"
             value={form.quantity}
             onChange={(e) => setForm((f) => ({ ...f, quantity: e.target.value }))}
@@ -1078,11 +1084,11 @@ function StockMovementDialog({
 
           {/* Reason */}
           <FormControl fullWidth size="small">
-            <InputLabel>Motivo</InputLabel>
+            <InputLabel>{t('inventory.movement.reason', 'Motivo')}</InputLabel>
             <Select
               value={form.reason}
               onChange={(e) => setForm((f) => ({ ...f, reason: e.target.value }))}
-              label="Motivo"
+              label={t('inventory.movement.reason', 'Motivo')}
             >
               {MOVEMENT_REASONS[form.type].map((reason) => (
                 <MenuItem key={reason} value={reason}>
@@ -1094,7 +1100,7 @@ function StockMovementDialog({
 
           {/* Notes */}
           <TextField
-            label="Observacoes"
+            label={t('inventory.movement.notes', 'Observações')}
             value={form.notes}
             onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
             fullWidth
@@ -1109,7 +1115,7 @@ function StockMovementDialog({
 
       <DialogActions sx={{ px: 3, py: 2 }}>
         <Button onClick={onClose} disabled={isSaving} sx={{ color: '#64748B' }}>
-          Cancelar
+          {t('inventory.cancel', 'Cancelar')}
         </Button>
         <Button
           onClick={handleSubmit}
@@ -1125,7 +1131,7 @@ function StockMovementDialog({
           {isSaving ? (
             <CircularProgress size={20} sx={{ color: 'white' }} />
           ) : (
-            'Confirmar'
+            t('inventory.movement.confirm', 'Confirmar')
           )}
         </Button>
       </DialogActions>
@@ -1145,6 +1151,7 @@ interface ProductDialogProps {
 }
 
 function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
+  const { t } = useTranslation();
   const [form, setForm] = useState<ProductFormData>(EMPTY_PRODUCT_FORM);
   const [isSaving, setIsSaving] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -1193,15 +1200,15 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
 
   function validate(): boolean {
     const newErrors: Record<string, string> = {};
-    if (!form.name.trim()) newErrors.name = 'Nome obrigatorio';
+    if (!form.name.trim()) newErrors.name = t('inventory.productForm.errors.nameRequired', 'Nome obrigatório');
     const costNum = currencyDisplayToNumber(form.costPrice);
     const saleNum = currencyDisplayToNumber(form.salePrice);
-    if (costNum < 0) newErrors.costPrice = 'Preco de custo invalido';
-    if (saleNum < 0) newErrors.salePrice = 'Preco de venda invalido';
-    if (form.currentStock === '' || parseInt(form.currentStock) < 0) newErrors.currentStock = 'Estoque invalido';
-    if (form.minStock === '' || parseInt(form.minStock) < 0) newErrors.minStock = 'Estoque minimo invalido';
+    if (costNum < 0) newErrors.costPrice = t('inventory.productForm.errors.invalidCostPrice', 'Preço de custo inválido');
+    if (saleNum < 0) newErrors.salePrice = t('inventory.productForm.errors.invalidSalePrice', 'Preço de venda inválido');
+    if (form.currentStock === '' || parseInt(form.currentStock) < 0) newErrors.currentStock = t('inventory.productForm.errors.invalidStock', 'Estoque inválido');
+    if (form.minStock === '' || parseInt(form.minStock) < 0) newErrors.minStock = t('inventory.productForm.errors.invalidMinStock', 'Estoque mínimo inválido');
     if (form.ncm && form.ncm.replace(/\D/g, '').length !== 0 && form.ncm.replace(/\D/g, '').length !== 8) {
-      newErrors.ncm = 'NCM deve ter 8 digitos';
+      newErrors.ncm = t('inventory.productForm.errors.ncmLength', 'NCM deve ter 8 dígitos');
     }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -1215,7 +1222,7 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
       onClose();
     } catch (err) {
       console.error('Error saving product:', err);
-      toast.error('Erro ao salvar produto');
+      toast.error(t('inventory.toast.saveProductError', 'Erro ao salvar produto'));
     } finally {
       setIsSaving(false);
     }
@@ -1232,11 +1239,11 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
 
   function handleFileSelect(file: File) {
     if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) {
-      setImageError('Formato invalido. Use JPG, PNG ou WebP.');
+      setImageError(t('inventory.image.invalidFormat', 'Formato inválido. Use JPG, PNG ou WebP.'));
       return;
     }
     if (file.size > MAX_IMAGE_SIZE) {
-      setImageError('Imagem muito grande. Maximo 5MB.');
+      setImageError(t('inventory.image.tooLarge', 'Imagem muito grande. Máximo 5MB.'));
       return;
     }
     setImageError('');
@@ -1269,7 +1276,7 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
           fontWeight: 700,
         }}
       >
-        <span>{isEditing ? 'Editar Produto' : 'Novo Produto'}</span>
+        <span>{isEditing ? t('inventory.productForm.editProduct', 'Editar Produto') : t('inventory.productForm.newProduct', 'Novo Produto')}</span>
         <IconButton onClick={onClose} disabled={isSaving} size="small">
           <X size={20} />
         </IconButton>
@@ -1288,7 +1295,7 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
             <div>
               <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3 flex items-center gap-2">
                 <ImageIcon className="w-4 h-4" />
-                Imagem do Produto
+                {t('inventory.productForm.productImage', 'Imagem do Produto')}
               </p>
               <ImageDropZone
                 preview={form.imagePreview}
@@ -1302,7 +1309,7 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
             {/* Nome + SKU */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <TextField
-                label="Nome do Produto"
+                label={t('inventory.productForm.productName', 'Nome do Produto')}
                 value={form.name}
                 onChange={(e) => updateField('name', e.target.value)}
                 error={!!errors.name}
@@ -1312,18 +1319,18 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
                 size="small"
               />
               <TextField
-                label="SKU"
+                label={t('inventory.productForm.sku', 'SKU')}
                 value={form.sku}
                 onChange={(e) => updateField('sku', e.target.value)}
                 fullWidth
                 size="small"
-                placeholder="Auto-gerado se vazio"
+                placeholder={t('inventory.productForm.skuPlaceholder', 'Auto-gerado se vazio')}
               />
             </div>
 
             {/* Descricao */}
             <TextField
-              label="Descricao"
+              label={t('inventory.productForm.description', 'Descrição')}
               value={form.description}
               onChange={(e) => updateField('description', e.target.value)}
               fullWidth
@@ -1335,18 +1342,18 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
             {/* Codigo de Barras + Categoria + Unidade */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <TextField
-                label="Codigo de Barras"
+                label={t('inventory.productForm.barcode', 'Código de Barras')}
                 value={form.barcode}
                 onChange={(e) => updateField('barcode', e.target.value)}
                 fullWidth
                 size="small"
               />
               <FormControl fullWidth size="small">
-                <InputLabel>Categoria</InputLabel>
+                <InputLabel>{t('inventory.productForm.category', 'Categoria')}</InputLabel>
                 <Select
                   value={form.category}
                   onChange={(e) => updateField('category', e.target.value)}
-                  label="Categoria"
+                  label={t('inventory.productForm.category', 'Categoria')}
                 >
                   {CATEGORIES.map((cat) => (
                     <MenuItem key={cat} value={cat}>{cat}</MenuItem>
@@ -1354,11 +1361,11 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
                 </Select>
               </FormControl>
               <FormControl fullWidth size="small">
-                <InputLabel>Unidade</InputLabel>
+                <InputLabel>{t('inventory.productForm.unit', 'Unidade')}</InputLabel>
                 <Select
                   value={form.unit}
                   onChange={(e) => updateField('unit', e.target.value)}
-                  label="Unidade"
+                  label={t('inventory.productForm.unit', 'Unidade')}
                 >
                   {UNITS.map((u) => (
                     <MenuItem key={u} value={u}>{u}</MenuItem>
@@ -1369,17 +1376,17 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
 
             {/* Prices */}
             <div>
-              <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">Precos</p>
+              <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">{t('inventory.productForm.prices', 'Preços')}</p>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <CurrencyInput
-                  label="Preco de Custo"
+                  label={t('inventory.productForm.costPrice', 'Preço de Custo')}
                   value={form.costPrice}
                   onChange={(v) => updateField('costPrice', v)}
                   error={errors.costPrice}
                   required
                 />
                 <CurrencyInput
-                  label="Preco de Venda"
+                  label={t('inventory.productForm.salePrice', 'Preço de Venda')}
                   value={form.salePrice}
                   onChange={(v) => updateField('salePrice', v)}
                   error={errors.salePrice}
@@ -1387,7 +1394,7 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
                 />
                 <div className="flex items-center px-3 rounded-lg bg-muted/40 border border-border/40">
                   <div>
-                    <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Margem</p>
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-wider">{t('inventory.productForm.margin', 'Margem')}</p>
                     <p className={cn(
                       'text-lg font-bold',
                       margin > 0 ? 'text-emerald-600' : margin < 0 ? 'text-red-600' : 'text-muted-foreground',
@@ -1401,10 +1408,10 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
 
             {/* Stock Levels */}
             <div>
-              <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">Estoque</p>
+              <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">{t('inventory.productForm.stockSection', 'Estoque')}</p>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <TextField
-                  label="Estoque Atual"
+                  label={t('inventory.productForm.currentStock', 'Estoque Atual')}
                   type="number"
                   value={form.currentStock}
                   onChange={(e) => updateField('currentStock', e.target.value)}
@@ -1416,7 +1423,7 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
                   slotProps={{ htmlInput: { min: 0 } }}
                 />
                 <TextField
-                  label="Estoque Minimo"
+                  label={t('inventory.productForm.minStock', 'Estoque Mínimo')}
                   type="number"
                   value={form.minStock}
                   onChange={(e) => updateField('minStock', e.target.value)}
@@ -1428,7 +1435,7 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
                   slotProps={{ htmlInput: { min: 0 } }}
                 />
                 <TextField
-                  label="Estoque Maximo"
+                  label={t('inventory.productForm.maxStock', 'Estoque Máximo')}
                   type="number"
                   value={form.maxStock}
                   onChange={(e) => updateField('maxStock', e.target.value)}
@@ -1441,9 +1448,9 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
 
             {/* Fiscal */}
             <div>
-              <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">Fiscal (Opcional)</p>
+              <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">{t('inventory.productForm.fiscalSection', 'Fiscal (Opcional)')}</p>
               <p className="text-xs text-slate-500 dark:text-slate-400 mb-3 -mt-1">
-                Campos opcionais. Obrigatorios para emissao de NF-e/NFC-e.
+                {t('inventory.productForm.fiscalDesc', 'Campos opcionais. Obrigatórios para emissão de NF-e/NFC-e.')}
               </p>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <TextField
@@ -1451,7 +1458,7 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
                   value={form.ncm}
                   onChange={(e) => updateField('ncm', e.target.value)}
                   error={!!errors.ncm}
-                  helperText={errors.ncm || 'Nomenclatura Comum do Mercosul'}
+                  helperText={errors.ncm || t('inventory.productForm.ncmHelper', 'Nomenclatura Comum do Mercosul')}
                   fullWidth
                   size="small"
                   placeholder="00000000"
@@ -1464,7 +1471,7 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
                   fullWidth
                   size="small"
                   placeholder="5102"
-                  helperText="Cod. Fiscal de Operacoes"
+                  helperText={t('inventory.productForm.cfopHelper', 'Cód. Fiscal de Operações')}
                   slotProps={{ htmlInput: { maxLength: 4 } }}
                 />
                 <TextField
@@ -1474,7 +1481,7 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
                   fullWidth
                   size="small"
                   placeholder="0000000"
-                  helperText="Substituicao Tributaria"
+                  helperText={t('inventory.productForm.cestHelper', 'Substituição Tributária')}
                   slotProps={{ htmlInput: { maxLength: 7 } }}
                 />
               </div>
@@ -1486,7 +1493,7 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
                   fullWidth
                   size="small"
                   placeholder="7891234567890"
-                  helperText="Codigo de barras fiscal"
+                  helperText={t('inventory.productForm.gtinHelper', 'Código de barras fiscal')}
                   slotProps={{ htmlInput: { maxLength: 14 } }}
                 />
                 <TextField
@@ -1497,7 +1504,7 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
                   size="small"
                   select
                   SelectProps={{ native: true }}
-                  helperText="Origem da mercadoria"
+                  helperText={t('inventory.productForm.icmsOrigemHelper', 'Origem da mercadoria')}
                 >
                   <option value="0">0 - Nacional</option>
                   <option value="1">1 - Estrangeira (importacao direta)</option>
@@ -1525,7 +1532,7 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
               }
               label={
                 <span className="text-sm font-medium text-foreground">
-                  Produto Ativo
+                  {t('inventory.productForm.activeProduct', 'Produto Ativo')}
                 </span>
               }
             />
@@ -1537,7 +1544,7 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
 
       <DialogActions sx={{ px: 3, py: 2 }}>
         <Button onClick={onClose} disabled={isSaving} sx={{ color: '#64748B' }}>
-          Cancelar
+          {t('inventory.cancel', 'Cancelar')}
         </Button>
         <Button
           onClick={handleSubmit}
@@ -1552,9 +1559,9 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
           {isSaving ? (
             <CircularProgress size={20} sx={{ color: 'white' }} />
           ) : isEditing ? (
-            'Salvar'
+            t('inventory.productForm.save', 'Salvar')
           ) : (
-            'Cadastrar'
+            t('inventory.productForm.register', 'Cadastrar')
           )}
         </Button>
       </DialogActions>
@@ -1572,10 +1579,11 @@ interface MovementHistoryProps {
 }
 
 function MovementHistory({ movements, isLoading }: MovementHistoryProps) {
+  const { t } = useTranslation();
   const typeConfig: Record<string, { label: string; bg: string; text: string }> = {
-    entrada: { label: 'Entrada', bg: 'bg-emerald-50 dark:bg-emerald-500/10', text: 'text-emerald-700 dark:text-emerald-400' },
-    saida: { label: 'Saida', bg: 'bg-red-50 dark:bg-red-500/10', text: 'text-red-700 dark:text-red-400' },
-    ajuste: { label: 'Ajuste', bg: 'bg-blue-50 dark:bg-blue-500/10', text: 'text-blue-700 dark:text-blue-400' },
+    entrada: { label: t('inventory.movement.entry', 'Entrada'), bg: 'bg-emerald-50 dark:bg-emerald-500/10', text: 'text-emerald-700 dark:text-emerald-400' },
+    saida: { label: t('inventory.movement.exit', 'Saída'), bg: 'bg-red-50 dark:bg-red-500/10', text: 'text-red-700 dark:text-red-400' },
+    ajuste: { label: t('inventory.movement.adjustment', 'Ajuste'), bg: 'bg-blue-50 dark:bg-blue-500/10', text: 'text-blue-700 dark:text-blue-400' },
   };
 
   if (isLoading) {
@@ -1592,8 +1600,8 @@ function MovementHistory({ movements, isLoading }: MovementHistoryProps) {
     return (
       <div className="flex flex-col items-center justify-center py-12 text-center">
         <ClipboardList className="w-10 h-10 text-muted-foreground/40 mb-3" />
-        <p className="text-sm font-medium text-muted-foreground">Nenhuma movimentacao registrada</p>
-        <p className="text-xs text-muted-foreground mt-1">As movimentacoes de estoque aparecerao aqui</p>
+        <p className="text-sm font-medium text-muted-foreground">{t('inventory.history.empty', 'Nenhuma movimentação registrada')}</p>
+        <p className="text-xs text-muted-foreground mt-1">{t('inventory.history.emptyHint', 'As movimentações de estoque aparecerão aqui')}</p>
       </div>
     );
   }
@@ -1603,14 +1611,14 @@ function MovementHistory({ movements, isLoading }: MovementHistoryProps) {
       <table className="w-full">
         <thead>
           <tr className="border-b border-border/60">
-            <th className="text-left py-3 px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Data</th>
-            <th className="text-left py-3 px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Produto</th>
-            <th className="text-left py-3 px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Tipo</th>
-            <th className="text-right py-3 px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Qtd</th>
-            <th className="text-right py-3 px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider hidden sm:table-cell">Anterior</th>
-            <th className="text-right py-3 px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider hidden sm:table-cell">Novo</th>
-            <th className="text-left py-3 px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider hidden md:table-cell">Motivo</th>
-            <th className="text-left py-3 px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider hidden lg:table-cell">Operador</th>
+            <th className="text-left py-3 px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider">{t('inventory.history.colDate', 'Data')}</th>
+            <th className="text-left py-3 px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider">{t('inventory.history.colProduct', 'Produto')}</th>
+            <th className="text-left py-3 px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider">{t('inventory.history.colType', 'Tipo')}</th>
+            <th className="text-right py-3 px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider">{t('inventory.history.colQty', 'Qtd')}</th>
+            <th className="text-right py-3 px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider hidden sm:table-cell">{t('inventory.history.colPrevious', 'Anterior')}</th>
+            <th className="text-right py-3 px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider hidden sm:table-cell">{t('inventory.history.colNew', 'Novo')}</th>
+            <th className="text-left py-3 px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider hidden md:table-cell">{t('inventory.history.colReason', 'Motivo')}</th>
+            <th className="text-left py-3 px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider hidden lg:table-cell">{t('inventory.history.colOperator', 'Operador')}</th>
           </tr>
         </thead>
         <tbody>
@@ -1658,6 +1666,7 @@ function MovementHistory({ movements, isLoading }: MovementHistoryProps) {
 // ==============================================
 
 function EmptyState({ onAdd }: { onAdd: () => void }) {
+  const { t } = useTranslation();
   return (
     <motion.div
       initial={{ opacity: 0, y: 12 }}
@@ -1669,17 +1678,17 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
         <Package className="w-10 h-10 text-red-500/60" />
       </div>
       <h3 className="text-lg font-semibold text-foreground mb-2">
-        Nenhum produto cadastrado
+        {t('inventory.emptyState.title', 'Nenhum produto cadastrado')}
       </h3>
       <p className="text-sm text-muted-foreground max-w-sm mb-6">
-        Comece adicionando seus produtos e materiais para controlar o estoque da sua empresa.
+        {t('inventory.emptyState.description', 'Comece adicionando seus produtos e materiais para controlar o estoque da sua empresa.')}
       </p>
       <button
         onClick={onAdd}
         className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-gradient-to-r from-red-600 to-red-500 text-white text-sm font-medium hover:from-red-700 hover:to-red-600 transition-all shadow-sm"
       >
         <Plus className="w-4 h-4" />
-        Cadastrar Primeiro Produto
+        {t('inventory.emptyState.cta', 'Cadastrar Primeiro Produto')}
       </button>
     </motion.div>
   );
@@ -1690,6 +1699,7 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
 // ==============================================
 
 export default function InventoryModule() {
+  const { t } = useTranslation();
   const { user, business } = useAuth();
   const queryClient = useQueryClient();
 
@@ -1812,7 +1822,7 @@ export default function InventoryModule() {
       );
 
       await updateDoc(doc(db, 'products', editingProduct.id), cleanedData);
-      toast.success('Produto atualizado com sucesso!');
+      toast.success(t('inventory.toast.productUpdated', 'Produto atualizado com sucesso!'));
     } else {
       // CREATE
       const productData = {
@@ -1846,7 +1856,7 @@ export default function InventoryModule() {
         const imageUrl = await uploadProductImage(data.imageFile, docRef.id);
         await updateDoc(doc(db, 'products', docRef.id), { imageUrl });
       }
-      toast.success('Produto cadastrado com sucesso!');
+      toast.success(t('inventory.toast.productCreated', 'Produto cadastrado com sucesso!'));
     }
 
     queryClient.invalidateQueries({ queryKey: ['products', business.id] });
@@ -1894,7 +1904,7 @@ export default function InventoryModule() {
       updatedAt: new Date().toISOString(),
     });
 
-    toast.success('Movimentacao registrada com sucesso!');
+    toast.success(t('inventory.toast.movementCreated', 'Movimentação registrada com sucesso!'));
     queryClient.invalidateQueries({ queryKey: ['products', business.id] });
     queryClient.invalidateQueries({ queryKey: ['stockMovements', business.id] });
   }, [business?.id, user, products, queryClient]);
@@ -1904,13 +1914,13 @@ export default function InventoryModule() {
     setIsDeleting(true);
     try {
       await deleteDoc(doc(db, 'products', deletingProduct.id));
-      toast.success('Produto excluido com sucesso');
+      toast.success(t('inventory.toast.productDeleted', 'Produto excluído com sucesso'));
       queryClient.invalidateQueries({ queryKey: ['products', business.id] });
       setDeleteDialogOpen(false);
       setDeletingProduct(null);
     } catch (err) {
       console.error('Error deleting product:', err);
-      toast.error('Erro ao excluir produto');
+      toast.error(t('inventory.toast.deleteProductError', 'Erro ao excluir produto'));
     } finally {
       setIsDeleting(false);
     }
@@ -2036,10 +2046,10 @@ export default function InventoryModule() {
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold tracking-tight text-foreground font-display">
-              Estoque
+              {t('inventory.header.title', 'Estoque')}
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Gerencie seus produtos e materiais
+              {t('inventory.header.subtitle', 'Gerencie seus produtos e materiais')}
             </p>
           </div>
         </div>
@@ -2067,10 +2077,10 @@ export default function InventoryModule() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-foreground font-display">
-            Estoque
+            {t('inventory.header.title', 'Estoque')}
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            {stats.totalProducts} produtos cadastrados
+            {t('inventory.header.productCount', '{{count}} produtos cadastrados', { count: stats.totalProducts })}
           </p>
         </div>
         <button
@@ -2078,7 +2088,7 @@ export default function InventoryModule() {
           className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-gradient-to-r from-red-600 to-red-500 text-white text-sm font-medium hover:from-red-700 hover:to-red-600 transition-all shadow-sm"
         >
           <Plus className="w-4 h-4" />
-          Novo Produto
+          {t('inventory.header.newProduct', 'Novo Produto')}
         </button>
       </div>
 
@@ -2089,7 +2099,7 @@ export default function InventoryModule() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <input
             type="text"
-            placeholder="Buscar por nome, SKU ou codigo..."
+            placeholder={t('inventory.filter.searchPlaceholder', 'Buscar por nome, SKU ou código...')}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="w-full pl-10 pr-4 py-2.5 rounded-lg border border-border/60 bg-white/70 dark:bg-gray-900/70 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-300 transition-all"
@@ -2103,7 +2113,7 @@ export default function InventoryModule() {
             onChange={(e) => setCategoryFilter(e.target.value)}
             className="appearance-none pl-3 pr-9 py-2.5 rounded-lg border border-border/60 bg-white/70 dark:bg-gray-900/70 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-300 transition-all cursor-pointer"
           >
-            <option value="all">Todas Categorias</option>
+            <option value="all">{t('inventory.filter.allCategories', 'Todas Categorias')}</option>
             {CATEGORIES.map((cat) => (
               <option key={cat} value={cat}>{cat}</option>
             ))}
@@ -2118,10 +2128,10 @@ export default function InventoryModule() {
             onChange={(e) => setStockFilter(e.target.value as StockStatusFilter)}
             className="appearance-none pl-3 pr-9 py-2.5 rounded-lg border border-border/60 bg-white/70 dark:bg-gray-900/70 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-300 transition-all cursor-pointer"
           >
-            <option value="all">Todo Estoque</option>
-            <option value="em_estoque">Em Estoque</option>
-            <option value="estoque_baixo">Estoque Baixo</option>
-            <option value="sem_estoque">Sem Estoque</option>
+            <option value="all">{t('inventory.filter.allStock', 'Todo Estoque')}</option>
+            <option value="em_estoque">{t('inventory.filter.inStock', 'Em Estoque')}</option>
+            <option value="estoque_baixo">{t('inventory.filter.lowStock', 'Estoque Baixo')}</option>
+            <option value="sem_estoque">{t('inventory.filter.outOfStock', 'Sem Estoque')}</option>
           </select>
           <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
         </div>
@@ -2133,9 +2143,9 @@ export default function InventoryModule() {
             onChange={(e) => setActiveFilter(e.target.value)}
             className="appearance-none pl-3 pr-9 py-2.5 rounded-lg border border-border/60 bg-white/70 dark:bg-gray-900/70 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-300 transition-all cursor-pointer"
           >
-            <option value="all">Todos</option>
-            <option value="ativo">Ativos</option>
-            <option value="inativo">Inativos</option>
+            <option value="all">{t('inventory.filter.all', 'Todos')}</option>
+            <option value="ativo">{t('inventory.filter.active', 'Ativos')}</option>
+            <option value="inativo">{t('inventory.filter.inactive', 'Inativos')}</option>
           </select>
           <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
         </div>
@@ -2150,7 +2160,7 @@ export default function InventoryModule() {
                 ? 'bg-white dark:bg-gray-700 text-foreground shadow-sm'
                 : 'text-muted-foreground hover:text-foreground',
             )}
-            title="Visualizacao em grade"
+            title={t('inventory.filter.gridView', 'Visualização em grade')}
           >
             <LayoutGrid className="w-4 h-4" />
           </button>
@@ -2162,7 +2172,7 @@ export default function InventoryModule() {
                 ? 'bg-white dark:bg-gray-700 text-foreground shadow-sm'
                 : 'text-muted-foreground hover:text-foreground',
             )}
-            title="Visualizacao em lista"
+            title={t('inventory.filter.listView', 'Visualização em lista')}
           >
             <List className="w-4 h-4" />
           </button>
@@ -2179,30 +2189,30 @@ export default function InventoryModule() {
         <StatCard
           icon={<Package className="w-5 h-5 text-blue-600" />}
           iconBg="bg-blue-50 dark:bg-blue-500/10"
-          label="Total de Produtos"
+          label={t('inventory.stats.totalProducts', 'Total de Produtos')}
           value={String(stats.totalProducts)}
-          subtitle={`${filteredProducts.length} exibidos`}
+          subtitle={t('inventory.stats.showing', '{{count}} exibidos', { count: filteredProducts.length })}
         />
         <StatCard
           icon={<DollarSign className="w-5 h-5 text-emerald-600" />}
           iconBg="bg-emerald-50 dark:bg-emerald-500/10"
-          label="Valor em Estoque"
+          label={t('inventory.stats.stockValue', 'Valor em Estoque')}
           value={formatCurrency(stats.totalValue)}
-          subtitle="Custo total em estoque"
+          subtitle={t('inventory.stats.stockValueSubtitle', 'Custo total em estoque')}
         />
         <StatCard
           icon={<TrendingDown className="w-5 h-5 text-amber-600" />}
           iconBg="bg-amber-50 dark:bg-amber-500/10"
-          label="Itens Abaixo do Minimo"
+          label={t('inventory.stats.belowMinimum', 'Itens Abaixo do Mínimo')}
           value={String(stats.lowStockCount)}
-          subtitle={stats.lowStockCount > 0 ? 'Necessita reposicao' : 'Tudo em ordem'}
+          subtitle={stats.lowStockCount > 0 ? t('inventory.stats.needsReplenishment', 'Necessita reposição') : t('inventory.stats.allGood', 'Tudo em ordem')}
         />
         <StatCard
           icon={<Activity className="w-5 h-5 text-violet-600" />}
           iconBg="bg-violet-50 dark:bg-violet-500/10"
-          label="Movimentacoes Hoje"
+          label={t('inventory.stats.todayMovements', 'Movimentações Hoje')}
           value={String(stats.todayMovements)}
-          subtitle="Entradas e saidas"
+          subtitle={t('inventory.stats.entriesAndExits', 'Entradas e saídas')}
         />
       </motion.div>
 

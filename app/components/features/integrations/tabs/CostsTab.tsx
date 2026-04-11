@@ -7,6 +7,7 @@ import {
   Database, Zap, RefreshCw, AlertTriangle, Activity,
   BarChart3, ArrowUpRight, Clock,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import type { IntegrationConfig } from '@/lib/types';
 import KPICard from '../shared/KPICard';
 import DemoDataBanner from '../shared/DemoDataBanner';
@@ -132,6 +133,7 @@ const DEMO: CostsData = {
 // COMPONENT
 // ============================================
 export default function CostsTab({ awsConfig }: CostsTabProps) {
+  const { t } = useTranslation();
   const [data, setData] = useState<CostsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -210,7 +212,7 @@ export default function CostsTab({ awsConfig }: CostsTabProps) {
       {/* Demo banner + refresh */}
       <div className="flex items-center justify-between">
         <div className="flex-1">
-          {error && <DemoDataBanner message={`Usando dados de demonstração. ${error}`} />}
+          {error && <DemoDataBanner message={`${t('integrations.demo.usingDemoPrefix', 'Usando dados de demonstração. ')}${error}`} />}
         </div>
         <button
           onClick={() => fetchData(true)}
@@ -224,7 +226,7 @@ export default function CostsTab({ awsConfig }: CostsTabProps) {
       {/* ========== 1. Cost KPIs ========== */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <KPICard
-          title="Custo Mensal Atual"
+          title={t('integrations.kpi.currentMonthlyCost', 'Custo Mensal Atual')}
           value={formatUSD(data.currentMonth)}
           change={data.monthlyChange}
           icon={<DollarSign className="w-4 h-4" />}
@@ -232,24 +234,26 @@ export default function CostsTab({ awsConfig }: CostsTabProps) {
           delay={0}
         />
         <KPICard
-          title="Forecast Próximo Mês"
+          title={t('integrations.kpi.forecastNextMonth', 'Forecast Próximo Mês')}
           value={formatUSD(data.forecast)}
-          subtitle={`${data.forecast > data.currentMonth ? '+' : ''}${formatUSD(data.forecast - data.currentMonth)} vs atual`}
+          subtitle={t('integrations.costs.forecastVsCurrent', '{{diff}} vs atual', {
+            diff: `${data.forecast > data.currentMonth ? '+' : ''}${formatUSD(data.forecast - data.currentMonth)}`,
+          })}
           icon={<TrendingUp className="w-4 h-4" />}
           color="blue"
           delay={0.05}
         />
         <KPICard
-          title="Variação Mensal"
+          title={t('integrations.kpi.monthlyVariation', 'Variação Mensal')}
           value={`${data.monthlyChange >= 0 ? '+' : ''}${data.monthlyChange.toFixed(1)}%`}
-          subtitle={`${formatUSD(data.previousMonth)} mês anterior`}
+          subtitle={t('integrations.kpi.previousMonth', '{{value}} mês anterior', { value: formatUSD(data.previousMonth) })}
           icon={data.monthlyChange > 0 ? <ArrowUpRight className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
           color={variationColor}
           delay={0.1}
           warning={data.monthlyChange > 15}
         />
         <KPICard
-          title="Top Serviço"
+          title={t('integrations.kpi.topService', 'Top Serviço')}
           value={data.topService.name}
           subtitle={formatUSD(data.topService.cost)}
           icon={<Server className="w-4 h-4" />}
@@ -267,8 +271,8 @@ export default function CostsTab({ awsConfig }: CostsTabProps) {
       >
         <h3 className="text-sm font-semibold font-display text-gray-900 dark:text-white mb-5 flex items-center gap-2">
           <Cloud className="w-4 h-4 text-violet-500" />
-          Custos por Serviço
-          <span className="text-[11px] font-normal text-gray-400 ml-auto">este mês</span>
+          {t('integrations.costs.costsByService', 'Custos por Serviço')}
+          <span className="text-[11px] font-normal text-gray-400 ml-auto">{t('integrations.costs.thisMonth', 'este mês')}</span>
         </h3>
         <div className="space-y-3">
           {data.services.map((service, i) => {
@@ -317,8 +321,8 @@ export default function CostsTab({ awsConfig }: CostsTabProps) {
         >
           <h3 className="text-sm font-semibold font-display text-gray-900 dark:text-white mb-4 flex items-center gap-2">
             <BarChart3 className="w-4 h-4 text-blue-500" />
-            Tendência Diária
-            <span className="text-[11px] font-normal text-gray-400 ml-auto">últimos 7 dias</span>
+            {t('integrations.costs.dailyTrend', 'Tendência Diária')}
+            <span className="text-[11px] font-normal text-gray-400 ml-auto">{t('integrations.costs.last7Days', 'últimos 7 dias')}</span>
           </h3>
           <div className="space-y-2.5">
             {data.dailyCosts.map((day, i) => {
@@ -353,7 +357,7 @@ export default function CostsTab({ awsConfig }: CostsTabProps) {
 
           {/* Daily average */}
           <div className="mt-4 pt-3 border-t border-gray-100 dark:border-gray-800 flex items-center justify-between">
-            <span className="text-[11px] text-gray-400">Média diária</span>
+            <span className="text-[11px] text-gray-400">{t('integrations.costs.dailyAverage', 'Média diária')}</span>
             <span className="text-sm font-bold text-gray-900 dark:text-white">
               {formatUSD(data.dailyCosts.reduce((sum, d) => sum + d.cost, 0) / Math.max(data.dailyCosts.length, 1))}
             </span>
@@ -369,10 +373,12 @@ export default function CostsTab({ awsConfig }: CostsTabProps) {
         >
           <h3 className="text-sm font-semibold font-display text-gray-900 dark:text-white mb-2 flex items-center gap-2">
             <TrendingUp className="w-4 h-4 text-violet-500" />
-            Projeção de Custos
+            {t('integrations.costs.costProjection', 'Projeção de Custos')}
           </h3>
           <p className="text-[12px] text-gray-400 mb-5">
-            Baseado na tendência atual de {data.monthlyChange >= 0 ? '+' : ''}{data.monthlyChange.toFixed(1)}% ao mês
+            {t('integrations.costs.basedOnTrend', 'Baseado na tendência atual de {{rate}} ao mês', {
+              rate: `${data.monthlyChange >= 0 ? '+' : ''}${data.monthlyChange.toFixed(1)}%`,
+            })}
           </p>
 
           <div className="relative">
@@ -413,7 +419,9 @@ export default function CostsTab({ awsConfig }: CostsTabProps) {
             >
               <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0" />
               <p className="text-sm text-amber-800 dark:text-amber-300 font-medium">
-                Custos crescendo {data.monthlyChange.toFixed(1)}% ao mês. Considere revisar os recursos EC2 e RDS.
+                {t('integrations.costs.costsGrowingAlert', 'Custos crescendo {{rate}} ao mês. Considere revisar os recursos EC2 e RDS.', {
+                  rate: `${data.monthlyChange.toFixed(1)}%`,
+                })}
               </p>
             </motion.div>
           )}

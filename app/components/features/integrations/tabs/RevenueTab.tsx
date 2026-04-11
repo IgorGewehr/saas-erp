@@ -7,6 +7,7 @@ import {
   ArrowUpRight, ArrowDownRight, RefreshCw, CreditCard, Activity,
   ArrowRight, Clock, Loader2,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import type { IntegrationConfig } from '@/lib/types';
 import KPICard from '../shared/KPICard';
 import DemoDataBanner from '../shared/DemoDataBanner';
@@ -107,6 +108,7 @@ const PRODUCT_GRADIENTS = [
 // COMPONENT
 // ============================================
 export default function RevenueTab({ stripeConfig, members }: RevenueTabProps) {
+  const { t } = useTranslation();
   const [data, setData] = useState<RevenueData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -172,7 +174,7 @@ export default function RevenueTab({ stripeConfig, members }: RevenueTabProps) {
       {/* Demo banner + refresh */}
       <div className="flex items-center justify-between">
         <div className="flex-1">
-          {error && <DemoDataBanner message={`Usando dados de demonstração. ${error}`} />}
+          {error && <DemoDataBanner message={`${t('integrations.demo.usingDemoPrefix', 'Usando dados de demonstração. ')}${error}`} />}
         </div>
         <button
           onClick={() => fetchData(true)}
@@ -186,7 +188,7 @@ export default function RevenueTab({ stripeConfig, members }: RevenueTabProps) {
       {/* ========== 1. Revenue KPIs ========== */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <KPICard
-          title="MRR"
+          title={t('integrations.kpi.mrr', 'MRR')}
           value={formatCurrency(data.mrr)}
           change={data.mrrChange}
           icon={<DollarSign className="w-4 h-4" />}
@@ -194,23 +196,26 @@ export default function RevenueTab({ stripeConfig, members }: RevenueTabProps) {
           delay={0}
         />
         <KPICard
-          title="ARR"
+          title={t('integrations.kpi.arr', 'ARR')}
           value={formatCurrency(data.arr)}
-          subtitle="MRR x 12"
+          subtitle={t('integrations.kpi.arrSubtitle', 'MRR x 12')}
           icon={<TrendingUp className="w-4 h-4" />}
           color="blue"
           delay={0.05}
         />
         <KPICard
-          title="Receita Liq. Mês"
+          title={t('integrations.kpi.netRevenue', 'Receita Liq. Mês')}
           value={formatCurrency(data.netRevenue - data.refunds - data.disputes)}
-          subtitle={`Bruto ${formatCurrency(data.netRevenue)} - devol. ${formatCurrency(data.refunds + data.disputes)}`}
+          subtitle={t('integrations.revenue.grossRevenue', 'Bruto {{value}} - devol. {{deductions}}', {
+            value: formatCurrency(data.netRevenue),
+            deductions: formatCurrency(data.refunds + data.disputes),
+          })}
           icon={<CreditCard className="w-4 h-4" />}
           color="emerald"
           delay={0.1}
         />
         <KPICard
-          title="Churn Rate"
+          title={t('integrations.kpi.churnRate', 'Churn Rate')}
           value={`${data.churnRate.toFixed(1)}%`}
           change={data.churnChange}
           icon={<AlertTriangle className="w-4 h-4" />}
@@ -229,7 +234,7 @@ export default function RevenueTab({ stripeConfig, members }: RevenueTabProps) {
       >
         <h3 className="text-sm font-semibold font-display text-gray-900 dark:text-white mb-5 flex items-center gap-2">
           <Activity className="w-4 h-4 text-violet-500" />
-          Receita por Produto
+          {t('integrations.revenue.revenueByProduct', 'Receita por Produto')}
         </h3>
 
         {/* Stacked bar */}
@@ -259,7 +264,7 @@ export default function RevenueTab({ stripeConfig, members }: RevenueTabProps) {
                 <div className={`w-3 h-3 rounded-full ${PRODUCT_COLORS[i % PRODUCT_COLORS.length]}`} />
                 <div>
                   <span className="text-sm font-medium text-gray-900 dark:text-white">{product.name}</span>
-                  <span className="text-[11px] text-gray-400 ml-2">{product.subs} assinaturas</span>
+                  <span className="text-[11px] text-gray-400 ml-2">{t('integrations.revenue.subscriptions', '{{count}} assinaturas', { count: product.subs })}</span>
                 </div>
               </div>
               <div className="flex items-center gap-4">
@@ -284,15 +289,15 @@ export default function RevenueTab({ stripeConfig, members }: RevenueTabProps) {
       >
         <h3 className="text-sm font-semibold font-display text-gray-900 dark:text-white mb-5 flex items-center gap-2">
           <Users className="w-4 h-4 text-blue-500" />
-          Saude das Assinaturas
+          {t('integrations.revenue.subscriptionHealth', 'Saúde das Assinaturas')}
         </h3>
 
         <div className="flex items-center gap-2 lg:gap-4 overflow-x-auto pb-2">
           {[
-            { label: 'Trialing', value: data.subscriptions.trialing, color: 'bg-blue-500', bg: 'bg-blue-50 dark:bg-blue-500/10', text: 'text-blue-700 dark:text-blue-400' },
-            { label: 'Ativas', value: data.subscriptions.active, color: 'bg-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-500/10', text: 'text-emerald-700 dark:text-emerald-400' },
-            { label: 'Vencidas', value: data.subscriptions.pastDue, color: 'bg-amber-500', bg: 'bg-amber-50 dark:bg-amber-500/10', text: 'text-amber-700 dark:text-amber-400' },
-            { label: 'Canceladas', value: data.subscriptions.canceled, color: 'bg-red-500', bg: 'bg-red-50 dark:bg-red-500/10', text: 'text-red-700 dark:text-red-400' },
+            { label: t('integrations.revenue.trialing', 'Trialing'), value: data.subscriptions.trialing, color: 'bg-blue-500', bg: 'bg-blue-50 dark:bg-blue-500/10', text: 'text-blue-700 dark:text-blue-400' },
+            { label: t('integrations.revenue.active', 'Ativas'), value: data.subscriptions.active, color: 'bg-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-500/10', text: 'text-emerald-700 dark:text-emerald-400' },
+            { label: t('integrations.revenue.pastDue', 'Vencidas'), value: data.subscriptions.pastDue, color: 'bg-amber-500', bg: 'bg-amber-50 dark:bg-amber-500/10', text: 'text-amber-700 dark:text-amber-400' },
+            { label: t('integrations.revenue.canceled', 'Canceladas'), value: data.subscriptions.canceled, color: 'bg-red-500', bg: 'bg-red-50 dark:bg-red-500/10', text: 'text-red-700 dark:text-red-400' },
           ].map((stage, i, arr) => {
             const pct = subTotal > 0 ? ((stage.value / subTotal) * 100) : 0;
             return (
@@ -335,7 +340,7 @@ export default function RevenueTab({ stripeConfig, members }: RevenueTabProps) {
         >
           <h3 className="text-sm font-semibold font-display text-gray-900 dark:text-white mb-4 flex items-center gap-2">
             <ArrowDownRight className="w-4 h-4 text-emerald-500" />
-            Entradas
+            {t('integrations.revenue.cashIn', 'Entradas')}
           </h3>
           <div className="space-y-2">
             {data.recentCharges.map((charge, i) => (
@@ -370,11 +375,11 @@ export default function RevenueTab({ stripeConfig, members }: RevenueTabProps) {
         >
           <h3 className="text-sm font-semibold font-display text-gray-900 dark:text-white mb-4 flex items-center gap-2">
             <ArrowUpRight className="w-4 h-4 text-red-500" />
-            Saidas
+            {t('integrations.revenue.cashOut', 'Saídas')}
           </h3>
           <div className="space-y-2">
             {data.recentRefunds.length === 0 ? (
-              <p className="text-sm text-gray-400 py-4 text-center">Nenhuma devolucao recente</p>
+              <p className="text-sm text-gray-400 py-4 text-center">{t('integrations.revenue.noRefunds', 'Nenhuma devolução recente')}</p>
             ) : (
               data.recentRefunds.map((refund, i) => (
                 <motion.div
@@ -413,10 +418,10 @@ export default function RevenueTab({ stripeConfig, members }: RevenueTabProps) {
       >
         <h3 className="text-sm font-semibold font-display text-gray-900 dark:text-white mb-2 flex items-center gap-2">
           <TrendingUp className="w-4 h-4 text-violet-500" />
-          Projecao de Receita
+          {t('integrations.revenue.revenueProjection', 'Projeção de Receita')}
         </h3>
         <p className="text-[12px] text-gray-400 mb-5">
-          Se o crescimento atual de {formatPercent(data.mrrChange)} ao mes se mantiver...
+          {t('integrations.revenue.ifGrowthMaintained', 'Se o crescimento atual de {{rate}} ao mês se mantiver...', { rate: formatPercent(data.mrrChange) })}
         </p>
 
         <div className="relative">
@@ -425,10 +430,10 @@ export default function RevenueTab({ stripeConfig, members }: RevenueTabProps) {
 
           <div className="grid grid-cols-4 gap-2 relative">
             {[
-              { label: 'Hoje', months: 0, active: true },
-              { label: '3 meses', months: 3, active: false },
-              { label: '6 meses', months: 6, active: false },
-              { label: '12 meses', months: 12, active: false },
+              { label: t('integrations.revenue.today', 'Hoje'), months: 0, active: true },
+              { label: t('integrations.revenue.months3', '3 meses'), months: 3, active: false },
+              { label: t('integrations.revenue.months6', '6 meses'), months: 6, active: false },
+              { label: t('integrations.revenue.months12', '12 meses'), months: 12, active: false },
             ].map((point, i) => (
               <motion.div
                 key={point.label}

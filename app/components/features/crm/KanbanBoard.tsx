@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Layers, Plus } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -18,6 +19,7 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
   filterTags: string[];
   filterSource: LeadSource | 'all';
 }) {
+  const { t } = useTranslation();
   const [draggingContact, setDraggingContact] = useState<CRMContact | null>(null);
   const [dragOverStatus, setDragOverStatus] = useState<LeadStatus | null>(null);
 
@@ -93,10 +95,10 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
       {/* KPI strip */}
       <div className="flex gap-3 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
         {[
-          { label: 'Total de Leads', value: String(totalLeads), color: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-500/10' },
-          { label: 'Leads Quentes', value: String(hotLeads), color: 'text-orange-600 dark:text-orange-400', bg: 'bg-orange-500/10' },
-          { label: 'Score Médio', value: String(avgScore), color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-500/10' },
-          { label: 'Convertidos', value: String(wonLeads), color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-500/10' },
+          { label: t('crm.kanban.totalLeads', 'Total de Leads'), value: String(totalLeads), color: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-500/10' },
+          { label: t('crm.kanban.hotLeads', 'Leads Quentes'), value: String(hotLeads), color: 'text-orange-600 dark:text-orange-400', bg: 'bg-orange-500/10' },
+          { label: t('crm.kanban.avgScore', 'Score Médio'), value: String(avgScore), color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-500/10' },
+          { label: t('crm.kanban.converted', 'Convertidos'), value: String(wonLeads), color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-500/10' },
         ].map((kpi, i) => (
           <motion.div
             key={kpi.label}
@@ -164,10 +166,10 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
                   {columnContacts.length === 0 && (
                     <div className="flex flex-col items-center justify-center h-32 text-gray-300 dark:text-gray-600">
                       <Layers size={22} strokeWidth={1.5} />
-                      <p className="text-xs mt-2">Nenhum lead</p>
+                      <p className="text-xs mt-2">{t('crm.kanban.noLeads', 'Nenhum lead')}</p>
                       {col.status === 'novo' && (
                         <button onClick={onNewContact} className="mt-2 text-xs font-semibold text-red-500 dark:text-red-400 hover:text-red-600 transition-colors">
-                          + Adicionar
+                          + {t('crm.kanban.add', 'Adicionar')}
                         </button>
                       )}
                     </div>

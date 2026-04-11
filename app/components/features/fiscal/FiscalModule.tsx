@@ -51,6 +51,7 @@ import type { FiscalDocument, FiscalDocType, FiscalDocStatus, FiscalItem } from 
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatCPFCNPJ, formatDateTime, getStatusColor } from '@/lib/utils/format';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
+import { useTranslation } from 'react-i18next';
 import EmitirNotaDialog from './EmitirNotaDialog';
 import CertificateManager from './CertificateManager';
 
@@ -89,21 +90,11 @@ const itemVariants = {
 // CONSTANTS
 // ==============================================
 
-const TYPE_CONFIG: Record<FiscalDocType, { title: string; icon: React.ReactNode }> = {
-  nfse: { title: 'Notas Fiscais de Servico (NFSe)', icon: <FileCheck2 className="w-6 h-6" /> },
-  nfce: { title: 'Nota Fiscal de Consumidor (NFCe)', icon: <Receipt className="w-6 h-6" /> },
-  nfe: { title: 'Nota Fiscal Eletronica (NFe)', icon: <FileText className="w-6 h-6" /> },
+const TYPE_ICONS: Record<FiscalDocType, React.ReactNode> = {
+  nfse: <FileCheck2 className="w-6 h-6" />,
+  nfce: <Receipt className="w-6 h-6" />,
+  nfe: <FileText className="w-6 h-6" />,
 };
-
-const STATUS_TABS: { value: StatusTab; label: string }[] = [
-  { value: 'todas', label: 'Todas' },
-  { value: 'rascunho', label: 'Rascunho' },
-  { value: 'processando', label: 'Processando' },
-  { value: 'autorizada', label: 'Autorizadas' },
-  { value: 'rejeitada', label: 'Rejeitadas' },
-  { value: 'cancelada', label: 'Canceladas' },
-  { value: 'erro', label: 'Erros' },
-];
 
 const ITEMS_PER_PAGE = 10;
 
@@ -112,15 +103,16 @@ const ITEMS_PER_PAGE = 10;
 // ==============================================
 
 function StatusChip({ status }: { status: FiscalDocStatus }) {
+  const { t } = useTranslation();
   const color = getStatusColor(status);
 
-  const labels: Record<FiscalDocStatus, string> = {
-    rascunho: 'Rascunho',
-    processando: 'Processando',
-    autorizada: 'Autorizada',
-    rejeitada: 'Rejeitada',
-    cancelada: 'Cancelada',
-    erro: 'Erro',
+  const statusLabels: Record<FiscalDocStatus, string> = {
+    rascunho: t('fiscal.status.rascunho', 'Rascunho'),
+    processando: t('fiscal.status.processando', 'Processando'),
+    autorizada: t('fiscal.status.autorizada', 'Autorizada'),
+    rejeitada: t('fiscal.status.rejeitada', 'Rejeitada'),
+    cancelada: t('fiscal.status.cancelada', 'Cancelada'),
+    erro: t('fiscal.status.erro', 'Erro'),
   };
 
   return (
@@ -138,7 +130,7 @@ function StatusChip({ status }: { status: FiscalDocStatus }) {
         className="w-1.5 h-1.5 rounded-full"
         style={{ backgroundColor: color }}
       />
-      {labels[status]}
+      {statusLabels[status]}
     </span>
   );
 }
@@ -190,6 +182,7 @@ interface DocumentDetailDialogProps {
 }
 
 function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated, business, onPrintDanfe, onCartaCorrecao }: DocumentDetailDialogProps) {
+  const { t } = useTranslation();
   const [showXml, setShowXml] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
@@ -202,19 +195,19 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
 
   const statusTimeline = [
     {
-      label: 'Criado',
+      label: t('fiscal.detail.timeline.criado', 'Criado'),
       date: doc.createdAt,
       icon: <Clock className="w-4 h-4" />,
       completed: true,
     },
     {
-      label: 'Processando',
+      label: t('fiscal.detail.timeline.processando', 'Processando'),
       date: doc.status !== 'rascunho' ? doc.createdAt : null,
       icon: <RefreshCw className="w-4 h-4" />,
       completed: doc.status !== 'rascunho',
     },
     {
-      label: doc.status === 'autorizada' ? 'Autorizada' : doc.status === 'rejeitada' ? 'Rejeitada' : doc.status === 'cancelada' ? 'Cancelada' : 'Autorizada',
+      label: doc.status === 'autorizada' ? t('fiscal.detail.timeline.autorizada', 'Autorizada') : doc.status === 'rejeitada' ? t('fiscal.detail.timeline.rejeitada', 'Rejeitada') : doc.status === 'cancelada' ? t('fiscal.detail.timeline.cancelada', 'Cancelada') : t('fiscal.detail.timeline.autorizada', 'Autorizada'),
       date: doc.status === 'autorizada' || doc.status === 'cancelada' ? doc.updatedAt : null,
       icon:
         doc.status === 'autorizada' ? (
@@ -230,7 +223,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
 
   if (doc.status === 'cancelada') {
     statusTimeline.push({
-      label: 'Cancelada',
+      label: t('fiscal.detail.timeline.cancelada', 'Cancelada'),
       date: doc.canceledAt || doc.updatedAt,
       icon: <XCircle className="w-4 h-4" />,
       completed: true,
@@ -240,7 +233,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
   async function handleCancel() {
     if (!doc) return;
     if (cancelReason.trim().length < 15) {
-      toast.error('A justificativa deve ter no minimo 15 caracteres.');
+      toast.error(t('fiscal.cancel.minCharsError', 'A justificativa deve ter no mínimo 15 caracteres.'));
       return;
     }
 
@@ -260,7 +253,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
       const result = await response.json();
 
       if (!response.ok) {
-        toast.error(result.error || 'Erro ao cancelar nota fiscal.');
+        toast.error(result.error || t('fiscal.cancel.error', 'Erro ao cancelar nota fiscal.'));
         return;
       }
 
@@ -272,13 +265,13 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
         updatedAt: new Date().toISOString(),
       });
 
-      toast.success('Nota fiscal cancelada com sucesso!');
+      toast.success(t('fiscal.cancel.success', 'Nota fiscal cancelada com sucesso!'));
       setCancelOpen(false);
       setCancelReason('');
       onDocumentUpdated();
       onClose();
     } catch {
-      toast.error('Erro de conexao. Tente novamente.');
+      toast.error(t('fiscal.cancel.connectionError', 'Erro de conexão. Tente novamente.'));
     } finally {
       setIsCancelling(false);
     }
@@ -301,7 +294,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
       const result = await response.json();
 
       if (!response.ok) {
-        toast.error(result.error || 'Erro ao consultar status.');
+        toast.error(result.error || t('fiscal.sync.error', 'Erro ao sincronizar status.'));
         return;
       }
 
@@ -332,10 +325,10 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
 
       await updateDoc(firestoreDoc(db, 'fiscalDocuments', doc.id), updateData);
 
-      toast.success('Status atualizado com sucesso!');
+      toast.success(t('fiscal.sync.success', 'Status atualizado com sucesso!'));
       onDocumentUpdated();
     } catch {
-      toast.error('Erro ao sincronizar status.');
+      toast.error(t('fiscal.sync.error', 'Erro ao sincronizar status.'));
     } finally {
       setIsSyncing(false);
     }
@@ -343,10 +336,10 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
 
   function handleCartaCorrecao() {
     if (ccText.trim().length < 15) {
-      toast.error('O texto da carta de correcao deve ter no minimo 15 caracteres.');
+      toast.error(t('fiscal.cartaCorrecao.minCharsError', 'Texto da correção deve ter no mínimo 15 caracteres.'));
       return;
     }
-    toast.success('Carta de correcao enviada com sucesso!');
+    toast.success(t('fiscal.cartaCorrecao.success', 'Carta de correção enviada com sucesso!'));
     setCcOpen(false);
     setCcText('');
   }
@@ -388,7 +381,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
             </div>
             <div>
               <span className="block">
-                {doc.type.toUpperCase()} {doc.number ? `#${doc.number}` : '(Rascunho)'}
+                {doc.type.toUpperCase()} {doc.number ? `#${doc.number}` : t('fiscal.detail.rascunho', '(Rascunho)')}
               </span>
               <span className="block text-xs font-normal text-muted-foreground">
                 Serie {doc.series || '-'} | {formatDateTime(doc.issueDate)}
@@ -418,13 +411,13 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
             {/* Chave de Acesso */}
             {doc.accessKey && (
               <div className="p-3 rounded-lg bg-muted/30">
-                <p className="text-xs text-muted-foreground mb-1">Chave de Acesso</p>
+                <p className="text-xs text-muted-foreground mb-1">{t('fiscal.detail.chaveAcesso', 'Chave de Acesso')}</p>
                 <p className="text-xs font-mono font-medium text-foreground break-all">
                   {doc.accessKey}
                 </p>
                 {doc.protocol && (
                   <>
-                    <p className="text-xs text-muted-foreground mb-1 mt-2">Protocolo</p>
+                    <p className="text-xs text-muted-foreground mb-1 mt-2">{t('fiscal.detail.protocolo', 'Protocolo')}</p>
                     <p className="text-xs font-mono font-medium text-foreground">
                       {doc.protocol}
                     </p>
@@ -437,7 +430,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="p-4 rounded-lg border border-border/60">
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-                  Emitente
+                  {t('fiscal.detail.emitente', 'Emitente')}
                 </p>
                 <p className="text-sm font-medium text-foreground">
                   {business?.razaoSocial || 'Empresa'}
@@ -450,10 +443,10 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
               </div>
               <div className="p-4 rounded-lg border border-border/60">
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-                  {doc.type === 'nfse' ? 'Tomador' : 'Destinatario'}
+                  {doc.type === 'nfse' ? t('fiscal.detail.tomador', 'Tomador') : t('fiscal.detail.destinatario', 'Destinatário')}
                 </p>
                 <p className="text-sm font-medium text-foreground">
-                  {doc.clientName || 'Consumidor nao identificado'}
+                  {doc.clientName || t('fiscal.detail.consumidorNaoIdentificado', 'Consumidor não identificado')}
                 </p>
                 {doc.clientCpfCnpj && (
                   <p className="text-xs text-muted-foreground mt-0.5">
@@ -467,7 +460,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
             {/* Items Table */}
             <div>
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-                {doc.type === 'nfse' ? 'Servico' : 'Itens'}
+                {doc.type === 'nfse' ? t('fiscal.detail.servico', 'Serviço') : t('fiscal.detail.itens', 'Itens')}
               </p>
               <div className="rounded-lg border border-border/60 overflow-hidden">
                 <div className="overflow-x-auto">
@@ -475,16 +468,16 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
                     <thead>
                       <tr className="bg-muted/30">
                         <th className="text-left text-xs font-medium text-muted-foreground px-4 py-2.5">
-                          Descricao
+                          {t('fiscal.detail.descricao', 'Descrição')}
                         </th>
                         <th className="text-center text-xs font-medium text-muted-foreground px-3 py-2.5">
-                          Qtd
+                          {t('fiscal.detail.qtd', 'Qtd')}
                         </th>
                         <th className="text-right text-xs font-medium text-muted-foreground px-3 py-2.5">
-                          Valor Unit.
+                          {t('fiscal.detail.valorUnit', 'Valor Unit.')}
                         </th>
                         <th className="text-right text-xs font-medium text-muted-foreground px-4 py-2.5">
-                          Total
+                          {t('fiscal.detail.total', 'Total')}
                         </th>
                       </tr>
                     </thead>
@@ -516,7 +509,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
                     <tfoot>
                       <tr className="border-t-2 border-border/60 bg-muted/20">
                         <td colSpan={3} className="text-sm font-semibold text-foreground px-4 py-3 text-right">
-                          Valor Total
+                          {t('fiscal.detail.valorTotal', 'Valor Total')}
                         </td>
                         <td className="text-sm font-bold text-primary-700 text-right px-4 py-3">
                           {formatCurrency(doc.totalValue)}
@@ -532,7 +525,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
             {doc.items.some((item) => item.taxes) && (
               <div>
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-                  Impostos
+                  {t('fiscal.detail.impostos', 'Impostos')}
                 </p>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                   {doc.items.some((i) => i.taxes?.icms) && (
@@ -582,7 +575,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
             {/* Status Timeline */}
             <div>
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-                Historico
+                {t('fiscal.detail.historico', 'Histórico')}
               </p>
               <div className="space-y-0">
                 {statusTimeline.map((step, idx) => (
@@ -632,7 +625,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
               <div className="flex items-start gap-2 p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700">
                 <XCircle className="w-4 h-4 text-gray-500 dark:text-gray-400 mt-0.5 shrink-0" />
                 <div>
-                  <p className="text-xs text-muted-foreground">Motivo do Cancelamento</p>
+                  <p className="text-xs text-muted-foreground">{t('fiscal.detail.motivoCancelamento', 'Motivo do Cancelamento')}</p>
                   <p className="text-sm text-foreground">{doc.cancelReason}</p>
                 </div>
               </div>
@@ -652,7 +645,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
               disabled={isSyncing}
               sx={{ color: '#3B82F6' }}
             >
-              Sincronizar Status
+              {t('fiscal.actions.sincronizar', 'Sincronizar Status')}
             </Button>
           )}
           {doc.pdfUrl && (
@@ -662,7 +655,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
               sx={{ color: '#DC2626' }}
               onClick={() => window.open(doc.pdfUrl!, '_blank')}
             >
-              Baixar PDF
+              {t('fiscal.actions.baixarPdf', 'Baixar PDF')}
             </Button>
           )}
           {doc.xmlUrl && (
@@ -672,7 +665,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
               sx={{ color: '#64748B' }}
               onClick={() => window.open(doc.xmlUrl!, '_blank')}
             >
-              Baixar XML
+              {t('fiscal.actions.baixarXml', 'Baixar XML')}
             </Button>
           )}
           {doc.xml && onPrintDanfe && (
@@ -681,7 +674,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900/30 transition-colors"
             >
               <Printer className="w-3.5 h-3.5" />
-              Imprimir DANFE
+              {t('fiscal.actions.imprimirDanfe', 'Imprimir DANFE')}
             </button>
           )}
           {doc.status === 'autorizada' && (
@@ -691,7 +684,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
               size="small"
               sx={{ color: '#EF4444' }}
             >
-              Cancelar
+              {t('fiscal.actions.cancelar', 'Cancelar')}
             </Button>
           )}
           {doc.type === 'nfe' && doc.status === 'autorizada' && onCartaCorrecao && (
@@ -700,7 +693,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors"
             >
               <BookOpen className="w-3.5 h-3.5" />
-              Carta de Correcao
+              {t('fiscal.actions.cartaCorrecao', 'Carta de Correção')}
             </button>
           )}
           {doc.type === 'nfe' && doc.status === 'autorizada' && !onCartaCorrecao && (
@@ -710,7 +703,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
               size="small"
               sx={{ color: '#64748B' }}
             >
-              Carta de Correcao
+              {t('fiscal.actions.cartaCorrecao', 'Carta de Correção')}
             </Button>
           )}
           {(doc.status === 'rejeitada' || doc.status === 'erro') && (
@@ -719,12 +712,12 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
               size="small"
               sx={{ color: '#DC2626' }}
             >
-              Reenviar
+              {t('fiscal.actions.reenviar', 'Reenviar')}
             </Button>
           )}
           <div className="flex-1" />
           <Button onClick={onClose} sx={{ color: '#64748B' }}>
-            Fechar
+            {t('fiscal.actions.fechar', 'Fechar')}
           </Button>
         </DialogActions>
       </Dialog>
@@ -743,15 +736,14 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
             fontWeight: 700,
           }}
         >
-          Cancelar Nota Fiscal
+          {t('fiscal.cancel.title', 'Cancelar Nota Fiscal')}
         </DialogTitle>
         <DialogContent>
           <p className="text-sm text-muted-foreground mb-4">
-            Informe a justificativa para o cancelamento. O prazo legal para cancelamento e de ate
-            24 horas apos a autorizacao.
+            {t('fiscal.cancel.desc', 'Informe a justificativa para o cancelamento. O prazo legal para cancelamento é de até 24 horas após a autorização.')}
           </p>
           <TextField
-            label="Justificativa (min. 15 caracteres)"
+            label={t('fiscal.cancel.justificativaLabel', 'Justificativa (min. 15 caracteres)')}
             value={cancelReason}
             onChange={(e) => setCancelReason(e.target.value)}
             fullWidth
@@ -759,7 +751,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
             multiline
             rows={3}
             disabled={isCancelling}
-            helperText={`${cancelReason.length}/255 caracteres`}
+            helperText={t('fiscal.cancel.charCount', '{{count}}/255 caracteres', { count: cancelReason.length })}
             inputProps={{ maxLength: 255 }}
           />
         </DialogContent>
@@ -769,7 +761,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
             disabled={isCancelling}
             sx={{ color: '#64748B' }}
           >
-            Voltar
+            {t('fiscal.actions.voltar', 'Voltar')}
           </Button>
           <Button
             onClick={handleCancel}
@@ -783,7 +775,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
             {isCancelling ? (
               <CircularProgress size={20} sx={{ color: 'white' }} />
             ) : (
-              'Confirmar Cancelamento'
+              t('fiscal.actions.confirmarCancelamento', 'Confirmar Cancelamento')
             )}
           </Button>
         </DialogActions>
@@ -803,28 +795,27 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
             fontWeight: 700,
           }}
         >
-          Carta de Correcao (CC-e)
+          {t('fiscal.cartaCorrecao.title', 'Carta de Correção (CC-e)')}
         </DialogTitle>
         <DialogContent>
           <p className="text-sm text-muted-foreground mb-4">
-            A carta de correcao permite corrigir informacoes da nota fiscal sem necessidade de
-            cancelamento. Nao e possivel alterar valores, impostos ou dados do destinatario.
+            {t('fiscal.cartaCorrecao.desc', 'A carta de correção permite corrigir informações da nota fiscal sem necessidade de cancelamento. Não é possível alterar valores, impostos ou dados do destinatário.')}
           </p>
           <TextField
-            label="Texto da Correcao (min. 15 caracteres)"
+            label={t('fiscal.cartaCorrecao.textLabel', 'Texto da Correção (min. 15 caracteres)')}
             value={ccText}
             onChange={(e) => setCcText(e.target.value)}
             fullWidth
             size="small"
             multiline
             rows={4}
-            helperText={`${ccText.length}/1000 caracteres`}
+            helperText={t('fiscal.cartaCorrecao.charCount', '{{count}}/1000 caracteres', { count: ccText.length })}
             inputProps={{ maxLength: 1000 }}
           />
         </DialogContent>
         <DialogActions sx={{ px: 3, py: 2 }}>
           <Button onClick={() => setCcOpen(false)} sx={{ color: '#64748B' }}>
-            Cancelar
+            {t('fiscal.actions.cancelar', 'Cancelar')}
           </Button>
           <Button
             onClick={handleCartaCorrecao}
@@ -835,7 +826,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
               '&:hover': { backgroundColor: '#B91C1C' },
             }}
           >
-            Enviar Carta de Correcao
+            {t('fiscal.actions.enviarCarta', 'Enviar Carta')}
           </Button>
         </DialogActions>
       </Dialog>
@@ -873,6 +864,7 @@ function TableSkeleton() {
 export default function FiscalModule({ type }: FiscalModuleProps) {
   const { business } = useAuth();
   const { isDark } = useTheme();
+  const { t } = useTranslation();
   const [documents, setDocuments] = useState<FiscalDocument[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -899,7 +891,20 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
   const [isAccountingSending, setIsAccountingSending] = useState(false);
 
   const queryClient = useQueryClient();
-  const typeConfig = TYPE_CONFIG[type];
+  const typeConfig = useMemo(() => ({
+    title: t(`fiscal.title.${type}`, type === 'nfse' ? 'Notas Fiscais de Serviço (NFSe)' : type === 'nfce' ? 'Nota Fiscal de Consumidor (NFCe)' : 'Nota Fiscal Eletrônica (NFe)'),
+    icon: TYPE_ICONS[type],
+  }), [t, type]);
+
+  const STATUS_TABS = useMemo<{ value: StatusTab; label: string }[]>(() => [
+    { value: 'todas', label: t('fiscal.tabs.todas', 'Todas') },
+    { value: 'rascunho', label: t('fiscal.tabs.rascunho', 'Rascunho') },
+    { value: 'processando', label: t('fiscal.tabs.processando', 'Processando') },
+    { value: 'autorizada', label: t('fiscal.tabs.autorizada', 'Autorizadas') },
+    { value: 'rejeitada', label: t('fiscal.tabs.rejeitada', 'Rejeitadas') },
+    { value: 'cancelada', label: t('fiscal.tabs.cancelada', 'Canceladas') },
+    { value: 'erro', label: t('fiscal.tabs.erro', 'Erros') },
+  ], [t]);
 
   // Fetch documents from Firestore
   const fetchDocuments = useCallback(async (showRefreshIndicator = false) => {
@@ -926,7 +931,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
       setDocuments(docs);
     } catch (error) {
       console.error('[FiscalModule] Error fetching documents:', error);
-      toast.error('Erro ao carregar documentos fiscais.');
+      toast.error(t('fiscal.sync.error', 'Erro ao carregar documentos fiscais.'));
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -1003,7 +1008,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
   // ── DANFE Print ──
   const handlePrintDanfe = async (document: FiscalDocument) => {
     if (!document.xml) {
-      toast.error('XML nao disponivel para gerar DANFE.');
+      toast.error(t('fiscal.danfe.noXml', 'XML não disponível para gerar DANFE.'));
       return;
     }
     try {
@@ -1012,18 +1017,18 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ xml: document.xml, type: document.type }),
       });
-      if (!res.ok) { toast.error('Erro ao gerar DANFE.'); return; }
+      if (!res.ok) { toast.error(t('fiscal.danfe.error', 'Erro ao gerar DANFE.')); return; }
       const html = await res.text();
       const win = window.open('', '_blank');
       if (win) { win.document.write(html); win.document.close(); }
-    } catch { toast.error('Erro ao gerar DANFE.'); }
+    } catch { toast.error(t('fiscal.danfe.error', 'Erro ao gerar DANFE.')); }
   };
 
   // ── Carta de Correção ──
   const handleCartaCorrecao = async () => {
     if (!cartaCorrecaoDoc || !business) return;
     if (cartaCorrecaoText.trim().length < 15) {
-      toast.error('Texto da correcao deve ter no minimo 15 caracteres.');
+      toast.error(t('fiscal.cartaCorrecao.minCharsError', 'Texto da correção deve ter no mínimo 15 caracteres.'));
       return;
     }
     setIsCartaCorrecaoSending(true);
@@ -1056,12 +1061,12 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
         }],
         updatedAt: new Date().toISOString(),
       });
-      toast.success('Carta de correcao enviada com sucesso!');
+      toast.success(t('fiscal.cartaCorrecao.success', 'Carta de correção enviada com sucesso!'));
       setCartaCorrecaoOpen(false);
       setCartaCorrecaoText('');
       queryClient.invalidateQueries({ queryKey: ['fiscalDocs'] });
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Erro ao enviar carta de correcao');
+      toast.error(error instanceof Error ? error.message : t('fiscal.cartaCorrecao.error', 'Erro ao enviar carta de correção'));
     } finally {
       setIsCartaCorrecaoSending(false);
     }
@@ -1073,11 +1078,11 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
     const numInicial = parseInt(inutilizarNumInicial);
     const numFinal = parseInt(inutilizarNumFinal);
     if (!numInicial || !numFinal || numInicial > numFinal) {
-      toast.error('Numeros invalidos.');
+      toast.error(t('fiscal.inutilizar.invalidNumbers', 'Números inválidos.'));
       return;
     }
     if (inutilizarJustificativa.trim().length < 15) {
-      toast.error('Justificativa deve ter no minimo 15 caracteres.');
+      toast.error(t('fiscal.inutilizar.minCharsError', 'Justificativa deve ter no mínimo 15 caracteres.'));
       return;
     }
     setIsInutilizarSending(true);
@@ -1105,13 +1110,13 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
         toast.error(result.details?.motivoStatus || result.error || 'Erro na inutilizacao');
         return;
       }
-      toast.success('Numeracao inutilizada com sucesso!');
+      toast.success(t('fiscal.inutilizar.success', 'Numeração inutilizada com sucesso!'));
       setInutilizarOpen(false);
       setInutilizarNumInicial('');
       setInutilizarNumFinal('');
       setInutilizarJustificativa('');
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Erro ao inutilizar');
+      toast.error(error instanceof Error ? error.message : t('fiscal.inutilizar.error', 'Erro na inutilização'));
     } finally {
       setIsInutilizarSending(false);
     }
@@ -1123,8 +1128,8 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
     const accountingEmail = business.fiscal?.accountingEmail;
     const notificationServerUrl = (business.fiscal as Record<string, unknown>)?.notificationServerUrl as string | undefined;
     const notificationServerKey = (business.fiscal as Record<string, unknown>)?.notificationServerKey as string | undefined;
-    if (!accountingEmail) { toast.error('Email do contador nao configurado. Acesse Configuracoes > Fiscal.'); return; }
-    if (!notificationServerUrl || !notificationServerKey) { toast.error('Servidor de notificacao nao configurado.'); return; }
+    if (!accountingEmail) { toast.error(t('fiscal.accounting.noEmail', 'Email do contador não configurado. Acesse Configurações > Fiscal.')); return; }
+    if (!notificationServerUrl || !notificationServerKey) { toast.error(t('fiscal.accounting.notificationNotConfigured', 'Servidor de notificação não configurado.')); return; }
 
     setIsAccountingSending(true);
     try {
@@ -1164,10 +1169,10 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
         toast.error(result.error || 'Erro ao enviar para contabilidade');
         return;
       }
-      toast.success(`Documentos enviados para ${accountingEmail} (${result.attachmentsCount} anexos)`);
+      toast.success(t('fiscal.accounting.success', 'Documentos enviados para {{email}} ({{count}} anexos)', { email: accountingEmail, count: result.attachmentsCount }));
       setAccountingOpen(false);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Erro ao enviar');
+      toast.error(error instanceof Error ? error.message : t('fiscal.accounting.error', 'Erro ao enviar para contabilidade'));
     } finally {
       setIsAccountingSending(false);
     }
@@ -1177,7 +1182,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
   const getCertificate = async (): Promise<{ pfxBase64: string; password: string }> => {
     const cert = business?.fiscal?.certificate;
     const pwdEncoded = business?.fiscal?.certPasswordEncrypted;
-    if (!cert?.storagePath || !pwdEncoded) throw new Error('Certificado digital nao configurado.');
+    if (!cert?.storagePath || !pwdEncoded) throw new Error(t('fiscal.cert.selectFile', 'Certificado digital não configurado.'));
     const fileRef = storageRef(storage, cert.storagePath);
     const downloadUrl = await getDownloadURL(fileRef);
     const response = await fetch(downloadUrl);
@@ -1212,12 +1217,12 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
             <AlertTriangle className={cn('w-5 h-5 shrink-0', certExpired ? 'text-red-500' : 'text-amber-500')} />
             <div className="flex-1">
               <p className={cn('text-sm font-semibold', certExpired ? 'text-red-700 dark:text-red-400' : 'text-amber-700 dark:text-amber-400')}>
-                {certExpired ? 'Certificado digital expirado' : 'Certificado digital nao configurado'}
+                {certExpired ? t('fiscal.cert.expired', 'Certificado digital expirado') : t('fiscal.cert.notConfigured', 'Certificado digital não configurado')}
               </p>
               <p className={cn('text-xs mt-0.5', certExpired ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-400')}>
                 {certExpired
-                  ? 'Renove seu certificado A1 para continuar emitindo documentos fiscais.'
-                  : 'Configure seu certificado digital A1 em Configuracoes > Fiscal para emitir notas.'}
+                  ? t('fiscal.cert.expiredDesc', 'Renove seu certificado A1 para continuar emitindo documentos fiscais.')
+                  : t('fiscal.cert.notConfiguredDesc', 'Configure seu certificado digital A1 em Configurações > Fiscal para emitir notas.')}
               </p>
             </div>
             <Button
@@ -1235,7 +1240,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
               }}
               variant="outlined"
             >
-              {certExpired ? 'Renovar' : 'Configurar'}
+              {certExpired ? t('fiscal.actions.renovar', 'Renovar') : t('fiscal.actions.configurar', 'Configurar')}
             </Button>
           </motion.div>
         )}
@@ -1256,7 +1261,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
                   {typeConfig.title}
                 </h1>
                 <p className="text-sm text-muted-foreground">
-                  Gerencie seus documentos fiscais eletronicos
+                  {t('fiscal.subtitle', 'Gerencie seus documentos fiscais eletrônicos')}
                 </p>
               </div>
             </div>
@@ -1265,7 +1270,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
                 onClick={handleRefresh}
                 disabled={isRefreshing}
                 size="small"
-                title="Atualizar lista"
+                title={t('fiscal.actions.atualizar', 'Atualizar lista')}
               >
                 <RefreshCw size={18} className={cn('text-muted-foreground', isRefreshing && 'animate-spin')} />
               </IconButton>
@@ -1280,21 +1285,21 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
                 }}
                 variant="outlined"
               >
-                Certificado
+                {t('fiscal.actions.certificado', 'Certificado')}
               </Button>
               <button
                 onClick={() => setInutilizarOpen(true)}
                 className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-gray-600 dark:text-gray-400 bg-gray-100 dark:bg-gray-800 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
               >
                 <Hash className="w-3.5 h-3.5" />
-                Inutilizar
+                {t('fiscal.actions.inutilizar', 'Inutilizar')}
               </button>
               <button
                 onClick={() => setAccountingOpen(true)}
                 className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/20 rounded-xl hover:bg-purple-100 dark:hover:bg-purple-900/30 transition-colors"
               >
                 <Send className="w-3.5 h-3.5" />
-                Contabilidade
+                {t('fiscal.actions.contabilidade', 'Contabilidade')}
               </button>
               <Button
                 onClick={() => setEmitirOpen(true)}
@@ -1306,7 +1311,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
                   fontWeight: 600,
                 }}
               >
-                Emitir Nova Nota
+                {t('fiscal.actions.emitirNova', 'Emitir Nova Nota')}
               </Button>
             </div>
           </div>
@@ -1320,25 +1325,25 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
           className="grid grid-cols-2 lg:grid-cols-4 gap-4"
         >
           <StatCard
-            label="Total Emitidas"
+            label={t('fiscal.stats.totalEmitidas', 'Total Emitidas')}
             value={stats.total}
             icon={<FileText className="w-5 h-5 text-blue-600 dark:text-blue-400" />}
             iconBg="bg-blue-50 dark:bg-blue-500/10"
           />
           <StatCard
-            label="Autorizadas"
+            label={t('fiscal.stats.autorizadas', 'Autorizadas')}
             value={stats.autorizadas}
             icon={<CheckCircle className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />}
             iconBg="bg-emerald-50 dark:bg-emerald-500/10"
           />
           <StatCard
-            label="Pendentes"
+            label={t('fiscal.stats.pendentes', 'Pendentes')}
             value={stats.pendentes}
             icon={<Clock className="w-5 h-5 text-amber-600 dark:text-amber-400" />}
             iconBg="bg-amber-50 dark:bg-amber-500/10"
           />
           <StatCard
-            label="Canceladas"
+            label={t('fiscal.stats.canceladas', 'Canceladas')}
             value={stats.canceladas}
             icon={<XCircle className="w-5 h-5 text-gray-500 dark:text-gray-400" />}
             iconBg="bg-gray-100 dark:bg-gray-800"
@@ -1364,7 +1369,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
                   setSearchQuery(e.target.value);
                   setPage(1);
                 }}
-                placeholder="Buscar por numero, cliente ou CPF/CNPJ..."
+                placeholder={t('fiscal.search.placeholder', 'Buscar por número, cliente ou CPF/CNPJ...')}
                 className={cn(
                   'w-full pl-10 pr-4 py-2.5 text-sm rounded-lg',
                   'border border-border/60 bg-white dark:bg-gray-900',
@@ -1403,28 +1408,28 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
                 <thead>
                   <tr className="border-t border-border/40 bg-muted/20">
                     <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">
-                      Numero
+                      {t('fiscal.table.numero', 'Número')}
                     </th>
                     <th className="text-left text-xs font-medium text-muted-foreground px-3 py-3">
-                      Serie
+                      {t('fiscal.table.serie', 'Série')}
                     </th>
                     <th className="text-left text-xs font-medium text-muted-foreground px-3 py-3">
-                      Data Emissao
+                      {t('fiscal.table.dataEmissao', 'Data Emissão')}
                     </th>
                     <th className="text-left text-xs font-medium text-muted-foreground px-3 py-3">
-                      {type === 'nfse' ? 'Tomador' : 'Cliente'}
+                      {type === 'nfse' ? t('fiscal.table.tomador', 'Tomador') : t('fiscal.table.cliente', 'Cliente')}
                     </th>
                     <th className="text-left text-xs font-medium text-muted-foreground px-3 py-3 hidden md:table-cell">
-                      CPF/CNPJ
+                      {t('fiscal.table.cpfCnpj', 'CPF/CNPJ')}
                     </th>
                     <th className="text-right text-xs font-medium text-muted-foreground px-3 py-3">
-                      Valor Total
+                      {t('fiscal.table.valorTotal', 'Valor Total')}
                     </th>
                     <th className="text-center text-xs font-medium text-muted-foreground px-3 py-3">
-                      Status
+                      {t('fiscal.table.status', 'Status')}
                     </th>
                     <th className="text-center text-xs font-medium text-muted-foreground px-4 py-3">
-                      Acoes
+                      {t('fiscal.table.acoes', 'Ações')}
                     </th>
                   </tr>
                 </thead>
@@ -1450,12 +1455,12 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
                             </div>
                             <div>
                               <p className="text-sm font-medium text-foreground">
-                                Nenhum documento encontrado
+                                {t('fiscal.empty.title', 'Nenhum documento encontrado')}
                               </p>
                               <p className="text-xs text-muted-foreground mt-0.5">
                                 {searchQuery
-                                  ? 'Tente ajustar os filtros de busca.'
-                                  : `Emita sua primeira ${type.toUpperCase()}.`}
+                                  ? t('fiscal.empty.searchHint', 'Tente ajustar os filtros de busca.')
+                                  : t('fiscal.empty.emitFirst', 'Emita sua primeira {{type}}.', { type: type.toUpperCase() })}
                               </p>
                             </div>
                             {!searchQuery && (
@@ -1471,7 +1476,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
                                   fontSize: '0.75rem',
                                 }}
                               >
-                                Emitir {type.toUpperCase()}
+                                {t('fiscal.actions.emitir', 'Emitir {{type}}', { type: type.toUpperCase() })}
                               </Button>
                             )}
                           </div>
@@ -1503,7 +1508,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
                           </td>
                           <td className="px-3 py-3">
                             <span className="text-sm font-medium text-foreground truncate max-w-[180px] block">
-                              {fiscalDoc.clientName || 'Consumidor'}
+                              {fiscalDoc.clientName || t('fiscal.detail.consumidorNaoIdentificado', 'Consumidor não identificado')}
                             </span>
                           </td>
                           <td className="px-3 py-3 hidden md:table-cell">
@@ -1527,14 +1532,14 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
                               <IconButton
                                 size="small"
                                 onClick={() => handleOpenDetail(fiscalDoc)}
-                                title="Ver detalhes"
+                                title={t('fiscal.table.verDetalhes', 'Ver detalhes')}
                               >
                                 <Eye size={16} className="text-muted-foreground" />
                               </IconButton>
                               {fiscalDoc.xmlUrl && (
                                 <IconButton
                                   size="small"
-                                  title="Ver XML"
+                                  title={t('fiscal.table.verXml', 'Ver XML')}
                                   onClick={() => window.open(fiscalDoc.xmlUrl!, '_blank')}
                                 >
                                   <FileCode size={16} className="text-muted-foreground" />
@@ -1543,7 +1548,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
                               {fiscalDoc.pdfUrl && (
                                 <IconButton
                                   size="small"
-                                  title="Download PDF"
+                                  title={t('fiscal.table.downloadPdf', 'Download PDF')}
                                   onClick={() => window.open(fiscalDoc.pdfUrl!, '_blank')}
                                 >
                                   <Printer size={16} className="text-muted-foreground" />
@@ -1569,9 +1574,11 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
           {totalPages > 1 && (
             <div className="flex items-center justify-between px-4 py-3 border-t border-border/40">
               <p className="text-xs text-muted-foreground">
-                Mostrando {(page - 1) * ITEMS_PER_PAGE + 1} a{' '}
-                {Math.min(page * ITEMS_PER_PAGE, filteredDocuments.length)} de{' '}
-                {filteredDocuments.length} documentos
+                {t('fiscal.pagination.showing', 'Mostrando {{from}} a {{to}} de {{total}} documentos', {
+                  from: (page - 1) * ITEMS_PER_PAGE + 1,
+                  to: Math.min(page * ITEMS_PER_PAGE, filteredDocuments.length),
+                  total: filteredDocuments.length,
+                })}
               </p>
               <Pagination
                 count={totalPages}
@@ -1625,7 +1632,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
         <DialogTitle className="dark:!text-gray-100">
           <div className="flex items-center gap-2">
             <BookOpen className="w-5 h-5 text-amber-500" />
-            Carta de Correcao
+            {t('fiscal.cartaCorrecao.title', 'Carta de Correção')}
           </div>
         </DialogTitle>
         <DialogContent>
@@ -1635,29 +1642,29 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
             </p>
             {cartaCorrecaoDoc?.cartaCorrecao?.length ? (
               <div className="bg-amber-50 dark:bg-amber-900/10 p-3 rounded-lg text-xs text-amber-700 dark:text-amber-400">
-                {cartaCorrecaoDoc.cartaCorrecao.length} carta(s) anteriores registrada(s). Proxima sequencia: {cartaCorrecaoDoc.cartaCorrecao.length + 1}
+                {t('fiscal.cartaCorrecao.previousCards', '{{count}} carta(s) anteriores registrada(s). Próxima sequência: {{next}}', { count: cartaCorrecaoDoc.cartaCorrecao.length, next: cartaCorrecaoDoc.cartaCorrecao.length + 1 })}
               </div>
             ) : null}
             <textarea
               value={cartaCorrecaoText}
               onChange={(e) => setCartaCorrecaoText(e.target.value)}
-              placeholder="Descreva a correcao (min. 15 caracteres, max. 1000)..."
+              placeholder={t('fiscal.cartaCorrecao.placeholder', 'Descreva a correção (min. 15 caracteres, max. 1000)...')}
               rows={4}
               maxLength={1000}
               className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-amber-500/20 resize-none"
             />
-            <p className="text-xs text-gray-400">{cartaCorrecaoText.length}/1000 caracteres</p>
+            <p className="text-xs text-gray-400">{t('fiscal.cartaCorrecao.charCount', '{{count}}/1000 caracteres', { count: cartaCorrecaoText.length })}</p>
           </div>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
-          <button onClick={() => setCartaCorrecaoOpen(false)} className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400">Cancelar</button>
+          <button onClick={() => setCartaCorrecaoOpen(false)} className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400">{t('fiscal.actions.cancelar', 'Cancelar')}</button>
           <button
             onClick={handleCartaCorrecao}
             disabled={isCartaCorrecaoSending || cartaCorrecaoText.trim().length < 15}
             className="px-4 py-2 text-sm font-medium text-white bg-amber-500 hover:bg-amber-600 rounded-lg disabled:opacity-50 flex items-center gap-2"
           >
             {isCartaCorrecaoSending && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-            Enviar Carta
+            {t('fiscal.actions.enviarCarta', 'Enviar Carta')}
           </button>
         </DialogActions>
       </Dialog>
@@ -1667,30 +1674,30 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
         <DialogTitle className="dark:!text-gray-100">
           <div className="flex items-center gap-2">
             <Hash className="w-5 h-5 text-gray-500" />
-            Inutilizar Numeracao
+            {t('fiscal.inutilizar.title', 'Inutilizar Numeração')}
           </div>
         </DialogTitle>
         <DialogContent>
           <div className="space-y-4 pt-2">
             <p className="text-sm text-gray-500 dark:text-gray-400">
-              Declare faixas de numeracao que nao serao utilizadas.
+              {t('fiscal.inutilizar.desc', 'Declare faixas de numeração que não serão utilizadas.')}
             </p>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Modelo</label>
+                <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.inutilizar.modelo', 'Modelo')}</label>
                 <select
                   value={inutilizarModelo}
                   onChange={(e) => setInutilizarModelo(e.target.value as '55' | '65')}
                   className="w-full h-10 px-3 rounded-xl border text-sm bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100"
                 >
-                  <option value="55">NF-e (mod. 55)</option>
-                  <option value="65">NFC-e (mod. 65)</option>
+                  <option value="55">{t('fiscal.inutilizar.nfeModelo', 'NF-e (mod. 55)')}</option>
+                  <option value="65">{t('fiscal.inutilizar.nfceModelo', 'NFC-e (mod. 65)')}</option>
                 </select>
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Numero Inicial</label>
+                <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.inutilizar.numInicial', 'Número Inicial')}</label>
                 <input
                   type="number"
                   min={1}
@@ -1700,7 +1707,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
                 />
               </div>
               <div>
-                <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Numero Final</label>
+                <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.inutilizar.numFinal', 'Número Final')}</label>
                 <input
                   type="number"
                   min={1}
@@ -1711,11 +1718,11 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
               </div>
             </div>
             <div>
-              <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Justificativa (min. 15 caracteres)</label>
+              <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.inutilizar.justificativaLabel', 'Justificativa (min. 15 caracteres)')}</label>
               <textarea
                 value={inutilizarJustificativa}
                 onChange={(e) => setInutilizarJustificativa(e.target.value)}
-                placeholder="Justifique a inutilizacao..."
+                placeholder={t('fiscal.inutilizar.justificativaPlaceholder', 'Justifique a inutilização...')}
                 rows={3}
                 maxLength={255}
                 className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 resize-none"
@@ -1724,14 +1731,14 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
           </div>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
-          <button onClick={() => setInutilizarOpen(false)} className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400">Cancelar</button>
+          <button onClick={() => setInutilizarOpen(false)} className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400">{t('fiscal.actions.cancelar', 'Cancelar')}</button>
           <button
             onClick={handleInutilizar}
             disabled={isInutilizarSending || inutilizarJustificativa.trim().length < 15}
             className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg disabled:opacity-50 flex items-center gap-2"
           >
             {isInutilizarSending && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-            Inutilizar
+            {t('fiscal.actions.inutilizar', 'Inutilizar')}
           </button>
         </DialogActions>
       </Dialog>
@@ -1741,35 +1748,35 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
         <DialogTitle className="dark:!text-gray-100">
           <div className="flex items-center gap-2">
             <Send className="w-5 h-5 text-purple-500" />
-            Enviar para Contabilidade
+            {t('fiscal.accounting.title', 'Enviar para Contabilidade')}
           </div>
         </DialogTitle>
         <DialogContent>
           <div className="space-y-4 pt-2">
             <p className="text-sm text-gray-500 dark:text-gray-400">
-              Envie XMLs e SPED do periodo selecionado para o email do contador.
+              {t('fiscal.accounting.desc', 'Envie XMLs e SPED do período selecionado para o email do contador.')}
             </p>
             {!business?.fiscal?.accountingEmail && (
               <div className="bg-amber-50 dark:bg-amber-900/10 p-3 rounded-lg text-xs text-amber-700 dark:text-amber-400 flex items-center gap-2">
                 <AlertCircle className="w-4 h-4 shrink-0" />
-                Email do contador nao configurado. Acesse Configuracoes &gt; Fiscal.
+                {t('fiscal.accounting.noEmail', 'Email do contador não configurado. Acesse Configurações > Fiscal.')}
               </div>
             )}
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Mes</label>
+                <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.accounting.mes', 'Mês')}</label>
                 <select
                   value={accountingMonth}
                   onChange={(e) => setAccountingMonth(Number(e.target.value))}
                   className="w-full h-10 px-3 rounded-xl border text-sm bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100"
                 >
-                  {['Janeiro','Fevereiro','Marco','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'].map((m, i) => (
-                    <option key={i+1} value={i+1}>{m}</option>
+                  {[1,2,3,4,5,6,7,8,9,10,11,12].map((m) => (
+                    <option key={m} value={m}>{t(`fiscal.accounting.months.${m}`, String(m))}</option>
                   ))}
                 </select>
               </div>
               <div>
-                <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Ano</label>
+                <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.accounting.ano', 'Ano')}</label>
                 <select
                   value={accountingYear}
                   onChange={(e) => setAccountingYear(Number(e.target.value))}
@@ -1783,20 +1790,20 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
             </div>
             {business?.fiscal?.accountingEmail && (
               <p className="text-xs text-gray-400">
-                Enviar para: <span className="font-medium text-gray-600 dark:text-gray-300">{business.fiscal.accountingEmail}</span>
+                {t('fiscal.accounting.sendTo', 'Enviar para:')} <span className="font-medium text-gray-600 dark:text-gray-300">{business.fiscal.accountingEmail}</span>
               </p>
             )}
           </div>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
-          <button onClick={() => setAccountingOpen(false)} className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400">Cancelar</button>
+          <button onClick={() => setAccountingOpen(false)} className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400">{t('fiscal.actions.cancelar', 'Cancelar')}</button>
           <button
             onClick={handleAccountingSend}
             disabled={isAccountingSending || !business?.fiscal?.accountingEmail}
             className="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg disabled:opacity-50 flex items-center gap-2"
           >
             {isAccountingSending && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-            Enviar
+            {t('fiscal.actions.enviar', 'Enviar')}
           </button>
         </DialogActions>
       </Dialog>

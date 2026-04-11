@@ -69,6 +69,7 @@ import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery as useTanstackQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'react-toastify';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
@@ -92,21 +93,6 @@ import type {
 const INCOME_CATEGORIES = ['Assinaturas', 'Implantacao', 'Consultoria', 'Servicos', 'Vendas', 'Comissoes', 'Juros', 'Outros'];
 const EXPENSE_CATEGORIES = ['Escritorio', 'Infraestrutura', 'Folha', 'Beneficios', 'Marketing', 'Software', 'Contabilidade', 'Impostos', 'Pro-labore', 'Energia', 'Juridico', 'Aluguel', 'Transporte', 'Outros'];
 
-const PAYMENT_METHODS: { value: PaymentMethod; label: string }[] = [
-  { value: 'dinheiro', label: 'Dinheiro' },
-  { value: 'pix', label: 'PIX' },
-  { value: 'credito', label: 'Cartao de Credito' },
-  { value: 'debito', label: 'Cartao de Debito' },
-  { value: 'boleto', label: 'Boleto' },
-  { value: 'outros', label: 'Outros' },
-];
-
-const ACCOUNT_TYPES: { value: BankAccountType; label: string }[] = [
-  { value: 'corrente', label: 'Conta Corrente' },
-  { value: 'poupanca', label: 'Poupanca' },
-  { value: 'investimento', label: 'Investimento' },
-  { value: 'caixa', label: 'Caixa' },
-];
 
 const PRESET_COLORS = [
   '#DC2626', '#F59E0B', '#10B981', '#3B82F6', '#8B5CF6',
@@ -116,12 +102,6 @@ const PRESET_COLORS = [
 
 type FinancialTab = 'visao-geral' | 'lancamentos' | 'contas';
 
-const TABS: { key: FinancialTab; label: string; icon: React.ReactNode }[] = [
-  { key: 'visao-geral', label: 'Visao Geral', icon: <BarChart3 size={16} /> },
-  { key: 'lancamentos', label: 'Transacoes', icon: <ArrowRightLeft size={16} /> },
-  { key: 'contas', label: 'Contas Bancarias', icon: <Landmark size={16} /> },
-];
-
 const inputSx = { '& .MuiOutlinedInput-root': { borderRadius: '12px' } };
 
 // ==========================================
@@ -129,9 +109,32 @@ const inputSx = { '& .MuiOutlinedInput-root': { borderRadius: '12px' } };
 // ==========================================
 
 export default function FinancialModule() {
+  const { t } = useTranslation();
   const { isDark } = useTheme();
   const { business, user, sectors } = useAuth();
   const queryClient = useQueryClient();
+
+  const TABS: { key: FinancialTab; label: string; icon: React.ReactNode }[] = [
+    { key: 'visao-geral', label: t('financial.tabs.overview', 'Visão Geral'), icon: <BarChart3 size={16} /> },
+    { key: 'lancamentos', label: t('financial.tabs.transactions', 'Transações'), icon: <ArrowRightLeft size={16} /> },
+    { key: 'contas', label: t('financial.tabs.accounts', 'Contas Bancárias'), icon: <Landmark size={16} /> },
+  ];
+
+  const PAYMENT_METHODS: { value: PaymentMethod; label: string }[] = [
+    { value: 'dinheiro', label: t('financial.paymentMethods.cash', 'Dinheiro') },
+    { value: 'pix', label: t('financial.paymentMethods.pix', 'PIX') },
+    { value: 'credito', label: t('financial.paymentMethods.credit', 'Cartão de Crédito') },
+    { value: 'debito', label: t('financial.paymentMethods.debit', 'Cartão de Débito') },
+    { value: 'boleto', label: t('financial.paymentMethods.boleto', 'Boleto') },
+    { value: 'outros', label: t('financial.paymentMethods.other', 'Outros') },
+  ];
+
+  const ACCOUNT_TYPES: { value: BankAccountType; label: string }[] = [
+    { value: 'corrente', label: t('financial.accountTypes.checking', 'Conta Corrente') },
+    { value: 'poupanca', label: t('financial.accountTypes.savings', 'Poupança') },
+    { value: 'investimento', label: t('financial.accountTypes.investment', 'Investimento') },
+    { value: 'caixa', label: t('financial.accountTypes.cash', 'Caixa') },
+  ];
   const isEnterprise = !!business?.enterprise?.isEnabled;
 
   const [activeTab, setActiveTab] = useState<FinancialTab>('visao-geral');
@@ -339,10 +342,10 @@ export default function FinancialModule() {
         updatedAt: new Date().toISOString(),
       });
       queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
-      toast.success('Transacao marcada como paga');
+      toast.success(t('financial.toast.markedAsPaid', 'Transação marcada como paga'));
     } catch (err) {
       console.error('Error marking as paid:', err);
-      toast.error('Erro ao atualizar transacao');
+      toast.error(t('financial.toast.updateError', 'Erro ao atualizar transação'));
     }
   }, [business?.id, queryClient]);
 
@@ -410,20 +413,20 @@ export default function FinancialModule() {
       if (editingTransaction) {
         const docRef = doc(db, 'transactions', editingTransaction.id);
         await updateDoc(docRef, txData);
-        toast.success('Transacao atualizada');
+        toast.success(t('financial.toast.transactionUpdated', 'Transação atualizada'));
       } else {
         await addDoc(collection(db, 'transactions'), {
           ...txData,
           createdAt: now,
         });
-        toast.success('Transacao criada');
+        toast.success(t('financial.toast.transactionCreated', 'Transação criada'));
       }
 
       queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
       setShowForm(false);
     } catch (err) {
       console.error('Error saving transaction:', err);
-      toast.error('Erro ao salvar transacao');
+      toast.error(t('financial.toast.saveError', 'Erro ao salvar transação'));
     } finally {
       setIsSaving(false);
     }
@@ -435,10 +438,10 @@ export default function FinancialModule() {
       await deleteDoc(doc(db, 'transactions', id));
       queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
       setShowDeleteConfirm(null);
-      toast.success('Transacao excluida');
+      toast.success(t('financial.toast.transactionDeleted', 'Transação excluída'));
     } catch (err) {
       console.error('Error deleting transaction:', err);
-      toast.error('Erro ao excluir transacao');
+      toast.error(t('financial.toast.deleteError', 'Erro ao excluir transação'));
     }
   }, [business?.id, queryClient]);
 
@@ -497,20 +500,20 @@ export default function FinancialModule() {
       if (editingBankAccount) {
         const docRef = doc(db, 'bankAccounts', editingBankAccount.id);
         await updateDoc(docRef, accData);
-        toast.success('Conta atualizada');
+        toast.success(t('financial.toast.accountUpdated', 'Conta atualizada'));
       } else {
         await addDoc(collection(db, 'bankAccounts'), {
           ...accData,
           createdAt: now,
         });
-        toast.success('Conta criada');
+        toast.success(t('financial.toast.accountCreated', 'Conta criada'));
       }
 
       queryClient.invalidateQueries({ queryKey: ['bankAccounts', business.id] });
       setShowBankForm(false);
     } catch (err) {
       console.error('Error saving bank account:', err);
-      toast.error('Erro ao salvar conta');
+      toast.error(t('financial.toast.accountSaveError', 'Erro ao salvar conta'));
     } finally {
       setIsSaving(false);
     }
@@ -522,10 +525,10 @@ export default function FinancialModule() {
       await deleteDoc(doc(db, 'bankAccounts', id));
       queryClient.invalidateQueries({ queryKey: ['bankAccounts', business.id] });
       setShowDeleteBankConfirm(null);
-      toast.success('Conta excluida');
+      toast.success(t('financial.toast.accountDeleted', 'Conta excluída'));
     } catch (err) {
       console.error('Error deleting bank account:', err);
-      toast.error('Erro ao excluir conta');
+      toast.error(t('financial.toast.accountDeleteError', 'Erro ao excluir conta'));
     }
   }, [business?.id, queryClient]);
 
@@ -545,7 +548,12 @@ export default function FinancialModule() {
     return map[status] || map.pendente;
   };
 
-  const statusLabel = (s: TransactionStatus) => ({ pago: 'Pago', pendente: 'Pendente', atrasado: 'Atrasado', cancelado: 'Cancelado' }[s]);
+  const statusLabel = (s: TransactionStatus) => ({
+    pago: t('financial.status.paid', 'Pago'),
+    pendente: t('financial.status.pending', 'Pendente'),
+    atrasado: t('financial.status.overdue', 'Atrasado'),
+    cancelado: t('financial.status.cancelled', 'Cancelado'),
+  }[s] ?? s);
 
   const fmtChart = (v: number) => v >= 1000 ? `R$ ${(v / 1000).toFixed(0)}k` : `R$ ${v}`;
 
@@ -609,11 +617,11 @@ export default function FinancialModule() {
         {/* ===== HEADER ===== */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
           <div>
-            <h1 className="text-2xl font-display font-bold text-slate-900 dark:text-gray-100 tracking-tight">Financeiro</h1>
-            <p className="text-sm text-slate-400 dark:text-gray-500 mt-0.5">Gestao financeira completa</p>
+            <h1 className="text-2xl font-display font-bold text-slate-900 dark:text-gray-100 tracking-tight">{t('financial.header.title', 'Financeiro')}</h1>
+            <p className="text-sm text-slate-400 dark:text-gray-500 mt-0.5">{t('financial.header.subtitle', 'Gestão financeira completa')}</p>
           </div>
           <div className="flex items-center gap-3">
-            <Tooltip title={showBalances ? 'Ocultar saldos' : 'Mostrar saldos'}>
+            <Tooltip title={showBalances ? t('financial.header.hideBalances', 'Ocultar saldos') : t('financial.header.showBalances', 'Mostrar saldos')}>
               <IconButton
                 onClick={() => setShowBalances(!showBalances)}
                 size="small"
@@ -629,7 +637,7 @@ export default function FinancialModule() {
               className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-red-600 to-red-700 text-white rounded-xl font-semibold text-sm shadow-sm shadow-red-200 hover:shadow-md hover:shadow-red-200 transition-all"
             >
               <Plus size={18} />
-              Novo Lancamento
+              {t('financial.header.newEntry', 'Novo Lançamento')}
             </motion.button>
           </div>
         </div>
@@ -720,7 +728,7 @@ export default function FinancialModule() {
         PaperProps={{ sx: { borderRadius: '20px', maxHeight: '90vh', backgroundColor: isDark ? '#111827' : undefined } }}
       >
         <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', pb: 1, fontFamily: '"Plus Jakarta Sans", sans-serif', fontWeight: 700, color: isDark ? '#F1F5F9' : undefined }}>
-          <span>{editingTransaction ? 'Editar Transacao' : 'Nova Transacao'}</span>
+          <span>{editingTransaction ? t('financial.form.editTransaction', 'Editar Transação') : t('financial.form.newTransaction', 'Nova Transação')}</span>
           <IconButton onClick={() => setShowForm(false)} size="small"><X size={20} className={isDark ? 'text-gray-400' : ''} /></IconButton>
         </DialogTitle>
         <Divider />
@@ -729,61 +737,61 @@ export default function FinancialModule() {
             {/* Type Toggle */}
             <ToggleButtonGroup value={formType} exclusive onChange={(_, v) => v && setFormType(v)} size="small" fullWidth>
               <ToggleButton value="receita" sx={{ gap: 1, borderRadius: '12px 0 0 12px', '&.Mui-selected': { backgroundColor: '#F0FDF4', color: '#166534', borderColor: '#BBF7D0', '&:hover': { backgroundColor: '#DCFCE7' } } }}>
-                <ArrowUpRight size={16} /> Receita
+                <ArrowUpRight size={16} /> {t('financial.form.income', 'Receita')}
               </ToggleButton>
               <ToggleButton value="despesa" sx={{ gap: 1, borderRadius: '0 12px 12px 0', '&.Mui-selected': { backgroundColor: '#FEF2F2', color: '#991B1B', borderColor: '#FECACA', '&:hover': { backgroundColor: '#FEE2E2' } } }}>
-                <ArrowDownRight size={16} /> Despesa
+                <ArrowDownRight size={16} /> {t('financial.form.expense', 'Despesa')}
               </ToggleButton>
             </ToggleButtonGroup>
 
-            <TextField label="Descricao" value={formDescription} onChange={(e) => setFormDescription(e.target.value)} fullWidth required size="small" sx={inputSx} />
+            <TextField label={t('financial.form.description', 'Descrição')} value={formDescription} onChange={(e) => setFormDescription(e.target.value)} fullWidth required size="small" sx={inputSx} />
 
             <div className="grid grid-cols-2 gap-3">
               <FormControl fullWidth size="small">
-                <InputLabel>Categoria</InputLabel>
-                <Select value={formCategory} onChange={(e) => setFormCategory(e.target.value)} label="Categoria" sx={{ borderRadius: '12px' }}>
+                <InputLabel>{t('financial.form.category', 'Categoria')}</InputLabel>
+                <Select value={formCategory} onChange={(e) => setFormCategory(e.target.value)} label={t('financial.form.category', 'Categoria')} sx={{ borderRadius: '12px' }}>
                   {(formType === 'receita' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map((c) => (
                     <MenuItem key={c} value={c}>{c}</MenuItem>
                   ))}
                 </Select>
               </FormControl>
-              <TextField label="Valor" value={formAmount} onChange={(e) => setFormAmount(e.target.value)} type="number" fullWidth required size="small"
+              <TextField label={t('financial.form.amount', 'Valor')} value={formAmount} onChange={(e) => setFormAmount(e.target.value)} type="number" fullWidth required size="small"
                 InputProps={{ startAdornment: <InputAdornment position="start"><span className="text-sm text-slate-400">R$</span></InputAdornment> }}
                 sx={inputSx}
               />
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              <TextField label="Vencimento" type="date" value={formDueDate} onChange={(e) => setFormDueDate(e.target.value)} fullWidth required size="small" InputLabelProps={{ shrink: true }} sx={inputSx} />
-              <TextField label="Pagamento" type="date" value={formPaymentDate} onChange={(e) => setFormPaymentDate(e.target.value)} fullWidth size="small" InputLabelProps={{ shrink: true }} sx={inputSx}
-                helperText="Preencha se ja foi pago"
+              <TextField label={t('financial.form.dueDate', 'Vencimento')} type="date" value={formDueDate} onChange={(e) => setFormDueDate(e.target.value)} fullWidth required size="small" InputLabelProps={{ shrink: true }} sx={inputSx} />
+              <TextField label={t('financial.form.paymentDate', 'Pagamento')} type="date" value={formPaymentDate} onChange={(e) => setFormPaymentDate(e.target.value)} fullWidth size="small" InputLabelProps={{ shrink: true }} sx={inputSx}
+                helperText={t('financial.form.paymentDateHelper', 'Preencha se já foi pago')}
               />
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <FormControl fullWidth size="small">
-                <InputLabel>Forma Pagamento</InputLabel>
-                <Select value={formPaymentMethod} onChange={(e) => setFormPaymentMethod(e.target.value as PaymentMethod | '')} label="Forma Pagamento" sx={{ borderRadius: '12px' }}>
+                <InputLabel>{t('financial.form.paymentMethod', 'Forma de Pagamento')}</InputLabel>
+                <Select value={formPaymentMethod} onChange={(e) => setFormPaymentMethod(e.target.value as PaymentMethod | '')} label={t('financial.form.paymentMethod', 'Forma de Pagamento')} sx={{ borderRadius: '12px' }}>
                   <MenuItem value=""><em>-</em></MenuItem>
                   {PAYMENT_METHODS.map((pm) => (<MenuItem key={pm.value} value={pm.value}>{pm.label}</MenuItem>))}
                 </Select>
               </FormControl>
               <FormControl fullWidth size="small">
-                <InputLabel>Status</InputLabel>
-                <Select value={formStatus} onChange={(e) => setFormStatus(e.target.value as TransactionStatus)} label="Status" sx={{ borderRadius: '12px' }}>
-                  <MenuItem value="pendente">Pendente</MenuItem>
-                  <MenuItem value="pago">Pago</MenuItem>
-                  <MenuItem value="atrasado">Atrasado</MenuItem>
-                  <MenuItem value="cancelado">Cancelado</MenuItem>
+                <InputLabel>{t('financial.form.status', 'Status')}</InputLabel>
+                <Select value={formStatus} onChange={(e) => setFormStatus(e.target.value as TransactionStatus)} label={t('financial.form.status', 'Status')} sx={{ borderRadius: '12px' }}>
+                  <MenuItem value="pendente">{t('financial.status.pending', 'Pendente')}</MenuItem>
+                  <MenuItem value="pago">{t('financial.status.paid', 'Pago')}</MenuItem>
+                  <MenuItem value="atrasado">{t('financial.status.overdue', 'Atrasado')}</MenuItem>
+                  <MenuItem value="cancelado">{t('financial.status.cancelled', 'Cancelado')}</MenuItem>
                 </Select>
               </FormControl>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              <TextField label="Cliente (opcional)" value={formClientName} onChange={(e) => setFormClientName(e.target.value)} fullWidth size="small" sx={inputSx} />
+              <TextField label={t('financial.form.clientOptional', 'Cliente (opcional)')} value={formClientName} onChange={(e) => setFormClientName(e.target.value)} fullWidth size="small" sx={inputSx} />
               <FormControl fullWidth size="small">
-                <InputLabel>Conta Bancaria</InputLabel>
-                <Select value={formBankAccount} onChange={(e) => setFormBankAccount(e.target.value)} label="Conta Bancaria" sx={{ borderRadius: '12px' }}>
+                <InputLabel>{t('financial.form.bankAccount', 'Conta Bancária')}</InputLabel>
+                <Select value={formBankAccount} onChange={(e) => setFormBankAccount(e.target.value)} label={t('financial.form.bankAccount', 'Conta Bancária')} sx={{ borderRadius: '12px' }}>
                   <MenuItem value=""><em>-</em></MenuItem>
                   {bankAccounts.filter((a) => a.isActive).map((a) => (<MenuItem key={a.id} value={a.id}>{a.name} - {a.bankName}</MenuItem>))}
                 </Select>
@@ -792,9 +800,9 @@ export default function FinancialModule() {
 
             {isEnterprise && sectors.length > 0 && (
               <FormControl fullWidth size="small">
-                <InputLabel>Setor (opcional)</InputLabel>
-                <Select value={formSectorId} onChange={(e) => setFormSectorId(e.target.value)} label="Setor (opcional)" sx={{ borderRadius: '12px' }}>
-                  <MenuItem value=""><em>Nenhum</em></MenuItem>
+                <InputLabel>{t('financial.form.sectorOptional', 'Setor (opcional)')}</InputLabel>
+                <Select value={formSectorId} onChange={(e) => setFormSectorId(e.target.value)} label={t('financial.form.sectorOptional', 'Setor (opcional)')} sx={{ borderRadius: '12px' }}>
+                  <MenuItem value=""><em>{t('financial.form.none', 'Nenhum')}</em></MenuItem>
                   {sectors.filter(s => s.isActive).map((s) => (
                     <MenuItem key={s.id} value={s.id}>
                       <div className="flex items-center gap-2">
@@ -807,16 +815,16 @@ export default function FinancialModule() {
               </FormControl>
             )}
 
-            <TextField label="Observacoes" value={formNotes} onChange={(e) => setFormNotes(e.target.value)} fullWidth multiline rows={2} size="small" sx={inputSx} />
+            <TextField label={t('financial.form.notes', 'Observações')} value={formNotes} onChange={(e) => setFormNotes(e.target.value)} fullWidth multiline rows={2} size="small" sx={inputSx} />
           </div>
         </DialogContent>
         <Divider />
         <DialogActions sx={{ px: 3, py: 2 }}>
-          <Button onClick={() => setShowForm(false)} sx={{ color: '#64748B', textTransform: 'none', fontWeight: 600, borderRadius: '12px' }}>Cancelar</Button>
+          <Button onClick={() => setShowForm(false)} sx={{ color: '#64748B', textTransform: 'none', fontWeight: 600, borderRadius: '12px' }}>{t('financial.form.cancel', 'Cancelar')}</Button>
           <Button onClick={handleSaveTransaction} variant="contained" disabled={!formDescription || !formCategory || !formAmount || !formDueDate || isSaving}
             sx={{ backgroundColor: '#DC2626', '&:hover': { backgroundColor: '#B91C1C' }, '&.Mui-disabled': { backgroundColor: '#FCA5A5', color: '#fff' }, borderRadius: '12px', textTransform: 'none', fontWeight: 700, px: 4 }}
           >
-            {isSaving ? 'Salvando...' : editingTransaction ? 'Salvar' : 'Criar Transacao'}
+            {isSaving ? t('financial.form.saving', 'Salvando...') : editingTransaction ? t('financial.form.save', 'Salvar') : t('financial.form.createTransaction', 'Criar Transação')}
           </Button>
         </DialogActions>
       </Dialog>
@@ -830,19 +838,19 @@ export default function FinancialModule() {
         PaperProps={{ sx: { borderRadius: '20px', backgroundColor: isDark ? '#111827' : undefined } }}
       >
         <DialogTitle sx={{ fontFamily: '"Plus Jakarta Sans", sans-serif', fontWeight: 700, color: isDark ? '#F1F5F9' : undefined }}>
-          Excluir Transacao
+          {t('financial.deleteTransaction.title', 'Excluir Transação')}
         </DialogTitle>
         <DialogContent>
           <p className="text-sm text-slate-600 dark:text-gray-400">
-            Tem certeza que deseja excluir esta transacao? Esta acao nao pode ser desfeita.
+            {t('financial.deleteTransaction.confirm', 'Tem certeza que deseja excluir esta transação? Esta ação não pode ser desfeita.')}
           </p>
         </DialogContent>
         <DialogActions sx={{ px: 3, py: 2 }}>
-          <Button onClick={() => setShowDeleteConfirm(null)} sx={{ color: '#64748B', textTransform: 'none', fontWeight: 600, borderRadius: '12px' }}>Cancelar</Button>
+          <Button onClick={() => setShowDeleteConfirm(null)} sx={{ color: '#64748B', textTransform: 'none', fontWeight: 600, borderRadius: '12px' }}>{t('financial.form.cancel', 'Cancelar')}</Button>
           <Button onClick={() => showDeleteConfirm && handleDeleteTransaction(showDeleteConfirm)} variant="contained"
             sx={{ backgroundColor: '#DC2626', '&:hover': { backgroundColor: '#B91C1C' }, borderRadius: '12px', textTransform: 'none', fontWeight: 700 }}
           >
-            Excluir
+            {t('financial.form.delete', 'Excluir')}
           </Button>
         </DialogActions>
       </Dialog>
@@ -856,46 +864,46 @@ export default function FinancialModule() {
         PaperProps={{ sx: { borderRadius: '20px', maxHeight: '90vh', backgroundColor: isDark ? '#111827' : undefined } }}
       >
         <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', pb: 1, fontFamily: '"Plus Jakarta Sans", sans-serif', fontWeight: 700, color: isDark ? '#F1F5F9' : undefined }}>
-          <span>{editingBankAccount ? 'Editar Conta' : 'Nova Conta Bancaria'}</span>
+          <span>{editingBankAccount ? t('financial.bankForm.editAccount', 'Editar Conta') : t('financial.bankForm.newAccount', 'Nova Conta Bancária')}</span>
           <IconButton onClick={() => setShowBankForm(false)} size="small"><X size={20} className={isDark ? 'text-gray-400' : ''} /></IconButton>
         </DialogTitle>
         <Divider />
         <DialogContent sx={{ pt: 3 }}>
           <div className="space-y-4">
-            <TextField label="Nome da Conta" value={bankName} onChange={(e) => setBankName(e.target.value)} fullWidth required size="small" sx={inputSx}
-              placeholder="Ex: Conta Principal"
+            <TextField label={t('financial.bankForm.accountName', 'Nome da Conta')} value={bankName} onChange={(e) => setBankName(e.target.value)} fullWidth required size="small" sx={inputSx}
+              placeholder={t('financial.bankForm.accountNamePlaceholder', 'Ex: Conta Principal')}
             />
 
             <div className="grid grid-cols-2 gap-3">
-              <TextField label="Nome do Banco" value={bankBankName} onChange={(e) => setBankBankName(e.target.value)} fullWidth required size="small" sx={inputSx}
-                placeholder="Ex: Nubank"
+              <TextField label={t('financial.bankForm.bankName', 'Nome do Banco')} value={bankBankName} onChange={(e) => setBankBankName(e.target.value)} fullWidth required size="small" sx={inputSx}
+                placeholder={t('financial.bankForm.bankNamePlaceholder', 'Ex: Nubank')}
               />
-              <TextField label="Codigo do Banco" value={bankBankCode} onChange={(e) => setBankBankCode(e.target.value)} fullWidth size="small" sx={inputSx}
-                placeholder="Ex: 260"
+              <TextField label={t('financial.bankForm.bankCode', 'Código do Banco')} value={bankBankCode} onChange={(e) => setBankBankCode(e.target.value)} fullWidth size="small" sx={inputSx}
+                placeholder={t('financial.bankForm.bankCodePlaceholder', 'Ex: 260')}
               />
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <FormControl fullWidth size="small">
-                <InputLabel>Tipo de Conta</InputLabel>
-                <Select value={bankAccountType} onChange={(e) => setBankAccountType(e.target.value as BankAccountType)} label="Tipo de Conta" sx={{ borderRadius: '12px' }}>
+                <InputLabel>{t('financial.bankForm.accountType', 'Tipo de Conta')}</InputLabel>
+                <Select value={bankAccountType} onChange={(e) => setBankAccountType(e.target.value as BankAccountType)} label={t('financial.bankForm.accountType', 'Tipo de Conta')} sx={{ borderRadius: '12px' }}>
                   {ACCOUNT_TYPES.map((at) => (<MenuItem key={at.value} value={at.value}>{at.label}</MenuItem>))}
                 </Select>
               </FormControl>
-              <TextField label="Saldo Inicial" value={bankBalance} onChange={(e) => setBankBalance(e.target.value)} type="number" fullWidth required size="small"
+              <TextField label={t('financial.bankForm.initialBalance', 'Saldo Inicial')} value={bankBalance} onChange={(e) => setBankBalance(e.target.value)} type="number" fullWidth required size="small"
                 InputProps={{ startAdornment: <InputAdornment position="start"><span className="text-sm text-slate-400">R$</span></InputAdornment> }}
                 sx={inputSx}
               />
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              <TextField label="Agencia" value={bankAgency} onChange={(e) => setBankAgency(e.target.value)} fullWidth size="small" sx={inputSx} />
-              <TextField label="Numero da Conta" value={bankAccountNumber} onChange={(e) => setBankAccountNumber(e.target.value)} fullWidth size="small" sx={inputSx} />
+              <TextField label={t('financial.bankForm.agency', 'Agência')} value={bankAgency} onChange={(e) => setBankAgency(e.target.value)} fullWidth size="small" sx={inputSx} />
+              <TextField label={t('financial.bankForm.accountNumber', 'Número da Conta')} value={bankAccountNumber} onChange={(e) => setBankAccountNumber(e.target.value)} fullWidth size="small" sx={inputSx} />
             </div>
 
             {/* Color picker */}
             <div>
-              <p className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-2">Cor da Conta</p>
+              <p className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-2">{t('financial.bankForm.accountColor', 'Cor da Conta')}</p>
               <div className="flex gap-2 flex-wrap">
                 {PRESET_COLORS.map((color) => (
                   <button
@@ -914,8 +922,8 @@ export default function FinancialModule() {
             {/* Main account toggle */}
             <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-white/[0.04] border border-slate-100 dark:border-gray-800">
               <div>
-                <p className="text-sm font-medium text-slate-700 dark:text-gray-300">Conta Principal</p>
-                <p className="text-xs text-slate-400 dark:text-gray-500">Definir como conta principal da empresa</p>
+                <p className="text-sm font-medium text-slate-700 dark:text-gray-300">{t('financial.bankForm.mainAccount', 'Conta Principal')}</p>
+                <p className="text-xs text-slate-400 dark:text-gray-500">{t('financial.bankForm.mainAccountDesc', 'Definir como conta principal da empresa')}</p>
               </div>
               <button
                 onClick={() => setBankIsMain(!bankIsMain)}
@@ -934,11 +942,11 @@ export default function FinancialModule() {
         </DialogContent>
         <Divider />
         <DialogActions sx={{ px: 3, py: 2 }}>
-          <Button onClick={() => setShowBankForm(false)} sx={{ color: '#64748B', textTransform: 'none', fontWeight: 600, borderRadius: '12px' }}>Cancelar</Button>
+          <Button onClick={() => setShowBankForm(false)} sx={{ color: '#64748B', textTransform: 'none', fontWeight: 600, borderRadius: '12px' }}>{t('financial.form.cancel', 'Cancelar')}</Button>
           <Button onClick={handleSaveBankAccount} variant="contained" disabled={!bankName || !bankBankName || !bankBalance || isSaving}
             sx={{ backgroundColor: '#DC2626', '&:hover': { backgroundColor: '#B91C1C' }, '&.Mui-disabled': { backgroundColor: '#FCA5A5', color: '#fff' }, borderRadius: '12px', textTransform: 'none', fontWeight: 700, px: 4 }}
           >
-            {isSaving ? 'Salvando...' : editingBankAccount ? 'Salvar' : 'Criar Conta'}
+            {isSaving ? t('financial.form.saving', 'Salvando...') : editingBankAccount ? t('financial.form.save', 'Salvar') : t('financial.bankForm.createAccount', 'Criar Conta')}
           </Button>
         </DialogActions>
       </Dialog>
@@ -952,19 +960,19 @@ export default function FinancialModule() {
         PaperProps={{ sx: { borderRadius: '20px', backgroundColor: isDark ? '#111827' : undefined } }}
       >
         <DialogTitle sx={{ fontFamily: '"Plus Jakarta Sans", sans-serif', fontWeight: 700, color: isDark ? '#F1F5F9' : undefined }}>
-          Excluir Conta Bancaria
+          {t('financial.deleteAccount.title', 'Excluir Conta Bancária')}
         </DialogTitle>
         <DialogContent>
           <p className="text-sm text-slate-600 dark:text-gray-400">
-            Tem certeza que deseja excluir esta conta bancaria? Esta acao nao pode ser desfeita.
+            {t('financial.deleteAccount.confirm', 'Tem certeza que deseja excluir esta conta bancária? Esta ação não pode ser desfeita.')}
           </p>
         </DialogContent>
         <DialogActions sx={{ px: 3, py: 2 }}>
-          <Button onClick={() => setShowDeleteBankConfirm(null)} sx={{ color: '#64748B', textTransform: 'none', fontWeight: 600, borderRadius: '12px' }}>Cancelar</Button>
+          <Button onClick={() => setShowDeleteBankConfirm(null)} sx={{ color: '#64748B', textTransform: 'none', fontWeight: 600, borderRadius: '12px' }}>{t('financial.form.cancel', 'Cancelar')}</Button>
           <Button onClick={() => showDeleteBankConfirm && handleDeleteBankAccount(showDeleteBankConfirm)} variant="contained"
             sx={{ backgroundColor: '#DC2626', '&:hover': { backgroundColor: '#B91C1C' }, borderRadius: '12px', textTransform: 'none', fontWeight: 700 }}
           >
-            Excluir
+            {t('financial.form.delete', 'Excluir')}
           </Button>
         </DialogActions>
       </Dialog>
@@ -1003,6 +1011,7 @@ function OverviewContent({
   broadcasts: Broadcast[];
   crmContacts: CRMContact[];
 }) {
+  const { t } = useTranslation();
   const hiddenValue = '******';
 
   const overdueCount = transactions.filter(t =>
@@ -1014,11 +1023,11 @@ function OverviewContent({
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
         {[
-          { label: 'Receitas Pagas', value: metrics.receitas, icon: <TrendingUp size={18} />, color: 'emerald' },
-          { label: 'Despesas Pagas', value: metrics.despesas, icon: <TrendingDown size={18} />, color: 'red' },
-          { label: 'Resultado', value: metrics.lucro, icon: <DollarSign size={18} />, color: metrics.lucro >= 0 ? 'blue' : 'red' },
-          { label: 'A Receber', value: metrics.aReceber, icon: <Clock size={18} />, color: 'amber' },
-          { label: 'A Pagar', value: metrics.aPagar, icon: <AlertTriangle size={18} />, color: 'orange' },
+          { label: t('financial.kpi.paidIncome', 'Receitas Pagas'), value: metrics.receitas, icon: <TrendingUp size={18} />, color: 'emerald' },
+          { label: t('financial.kpi.paidExpenses', 'Despesas Pagas'), value: metrics.despesas, icon: <TrendingDown size={18} />, color: 'red' },
+          { label: t('financial.kpi.result', 'Resultado'), value: metrics.lucro, icon: <DollarSign size={18} />, color: metrics.lucro >= 0 ? 'blue' : 'red' },
+          { label: t('financial.kpi.toReceive', 'A Receber'), value: metrics.aReceber, icon: <Clock size={18} />, color: 'amber' },
+          { label: t('financial.kpi.toPay', 'A Pagar'), value: metrics.aPagar, icon: <AlertTriangle size={18} />, color: 'orange' },
         ].map((card, i) => {
           const cm: Record<string, { iconBg: string; iconTxt: string; valTxt: string }> = {
             emerald: { iconBg: 'bg-emerald-50 dark:bg-emerald-500/10', iconTxt: 'text-emerald-600 dark:text-emerald-400', valTxt: 'text-emerald-600 dark:text-emerald-400' },
@@ -1051,7 +1060,7 @@ function OverviewContent({
         >
           <AlertTriangle size={18} className="text-red-600 dark:text-red-400 flex-shrink-0" />
           <p className="text-sm text-red-700 dark:text-red-300">
-            Voce tem <span className="font-bold">{overdueCount}</span> transac{overdueCount === 1 ? 'ao' : 'oes'} vencida{overdueCount === 1 ? '' : 's'} com pagamento pendente.
+            {t('financial.overdueAlert', 'Você tem {{count}} transação(ões) vencida(s) com pagamento pendente.', { count: overdueCount })}
           </p>
         </motion.div>
       )}
@@ -1064,8 +1073,8 @@ function OverviewContent({
         >
           <div className="flex items-center justify-between mb-5">
             <div>
-              <h3 className="text-base font-display font-bold text-slate-900 dark:text-gray-100">Fluxo de Caixa</h3>
-              <p className="text-xs text-slate-400 dark:text-gray-500 mt-0.5">Receitas vs Despesas</p>
+              <h3 className="text-base font-display font-bold text-slate-900 dark:text-gray-100">{t('financial.charts.cashFlow', 'Fluxo de Caixa')}</h3>
+              <p className="text-xs text-slate-400 dark:text-gray-500 mt-0.5">{t('financial.charts.cashFlowSubtitle', 'Receitas vs Despesas')}</p>
             </div>
           </div>
           {monthlyData.length > 0 ? (
@@ -1086,16 +1095,16 @@ function OverviewContent({
                 <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94A3B8', fontSize: 11 }} tickFormatter={fmtChart} />
                 <RechartsTooltip content={<ChartTooltip />} />
                 <Legend wrapperStyle={{ paddingTop: 12 }} iconType="circle" iconSize={8} formatter={(v: string) => <span className="text-xs text-slate-500 dark:text-gray-400">{v}</span>} />
-                <Bar dataKey="receitas" name="Receitas" fill="url(#gradReceita)" radius={[6, 6, 0, 0]} barSize={22} />
-                <Bar dataKey="despesas" name="Despesas" fill="url(#gradDespesa)" radius={[6, 6, 0, 0]} barSize={22} />
-                <Line type="monotone" dataKey="saldo" name="Resultado" stroke="#3B82F6" strokeWidth={2.5} dot={{ r: 4, fill: '#3B82F6', strokeWidth: 2, stroke: '#fff' }} />
+                <Bar dataKey="receitas" name={t('financial.charts.revenues', 'Receitas')} fill="url(#gradReceita)" radius={[6, 6, 0, 0]} barSize={22} />
+                <Bar dataKey="despesas" name={t('financial.charts.expenses', 'Despesas')} fill="url(#gradDespesa)" radius={[6, 6, 0, 0]} barSize={22} />
+                <Line type="monotone" dataKey="saldo" name={t('financial.charts.result', 'Resultado')} stroke="#3B82F6" strokeWidth={2.5} dot={{ r: 4, fill: '#3B82F6', strokeWidth: 2, stroke: '#fff' }} />
               </ComposedChart>
             </ResponsiveContainer>
           ) : (
             <div className="flex flex-col items-center justify-center h-[280px] text-slate-400 dark:text-gray-500">
               <BarChart3 size={36} strokeWidth={1.5} />
-              <p className="mt-3 text-sm">Sem dados para exibir</p>
-              <p className="text-xs mt-1">Crie transacoes para visualizar o grafico</p>
+              <p className="mt-3 text-sm">{t('financial.charts.noData', 'Sem dados para exibir')}</p>
+              <p className="text-xs mt-1">{t('financial.charts.noDataHint', 'Crie transações para visualizar o gráfico')}</p>
             </div>
           )}
         </motion.div>
@@ -1104,8 +1113,8 @@ function OverviewContent({
         <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}
           className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-6 hover:shadow-md transition-all"
         >
-          <h3 className="text-base font-display font-bold text-slate-900 dark:text-gray-100 mb-1">Despesas por Categoria</h3>
-          <p className="text-xs text-slate-400 dark:text-gray-500 mb-4">Distribuicao das despesas pagas</p>
+          <h3 className="text-base font-display font-bold text-slate-900 dark:text-gray-100 mb-1">{t('financial.charts.expenseByCategory', 'Despesas por Categoria')}</h3>
+          <p className="text-xs text-slate-400 dark:text-gray-500 mb-4">{t('financial.charts.expenseByCategorySubtitle', 'Distribuição das despesas pagas')}</p>
           {expenseBreakdown.length > 0 ? (
             <>
               <div className="flex justify-center mb-4">
@@ -1136,7 +1145,7 @@ function OverviewContent({
           ) : (
             <div className="flex flex-col items-center justify-center h-[280px] text-slate-400 dark:text-gray-500">
               <Receipt size={36} strokeWidth={1.5} />
-              <p className="mt-3 text-sm">Sem despesas registradas</p>
+              <p className="mt-3 text-sm">{t('financial.charts.noExpenses', 'Sem despesas registradas')}</p>
             </div>
           )}
         </motion.div>
@@ -1147,8 +1156,8 @@ function OverviewContent({
         className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl overflow-hidden"
       >
         <div className="px-6 py-4 border-b border-slate-100 dark:border-gray-800">
-          <h3 className="text-base font-display font-bold text-slate-900 dark:text-gray-100">Transacoes Recentes</h3>
-          <p className="text-xs text-slate-400 dark:text-gray-500 mt-0.5">Ultimas 10 transacoes</p>
+          <h3 className="text-base font-display font-bold text-slate-900 dark:text-gray-100">{t('financial.recentTransactions.title', 'Transações Recentes')}</h3>
+          <p className="text-xs text-slate-400 dark:text-gray-500 mt-0.5">{t('financial.recentTransactions.subtitle', 'Últimas 10 transações')}</p>
         </div>
         {transactions.length > 0 ? (
           <div className="divide-y divide-slate-50 dark:divide-gray-800">
@@ -1176,7 +1185,7 @@ function OverviewContent({
                     tx.status === 'atrasado' ? 'text-red-600 dark:text-red-400' :
                     'text-amber-600 dark:text-amber-400'
                   )}>
-                    {tx.status === 'pago' ? 'Pago' : tx.status === 'atrasado' ? 'Atrasado' : tx.status === 'pendente' ? 'Pendente' : 'Cancelado'}
+                    {tx.status === 'pago' ? t('financial.status.paid', 'Pago') : tx.status === 'atrasado' ? t('financial.status.overdue', 'Atrasado') : tx.status === 'pendente' ? t('financial.status.pending', 'Pendente') : t('financial.status.cancelled', 'Cancelado')}
                   </p>
                 </div>
               </motion.div>
@@ -1185,8 +1194,8 @@ function OverviewContent({
         ) : (
           <div className="flex flex-col items-center justify-center py-12 text-slate-400 dark:text-gray-500">
             <Receipt size={36} strokeWidth={1.5} />
-            <p className="mt-3 text-sm">Nenhuma transacao registrada</p>
-            <p className="text-xs mt-1">Clique em "Novo Lancamento" para comecar</p>
+            <p className="mt-3 text-sm">{t('financial.recentTransactions.empty', 'Nenhuma transação registrada')}</p>
+            <p className="text-xs mt-1">{t('financial.recentTransactions.emptyHint', 'Clique em "Novo Lançamento" para começar')}</p>
           </div>
         )}
       </motion.div>
@@ -1236,6 +1245,7 @@ function EnterpriseFinancialCards({
   showBalances: boolean;
   isDark: boolean;
 }) {
+  const { t } = useTranslation();
   const hiddenValue = '******';
 
   // Revenue by Channel
@@ -1263,9 +1273,9 @@ function EnterpriseFinancialCards({
   const revenueBySector = useMemo(() => {
     const sectorMap: Record<string, number> = {};
     transactions
-      .filter(t => t.type === 'receita' && t.status === 'pago' && t.sectorId)
-      .forEach(t => {
-        sectorMap[t.sectorId!] = (sectorMap[t.sectorId!] || 0) + t.amount;
+      .filter(tx => tx.type === 'receita' && tx.status === 'pago' && tx.sectorId)
+      .forEach(tx => {
+        sectorMap[tx.sectorId!] = (sectorMap[tx.sectorId!] || 0) + tx.amount;
       });
     return Object.entries(sectorMap)
       .sort(([, a], [, b]) => b - a)
@@ -1273,7 +1283,7 @@ function EnterpriseFinancialCards({
         const sector = sectors.find(s => s.id === sectorId);
         return {
           sectorId,
-          name: sector?.name || 'Desconhecido',
+          name: sector?.name || t('financial.enterprise.unknown', 'Desconhecido'),
           color: sector?.color || '#6B7280',
           amount,
         };
@@ -1290,8 +1300,8 @@ function EnterpriseFinancialCards({
         const cost = b.stats.sent * META_MSG_COST;
         // Revenue attributed to this campaign
         const revenue = transactions
-          .filter(t => t.type === 'receita' && t.status === 'pago' && t.campaignId === b.id)
-          .reduce((s, t) => s + t.amount, 0);
+          .filter(tx => tx.type === 'receita' && tx.status === 'pago' && tx.campaignId === b.id)
+          .reduce((s, tx) => s + tx.amount, 0);
         const roi = cost > 0 ? ((revenue - cost) / cost) * 100 : 0;
         return {
           id: b.id,
@@ -1311,14 +1321,14 @@ function EnterpriseFinancialCards({
   const clvTop10 = useMemo(() => {
     const contactRevenue: Record<string, { name: string; total: number; count: number }> = {};
     transactions
-      .filter(t => t.type === 'receita' && t.status === 'pago' && t.contactId)
-      .forEach(t => {
-        if (!contactRevenue[t.contactId!]) {
-          const contact = crmContacts.find(c => c.id === t.contactId);
-          contactRevenue[t.contactId!] = { name: contact?.name || t.clientName || 'Desconhecido', total: 0, count: 0 };
+      .filter(tx => tx.type === 'receita' && tx.status === 'pago' && tx.contactId)
+      .forEach(tx => {
+        if (!contactRevenue[tx.contactId!]) {
+          const contact = crmContacts.find(c => c.id === tx.contactId);
+          contactRevenue[tx.contactId!] = { name: contact?.name || tx.clientName || t('financial.enterprise.unknown', 'Desconhecido'), total: 0, count: 0 };
         }
-        contactRevenue[t.contactId!].total += t.amount;
-        contactRevenue[t.contactId!].count += 1;
+        contactRevenue[tx.contactId!].total += tx.amount;
+        contactRevenue[tx.contactId!].count += 1;
       });
     return Object.entries(contactRevenue)
       .sort(([, a], [, b]) => b.total - a.total)
@@ -1340,8 +1350,8 @@ function EnterpriseFinancialCards({
           <Crown size={16} className="text-white" />
         </div>
         <div>
-          <h2 className="text-lg font-display font-bold text-slate-900 dark:text-gray-100">Relatorios Enterprise</h2>
-          <p className="text-xs text-slate-400 dark:text-gray-500">Atribuicao de receita por canal, setor e campanha</p>
+          <h2 className="text-lg font-display font-bold text-slate-900 dark:text-gray-100">{t('financial.enterprise.title', 'Relatórios Enterprise')}</h2>
+          <p className="text-xs text-slate-400 dark:text-gray-500">{t('financial.enterprise.subtitle', 'Atribuição de receita por canal, setor e campanha')}</p>
         </div>
       </motion.div>
 
@@ -1356,8 +1366,8 @@ function EnterpriseFinancialCards({
                 <MessageSquare size={16} className="text-blue-600 dark:text-blue-400" />
               </div>
               <div>
-                <h3 className="text-sm font-display font-bold text-slate-900 dark:text-gray-100">Receita por Canal</h3>
-                <p className="text-[11px] text-slate-400 dark:text-gray-500">Origem omnichannel</p>
+                <h3 className="text-sm font-display font-bold text-slate-900 dark:text-gray-100">{t('financial.enterprise.revenueByChannel', 'Receita por Canal')}</h3>
+                <p className="text-[11px] text-slate-400 dark:text-gray-500">{t('financial.enterprise.revenueByChannelSubtitle', 'Origem omnichannel')}</p>
               </div>
             </div>
             <div className="space-y-3">
@@ -1395,8 +1405,8 @@ function EnterpriseFinancialCards({
                 <Layers size={16} className="text-violet-600 dark:text-violet-400" />
               </div>
               <div>
-                <h3 className="text-sm font-display font-bold text-slate-900 dark:text-gray-100">Receita por Setor</h3>
-                <p className="text-[11px] text-slate-400 dark:text-gray-500">Performance por departamento</p>
+                <h3 className="text-sm font-display font-bold text-slate-900 dark:text-gray-100">{t('financial.enterprise.revenueBySector', 'Receita por Setor')}</h3>
+                <p className="text-[11px] text-slate-400 dark:text-gray-500">{t('financial.enterprise.revenueBySectorSubtitle', 'Performance por departamento')}</p>
               </div>
             </div>
             <div className="space-y-3">
@@ -1441,8 +1451,8 @@ function EnterpriseFinancialCards({
                 <Target size={16} className="text-emerald-600 dark:text-emerald-400" />
               </div>
               <div>
-                <h3 className="text-sm font-display font-bold text-slate-900 dark:text-gray-100">ROI de Campanhas</h3>
-                <p className="text-[11px] text-slate-400 dark:text-gray-500">Custo vs receita gerada pelas ultimas campanhas</p>
+                <h3 className="text-sm font-display font-bold text-slate-900 dark:text-gray-100">{t('financial.enterprise.campaignROI', 'ROI de Campanhas')}</h3>
+                <p className="text-[11px] text-slate-400 dark:text-gray-500">{t('financial.enterprise.campaignROISubtitle', 'Custo vs receita gerada pelas últimas campanhas')}</p>
               </div>
             </div>
           </div>
@@ -1450,12 +1460,12 @@ function EnterpriseFinancialCards({
             <table className="w-full">
               <thead>
                 <tr className="text-left">
-                  <th className="px-5 py-3 text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider">Campanha</th>
-                  <th className="px-5 py-3 text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider">Canal</th>
-                  <th className="px-5 py-3 text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider text-right">Enviadas</th>
-                  <th className="px-5 py-3 text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider text-right">Custo Est.</th>
-                  <th className="px-5 py-3 text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider text-right">Receita</th>
-                  <th className="px-5 py-3 text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider text-right">ROI</th>
+                  <th className="px-5 py-3 text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider">{t('financial.enterprise.campaign', 'Campanha')}</th>
+                  <th className="px-5 py-3 text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider">{t('financial.enterprise.channel', 'Canal')}</th>
+                  <th className="px-5 py-3 text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider text-right">{t('financial.enterprise.sent', 'Enviadas')}</th>
+                  <th className="px-5 py-3 text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider text-right">{t('financial.enterprise.estimatedCost', 'Custo Est.')}</th>
+                  <th className="px-5 py-3 text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider text-right">{t('financial.enterprise.revenue', 'Receita')}</th>
+                  <th className="px-5 py-3 text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider text-right">{t('financial.enterprise.roi', 'ROI')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50 dark:divide-gray-800">
@@ -1501,8 +1511,8 @@ function EnterpriseFinancialCards({
                 <Users size={16} className="text-amber-600 dark:text-amber-400" />
               </div>
               <div>
-                <h3 className="text-sm font-display font-bold text-slate-900 dark:text-gray-100">CLV Top 10</h3>
-                <p className="text-[11px] text-slate-400 dark:text-gray-500">Contatos com maior valor acumulado</p>
+                <h3 className="text-sm font-display font-bold text-slate-900 dark:text-gray-100">{t('financial.enterprise.clvTop10', 'CLV Top 10')}</h3>
+                <p className="text-[11px] text-slate-400 dark:text-gray-500">{t('financial.enterprise.clvTop10Subtitle', 'Contatos com maior valor acumulado')}</p>
               </div>
             </div>
           </div>
@@ -1514,7 +1524,7 @@ function EnterpriseFinancialCards({
                   <span className="text-[11px] font-bold text-slate-400 dark:text-gray-500 w-5 text-center">{i + 1}</span>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-slate-800 dark:text-gray-200 truncate">{c.name}</p>
-                    <p className="text-[11px] text-slate-400 dark:text-gray-500">{c.count} transac{c.count !== 1 ? 'oes' : 'ao'}</p>
+                    <p className="text-[11px] text-slate-400 dark:text-gray-500">{t('financial.enterprise.transactionCount', '{{count}} transação(ões)', { count: c.count })}</p>
                   </div>
                   <div className="w-24 h-1.5 bg-slate-100 dark:bg-gray-800 rounded-full overflow-hidden flex-shrink-0">
                     <motion.div
@@ -1572,12 +1582,13 @@ function TransactionsContent({
   getStatusChipColor: (s: TransactionStatus) => { bg: string; text: string; border: string };
   statusLabel: (s: TransactionStatus) => string;
 }) {
+  const { t } = useTranslation();
   const filterTabs = [
-    { key: 'todas', label: 'Todas', count: allTransactions.length },
-    { key: 'receitas', label: 'Receitas', count: allTransactions.filter((t) => t.type === 'receita').length },
-    { key: 'despesas', label: 'Despesas', count: allTransactions.filter((t) => t.type === 'despesa').length },
-    { key: 'pendentes', label: 'Pendentes', count: allTransactions.filter((t) => t.status === 'pendente').length },
-    { key: 'atrasadas', label: 'Atrasadas', count: allTransactions.filter((t) => t.status === 'atrasado').length },
+    { key: 'todas', label: t('financial.txFilter.all', 'Todas'), count: allTransactions.length },
+    { key: 'receitas', label: t('financial.txFilter.income', 'Receitas'), count: allTransactions.filter((tx) => tx.type === 'receita').length },
+    { key: 'despesas', label: t('financial.txFilter.expenses', 'Despesas'), count: allTransactions.filter((tx) => tx.type === 'despesa').length },
+    { key: 'pendentes', label: t('financial.txFilter.pending', 'Pendentes'), count: allTransactions.filter((tx) => tx.status === 'pendente').length },
+    { key: 'atrasadas', label: t('financial.txFilter.overdue', 'Atrasadas'), count: allTransactions.filter((tx) => tx.status === 'atrasado').length },
   ];
 
   return (
@@ -1585,10 +1596,10 @@ function TransactionsContent({
       {/* Header */}
       <div className="px-6 pt-6 pb-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
-          <h3 className="text-base font-display font-bold text-slate-900 dark:text-gray-100">Transacoes</h3>
+          <h3 className="text-base font-display font-bold text-slate-900 dark:text-gray-100">{t('financial.txList.title', 'Transações')}</h3>
           <div className="relative w-full sm:w-72">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-gray-500" />
-            <input type="text" placeholder="Buscar transacao..." value={search} onChange={(e) => onSearchChange(e.target.value)}
+            <input type="text" placeholder={t('financial.txList.searchPlaceholder', 'Buscar transação...')} value={search} onChange={(e) => onSearchChange(e.target.value)}
               className="w-full pl-9 pr-4 py-2 bg-slate-50 dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-xl text-sm text-slate-900 dark:text-gray-100 placeholder:text-slate-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 transition-all"
             />
           </div>
@@ -1614,12 +1625,12 @@ function TransactionsContent({
           <thead>
             <tr className="text-left">
               {[
-                { key: 'dueDate', label: 'Data' },
-                { key: 'description', label: 'Descricao' },
-                { key: 'category', label: 'Categoria' },
-                { key: 'type', label: 'Tipo' },
-                { key: 'amount', label: 'Valor' },
-                { key: 'status', label: 'Status' },
+                { key: 'dueDate', label: t('financial.txList.colDate', 'Data') },
+                { key: 'description', label: t('financial.txList.colDescription', 'Descrição') },
+                { key: 'category', label: t('financial.txList.colCategory', 'Categoria') },
+                { key: 'type', label: t('financial.txList.colType', 'Tipo') },
+                { key: 'amount', label: t('financial.txList.colAmount', 'Valor') },
+                { key: 'status', label: t('financial.txList.colStatus', 'Status') },
                 { key: 'actions', label: '' },
               ].map((col) => (
                 <th key={col.key} onClick={() => col.key !== 'actions' && onSort(col.key)}
@@ -1654,7 +1665,7 @@ function TransactionsContent({
                         tx.type === 'receita' ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' : 'bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-400'
                       )}>
                         {tx.type === 'receita' ? <ArrowUpRight size={11} /> : <ArrowDownRight size={11} />}
-                        {tx.type === 'receita' ? 'Receita' : 'Despesa'}
+                        {tx.type === 'receita' ? t('financial.form.income', 'Receita') : t('financial.form.expense', 'Despesa')}
                       </span>
                     </td>
                     <td className="px-5 py-3">
@@ -1664,7 +1675,7 @@ function TransactionsContent({
                     </td>
                     <td className="px-5 py-3">
                       {(tx.status === 'pendente' || tx.status === 'atrasado') ? (
-                        <Tooltip title="Marcar como pago">
+                        <Tooltip title={t('financial.txList.markAsPaid', 'Marcar como pago')}>
                           <button onClick={() => onMarkPaid(tx.id)} className="inline-flex">
                             <Chip label={statusLabel(tx.status)} size="small" sx={{ backgroundColor: sc.bg, color: sc.text, border: `1px solid ${sc.border}`, fontWeight: 600, fontSize: '0.65rem', cursor: 'pointer', '&:hover': { opacity: 0.8 } }} />
                           </button>
@@ -1675,8 +1686,8 @@ function TransactionsContent({
                     </td>
                     <td className="px-5 py-3">
                       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <Tooltip title="Editar"><IconButton size="small" onClick={() => onEdit(tx)} sx={{ color: '#64748B' }}><Edit3 size={14} /></IconButton></Tooltip>
-                        <Tooltip title="Excluir"><IconButton size="small" onClick={() => onDelete(tx.id)} sx={{ color: '#64748B', '&:hover': { color: '#EF4444' } }}><Trash2 size={14} /></IconButton></Tooltip>
+                        <Tooltip title={t('financial.txList.edit', 'Editar')}><IconButton size="small" onClick={() => onEdit(tx)} sx={{ color: '#64748B' }}><Edit3 size={14} /></IconButton></Tooltip>
+                        <Tooltip title={t('financial.txList.delete', 'Excluir')}><IconButton size="small" onClick={() => onDelete(tx.id)} sx={{ color: '#64748B', '&:hover': { color: '#EF4444' } }}><Trash2 size={14} /></IconButton></Tooltip>
                       </div>
                     </td>
                   </motion.tr>
@@ -1690,12 +1701,12 @@ function TransactionsContent({
       {transactions.length === 0 && (
         <div className="flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
           <Receipt size={36} strokeWidth={1.5} />
-          <p className="mt-3 text-sm">Nenhuma transacao encontrada</p>
+          <p className="mt-3 text-sm">{t('financial.txList.empty', 'Nenhuma transação encontrada')}</p>
         </div>
       )}
 
       <div className="px-6 py-3 border-t border-slate-100 dark:border-gray-800 text-sm text-slate-400 dark:text-gray-500">
-        {transactions.length} transac{transactions.length !== 1 ? 'oes' : 'ao'}
+        {t('financial.txList.count', '{{count}} transação(ões)', { count: transactions.length })}
       </div>
     </div>
   );
@@ -1718,9 +1729,15 @@ function BankAccountsContent({
   onEdit: (account: BankAccount) => void;
   onDelete: (id: string) => void;
 }) {
+  const { t } = useTranslation();
   const activeAccounts = accounts.filter((a) => a.isActive);
   const totalBalance = activeAccounts.reduce((s, a) => s + a.balance, 0);
-  const typeLabels: Record<string, string> = { corrente: 'Conta Corrente', poupanca: 'Poupanca', investimento: 'Investimento', caixa: 'Caixa' };
+  const typeLabels: Record<string, string> = {
+    corrente: t('financial.accountTypes.checking', 'Conta Corrente'),
+    poupanca: t('financial.accountTypes.savings', 'Poupança'),
+    investimento: t('financial.accountTypes.investment', 'Investimento'),
+    caixa: t('financial.accountTypes.cash', 'Caixa'),
+  };
 
   return (
     <div className="space-y-6">
@@ -1730,11 +1747,11 @@ function BankAccountsContent({
       >
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-sm text-slate-300 mb-1">Saldo Total Consolidado</p>
+            <p className="text-sm text-slate-300 mb-1">{t('financial.accounts.totalBalance', 'Saldo Total Consolidado')}</p>
             <p className="text-3xl font-display font-bold">
               {showBalances ? formatCurrency(totalBalance) : 'R$ ******'}
             </p>
-            <p className="text-xs text-slate-400 mt-2">{activeAccounts.length} conta{activeAccounts.length !== 1 ? 's' : ''} ativa{activeAccounts.length !== 1 ? 's' : ''}</p>
+            <p className="text-xs text-slate-400 mt-2">{t('financial.accounts.activeCount', '{{count}} conta(s) ativa(s)', { count: activeAccounts.length })}</p>
           </div>
           <div className="flex items-center gap-3">
             <motion.button
@@ -1744,7 +1761,7 @@ function BankAccountsContent({
               className="inline-flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl font-semibold text-sm transition-all"
             >
               <Plus size={16} />
-              Nova Conta
+              {t('financial.accounts.newAccount', 'Nova Conta')}
             </motion.button>
             <div className="w-14 h-14 rounded-2xl bg-white/10 flex items-center justify-center">
               <Landmark size={28} className="text-white/80" />
@@ -1772,15 +1789,15 @@ function BankAccountsContent({
                 </div>
                 <div className="flex items-center gap-1">
                   {account.isMain && (
-                    <Chip label="Principal" size="small" sx={{ backgroundColor: '#EFF6FF', color: '#2563EB', fontWeight: 600, fontSize: '0.65rem', height: 22 }} />
+                    <Chip label={t('financial.accounts.main', 'Principal')} size="small" sx={{ backgroundColor: '#EFF6FF', color: '#2563EB', fontWeight: 600, fontSize: '0.65rem', height: 22 }} />
                   )}
                   <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <Tooltip title="Editar">
+                    <Tooltip title={t('financial.txList.edit', 'Editar')}>
                       <IconButton size="small" onClick={() => onEdit(account)} sx={{ color: '#64748B' }}>
                         <Edit3 size={14} />
                       </IconButton>
                     </Tooltip>
-                    <Tooltip title="Excluir">
+                    <Tooltip title={t('financial.txList.delete', 'Excluir')}>
                       <IconButton size="small" onClick={() => onDelete(account.id)} sx={{ color: '#64748B', '&:hover': { color: '#EF4444' } }}>
                         <Trash2 size={14} />
                       </IconButton>
@@ -1798,8 +1815,8 @@ function BankAccountsContent({
 
               {account.agency && (
                 <div className="flex items-center gap-4 text-[11px] text-slate-400 dark:text-gray-500 pt-3 border-t border-slate-100 dark:border-gray-800">
-                  <span>Ag: {account.agency}</span>
-                  {account.accountNumber && <span>CC: {account.accountNumber}</span>}
+                  <span>{t('financial.accounts.agency', 'Ag')}: {account.agency}</span>
+                  {account.accountNumber && <span>{t('financial.accounts.accountNumber', 'CC')}: {account.accountNumber}</span>}
                 </div>
               )}
 
@@ -1809,7 +1826,7 @@ function BankAccountsContent({
                   <div className="w-full h-1.5 bg-slate-100 dark:bg-gray-800 rounded-full overflow-hidden">
                     <div className="h-full rounded-full transition-all" style={{ width: `${(account.balance / totalBalance) * 100}%`, backgroundColor: account.color }} />
                   </div>
-                  <p className="text-[10px] text-slate-400 dark:text-gray-500 mt-1">{((account.balance / totalBalance) * 100).toFixed(1)}% do total</p>
+                  <p className="text-[10px] text-slate-400 dark:text-gray-500 mt-1">{((account.balance / totalBalance) * 100).toFixed(1)}% {t('financial.accounts.ofTotal', 'do total')}</p>
                 </div>
               )}
             </motion.div>
@@ -1818,8 +1835,8 @@ function BankAccountsContent({
       ) : (
         <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
           <Landmark size={40} strokeWidth={1.5} />
-          <p className="mt-3 text-sm font-medium">Nenhuma conta bancaria cadastrada</p>
-          <p className="text-xs mt-1">Clique em "Nova Conta" para adicionar sua primeira conta</p>
+          <p className="mt-3 text-sm font-medium">{t('financial.accounts.empty', 'Nenhuma conta bancária cadastrada')}</p>
+          <p className="text-xs mt-1">{t('financial.accounts.emptyHint', 'Clique em "Nova Conta" para adicionar sua primeira conta')}</p>
           <motion.button
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
@@ -1827,7 +1844,7 @@ function BankAccountsContent({
             className="mt-4 inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-red-600 to-red-700 text-white rounded-xl font-semibold text-sm shadow-sm"
           >
             <Plus size={16} />
-            Nova Conta
+            {t('financial.accounts.newAccount', 'Nova Conta')}
           </motion.button>
         </div>
       )}

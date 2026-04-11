@@ -8,6 +8,7 @@ import {
   Lock, Unlock, ArrowUpRight, Calendar, MapPin,
   Pause, Play, ExternalLink,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import type { IntegrationConfig } from '@/lib/types';
 import KPICard from '../shared/KPICard';
 import DemoDataBanner from '../shared/DemoDataBanner';
@@ -52,10 +53,11 @@ interface PlatformData {
 // ============================================
 // CONSTANTS
 // ============================================
-const PROJECT_STATUS_CONFIG: Record<string, { dot: string; bg: string; text: string; label: string; icon: React.ElementType }> = {
-  active: { dot: 'bg-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-500/10', text: 'text-emerald-700 dark:text-emerald-400', label: 'Ativo', icon: Play },
-  paused: { dot: 'bg-amber-400', bg: 'bg-amber-50 dark:bg-amber-500/10', text: 'text-amber-700 dark:text-amber-400', label: 'Pausado', icon: Pause },
-  inactive: { dot: 'bg-gray-400', bg: 'bg-gray-100 dark:bg-gray-800', text: 'text-gray-500 dark:text-gray-400', label: 'Inativo', icon: Pause },
+// Labels resolved at render time using t()
+const PROJECT_STATUS_CONFIG: Record<string, { dot: string; bg: string; text: string; labelKey: string; icon: React.ElementType }> = {
+  active: { dot: 'bg-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-500/10', text: 'text-emerald-700 dark:text-emerald-400', labelKey: 'integrations.platform.projectActive', icon: Play },
+  paused: { dot: 'bg-amber-400', bg: 'bg-amber-50 dark:bg-amber-500/10', text: 'text-amber-700 dark:text-amber-400', labelKey: 'integrations.platform.projectPaused', icon: Pause },
+  inactive: { dot: 'bg-gray-400', bg: 'bg-gray-100 dark:bg-gray-800', text: 'text-gray-500 dark:text-gray-400', labelKey: 'integrations.platform.projectInactive', icon: Pause },
 };
 
 const REGION_LABELS: Record<string, string> = {
@@ -118,6 +120,7 @@ const DEMO: PlatformData = {
 // COMPONENT
 // ============================================
 export default function PlatformTab({ supabaseConfig, godaddyConfig }: PlatformTabProps) {
+  const { t } = useTranslation();
   const [data, setData] = useState<PlatformData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -164,7 +167,7 @@ export default function PlatformTab({ supabaseConfig, godaddyConfig }: PlatformT
 
     const usingDemo = !supabaseData && !godaddyData;
     if (usingDemo) {
-      setError('Usando dados de demonstração. Configure Supabase e GoDaddy nas configurações Enterprise.');
+      setError(t('integrations.platform.demoMessage', 'Usando dados de demonstração. Configure Supabase e GoDaddy nas configurações Enterprise.'));
     }
 
     // Parse Supabase projects
@@ -241,29 +244,31 @@ export default function PlatformTab({ supabaseConfig, godaddyConfig }: PlatformT
       {/* ========== 1. Platform KPIs ========== */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <KPICard
-          title="Projetos Supabase"
+          title={t('integrations.kpi.supabaseProjects', 'Projetos Supabase')}
           value={data.supabaseProjects.length.toString()}
           icon={<Database className="w-4 h-4" />}
           color="emerald"
           delay={0}
         />
         <KPICard
-          title="Projetos Saudáveis"
+          title={t('integrations.kpi.healthyProjects', 'Projetos Saudáveis')}
           value={`${data.healthyProjects}/${data.supabaseProjects.length}`}
-          subtitle={data.healthyProjects === data.supabaseProjects.length ? 'Todos operacionais' : `${data.supabaseProjects.length - data.healthyProjects} com alerta`}
+          subtitle={data.healthyProjects === data.supabaseProjects.length
+            ? t('integrations.kpi.allOperational', 'Todos operacionais')
+            : t('integrations.kpi.withAlert', '{{count}} com alerta', { count: data.supabaseProjects.length - data.healthyProjects })}
           icon={<CheckCircle2 className="w-4 h-4" />}
           color="blue"
           delay={0.05}
         />
         <KPICard
-          title="Domínios Ativos"
+          title={t('integrations.kpi.activeDomains', 'Domínios Ativos')}
           value={data.activeDomains.toString()}
           icon={<Globe className="w-4 h-4" />}
           color="violet"
           delay={0.1}
         />
         <KPICard
-          title="Expirando em 30d"
+          title={t('integrations.kpi.expiringIn30d', 'Expirando em 30d')}
           value={data.expiringIn30d.toString()}
           icon={<AlertTriangle className="w-4 h-4" />}
           color={data.expiringIn30d > 0 ? 'red' : 'gray'}
@@ -281,7 +286,7 @@ export default function PlatformTab({ supabaseConfig, godaddyConfig }: PlatformT
       >
         <h3 className="text-sm font-semibold font-display text-gray-900 dark:text-white mb-4 flex items-center gap-2">
           <Database className="w-4 h-4 text-emerald-500" />
-          Projetos Supabase
+          {t('integrations.platform.supabaseProjects', 'Projetos Supabase')}
         </h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {data.supabaseProjects.map((project, i) => {
@@ -303,7 +308,7 @@ export default function PlatformTab({ supabaseConfig, godaddyConfig }: PlatformT
                   </div>
                   <span className={`text-[10px] font-medium px-2 py-0.5 rounded-md flex items-center gap-1 ${statusCfg.bg} ${statusCfg.text}`}>
                     <StatusIcon className="w-2.5 h-2.5" />
-                    {statusCfg.label}
+                    {t(statusCfg.labelKey, statusCfg.labelKey)}
                   </span>
                 </div>
                 <div className="space-y-1.5">
@@ -319,7 +324,7 @@ export default function PlatformTab({ supabaseConfig, godaddyConfig }: PlatformT
                   )}
                   <div className="flex items-center gap-1.5 text-[11px] text-gray-400">
                     <Calendar className="w-3 h-3 flex-shrink-0" />
-                    <span>Criado {timeAgo(project.createdAt)}</span>
+                    <span>{t('integrations.platform.createdAgo', 'Criado {{time}}', { time: timeAgo(project.createdAt) })}</span>
                   </div>
                 </div>
               </motion.div>
@@ -337,17 +342,17 @@ export default function PlatformTab({ supabaseConfig, godaddyConfig }: PlatformT
       >
         <h3 className="text-sm font-semibold font-display text-gray-900 dark:text-white mb-4 flex items-center gap-2">
           <Globe className="w-4 h-4 text-violet-500" />
-          Inventário de Domínios
-          <span className="text-[11px] font-normal text-gray-400 ml-auto">{data.domains.length} domínios</span>
+          {t('integrations.platform.domainInventory', 'Inventário de Domínios')}
+          <span className="text-[11px] font-normal text-gray-400 ml-auto">{t('integrations.platform.domains', '{{count}} domínio(s)', { count: data.domains.length })}</span>
         </h3>
 
         {/* Table header */}
         <div className="hidden sm:grid grid-cols-12 gap-3 px-3 py-2 text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider border-b border-gray-100 dark:border-gray-800 mb-1">
-          <div className="col-span-4">Domínio</div>
-          <div className="col-span-2">Status</div>
-          <div className="col-span-3">Expiração</div>
-          <div className="col-span-1 text-center">Renov.</div>
-          <div className="col-span-2 text-center">Privacidade</div>
+          <div className="col-span-4">{t('integrations.platform.domainColumn', 'Domínio')}</div>
+          <div className="col-span-2">{t('integrations.platform.statusColumn', 'Status')}</div>
+          <div className="col-span-3">{t('integrations.platform.expirationColumn', 'Expiração')}</div>
+          <div className="col-span-1 text-center">{t('integrations.platform.renewColumn', 'Renov.')}</div>
+          <div className="col-span-2 text-center">{t('integrations.platform.privacyColumn', 'Privacidade')}</div>
         </div>
 
         <div className="space-y-1">
@@ -377,7 +382,7 @@ export default function PlatformTab({ supabaseConfig, godaddyConfig }: PlatformT
                     domain.status === 'expired' ? 'bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400' :
                     'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400'
                   }`}>
-                    {domain.status === 'active' ? 'Ativo' : domain.status === 'expired' ? 'Expirado' : 'Pendente'}
+                    {domain.status === 'active' ? t('integrations.platform.domainActive', 'Ativo') : domain.status === 'expired' ? t('integrations.platform.domainExpired', 'Expirado') : t('integrations.platform.domainPending', 'Pendente')}
                   </span>
                 </div>
 
@@ -389,7 +394,7 @@ export default function PlatformTab({ supabaseConfig, godaddyConfig }: PlatformT
                       {formatExpirationDate(domain.expiresAt)}
                     </span>
                     <span className="text-[10px] text-gray-400 ml-1.5">
-                      {isExpired ? '(expirado)' : `(${days}d)`}
+                      {isExpired ? t('integrations.platform.expiredLabel', '(expirado)') : t('integrations.platform.daysLabel', '({{days}}d)', { days })}
                     </span>
                   </div>
                 </div>
@@ -408,12 +413,12 @@ export default function PlatformTab({ supabaseConfig, godaddyConfig }: PlatformT
                   {domain.privacy ? (
                     <>
                       <Lock className="w-3 h-3 text-emerald-500" />
-                      <span className="text-[11px] text-emerald-600 dark:text-emerald-400">Ativa</span>
+                      <span className="text-[11px] text-emerald-600 dark:text-emerald-400">{t('integrations.platform.privacyActive', 'Ativa')}</span>
                     </>
                   ) : (
                     <>
                       <Unlock className="w-3 h-3 text-amber-500" />
-                      <span className="text-[11px] text-amber-600 dark:text-amber-400">Inativa</span>
+                      <span className="text-[11px] text-amber-600 dark:text-amber-400">{t('integrations.platform.privacyInactive', 'Inativa')}</span>
                     </>
                   )}
                 </div>
@@ -433,8 +438,8 @@ export default function PlatformTab({ supabaseConfig, godaddyConfig }: PlatformT
         >
           <h3 className="text-sm font-semibold font-display text-gray-900 dark:text-white mb-4 flex items-center gap-2">
             <AlertTriangle className="w-4 h-4 text-amber-500" />
-            Alertas de Expiração
-            <span className="text-[11px] font-normal text-gray-400 ml-auto">próximos 90 dias</span>
+            {t('integrations.platform.expirationAlerts', 'Alertas de Expiração')}
+            <span className="text-[11px] font-normal text-gray-400 ml-auto">{t('integrations.platform.next90days', 'próximos 90 dias')}</span>
           </h3>
           <div className="space-y-2.5">
             {expirationAlerts.map((domain, i) => {
@@ -467,8 +472,8 @@ export default function PlatformTab({ supabaseConfig, godaddyConfig }: PlatformT
                       {domain.domain}
                     </p>
                     <p className={`text-xs mt-0.5 ${alertSub}`}>
-                      Expira em {days} dia{days !== 1 ? 's' : ''} — {formatExpirationDate(domain.expiresAt)}
-                      {!domain.autoRenew && ' — Renovação automática desativada'}
+                      {t('integrations.platform.expiresInDays', 'Expira em {{count}} dia(s)', { count: days })} — {formatExpirationDate(domain.expiresAt)}
+                      {!domain.autoRenew && ` — ${t('integrations.platform.noAutoRenew', 'Renovação automática desativada')}`}
                     </p>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
@@ -478,7 +483,7 @@ export default function PlatformTab({ supabaseConfig, godaddyConfig }: PlatformT
                           ? 'bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-300'
                           : 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300'
                       }`}>
-                        Sem auto-renov.
+                        {t('integrations.platform.noAutoRenewBadge', 'Sem auto-renov.')}
                       </span>
                     )}
                     <span className={`text-lg font-bold tabular-nums ${

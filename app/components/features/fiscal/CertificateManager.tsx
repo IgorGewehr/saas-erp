@@ -31,6 +31,7 @@ import { db, storage } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { cn } from '@/lib/utils';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
+import { useTranslation } from 'react-i18next';
 
 // ==============================================
 // TYPES
@@ -64,10 +65,9 @@ function getCertStatus(cert: CertInfo | null): CertStatus {
   return 'valid';
 }
 
-function getStatusConfig(status: CertStatus) {
-  const configs = {
+function getStatusStyle(status: CertStatus) {
+  const styles = {
     valid: {
-      label: 'Valido',
       color: '#10B981',
       bgColor: 'bg-emerald-50 dark:bg-emerald-500/10',
       textColor: 'text-emerald-700 dark:text-emerald-400',
@@ -75,7 +75,6 @@ function getStatusConfig(status: CertStatus) {
       icon: <CheckCircle className="w-5 h-5 text-emerald-500" />,
     },
     expiring: {
-      label: 'Expirando',
       color: '#F59E0B',
       bgColor: 'bg-amber-50 dark:bg-amber-500/10',
       textColor: 'text-amber-700 dark:text-amber-400',
@@ -83,7 +82,6 @@ function getStatusConfig(status: CertStatus) {
       icon: <AlertTriangle className="w-5 h-5 text-amber-500" />,
     },
     expired: {
-      label: 'Expirado',
       color: '#EF4444',
       bgColor: 'bg-red-50 dark:bg-red-500/10',
       textColor: 'text-red-700 dark:text-red-400',
@@ -91,7 +89,6 @@ function getStatusConfig(status: CertStatus) {
       icon: <XCircle className="w-5 h-5 text-red-500" />,
     },
     none: {
-      label: 'Nenhum',
       color: '#6B7280',
       bgColor: 'bg-gray-50 dark:bg-gray-800/50',
       textColor: 'text-gray-700 dark:text-gray-300',
@@ -99,7 +96,7 @@ function getStatusConfig(status: CertStatus) {
       icon: <Shield className="w-5 h-5 text-gray-400 dark:text-gray-500" />,
     },
   };
-  return configs[status];
+  return styles[status];
 }
 
 function formatCertDate(dateStr: string): string {
@@ -128,6 +125,7 @@ function calculateDaysUntilExpiry(expiresAt: string): number {
 export default function CertificateManager({ open, onClose }: CertificateManagerProps) {
   const { business, refreshUser } = useAuth();
   const { isDark } = useTheme();
+  const { t } = useTranslation();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [password, setPassword] = useState('');
   const [isUploading, setIsUploading] = useState(false);
@@ -153,17 +151,23 @@ export default function CertificateManager({ open, onClose }: CertificateManager
   }, [business]);
 
   const certStatus = getCertStatus(certificate);
-  const statusConfig = getStatusConfig(certStatus);
+  const statusStyle = getStatusStyle(certStatus);
+  const statusLabels: Record<CertStatus, string> = useMemo(() => ({
+    valid: t('fiscal.cert.statusValid', 'Válido'),
+    expiring: t('fiscal.cert.statusExpiring', 'Expirando'),
+    expired: t('fiscal.cert.statusExpired', 'Expirado'),
+    none: t('fiscal.cert.statusNone', 'Nenhum'),
+  }), [t]);
 
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (file) {
       if (!file.name.toLowerCase().endsWith('.pfx') && !file.name.toLowerCase().endsWith('.p12')) {
-        toast.error('Selecione um arquivo .pfx ou .p12 valido.');
+        toast.error(t('fiscal.cert.errorInvalidFormat', 'Selecione um arquivo .pfx ou .p12 válido.'));
         return;
       }
       if (file.size > 10 * 1024 * 1024) {
-        toast.error('O arquivo deve ter no maximo 10MB.');
+        toast.error(t('fiscal.cert.errorFileSize', 'O arquivo deve ter no máximo 10MB.'));
         return;
       }
       setSelectedFile(file);
@@ -172,11 +176,11 @@ export default function CertificateManager({ open, onClose }: CertificateManager
 
   async function handleUpload() {
     if (!selectedFile || !business) {
-      toast.error('Selecione um arquivo de certificado.');
+      toast.error(t('fiscal.cert.errorNoFile', 'Selecione um arquivo de certificado.'));
       return;
     }
     if (!password.trim()) {
-      toast.error('Informe a senha do certificado.');
+      toast.error(t('fiscal.cert.errorNoPassword', 'Informe a senha do certificado.'));
       return;
     }
 
@@ -213,10 +217,10 @@ export default function CertificateManager({ open, onClose }: CertificateManager
       setSelectedFile(null);
       setPassword('');
       setShowUploadForm(false);
-      toast.success('Certificado digital enviado com sucesso!');
+      toast.success(t('fiscal.cert.successUpload', 'Certificado digital enviado com sucesso!'));
     } catch (error) {
       console.error('[CertificateManager] Upload error:', error);
-      toast.error('Erro ao processar o certificado. Verifique o arquivo e a senha.');
+      toast.error(t('fiscal.cert.errorUpload', 'Erro ao processar o certificado. Verifique o arquivo e a senha.'));
     } finally {
       setIsUploading(false);
     }
@@ -234,9 +238,9 @@ export default function CertificateManager({ open, onClose }: CertificateManager
 
       await refreshUser();
       setShowUploadForm(true);
-      toast.success('Certificado removido.');
+      toast.success(t('fiscal.cert.successRemove', 'Certificado removido.'));
     } catch {
-      toast.error('Erro ao remover certificado.');
+      toast.error(t('fiscal.cert.errorRemove', 'Erro ao remover certificado.'));
     }
   }
 
@@ -266,7 +270,7 @@ export default function CertificateManager({ open, onClose }: CertificateManager
       >
         <div className="flex items-center gap-2">
           <Shield className="w-5 h-5 text-primary-600" />
-          <span>Certificado Digital</span>
+          <span>{t('fiscal.cert.title', 'Certificado Digital')}</span>
         </div>
         <IconButton onClick={onClose} disabled={isUploading} size="small">
           <X size={20} />
@@ -290,21 +294,21 @@ export default function CertificateManager({ open, onClose }: CertificateManager
               <div
                 className={cn(
                   'flex items-center gap-3 p-4 rounded-xl border',
-                  statusConfig.bgColor,
-                  statusConfig.borderColor,
+                  statusStyle.bgColor,
+                  statusStyle.borderColor,
                 )}
               >
-                {statusConfig.icon}
+                {statusStyle.icon}
                 <div className="flex-1">
-                  <p className={cn('text-sm font-semibold', statusConfig.textColor)}>
-                    Certificado {statusConfig.label}
+                  <p className={cn('text-sm font-semibold', statusStyle.textColor)}>
+                    {t('fiscal.cert.certificado', 'Certificado')} {statusLabels[certStatus]}
                   </p>
                   <p className="text-xs text-muted-foreground mt-0.5">
                     {certStatus === 'expired'
-                      ? 'Seu certificado esta expirado. Substitua-o para continuar emitindo documentos.'
+                      ? t('fiscal.cert.msgExpired', 'Seu certificado está expirado. Substitua-o para continuar emitindo documentos.')
                       : certStatus === 'expiring'
-                        ? `Seu certificado expira em ${certificate.daysUntilExpiry} dias. Considere renova-lo.`
-                        : `Valido por mais ${certificate.daysUntilExpiry} dias.`}
+                        ? t('fiscal.cert.msgExpiring', 'Seu certificado expira em {{days}} dias. Considere renová-lo.', { days: certificate.daysUntilExpiry })
+                        : t('fiscal.cert.msgValid', 'Válido por mais {{days}} dias.', { days: certificate.daysUntilExpiry })}
                   </p>
                 </div>
               </div>
@@ -314,7 +318,7 @@ export default function CertificateManager({ open, onClose }: CertificateManager
                 <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/30">
                   <Lock className="w-4 h-4 text-muted-foreground mt-0.5 shrink-0" />
                   <div>
-                    <p className="text-xs text-muted-foreground">Titular (Subject)</p>
+                    <p className="text-xs text-muted-foreground">{t('fiscal.cert.titular', 'Titular (Subject)')}</p>
                     <p className="text-sm font-medium text-foreground break-all">
                       {certificate.subject}
                     </p>
@@ -324,7 +328,7 @@ export default function CertificateManager({ open, onClose }: CertificateManager
                 <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/30">
                   <Shield className="w-4 h-4 text-muted-foreground mt-0.5 shrink-0" />
                   <div>
-                    <p className="text-xs text-muted-foreground">Numero de Serie</p>
+                    <p className="text-xs text-muted-foreground">{t('fiscal.cert.serialNumber', 'Número de Série')}</p>
                     <p className="text-sm font-mono font-medium text-foreground">
                       {certificate.serialNumber}
                     </p>
@@ -336,7 +340,7 @@ export default function CertificateManager({ open, onClose }: CertificateManager
                     <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/30">
                       <Calendar className="w-4 h-4 text-muted-foreground mt-0.5 shrink-0" />
                       <div>
-                        <p className="text-xs text-muted-foreground">Valido Desde</p>
+                        <p className="text-xs text-muted-foreground">{t('fiscal.cert.validFrom', 'Válido Desde')}</p>
                         <p className="text-sm font-medium text-foreground">
                           {formatCertDate(certificate.validFrom)}
                         </p>
@@ -346,8 +350,8 @@ export default function CertificateManager({ open, onClose }: CertificateManager
                   <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/30">
                     <Calendar className="w-4 h-4 text-muted-foreground mt-0.5 shrink-0" />
                     <div>
-                      <p className="text-xs text-muted-foreground">Valido Ate</p>
-                      <p className={cn('text-sm font-medium', statusConfig.textColor)}>
+                      <p className="text-xs text-muted-foreground">{t('fiscal.cert.validUntil', 'Válido Até')}</p>
+                      <p className={cn('text-sm font-medium', statusStyle.textColor)}>
                         {formatCertDate(certificate.expiresAt)}
                       </p>
                     </div>
@@ -358,15 +362,15 @@ export default function CertificateManager({ open, onClose }: CertificateManager
               {/* Expiry Progress */}
               <div>
                 <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs text-muted-foreground">Dias restantes</span>
-                  <span className={cn('text-xs font-semibold', statusConfig.textColor)}>
-                    {Math.max(0, certificate.daysUntilExpiry)} dias
+                  <span className="text-xs text-muted-foreground">{t('fiscal.cert.diasRestantes', 'Dias restantes')}</span>
+                  <span className={cn('text-xs font-semibold', statusStyle.textColor)}>
+                    {Math.max(0, certificate.daysUntilExpiry)} {t('fiscal.cert.dias', 'dias')}
                   </span>
                 </div>
                 <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
                   <motion.div
                     className="h-full rounded-full"
-                    style={{ backgroundColor: statusConfig.color }}
+                    style={{ backgroundColor: statusStyle.color }}
                     initial={{ width: 0 }}
                     animate={{
                       width: `${Math.min(100, Math.max(0, (certificate.daysUntilExpiry / 365) * 100))}%`,
@@ -391,7 +395,7 @@ export default function CertificateManager({ open, onClose }: CertificateManager
                   },
                 }}
               >
-                Substituir Certificado
+                {t('fiscal.cert.substituir', 'Substituir Certificado')}
               </Button>
             </motion.div>
           ) : (
@@ -430,7 +434,7 @@ export default function CertificateManager({ open, onClose }: CertificateManager
                     <div className="text-center">
                       <p className="text-sm font-medium text-foreground">{selectedFile.name}</p>
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        {(selectedFile.size / 1024).toFixed(1)} KB - Clique para alterar
+                        {(selectedFile.size / 1024).toFixed(1)} KB - {t('fiscal.cert.clickToChange', 'Clique para alterar')}
                       </p>
                     </div>
                   </>
@@ -441,10 +445,10 @@ export default function CertificateManager({ open, onClose }: CertificateManager
                     </div>
                     <div className="text-center">
                       <p className="text-sm font-medium text-foreground">
-                        Clique para selecionar o certificado
+                        {t('fiscal.cert.clickToSelect', 'Clique para selecionar o certificado')}
                       </p>
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        Formatos aceitos: .pfx, .p12 (max. 10MB)
+                        {t('fiscal.cert.formatsAccepted', 'Formatos aceitos: .pfx, .p12 (max. 10MB)')}
                       </p>
                     </div>
                   </>
@@ -453,13 +457,13 @@ export default function CertificateManager({ open, onClose }: CertificateManager
 
               {/* Password */}
               <TextField
-                label="Senha do Certificado"
+                label={t('fiscal.cert.senha', 'Senha do Certificado')}
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 fullWidth
                 size="small"
-                placeholder="Digite a senha do certificado PFX"
+                placeholder={t('fiscal.cert.senhaPlaceholder', 'Digite a senha do certificado PFX')}
                 disabled={isUploading}
               />
 
@@ -475,7 +479,7 @@ export default function CertificateManager({ open, onClose }: CertificateManager
                     disabled={isUploading}
                     sx={{ color: '#64748B', flex: 1 }}
                   >
-                    Voltar
+                    {t('fiscal.cert.voltar', 'Voltar')}
                   </Button>
                 )}
                 <Button
@@ -493,7 +497,7 @@ export default function CertificateManager({ open, onClose }: CertificateManager
                   {isUploading ? (
                     <CircularProgress size={20} sx={{ color: 'white' }} />
                   ) : (
-                    'Enviar e Validar'
+                    t('fiscal.cert.enviarValidar', 'Enviar e Validar')
                   )}
                 </Button>
               </div>
@@ -502,9 +506,7 @@ export default function CertificateManager({ open, onClose }: CertificateManager
               <div className="flex items-start gap-2 p-3 rounded-lg bg-blue-50 dark:bg-blue-500/10 border border-blue-100 dark:border-blue-500/20">
                 <Shield className="w-4 h-4 text-blue-500 mt-0.5 shrink-0" />
                 <p className="text-xs text-blue-700 dark:text-blue-400">
-                  O certificado digital A1 (e-CNPJ) e necessario para emissao de documentos
-                  fiscais eletronicos. O arquivo e a senha sao transmitidos de forma segura e
-                  criptografada.
+                  {t('fiscal.cert.infoNote', 'O certificado digital A1 (e-CNPJ) é necessário para emissão de documentos fiscais eletrônicos. O arquivo e a senha são transmitidos de forma segura e criptografada.')}
                 </p>
               </div>
             </motion.div>
@@ -520,11 +522,11 @@ export default function CertificateManager({ open, onClose }: CertificateManager
             onClick={handleRemove}
             sx={{ color: '#EF4444', mr: 'auto' }}
           >
-            Remover Certificado
+            {t('fiscal.cert.remover', 'Remover Certificado')}
           </Button>
         )}
         <Button onClick={onClose} disabled={isUploading} sx={{ color: '#64748B' }}>
-          Fechar
+          {t('fiscal.cert.fechar', 'Fechar')}
         </Button>
       </DialogActions>
     </Dialog>

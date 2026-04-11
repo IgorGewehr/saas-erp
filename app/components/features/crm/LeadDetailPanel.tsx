@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Chip } from '@mui/material';
 import {
   X, Edit3, Mail, Phone, Clock, MessageCircle, MessageSquare,
@@ -114,6 +115,7 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
   onSchedule: () => void;
   onOpenInbox: () => void;
 }) {
+  const { t } = useTranslation();
   const contactActivities = useMemo(
     () => activities
       .filter((a) => a.contactId === contact.id)
@@ -146,7 +148,7 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
       <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-100 dark:border-white/[0.06] shrink-0 bg-gradient-to-r from-white to-gray-50/50 dark:from-[#0a0e17] dark:to-[#0f1525]">
         <div className="flex items-center gap-2">
           <Brain size={16} className="text-red-500" />
-          <h2 className="font-display font-bold text-gray-900 dark:text-white text-sm">Perfil 360°</h2>
+          <h2 className="font-display font-bold text-gray-900 dark:text-white text-sm">{t('crm.detail.title360', 'Perfil 360°')}</h2>
         </div>
         <div className="flex items-center gap-1.5">
           <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={onEdit}
@@ -203,7 +205,7 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
             className="relative p-3.5 rounded-xl bg-gradient-to-br from-violet-500/5 to-blue-500/5 dark:from-violet-500/10 dark:to-blue-500/10 border border-violet-200/50 dark:border-violet-500/20">
             <div className="flex items-center gap-1.5 mb-2">
               <Sparkles size={12} className="text-violet-500" />
-              <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400 uppercase tracking-wider">Resumo IA</span>
+              <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400 uppercase tracking-wider">{t('crm.form.aiSummary', 'Resumo IA')}</span>
             </div>
             <p className="text-xs text-gray-700 dark:text-gray-300 leading-relaxed">{contact.aiSummary}</p>
           </motion.div>
@@ -217,7 +219,7 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
               <Zap size={13} className="text-amber-600 dark:text-amber-400" />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider mb-0.5">Próxima Ação</p>
+              <p className="text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider mb-0.5">{t('crm.detail.nextAction', 'Próxima Ação')}</p>
               <p className="text-xs font-medium text-gray-700 dark:text-gray-300">{contact.suggestedAction}</p>
             </div>
             <ArrowRight size={14} className="text-amber-400 shrink-0" />
@@ -227,18 +229,18 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
         {/* ── Scores ──────────────────────────────────────────── */}
         {scores && (
           <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
-            <SectionHeader icon={<BarChart3 size={11} />} label="Scores de Inteligência" />
+            <SectionHeader icon={<BarChart3 size={11} />} label={t('crm.detail.scoresTitle', 'Scores de Inteligência')} />
             <div className="p-3.5 rounded-xl bg-gray-50 dark:bg-white/[0.02] border border-gray-100 dark:border-white/[0.06]">
               <div className="flex items-center justify-around">
-                <ScoreRing value={scores.loyalty} label="Fidelidade" />
-                <ScoreRing value={scores.value} label="Valor" />
-                <ScoreRing value={scores.engagement} label="Engajamento" />
-                <ScoreRing value={scores.churnRisk} label="Risco Churn" />
-                <ScoreRing value={scores.overall} size={52} stroke={5} label="Geral" />
+                <ScoreRing value={scores.loyalty} label={t('crm.detail.scoreLoyalty', 'Fidelidade')} />
+                <ScoreRing value={scores.value} label={t('crm.detail.scoreValue', 'Valor')} />
+                <ScoreRing value={scores.engagement} label={t('crm.detail.scoreEngagement', 'Engajamento')} />
+                <ScoreRing value={scores.churnRisk} label={t('crm.detail.scoreChurn', 'Risco Churn')} />
+                <ScoreRing value={scores.overall} size={52} stroke={5} label={t('crm.detail.scoreOverall', 'Geral')} />
               </div>
               {scores.lastCalculatedAt && (
                 <p className="text-[9px] text-gray-400 dark:text-gray-600 text-center mt-2.5">
-                  Calculado {relativeTime(scores.lastCalculatedAt)}
+                  {t('crm.detail.calculated', 'Calculado')} {relativeTime(scores.lastCalculatedAt)}
                 </p>
               )}
             </div>
@@ -268,13 +270,13 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
           {contact.preferredChannel && (
             <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
               <Star size={12} className="text-amber-400 shrink-0" />
-              <span>Canal preferido: <strong className="capitalize">{contact.preferredChannel}</strong></span>
+              <span>{t('crm.detail.preferredChannel', 'Canal preferido')}: <strong className="capitalize">{contact.preferredChannel}</strong></span>
             </div>
           )}
           {contact.lastContactDate && (
             <div className="flex items-center gap-2 text-xs text-gray-400 dark:text-gray-500">
               <Clock size={12} className="shrink-0" />
-              <span>Último contato: {relativeTime(contact.lastContactDate)}</span>
+              <span>{t('crm.detail.lastContact', 'Último contato')}: {relativeTime(contact.lastContactDate)}</span>
             </div>
           )}
         </div>
@@ -282,44 +284,44 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
         {/* ── Relationship History ────────────────────────────── */}
         {rh && (Object.keys(rh).length > 0) && (
           <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }}>
-            <SectionHeader icon={<Heart size={11} />} label="Histórico de Relacionamento" />
+            <SectionHeader icon={<Heart size={11} />} label={t('crm.detail.relationshipHistory', 'Histórico de Relacionamento')} />
             <div className="p-3 rounded-xl bg-gray-50 dark:bg-white/[0.02] border border-gray-100 dark:border-white/[0.06] space-y-0.5">
               {rh.firstContactDate && (
-                <StatRow icon={<Calendar size={12} />} label="Cliente há" value={formatDaysSince(rh.firstContactDate)} />
+                <StatRow icon={<Calendar size={12} />} label={t('crm.detail.clientSince', 'Cliente há')} value={formatDaysSince(rh.firstContactDate)} />
               )}
               {rh.totalAppointments != null && (
-                <StatRow icon={<Target size={12} />} label="Agendamentos" value={`${rh.completedAppointments ?? 0} / ${rh.totalAppointments}`} />
+                <StatRow icon={<Target size={12} />} label={t('crm.detail.appointments', 'Agendamentos')} value={`${rh.completedAppointments ?? 0} / ${rh.totalAppointments}`} />
               )}
               {rh.attendanceRate != null && (
-                <StatRow icon={<UserCheck size={12} />} label="Taxa de comparecimento"
+                <StatRow icon={<UserCheck size={12} />} label={t('crm.detail.attendanceRate', 'Taxa de comparecimento')}
                   value={`${rh.attendanceRate}%`}
                   accent={rh.attendanceRate >= 80 ? 'text-emerald-600 dark:text-emerald-400' : rh.attendanceRate >= 50 ? 'text-amber-600 dark:text-amber-400' : 'text-red-600 dark:text-red-400'} />
               )}
               {rh.noShowCount != null && rh.noShowCount > 0 && (
-                <StatRow icon={<Ban size={12} />} label="Faltas" value={rh.noShowCount} accent="text-red-600 dark:text-red-400" />
+                <StatRow icon={<Ban size={12} />} label={t('crm.detail.noShows', 'Faltas')} value={rh.noShowCount} accent="text-red-600 dark:text-red-400" />
               )}
               {rh.cancelledAppointments != null && rh.cancelledAppointments > 0 && (
-                <StatRow icon={<X size={12} />} label="Cancelamentos" value={rh.cancelledAppointments} accent="text-orange-600 dark:text-orange-400" />
+                <StatRow icon={<X size={12} />} label={t('crm.detail.cancellations', 'Cancelamentos')} value={rh.cancelledAppointments} accent="text-orange-600 dark:text-orange-400" />
               )}
               {rh.avgDaysBetweenVisits != null && (
-                <StatRow icon={<Timer size={12} />} label="Intervalo médio" value={`${rh.avgDaysBetweenVisits} dias`} />
+                <StatRow icon={<Timer size={12} />} label={t('crm.detail.avgInterval', 'Intervalo médio')} value={`${rh.avgDaysBetweenVisits} ${t('crm.detail.days', 'dias')}`} />
               )}
               {rh.lastVisitDate && (
-                <StatRow icon={<Clock size={12} />} label="Última visita" value={formatDaysSince(rh.lastVisitDate)} />
+                <StatRow icon={<Clock size={12} />} label={t('crm.detail.lastVisit', 'Última visita')} value={formatDaysSince(rh.lastVisitDate)} />
               )}
               {rh.lastServiceName && (
-                <StatRow icon={<Zap size={12} />} label="Último serviço" value={rh.lastServiceName} />
+                <StatRow icon={<Zap size={12} />} label={t('crm.detail.lastService', 'Último serviço')} value={rh.lastServiceName} />
               )}
               {rh.totalSpent != null && (
-                <StatRow icon={<DollarSign size={12} />} label="Total gasto" value={formatCurrency(rh.totalSpent)}
+                <StatRow icon={<DollarSign size={12} />} label={t('crm.detail.totalSpent', 'Total gasto')} value={formatCurrency(rh.totalSpent)}
                   accent="text-emerald-600 dark:text-emerald-400" />
               )}
               {rh.avgTicket != null && (
-                <StatRow icon={<Hash size={12} />} label="Ticket médio" value={formatCurrency(rh.avgTicket)} />
+                <StatRow icon={<Hash size={12} />} label={t('crm.detail.avgTicket', 'Ticket médio')} value={formatCurrency(rh.avgTicket)} />
               )}
               {rh.servicesContracted && rh.servicesContracted.length > 0 && (
                 <div className="pt-2 mt-1 border-t border-gray-100 dark:border-white/[0.04]">
-                  <p className="text-[10px] font-medium text-gray-400 dark:text-gray-500 mb-1.5">Serviços contratados</p>
+                  <p className="text-[10px] font-medium text-gray-400 dark:text-gray-500 mb-1.5">{t('crm.detail.servicesContracted', 'Serviços contratados')}</p>
                   <div className="flex flex-wrap gap-1">
                     {rh.servicesContracted.map((s) => (
                       <span key={s} className="text-[10px] font-medium px-2 py-0.5 rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">{s}</span>
@@ -334,14 +336,14 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
         {/* ── Behavioral Insights ─────────────────────────────── */}
         {bi && (Object.keys(bi).length > 0) && (
           <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
-            <SectionHeader icon={<Eye size={11} />} label="Insights Comportamentais" />
+            <SectionHeader icon={<Eye size={11} />} label={t('crm.detail.behavioralInsights', 'Insights Comportamentais')} />
             <div className="p-3 rounded-xl bg-gray-50 dark:bg-white/[0.02] border border-gray-100 dark:border-white/[0.06] space-y-3">
 
               {/* Tone & Sensitivity */}
               <div className="flex items-center gap-3">
                 {bi.conversationTone && (
                   <div className="flex items-center gap-1.5">
-                    <span className="text-[10px] text-gray-400">Tom:</span>
+                    <span className="text-[10px] text-gray-400">{t('crm.detail.tone', 'Tom')}:</span>
                     <span className={cn('text-sm', TONE_CONFIG[bi.conversationTone].color)}>
                       {TONE_CONFIG[bi.conversationTone].emoji}
                     </span>
@@ -352,7 +354,7 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
                 )}
                 {bi.priceSensitivity && (
                   <div className="flex items-center gap-1.5">
-                    <span className="text-[10px] text-gray-400">Preço:</span>
+                    <span className="text-[10px] text-gray-400">{t('crm.detail.price', 'Preço')}:</span>
                     <span className={cn('text-[10px] font-semibold px-1.5 py-0.5 rounded-md', SENSITIVITY_CONFIG[bi.priceSensitivity].bg, SENSITIVITY_CONFIG[bi.priceSensitivity].color)}>
                       {SENSITIVITY_CONFIG[bi.priceSensitivity].label}
                     </span>
@@ -364,7 +366,7 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
               {bi.preferredProfessional && (
                 <div className="flex items-center gap-2 text-xs">
                   <UserCheck size={12} className="text-blue-400" />
-                  <span className="text-gray-500 dark:text-gray-400">Preferência:</span>
+                  <span className="text-gray-500 dark:text-gray-400">{t('crm.detail.preference', 'Preferência')}:</span>
                   <span className="font-semibold text-gray-800 dark:text-gray-200">&quot;{bi.preferredProfessional}&quot;</span>
                 </div>
               )}
@@ -372,7 +374,7 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
               {/* Preferred Times */}
               {bi.preferredTimes && bi.preferredTimes.length > 0 && (
                 <div>
-                  <p className="text-[10px] text-gray-400 dark:text-gray-500 mb-1">Horários preferidos</p>
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500 mb-1">{t('crm.detail.preferredTimes', 'Horários preferidos')}</p>
                   <div className="flex flex-wrap gap-1">
                     {bi.preferredTimes.map((t) => <InsightChip key={t} text={t} variant="positive" />)}
                   </div>
@@ -382,7 +384,7 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
               {/* Preferences */}
               {bi.preferences && bi.preferences.length > 0 && (
                 <div>
-                  <p className="text-[10px] text-gray-400 dark:text-gray-500 mb-1">Preferências mencionadas</p>
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500 mb-1">{t('crm.detail.preferencesMentioned', 'Preferências mencionadas')}</p>
                   <div className="flex flex-wrap gap-1">
                     {bi.preferences.map((p) => <InsightChip key={p} text={`"${p}"`} variant="neutral" />)}
                   </div>
@@ -393,7 +395,7 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
               {bi.recurringObjections && bi.recurringObjections.length > 0 && (
                 <div>
                   <p className="text-[10px] text-gray-400 dark:text-gray-500 mb-1 flex items-center gap-1">
-                    <ThumbsDown size={10} /> Objeções recorrentes
+                    <ThumbsDown size={10} /> {t('crm.detail.recurringObjections', 'Objeções recorrentes')}
                   </p>
                   <div className="flex flex-wrap gap-1">
                     {bi.recurringObjections.map((o) => <InsightChip key={o} text={`"${o}"`} variant="warning" />)}
@@ -405,7 +407,7 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
               {bi.cancellationReasons && bi.cancellationReasons.length > 0 && (
                 <div>
                   <p className="text-[10px] text-gray-400 dark:text-gray-500 mb-1 flex items-center gap-1">
-                    <Ban size={10} /> Motivos de cancelamento
+                    <Ban size={10} /> {t('crm.detail.cancellationReasons', 'Motivos de cancelamento')}
                   </p>
                   <div className="flex flex-wrap gap-1">
                     {bi.cancellationReasons.map((r) => <InsightChip key={r} text={r} variant="negative" />)}
@@ -417,7 +419,7 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
               {bi.uncontractedServices && bi.uncontractedServices.length > 0 && (
                 <div>
                   <p className="text-[10px] text-gray-400 dark:text-gray-500 mb-1 flex items-center gap-1">
-                    <Eye size={10} /> Perguntou mas não contratou
+                    <Eye size={10} /> {t('crm.detail.uncontractedServices', 'Perguntou mas não contratou')}
                   </p>
                   <div className="flex flex-wrap gap-1">
                     {bi.uncontractedServices.map((s) => <InsightChip key={s} text={s} variant="warning" />)}
@@ -429,7 +431,7 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
               {bi.inquiredButNotBooked && bi.inquiredButNotBooked.length > 0 && (
                 <div>
                   <p className="text-[10px] text-gray-400 dark:text-gray-500 mb-1 flex items-center gap-1">
-                    <Clock size={10} /> Horários perguntados mas nunca fechou
+                    <Clock size={10} /> {t('crm.detail.inquiredButNotBooked', 'Horários perguntados mas nunca fechou')}
                   </p>
                   <div className="flex flex-wrap gap-1">
                     {bi.inquiredButNotBooked.map((h) => <InsightChip key={h} text={h} variant="neutral" />)}
@@ -442,23 +444,23 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
 
         {/* ── Quick Actions ───────────────────────────────────── */}
         <div className="space-y-2">
-          <SectionHeader icon={<Zap size={11} />} label="Ações Rápidas" />
+          <SectionHeader icon={<Zap size={11} />} label={t('crm.detail.quickActions', 'Ações Rápidas')} />
           <div className="grid grid-cols-2 gap-2">
             <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={onSchedule}
               className="flex items-center gap-2 px-3 py-2.5 bg-white dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-xl text-xs font-semibold text-gray-700 dark:text-gray-300 hover:border-red-300 dark:hover:border-red-500/40 hover:text-red-600 dark:hover:text-red-400 transition-all">
-              <CalendarPlus size={14} /> Agendar
+              <CalendarPlus size={14} /> {t('crm.detail.schedule', 'Agendar')}
             </motion.button>
             <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={onOpenInbox}
               className="flex items-center gap-2 px-3 py-2.5 bg-white dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-xl text-xs font-semibold text-gray-700 dark:text-gray-300 hover:border-emerald-300 dark:hover:border-emerald-500/40 hover:text-emerald-600 dark:hover:text-emerald-400 transition-all">
-              <MessageSquare size={14} /> Mensagem
+              <MessageSquare size={14} /> {t('crm.detail.message', 'Mensagem')}
             </motion.button>
             <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={onSchedule}
               className="flex items-center gap-2 px-3 py-2.5 bg-white dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-xl text-xs font-semibold text-gray-700 dark:text-gray-300 hover:border-blue-300 dark:hover:border-blue-500/40 hover:text-blue-600 dark:hover:text-blue-400 transition-all">
-              <Calendar size={14} /> Consulta
+              <Calendar size={14} /> {t('crm.detail.consultation', 'Consulta')}
             </motion.button>
             <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={onDelete}
               className="flex items-center gap-2 px-3 py-2.5 bg-white dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-xl text-xs font-semibold text-gray-700 dark:text-gray-300 hover:border-red-300 dark:hover:border-red-500/40 hover:text-red-600 dark:hover:text-red-400 transition-all">
-              <Trash2 size={14} /> Excluir
+              <Trash2 size={14} /> {t('crm.action.delete', 'Excluir')}
             </motion.button>
           </div>
         </div>
@@ -469,7 +471,7 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
         {/* ── Notes ───────────────────────────────────────────── */}
         {contact.notes && (
           <div className="space-y-1.5">
-            <p className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">Observações</p>
+            <p className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">{t('crm.form.notes', 'Observações')}</p>
             <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed bg-gray-50 dark:bg-white/[0.02] rounded-xl p-3 border border-gray-100 dark:border-white/[0.06]">
               {contact.notes}
             </p>
@@ -478,11 +480,11 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
 
         {/* ── Activity Timeline ───────────────────────────────── */}
         <div className="space-y-2">
-          <SectionHeader icon={<Activity size={11} />} label="Atividades Recentes" />
+          <SectionHeader icon={<Activity size={11} />} label={t('crm.detail.recentActivities', 'Atividades Recentes')} />
           {contactActivities.length === 0 ? (
             <div className="text-center py-6 text-gray-300 dark:text-gray-600">
               <Activity size={20} className="mx-auto mb-1.5" />
-              <p className="text-[11px]">Nenhuma atividade registrada</p>
+              <p className="text-[11px]">{t('crm.tab.noActivity', 'Nenhuma atividade registrada')}</p>
             </div>
           ) : (
             <div className="space-y-2">

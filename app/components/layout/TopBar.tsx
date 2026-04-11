@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
+import { useTranslation } from 'react-i18next';
 import { getInitials, formatCurrency } from '@/lib/utils/format';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
@@ -41,11 +42,11 @@ interface TopBarProps {
 
 // ─── Presence helpers ─────────────────────────────────
 
-const STATUS_CFG: Record<UserStatus, { label: string; dot: string; text: string; bg: string }> = {
-  online:    { label: 'Online',    dot: 'bg-emerald-400', text: 'text-emerald-700 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
-  busy:      { label: 'Ocupado',   dot: 'bg-amber-400',   text: 'text-amber-700 dark:text-amber-400',     bg: 'bg-amber-50 dark:bg-amber-500/10'     },
-  invisible: { label: 'Invisível', dot: 'bg-gray-400',    text: 'text-gray-500 dark:text-gray-400',       bg: 'bg-gray-100 dark:bg-gray-700/40'      },
-  offline:   { label: 'Offline',   dot: 'bg-gray-400',    text: 'text-gray-500 dark:text-gray-400',       bg: 'bg-gray-100 dark:bg-gray-700/40'      },
+const STATUS_STYLE: Record<UserStatus, { dot: string; text: string; bg: string }> = {
+  online:    { dot: 'bg-emerald-400', text: 'text-emerald-700 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
+  busy:      { dot: 'bg-amber-400',   text: 'text-amber-700 dark:text-amber-400',     bg: 'bg-amber-50 dark:bg-amber-500/10'     },
+  invisible: { dot: 'bg-gray-400',    text: 'text-gray-500 dark:text-gray-400',       bg: 'bg-gray-100 dark:bg-gray-700/40'      },
+  offline:   { dot: 'bg-gray-400',    text: 'text-gray-500 dark:text-gray-400',       bg: 'bg-gray-100 dark:bg-gray-700/40'      },
 };
 
 // Returns the visible display status for a member (invisible = appears offline)
@@ -60,18 +61,19 @@ function isOnline(member: UserType): boolean {
   return getMemberDisplayStatus(member) !== 'offline';
 }
 
-function relativeTime(dateStr?: string | null): string {
-  if (!dateStr) return 'Nunca';
+function relativeTime(dateStr?: string | null, t?: (key: string, opts?: Record<string, unknown>) => string): string {
+  if (!dateStr) return t ? t('settings.users.never') : 'Nunca';
   const diff = Date.now() - new Date(dateStr).getTime();
-  if (diff < 60_000)         return 'Agora mesmo';
-  if (diff < 3_600_000)      return `${Math.floor(diff / 60_000)}min atrás`;
-  if (diff < 86_400_000)     return `${Math.floor(diff / 3_600_000)}h atrás`;
-  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)}d atrás`;
-  return new Date(dateStr).toLocaleDateString('pt-BR');
+  if (diff < 60_000)         return t ? t('settings.users.justNow') : 'Agora mesmo';
+  if (diff < 3_600_000)      return t ? t('settings.users.minsAgo', { mins: Math.floor(diff / 60_000) }) : `${Math.floor(diff / 60_000)}min atrás`;
+  if (diff < 86_400_000)     return t ? t('settings.users.hoursAgo', { hours: Math.floor(diff / 3_600_000) }) : `${Math.floor(diff / 3_600_000)}h atrás`;
+  if (diff < 7 * 86_400_000) return t ? t('settings.users.daysAgo', { days: Math.floor(diff / 86_400_000) }) : `${Math.floor(diff / 86_400_000)}d atrás`;
+  return new Date(dateStr).toLocaleDateString();
 }
 
 // ─── Team Presence Panel ──────────────────────────────
 function TeamPresencePanel() {
+  const { t } = useTranslation();
   const { user, business } = useAuth();
   const [open, setOpen]       = useState(false);
   const [members, setMembers] = useState<UserType[]>([]);
@@ -110,7 +112,7 @@ function TeamPresencePanel() {
     <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen(!open)}
-        title="Equipe online"
+        title={t('topbar.teamOnline')}
         className={cn(
           'relative flex items-center gap-1.5 h-9 px-2.5 rounded-xl',
           'text-gray-500 dark:text-gray-400 transition-all duration-150 active:scale-95',
@@ -162,16 +164,16 @@ function TeamPresencePanel() {
             <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-700/50">
               <div className="flex items-center gap-2">
                 <Users className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
-                <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-200">Equipe</span>
+                <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-200">{t('topbar.team')}</span>
               </div>
               <div className="flex items-center gap-1.5">
                 {onlineCount > 0 ? (
                   <span className="flex items-center gap-1 text-[11.5px] font-medium text-emerald-600 dark:text-emerald-400">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                    {onlineCount} online
+                    {onlineCount} {t('topbar.online')}
                   </span>
                 ) : (
-                  <span className="text-[11.5px] text-gray-400 dark:text-gray-500">Ninguém online</span>
+                  <span className="text-[11.5px] text-gray-400 dark:text-gray-500">{t('topbar.noOneOnline')}</span>
                 )}
               </div>
             </div>
@@ -180,7 +182,7 @@ function TeamPresencePanel() {
             <div className="max-h-[320px] overflow-y-auto" style={{ scrollbarWidth: 'thin' }}>
               {members.length === 0 ? (
                 <div className="py-8 text-center text-[13px] text-gray-400 dark:text-gray-500">
-                  Carregando equipe...
+                  {t('topbar.loadingTeam')}
                 </div>
               ) : (
                 <div className="p-1.5 space-y-0.5">
@@ -220,7 +222,7 @@ function TeamPresencePanel() {
                         <div className="flex-1 min-w-0">
                           <p className="text-[13px] font-medium text-gray-800 dark:text-gray-100 truncate leading-tight">
                             {member.name}
-                            {isSelf && <span className="text-gray-400 dark:text-gray-500 font-normal text-[11px]"> · você</span>}
+                            {isSelf && <span className="text-gray-400 dark:text-gray-500 font-normal text-[11px]"> · {t('topbar.you')}</span>}
                           </p>
                           {(() => {
                             const ms = getMemberDisplayStatus(member);
@@ -229,20 +231,20 @@ function TeamPresencePanel() {
                                 {ms === 'online' && (
                                   <>
                                     <Wifi className="w-2.5 h-2.5 text-emerald-500 flex-shrink-0" />
-                                    <span className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400">Online agora</span>
+                                    <span className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400">{t('topbar.onlineNow')}</span>
                                   </>
                                 )}
                                 {ms === 'busy' && (
                                   <>
                                     <Clock className="w-2.5 h-2.5 text-amber-500 flex-shrink-0" />
-                                    <span className="text-[11px] font-medium text-amber-600 dark:text-amber-400">Ocupado</span>
+                                    <span className="text-[11px] font-medium text-amber-600 dark:text-amber-400">{t('topbar.busy')}</span>
                                   </>
                                 )}
                                 {ms === 'offline' && (
                                   <>
                                     <Clock className="w-2.5 h-2.5 text-gray-400 dark:text-gray-500 flex-shrink-0" />
                                     <span className="text-[11px] text-gray-400 dark:text-gray-500 truncate">
-                                      {relativeTime(lastSeen)}
+                                      {relativeTime(lastSeen, t)}
                                     </span>
                                   </>
                                 )}
@@ -261,7 +263,7 @@ function TeamPresencePanel() {
                                 : ms === 'busy' ? 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400'
                                 : 'bg-gray-100 dark:bg-gray-700/50 text-gray-500 dark:text-gray-400'
                             )}>
-                              {ms === 'online' ? 'Online' : ms === 'busy' ? 'Ocupado' : 'Offline'}
+                              {ms === 'online' ? t('topbar.statusOnline') : ms === 'busy' ? t('topbar.statusBusy') : t('topbar.statusOffline')}
                             </div>
                           );
                         })()}
@@ -275,7 +277,7 @@ function TeamPresencePanel() {
             {/* Footer note */}
             <div className="px-4 py-2.5 border-t border-gray-100 dark:border-gray-700/50 bg-gray-50/50 dark:bg-white/[0.01]">
               <p className="text-[10.5px] text-gray-400 dark:text-gray-500 text-center">
-                Atualiza em tempo real · presença detectada automaticamente
+                {t('topbar.realTimeUpdate')}
               </p>
             </div>
           </motion.div>
@@ -287,6 +289,7 @@ function TeamPresencePanel() {
 
 // ─── Theme Toggle ─────────────────────────────────────
 function ThemeToggle() {
+  const { t } = useTranslation();
   const { isDark, setMode } = useTheme();
 
   const toggle = () => setMode(isDark ? 'light' : 'dark');
@@ -300,7 +303,7 @@ function ThemeToggle() {
         'hover:bg-gray-100 dark:hover:bg-white/[0.06]',
         'transition-all duration-150 active:scale-95',
       )}
-      title={isDark ? 'Modo claro' : 'Modo escuro'}
+      title={isDark ? t('topbar.lightMode') : t('topbar.darkMode')}
     >
       <AnimatePresence mode="wait" initial={false}>
         {isDark ? (
@@ -341,6 +344,7 @@ interface SearchResult {
 
 // ─── TopBar ───────────────────────────────────────────
 export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) {
+  const { t } = useTranslation();
   const { user, business, signOut, updateUserProfile } = useAuth();
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [isStatusOpen, setIsStatusOpen]     = useState(false);
@@ -352,7 +356,14 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
   const searchBoxRef = useRef<HTMLDivElement>(null);
 
   const currentStatus = (user?.userStatus || 'online') as UserStatus;
-  const statusCfg = STATUS_CFG[currentStatus];
+  const statusCfg = STATUS_STYLE[currentStatus];
+
+  const STATUS_CFG = useMemo(() => ({
+    online:    { label: t('topbar.statusOnline'),    ...STATUS_STYLE.online    },
+    busy:      { label: t('topbar.statusBusy'),      ...STATUS_STYLE.busy      },
+    invisible: { label: t('topbar.statusInvisible'), ...STATUS_STYLE.invisible },
+    offline:   { label: t('topbar.statusOffline'),   ...STATUS_STYLE.offline   },
+  }), [t]);
 
   const handleSetStatus = async (status: UserStatus) => {
     setIsStatusOpen(false);
@@ -520,7 +531,7 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
               <input
                 ref={searchRef}
                 type="text"
-                placeholder="Buscar clientes, produtos, agendamentos..."
+                placeholder={t('topbar.searchPlaceholder')}
                 value={searchValue}
                 onChange={(e) => { setSearchValue(e.target.value); setShowResults(true); }}
                 onFocus={() => { setIsFocused(true); setShowResults(true); }}
@@ -564,17 +575,17 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
                     <div className="py-8 px-4 text-center">
                       <Search className="w-8 h-8 text-gray-300 dark:text-gray-600 mx-auto mb-2" />
                       <p className="text-sm text-gray-400 dark:text-gray-500">
-                        Nenhum resultado para &quot;{searchValue}&quot;
+                        {t('topbar.noResults')} &quot;{searchValue}&quot;
                       </p>
                       <p className="text-xs text-gray-300 dark:text-gray-600 mt-1">
-                        Busque por clientes, produtos, agendamentos ou contatos
+                        {t('topbar.searchHint')}
                       </p>
                     </div>
                   ) : (
                     <>
                       <div className="px-3 py-2 border-b border-gray-100 dark:border-gray-700/50">
                         <span className="text-[11px] font-medium text-gray-400 dark:text-gray-500">
-                          {searchResults.length} resultado{searchResults.length !== 1 ? 's' : ''}
+                          {t('topbar.results', { count: searchResults.length })}
                         </span>
                       </div>
                       <div className="max-h-[340px] overflow-y-auto p-1.5" style={{ scrollbarWidth: 'thin' }}>
@@ -586,7 +597,7 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
                             appointment: 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400',
                             contact: 'bg-purple-50 dark:bg-purple-500/10 text-purple-600 dark:text-purple-400',
                           };
-                          const typeLabels = { client: 'Cliente', product: 'Produto', appointment: 'Agendamento', contact: 'Contato CRM' };
+                          const typeLabels = { client: t('topbar.typeClient'), product: t('topbar.typeProduct'), appointment: t('topbar.typeAppointment'), contact: t('topbar.typeContact') };
                           return (
                             <button
                               key={`${result.type}-${result.id}`}
@@ -609,7 +620,7 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
                       </div>
                       <div className="px-3 py-2 border-t border-gray-100 dark:border-gray-700/50 bg-gray-50/50 dark:bg-white/[0.01]">
                         <p className="text-[10px] text-gray-400 dark:text-gray-500 text-center">
-                          Pressione Enter para navegar · Esc para fechar
+                          {t('topbar.pressEnter')}
                         </p>
                       </div>
                     </>
@@ -637,7 +648,7 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
               'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/[0.06]',
               'transition-all duration-150 active:scale-95'
             )}
-            title={unreadCount > 0 ? `${unreadCount} mensagen${unreadCount !== 1 ? 's' : ''} nao lida${unreadCount !== 1 ? 's' : ''}` : 'Notificacoes'}
+            title={unreadCount > 0 ? t('topbar.unreadMessages', { count: unreadCount }) : t('topbar.notifications')}
           >
             <Bell className="w-[17px] h-[17px]" />
             {unreadCount > 0 && (
@@ -725,7 +736,7 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
                         )}
                       >
                         <div className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0', statusCfg.dot)} />
-                        <span className={cn('text-[11px] font-medium flex-1 text-left', statusCfg.text)}>{statusCfg.label}</span>
+                        <span className={cn('text-[11px] font-medium flex-1 text-left', statusCfg.text)}>{STATUS_CFG[currentStatus].label}</span>
                         <ChevronDown className={cn('w-3 h-3 transition-transform duration-200', statusCfg.text, isStatusOpen && 'rotate-180')} />
                       </button>
                       <AnimatePresence>
@@ -761,8 +772,8 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
 
                   <div className="p-1.5 space-y-0.5">
                     {[
-                      { icon: UserIcon, label: 'Meu Perfil',    page: 'Configurações' as MenuPage },
-                      { icon: Settings, label: 'Configurações', page: 'Configurações' as MenuPage },
+                      { icon: UserIcon, label: t('topbar.myProfile'),  page: 'Configurações' as MenuPage },
+                      { icon: Settings, label: t('topbar.settings'),   page: 'Configurações' as MenuPage },
                     ].map(({ icon: Icon, label, page }) => (
                       <button
                         key={label}
@@ -781,7 +792,7 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
                       className="group flex items-center gap-3 w-full px-3 py-2 rounded-xl text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/[0.08] transition-colors duration-150"
                     >
                       <LogOut className="w-4 h-4 group-hover:translate-x-0.5 transition-transform duration-150" />
-                      Sair da conta
+                      {t('topbar.signOut')}
                     </button>
                   </div>
                 </motion.div>

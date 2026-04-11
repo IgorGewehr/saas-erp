@@ -232,8 +232,13 @@ const STATUS_OPTIONS: { value: UserStatus; label: string; dot: string; text: str
   { value: 'offline',   label: 'Offline',   dot: 'bg-gray-400',    text: 'text-gray-600 dark:text-gray-400',       bg: 'bg-gray-100 dark:bg-gray-700/40'      },
 ];
 
+const LANGUAGE_OPTIONS = [
+  { value: 'pt-BR', label: 'Português (Brasil)', flag: '🇧🇷' },
+  { value: 'en-US', label: 'English (US)',        flag: '🇺🇸' },
+];
+
 function ProfileTab() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { user, business, updateUserProfile } = useAuth();
   const [isSaving, setIsSaving]                 = useState(false);
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
@@ -280,7 +285,15 @@ function ProfileTab() {
     return slots;
   }, []);
 
-  const DAY_NAMES = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
+  const DAY_NAMES = [
+    t('settings.profile.days.sunday',    'Domingo'),
+    t('settings.profile.days.monday',    'Segunda'),
+    t('settings.profile.days.tuesday',   'Terça'),
+    t('settings.profile.days.wednesday', 'Quarta'),
+    t('settings.profile.days.thursday',  'Quinta'),
+    t('settings.profile.days.friday',    'Sexta'),
+    t('settings.profile.days.saturday',  'Sábado'),
+  ];
 
   useEffect(() => {
     if (user) {
@@ -497,9 +510,39 @@ function ProfileTab() {
           {currentStatus === 'invisible' && (
             <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
               <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-              No modo invisível, você aparecerá como offline para os outros membros.
+              {t('settings.profile.invisibleWarning', 'No modo invisível, você aparecerá como offline para os outros membros.')}
             </p>
           )}
+        </div>
+      </SectionCard>
+
+      {/* Language */}
+      <SectionCard title={t('settings.profile.languageTitle', 'Idioma')} icon={Globe}>
+        <div className="space-y-3">
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            {t('settings.profile.languageDesc', 'Escolha o idioma da interface do sistema.')}
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {LANGUAGE_OPTIONS.map((opt) => {
+              const isActive = i18n.language === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  onClick={() => i18n.changeLanguage(opt.value)}
+                  className={cn(
+                    'flex items-center gap-3 px-4 py-3 rounded-xl border transition-all duration-200 text-left',
+                    isActive
+                      ? 'bg-red-50 dark:bg-red-500/10 border-red-300 dark:border-red-500/40 text-red-700 dark:text-red-400 shadow-sm'
+                      : 'border-gray-200 dark:border-gray-700/50 bg-white dark:bg-white/[0.03] text-gray-600 dark:text-gray-400 hover:border-gray-300 dark:hover:border-gray-600'
+                  )}
+                >
+                  <span className="text-xl leading-none">{opt.flag}</span>
+                  <span className="text-sm font-medium flex-1">{opt.label}</span>
+                  {isActive && <Check className="w-4 h-4 flex-shrink-0" />}
+                </button>
+              );
+            })}
+          </div>
         </div>
       </SectionCard>
 
@@ -649,7 +692,7 @@ function ProfileTab() {
       <SectionCard title={t('settings.profile.workingHours', 'Horários de Trabalho')} icon={Calendar}>
         <div className="space-y-3">
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            Configure seus horários de disponibilidade para cada dia da semana.
+            {t('settings.profile.workingHoursDesc', 'Configure seus horários de disponibilidade para cada dia da semana.')}
           </p>
 
           <div className="space-y-2">
@@ -720,7 +763,7 @@ function ProfileTab() {
                     </div>
                   ) : (
                     <span className="text-xs text-gray-400 dark:text-gray-500 italic">
-                      Indisponível
+                      {t('settings.profile.unavailable', 'Indisponível')}
                     </span>
                   )}
                 </div>
@@ -2418,10 +2461,10 @@ function IntegrationRow({
             {isConnected ? (
               <span className="flex items-center gap-1 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                Conectado
+                {t('settings.enterprise.integrationStatusConnected', 'Conectado')}
               </span>
             ) : (
-              <span className="text-[10px] font-medium text-gray-400 dark:text-gray-500">Não configurado</span>
+              <span className="text-[10px] font-medium text-gray-400 dark:text-gray-500">{t('settings.enterprise.integrationStatusNotConfigured', 'Não configurado')}</span>
             )}
           </div>
           <p className="text-[12px] text-gray-400 dark:text-gray-500 truncate">{provider.description}</p>
@@ -2971,11 +3014,12 @@ function SectorsTab() {
 }
 
 function StatusBadge({ status }: { status: IntegrationStatus }) {
+  const { t } = useTranslation();
   const cfg = {
-    connected: { label: 'Conectado', className: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' },
-    disconnected: { label: 'Desconectado', className: 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400' },
-    error: { label: 'Erro', className: 'bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-400' },
-    pending: { label: 'Pendente', className: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400' },
+    connected:    { label: t('settings.enterprise.integrationStatusConnected', 'Conectado'),    className: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' },
+    disconnected: { label: t('settings.enterprise.statusDisconnected',         'Desconectado'), className: 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400' },
+    error:        { label: t('settings.enterprise.statusError',                'Erro'),         className: 'bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-400' },
+    pending:      { label: t('settings.enterprise.statusPending',              'Pendente'),     className: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400' },
   };
   const c = cfg[status];
   return <span className={cn('text-[10px] font-semibold px-2 py-0.5 rounded-full', c.className)}>{c.label}</span>;
@@ -3882,9 +3926,9 @@ function CanaisTab() {
               <MessageCircle className="w-6 h-6 text-white" />
             </div>
             <div>
-              <h3 className="text-lg font-bold text-gray-900 dark:text-white font-display">Canais de Comunicacao</h3>
+              <h3 className="text-lg font-bold text-gray-900 dark:text-white font-display">{t('settings.channelsTab.title', 'Canais de Comunicação')}</h3>
               <p className="text-sm text-gray-600 dark:text-gray-400 mt-1 max-w-md">
-                Conecte cada canal individualmente para centralizar o atendimento ao cliente.
+                {t('settings.channelsTab.description', 'Conecte cada canal individualmente para centralizar o atendimento ao cliente.')}
               </p>
             </div>
           </div>
@@ -3918,7 +3962,7 @@ function CanaisTab() {
           <div className="flex-1 min-w-0">
             <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">{t('settings.channelsTab.attention', 'Conexão precisa de atenção')}</p>
             <p className="text-xs text-amber-700/80 dark:text-amber-400/70 mt-0.5 leading-relaxed">
-              Sua conexao com o Meta expirou ou esta incompleta. Clique em <strong>Reconectar</strong> no canal afetado para garantir o envio de mensagens.
+              <span dangerouslySetInnerHTML={{ __html: t('settings.channelsTab.attentionDesc', 'Sua conexão com o Meta expirou ou está incompleta. Clique em <strong>Reconectar</strong> no canal afetado para garantir o envio de mensagens.') }} />
             </p>
           </div>
         </motion.div>
@@ -3941,17 +3985,17 @@ function CanaisTab() {
                 <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">Facebook Messenger</span>
                 {fbConnected && !needsAttention && (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20">
-                    <Check className="w-2.5 h-2.5" /> Conectado
+                    <Check className="w-2.5 h-2.5" /> {t('settings.channelsTab.connected', 'Conectado')}
                   </span>
                 )}
                 {fbConnected && needsAttention && (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-500/20">
-                    <AlertTriangle className="w-2.5 h-2.5" /> Requer atencao
+                    <AlertTriangle className="w-2.5 h-2.5" /> {t('settings.channelsTab.requiresAttention', 'Requer atenção')}
                   </span>
                 )}
               </div>
               {fbConnected && fbPageName ? (
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Pagina: {fbPageName}</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{t('settings.channelsTab.page', 'Página')}: {fbPageName}</p>
               ) : (
                 <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{t('settings.channelsTab.fbDesc', 'Receba e responda mensagens do Messenger')}</p>
               )}
@@ -3980,7 +4024,7 @@ function CanaisTab() {
               disabled={disconnecting === 'facebook'}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
             >
-              {disconnecting === 'facebook' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Desconectar'}
+              {disconnecting === 'facebook' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : t('settings.channelsTab.disconnect', 'Desconectar')}
             </button>
           ) : (
             <button
@@ -4019,16 +4063,16 @@ function CanaisTab() {
                 <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">Instagram Direct</span>
                 {igConnected ? (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20">
-                    <Check className="w-2.5 h-2.5" /> Conectado
+                    <Check className="w-2.5 h-2.5" /> {t('settings.channelsTab.connected', 'Conectado')}
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-gray-100 dark:bg-white/[0.06] text-gray-500 dark:text-gray-400">
-                    Nao conectado
+                    {t('settings.channelsTab.notConnected', 'Não conectado')}
                   </span>
                 )}
               </div>
               {igConnected && igAccountName ? (
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Conta: {igAccountName}</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{t('settings.channelsTab.account', 'Conta')}: {igAccountName}</p>
               ) : (
                 <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{t('settings.channelsTab.igDesc', 'DMs e comentários do Instagram')}</p>
               )}
@@ -4040,7 +4084,7 @@ function CanaisTab() {
               disabled={disconnecting === 'instagram'}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
             >
-              {disconnecting === 'instagram' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Desconectar'}
+              {disconnecting === 'instagram' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : t('settings.channelsTab.disconnect', 'Desconectar')}
             </button>
           ) : (
             <button
@@ -4087,7 +4131,7 @@ function CanaisTab() {
                         <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">Cloud API</span>
                         {isCloudApi && (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20">
-                            <Check className="w-2.5 h-2.5" /> Conectado
+                            <Check className="w-2.5 h-2.5" /> {t('settings.channelsTab.connected', 'Conectado')}
                           </span>
                         )}
                       </div>
@@ -4104,7 +4148,7 @@ function CanaisTab() {
                       disabled={disconnecting === 'whatsapp'}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
                     >
-                      {disconnecting === 'whatsapp' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Desconectar'}
+                      {disconnecting === 'whatsapp' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : t('settings.channelsTab.disconnect', 'Desconectar')}
                     </button>
                   )}
                 </div>
@@ -4146,7 +4190,7 @@ function CanaisTab() {
                         <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-[#25D366]/10 text-[#25D366]">{t('settings.channelsTab.qrCode', 'QR Code')}</span>
                         {isBaileys && (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20">
-                            <Check className="w-2.5 h-2.5" /> Conectado
+                            <Check className="w-2.5 h-2.5" /> {t('settings.channelsTab.connected', 'Conectado')}
                           </span>
                         )}
                       </div>
@@ -4163,7 +4207,7 @@ function CanaisTab() {
                       disabled={disconnecting === 'whatsapp'}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
                     >
-                      {disconnecting === 'whatsapp' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Desconectar'}
+                      {disconnecting === 'whatsapp' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : t('settings.channelsTab.disconnect', 'Desconectar')}
                     </button>
                   )}
                 </div>
@@ -4419,13 +4463,12 @@ export default function SettingsModule() {
   const [activeTab, setActiveTab] = useState<Tab>('perfil');
 
   const allTabs = [
-    { id: 'perfil'     as Tab, label: 'Meu Perfil',  icon: UserCircle },
-    { id: 'empresa'    as Tab, label: 'Empresa',     icon: Building2  },
-    { id: 'fiscal'     as Tab, label: 'Fiscal',      icon: FileText   },
-    { id: 'usuarios'   as Tab, label: 'Usuários',    icon: Users      },
-    { id: 'setores'    as Tab, label: 'Setores',     icon: Layers     },
-
-    { id: 'canais'     as Tab, label: 'Canais',      icon: Plug2      },
+    { id: 'perfil'     as Tab, label: t('settings.tabs.perfil',   'Meu Perfil'), icon: UserCircle },
+    { id: 'empresa'    as Tab, label: t('settings.tabs.empresa',  'Empresa'),    icon: Building2  },
+    { id: 'fiscal'     as Tab, label: t('settings.tabs.fiscal',   'Fiscal'),     icon: FileText   },
+    { id: 'usuarios'   as Tab, label: t('settings.tabs.usuarios', 'Usuários'),   icon: Users      },
+    { id: 'setores'    as Tab, label: t('settings.tabs.setores',  'Setores'),    icon: Layers     },
+    { id: 'canais'     as Tab, label: t('settings.tabs.canais',   'Canais'),     icon: Plug2      },
   ];
 
   const tabs = isAdmin ? allTabs : allTabs.filter(t => t.id === 'perfil');
@@ -4444,9 +4487,9 @@ export default function SettingsModule() {
             <Building2 className="w-5 h-5 text-red-500 dark:text-red-400" />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100 font-display">Configurações</h2>
+            <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100 font-display">{t('settings.title', 'Configurações')}</h2>
             <p className="text-sm text-gray-500 dark:text-gray-400">
-              {isAdmin ? 'Gerencie os dados da empresa, configurações fiscais e equipe' : 'Gerencie seu perfil pessoal'}
+              {isAdmin ? t('settings.descAdmin', 'Gerencie os dados da empresa, configurações fiscais e equipe') : t('settings.descUser', 'Gerencie seu perfil pessoal')}
             </p>
           </div>
         </div>

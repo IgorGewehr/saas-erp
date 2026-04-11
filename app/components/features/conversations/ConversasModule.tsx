@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useTranslation } from 'react-i18next';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -70,9 +71,9 @@ import { ROLE_HIERARCHY } from '@/lib/types';
 
 // ─── Timestamp helpers ───────────────────────────────────────────────────────
 
-function relativeTime(isoStr: string): string {
+function relativeTime(isoStr: string, t?: (key: string, fallback: string) => string): string {
   const diff = Date.now() - new Date(isoStr).getTime();
-  if (diff < 60_000) return 'agora';
+  if (diff < 60_000) return t ? t('conversations.timeNow', 'agora') : 'agora';
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}min`;
   const now = new Date();
   const date = new Date(isoStr);
@@ -89,7 +90,7 @@ function relativeTime(isoStr: string): string {
     date.getDate() === yesterday.getDate() &&
     date.getMonth() === yesterday.getMonth() &&
     date.getFullYear() === yesterday.getFullYear();
-  if (isYesterday) return 'Ontem';
+  if (isYesterday) return t ? t('conversations.timeYesterday', 'Ontem') : 'Ontem';
   return date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
 }
 
@@ -98,21 +99,21 @@ function fullTime(isoStr: string): string {
   return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 }
 
-function dateSeparatorLabel(isoStr: string): string {
+function dateSeparatorLabel(isoStr: string, t?: (key: string, fallback: string) => string): string {
   const now = new Date();
   const date = new Date(isoStr);
   const isToday =
     date.getDate() === now.getDate() &&
     date.getMonth() === now.getMonth() &&
     date.getFullYear() === now.getFullYear();
-  if (isToday) return 'Hoje';
+  if (isToday) return t ? t('conversations.timeToday', 'Hoje') : 'Hoje';
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);
   const isYesterday =
     date.getDate() === yesterday.getDate() &&
     date.getMonth() === yesterday.getMonth() &&
     date.getFullYear() === yesterday.getFullYear();
-  if (isYesterday) return 'Ontem';
+  if (isYesterday) return t ? t('conversations.timeYesterday', 'Ontem') : 'Ontem';
   return date.toLocaleDateString('pt-BR', { day: 'numeric', month: 'long' });
 }
 
@@ -233,6 +234,7 @@ interface ConversationItemProps {
 }
 
 function ConversationItem({ conversation, isSelected, onClick }: ConversationItemProps) {
+  const { t } = useTranslation();
   const cfg = CHANNEL_CONFIG[conversation.channel];
   const initials = getInitials(conversation.contactName);
 
@@ -295,13 +297,13 @@ function ConversationItem({ conversation, isSelected, onClick }: ConversationIte
             </span>
           </div>
           <span className="text-[10px] text-gray-400 dark:text-gray-500 flex-shrink-0 whitespace-nowrap">
-            {relativeTime(conversation.lastMessageAt)}
+            {relativeTime(conversation.lastMessageAt, t)}
           </span>
         </div>
         <div className="flex items-center justify-between gap-1">
           <p className="text-xs text-gray-500 dark:text-gray-400 truncate leading-relaxed">
             {conversation.lastMessageDirection === 'outbound' && (
-              <span className="text-gray-400 dark:text-gray-500 mr-1">Voce:</span>
+              <span className="text-gray-400 dark:text-gray-500 mr-1">{t('conversations.you', 'Você:')}</span>
             )}
             {conversation.lastMessage}
           </p>
@@ -319,6 +321,7 @@ function ConversationItem({ conversation, isSelected, onClick }: ConversationIte
 // ─── Settings Dialog ─────────────────────────────────────────────────────────
 
 function IntegrationSettingsDialog({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation();
   const integrations = [
     {
       channel: 'whatsapp' as ConversationChannel,
@@ -329,7 +332,7 @@ function IntegrationSettingsDialog({ onClose }: { onClose: () => void }) {
     {
       channel: 'facebook' as ConversationChannel,
       name: 'Facebook Page',
-      description: 'Integre com sua Pagina do Facebook para gerenciar mensagens',
+      description: 'Integre com sua Página do Facebook para gerenciar mensagens',
       isConnected: false,
     },
     {
@@ -363,10 +366,10 @@ function IntegrationSettingsDialog({ onClose }: { onClose: () => void }) {
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-white/[0.06]">
           <div>
             <h2 className="font-display font-bold text-gray-900 dark:text-white text-lg">
-              Integracoes de Mensagens
+              {t('conversations.integrationsTitle', 'Integrações de Mensagens')}
             </h2>
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-              Configure os canais de comunicacao
+              {t('conversations.integrationsDesc', 'Configure os canais de comunicação')}
             </p>
           </div>
           <button
@@ -407,7 +410,7 @@ function IntegrationSettingsDialog({ onClose }: { onClose: () => void }) {
                           : 'bg-gray-100 dark:bg-white/[0.06] text-gray-500 dark:text-gray-400',
                       )}
                     >
-                      {item.isConnected ? 'Conectado' : 'Nao configurado'}
+                      {item.isConnected ? t('conversations.connected', 'Conectado') : t('conversations.notConfigured', 'Não configurado')}
                     </span>
                   </div>
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 leading-relaxed">
@@ -421,7 +424,7 @@ function IntegrationSettingsDialog({ onClose }: { onClose: () => void }) {
                       'hover:opacity-80',
                     )}
                   >
-                    {item.isConnected ? 'Gerenciar' : 'Configurar'}
+                    {item.isConnected ? t('conversations.manage', 'Gerenciar') : t('conversations.configure', 'Configurar')}
                   </button>
                 </div>
               </div>
@@ -433,8 +436,7 @@ function IntegrationSettingsDialog({ onClose }: { onClose: () => void }) {
           <div className="flex items-start gap-2 p-3 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-100 dark:border-amber-500/20">
             <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
             <p className="text-xs text-amber-700 dark:text-amber-400 leading-relaxed">
-              Para conectar os canais voce precisara de uma conta Meta Business Suite e
-              configurar as credenciais da API no painel de Configuracoes.
+              {t('conversations.metaWarning', 'Para conectar os canais você precisará de uma conta Meta Business Suite e configurar as credenciais da API no painel de Configurações.')}
             </p>
           </div>
         </div>
@@ -458,14 +460,15 @@ function ThreadHeader({
   onSectorAssign?: () => void;
   sectors?: Sector[];
 }) {
+  const { t } = useTranslation();
   const cfg = CHANNEL_CONFIG[conversation.channel];
   const initials = getInitials(conversation.contactName);
   const [showStatusMenu, setShowStatusMenu] = useState(false);
 
   const statusOptions: { value: ConversationStatus; label: string; color: string }[] = [
-    { value: 'open', label: 'Aberta', color: 'text-emerald-600 dark:text-emerald-400' },
-    { value: 'waiting', label: 'Aguardando', color: 'text-amber-600 dark:text-amber-400' },
-    { value: 'resolved', label: 'Resolvida', color: 'text-gray-500 dark:text-gray-400' },
+    { value: 'open', label: t('conversations.statusOpen', 'Aberta'), color: 'text-emerald-600 dark:text-emerald-400' },
+    { value: 'waiting', label: t('conversations.statusWaiting2', 'Aguardando'), color: 'text-amber-600 dark:text-amber-400' },
+    { value: 'resolved', label: t('conversations.statusResolved2', 'Resolvida'), color: 'text-gray-500 dark:text-gray-400' },
   ];
 
   return (
@@ -527,9 +530,9 @@ function ThreadHeader({
           <div className="flex items-center gap-1.5 mt-0.5">
             <StatusDot status={conversation.status} />
             <span className="text-[11px] text-gray-400 dark:text-gray-500">
-              {conversation.status === 'open' && 'Em atendimento'}
-              {conversation.status === 'waiting' && 'Aguardando'}
-              {conversation.status === 'resolved' && 'Resolvida'}
+              {conversation.status === 'open' && t('conversations.inAttendance', 'Em atendimento')}
+              {conversation.status === 'waiting' && t('conversations.waiting', 'Aguardando')}
+              {conversation.status === 'resolved' && t('conversations.resolved', 'Resolvida')}
             </span>
             {conversation.contactPhone && (
               <>
@@ -564,7 +567,7 @@ function ThreadHeader({
                   conversation.priority === 'high' && 'bg-orange-100 dark:bg-orange-500/20 text-orange-600 dark:text-orange-400',
                   conversation.priority === 'low' && 'bg-blue-100 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400',
                 )}>
-                  {conversation.priority === 'urgent' ? 'Urgente' : conversation.priority === 'high' ? 'Alta' : 'Baixa'}
+                  {conversation.priority === 'urgent' ? t('kanban.priority.urgent', 'Urgente') : conversation.priority === 'high' ? t('kanban.priority.high', 'Alta') : t('kanban.priority.low', 'Baixa')}
                 </span>
               </>
             )}
@@ -587,7 +590,7 @@ function ThreadHeader({
             whileTap={{ scale: 0.95 }}
             onClick={onSectorAssign}
             className="w-8 h-8 rounded-xl bg-gray-100 dark:bg-white/[0.06] flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
-            title="Atribuir setor"
+            title={t('conversations.assignSector', 'Atribuir setor')}
           >
             <Layers className="w-4 h-4" />
           </motion.button>
@@ -683,12 +686,14 @@ function MediaAttachment({
   mediaUrl: string;
   mediaType?: ConversationMessage['mediaType'];
 }) {
+  const { t } = useTranslation();
+
   if (mediaType === 'image') {
     return (
       <div className="mb-1.5 rounded-xl overflow-hidden max-w-[240px]">
         <img
           src={mediaUrl}
-          alt="Imagem"
+          alt={t('conversations.mediaImage', 'Imagem')}
           className="w-full h-auto object-cover rounded-xl"
           loading="lazy"
         />
@@ -700,7 +705,7 @@ function MediaAttachment({
     return (
       <div className="mb-1.5 rounded-xl overflow-hidden max-w-[240px] bg-black/10 dark:bg-white/5 flex items-center justify-center p-4 gap-2">
         <Video className="w-5 h-5 text-gray-400" />
-        <span className="text-xs text-gray-500 dark:text-gray-400">Video</span>
+        <span className="text-xs text-gray-500 dark:text-gray-400">{t('conversations.mediaVideo', 'Vídeo')}</span>
       </div>
     );
   }
@@ -710,7 +715,7 @@ function MediaAttachment({
       <div className="mb-1.5 flex items-center gap-2 px-3 py-2 rounded-xl bg-black/5 dark:bg-white/5 min-w-[180px]">
         <Headphones className="w-4 h-4 text-gray-400 flex-shrink-0" />
         <div className="flex-1 h-1 rounded-full bg-gray-300 dark:bg-gray-600" />
-        <span className="text-[10px] text-gray-400">Audio</span>
+        <span className="text-[10px] text-gray-400">{t('conversations.mediaAudio', 'Áudio')}</span>
       </div>
     );
   }
@@ -724,7 +729,7 @@ function MediaAttachment({
         className="mb-1.5 flex items-center gap-2 px-3 py-2 rounded-xl bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 transition-colors min-w-[160px]"
       >
         <FileText className="w-4 h-4 text-gray-400 flex-shrink-0" />
-        <span className="text-xs text-gray-500 dark:text-gray-400 truncate">Documento</span>
+        <span className="text-xs text-gray-500 dark:text-gray-400 truncate">{t('conversations.mediaDocument', 'Documento')}</span>
       </a>
     );
   }
@@ -745,6 +750,7 @@ function MessageBubble({
   channel: ConversationChannel;
   onRetry?: (msg: ConversationMessage) => void;
 }) {
+  const { t } = useTranslation();
   const isOut = message.direction === 'outbound';
 
   return (
@@ -779,7 +785,7 @@ function MessageBubble({
             {message.isInternal && (
               <div className="flex items-center gap-1 mb-1">
                 <Lock className="w-3 h-3 text-amber-500" />
-                <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400">Nota interna</span>
+                <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400">{t('conversations.internalNote', 'Nota interna')}</span>
                 {message.senderName && (
                   <span className="text-[10px] text-amber-500 dark:text-amber-400/70">· {message.senderName}</span>
                 )}
@@ -809,7 +815,7 @@ function MessageBubble({
             className="flex items-center gap-1 text-xs text-red-500 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300 mt-1 px-1 transition-colors"
           >
             <RotateCcw className="w-3 h-3" />
-            Tentar novamente
+            {t('conversations.tryAgain', 'Tentar novamente')}
           </button>
         )}
       </div>
@@ -836,6 +842,7 @@ function MessageList({
   loadingMoreMessages?: boolean;
   onLoadMore?: () => void;
 }) {
+  const { t } = useTranslation();
   const items: Array<
     | { type: 'separator'; label: string }
     | { type: 'message'; msg: ConversationMessage; isGrouped: boolean }
@@ -845,7 +852,7 @@ function MessageList({
     // Date separator
     const prev = messages[idx - 1];
     if (!prev || !isSameDay(prev.sentAt, msg.sentAt)) {
-      items.push({ type: 'separator', label: dateSeparatorLabel(msg.sentAt) });
+      items.push({ type: 'separator', label: dateSeparatorLabel(msg.sentAt, t) });
     }
     // Group with previous?
     const isGrouped =
@@ -866,9 +873,9 @@ function MessageList({
             className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors disabled:opacity-50"
           >
             {loadingMoreMessages ? (
-              <><Loader2 className="w-3 h-3 animate-spin" /> Carregando...</>
+              <><Loader2 className="w-3 h-3 animate-spin" /> {t('conversations.loadingMore', 'Carregando...')}</>
             ) : (
-              <><ChevronUp className="w-3 h-3" /> Carregar mensagens anteriores</>
+              <><ChevronUp className="w-3 h-3" /> {t('conversations.loadMoreMessages', 'Carregar mensagens anteriores')}</>
             )}
           </button>
         </div>
@@ -938,6 +945,7 @@ function Composer({
   onToggleInternalNote?: () => void;
   onSnippetClick?: () => void;
 }) {
+  const { t } = useTranslation();
   const cfg = CHANNEL_CONFIG[channel];
   const hasContent = value.trim().length > 0 || !!attachment;
   const isDisabled = disabled || false;
@@ -972,13 +980,13 @@ function Composer({
         <div className="flex items-center gap-2 mb-2 px-2">
           <Lock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
           <span className="text-xs font-medium text-amber-700 dark:text-amber-300">
-            Nota interna — não será enviada ao contato
+            {t('conversations.internalNoteHint', 'Nota interna — não será enviada ao contato')}
           </span>
           <button
             onClick={onToggleInternalNote}
             className="ml-auto text-xs text-amber-600 dark:text-amber-400 hover:text-amber-800 dark:hover:text-amber-200 font-medium"
           >
-            Voltar para mensagem
+            {t('conversations.backToMessage', 'Voltar para mensagem')}
           </button>
         </div>
       )}
@@ -986,7 +994,7 @@ function Composer({
         /* Template-only mode (24h window expired) */
         <div className="flex items-center gap-3">
           <div className="flex-1 px-4 py-2.5 rounded-2xl bg-gray-100 dark:bg-white/[0.04] border border-transparent dark:border-white/[0.06] text-sm text-gray-400 dark:text-gray-500">
-            Janela de 24h expirada. Use um template para retomar a conversa.
+            {t('conversations.windowExpiredInline', 'Janela de 24h expirada. Use um template para retomar a conversa.')}
           </div>
           <motion.button
             onClick={onTemplateClick}
@@ -995,7 +1003,7 @@ function Composer({
             className="flex-shrink-0 flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-gradient-to-br from-[#25D366] to-[#128C7E] text-white text-sm font-semibold shadow-sm shadow-[#25D366]/30 hover:shadow-md transition-all"
           >
             <FileText className="w-4 h-4" />
-            Enviar Template
+            {t('conversations.sendTemplate', 'Enviar Template')}
           </motion.button>
         </div>
       ) : (
@@ -1049,7 +1057,7 @@ function Composer({
             whileTap={{ scale: 0.9 }}
             onClick={() => fileInputRef.current?.click()}
             className="w-8 h-8 rounded-xl flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
-            title="Anexar arquivo"
+            title={t('conversations.attachFile', 'Anexar arquivo')}
           >
             <Paperclip className="w-4 h-4" />
           </motion.button>
@@ -1064,7 +1072,7 @@ function Composer({
                   ? 'text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-500/20'
                   : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06]'
               )}
-              title="Nota interna"
+              title={t('conversations.internalNoteButton', 'Nota interna')}
             >
               <StickyNote className="w-4 h-4" />
             </motion.button>
@@ -1075,7 +1083,7 @@ function Composer({
               whileTap={{ scale: 0.9 }}
               onClick={onSnippetClick}
               className="w-8 h-8 rounded-xl flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
-              title="Respostas rápidas"
+              title={t('conversations.quickReplies', 'Respostas rápidas')}
             >
               <Slash className="w-4 h-4" />
             </motion.button>
@@ -1097,7 +1105,7 @@ function Composer({
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={onKeyDown}
             rows={1}
-            placeholder="Digite uma mensagem..."
+            placeholder={t('conversations.messagePlaceholder', 'Digite uma mensagem...')}
             disabled={isSending}
             className="w-full resize-none bg-gray-100 dark:bg-white/[0.04] border border-transparent dark:border-white/[0.06] rounded-2xl px-4 py-2.5 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-red-500/50 focus:bg-white dark:focus:bg-white/[0.06] transition-colors leading-relaxed max-h-36 overflow-y-auto disabled:opacity-50"
             style={{ minHeight: '42px' }}
@@ -1133,11 +1141,11 @@ function Composer({
         <div className={cn('flex items-center gap-1', cfg.textColor)}>
           <ChannelIcon channel={channel} size="sm" />
           <span className="text-[10px] font-medium opacity-70">
-            Enviando via {cfg.label}
+            {t('conversations.sendingVia', 'Enviando via {{channel}}', { channel: cfg.label })}
           </span>
         </div>
         <span className="text-[10px] text-gray-400 dark:text-gray-600">
-          {isDisabled ? 'Apenas templates disponiveis' : 'Enter para enviar · Shift+Enter para nova linha'}
+          {isDisabled ? t('conversations.onlyTemplatesAvailable', 'Apenas templates disponíveis') : t('conversations.enterToSend', 'Enter para enviar · Shift+Enter para nova linha')}
         </span>
       </div>
     </div>
@@ -1155,11 +1163,12 @@ function StatusFilterBar({
   onStatusChange: (status: ConversationStatus | 'all') => void;
   counts: Record<string, number>;
 }) {
+  const { t } = useTranslation();
   const statuses: { id: ConversationStatus | 'all'; label: string }[] = [
-    { id: 'all', label: 'Todas' },
-    { id: 'open', label: 'Abertas' },
-    { id: 'waiting', label: 'Aguardando' },
-    { id: 'resolved', label: 'Resolvidas' },
+    { id: 'all', label: t('conversations.statusAll', 'Todas') },
+    { id: 'open', label: t('conversations.statusOpen', 'Abertas') },
+    { id: 'waiting', label: t('conversations.statusWaiting', 'Aguardando') },
+    { id: 'resolved', label: t('conversations.statusResolved', 'Resolvidas') },
   ];
 
   return (
@@ -1227,6 +1236,7 @@ function ConversationListSkeleton() {
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function ConversasModule() {
+  const { t } = useTranslation();
   const { user, business, sectors, userSectorIds } = useAuth();
 
   const [activeChannel, setActiveChannel] = useState<ConversationChannel | 'all'>('all');
@@ -1639,7 +1649,7 @@ export default function ConversasModule() {
     const file = e.target.files?.[0];
     if (!file) return;
     if (file.size > 16 * 1024 * 1024) {
-      alert('Arquivo muito grande. Maximo 16MB.');
+      alert(t('conversations.fileTooLarge', 'Arquivo muito grande. Máximo 16MB.'));
       return;
     }
     setAttachment(file);
@@ -1682,7 +1692,7 @@ export default function ConversasModule() {
 
     // Update conversation metadata
     await updateDoc(doc(db, 'conversations', selectedConversation.id), {
-      lastMessage: `[${mediaType === 'image' ? 'Imagem' : mediaType === 'video' ? 'Video' : mediaType === 'audio' ? 'Audio' : 'Documento'}] ${file.name}`,
+      lastMessage: `[${mediaType === 'image' ? t('conversations.mediaImage', 'Imagem') : mediaType === 'video' ? t('conversations.mediaVideo', 'Vídeo') : mediaType === 'audio' ? t('conversations.mediaAudio', 'Áudio') : t('conversations.mediaDocument', 'Documento')}] ${file.name}`,
       lastMessageAt: now,
       lastMessageDirection: 'outbound',
       updatedAt: now,
@@ -1855,12 +1865,12 @@ export default function ConversasModule() {
             const errBody = await res.json().catch(() => ({ code: 'unknown' }));
             if (errBody.code === 'disconnected' || errBody.code === 'token_expired') {
               const names: Record<string, string> = { whatsapp: 'WhatsApp', facebook: 'Facebook Messenger', instagram: 'Instagram' };
-              toast.warn(`${names[selectedConversation.channel] || 'Canal'} está desconectado. Reconecte nas Configurações para enviar mensagens.`);
+              toast.warn(t('conversations.disconnectedWarn', '{{channel}} está desconectado. Reconecte nas Configurações para enviar mensagens.', { channel: names[selectedConversation.channel] || 'Canal' }));
             }
             await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(() => {});
           }
         } catch {
-          toast.error('Erro de conexão. Verifique sua internet e tente novamente.');
+          toast.error(t('conversations.connectionError', 'Erro de conexão. Verifique sua internet e tente novamente.'));
           await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(() => {});
         }
       }
@@ -1985,10 +1995,10 @@ export default function ConversasModule() {
   // ── Tabs ────────────────────────────────────────────────────────────────────
 
   const tabs: { id: ConversationChannel | 'all'; label: string }[] = [
-    { id: 'all', label: 'Todos' },
-    { id: 'whatsapp', label: 'WhatsApp' },
-    { id: 'facebook', label: 'Messenger' },
-    { id: 'instagram', label: 'Instagram' },
+    { id: 'all', label: t('conversations.tabAll', 'Todos') },
+    { id: 'whatsapp', label: t('conversations.tabWhatsApp', 'WhatsApp') },
+    { id: 'facebook', label: t('conversations.tabMessenger', 'Messenger') },
+    { id: 'instagram', label: t('conversations.tabInstagram', 'Instagram') },
   ];
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -2013,12 +2023,12 @@ export default function ConversasModule() {
                 </div>
                 <div>
                   <h1 className="font-display font-bold text-gray-900 dark:text-white text-base leading-tight">
-                    Conversas
+                    {t('conversations.title', 'Conversas')}
                   </h1>
                   <p className="text-[10px] text-gray-400 dark:text-gray-500">
                     {isLoadingConversations
-                      ? 'Carregando...'
-                      : `${filteredConversations.length} conversa${filteredConversations.length !== 1 ? 's' : ''}`}
+                      ? t('conversations.loading', 'Carregando...')
+                      : t(filteredConversations.length === 1 ? 'conversations.conversationCount_one' : 'conversations.conversationCount_other', filteredConversations.length === 1 ? '{{count}} conversa' : '{{count}} conversas', { count: filteredConversations.length })}
                   </p>
                 </div>
               </div>
@@ -2039,7 +2049,7 @@ export default function ConversasModule() {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
               <input
                 type="text"
-                placeholder="Buscar conversas..."
+                placeholder={t('conversations.searchPlaceholder', 'Buscar conversas...')}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full pl-8 pr-3 py-2 text-sm bg-gray-100 dark:bg-white/[0.04] border border-transparent dark:border-white/[0.06] rounded-xl text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-red-500/50 focus:bg-white dark:focus:bg-white/[0.06] transition-colors"
@@ -2110,7 +2120,7 @@ export default function ConversasModule() {
                   )}
                 >
                   <Layers className="w-3 h-3 inline mr-1" />
-                  Todos
+                  {t('conversations.statusAllSectors', 'Todos')}
                 </button>
                 {sectors.filter(s => s.isActive).map((sector) => (
                   <button
@@ -2151,25 +2161,25 @@ export default function ConversasModule() {
                     {conversations.length === 0 ? (
                       <>
                         <p className="text-sm font-medium text-gray-500 dark:text-gray-400">
-                          Nenhuma conversa ainda
+                          {t('conversations.noConversationsYet', 'Nenhuma conversa ainda')}
                         </p>
                         <p className="text-xs text-gray-400 dark:text-gray-500 mt-1 leading-relaxed max-w-[220px]">
-                          Conecte seus canais em Configuracoes para comecar a receber mensagens
+                          {t('conversations.noConversationsYetDesc', 'Conecte seus canais em Configurações para começar a receber mensagens')}
                         </p>
                         <button
                           onClick={() => setShowSettings(true)}
                           className="mt-3 text-xs font-semibold px-4 py-2 rounded-xl bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors"
                         >
-                          Configurar canais
+                          {t('conversations.configureChannels', 'Configurar canais')}
                         </button>
                       </>
                     ) : (
                       <>
                         <p className="text-sm font-medium text-gray-500 dark:text-gray-400">
-                          Nenhuma conversa encontrada
+                          {t('conversations.noConversationsFound', 'Nenhuma conversa encontrada')}
                         </p>
                         <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
-                          Tente mudar o filtro ou a busca
+                          {t('conversations.noConversationsFoundDesc', 'Tente mudar o filtro ou a busca')}
                         </p>
                       </>
                     )}
@@ -2231,10 +2241,10 @@ export default function ConversasModule() {
                 </motion.div>
                 <div className="text-center max-w-xs">
                   <h2 className="font-display font-bold text-gray-700 dark:text-gray-200 text-xl mb-2">
-                    Selecione uma conversa
+                    {t('conversations.selectConversation', 'Selecione uma conversa')}
                   </h2>
                   <p className="text-sm text-gray-400 dark:text-gray-500 leading-relaxed">
-                    Escolha uma conversa a esquerda para comecar a responder seus clientes
+                    {t('conversations.selectConversationDesc', 'Escolha uma conversa à esquerda para começar a responder seus clientes')}
                   </p>
                 </div>
                 <div className="flex items-center gap-4 mt-2">
@@ -2289,7 +2299,7 @@ export default function ConversasModule() {
                     <div className="flex-1 flex items-center justify-center py-12">
                       <div className="flex flex-col items-center gap-3">
                         <div className="w-8 h-8 border-2 border-red-500/30 border-t-red-500 rounded-full animate-spin" />
-                        <span className="text-xs text-gray-400 dark:text-gray-500">Carregando mensagens...</span>
+                        <span className="text-xs text-gray-400 dark:text-gray-500">{t('conversations.loadingMessages', 'Carregando mensagens...')}</span>
                       </div>
                     </div>
                   ) : messages.length === 0 ? (
@@ -2298,8 +2308,8 @@ export default function ConversasModule() {
                         <div className="w-10 h-10 rounded-2xl bg-gray-100 dark:bg-white/[0.04] flex items-center justify-center">
                           <MessageSquare className="w-5 h-5 text-gray-300 dark:text-gray-600" />
                         </div>
-                        <p className="text-sm text-gray-400 dark:text-gray-500">Nenhuma mensagem ainda</p>
-                        <p className="text-xs text-gray-300 dark:text-gray-600">Envie a primeira mensagem</p>
+                        <p className="text-sm text-gray-400 dark:text-gray-500">{t('conversations.noMessagesYet', 'Nenhuma mensagem ainda')}</p>
+                        <p className="text-xs text-gray-300 dark:text-gray-600">{t('conversations.sendFirstMessage', 'Envie a primeira mensagem')}</p>
                       </div>
                     </div>
                   ) : (
@@ -2320,7 +2330,7 @@ export default function ConversasModule() {
                   <div className="px-4 py-2 bg-amber-50 dark:bg-amber-500/10 border-b border-amber-100 dark:border-amber-500/20 flex items-center gap-2">
                     <AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0" />
                     <p className="text-xs text-amber-700 dark:text-amber-400">
-                      Janela de 24h expirada. Apenas mensagens de template podem ser enviadas.
+                      {t('conversations.windowExpired', 'Janela de 24h expirada. Apenas mensagens de template podem ser enviadas.')}
                     </p>
                   </div>
                 )}
@@ -2336,7 +2346,7 @@ export default function ConversasModule() {
                       className="mx-4 mb-2 p-3 bg-white dark:bg-[#1e293b] rounded-xl border border-gray-200 dark:border-white/[0.08] shadow-lg"
                     >
                       <div className="flex items-center justify-between mb-2.5">
-                        <h4 className="text-xs font-semibold text-gray-900 dark:text-white">Selecionar Template</h4>
+                        <h4 className="text-xs font-semibold text-gray-900 dark:text-white">{t('conversations.selectTemplate', 'Selecionar Template')}</h4>
                         <button
                           onClick={() => setShowTemplateSelector(false)}
                           className="w-5 h-5 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
@@ -2397,7 +2407,7 @@ export default function ConversasModule() {
                           <Slash className="w-4 h-4 text-gray-400" />
                           <input
                             type="text"
-                            placeholder="Buscar respostas rápidas..."
+                            placeholder={t('conversations.searchSnippets', 'Buscar respostas rápidas...')}
                             value={snippetSearch}
                             onChange={(e) => setSnippetSearch(e.target.value)}
                             className="flex-1 text-sm bg-transparent text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none"
@@ -2411,7 +2421,7 @@ export default function ConversasModule() {
                       <div className="overflow-y-auto max-h-48">
                         {filteredSnippets.length === 0 ? (
                           <div className="p-4 text-center text-xs text-gray-400 dark:text-gray-500">
-                            {snippets.length === 0 ? 'Nenhuma resposta rápida cadastrada' : 'Nenhum resultado encontrado'}
+                            {snippets.length === 0 ? t('conversations.noSnippets', 'Nenhuma resposta rápida cadastrada') : t('conversations.noSnippetsFound', 'Nenhum resultado encontrado')}
                           </div>
                         ) : (
                           filteredSnippets.map((s) => (
@@ -2424,7 +2434,7 @@ export default function ConversasModule() {
                                 <span className="text-xs font-mono text-red-500 dark:text-red-400">/{s.shortcode}</span>
                                 {s.sectorId && (
                                   <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400">
-                                    setor
+                                    {t('conversations.sectorLabel', 'setor')}
                                   </span>
                                 )}
                               </div>
@@ -2447,7 +2457,7 @@ export default function ConversasModule() {
                       className="absolute top-14 right-4 w-56 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-2xl overflow-hidden z-30"
                     >
                       <div className="px-3 py-2 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
-                        <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">Atribuir Setor</span>
+                        <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">{t('conversations.assignSectorTitle', 'Atribuir Setor')}</span>
                         <button onClick={() => setShowSectorAssign(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
                           <X className="w-3.5 h-3.5" />
                         </button>
@@ -2477,7 +2487,7 @@ export default function ConversasModule() {
                           className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
                         >
                           <Lock className="w-3.5 h-3.5" />
-                          {selectedConversation?.isPrivate ? 'Tornar pública' : 'Tornar privada'}
+                          {selectedConversation?.isPrivate ? t('conversations.makePublic', 'Tornar pública') : t('conversations.makePrivate', 'Tornar privada')}
                         </button>
                       </div>
                     </motion.div>

@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { X, Plus, Check } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { getTagConfig, ALL_PRESET_TAGS } from './shared';
 
@@ -25,6 +26,7 @@ export function TagPicker({ currentTags, onToggle, onAddCustom }: {
   onToggle: (tag: string) => void;
   onAddCustom: (tag: string) => void;
 }) {
+  const { t } = useTranslation();
   const [customTag, setCustomTag] = useState('');
 
   const handleAddCustom = () => {
@@ -37,7 +39,7 @@ export function TagPicker({ currentTags, onToggle, onAddCustom }: {
 
   return (
     <div className="space-y-2">
-      <p className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">Tags</p>
+      <p className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">{t('crm.form.tags', 'Tags')}</p>
       <div className="flex flex-wrap gap-1.5">
         {ALL_PRESET_TAGS.map((tag) => {
           const cfg = getTagConfig(tag);
@@ -66,7 +68,7 @@ export function TagPicker({ currentTags, onToggle, onAddCustom }: {
       <div className="flex gap-1.5 mt-1">
         <input
           type="text"
-          placeholder="Tag personalizada..."
+          placeholder={t('crm.tag.customPlaceholder', 'Tag personalizada...')}
           value={customTag}
           onChange={(e) => setCustomTag(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleAddCustom()}

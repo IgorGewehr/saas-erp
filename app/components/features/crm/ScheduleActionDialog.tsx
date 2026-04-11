@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { Dialog, DialogTitle, DialogContent, DialogActions, TextField, Button } from '@mui/material';
 import { Phone, Calendar, CalendarPlus } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
 import { db } from '@/lib/config/firebase';
@@ -18,6 +19,7 @@ export function ScheduleActionDialog({ open, onClose, contact, businessId, userI
   userName: string;
   onCreated: () => void;
 }) {
+  const { t } = useTranslation();
   const [type, setType] = useState<'contato' | 'consulta'>('contato');
   const [date, setDate] = useState('');
   const [time, setTime] = useState('');
@@ -52,7 +54,7 @@ export function ScheduleActionDialog({ open, onClose, contact, businessId, userI
             clientId: contact.id,
             clientName: contact.name,
             clientPhone: contact.phone || contact.whatsapp || '',
-            serviceName: 'Consulta CRM',
+            serviceName: t('crm.schedule.crmConsultation', 'Consulta CRM'),
             date,
             startTime: time,
             endTime,
@@ -65,7 +67,7 @@ export function ScheduleActionDialog({ open, onClose, contact, businessId, userI
           });
         } catch (err) {
           console.error('[ScheduleDialog] Failed to create appointment:', err);
-          toast.error('Erro ao criar agendamento na agenda');
+          toast.error(t('crm.schedule.errorAppointment', 'Erro ao criar agendamento na agenda'));
           setSaving(false);
           return;
         }
@@ -88,7 +90,7 @@ export function ScheduleActionDialog({ open, onClose, contact, businessId, userI
         });
       } catch (err) {
         console.error('[ScheduleDialog] Failed to create CRM activity:', err);
-        toast.error('Erro ao registrar atividade no CRM');
+        toast.error(t('crm.schedule.errorActivity', 'Erro ao registrar atividade no CRM'));
         setSaving(false);
         return;
       }
@@ -102,12 +104,12 @@ export function ScheduleActionDialog({ open, onClose, contact, businessId, userI
         console.error('[ScheduleDialog] Failed to update contact lastContactDate:', err);
       }
 
-      toast.success(type === 'consulta' ? 'Consulta agendada! Visível na Agenda.' : 'Contato agendado!');
+      toast.success(type === 'consulta' ? t('crm.schedule.successConsultation', 'Consulta agendada! Visível na Agenda.') : t('crm.schedule.successContact', 'Contato agendado!'));
       onCreated();
       onClose();
     } catch (err) {
       console.error('[ScheduleDialog] Unexpected error:', err);
-      toast.error('Erro ao agendar');
+      toast.error(t('crm.schedule.errorSchedule', 'Erro ao agendar'));
     } finally {
       setSaving(false);
     }
@@ -121,7 +123,7 @@ export function ScheduleActionDialog({ open, onClose, contact, businessId, userI
             <CalendarPlus size={18} className="text-white" />
           </div>
           <div>
-            <span className="text-base font-display font-bold text-gray-900 dark:text-gray-100">Agendar</span>
+            <span className="text-base font-display font-bold text-gray-900 dark:text-gray-100">{t('crm.detail.schedule', 'Agendar')}</span>
             <p className="text-xs text-gray-400 dark:text-gray-500">{contact.name}</p>
           </div>
         </div>
@@ -130,8 +132,8 @@ export function ScheduleActionDialog({ open, onClose, contact, businessId, userI
         <div className="space-y-4">
           <div className="flex gap-2">
             {[
-              { value: 'contato' as const, label: 'Próximo Contato', icon: <Phone size={14} /> },
-              { value: 'consulta' as const, label: 'Nova Consulta', icon: <Calendar size={14} /> },
+              { value: 'contato' as const, label: t('crm.schedule.nextContact', 'Próximo Contato'), icon: <Phone size={14} /> },
+              { value: 'consulta' as const, label: t('crm.schedule.newConsultation', 'Nova Consulta'), icon: <Calendar size={14} /> },
             ].map((opt) => (
               <button
                 key={opt.value}
@@ -148,24 +150,24 @@ export function ScheduleActionDialog({ open, onClose, contact, businessId, userI
             ))}
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <TextField label="Data" value={date} onChange={(e) => setDate(e.target.value)} fullWidth size="small" type="date" InputLabelProps={{ shrink: true }} sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
-            <TextField label="Horário" value={time} onChange={(e) => setTime(e.target.value)} fullWidth size="small" type="time" InputLabelProps={{ shrink: true }} sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
+            <TextField label={t('crm.schedule.date', 'Data')} value={date} onChange={(e) => setDate(e.target.value)} fullWidth size="small" type="date" InputLabelProps={{ shrink: true }} sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
+            <TextField label={t('crm.schedule.time', 'Horário')} value={time} onChange={(e) => setTime(e.target.value)} fullWidth size="small" type="time" InputLabelProps={{ shrink: true }} sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
           </div>
-          <TextField label="Observações" value={notes} onChange={(e) => setNotes(e.target.value)} fullWidth size="small" multiline rows={2} sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
+          <TextField label={t('crm.form.notes', 'Observações')} value={notes} onChange={(e) => setNotes(e.target.value)} fullWidth size="small" multiline rows={2} sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
           {type === 'consulta' && (
             <div className="flex items-start gap-2 p-2.5 rounded-xl bg-blue-50 dark:bg-blue-500/10 border border-blue-100 dark:border-blue-500/20">
               <Calendar size={14} className="text-blue-500 shrink-0 mt-0.5" />
               <p className="text-[11px] text-blue-700 dark:text-blue-400 leading-relaxed">
-                Um agendamento será criado na Agenda do Aevo e uma atividade será registrada no CRM.
+                {t('crm.schedule.consultationNote', 'Um agendamento será criado na Agenda do Aevo e uma atividade será registrada no CRM.')}
               </p>
             </div>
           )}
         </div>
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2.5 }}>
-        <Button onClick={onClose} disabled={saving} sx={{ borderRadius: '10px', textTransform: 'none' }}>Cancelar</Button>
+        <Button onClick={onClose} disabled={saving} sx={{ borderRadius: '10px', textTransform: 'none' }}>{t('crm.action.cancel', 'Cancelar')}</Button>
         <Button onClick={handleSave} disabled={saving || !date || !time} variant="contained" sx={{ borderRadius: '10px', textTransform: 'none', bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' } }}>
-          {saving ? 'Agendando...' : 'Agendar'}
+          {saving ? t('crm.schedule.scheduling', 'Agendando...') : t('crm.detail.schedule', 'Agendar')}
         </Button>
       </DialogActions>
     </Dialog>

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Search, Send, MessageSquare, Inbox, Instagram, Facebook, Check, CheckCheck, Star, AlertCircle, Clock, Trash2, X, Loader2, RefreshCw, FileText, Headphones, Play, Paperclip, Mic, Square, Image as ImageIcon } from 'lucide-react';
 import { AnimatePresence } from 'framer-motion';
 import { motion } from 'framer-motion';
@@ -22,6 +23,7 @@ const CHANNEL_CFG: Record<ConversationChannel, { label: string; color: string; t
 };
 
 export function OmnichannelInbox({ businessId, contacts }: { businessId: string; contacts: CRMContact[] }) {
+  const { t } = useTranslation();
   const { user } = useAuth();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
@@ -120,7 +122,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
     const file = e.target.files?.[0];
     if (!file) return;
     if (file.size > 16 * 1024 * 1024) {
-      toast.warn('Arquivo muito grande. Máximo 16MB.');
+      toast.warn(t('crm.inbox.fileTooLarge', 'Arquivo muito grande. Máximo 16MB.'));
       return;
     }
     setAttachment(file);
@@ -166,7 +168,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
       recorder.start();
       setIsRecording(true);
     } catch {
-      toast.error('Não foi possível acessar o microfone.');
+      toast.error(t('crm.inbox.micError', 'Não foi possível acessar o microfone.'));
     }
   }, []);
 
@@ -204,7 +206,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
     const file = e.dataTransfer.files?.[0];
     if (!file) return;
     if (file.size > 16 * 1024 * 1024) {
-      toast.warn('Arquivo muito grande. Máximo 16MB.');
+      toast.warn(t('crm.inbox.fileTooLarge', 'Arquivo muito grande. Máximo 16MB.'));
       return;
     }
     setAttachment(file);
@@ -303,7 +305,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
           const errBody = await res.json().catch(() => ({ code: 'unknown' }));
           if (errBody.code === 'disconnected' || errBody.code === 'token_expired') {
             const channelNames: Record<string, string> = { whatsapp: 'WhatsApp', facebook: 'Facebook Messenger', instagram: 'Instagram' };
-            toast.warn(`${channelNames[selectedConv.channel] || 'Canal'} está desconectado. Reconecte nas Configurações para enviar mensagens.`);
+            toast.warn(`${channelNames[selectedConv.channel] || t('crm.inbox.channel', 'Canal')} ${t('crm.inbox.channelDisconnected', 'está desconectado. Reconecte nas Configurações para enviar mensagens.')}`);
           } else {
             console.error('[OmnichannelInbox] Send failed:', errBody);
           }
@@ -311,7 +313,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
         }
       } catch (apiErr) {
         console.error('[OmnichannelInbox] Network error:', apiErr);
-        toast.error('Erro de conexão. Verifique sua internet e tente novamente.');
+        toast.error(t('crm.inbox.connectionError', 'Erro de conexão. Verifique sua internet e tente novamente.'));
         await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(() => {});
       }
     } catch (err) {
@@ -383,10 +385,10 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
       setIsDeleteModalOpen(false);
       setSelectedConv(null);
       setMessages([]);
-      toast.success('Conversa excluída com sucesso');
+      toast.success(t('crm.inbox.convDeleted', 'Conversa excluída com sucesso'));
     } catch (err) {
       console.error('[OmnichannelInbox] Delete failed:', err);
-      toast.error('Erro ao excluir conversa');
+      toast.error(t('crm.inbox.errorDeleteConv', 'Erro ao excluir conversa'));
     } finally {
       setIsDeleting(false);
     }
@@ -410,14 +412,14 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
       if (data.success) {
         const { stats } = data;
         toast.success(
-          `Sincronizado: ${stats.messagesImported} mensagens novas, ${stats.conversationsSynced} conversas`,
+          t('crm.inbox.syncSuccess', 'Sincronizado: {{messages}} mensagens novas, {{conversations}} conversas', { messages: stats.messagesImported, conversations: stats.conversationsSynced }),
         );
       } else {
-        toast.error(data.error || 'Erro ao sincronizar');
+        toast.error(data.error || t('crm.inbox.errorSync', 'Erro ao sincronizar'));
       }
     } catch (err) {
       console.error('[OmnichannelInbox] Sync failed:', err);
-      toast.error('Erro ao sincronizar com a Meta');
+      toast.error(t('crm.inbox.errorSyncMeta', 'Erro ao sincronizar com a Meta'));
     } finally {
       setIsSyncing(false);
     }
@@ -431,11 +433,11 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
         <div className="px-3 pt-3 pb-2 shrink-0">
           <div className="flex flex-wrap gap-1">
             {([
-              { id: 'all' as const, label: 'Todos' },
+              { id: 'all' as const, label: t('crm.inbox.filterAll', 'Todos') },
               { id: 'whatsapp' as const, label: 'WhatsApp' },
               { id: 'instagram' as const, label: 'Instagram' },
               { id: 'facebook' as const, label: 'Messenger' },
-              { id: 'comments' as const, label: 'Comentários' },
+              { id: 'comments' as const, label: t('crm.inbox.filterComments', 'Comentários') },
             ] as const).map((tab) => (
               <button key={tab.id} onClick={() => setFilter(tab.id)}
                 className={cn(
@@ -455,7 +457,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
         <div className="px-3 pb-2 flex gap-1.5">
           <div className="relative flex-1">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
-            <input type="text" placeholder="Buscar..." value={search} onChange={(e) => setSearch(e.target.value)}
+            <input type="text" placeholder={t('crm.action.search', 'Buscar...')} value={search} onChange={(e) => setSearch(e.target.value)}
               className="w-full pl-8 pr-3 py-1.5 text-xs bg-gray-100 dark:bg-white/[0.04] border border-transparent dark:border-white/[0.06] rounded-lg text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:border-red-500/50 transition-colors"
             />
           </div>
@@ -469,7 +471,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
               'bg-gray-100 dark:bg-white/[0.06] text-gray-400 hover:text-red-500 dark:hover:text-red-400',
               isSyncing && 'opacity-60 cursor-not-allowed',
             )}
-            title="Sincronizar mensagens da Meta"
+            title={t('crm.inbox.syncMeta', 'Sincronizar mensagens da Meta')}
           >
             <RefreshCw size={13} className={isSyncing ? 'animate-spin' : ''} />
           </motion.button>
@@ -491,15 +493,15 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
               <div className="w-10 h-10 rounded-2xl bg-purple-50 dark:bg-purple-500/10 flex items-center justify-center mb-3">
                 <MessageSquare size={20} className="text-purple-500/60" />
               </div>
-              <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Gestão de Comentários</p>
+              <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">{t('crm.inbox.commentsTitle', 'Gestão de Comentários')}</p>
               <p className="text-[11px] text-gray-400 dark:text-gray-500 leading-relaxed">
-                Comentários do Instagram e Facebook aparecerão aqui quando o webhook estiver configurado.
+                {t('crm.inbox.commentsDesc', 'Comentários do Instagram e Facebook aparecerão aqui quando o webhook estiver configurado.')}
               </p>
             </div>
           ) : filtered.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
               <MessageSquare size={24} className="text-gray-300 dark:text-gray-600 mb-2" />
-              <p className="text-xs text-gray-400 dark:text-gray-500">{conversations.length === 0 ? 'Nenhuma conversa' : 'Nenhum resultado'}</p>
+              <p className="text-xs text-gray-400 dark:text-gray-500">{conversations.length === 0 ? t('crm.inbox.noConversations', 'Nenhuma conversa') : t('crm.inbox.noResults', 'Nenhum resultado')}</p>
             </div>
           ) : (
             filtered.map((conv) => {
@@ -542,7 +544,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
                     </div>
                     <div className="flex items-center justify-between gap-1">
                       <p className="text-[10px] text-gray-500 dark:text-gray-400 truncate">
-                        {conv.lastMessageDirection === 'outbound' && <span className="text-gray-400 mr-1">Você:</span>}
+                        {conv.lastMessageDirection === 'outbound' && <span className="text-gray-400 mr-1">{t('crm.inbox.you', 'Você')}:</span>}
                         {conv.lastMessage}
                       </p>
                       {conv.unreadCount > 0 && (
@@ -567,8 +569,8 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
               <Inbox size={24} className="text-red-500/60" />
             </div>
             <div className="text-center">
-              <h3 className="font-display font-bold text-gray-700 dark:text-gray-200 text-sm mb-1">Caixa de Entrada</h3>
-              <p className="text-xs text-gray-400 dark:text-gray-500">Selecione uma conversa para visualizar as mensagens</p>
+              <h3 className="font-display font-bold text-gray-700 dark:text-gray-200 text-sm mb-1">{t('crm.inbox.inboxTitle', 'Caixa de Entrada')}</h3>
+              <p className="text-xs text-gray-400 dark:text-gray-500">{t('crm.inbox.selectConversation', 'Selecione uma conversa para visualizar as mensagens')}</p>
             </div>
           </div>
         ) : (
@@ -597,7 +599,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
                   </div>
                   {linkedContact && (
                     <p className="text-[10px] text-gray-400 dark:text-gray-500 flex items-center gap-1">
-                      <Star size={8} className="text-amber-400" /> Lead vinculado: {linkedContact.name}
+                      <Star size={8} className="text-amber-400" /> {t('crm.inbox.linkedLead', 'Lead vinculado')}: {linkedContact.name}
                     </p>
                   )}
                 </div>
@@ -607,7 +609,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
                 whileTap={{ scale: 0.9 }}
                 onClick={() => setIsDeleteModalOpen(true)}
                 className="w-8 h-8 rounded-xl bg-gray-100 dark:bg-white/[0.06] flex items-center justify-center text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors shrink-0"
-                title="Excluir conversa"
+                title={t('crm.inbox.deleteConv', 'Excluir conversa')}
               >
                 <Trash2 size={14} />
               </motion.button>
@@ -637,8 +639,8 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
                       <div className="w-12 h-12 rounded-2xl bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
                         <Paperclip size={22} className="text-red-500" />
                       </div>
-                      <p className="text-sm font-semibold text-red-600 dark:text-red-400">Solte o arquivo aqui</p>
-                      <p className="text-[10px] text-gray-400">Imagem, vídeo, áudio ou documento (max 16MB)</p>
+                      <p className="text-sm font-semibold text-red-600 dark:text-red-400">{t('crm.inbox.dropFile', 'Solte o arquivo aqui')}</p>
+                      <p className="text-[10px] text-gray-400">{t('crm.inbox.dropFileDesc', 'Imagem, vídeo, áudio ou documento (max 16MB)')}</p>
                     </div>
                   </motion.div>
                 )}
@@ -750,7 +752,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
                     whileTap={{ scale: 0.9 }}
                     onClick={() => fileInputRef.current?.click()}
                     className="w-8 h-8 rounded-xl flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
-                    title="Anexar arquivo"
+                    title={t('crm.inbox.attachFile', 'Anexar arquivo')}
                   >
                     <Paperclip className="w-4 h-4" />
                   </motion.button>
@@ -771,7 +773,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
                         ? 'text-red-500 bg-red-50 dark:bg-red-500/10 animate-pulse'
                         : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06]',
                     )}
-                    title={isRecording ? 'Parar gravação' : 'Gravar áudio'}
+                    title={isRecording ? t('crm.inbox.stopRecording', 'Parar gravação') : t('crm.inbox.recordAudio', 'Gravar áudio')}
                   >
                     {isRecording ? <Square className="w-3.5 h-3.5" /> : <Mic className="w-4 h-4" />}
                   </motion.button>
@@ -784,7 +786,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
                   onChange={(e) => setMessageInput(e.target.value)}
                   onKeyDown={handleKeyDown}
                   rows={1}
-                  placeholder={isRecording ? 'Gravando áudio...' : 'Digite uma mensagem...'}
+                  placeholder={isRecording ? t('crm.inbox.recording', 'Gravando áudio...') : t('crm.inbox.typePlaceholder', 'Digite uma mensagem...')}
                   disabled={isSending || isRecording}
                   className="flex-1 resize-none bg-gray-100 dark:bg-white/[0.04] border border-transparent dark:border-white/[0.06] rounded-2xl px-4 py-2.5 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:border-red-500/50 transition-colors max-h-28 overflow-y-auto disabled:opacity-50"
                   style={{ minHeight: '40px' }}
@@ -817,7 +819,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
                   {CHANNEL_CFG[selectedConv.channel].label}
                 </span>
                 <span className="text-[9px] text-gray-400 dark:text-gray-600 ml-auto">
-                  {isRecording ? 'Clique no quadrado para parar' : 'Enter para enviar'}
+                  {isRecording ? t('crm.inbox.clickToStop', 'Clique no quadrado para parar') : t('crm.inbox.enterToSend', 'Enter para enviar')}
                 </span>
               </div>
             </div>
@@ -851,7 +853,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
                     <Trash2 size={18} className="text-red-500" />
                   </div>
                   <h3 className="font-display font-bold text-gray-900 dark:text-white text-sm">
-                    Excluir Conversa?
+                    {t('crm.inbox.deleteConvTitle', 'Excluir Conversa?')}
                   </h3>
                 </div>
                 <button
@@ -866,12 +868,12 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
               {/* Body */}
               <div className="px-6 py-5">
                 <p className="text-sm text-gray-600 dark:text-gray-300 leading-relaxed">
-                  A conversa com <strong className="text-gray-900 dark:text-white">{selectedConv.contactName}</strong> e todas as suas mensagens serão excluídas permanentemente.
+                  {t('crm.inbox.deleteConvBody', 'A conversa com')} <strong className="text-gray-900 dark:text-white">{selectedConv.contactName}</strong> {t('crm.inbox.deleteConvBodySuffix', 'e todas as suas mensagens serão excluídas permanentemente.')}
                 </p>
                 <div className="flex items-start gap-2 mt-3 p-3 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-100 dark:border-amber-500/20">
                   <AlertCircle size={14} className="text-amber-500 shrink-0 mt-0.5" />
                   <p className="text-xs text-amber-700 dark:text-amber-400 leading-relaxed">
-                    Esta ação é irreversível. O histórico de mensagens não poderá ser recuperado.
+                    {t('crm.inbox.deleteConvWarning', 'Esta ação é irreversível. O histórico de mensagens não poderá ser recuperado.')}
                   </p>
                 </div>
               </div>
@@ -883,7 +885,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
                   disabled={isDeleting}
                   className="px-4 py-2 text-sm font-semibold text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-white/[0.06] rounded-xl hover:bg-gray-200 dark:hover:bg-white/[0.1] transition-colors disabled:opacity-50"
                 >
-                  Cancelar
+                  {t('crm.action.cancel', 'Cancelar')}
                 </button>
                 <button
                   onClick={handleDeleteConversation}
@@ -891,9 +893,9 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
                   className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-gradient-to-br from-red-600 to-red-500 rounded-xl shadow-sm shadow-red-500/30 hover:shadow-md hover:shadow-red-500/40 transition-all disabled:opacity-50"
                 >
                   {isDeleting ? (
-                    <><Loader2 size={14} className="animate-spin" /> Excluindo...</>
+                    <><Loader2 size={14} className="animate-spin" /> {t('crm.action.deleting', 'Excluindo...')}</>
                   ) : (
-                    <><Trash2 size={14} /> Excluir</>
+                    <><Trash2 size={14} /> {t('crm.action.delete', 'Excluir')}</>
                   )}
                 </button>
               </div>

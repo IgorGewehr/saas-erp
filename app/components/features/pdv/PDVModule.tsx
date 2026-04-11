@@ -49,6 +49,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatDate, formatDateTime, generateId } from '@/lib/utils/format';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
+import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, doc } from 'firebase/firestore';
@@ -117,6 +118,26 @@ interface CartItem extends SaleItem {
 }
 
 export default function PDVModule() {
+  const { t } = useTranslation();
+
+  const PAYMENT_METHODS: { value: PaymentMethod; label: string; icon: React.ReactNode }[] = useMemo(() => [
+    { value: 'dinheiro', label: t('pdv.payment.cash', 'Dinheiro'), icon: <Banknote size={18} /> },
+    { value: 'pix', label: t('pdv.payment.pix', 'PIX'), icon: <QrCode size={18} /> },
+    { value: 'credito', label: t('pdv.payment.credit', 'Crédito'), icon: <CreditCard size={18} /> },
+    { value: 'debito', label: t('pdv.payment.debit', 'Débito'), icon: <Wallet size={18} /> },
+    { value: 'boleto', label: t('pdv.payment.boleto', 'Boleto'), icon: <FileText size={18} /> },
+    { value: 'outros', label: t('pdv.payment.other', 'Outros'), icon: <MoreHorizontal size={18} /> },
+  ], [t]);
+
+  const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = useMemo(() => ({
+    dinheiro: t('pdv.payment.cash', 'Dinheiro'),
+    pix: t('pdv.payment.pix', 'PIX'),
+    credito: t('pdv.payment.credit', 'Crédito'),
+    debito: t('pdv.payment.debit', 'Débito'),
+    boleto: t('pdv.payment.boleto', 'Boleto'),
+    outros: t('pdv.payment.other', 'Outros'),
+  }), [t]);
+
   const { isDark } = useTheme();
   const { user, business } = useAuth();
   const queryClient = useQueryClient();
@@ -127,7 +148,7 @@ export default function PDVModule() {
   // --- State ---
   const [activeTab, setActiveTab] = useState<'produtos' | 'servicos'>('produtos');
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeCategory, setActiveCategory] = useState('Todos');
+  const [activeCategory, setActiveCategory] = useState(t('pdv.catalog.all', 'Todos'));
   const [cart, setCart] = useState<CartItem[]>([]);
   const [selectedClient, setSelectedClient] = useState<CRMContact | null>(null);
   const [discountValue, setDiscountValue] = useState('');
@@ -219,13 +240,14 @@ export default function PDVModule() {
 
   // --- Derived Data ---
   const categories = useMemo(() => {
+    const todosLabel = t('pdv.catalog.all', 'Todos');
     const cats = new Set<string>();
     if (activeTab === 'produtos') {
       products.forEach(p => { if (p.category) cats.add(p.category); });
     } else {
       services.forEach(s => { if (s.category) cats.add(s.category); });
     }
-    return ['Todos', ...Array.from(cats).sort()];
+    return [todosLabel, ...Array.from(cats).sort()];
   }, [activeTab, products, services]);
 
   const catalogItems: CatalogItem[] = useMemo(() => {
@@ -234,7 +256,7 @@ export default function PDVModule() {
       : services.map(s => ({ ...s, type: 'service' as const }));
     return items.filter((item) => {
       const matchesSearch = item.name.toLowerCase().includes(searchQuery.toLowerCase());
-      const matchesCategory = activeCategory === 'Todos' || item.category === activeCategory;
+      const matchesCategory = activeCategory === t('pdv.catalog.all', 'Todos') || item.category === activeCategory;
       return matchesSearch && matchesCategory;
     });
   }, [activeTab, searchQuery, activeCategory, products, services]);
@@ -550,9 +572,9 @@ export default function PDVModule() {
                 <ChevronRight size={18} className="rotate-180" />
               </button>
               <div>
-                <h1 className="text-2xl font-display font-bold text-slate-900 dark:text-gray-100">Historico de Vendas</h1>
+                <h1 className="text-2xl font-display font-bold text-slate-900 dark:text-gray-100">{t('pdv.history.title', 'Histórico de Vendas')}</h1>
                 <p className="text-sm text-slate-500 dark:text-gray-400 mt-0.5">
-                  {salesHistory.length} {salesHistory.length === 1 ? 'venda registrada' : 'vendas registradas'}
+                  {salesHistory.length} {salesHistory.length === 1 ? t('pdv.history.saleRegistered', 'venda registrada') : t('pdv.history.salesRegistered', 'vendas registradas')}
                 </p>
               </div>
             </div>
@@ -561,7 +583,7 @@ export default function PDVModule() {
             <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-gray-500" />
             <input
               type="text"
-              placeholder="Buscar por cliente, produto ou ID da venda..."
+              placeholder={t('pdv.history.searchPlaceholder', 'Buscar por cliente, produto ou ID da venda...')}
               value={historySearch}
               onChange={(e) => setHistorySearch(e.target.value)}
               className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-gray-800/50 border border-slate-200 dark:border-gray-700 rounded-xl text-sm text-slate-900 dark:text-gray-100 placeholder:text-slate-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 transition-all"
@@ -580,7 +602,7 @@ export default function PDVModule() {
           ) : filteredSales.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
               <Receipt size={40} strokeWidth={1.5} />
-              <p className="mt-3 text-sm">{historySearch ? 'Nenhuma venda encontrada' : 'Nenhuma venda registrada ainda'}</p>
+              <p className="mt-3 text-sm">{historySearch ? t('pdv.history.emptySearch', 'Nenhuma venda encontrada') : t('pdv.history.empty', 'Nenhuma venda registrada ainda')}</p>
             </div>
           ) : (
             <div className="space-y-2">
@@ -615,7 +637,7 @@ export default function PDVModule() {
                         #{sale.id.substring(0, 6).toUpperCase()}
                       </p>
                       <Chip
-                        label={sale.status === 'finalizada' ? 'Finalizada' : sale.status === 'cancelada' ? 'Cancelada' : 'Aberta'}
+                        label={sale.status === 'finalizada' ? t('pdv.status.finalized', 'Finalizada') : sale.status === 'cancelada' ? t('pdv.status.canceled', 'Cancelada') : t('pdv.status.open', 'Aberta')}
                         size="small"
                         sx={{
                           height: 20,
@@ -635,7 +657,7 @@ export default function PDVModule() {
                       />
                     </div>
                     <p className="text-xs text-slate-500 dark:text-gray-400 mt-0.5 truncate">
-                      {sale.clientName || 'Cliente avulso'} - {sale.items.length} {sale.items.length === 1 ? 'item' : 'itens'}
+                      {sale.clientName || t('pdv.history.guestClient', 'Cliente avulso')} - {sale.items.length} {sale.items.length === 1 ? t('pdv.history.item', 'item') : t('pdv.history.items', 'itens')}
                     </p>
                   </div>
                   <div className="text-right shrink-0">
@@ -677,7 +699,7 @@ export default function PDVModule() {
               >
                 <div className="flex items-center gap-3">
                   <Receipt size={20} className="text-red-600 dark:text-red-400" />
-                  <span>Venda #{selectedSale.id.substring(0, 6).toUpperCase()}</span>
+                  <span>{t('pdv.modal.sale', 'Venda')} #{selectedSale.id.substring(0, 6).toUpperCase()}</span>
                 </div>
                 <IconButton onClick={() => setSelectedSale(null)} size="small">
                   <X size={18} className={isDark ? 'text-gray-400' : ''} />
@@ -689,23 +711,23 @@ export default function PDVModule() {
                   <div className="bg-slate-50 dark:bg-gray-800/50 rounded-xl p-4 border border-slate-100 dark:border-gray-700/50">
                     {/* Sale info */}
                     <div className="flex items-center justify-between text-sm mb-3">
-                      <span className="text-slate-500 dark:text-gray-400">Data</span>
+                      <span className="text-slate-500 dark:text-gray-400">{t('pdv.modal.date', 'Data')}</span>
                       <span className="font-medium text-slate-900 dark:text-gray-100">{formatDateTime(selectedSale.createdAt)}</span>
                     </div>
                     {selectedSale.clientName && (
                       <div className="flex items-center justify-between text-sm mb-3">
-                        <span className="text-slate-500 dark:text-gray-400">Cliente</span>
+                        <span className="text-slate-500 dark:text-gray-400">{t('pdv.modal.client', 'Cliente')}</span>
                         <span className="font-medium text-slate-900 dark:text-gray-100">{selectedSale.clientName}</span>
                       </div>
                     )}
                     <div className="flex items-center justify-between text-sm mb-3">
-                      <span className="text-slate-500 dark:text-gray-400">Operador</span>
+                      <span className="text-slate-500 dark:text-gray-400">{t('pdv.modal.operator', 'Operador')}</span>
                       <span className="font-medium text-slate-900 dark:text-gray-100">{selectedSale.operatorName}</span>
                     </div>
                     <Divider sx={{ my: 1.5, borderStyle: 'dashed', borderColor: isDark ? '#374151' : undefined }} />
 
                     {/* Items */}
-                    <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase tracking-wider mb-2">Itens</p>
+                    <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase tracking-wider mb-2">{t('pdv.modal.items', 'Itens')}</p>
                     <div className="space-y-2">
                       {selectedSale.items.map((item, idx) => (
                         <div key={idx} className="flex justify-between text-sm">
@@ -725,17 +747,17 @@ export default function PDVModule() {
                     {/* Totals */}
                     <div className="space-y-1">
                       <div className="flex justify-between text-sm text-slate-600 dark:text-gray-400">
-                        <span>Subtotal</span>
+                        <span>{t('pdv.modal.subtotal', 'Subtotal')}</span>
                         <span>{formatCurrency(selectedSale.subtotal)}</span>
                       </div>
                       {selectedSale.discount > 0 && (
                         <div className="flex justify-between text-sm text-red-600 dark:text-red-400">
-                          <span>Desconto</span>
+                          <span>{t('pdv.modal.discount', 'Desconto')}</span>
                           <span>-{formatCurrency(selectedSale.discount)}</span>
                         </div>
                       )}
                       <div className="flex justify-between text-base font-bold text-slate-900 dark:text-gray-100 pt-1">
-                        <span>Total</span>
+                        <span>{t('pdv.modal.total', 'Total')}</span>
                         <span>{formatCurrency(selectedSale.total)}</span>
                       </div>
                     </div>
@@ -743,7 +765,7 @@ export default function PDVModule() {
                     <Divider sx={{ my: 1.5, borderStyle: 'dashed', borderColor: isDark ? '#374151' : undefined }} />
 
                     {/* Payments */}
-                    <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase tracking-wider mb-2">Pagamento</p>
+                    <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase tracking-wider mb-2">{t('pdv.modal.payment', 'Pagamento')}</p>
                     <div className="space-y-1">
                       {selectedSale.payments.map((p, idx) => (
                         <div key={idx} className="flex justify-between text-sm text-slate-700 dark:text-gray-300">
@@ -776,23 +798,23 @@ export default function PDVModule() {
         <div className="px-6 pt-6 pb-4 border-b border-slate-100 dark:border-gray-800">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h1 className="text-2xl font-display font-bold text-slate-900 dark:text-gray-100">PDV</h1>
-              <p className="text-sm text-slate-500 dark:text-gray-400 mt-0.5">Ponto de Venda</p>
+              <h1 className="text-2xl font-display font-bold text-slate-900 dark:text-gray-100">{t('pdv.main.title', 'PDV')}</h1>
+              <p className="text-sm text-slate-500 dark:text-gray-400 mt-0.5">{t('pdv.main.subtitle', 'Ponto de Venda')}</p>
             </div>
             <div className="flex items-center gap-2">
-              <Tooltip title="Historico de vendas">
+              <Tooltip title={t('pdv.main.historyTooltip', 'Histórico de vendas')}>
                 <button
                   onClick={() => setMainView('historico')}
                   className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-gray-400 bg-slate-50 dark:bg-gray-800/50 px-3 py-2 rounded-lg border border-slate-200 dark:border-gray-700 hover:border-slate-300 dark:hover:border-gray-600 hover:text-slate-700 dark:hover:text-gray-300 transition-all"
                 >
                   <History size={14} />
-                  <span>Historico</span>
+                  <span>{t('pdv.main.historyBtn', 'Histórico')}</span>
                 </button>
               </Tooltip>
-              <Tooltip title="Atalhos: Enter para buscar, Esc para limpar">
+              <Tooltip title={t('pdv.main.shortcutsTooltip', 'Atalhos: Enter para buscar, Esc para limpar')}>
                 <div className="flex items-center gap-1.5 text-xs text-slate-400 dark:text-gray-500 bg-slate-50 dark:bg-gray-800/50 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-gray-700">
                   <Keyboard size={14} />
-                  <span>Atalhos</span>
+                  <span>{t('pdv.main.shortcutsBtn', 'Atalhos')}</span>
                 </div>
               </Tooltip>
             </div>
@@ -804,7 +826,7 @@ export default function PDVModule() {
             <input
               ref={searchInputRef}
               type="text"
-              placeholder="Buscar produto ou servico..."
+              placeholder={t('pdv.catalog.searchPlaceholder', 'Buscar produto ou serviço...')}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-gray-800/50 border border-slate-200 dark:border-gray-700 rounded-xl text-sm text-slate-900 dark:text-gray-100 placeholder:text-slate-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 transition-all"
@@ -825,7 +847,7 @@ export default function PDVModule() {
               )}
             >
               <Package size={16} />
-              Produtos
+              {t('pdv.catalog.productsBtn', 'Produtos')}
               {products.length > 0 && (
                 <span className="text-xs text-slate-400 dark:text-gray-500">({products.length})</span>
               )}
@@ -840,7 +862,7 @@ export default function PDVModule() {
               )}
             >
               <Scissors size={16} />
-              Servicos
+              {t('pdv.catalog.servicesBtn', 'Serviços')}
               {services.length > 0 && (
                 <span className="text-xs text-slate-400 dark:text-gray-500">({services.length})</span>
               )}
@@ -961,9 +983,9 @@ export default function PDVModule() {
           {catalogItems.length === 0 && (
             <div className="flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
               <Search size={40} strokeWidth={1.5} />
-              <p className="mt-3 text-sm">Nenhum item encontrado</p>
+              <p className="mt-3 text-sm">{t('pdv.catalog.emptyTitle', 'Nenhum item encontrado')}</p>
               <p className="text-xs text-slate-300 dark:text-gray-600 mt-1">
-                {activeTab === 'produtos' ? 'Cadastre produtos no modulo de Estoque' : 'Cadastre servicos no modulo de Agenda'}
+                {activeTab === 'produtos' ? t('pdv.catalog.emptyProductsDesc', 'Cadastre produtos no módulo de Estoque') : t('pdv.catalog.emptyServicesDesc', 'Cadastre serviços no módulo de Agenda')}
               </p>
             </div>
           )}
@@ -981,12 +1003,12 @@ export default function PDVModule() {
               </div>
               <div>
                 <h2 className="text-lg font-display font-bold text-slate-900 dark:text-gray-100">
-                  Nova Venda
+                  {t('pdv.cart.newSale', 'Nova Venda')}
                 </h2>
               </div>
             </div>
             <Chip
-              label={`${cart.length} ${cart.length === 1 ? 'item' : 'itens'}`}
+              label={`${cart.length} ${cart.length === 1 ? t('pdv.history.item', 'item') : t('pdv.history.items', 'itens')}`}
               size="small"
               sx={{
                 backgroundColor: cart.length > 0
@@ -1009,11 +1031,11 @@ export default function PDVModule() {
             onChange={(_, value) => setSelectedClient(value)}
             size="small"
             loading={loadingClients}
-            loadingText="Carregando clientes..."
+            loadingText={t('pdv.cart.loadingClients', 'Carregando clientes...')}
             renderInput={(params) => (
               <TextField
                 {...params}
-                placeholder="Selecionar cliente (opcional)"
+                placeholder={t('pdv.cart.selectClient', 'Selecionar cliente (opcional)')}
                 InputProps={{
                   ...params.InputProps,
                   startAdornment: (
@@ -1046,12 +1068,12 @@ export default function PDVModule() {
                   </div>
                   <div>
                     <p className="text-sm font-medium text-slate-900 dark:text-gray-100">{option.name}</p>
-                    <p className="text-xs text-slate-400 dark:text-gray-500">{option.visitCount} visitas</p>
+                    <p className="text-xs text-slate-400 dark:text-gray-500">{option.visitCount} {t('pdv.cart.visits', 'visitas')}</p>
                   </div>
                 </div>
               </li>
             )}
-            noOptionsText="Nenhum cliente encontrado"
+            noOptionsText={t('pdv.catalog.emptyTitle', 'Nenhum cliente encontrado')}
           />
         </div>
 
@@ -1066,8 +1088,8 @@ export default function PDVModule() {
                 className="flex flex-col items-center justify-center py-16 text-slate-300 dark:text-gray-600"
               >
                 <ShoppingCart size={48} strokeWidth={1.2} />
-                <p className="mt-3 text-sm text-slate-400 dark:text-gray-500">Carrinho vazio</p>
-                <p className="text-xs text-slate-300 dark:text-gray-600 mt-1">Clique em um produto ou servico para adicionar</p>
+                <p className="mt-3 text-sm text-slate-400 dark:text-gray-500">{t('pdv.cart.emptyTitle', 'Carrinho vazio')}</p>
+                <p className="text-xs text-slate-300 dark:text-gray-600 mt-1">{t('pdv.cart.emptyDesc', 'Clique em um produto ou serviço para adicionar')}</p>
               </motion.div>
             ) : (
               <div className="space-y-2">
@@ -1127,7 +1149,7 @@ export default function PDVModule() {
             {/* Subtotal & Discount */}
             <div className="space-y-2 mb-4">
               <div className="flex justify-between text-sm text-slate-600 dark:text-gray-400">
-                <span>Subtotal</span>
+                <span>{t('pdv.modal.subtotal', 'Subtotal')}</span>
                 <span className="font-medium">{formatCurrency(subtotal)}</span>
               </div>
               <div className="flex items-center gap-2">
@@ -1262,7 +1284,7 @@ export default function PDVModule() {
                       >
                         {Array.from({ length: 12 }, (_, i) => i + 1).map((n) => (
                           <option key={n} value={n}>
-                            {n}x {n === 1 ? 'a vista' : `de ${formatCurrency((parseFloat(paymentAmount) || 0) / n)}`}
+                            {n}x {n === 1 ? t('pdv.checkout.cash', 'à vista') : `${t('pdv.checkout.of', 'de')} ${formatCurrency((parseFloat(paymentAmount) || 0) / n)}`}
                           </option>
                         ))}
                       </select>
@@ -1304,18 +1326,18 @@ export default function PDVModule() {
                 <div className="flex justify-between text-sm py-2 px-3 bg-slate-100 dark:bg-gray-800 rounded-lg">
                   {remaining > 0.01 ? (
                     <>
-                      <span className="text-slate-600 dark:text-gray-400">Falta</span>
+                      <span className="text-slate-600 dark:text-gray-400">{t('pdv.checkout.missing', 'Falta')}</span>
                       <span className="font-bold text-amber-600">{formatCurrency(remaining)}</span>
                     </>
                   ) : change > 0 ? (
                     <>
-                      <span className="text-slate-600 dark:text-gray-400">Troco</span>
+                      <span className="text-slate-600 dark:text-gray-400">{t('pdv.checkout.change', 'Troco')}</span>
                       <span className="font-bold text-emerald-600">{formatCurrency(change)}</span>
                     </>
                   ) : (
                     <>
                       <span className="text-slate-600 dark:text-gray-400">Pagamento</span>
-                      <span className="font-bold text-emerald-600">Completo</span>
+                      <span className="font-bold text-emerald-600">{t('pdv.checkout.complete', 'Completo')}</span>
                     </>
                   )}
                 </div>
@@ -1339,7 +1361,7 @@ export default function PDVModule() {
               >
                 Cancelar
               </Button>
-              <Tooltip title="Emitir Nota Fiscal">
+              <Tooltip title={t('pdv.checkout.emitNf', 'Emitir Nota Fiscal')}>
                 <IconButton
                   sx={{
                     border: `1px solid ${isDark ? '#374151' : '#CBD5E1'}`,
@@ -1412,7 +1434,7 @@ export default function PDVModule() {
                 transition={{ delay: 0.3 }}
                 className="text-xl font-display font-bold text-slate-900 dark:text-gray-100 mb-2"
               >
-                Venda Finalizada!
+                {t('pdv.modal.saleFinishedTitle', 'Venda Finalizada!')}
               </motion.h3>
               <motion.p
                 initial={{ opacity: 0, y: 10 }}
@@ -1467,7 +1489,7 @@ export default function PDVModule() {
                   {/* Receipt Preview */}
                   <div className="bg-slate-50 dark:bg-gray-800/50 rounded-xl p-4 border border-slate-100 dark:border-gray-700/50">
                     <div className="text-center mb-4">
-                      <p className="text-xs text-slate-400 dark:text-gray-500 uppercase tracking-widest">Resumo da Venda</p>
+                      <p className="text-xs text-slate-400 dark:text-gray-500 uppercase tracking-widest">{t('pdv.modal.receiptSummary', 'Resumo da Venda')}</p>
                       {selectedClient && (
                         <p className="text-xs text-slate-500 dark:text-gray-400 mt-1">
                           Cliente: {selectedClient.name}
@@ -1491,17 +1513,17 @@ export default function PDVModule() {
                     <Divider sx={{ my: 1.5, borderStyle: 'dashed', borderColor: isDark ? '#374151' : undefined }} />
                     <div className="space-y-1">
                       <div className="flex justify-between text-sm text-slate-600 dark:text-gray-400">
-                        <span>Subtotal</span>
+                        <span>{t('pdv.modal.subtotal', 'Subtotal')}</span>
                         <span>{formatCurrency(subtotal)}</span>
                       </div>
                       {discountAmount > 0 && (
                         <div className="flex justify-between text-sm text-red-600 dark:text-red-400">
-                          <span>Desconto</span>
+                          <span>{t('pdv.modal.discount', 'Desconto')}</span>
                           <span>-{formatCurrency(discountAmount)}</span>
                         </div>
                       )}
                       <div className="flex justify-between text-base font-bold text-slate-900 dark:text-gray-100 pt-1">
-                        <span>Total</span>
+                        <span>{t('pdv.modal.total', 'Total')}</span>
                         <span>{formatCurrency(total)}</span>
                       </div>
                     </div>
@@ -1528,7 +1550,7 @@ export default function PDVModule() {
                 </div>
               </DialogContent>
               <DialogActions sx={{ px: 3, py: 2, gap: 1, backgroundColor: isDark ? '#1f2937' : undefined }}>
-                <Tooltip title="Imprimir recibo">
+                <Tooltip title={t('pdv.modal.printTooltip', 'Imprimir recibo')}>
                   <IconButton
                     sx={{
                       border: `1px solid ${isDark ? '#374151' : '#E2E8F0'}`,
@@ -1564,10 +1586,10 @@ export default function PDVModule() {
                   {isSaving ? (
                     <div className="flex items-center gap-2">
                       <Loader2 size={16} className="animate-spin" />
-                      Salvando...
+                      {t('pdv.modal.savingBtn', 'Salvando...')}
                     </div>
                   ) : (
-                    'Confirmar Venda'
+                    t('pdv.modal.confirmBtn', 'Confirmar Venda')
                   )}
                 </Button>
               </DialogActions>

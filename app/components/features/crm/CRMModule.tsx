@@ -21,6 +21,7 @@ import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatDate, formatDateTime, getInitials } from '@/lib/utils/format';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
+import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
 import { db } from '@/lib/config/firebase';
@@ -48,13 +49,7 @@ import { SourceIcon } from './SourceIcon';
 
 // ── Tab Config ──────────────────────────────────────────────────────────────
 
-const TABS: { key: CRMTab; label: string; icon: React.ReactNode; desc: string }[] = [
-  { key: 'kanban', label: 'Pipeline', icon: <Layers size={15} />, desc: 'Kanban de leads' },
-  { key: 'inbox', label: 'Inbox', icon: <Inbox size={15} />, desc: 'Conversas' },
-  { key: 'atividades', label: 'Atividades', icon: <Activity size={15} />, desc: 'Tarefas e follow-ups' },
-  { key: 'campanhas', label: 'Campanhas', icon: <Send size={15} />, desc: 'Broadcasts' },
-  { key: 'metricas', label: 'Inteligência', icon: <Brain size={15} />, desc: 'Scores e insights' },
-];
+
 
 // ── Activity Icons (JSX — can't live in shared.ts) ─────────────────────────
 
@@ -106,6 +101,7 @@ function CRMSkeleton() {
 function ContactFormDialog({ open, onClose, onSave, contact, members }: {
   open: boolean; onClose: () => void; onSave: (data: Partial<CRMContact>) => Promise<void>; contact: CRMContact | null; members: User[];
 }) {
+  const { t } = useTranslation();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
@@ -169,7 +165,7 @@ function ContactFormDialog({ open, onClose, onSave, contact, members }: {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center"><UserPlus size={18} className="text-white" /></div>
-            <span className="text-base font-display font-bold text-gray-900 dark:text-gray-100">{contact ? 'Editar Contato' : 'Novo Contato'}</span>
+            <span className="text-base font-display font-bold text-gray-900 dark:text-gray-100">{contact ? t('crm.dialog.editContact', 'Editar Contato') : t('crm.dialog.newContact', 'Novo Contato')}</span>
           </div>
           <IconButton onClick={onClose} size="small"><X size={18} /></IconButton>
         </div>
@@ -177,50 +173,50 @@ function ContactFormDialog({ open, onClose, onSave, contact, members }: {
       <DialogContent sx={{ pt: '12px !important' }}>
         <div className="space-y-4">
           {/* ── Dados Base ──────────────────────────── */}
-          <TextField label="Nome *" value={name} onChange={(e) => setName(e.target.value)} fullWidth size="small" sx={inputSx} />
+          <TextField label={t('crm.form.nameReq', 'Nome *')} value={name} onChange={(e) => setName(e.target.value)} fullWidth size="small" sx={inputSx} />
           <div className="grid grid-cols-2 gap-3">
-            <TextField label="E-mail" value={email} onChange={(e) => setEmail(e.target.value)} fullWidth size="small" type="email" sx={inputSx} />
-            <TextField label="Telefone" value={phone} onChange={(e) => setPhone(applyPhoneMask(e.target.value))} fullWidth size="small" sx={inputSx} />
+            <TextField label={t('crm.form.email', 'E-mail')} value={email} onChange={(e) => setEmail(e.target.value)} fullWidth size="small" type="email" sx={inputSx} />
+            <TextField label={t('crm.form.phone', 'Telefone')} value={phone} onChange={(e) => setPhone(applyPhoneMask(e.target.value))} fullWidth size="small" sx={inputSx} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <TextField label="WhatsApp" value={whatsapp} onChange={(e) => setWhatsapp(applyPhoneMask(e.target.value))} fullWidth size="small" sx={inputSx} />
-            <TextField label="Empresa" value={company} onChange={(e) => setCompany(e.target.value)} fullWidth size="small" sx={inputSx} />
+            <TextField label={t('crm.form.company', 'Empresa')} value={company} onChange={(e) => setCompany(e.target.value)} fullWidth size="small" sx={inputSx} />
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <TextField label="Cargo" value={role} onChange={(e) => setRole(e.target.value)} fullWidth size="small" sx={inputSx} />
-            <FormControl size="small" fullWidth><InputLabel>Origem</InputLabel><Select value={source} onChange={(e) => setSource(e.target.value as LeadSource)} label="Origem" sx={{ borderRadius: '10px' }}>{ALL_SOURCES.map((s) => <MenuItem key={s} value={s}>{SOURCE_LABELS[s]}</MenuItem>)}</Select></FormControl>
+            <TextField label={t('crm.form.role', 'Cargo')} value={role} onChange={(e) => setRole(e.target.value)} fullWidth size="small" sx={inputSx} />
+            <FormControl size="small" fullWidth><InputLabel>{t('crm.filter.source', 'Origem')}</InputLabel><Select value={source} onChange={(e) => setSource(e.target.value as LeadSource)} label={t('crm.form.source', 'Origem')} sx={{ borderRadius: '10px' }}>{ALL_SOURCES.map((s) => <MenuItem key={s} value={s}>{t('crm.source.' + s, SOURCE_LABELS[s])}</MenuItem>)}</Select></FormControl>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <FormControl size="small" fullWidth><InputLabel>Status</InputLabel><Select value={status} onChange={(e) => setStatus(e.target.value as LeadStatus)} label="Status" sx={{ borderRadius: '10px' }}>{ALL_STATUSES.map((s) => <MenuItem key={s} value={s}>{STATUS_LABELS[s]}</MenuItem>)}</Select></FormControl>
-            <FormControl size="small" fullWidth><InputLabel>Responsável</InputLabel><Select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} label="Responsável" sx={{ borderRadius: '10px' }}><MenuItem value="">Nenhum</MenuItem>{members.map((m) => <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>)}</Select></FormControl>
+            <FormControl size="small" fullWidth><InputLabel>{t('crm.form.status', 'Status')}</InputLabel><Select value={status} onChange={(e) => setStatus(e.target.value as LeadStatus)} label={t('crm.form.status', 'Status')} sx={{ borderRadius: '10px' }}>{ALL_STATUSES.map((s) => <MenuItem key={s} value={s}>{t('crm.status.' + s, STATUS_LABELS[s])}</MenuItem>)}</Select></FormControl>
+            <FormControl size="small" fullWidth><InputLabel>{t('crm.form.assignedTo', 'Responsável')}</InputLabel><Select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} label={t('crm.form.assignedTo', 'Responsável')} sx={{ borderRadius: '10px' }}><MenuItem value="">{t('crm.form.none', 'Nenhum')}</MenuItem>{members.map((m) => <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>)}</Select></FormControl>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <FormControl size="small" fullWidth><InputLabel>Canal Preferido</InputLabel><Select value={preferredChannel} onChange={(e) => setPreferredChannel(e.target.value)} label="Canal Preferido" sx={{ borderRadius: '10px' }}><MenuItem value="">Nenhum</MenuItem><MenuItem value="whatsapp">WhatsApp</MenuItem><MenuItem value="facebook">Messenger</MenuItem><MenuItem value="instagram">Instagram</MenuItem></Select></FormControl>
-            <FormControl size="small" fullWidth><InputLabel>Perfil</InputLabel><Select value={profile} onChange={(e) => setProfile(e.target.value)} label="Perfil" sx={{ borderRadius: '10px' }}><MenuItem value="">Auto</MenuItem><MenuItem value="vip">👑 VIP</MenuItem><MenuItem value="regular">● Regular</MenuItem><MenuItem value="sporadic">◌ Esporádico</MenuItem><MenuItem value="new">✦ Novo</MenuItem><MenuItem value="at_risk">⚠ Em Risco</MenuItem><MenuItem value="churned">✕ Perdido</MenuItem></Select></FormControl>
+            <FormControl size="small" fullWidth><InputLabel>{t('crm.form.preferredChannel', 'Canal Preferido')}</InputLabel><Select value={preferredChannel} onChange={(e) => setPreferredChannel(e.target.value)} label={t('crm.form.preferredChannel', 'Canal Preferido')} sx={{ borderRadius: '10px' }}><MenuItem value="">{t('crm.form.none', 'Nenhum')}</MenuItem><MenuItem value="whatsapp">WhatsApp</MenuItem><MenuItem value="facebook">Messenger</MenuItem><MenuItem value="instagram">Instagram</MenuItem></Select></FormControl>
+            <FormControl size="small" fullWidth><InputLabel>{t('crm.form.profile', 'Perfil')}</InputLabel><Select value={profile} onChange={(e) => setProfile(e.target.value)} label={t('crm.form.profile', 'Perfil')} sx={{ borderRadius: '10px' }}><MenuItem value="">{t('crm.form.auto', 'Auto')}</MenuItem><MenuItem value="vip">👑 VIP</MenuItem><MenuItem value="regular">● {t('crm.profile.regular', 'Regular')}</MenuItem><MenuItem value="sporadic">◌ {t('crm.profile.sporadic', 'Esporádico')}</MenuItem><MenuItem value="new">✦ {t('crm.profile.new', 'Novo')}</MenuItem><MenuItem value="at_risk">⚠ {t('crm.profile.risk', 'Em Risco')}</MenuItem><MenuItem value="churned">✕ {t('crm.profile.churn', 'Perdido')}</MenuItem></Select></FormControl>
           </div>
           <div><p className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">Score: {score}</p><Slider value={score} onChange={(_, v) => setScore(v as number)} min={0} max={100} step={5} sx={{ color: score >= 80 ? '#10B981' : score >= 50 ? '#F59E0B' : '#94A3B8' }} /></div>
           <TextField label="Tags (separadas por vírgula)" value={tags} onChange={(e) => setTags(e.target.value)} fullWidth size="small" placeholder="quente, tem interesse" sx={inputSx} />
-          <TextField label="Observações" value={notes} onChange={(e) => setNotes(e.target.value)} fullWidth size="small" multiline rows={2} sx={inputSx} />
+          <TextField label={t('crm.form.notes', 'Observações')} value={notes} onChange={(e) => setNotes(e.target.value)} fullWidth size="small" multiline rows={2} sx={inputSx} />
 
           {/* ── Inteligência (toggle) ──────────────── */}
           <button type="button" onClick={() => setShowAdvanced(!showAdvanced)}
             className="flex items-center gap-2 text-xs font-semibold text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors">
             <Zap size={13} />
-            {showAdvanced ? 'Ocultar campos de inteligência ▲' : 'Campos de inteligência ▼'}
+            {showAdvanced ? t('crm.action.hideIntelligence', 'Ocultar campos de inteligência ▲') : t('crm.action.showIntelligence', 'Campos de inteligência ▼')}
           </button>
           {showAdvanced && (
             <div className="space-y-3 p-3 rounded-xl bg-gray-50 dark:bg-white/[0.02] border border-gray-100 dark:border-white/[0.06]">
-              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Dados para Agente IA</p>
-              <TextField label="Próxima ação sugerida" value={suggestedAction} onChange={(e) => setSuggestedAction(e.target.value)} fullWidth size="small" placeholder="Ligar para reativar, oferecer desconto..." sx={inputSx} />
-              <TextField label="Resumo IA" value={aiSummary} onChange={(e) => setAiSummary(e.target.value)} fullWidth size="small" multiline rows={3}
-                placeholder="Ex: Cliente há 8 meses, sempre agenda corte + barba, cancelou 2x nos últimos 3 meses, score de churn alto" sx={inputSx} />
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">{t('crm.form.aiData', 'Dados para Agente IA')}</p>
+              <TextField label={t('crm.form.suggestedAction', 'Próxima ação sugerida')} value={suggestedAction} onChange={(e) => setSuggestedAction(e.target.value)} fullWidth size="small" placeholder={t('crm.form.suggestedActionPlaceholder', 'Ligar para reativar, oferecer desconto...')} sx={inputSx} />
+              <TextField label={t('crm.form.aiSummary', 'Resumo IA')} value={aiSummary} onChange={(e) => setAiSummary(e.target.value)} fullWidth size="small" multiline rows={3}
+                placeholder={t('crm.form.aiSummaryPlaceholder', 'Ex: Cliente há 8 meses, sempre agenda corte + barba, cancelou 2x nos últimos 3 meses, score de churn alto')} sx={inputSx} />
             </div>
           )}
         </div>
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2.5 }}>
-        <Button onClick={onClose} disabled={saving} sx={{ borderRadius: '10px', textTransform: 'none' }}>Cancelar</Button>
-        <Button onClick={handleSubmit} disabled={saving || !name.trim()} variant="contained" sx={{ borderRadius: '10px', textTransform: 'none', bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' } }}>{saving ? 'Salvando...' : contact ? 'Salvar' : 'Criar Contato'}</Button>
+        <Button onClick={onClose} disabled={saving} sx={{ borderRadius: '10px', textTransform: 'none' }}>{t('crm.action.cancel', 'Cancelar')}</Button>
+        <Button onClick={handleSubmit} disabled={saving || !name.trim()} variant="contained" sx={{ borderRadius: '10px', textTransform: 'none', bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' } }}>{saving ? t('crm.action.saving', 'Salvando...') : contact ? t('crm.action.save', 'Salvar') : t('crm.action.createContact', 'Criar Contato')}</Button>
       </DialogActions>
     </Dialog>
   );
@@ -233,6 +229,7 @@ function ContactFormDialog({ open, onClose, onSave, contact, members }: {
 function DealFormDialog({ open, onClose, onSave, deal, contacts, members }: {
   open: boolean; onClose: () => void; onSave: (data: Partial<CRMDeal>) => Promise<void>; deal: CRMDeal | null; contacts: CRMContact[]; members: User[];
 }) {
+  const { t } = useTranslation();
   const [title, setTitle] = useState(''); const [contactId, setContactId] = useState(''); const [valueStr, setValueStr] = useState('');
   const [stage, setStage] = useState('prospeccao'); const [probability, setProbability] = useState(10);
   const [expectedCloseDate, setExpectedCloseDate] = useState(''); const [assignedTo, setAssignedTo] = useState('');
@@ -252,26 +249,26 @@ function DealFormDialog({ open, onClose, onSave, deal, contacts, members }: {
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: '16px' } }}>
-      <DialogTitle sx={{ pb: 1 }}><div className="flex items-center justify-between"><div className="flex items-center gap-2"><div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center"><Briefcase size={18} className="text-white" /></div><span className="text-base font-display font-bold text-gray-900 dark:text-gray-100">{deal ? 'Editar Deal' : 'Novo Deal'}</span></div><IconButton onClick={onClose} size="small"><X size={18} /></IconButton></div></DialogTitle>
+      <DialogTitle sx={{ pb: 1 }}><div className="flex items-center justify-between"><div className="flex items-center gap-2"><div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center"><Briefcase size={18} className="text-white" /></div><span className="text-base font-display font-bold text-gray-900 dark:text-gray-100">{deal ? t('crm.dialog.editDeal', 'Editar Deal') : t('crm.dialog.newDeal', 'Novo Deal')}</span></div><IconButton onClick={onClose} size="small"><X size={18} /></IconButton></div></DialogTitle>
       <DialogContent sx={{ pt: '12px !important' }}>
         <div className="space-y-4">
-          <TextField label="Título *" value={title} onChange={(e) => setTitle(e.target.value)} fullWidth size="small" sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
-          <FormControl size="small" fullWidth><InputLabel>Contato *</InputLabel><Select value={contactId} onChange={(e) => setContactId(e.target.value)} label="Contato *" sx={{ borderRadius: '10px' }}>{contacts.map((c) => <MenuItem key={c.id} value={c.id}>{c.name}{c.company ? ` - ${c.company}` : ''}</MenuItem>)}</Select></FormControl>
+          <TextField label={t('crm.form.titleReq', 'Título *')} value={title} onChange={(e) => setTitle(e.target.value)} fullWidth size="small" sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
+          <FormControl size="small" fullWidth><InputLabel>{t('crm.form.contactReq', 'Contato *')}</InputLabel><Select value={contactId} onChange={(e) => setContactId(e.target.value)} label={t('crm.form.contactReq', 'Contato *')} sx={{ borderRadius: '10px' }}>{contacts.map((c) => <MenuItem key={c.id} value={c.id}>{c.name}{c.company ? ` - ${c.company}` : ''}</MenuItem>)}</Select></FormControl>
           <div className="grid grid-cols-2 gap-3">
-            <TextField label="Valor (R$)" value={valueStr} onChange={(e) => setValueStr(e.target.value)} fullWidth size="small" placeholder="0,00" sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
-            <FormControl size="small" fullWidth><InputLabel>Etapa</InputLabel><Select value={stage} onChange={(e) => handleStageChange(e.target.value)} label="Etapa" sx={{ borderRadius: '10px' }}>{PIPELINE_STAGES.map((s) => (<MenuItem key={s.id} value={s.id}><div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: s.color }} />{s.name}</div></MenuItem>))}</Select></FormControl>
+            <TextField label={t('crm.form.value', 'Valor (R$)')} value={valueStr} onChange={(e) => setValueStr(e.target.value)} fullWidth size="small" placeholder="0,00" sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
+            <FormControl size="small" fullWidth><InputLabel>{t('crm.form.stage', 'Etapa')}</InputLabel><Select value={stage} onChange={(e) => handleStageChange(e.target.value)} label={t('crm.form.stage', 'Etapa')} sx={{ borderRadius: '10px' }}>{PIPELINE_STAGES.map((s) => (<MenuItem key={s.id} value={s.id}><div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: s.color }} />{t('crm.stage.' + s.id, s.name)}</div></MenuItem>))}</Select></FormControl>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <div><p className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">Probabilidade: {probability}%</p><Slider value={probability} onChange={(_, v) => setProbability(v as number)} min={0} max={100} step={5} sx={{ color: '#DC2626' }} /></div>
-            <TextField label="Previsão de Fechamento" value={expectedCloseDate} onChange={(e) => setExpectedCloseDate(e.target.value)} fullWidth size="small" type="date" InputLabelProps={{ shrink: true }} sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
+            <div><p className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">{t('crm.form.prob', 'Probabilidade: ')}{probability}%</p><Slider value={probability} onChange={(_, v) => setProbability(v as number)} min={0} max={100} step={5} sx={{ color: '#DC2626' }} /></div>
+            <TextField label={t('crm.form.expectedCloseDate', 'Previsão de Fechamento')} value={expectedCloseDate} onChange={(e) => setExpectedCloseDate(e.target.value)} fullWidth size="small" type="date" InputLabelProps={{ shrink: true }} sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
           </div>
-          <FormControl size="small" fullWidth><InputLabel>Responsável</InputLabel><Select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} label="Responsável" sx={{ borderRadius: '10px' }}><MenuItem value="">Nenhum</MenuItem>{members.map((m) => <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>)}</Select></FormControl>
-          <TextField label="Observações" value={notes} onChange={(e) => setNotes(e.target.value)} fullWidth size="small" multiline rows={3} sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
+          <FormControl size="small" fullWidth><InputLabel>{t('crm.form.assignedTo', 'Responsável')}</InputLabel><Select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} label={t('crm.form.assignedTo', 'Responsável')} sx={{ borderRadius: '10px' }}><MenuItem value="">{t('crm.form.none', 'Nenhum')}</MenuItem>{members.map((m) => <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>)}</Select></FormControl>
+          <TextField label={t('crm.form.notes', 'Observações')} value={notes} onChange={(e) => setNotes(e.target.value)} fullWidth size="small" multiline rows={3} sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
         </div>
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2.5 }}>
-        <Button onClick={onClose} disabled={saving} sx={{ borderRadius: '10px', textTransform: 'none' }}>Cancelar</Button>
-        <Button onClick={handleSubmit} disabled={saving || !title.trim() || !contactId} variant="contained" sx={{ borderRadius: '10px', textTransform: 'none', bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' } }}>{saving ? 'Salvando...' : deal ? 'Salvar' : 'Criar Deal'}</Button>
+        <Button onClick={onClose} disabled={saving} sx={{ borderRadius: '10px', textTransform: 'none' }}>{t('crm.action.cancel', 'Cancelar')}</Button>
+        <Button onClick={handleSubmit} disabled={saving || !title.trim() || !contactId} variant="contained" sx={{ borderRadius: '10px', textTransform: 'none', bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' } }}>{saving ? t('crm.action.saving', 'Salvando...') : deal ? t('crm.action.save', 'Salvar') : t('crm.action.createDeal', 'Criar Deal')}</Button>
       </DialogActions>
     </Dialog>
   );
@@ -284,6 +281,7 @@ function DealFormDialog({ open, onClose, onSave, deal, contacts, members }: {
 function ActivityFormDialog({ open, onClose, onSave, activity, contacts, deals, members }: {
   open: boolean; onClose: () => void; onSave: (data: Partial<CRMActivity>) => Promise<void>; activity: CRMActivity | null; contacts: CRMContact[]; deals: CRMDeal[]; members: User[];
 }) {
+  const { t } = useTranslation();
   const [type, setType] = useState<CRMActivityType>('tarefa'); const [title, setTitle] = useState(''); const [description, setDescription] = useState('');
   const [contactId, setContactId] = useState(''); const [dealId, setDealId] = useState(''); const [scheduledAt, setScheduledAt] = useState('');
   const [assignedTo, setAssignedTo] = useState(''); const [duration, setDuration] = useState(''); const [saving, setSaving] = useState(false);
@@ -300,26 +298,26 @@ function ActivityFormDialog({ open, onClose, onSave, activity, contacts, deals, 
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: '16px' } }}>
-      <DialogTitle sx={{ pb: 1 }}><div className="flex items-center justify-between"><div className="flex items-center gap-2"><div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center"><Activity size={18} className="text-white" /></div><span className="text-base font-display font-bold text-gray-900 dark:text-gray-100">{activity ? 'Editar Atividade' : 'Nova Atividade'}</span></div><IconButton onClick={onClose} size="small"><X size={18} /></IconButton></div></DialogTitle>
+      <DialogTitle sx={{ pb: 1 }}><div className="flex items-center justify-between"><div className="flex items-center gap-2"><div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center"><Activity size={18} className="text-white" /></div><span className="text-base font-display font-bold text-gray-900 dark:text-gray-100">{activity ? t('crm.dialog.editActivity', 'Editar Atividade') : t('crm.dialog.newActivity', 'Nova Atividade')}</span></div><IconButton onClick={onClose} size="small"><X size={18} /></IconButton></div></DialogTitle>
       <DialogContent sx={{ pt: '12px !important' }}>
         <div className="space-y-4">
-          <FormControl size="small" fullWidth><InputLabel>Tipo</InputLabel><Select value={type} onChange={(e) => setType(e.target.value as CRMActivityType)} label="Tipo" sx={{ borderRadius: '10px' }}>{ALL_ACTIVITY_TYPES.map((t) => (<MenuItem key={t} value={t}><div className="flex items-center gap-2"><span style={{ color: ACTIVITY_COLORS[t] }}>{ACTIVITY_ICONS[t]}</span>{ACTIVITY_LABELS[t]}</div></MenuItem>))}</Select></FormControl>
-          <TextField label="Título *" value={title} onChange={(e) => setTitle(e.target.value)} fullWidth size="small" sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
-          <TextField label="Descrição" value={description} onChange={(e) => setDescription(e.target.value)} fullWidth size="small" multiline rows={2} sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
+          <FormControl size="small" fullWidth><InputLabel>{t('crm.form.type', 'Tipo')}</InputLabel><Select value={type} onChange={(e) => setType(e.target.value as CRMActivityType)} label={t('crm.form.type', 'Tipo')} sx={{ borderRadius: '10px' }}>{ALL_ACTIVITY_TYPES.map((typeKey) => (<MenuItem key={typeKey} value={typeKey}><div className="flex items-center gap-2"><span style={{ color: ACTIVITY_COLORS[typeKey] }}>{ACTIVITY_ICONS[typeKey]}</span>{t('crm.activity.' + typeKey, ACTIVITY_LABELS[typeKey])}</div></MenuItem>))}</Select></FormControl>
+          <TextField label={t('crm.form.titleReq', 'Título *')} value={title} onChange={(e) => setTitle(e.target.value)} fullWidth size="small" sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
+          <TextField label={t('crm.form.desc', 'Descrição')} value={description} onChange={(e) => setDescription(e.target.value)} fullWidth size="small" multiline rows={2} sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
           <div className="grid grid-cols-2 gap-3">
-            <FormControl size="small" fullWidth><InputLabel>Contato</InputLabel><Select value={contactId} onChange={(e) => setContactId(e.target.value)} label="Contato" sx={{ borderRadius: '10px' }}><MenuItem value="">Nenhum</MenuItem>{contacts.map((c) => <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>)}</Select></FormControl>
-            <FormControl size="small" fullWidth><InputLabel>Deal</InputLabel><Select value={dealId} onChange={(e) => setDealId(e.target.value)} label="Deal" sx={{ borderRadius: '10px' }}><MenuItem value="">Nenhum</MenuItem>{deals.map((d) => <MenuItem key={d.id} value={d.id}>{d.title}</MenuItem>)}</Select></FormControl>
+            <FormControl size="small" fullWidth><InputLabel>Contato</InputLabel><Select value={contactId} onChange={(e) => setContactId(e.target.value)} label="Contato" sx={{ borderRadius: '10px' }}><MenuItem value="">{t('crm.form.none', 'Nenhum')}</MenuItem>{contacts.map((c) => <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>)}</Select></FormControl>
+            <FormControl size="small" fullWidth><InputLabel>{t('crm.form.deal', 'Deal')}</InputLabel><Select value={dealId} onChange={(e) => setDealId(e.target.value)} label={t('crm.form.deal', 'Deal')} sx={{ borderRadius: '10px' }}><MenuItem value="">{t('crm.form.none', 'Nenhum')}</MenuItem>{deals.map((d) => <MenuItem key={d.id} value={d.id}>{d.title}</MenuItem>)}</Select></FormControl>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <TextField label="Data/Hora" value={scheduledAt} onChange={(e) => setScheduledAt(e.target.value)} fullWidth size="small" type="datetime-local" InputLabelProps={{ shrink: true }} sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
-            <TextField label="Duração (min)" value={duration} onChange={(e) => setDuration(e.target.value.replace(/\D/g, ''))} fullWidth size="small" sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
+            <TextField label={t('crm.form.dateTime', 'Data/Hora')} value={scheduledAt} onChange={(e) => setScheduledAt(e.target.value)} fullWidth size="small" type="datetime-local" InputLabelProps={{ shrink: true }} sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
+            <TextField label={t('crm.form.duration', 'Duração (min)')} value={duration} onChange={(e) => setDuration(e.target.value.replace(/\D/g, ''))} fullWidth size="small" sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
           </div>
-          <FormControl size="small" fullWidth><InputLabel>Responsável</InputLabel><Select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} label="Responsável" sx={{ borderRadius: '10px' }}><MenuItem value="">Nenhum</MenuItem>{members.map((m) => <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>)}</Select></FormControl>
+          <FormControl size="small" fullWidth><InputLabel>{t('crm.form.assignedTo', 'Responsável')}</InputLabel><Select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} label={t('crm.form.assignedTo', 'Responsável')} sx={{ borderRadius: '10px' }}><MenuItem value="">{t('crm.form.none', 'Nenhum')}</MenuItem>{members.map((m) => <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>)}</Select></FormControl>
         </div>
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2.5 }}>
-        <Button onClick={onClose} disabled={saving} sx={{ borderRadius: '10px', textTransform: 'none' }}>Cancelar</Button>
-        <Button onClick={handleSubmit} disabled={saving || !title.trim()} variant="contained" sx={{ borderRadius: '10px', textTransform: 'none', bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' } }}>{saving ? 'Salvando...' : activity ? 'Salvar' : 'Criar Atividade'}</Button>
+        <Button onClick={onClose} disabled={saving} sx={{ borderRadius: '10px', textTransform: 'none' }}>{t('crm.action.cancel', 'Cancelar')}</Button>
+        <Button onClick={handleSubmit} disabled={saving || !title.trim()} variant="contained" sx={{ borderRadius: '10px', textTransform: 'none', bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' } }}>{saving ? t('crm.action.saving', 'Salvando...') : activity ? t('crm.action.save', 'Salvar') : t('crm.action.createActivity', 'Criar Atividade')}</Button>
       </DialogActions>
     </Dialog>
   );
@@ -330,14 +328,15 @@ function ActivityFormDialog({ open, onClose, onSave, activity, contacts, deals, 
 // ==========================================
 
 function DeleteConfirmDialog({ open, title, message, onClose, onConfirm }: { open: boolean; title: string; message: string; onClose: () => void; onConfirm: () => void }) {
+  const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
   return (
     <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth PaperProps={{ sx: { borderRadius: '16px' } }}>
       <DialogTitle sx={{ pb: 1 }}><div className="flex items-center gap-2"><div className="w-9 h-9 rounded-xl bg-red-50 dark:bg-red-500/10 flex items-center justify-center"><AlertTriangle size={18} className="text-red-600 dark:text-red-400" /></div><span className="text-base font-display font-bold text-gray-900 dark:text-gray-100">{title}</span></div></DialogTitle>
       <DialogContent><p className="text-sm text-gray-500 dark:text-gray-400">{message}</p></DialogContent>
       <DialogActions sx={{ px: 3, pb: 2.5 }}>
-        <Button onClick={onClose} disabled={loading} sx={{ borderRadius: '10px', textTransform: 'none' }}>Cancelar</Button>
-        <Button onClick={async () => { setLoading(true); try { await onConfirm(); } finally { setLoading(false); } }} disabled={loading} variant="contained" color="error" sx={{ borderRadius: '10px', textTransform: 'none' }}>{loading ? 'Excluindo...' : 'Excluir'}</Button>
+        <Button onClick={onClose} disabled={loading} sx={{ borderRadius: '10px', textTransform: 'none' }}>{t('crm.action.cancel', 'Cancelar')}</Button>
+        <Button onClick={async () => { setLoading(true); try { await onConfirm(); } finally { setLoading(false); } }} disabled={loading} variant="contained" color="error" sx={{ borderRadius: '10px', textTransform: 'none' }}>{loading ? t('crm.action.deleting', 'Excluindo...') : t('crm.action.delete', 'Excluir')}</Button>
       </DialogActions>
     </Dialog>
   );
@@ -350,6 +349,7 @@ function DeleteConfirmDialog({ open, title, message, onClose, onConfirm }: { ope
 function ActivitiesTab({ activities, onEdit, onDelete, onToggle, onNew }: {
   activities: CRMActivity[]; onEdit: (a: CRMActivity) => void; onDelete: (a: CRMActivity) => void; onToggle: (a: CRMActivity) => void; onNew: () => void;
 }) {
+  const { t } = useTranslation();
   const [filter, setFilter] = useState<'all' | 'pending' | 'completed'>('all');
   const sorted = useMemo(() => { let r = [...activities]; if (filter === 'pending') r = r.filter((a) => !a.isCompleted); if (filter === 'completed') r = r.filter((a) => a.isCompleted); return r.sort((a, b) => (b.completedAt || b.scheduledAt || b.createdAt).localeCompare(a.completedAt || a.scheduledAt || a.createdAt)); }, [activities, filter]);
   const pending = activities.filter((a) => !a.isCompleted);
@@ -360,7 +360,7 @@ function ActivitiesTab({ activities, onEdit, onDelete, onToggle, onNew }: {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-3 gap-4">
-        {[{ label: 'Pendentes', value: pending.length, color: 'text-amber-600 dark:text-amber-400', delay: 0 }, { label: 'Hoje', value: todayActs.length, color: 'text-red-600 dark:text-red-400', delay: 0.06 }, { label: 'Concluídas', value: completed.length, color: 'text-emerald-600 dark:text-emerald-400', delay: 0.12 }].map((k) => (
+        {[{ label: t('crm.tab.pending', 'Pendentes'), value: pending.length, color: 'text-amber-600 dark:text-amber-400', delay: 0 }, { label: t('crm.tab.today', 'Hoje'), value: todayActs.length, color: 'text-red-600 dark:text-red-400', delay: 0.06 }, { label: t('crm.tab.completed', 'Concluídas'), value: completed.length, color: 'text-emerald-600 dark:text-emerald-400', delay: 0.12 }].map((k) => (
           <motion.div key={k.label} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: k.delay }} className="bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl p-4">
             <p className="text-[11px] text-gray-400 dark:text-gray-500 font-medium mb-1">{k.label}</p>
             <p className={cn('text-xl font-display font-bold', k.color)}>{k.value}</p>
@@ -369,11 +369,11 @@ function ActivitiesTab({ activities, onEdit, onDelete, onToggle, onNew }: {
       </div>
       <div className="flex items-center justify-between">
         <div className="flex gap-1 p-0.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl w-fit">
-          {[{ key: 'all' as const, label: 'Todas' }, { key: 'pending' as const, label: 'Pendentes' }, { key: 'completed' as const, label: 'Concluídas' }].map((f) => (
+          {[{ key: 'all' as const, label: t('crm.tab.all', 'Todas') }, { key: 'pending' as const, label: t('crm.tab.pending', 'Pendentes') }, { key: 'completed' as const, label: t('crm.tab.completed', 'Concluídas') }].map((f) => (
             <button key={f.key} onClick={() => setFilter(f.key)} className={cn('px-4 py-1.5 rounded-lg text-xs font-medium transition-all', filter === f.key ? 'bg-gray-900 dark:bg-gray-700 text-white' : 'text-gray-500 dark:text-gray-400')}>{f.label}</button>
           ))}
         </div>
-        <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={onNew} className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-500/10 rounded-lg"><Plus size={14} /> Nova Atividade</motion.button>
+        <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={onNew} className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-500/10 rounded-lg"><Plus size={14} /> {t('crm.action.newActivity', 'Nova Atividade')}</motion.button>
       </div>
       <div className="space-y-3">
         {sorted.map((activity, i) => { const ac = ACTIVITY_COLORS[activity.type]; const ds = activity.completedAt || activity.scheduledAt || activity.createdAt; return (
@@ -381,13 +381,13 @@ function ActivitiesTab({ activities, onEdit, onDelete, onToggle, onNew }: {
             <button onClick={() => onToggle(activity)} className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 hover:scale-110 transition-transform" style={{ backgroundColor: `${ac}15`, color: ac }}>{activity.isCompleted ? <CheckCircle2 size={14} /> : ACTIVITY_ICONS[activity.type]}</button>
             <div className="flex-1 min-w-0">
               <div className="flex items-start justify-between gap-2"><div><p className={cn('text-sm font-semibold', activity.isCompleted ? 'text-gray-400 dark:text-gray-500 line-through' : 'text-gray-800 dark:text-gray-200')}>{activity.title}</p>{activity.description && <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{activity.description}</p>}</div><div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"><IconButton size="small" onClick={() => onEdit(activity)}><Edit3 size={13} className="text-gray-400" /></IconButton><IconButton size="small" onClick={() => onDelete(activity)}><Trash2 size={13} className="text-gray-400 hover:text-red-500" /></IconButton></div></div>
-              <div className="flex items-center flex-wrap gap-x-3 gap-y-1 mt-2 text-[11px] text-gray-400 dark:text-gray-500"><span className="font-medium px-1.5 py-0.5 rounded-md" style={{ backgroundColor: `${ac}15`, color: ac }}>{ACTIVITY_LABELS[activity.type]}</span>{activity.contactName && <span className="font-medium text-gray-500 dark:text-gray-400">{activity.contactName}</span>}{activity.dealTitle && <span>· {activity.dealTitle}</span>}<span>· {formatDateTime(ds)}</span>{activity.duration && <span>· {activity.duration}min</span>}{activity.assignedToName && <span>· {activity.assignedToName}</span>}</div>
+              <div className="flex items-center flex-wrap gap-x-3 gap-y-1 mt-2 text-[11px] text-gray-400 dark:text-gray-500"><span className="font-medium px-1.5 py-0.5 rounded-md" style={{ backgroundColor: `${ac}15`, color: ac }}>{t('crm.activity.' + activity.type, ACTIVITY_LABELS[activity.type])}</span>{activity.contactName && <span className="font-medium text-gray-500 dark:text-gray-400">{activity.contactName}</span>}{activity.dealTitle && <span>· {activity.dealTitle}</span>}<span>· {formatDateTime(ds)}</span>{activity.duration && <span>· {activity.duration}min</span>}{activity.assignedToName && <span>· {activity.assignedToName}</span>}</div>
             </div>
           </motion.div>
         ); })}
       </div>
       {sorted.length === 0 && activities.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-16 text-gray-400 dark:text-gray-500"><div className="w-16 h-16 rounded-2xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center mb-4"><Activity size={28} strokeWidth={1.5} /></div><p className="text-sm font-medium mb-1">Nenhuma atividade registrada</p><motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={onNew} className="mt-4 inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-red-600 to-red-500 text-white rounded-xl font-semibold text-sm"><Plus size={16} /> Nova Atividade</motion.button></div>
+        <div className="flex flex-col items-center justify-center py-16 text-gray-400 dark:text-gray-500"><div className="w-16 h-16 rounded-2xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center mb-4"><Activity size={28} strokeWidth={1.5} /></div><p className="text-sm font-medium mb-1">{t('crm.tab.noActivity', 'Nenhuma atividade registrada')}</p><motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={onNew} className="mt-4 inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-red-600 to-red-500 text-white rounded-xl font-semibold text-sm"><Plus size={16} /> {t('crm.action.newActivity', 'Nova Atividade')}</motion.button></div>
       )}
     </div>
   );
@@ -401,21 +401,24 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
   deals: CRMDeal[]; contacts: CRMContact[]; activities: CRMActivity[]; stages: CRMPipelineStage[]; isDark: boolean;
   metrics: { totalValue: number; weightedValue: number; avgDealSize: number; activeDeals: number; conversionRate: number; wonValue: number; wonDeals: number };
 }) {
-  const funnelData = useMemo(() => stages.map((s) => { const sd = deals.filter((d) => d.stage === s.id); return { name: s.name, value: sd.length, dealValue: sd.reduce((a, d) => a + d.value, 0), fill: s.color }; }), [deals, stages]);
-  const sourceData = useMemo(() => { const c: Record<string, number> = {}; contacts.forEach((ct) => { c[ct.source] = (c[ct.source] || 0) + 1; }); return Object.entries(c).map(([s, v]) => ({ name: SOURCE_LABELS[s as LeadSource] || s, value: v, color: SOURCE_COLORS[s as LeadSource] || '#6B7280' })).sort((a, b) => b.value - a.value); }, [contacts]);
+  const { t } = useTranslation();
+  const funnelData = useMemo(() => stages.map((s) => { const sd = deals.filter((d) => d.stage === s.id); return { name: t('crm.stage.' + s.id, s.name), value: sd.length, dealValue: sd.reduce((a, d) => a + d.value, 0), fill: s.color }; }), [deals, stages, t]);
+  const sourceData = useMemo(() => { const c: Record<string, number> = {}; contacts.forEach((ct) => { c[ct.source] = (c[ct.source] || 0) + 1; }); return Object.entries(c).map(([s, v]) => ({ name: t('crm.source.' + s, SOURCE_LABELS[s as LeadSource] || s), value: v, color: SOURCE_COLORS[s as LeadSource] || '#6B7280' })).sort((a, b) => b.value - a.value); }, [contacts, t]);
   const convRate = contacts.length > 0 ? ((contacts.filter((c) => c.status === 'ganho').length / contacts.length) * 100).toFixed(1) : '0';
   const avgScore = contacts.length > 0 ? (contacts.reduce((s, c) => s + (c.scores?.overall ?? c.score), 0) / contacts.length).toFixed(0) : '0';
   const tooltipStyle = { borderRadius: '12px', border: isDark ? '1px solid #374151' : '1px solid #E2E8F0', backgroundColor: isDark ? '#111827' : '#fff', color: isDark ? '#F1F5F9' : '#0F172A' };
 
   // ── Scoring analytics ─────────────────────────────────────
   const profileDistribution = useMemo(() => {
+    const profileKeyMap: Record<string, string> = { vip: 'vip', regular: 'regular', sporadic: 'sporadic', new: 'new', at_risk: 'risk', churned: 'churn' };
     const dist: Record<string, number> = {};
     contacts.forEach((c) => { const p = c.profile || 'new'; dist[p] = (dist[p] || 0) + 1; });
     return Object.entries(dist).map(([profile, count]) => {
       const cfg = PROFILE_CONFIG[profile as ContactProfile] || PROFILE_CONFIG.new;
-      return { profile, label: cfg.label, emoji: cfg.emoji, count, pct: contacts.length > 0 ? Math.round((count / contacts.length) * 100) : 0 };
+      const tKey = profileKeyMap[profile] || profile;
+      return { profile, label: t('crm.profile.' + tKey, cfg.label), emoji: cfg.emoji, count, pct: contacts.length > 0 ? Math.round((count / contacts.length) * 100) : 0 };
     }).sort((a, b) => b.count - a.count);
-  }, [contacts]);
+  }, [contacts, t]);
 
   const churnRiskContacts = useMemo(() =>
     contacts.filter((c) => c.scores && c.scores.churnRisk >= 60)
@@ -441,19 +444,19 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
     ? (contacts.reduce((s, c) => s + (c.scores?.loyalty ?? 0), 0) / contacts.length).toFixed(0)
     : '0';
 
-  if (deals.length === 0 && contacts.length === 0) return <div className="flex flex-col items-center justify-center py-20 text-gray-400"><BarChart3 size={28} className="mb-4" /><p className="text-sm font-medium">Sem dados para exibir</p></div>;
+  if (deals.length === 0 && contacts.length === 0) return <div className="flex flex-col items-center justify-center py-20 text-gray-400"><BarChart3 size={28} className="mb-4" /><p className="text-sm font-medium">{t('crm.metrics.noData', 'Sem dados para exibir')}</p></div>;
 
   return (
     <div className="space-y-6">
       {/* ── KPI Cards ─────────────────────────────────────────── */}
       <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
         {[
-          { label: 'Conversão', value: `${convRate}%`, icon: <TrendingUp size={18} />, c: 'emerald' },
-          { label: 'Score Médio', value: avgScore, icon: <Gauge size={18} />, c: 'amber' },
-          { label: 'Total Leads', value: String(contacts.length), icon: <Users size={18} />, c: 'blue' },
-          { label: 'Valor Ganho', value: formatCurrency(metrics.wonValue), icon: <DollarSign size={18} />, c: 'red' },
-          { label: 'Fidelidade Média', value: `${avgLoyalty}%`, icon: <Heart size={18} />, c: 'purple' },
-          { label: 'Risco Churn Médio', value: `${avgChurn}%`, icon: <AlertTriangle size={18} />, c: 'orange' },
+          { label: t('crm.metrics.conversion', 'Conversão'), value: `${convRate}%`, icon: <TrendingUp size={18} />, c: 'emerald' },
+          { label: t('crm.metrics.avgScore', 'Score Médio'), value: avgScore, icon: <Gauge size={18} />, c: 'amber' },
+          { label: t('crm.metrics.totalLeads', 'Total Leads'), value: String(contacts.length), icon: <Users size={18} />, c: 'blue' },
+          { label: t('crm.metrics.wonValue', 'Valor Ganho'), value: formatCurrency(metrics.wonValue), icon: <DollarSign size={18} />, c: 'red' },
+          { label: t('crm.metrics.avgLoyalty', 'Fidelidade Média'), value: `${avgLoyalty}%`, icon: <Heart size={18} />, c: 'purple' },
+          { label: t('crm.metrics.avgChurn', 'Risco Churn Médio'), value: `${avgChurn}%`, icon: <AlertTriangle size={18} />, c: 'orange' },
         ].map((card, i) => {
           const cm: Record<string, { bg: string; txt: string }> = {
             emerald: { bg: 'bg-emerald-50 dark:bg-emerald-500/10', txt: 'text-emerald-600 dark:text-emerald-400' },
@@ -478,12 +481,12 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
       {/* ── Row 2: Funnel + Source ─────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <div className="bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl p-5">
-          <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100 mb-4">Funil de Vendas</h3>
+          <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100 mb-4">{t('crm.metrics.funnel', 'Funil de Vendas')}</h3>
           <div className="space-y-3">{funnelData.map((s, i) => { const mx = Math.max(...funnelData.map((x) => x.value), 1); return <div key={s.name} className="flex items-center gap-3"><span className="text-sm text-gray-600 dark:text-gray-400 font-medium w-28 shrink-0">{s.name}</span><div className="flex-1 h-8 bg-gray-50 dark:bg-white/[0.02] rounded-lg overflow-hidden"><motion.div initial={{ width: 0 }} animate={{ width: `${(s.value / mx) * 100}%` }} transition={{ duration: 0.6, delay: 0.3 + i * 0.1 }} className="h-full rounded-lg flex items-center px-3" style={{ backgroundColor: s.fill }}>{s.value > 0 && <span className="text-xs font-bold text-white">{s.value}</span>}</motion.div></div><span className="text-xs text-gray-400 font-medium w-20 text-right">{formatCurrency(s.dealValue)}</span></div>; })}</div>
         </div>
         {sourceData.length > 0 && (
           <div className="bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl p-5">
-            <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100 mb-4">Origem dos Leads</h3>
+            <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100 mb-4">{t('crm.metrics.leadSource', 'Origem dos Leads')}</h3>
             <div className="flex items-center gap-6"><ResponsiveContainer width={150} height={150}><PieChart><Pie data={sourceData} cx="50%" cy="50%" innerRadius={40} outerRadius={68} paddingAngle={2} dataKey="value">{sourceData.map((e, i) => <Cell key={i} fill={e.color} />)}</Pie><RechartsTooltip contentStyle={tooltipStyle} /></PieChart></ResponsiveContainer><div className="flex-1 space-y-2">{sourceData.map((s) => <div key={s.name} className="flex items-center justify-between"><div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: s.color }} /><span className="text-sm text-gray-600 dark:text-gray-400">{s.name}</span></div><span className="text-sm font-semibold text-gray-800 dark:text-gray-200">{s.value}</span></div>)}</div></div>
           </div>
         )}
@@ -496,7 +499,7 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
           className="bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl p-5">
           <div className="flex items-center gap-2.5 mb-4">
             <div className="w-8 h-8 rounded-xl bg-purple-500/10 flex items-center justify-center"><Shield size={16} className="text-purple-500" /></div>
-            <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100">Segmentação</h3>
+            <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100">{t('crm.metrics.segmentation', 'Segmentação')}</h3>
           </div>
           <div className="space-y-3">
             {profileDistribution.map((p) => (
@@ -510,7 +513,7 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
                 <span className="text-sm font-semibold text-gray-700 dark:text-gray-300 w-8 text-right">{p.count}</span>
               </div>
             ))}
-            {profileDistribution.length === 0 && <p className="text-xs text-gray-400 py-4 text-center">Sem dados de perfil</p>}
+            {profileDistribution.length === 0 && <p className="text-xs text-gray-400 py-4 text-center">{t('crm.metrics.noProfileData', 'Sem dados de perfil')}</p>}
           </div>
         </motion.div>
 
@@ -519,7 +522,7 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
           className="bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl p-5">
           <div className="flex items-center gap-2.5 mb-4">
             <div className="w-8 h-8 rounded-xl bg-orange-500/10 flex items-center justify-center"><AlertTriangle size={16} className="text-orange-500" /></div>
-            <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100">Risco de Churn</h3>
+            <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100">{t('crm.metrics.churnRisk', 'Risco de Churn')}</h3>
           </div>
           <div className="space-y-2.5">
             {churnRiskContacts.map((c) => {
@@ -531,7 +534,7 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">{c.name}</p>
-                    <p className="text-xs text-gray-400">{c.suggestedAction || 'Reativar contato'}</p>
+                    <p className="text-xs text-gray-400">{c.suggestedAction || t('crm.metrics.reactivate', 'Reativar contato')}</p>
                   </div>
                   <span className={cn('text-xs font-bold px-2 py-1 rounded-md shrink-0', cl.bg, cl.color)}>
                     {c.scores!.churnRisk}%
@@ -539,7 +542,7 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
                 </div>
               );
             })}
-            {churnRiskContacts.length === 0 && <p className="text-xs text-gray-400 py-4 text-center">Nenhum contato em risco</p>}
+            {churnRiskContacts.length === 0 && <p className="text-xs text-gray-400 py-4 text-center">{t('crm.metrics.noRiskContact', 'Nenhum contato em risco')}</p>}
           </div>
         </motion.div>
 
@@ -548,7 +551,7 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
           className="bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl p-5">
           <div className="flex items-center gap-2.5 mb-4">
             <div className="w-8 h-8 rounded-xl bg-emerald-500/10 flex items-center justify-center"><DollarSign size={16} className="text-emerald-500" /></div>
-            <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100">Top Clientes (Valor)</h3>
+            <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100">{t('crm.metrics.topClients', 'Top Clientes (Valor)')}</h3>
           </div>
           <div className="space-y-2.5">
             {topValueContacts.map((c, i) => (
@@ -568,7 +571,7 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
                 </span>
               </div>
             ))}
-            {topValueContacts.length === 0 && <p className="text-xs text-gray-400 py-4 text-center">Sem dados de valor</p>}
+            {topValueContacts.length === 0 && <p className="text-xs text-gray-400 py-4 text-center">{t('crm.metrics.noValueData', 'Sem dados de valor')}</p>}
           </div>
         </motion.div>
       </div>
@@ -579,7 +582,7 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
           className="bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl p-5">
           <div className="flex items-center gap-2.5 mb-4">
             <div className="w-8 h-8 rounded-xl bg-amber-500/10 flex items-center justify-center"><Zap size={16} className="text-amber-500" /></div>
-            <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100">Ações Sugeridas Pendentes</h3>
+            <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100">{t('crm.metrics.pendingActions', 'Ações Sugeridas Pendentes')}</h3>
             <span className="text-xs font-semibold text-amber-600 dark:text-amber-400 bg-amber-500/10 px-2.5 py-0.5 rounded-full">{pendingActions.length}</span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -606,6 +609,7 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
 // ==========================================
 
 function CampaignsTab({ businessId }: { businessId: string }) {
+  const { t } = useTranslation();
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
   const [loading, setLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
@@ -628,28 +632,28 @@ function CampaignsTab({ businessId }: { businessId: string }) {
 
   const handleCreate = async () => {
     if (!businessId || !user || !formName.trim()) return; setSaving(true);
-    try { const now = new Date().toISOString(); await addDoc(collection(db, 'broadcasts'), { businessId, name: formName.trim(), channel: formChannel, audienceType: formAudienceType, audienceTags: formAudienceType === 'tags' ? formTags.split(',').map(t => t.trim()).filter(Boolean) : [], messageType: formMsgType, templateName: formMsgType === 'template' ? formTemplate.trim() : undefined, messageContent: formMsgType === 'text' ? formContent.trim() : undefined, status: 'draft' as BroadcastStatus, stats: { total: 0, sent: 0, delivered: 0, read: 0, failed: 0, replied: 0 }, createdBy: user.uid, createdByName: user.name, createdAt: now, updatedAt: now }); toast.success('Campanha criada'); setShowNew(false); setFormName(''); }
-    catch (err) { console.error('[CRM:Campaigns] Error creating broadcast:', err); toast.error('Erro ao criar campanha'); } finally { setSaving(false); }
+    try { const now = new Date().toISOString(); await addDoc(collection(db, 'broadcasts'), { businessId, name: formName.trim(), channel: formChannel, audienceType: formAudienceType, audienceTags: formAudienceType === 'tags' ? formTags.split(',').map(t => t.trim()).filter(Boolean) : [], messageType: formMsgType, templateName: formMsgType === 'template' ? formTemplate.trim() : undefined, messageContent: formMsgType === 'text' ? formContent.trim() : undefined, status: 'draft' as BroadcastStatus, stats: { total: 0, sent: 0, delivered: 0, read: 0, failed: 0, replied: 0 }, createdBy: user.uid, createdByName: user.name, createdAt: now, updatedAt: now }); toast.success(t('crm.toast.campaignCreated', 'Campanha criada')); setShowNew(false); setFormName(''); }
+    catch (err) { console.error('[CRM:Campaigns] Error creating broadcast:', err); toast.error(t('crm.toast.errorCreateCampaign', 'Erro ao criar campanha')); } finally { setSaving(false); }
   };
 
   if (loading) return <div className="space-y-4">{[0, 1, 2].map(i => <div key={i} className="h-24 rounded-2xl shimmer" />)}</div>;
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between"><div><h3 className="text-base font-bold text-gray-900 dark:text-gray-100 font-display">Campanhas</h3><p className="text-xs text-gray-500 dark:text-gray-400">{broadcasts.length} campanha{broadcasts.length !== 1 ? 's' : ''}</p></div><button onClick={() => setShowNew(true)} className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-red-600 to-red-500 shadow-lg shadow-red-500/25"><Plus size={16} />Nova Campanha</button></div>
-      {broadcasts.length === 0 ? <div className="text-center py-16 bg-white dark:bg-gray-900/50 rounded-2xl border border-gray-200 dark:border-gray-700/50"><Send className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-3" /><p className="text-sm font-semibold text-gray-600 dark:text-gray-400">Nenhuma campanha</p></div>
-      : <div className="space-y-3">{broadcasts.map((b) => { const sc = BROADCAST_STATUS_LABELS[b.status]; return <motion.div key={b.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="bg-white dark:bg-gray-900/50 rounded-2xl border border-gray-200 dark:border-gray-700/50 p-5 hover:shadow-md transition-shadow"><div className="flex items-center gap-2"><h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{b.name}</h4><span className={cn('text-[10px] font-semibold px-2 py-0.5 rounded-full', sc.bg, sc.color)}>{sc.label}</span></div><div className="flex items-center gap-3 mt-1.5 text-xs text-gray-400"><span className="capitalize">{b.channel}</span><span>·</span><span>{formatDate(b.createdAt)}</span></div>{b.stats.total > 0 && <div className="mt-3 grid grid-cols-4 gap-3">{[{ l: 'Total', v: b.stats.total, c: '' }, { l: 'Enviadas', v: b.stats.sent, c: 'text-emerald-600 dark:text-emerald-400' }, { l: 'Entregues', v: `${Math.round((b.stats.delivered / b.stats.total) * 100)}%`, c: 'text-blue-600 dark:text-blue-400' }, { l: 'Lidas', v: `${b.stats.delivered > 0 ? Math.round((b.stats.read / b.stats.delivered) * 100) : 0}%`, c: 'text-purple-600 dark:text-purple-400' }].map((s) => <div key={s.l}><p className="text-[10px] text-gray-400 uppercase tracking-wider">{s.l}</p><p className={cn('text-sm font-bold text-gray-900 dark:text-gray-100', s.c)}>{s.v}</p></div>)}</div>}</motion.div>; })}</div>}
+      <div className="flex items-center justify-between"><div><h3 className="text-base font-bold text-gray-900 dark:text-gray-100 font-display">{t('crm.campaign.title', 'Campanhas')}</h3><p className="text-xs text-gray-500 dark:text-gray-400">{broadcasts.length} {t('crm.campaign.campaignsSuffix', 'campanha{{s}}', { s: broadcasts.length !== 1 ? 's' : '' })}</p></div><button onClick={() => setShowNew(true)} className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-red-600 to-red-500 shadow-lg shadow-red-500/25"><Plus size={16} />{t('crm.action.newCampaign', 'Nova Campanha')}</button></div>
+      {broadcasts.length === 0 ? <div className="text-center py-16 bg-white dark:bg-gray-900/50 rounded-2xl border border-gray-200 dark:border-gray-700/50"><Send className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-3" /><p className="text-sm font-semibold text-gray-600 dark:text-gray-400">{t('crm.campaign.none', 'Nenhuma campanha')}</p></div>
+      : <div className="space-y-3">{broadcasts.map((b) => { const sc = BROADCAST_STATUS_LABELS[b.status]; return <motion.div key={b.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="bg-white dark:bg-gray-900/50 rounded-2xl border border-gray-200 dark:border-gray-700/50 p-5 hover:shadow-md transition-shadow"><div className="flex items-center gap-2"><h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{b.name}</h4><span className={cn('text-[10px] font-semibold px-2 py-0.5 rounded-full', sc.bg, sc.color)}>{t('crm.broadcastStatus.' + b.status, sc.label)}</span></div><div className="flex items-center gap-3 mt-1.5 text-xs text-gray-400"><span className="capitalize">{b.channel}</span><span>·</span><span>{formatDate(b.createdAt)}</span></div>{b.stats.total > 0 && <div className="mt-3 grid grid-cols-4 gap-3">{[{ l: t('crm.campaign.total', 'Total'), v: b.stats.total, c: '' }, { l: t('crm.campaign.sent', 'Enviadas'), v: b.stats.sent, c: 'text-emerald-600 dark:text-emerald-400' }, { l: t('crm.campaign.delivered', 'Entregues'), v: `${Math.round((b.stats.delivered / b.stats.total) * 100)}%`, c: 'text-blue-600 dark:text-blue-400' }, { l: t('crm.campaign.read', 'Lidas'), v: `${b.stats.delivered > 0 ? Math.round((b.stats.read / b.stats.delivered) * 100) : 0}%`, c: 'text-purple-600 dark:text-purple-400' }].map((s) => <div key={s.l}><p className="text-[10px] text-gray-400 uppercase tracking-wider">{s.l}</p><p className={cn('text-sm font-bold text-gray-900 dark:text-gray-100', s.c)}>{s.v}</p></div>)}</div>}</motion.div>; })}</div>}
       <Dialog open={showNew} onClose={() => setShowNew(false)} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: '1rem' } }}>
-        <DialogTitle sx={{ fontWeight: 700, fontFamily: '"Plus Jakarta Sans", sans-serif' }}>Nova Campanha</DialogTitle>
+        <DialogTitle sx={{ fontWeight: 700, fontFamily: '"Plus Jakarta Sans", sans-serif' }}>{t('crm.dialog.newCampaign', 'Nova Campanha')}</DialogTitle>
         <DialogContent className="space-y-4 !pt-2">
-          <TextField label="Nome" value={formName} onChange={(e) => setFormName(e.target.value)} fullWidth size="small" />
-          <FormControl fullWidth size="small"><InputLabel>Canal</InputLabel><Select value={formChannel} label="Canal" onChange={(e) => setFormChannel(e.target.value as typeof formChannel)}><MenuItem value="whatsapp">WhatsApp</MenuItem><MenuItem value="facebook">Messenger</MenuItem><MenuItem value="instagram">Instagram</MenuItem></Select></FormControl>
-          <FormControl fullWidth size="small"><InputLabel>Audiência</InputLabel><Select value={formAudienceType} label="Audiência" onChange={(e) => setFormAudienceType(e.target.value as typeof formAudienceType)}><MenuItem value="all_contacts">Todos</MenuItem><MenuItem value="tags">Por tags</MenuItem><MenuItem value="manual">Manual</MenuItem></Select></FormControl>
-          {formAudienceType === 'tags' && <TextField label="Tags" value={formTags} onChange={(e) => setFormTags(e.target.value)} fullWidth size="small" />}
-          <FormControl fullWidth size="small"><InputLabel>Tipo</InputLabel><Select value={formMsgType} label="Tipo" onChange={(e) => setFormMsgType(e.target.value as typeof formMsgType)}><MenuItem value="template">Template</MenuItem><MenuItem value="text">Texto</MenuItem></Select></FormControl>
-          {formMsgType === 'template' ? <TextField label="Template" value={formTemplate} onChange={(e) => setFormTemplate(e.target.value)} fullWidth size="small" /> : <TextField label="Conteúdo" value={formContent} onChange={(e) => setFormContent(e.target.value)} fullWidth multiline rows={3} size="small" />}
+          <TextField label={t('crm.form.name', 'Nome')} value={formName} onChange={(e) => setFormName(e.target.value)} fullWidth size="small" />
+          <FormControl fullWidth size="small"><InputLabel>{t('crm.form.channel', 'Canal')}</InputLabel><Select value={formChannel} label={t('crm.form.channel', 'Canal')} onChange={(e) => setFormChannel(e.target.value as typeof formChannel)}><MenuItem value="whatsapp">WhatsApp</MenuItem><MenuItem value="facebook">Messenger</MenuItem><MenuItem value="instagram">Instagram</MenuItem></Select></FormControl>
+          <FormControl fullWidth size="small"><InputLabel>{t('crm.form.audience', 'Audiência')}</InputLabel><Select value={formAudienceType} label={t('crm.form.audience', 'Audiência')} onChange={(e) => setFormAudienceType(e.target.value as typeof formAudienceType)}><MenuItem value="all_contacts">{t('crm.form.all', 'Todos')}</MenuItem><MenuItem value="tags">{t('crm.form.byTags', 'Por tags')}</MenuItem><MenuItem value="manual">{t('crm.form.manual', 'Manual')}</MenuItem></Select></FormControl>
+          {formAudienceType === 'tags' && <TextField label={t('crm.form.tags', 'Tags')} value={formTags} onChange={(e) => setFormTags(e.target.value)} fullWidth size="small" />}
+          <FormControl fullWidth size="small"><InputLabel>{t('crm.form.type', 'Tipo')}</InputLabel><Select value={formMsgType} label={t('crm.form.type', 'Tipo')} onChange={(e) => setFormMsgType(e.target.value as typeof formMsgType)}><MenuItem value="template">{t('crm.form.template', 'Template')}</MenuItem><MenuItem value="text">{t('crm.form.text', 'Texto')}</MenuItem></Select></FormControl>
+          {formMsgType === 'template' ? <TextField label="Template" value={formTemplate} onChange={(e) => setFormTemplate(e.target.value)} fullWidth size="small" /> : <TextField label={t('crm.form.content', 'Conteúdo')} value={formContent} onChange={(e) => setFormContent(e.target.value)} fullWidth multiline rows={3} size="small" />}
         </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2 }}><Button onClick={() => setShowNew(false)}>Cancelar</Button><Button onClick={handleCreate} variant="contained" disabled={saving || !formName.trim()} sx={{ bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' }, borderRadius: '0.75rem' }}>{saving ? 'Criando...' : 'Criar'}</Button></DialogActions>
+        <DialogActions sx={{ px: 3, pb: 2 }}><Button onClick={() => setShowNew(false)}>{t('crm.action.cancel', 'Cancelar')}</Button><Button onClick={handleCreate} variant="contained" disabled={saving || !formName.trim()} sx={{ bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' }, borderRadius: '0.75rem' }}>{saving ? t('crm.action.creating', 'Criando...') : t('crm.action.create', 'Criar')}</Button></DialogActions>
       </Dialog>
     </div>
   );
@@ -660,6 +664,15 @@ function CampaignsTab({ businessId }: { businessId: string }) {
 // ==========================================
 
 export default function CRMModule() {
+  const { t } = useTranslation();
+
+  const TABS: { key: CRMTab; label: string; icon: React.ReactNode; desc: string }[] = useMemo(() => [
+    { key: 'kanban', label: t('crm.tab.kanban', 'Pipeline'), icon: <Layers size={15} />, desc: t('crm.tab.kanban_desc', 'Kanban de leads') },
+    { key: 'inbox', label: t('crm.tab.inbox', 'Inbox'), icon: <Inbox size={15} />, desc: t('crm.tab.inbox_desc', 'Conversas') },
+    { key: 'atividades', label: t('crm.tab.activities', 'Atividades'), icon: <Activity size={15} />, desc: t('crm.tab.activities_desc', 'Tarefas e follow-ups') },
+    { key: 'campanhas', label: t('crm.tab.campaigns', 'Campanhas'), icon: <Send size={15} />, desc: t('crm.tab.campaigns_desc', 'Broadcasts') },
+    { key: 'metricas', label: t('crm.tab.metrics', 'Inteligência'), icon: <Brain size={15} />, desc: t('crm.tab.metrics_desc', 'Scores e insights') },
+  ], [t]);
   const { isDark } = useTheme();
   const { user, business } = useAuth();
   const queryClient = useQueryClient();
@@ -712,31 +725,31 @@ export default function CRMModule() {
     try {
       if (editingContact) {
         await updateDoc(doc(db, 'crmContacts', editingContact.id), { ...clean, updatedAt: now });
-        toast.success('Contato atualizado!');
+        toast.success(t('crm.toast.contactUpdated', 'Contato atualizado!'));
       } else {
         await addDoc(collection(db, 'crmContacts'), { ...clean, businessId: business.id, score: data.score ?? 0, status: data.status ?? 'novo', source: data.source ?? 'outro', createdAt: now, updatedAt: now });
-        toast.success('Contato criado!');
+        toast.success(t('crm.toast.contactCreated', 'Contato criado!'));
       }
       queryClient.invalidateQueries({ queryKey: ['crmContacts', business.id] });
       setContactDialogOpen(false); setEditingContact(null);
-    } catch (err) { console.error('[CRM] Error saving contact:', err); toast.error('Erro ao salvar contato'); }
+    } catch (err) { console.error('[CRM] Error saving contact:', err); toast.error(t('crm.toast.errorSaveContact', 'Erro ao salvar contato')); }
   }, [business?.id, user, editingContact, queryClient]);
 
-  const handleDeleteContact = useCallback(async () => { if (!deleteContactConfirm || !business?.id) return; try { await deleteDoc(doc(db, 'crmContacts', deleteContactConfirm.id)); toast.success('Contato excluído'); queryClient.invalidateQueries({ queryKey: ['crmContacts', business.id] }); setDeleteContactConfirm(null); } catch (err) { console.error('[CRM] Error deleting contact:', err); toast.error('Erro ao excluir'); } }, [deleteContactConfirm, business?.id, queryClient]);
+  const handleDeleteContact = useCallback(async () => { if (!deleteContactConfirm || !business?.id) return; try { await deleteDoc(doc(db, 'crmContacts', deleteContactConfirm.id)); toast.success(t('crm.toast.contactDeleted', 'Contato excluído')); queryClient.invalidateQueries({ queryKey: ['crmContacts', business.id] }); setDeleteContactConfirm(null); } catch (err) { console.error('[CRM] Error deleting contact:', err); toast.error(t('crm.toast.errorDelete', 'Erro ao excluir')); } }, [deleteContactConfirm, business?.id, queryClient]);
 
-  const handleSaveDeal = useCallback(async (data: Partial<CRMDeal>) => { if (!business?.id || !user) return; const now = new Date().toISOString(); try { if (editingDeal) { await updateDoc(doc(db, 'crmDeals', editingDeal.id), { ...data, updatedAt: now }); toast.success('Deal atualizado!'); } else { await addDoc(collection(db, 'crmDeals'), { ...data, businessId: business.id, stage: data.stage ?? 'prospeccao', probability: data.probability ?? 10, value: data.value ?? 0, createdAt: now, updatedAt: now }); toast.success('Deal criado!'); } queryClient.invalidateQueries({ queryKey: ['crmDeals', business.id] }); setDealDialogOpen(false); setEditingDeal(null); } catch (err) { console.error('[CRM] Error saving deal:', err); toast.error('Erro ao salvar deal'); } }, [business?.id, user, editingDeal, queryClient]);
+  const handleSaveDeal = useCallback(async (data: Partial<CRMDeal>) => { if (!business?.id || !user) return; const now = new Date().toISOString(); try { if (editingDeal) { await updateDoc(doc(db, 'crmDeals', editingDeal.id), { ...data, updatedAt: now }); toast.success(t('crm.toast.dealUpdated', 'Deal atualizado!')); } else { await addDoc(collection(db, 'crmDeals'), { ...data, businessId: business.id, stage: data.stage ?? 'prospeccao', probability: data.probability ?? 10, value: data.value ?? 0, createdAt: now, updatedAt: now }); toast.success(t('crm.toast.dealCreated', 'Deal criado!')); } queryClient.invalidateQueries({ queryKey: ['crmDeals', business.id] }); setDealDialogOpen(false); setEditingDeal(null); } catch (err) { console.error('[CRM] Error saving deal:', err); toast.error(t('crm.toast.errorSaveDeal', 'Erro ao salvar deal')); } }, [business?.id, user, editingDeal, queryClient]);
 
-  const handleDeleteDeal = useCallback(async () => { if (!deleteDealConfirm || !business?.id) return; try { await deleteDoc(doc(db, 'crmDeals', deleteDealConfirm.id)); toast.success('Deal excluído'); queryClient.invalidateQueries({ queryKey: ['crmDeals', business.id] }); setDeleteDealConfirm(null); } catch (err) { console.error('[CRM] Error deleting deal:', err); toast.error('Erro ao excluir'); } }, [deleteDealConfirm, business?.id, queryClient]);
+  const handleDeleteDeal = useCallback(async () => { if (!deleteDealConfirm || !business?.id) return; try { await deleteDoc(doc(db, 'crmDeals', deleteDealConfirm.id)); toast.success(t('crm.toast.dealDeleted', 'Deal excluído')); queryClient.invalidateQueries({ queryKey: ['crmDeals', business.id] }); setDeleteDealConfirm(null); } catch (err) { console.error('[CRM] Error deleting deal:', err); toast.error(t('crm.toast.errorDelete', 'Erro ao excluir')); } }, [deleteDealConfirm, business?.id, queryClient]);
 
-  const handleSaveActivity = useCallback(async (data: Partial<CRMActivity>) => { if (!business?.id || !user) return; const now = new Date().toISOString(); try { if (editingActivity) { await updateDoc(doc(db, 'crmActivities', editingActivity.id), { ...data, updatedAt: now }); toast.success('Atividade atualizada!'); } else { await addDoc(collection(db, 'crmActivities'), { ...data, businessId: business.id, isCompleted: false, createdAt: now, updatedAt: now }); toast.success('Atividade registrada!'); } queryClient.invalidateQueries({ queryKey: ['crmActivities', business.id] }); setActivityDialogOpen(false); setEditingActivity(null); } catch (err) { console.error('[CRM] Error saving activity:', err); toast.error('Erro ao salvar atividade'); } }, [business?.id, user, editingActivity, queryClient]);
+  const handleSaveActivity = useCallback(async (data: Partial<CRMActivity>) => { if (!business?.id || !user) return; const now = new Date().toISOString(); try { if (editingActivity) { await updateDoc(doc(db, 'crmActivities', editingActivity.id), { ...data, updatedAt: now }); toast.success(t('crm.toast.activityUpdated', 'Atividade atualizada!')); } else { await addDoc(collection(db, 'crmActivities'), { ...data, businessId: business.id, isCompleted: false, createdAt: now, updatedAt: now }); toast.success(t('crm.toast.activityCreated', 'Atividade registrada!')); } queryClient.invalidateQueries({ queryKey: ['crmActivities', business.id] }); setActivityDialogOpen(false); setEditingActivity(null); } catch (err) { console.error('[CRM] Error saving activity:', err); toast.error(t('crm.toast.errorSaveActivity', 'Erro ao salvar atividade')); } }, [business?.id, user, editingActivity, queryClient]);
 
-  const handleToggleActivity = useCallback(async (a: CRMActivity) => { if (!business?.id) return; try { await updateDoc(doc(db, 'crmActivities', a.id), { isCompleted: !a.isCompleted, completedAt: !a.isCompleted ? new Date().toISOString() : null, updatedAt: new Date().toISOString() }); queryClient.invalidateQueries({ queryKey: ['crmActivities', business.id] }); } catch (err) { console.error('[CRM] Error toggling activity:', err); toast.error('Erro ao atualizar'); } }, [business?.id, queryClient]);
+  const handleToggleActivity = useCallback(async (a: CRMActivity) => { if (!business?.id) return; try { await updateDoc(doc(db, 'crmActivities', a.id), { isCompleted: !a.isCompleted, completedAt: !a.isCompleted ? new Date().toISOString() : null, updatedAt: new Date().toISOString() }); queryClient.invalidateQueries({ queryKey: ['crmActivities', business.id] }); } catch (err) { console.error('[CRM] Error toggling activity:', err); toast.error(t('crm.toast.errorUpdate', 'Erro ao atualizar')); } }, [business?.id, queryClient]);
 
-  const handleDeleteActivity = useCallback(async () => { if (!deleteActivityConfirm || !business?.id) return; try { await deleteDoc(doc(db, 'crmActivities', deleteActivityConfirm.id)); toast.success('Atividade excluída'); queryClient.invalidateQueries({ queryKey: ['crmActivities', business.id] }); setDeleteActivityConfirm(null); } catch (err) { console.error('[CRM] Error deleting activity:', err); toast.error('Erro ao excluir'); } }, [deleteActivityConfirm, business?.id, queryClient]);
+  const handleDeleteActivity = useCallback(async () => { if (!deleteActivityConfirm || !business?.id) return; try { await deleteDoc(doc(db, 'crmActivities', deleteActivityConfirm.id)); toast.success(t('crm.toast.activityDeleted', 'Atividade excluída')); queryClient.invalidateQueries({ queryKey: ['crmActivities', business.id] }); setDeleteActivityConfirm(null); } catch (err) { console.error('[CRM] Error deleting activity:', err); toast.error(t('crm.toast.errorDelete', 'Erro ao excluir')); } }, [deleteActivityConfirm, business?.id, queryClient]);
 
-  const handleStatusChange = useCallback(async (contactId: string, newStatus: LeadStatus) => { if (!business?.id) return; try { await updateDoc(doc(db, 'crmContacts', contactId), { status: newStatus, updatedAt: new Date().toISOString() }); queryClient.invalidateQueries({ queryKey: ['crmContacts', business.id] }); } catch (err) { console.error('[CRM] Error changing lead status:', err); toast.error('Erro ao mover lead'); } }, [business?.id, queryClient]);
+  const handleStatusChange = useCallback(async (contactId: string, newStatus: LeadStatus) => { if (!business?.id) return; try { await updateDoc(doc(db, 'crmContacts', contactId), { status: newStatus, updatedAt: new Date().toISOString() }); queryClient.invalidateQueries({ queryKey: ['crmContacts', business.id] }); } catch (err) { console.error('[CRM] Error changing lead status:', err); toast.error(t('crm.toast.errorMoveLead', 'Erro ao mover lead')); } }, [business?.id, queryClient]);
 
-  const handleTagsChange = useCallback(async (contactId: string, tags: string[]) => { if (!business?.id) return; try { await updateDoc(doc(db, 'crmContacts', contactId), { tags, updatedAt: new Date().toISOString() }); queryClient.invalidateQueries({ queryKey: ['crmContacts', business.id] }); } catch (err) { console.error('[CRM] Error updating tags:', err); toast.error('Erro ao atualizar tags'); } }, [business?.id, queryClient]);
+  const handleTagsChange = useCallback(async (contactId: string, tags: string[]) => { if (!business?.id) return; try { await updateDoc(doc(db, 'crmContacts', contactId), { tags, updatedAt: new Date().toISOString() }); queryClient.invalidateQueries({ queryKey: ['crmContacts', business.id] }); } catch (err) { console.error('[CRM] Error updating tags:', err); toast.error(t('crm.toast.errorUpdateTags', 'Erro ao atualizar tags')); } }, [business?.id, queryClient]);
 
   // Quick stats for header
   const hotLeads = contacts.filter((c) => c.scores?.churnRisk && c.scores.churnRisk >= 60).length;
@@ -758,19 +771,19 @@ export default function CRMModule() {
             <div className="hidden sm:flex items-center gap-4 pl-5 border-l border-gray-200 dark:border-gray-700/50">
               <div className="flex items-center gap-1.5 text-sm">
                 <span className="font-semibold text-gray-800 dark:text-gray-200">{contacts.length}</span>
-                <span className="text-gray-400">contatos</span>
+                <span className="text-gray-400">{t('crm.header.contacts', 'contatos')}</span>
               </div>
               {activeDealsCount > 0 && (
                 <div className="flex items-center gap-1.5 text-sm">
                   <span className="font-semibold text-blue-600 dark:text-blue-400">{activeDealsCount}</span>
-                  <span className="text-gray-400">deals ativos</span>
+                  <span className="text-gray-400">{t('crm.header.activeDeals', 'deals ativos')}</span>
                 </div>
               )}
               {hotLeads > 0 && (
                 <div className="flex items-center gap-1.5 text-sm">
                   <AlertTriangle size={14} className="text-orange-500" />
                   <span className="font-semibold text-orange-600 dark:text-orange-400">{hotLeads}</span>
-                  <span className="text-gray-400">em risco</span>
+                  <span className="text-gray-400">{t('crm.header.atRisk', 'em risco')}</span>
                 </div>
               )}
             </div>
@@ -782,7 +795,7 @@ export default function CRMModule() {
             {(activeTab === 'kanban' || activeTab === 'atividades') && (
               <div className="relative hidden sm:block">
                 <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
-                <input type="text" placeholder="Buscar..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+                <input type="text" placeholder={t('crm.action.search', 'Buscar...')} value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
                   className="pl-10 pr-4 py-2.5 w-52 bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700/50 rounded-xl text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400 focus:bg-white dark:focus:bg-white/[0.06] transition-all" />
               </div>
             )}
@@ -790,7 +803,7 @@ export default function CRMModule() {
             {/* Filter — only on pipeline */}
             {activeTab === 'kanban' && (
               <>
-                <Tooltip title="Filtrar por tags" arrow>
+                <Tooltip title={t('crm.action.filterByTags', 'Filtrar por tags')} arrow>
                   <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
                     onClick={() => setShowTagFilter(!showTagFilter)}
                     className={cn('inline-flex items-center gap-1.5 px-3 py-2.5 border rounded-xl text-sm font-medium transition-all',
@@ -804,8 +817,8 @@ export default function CRMModule() {
                 <FormControl size="small" sx={{ minWidth: 110 }} className="hidden sm:block">
                   <Select value={filterSource} onChange={(e) => setFilterSource(e.target.value as typeof filterSource)}
                     displayEmpty sx={{ borderRadius: '12px', fontSize: '0.875rem', height: 42, bgcolor: isDark ? 'rgba(255,255,255,0.04)' : '#F9FAFB' }}>
-                    <MenuItem value="all"><span className="text-gray-400">Origem</span></MenuItem>
-                    {ALL_SOURCES.map((s) => <MenuItem key={s} value={s}>{SOURCE_LABELS[s]}</MenuItem>)}
+                    <MenuItem value="all"><span className="text-gray-400">{t('crm.filter.source', 'Origem')}</span></MenuItem>
+                    {ALL_SOURCES.map((s) => <MenuItem key={s} value={s}>{t('crm.source.' + s, SOURCE_LABELS[s])}</MenuItem>)}
                   </Select>
                 </FormControl>
               </>
@@ -870,7 +883,7 @@ export default function CRMModule() {
                 </button>
               );
             })}
-            {filterTags.length > 0 && <button onClick={() => setFilterTags([])} className="text-xs font-semibold text-gray-400 hover:text-red-500 ml-1">Limpar</button>}
+            {filterTags.length > 0 && <button onClick={() => setFilterTags([])} className="text-xs font-semibold text-gray-400 hover:text-red-500 ml-1">{t('crm.action.clear', 'Limpar')}</button>}
           </div>
         </motion.div>
       )}</AnimatePresence>

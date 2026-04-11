@@ -27,7 +27,8 @@ import {
   isBefore,
   isAfter,
 } from 'date-fns';
-import { ptBR } from 'date-fns/locale';
+import { ptBR, enUS } from 'date-fns/locale';
+import { useTranslation } from 'react-i18next';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ChevronLeft,
@@ -84,7 +85,8 @@ const START_HOUR = 6;
 const END_HOUR = 22;
 const TOTAL_HOURS = END_HOUR - START_HOUR;
 
-const WEEKDAY_LABELS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'];
+const WEEKDAY_LABELS_PT = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'];
+const WEEKDAY_LABELS_EN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 const STATUS_COLORS: Record<AppointmentStatus, string> = {
   agendado: '#3B82F6',
@@ -217,6 +219,8 @@ interface MiniCalendarProps {
 }
 
 function MiniCalendar({ selectedDate, onSelect, appointments }: MiniCalendarProps) {
+  const { t, i18n } = useTranslation();
+  const dateLocale = i18n.language === 'en-US' ? enUS : ptBR;
   const [viewMonth, setViewMonth] = useState(startOfMonth(selectedDate));
 
   const monthStart2 = startOfMonth(viewMonth);
@@ -241,7 +245,7 @@ function MiniCalendar({ selectedDate, onSelect, appointments }: MiniCalendarProp
           <ChevronLeft className="w-4 h-4 text-gray-500 dark:text-gray-400" />
         </button>
         <span className="text-sm font-semibold text-gray-900 dark:text-gray-100 capitalize">
-          {format(viewMonth, 'MMMM yyyy', { locale: ptBR })}
+          {format(viewMonth, 'MMMM yyyy', { locale: dateLocale })}
         </span>
         <button
           onClick={() => setViewMonth(addMonths(viewMonth, 1))}
@@ -252,7 +256,10 @@ function MiniCalendar({ selectedDate, onSelect, appointments }: MiniCalendarProp
       </div>
 
       <div className="grid grid-cols-7 mb-1">
-        {['D', 'S', 'T', 'Q', 'Q', 'S', 'S'].map((d, i) => (
+        {(i18n.language === 'en-US'
+          ? ['S', 'M', 'T', 'W', 'T', 'F', 'S']
+          : ['D', 'S', 'T', 'Q', 'Q', 'S', 'S']
+        ).map((d, i) => (
           <div key={i} className="text-center text-[11px] font-medium text-gray-400 dark:text-gray-500 py-1">
             {d}
           </div>
@@ -411,6 +418,7 @@ function ServiceManagementDialog({
   onUpdateService,
   onDeleteService,
 }: ServiceManagementDialogProps) {
+  const { t } = useTranslation();
   const [view, setView] = useState<'list' | 'form'>('list');
   const [editingService, setEditingService] = useState<Service | null>(null);
   const [saving, setSaving] = useState(false);
@@ -517,7 +525,7 @@ function ServiceManagementDialog({
         }}
       >
         <span className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-          {view === 'list' ? 'Gerenciar Servicos' : editingService ? 'Editar Servico' : 'Novo Servico'}
+          {view === 'list' ? t('agenda.manageServices', 'Gerenciar Serviços') : editingService ? t('agenda.editService', 'Editar Serviço') : t('agenda.newService', 'Novo Serviço')}
         </span>
         <button
           onClick={view === 'form' ? () => { resetForm(); setView('list'); } : onClose}
@@ -551,7 +559,7 @@ function ServiceManagementDialog({
                         : 'bg-white dark:bg-gray-800 border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:border-slate-300 dark:hover:border-gray-600',
                     )}
                   >
-                    Todos
+                    {t('agenda.all', 'Todos')}
                   </button>
                   {members.map((m) => (
                     <button
@@ -576,9 +584,9 @@ function ServiceManagementDialog({
                     <Settings2 className="w-6 h-6 text-gray-400 dark:text-gray-500" />
                   </div>
                   <p className="text-sm text-gray-500 dark:text-gray-400">
-                    {filterUserId !== 'all' ? 'Nenhum servico para este usuario' : 'Nenhum servico cadastrado'}
+                    {filterUserId !== 'all' ? t('agenda.noServicesForUser', 'Nenhum serviço para este usuário') : t('agenda.noServicesRegistered', 'Nenhum serviço cadastrado')}
                   </p>
-                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">Crie seu primeiro servico para comecar a agendar</p>
+                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">{t('agenda.createFirstService', 'Crie seu primeiro serviço para começar a agendar')}</p>
                 </div>
               ) : (
                 <div className="space-y-2 max-h-[400px] overflow-y-auto">
@@ -607,7 +615,7 @@ function ServiceManagementDialog({
                             </span>
                             {!service.isActive && (
                               <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400">
-                                Inativo
+                                {t('agenda.inactive', 'Inativo')}
                               </span>
                             )}
                           </div>
@@ -683,13 +691,13 @@ function ServiceManagementDialog({
               {/* Name */}
               <div>
                 <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                  Nome do Servico *
+                  {t('agenda.serviceName', 'Nome do Serviço')} *
                 </label>
                 <input
                   type="text"
                   value={formData.name}
                   onChange={(e) => setFormData((p) => ({ ...p, name: e.target.value }))}
-                  placeholder="Ex: Corte Masculino"
+                  placeholder={t('agenda.serviceNamePlaceholder', 'Ex: Corte Masculino')}
                   className={cn(
                     'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
                     'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
@@ -703,13 +711,13 @@ function ServiceManagementDialog({
               {/* Description */}
               <div>
                 <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                  Descricao
+                  {t('agenda.description', 'Descrição')}
                 </label>
                 <textarea
                   value={formData.description}
                   onChange={(e) => setFormData((p) => ({ ...p, description: e.target.value }))}
                   rows={2}
-                  placeholder="Descricao do servico..."
+                  placeholder={t('agenda.descriptionPlaceholder', 'Descrição do serviço...')}
                   className={cn(
                     'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 resize-none',
                     'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
@@ -724,7 +732,7 @@ function ServiceManagementDialog({
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                    Duracao *
+                    {t('agenda.duration', 'Duração')} *
                   </label>
                   <select
                     value={formData.duration}
@@ -743,7 +751,7 @@ function ServiceManagementDialog({
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                    Preco (R$) *
+                    {t('agenda.price', 'Preço (R$)')} *
                   </label>
                   <input
                     type="number"
@@ -766,13 +774,13 @@ function ServiceManagementDialog({
               {/* Category */}
               <div>
                 <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                  Categoria
+                  {t('agenda.category', 'Categoria')}
                 </label>
                 <input
                   type="text"
                   value={formData.category}
                   onChange={(e) => setFormData((p) => ({ ...p, category: e.target.value }))}
-                  placeholder="Ex: Cabelo, Unhas, Barba..."
+                  placeholder={t('agenda.categoryPlaceholder', 'Ex: Cabelo, Unhas, Barba...')}
                   className={cn(
                     'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
                     'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
@@ -787,7 +795,7 @@ function ServiceManagementDialog({
               <div>
                 <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
                   <Palette className="w-3.5 h-3.5 inline mr-1" />
-                  Cor
+                  {t('agenda.color', 'Cor')}
                 </label>
                 <div className="flex flex-wrap gap-2">
                   {SERVICE_COLOR_PALETTE.map((c) => (
@@ -809,8 +817,8 @@ function ServiceManagementDialog({
               {/* Active toggle */}
               <div className="flex items-center justify-between py-2">
                 <div>
-                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100">Servico Ativo</div>
-                  <div className="text-xs text-gray-500 dark:text-gray-400">Servicos inativos nao aparecem na agenda</div>
+                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{t('agenda.serviceActive', 'Serviço Ativo')}</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">{t('agenda.serviceActiveDesc', 'Serviços inativos não aparecem na agenda')}</div>
                 </div>
                 <button
                   onClick={() => setFormData((p) => ({ ...p, isActive: !p.isActive }))}
@@ -847,7 +855,7 @@ function ServiceManagementDialog({
             )}
           >
             <Plus className="w-4 h-4" />
-            Novo Servico
+            {t('agenda.newService', 'Novo Serviço')}
           </button>
         ) : (
           <>
@@ -859,7 +867,7 @@ function ServiceManagementDialog({
                 'transition-all duration-200',
               )}
             >
-              Voltar
+              {t('agenda.back', 'Voltar')}
             </button>
             <button
               onClick={handleSave}
@@ -872,7 +880,7 @@ function ServiceManagementDialog({
                 'disabled:opacity-50 disabled:cursor-not-allowed',
               )}
             >
-              {saving ? 'Salvando...' : editingService ? 'Salvar Alteracoes' : 'Criar Servico'}
+              {saving ? t('agenda.saving', 'Salvando...') : editingService ? t('agenda.saveChanges', 'Salvar Alterações') : t('agenda.createService', 'Criar Serviço')}
             </button>
           </>
         )}
@@ -892,6 +900,7 @@ interface DeleteConfirmDialogProps {
 }
 
 function DeleteConfirmDialog({ open, onClose, onCancel, onDelete, loading, appointmentName }: DeleteConfirmDialogProps) {
+  const { t } = useTranslation();
   return (
     <Dialog
       open={open}
@@ -905,13 +914,13 @@ function DeleteConfirmDialog({ open, onClose, onCancel, onDelete, loading, appoi
           <AlertTriangle className="w-6 h-6 text-red-600 dark:text-red-400" />
         </div>
         <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">
-          Excluir Agendamento
+          {t('agenda.deleteAppointment', 'Excluir Agendamento')}
         </h3>
         <p className="text-sm text-gray-500 dark:text-gray-400 mb-1">
-          {appointmentName ? `Deseja excluir o agendamento de ${appointmentName}?` : 'Deseja excluir este agendamento?'}
+          {appointmentName ? t('agenda.deleteConfirmNamed', `Deseja excluir o agendamento de ${appointmentName}?`, { name: appointmentName }) : t('agenda.deleteConfirm', 'Deseja excluir este agendamento?')}
         </p>
         <p className="text-xs text-gray-400 dark:text-gray-500 mb-6">
-          Voce pode cancelar o agendamento ou exclui-lo permanentemente.
+          {t('agenda.deleteOrCancelHint', 'Você pode cancelar o agendamento ou excluí-lo permanentemente.')}
         </p>
         <div className="flex flex-col gap-2">
           <button
@@ -924,7 +933,7 @@ function DeleteConfirmDialog({ open, onClose, onCancel, onDelete, loading, appoi
               'disabled:opacity-50',
             )}
           >
-            Cancelar Agendamento (manter registro)
+            {t('agenda.cancelAppointmentKeepRecord', 'Cancelar Agendamento (manter registro)')}
           </button>
           <button
             onClick={onDelete}
@@ -937,7 +946,7 @@ function DeleteConfirmDialog({ open, onClose, onCancel, onDelete, loading, appoi
               'disabled:opacity-50',
             )}
           >
-            {loading ? 'Excluindo...' : 'Excluir Permanentemente'}
+            {loading ? t('agenda.deleting', 'Excluindo...') : t('agenda.deletePermanently', 'Excluir Permanentemente')}
           </button>
           <button
             onClick={onClose}
@@ -948,7 +957,7 @@ function DeleteConfirmDialog({ open, onClose, onCancel, onDelete, loading, appoi
               'transition-all duration-200',
             )}
           >
-            Voltar
+            {t('agenda.back', 'Voltar')}
           </button>
         </div>
       </div>
@@ -1003,6 +1012,7 @@ function AppointmentFormDialog({
   checkConflicts,
   editingAppointmentId,
 }: AppointmentDialogProps) {
+  const { t } = useTranslation();
   const [formData, setFormData] = useState<AppointmentFormData>({
     clientId: '',
     clientName: '',
@@ -1151,7 +1161,7 @@ function AppointmentFormDialog({
         }}
       >
         <span className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-          {isEditing ? 'Editar Agendamento' : 'Novo Agendamento'}
+          {isEditing ? t('agenda.editAppointment', 'Editar Agendamento') : t('agenda.newAppointment', 'Novo Agendamento')}
         </span>
         <button
           onClick={onClose}
@@ -1166,7 +1176,7 @@ function AppointmentFormDialog({
           {/* Client search */}
           <div ref={clientSearchRef} className="relative">
             <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-              Cliente *
+              {t('agenda.client', 'Cliente')} *
             </label>
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500" />
@@ -1179,7 +1189,7 @@ function AppointmentFormDialog({
                   setFormData((prev) => ({ ...prev, clientName: e.target.value, clientId: '' }));
                 }}
                 onFocus={() => setShowClientDropdown(true)}
-                placeholder="Buscar cliente..."
+                placeholder={t('agenda.searchClient', 'Buscar cliente...')}
                 className={cn(
                   'w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
                   'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
@@ -1220,7 +1230,7 @@ function AppointmentFormDialog({
           {/* Service select */}
           <div>
             <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-              Servico *
+              {t('agenda.service', 'Serviço')} *
             </label>
             <select
               value={formData.serviceId}
@@ -1232,7 +1242,7 @@ function AppointmentFormDialog({
                 'transition-all duration-200',
               )}
             >
-              <option value="">Selecionar servico</option>
+              <option value="">{t('agenda.selectService', 'Selecionar serviço')}</option>
               {activeServices.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name} - {formatCurrency(s.price)} ({s.duration} min)
@@ -1245,7 +1255,7 @@ function AppointmentFormDialog({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                Data *
+                {t('agenda.date', 'Data')} *
               </label>
               <input
                 type="date"
@@ -1262,7 +1272,7 @@ function AppointmentFormDialog({
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                Horario Inicio *
+                {t('agenda.startTime', 'Horário Início')} *
               </label>
               <select
                 value={formData.startTime}
@@ -1285,7 +1295,7 @@ function AppointmentFormDialog({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                Duracao
+                {t('agenda.duration', 'Duração')}
               </label>
               <select
                 value={formData.duration}
@@ -1304,7 +1314,7 @@ function AppointmentFormDialog({
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                Termino
+                {t('agenda.endTime', 'Término')}
               </label>
               <div className="px-4 py-2.5 rounded-xl border border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50 text-sm text-gray-500 dark:text-gray-400">
                 {endTime}
@@ -1315,10 +1325,10 @@ function AppointmentFormDialog({
           {/* Professional */}
           <div>
             <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-              Profissional
+              {t('agenda.professional', 'Profissional')}
               {formData.serviceId && availableMembers.length < members.length && (
                 <span className="ml-1.5 text-[10px] text-gray-400 dark:text-gray-500 font-normal">
-                  ({availableMembers.length} disponiveis para este servico)
+                  ({availableMembers.length} {t('agenda.availableForService', 'disponíveis para este serviço')})
                 </span>
               )}
             </label>
@@ -1342,7 +1352,7 @@ function AppointmentFormDialog({
                   : 'border-gray-200 dark:border-gray-700',
               )}
             >
-              <option value="">Selecionar profissional</option>
+              <option value="">{t('agenda.selectProfessional', 'Selecionar profissional')}</option>
               {availableMembers.map((m) => (
                 <option key={m.id} value={m.id}>{m.name}</option>
               ))}
@@ -1364,7 +1374,7 @@ function AppointmentFormDialog({
                 )}>
                   <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
                   <div>
-                    <div className="text-xs font-semibold text-amber-700 dark:text-amber-300">Conflito de Agenda</div>
+                    <div className="text-xs font-semibold text-amber-700 dark:text-amber-300">{t('agenda.scheduleConflict', 'Conflito de Agenda')}</div>
                     <div className="text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">{formConflict.message}</div>
                   </div>
                 </div>
@@ -1376,7 +1386,7 @@ function AppointmentFormDialog({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                Status
+                {t('agenda.status', 'Status')}
               </label>
               <select
                 value={formData.status}
@@ -1391,13 +1401,13 @@ function AppointmentFormDialog({
                 )}
               >
                 {STATUS_OPTIONS.map((s) => (
-                  <option key={s.value} value={s.value}>{s.label}</option>
+                  <option key={s.value} value={s.value}>{t(`agenda.status_${s.value}`, s.label)}</option>
                 ))}
               </select>
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                Valor (R$)
+                {t('agenda.value', 'Valor (R$)')}
               </label>
               <input
                 type="number"
@@ -1422,13 +1432,13 @@ function AppointmentFormDialog({
           {/* Notes */}
           <div>
             <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-              Observacoes
+              {t('agenda.notes', 'Observações')}
             </label>
             <textarea
               value={formData.notes}
               onChange={(e) => setFormData((prev) => ({ ...prev, notes: e.target.value }))}
               rows={3}
-              placeholder="Observacoes adicionais..."
+              placeholder={t('agenda.notesPlaceholder', 'Observações adicionais...')}
               className={cn(
                 'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 resize-none',
                 'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
@@ -1458,7 +1468,7 @@ function AppointmentFormDialog({
             )}
           >
             <Trash2 className="w-4 h-4 inline mr-1.5" />
-            Excluir
+            {t('agenda.delete', 'Excluir')}
           </button>
         )}
         <div className="flex gap-2">
@@ -1470,7 +1480,7 @@ function AppointmentFormDialog({
               'transition-all duration-200',
             )}
           >
-            Cancelar
+            {t('agenda.cancel', 'Cancelar')}
           </button>
           <button
             onClick={handleSubmit}
@@ -1483,7 +1493,7 @@ function AppointmentFormDialog({
               'disabled:opacity-50 disabled:cursor-not-allowed',
             )}
           >
-            {saving ? 'Salvando...' : isEditing ? 'Salvar Alteracoes' : 'Agendar'}
+            {saving ? t('agenda.saving', 'Salvando...') : isEditing ? t('agenda.saveChanges', 'Salvar Alterações') : t('agenda.schedule', 'Agendar')}
           </button>
         </div>
       </DialogActions>
@@ -1511,6 +1521,8 @@ function ViewAppointmentDialog({
   onStatusChange,
   statusChanging,
 }: ViewAppointmentDialogProps) {
+  const { t, i18n } = useTranslation();
+  const dateLocale = i18n.language === 'en-US' ? enUS : ptBR;
   if (!appointment) return null;
 
   const color = STATUS_COLORS[appointment.status];
@@ -1576,9 +1588,9 @@ function ViewAppointmentDialog({
             <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
               <CalendarIcon className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
               <div>
-                <div className="text-xs text-gray-500 dark:text-gray-400">Data</div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">{t('agenda.date', 'Data')}</div>
                 <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                  {format(parseISO(appointment.date), "EEEE, dd 'de' MMMM 'de' yyyy", { locale: ptBR })}
+                  {format(parseISO(appointment.date), "EEEE, dd 'de' MMMM 'de' yyyy", { locale: dateLocale })}
                 </div>
               </div>
             </div>
@@ -1586,7 +1598,7 @@ function ViewAppointmentDialog({
             <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
               <Clock className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
               <div>
-                <div className="text-xs text-gray-500 dark:text-gray-400">Horario</div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">{t('agenda.time', 'Horário')}</div>
                 <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
                   {appointment.startTime} - {appointment.endTime} ({appointment.duration} min)
                 </div>
@@ -1597,7 +1609,7 @@ function ViewAppointmentDialog({
               <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
                 <Phone className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
                 <div>
-                  <div className="text-xs text-gray-500 dark:text-gray-400">Telefone</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">{t('agenda.phone', 'Telefone')}</div>
                   <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{appointment.clientPhone}</div>
                 </div>
               </div>
@@ -1607,7 +1619,7 @@ function ViewAppointmentDialog({
               <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
                 <UserIcon className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
                 <div>
-                  <div className="text-xs text-gray-500 dark:text-gray-400">Profissional</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">{t('agenda.professional', 'Profissional')}</div>
                   <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{appointment.professionalName}</div>
                 </div>
               </div>
@@ -1616,7 +1628,7 @@ function ViewAppointmentDialog({
             <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
               <DollarSign className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
               <div>
-                <div className="text-xs text-gray-500 dark:text-gray-400">Valor</div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">{t('agenda.value', 'Valor')}</div>
                 <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">{formatCurrency(appointment.price)}</div>
               </div>
             </div>
@@ -1625,7 +1637,7 @@ function ViewAppointmentDialog({
               <div className="flex items-start gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
                 <FileText className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0 mt-0.5" />
                 <div>
-                  <div className="text-xs text-gray-500 dark:text-gray-400">Observacoes</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">{t('agenda.notes', 'Observações')}</div>
                   <div className="text-sm text-gray-700 dark:text-gray-300 mt-0.5">{appointment.notes}</div>
                 </div>
               </div>
@@ -1643,7 +1655,7 @@ function ViewAppointmentDialog({
                 )}
               >
                 <Edit3 className="w-3.5 h-3.5" />
-                Editar
+                {t('agenda.edit', 'Editar')}
               </button>
             )}
 
@@ -1658,7 +1670,7 @@ function ViewAppointmentDialog({
                 )}
               >
                 <Check className="w-3.5 h-3.5" />
-                Confirmar
+                {t('agenda.confirm', 'Confirmar')}
               </button>
             )}
 
@@ -1673,7 +1685,7 @@ function ViewAppointmentDialog({
                 )}
               >
                 <Clock className="w-3.5 h-3.5" />
-                Iniciar
+                {t('agenda.start', 'Iniciar')}
               </button>
             )}
 
@@ -1688,7 +1700,7 @@ function ViewAppointmentDialog({
                 )}
               >
                 <X className="w-3.5 h-3.5" />
-                Cancelar
+                {t('agenda.cancel', 'Cancelar')}
               </button>
             )}
 
@@ -1703,7 +1715,7 @@ function ViewAppointmentDialog({
                 )}
               >
                 <Check className="w-3.5 h-3.5" />
-                Concluir
+                {t('agenda.complete', 'Concluir')}
               </button>
             )}
 
@@ -1717,7 +1729,7 @@ function ViewAppointmentDialog({
                   'disabled:opacity-50',
                 )}
               >
-                Nao Compareceu
+                {t('agenda.noShow', 'Não Compareceu')}
               </button>
             )}
           </div>
@@ -1782,6 +1794,8 @@ function AgendaSkeleton() {
 // ==========================================
 
 export default function AgendaModule() {
+  const { t, i18n } = useTranslation();
+  const dateLocale = i18n.language === 'en-US' ? enUS : ptBR;
   const { user, business } = useAuth();
   const queryClient = useQueryClient();
 
@@ -1945,10 +1959,10 @@ export default function AgendaModule() {
       const dayOfWeek = new Date(date + 'T12:00:00').getDay();
       const daySchedule = professional.workingHours[dayOfWeek];
       if (!daySchedule?.enabled) {
-        return { hasConflict: true, message: `${professional.name} nao trabalha neste dia` };
+        return { hasConflict: true, message: t('agenda.doesNotWorkThisDay', `${professional.name} não trabalha neste dia`, { name: professional.name }) };
       }
       if (startTime < daySchedule.start || endTime > daySchedule.end) {
-        return { hasConflict: true, message: `Fora do horario de trabalho (${daySchedule.start} - ${daySchedule.end})` };
+        return { hasConflict: true, message: t('agenda.outsideWorkingHours', `Fora do horário de trabalho (${daySchedule.start} - ${daySchedule.end})`, { start: daySchedule.start, end: daySchedule.end }) };
       }
     }
 
@@ -1962,7 +1976,7 @@ export default function AgendaModule() {
     );
 
     if (existing.length > 0) {
-      return { hasConflict: true, message: `Conflito com ${existing[0].clientName} (${existing[0].startTime} - ${existing[0].endTime})` };
+      return { hasConflict: true, message: t('agenda.conflictWith', `Conflito com ${existing[0].clientName} (${existing[0].startTime} - ${existing[0].endTime})`, { name: existing[0].clientName, start: existing[0].startTime, end: existing[0].endTime }) };
     }
 
     return { hasConflict: false, message: '' };
@@ -1989,8 +2003,8 @@ export default function AgendaModule() {
       updatedAt: new Date().toISOString(),
     });
     queryClient.invalidateQueries({ queryKey: ['services', business.id] });
-    setSnackbar({ open: true, message: 'Servico criado com sucesso!', severity: 'success' });
-  }, [business?.id, user, queryClient]);
+    setSnackbar({ open: true, message: t('agenda.serviceCreated', 'Serviço criado com sucesso!'), severity: 'success' });
+  }, [business?.id, user, queryClient, t]);
 
   const handleUpdateService = useCallback(async (id: string, data: ServiceFormData) => {
     if (!business?.id) return;
@@ -2005,15 +2019,15 @@ export default function AgendaModule() {
       updatedAt: new Date().toISOString(),
     });
     queryClient.invalidateQueries({ queryKey: ['services', business.id] });
-    setSnackbar({ open: true, message: 'Servico atualizado com sucesso!', severity: 'success' });
-  }, [business?.id, queryClient]);
+    setSnackbar({ open: true, message: t('agenda.serviceUpdated', 'Serviço atualizado com sucesso!'), severity: 'success' });
+  }, [business?.id, queryClient, t]);
 
   const handleDeleteService = useCallback(async (id: string) => {
     if (!business?.id) return;
     await deleteDoc(doc(db, 'services', id));
     queryClient.invalidateQueries({ queryKey: ['services', business.id] });
-    setSnackbar({ open: true, message: 'Servico excluido.', severity: 'info' });
-  }, [business?.id, queryClient]);
+    setSnackbar({ open: true, message: t('agenda.serviceDeleted', 'Serviço excluído.'), severity: 'info' });
+  }, [business?.id, queryClient, t]);
 
   // ==========================================
   // APPOINTMENT CRUD HANDLERS
@@ -2038,7 +2052,7 @@ export default function AgendaModule() {
         if (conflictResult.hasConflict) {
           setSnackbar({
             open: true,
-            message: `Aviso: ${conflictResult.message}`,
+            message: `${t('agenda.warning', 'Aviso')}: ${conflictResult.message}`,
             severity: 'warning',
           });
         }
@@ -2065,12 +2079,12 @@ export default function AgendaModule() {
 
       if (editingAppointment) {
         await updateDoc(doc(db, 'appointments', editingAppointment.id), payload);
-        setSnackbar({ open: true, message: 'Agendamento atualizado com sucesso!', severity: 'success' });
+        setSnackbar({ open: true, message: t('agenda.appointmentUpdated', 'Agendamento atualizado com sucesso!'), severity: 'success' });
       } else {
         payload.businessId = business.id;
         payload.createdAt = new Date().toISOString();
         await addDoc(collection(db, 'appointments'), payload);
-        setSnackbar({ open: true, message: 'Agendamento criado com sucesso!', severity: 'success' });
+        setSnackbar({ open: true, message: t('agenda.appointmentCreated', 'Agendamento criado com sucesso!'), severity: 'success' });
       }
 
       queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
@@ -2078,11 +2092,11 @@ export default function AgendaModule() {
       setEditingAppointment(null);
     } catch (err) {
       console.error('Error saving appointment:', err);
-      setSnackbar({ open: true, message: 'Erro ao salvar agendamento.', severity: 'error' });
+      setSnackbar({ open: true, message: t('agenda.errorSavingAppointment', 'Erro ao salvar agendamento.'), severity: 'error' });
     } finally {
       setSaving(false);
     }
-  }, [business?.id, editingAppointment, services, queryClient, checkConflicts]);
+  }, [business?.id, editingAppointment, services, queryClient, checkConflicts, t]);
 
   const handleDeleteAppointment = useCallback(async () => {
     if (!editingAppointment || !business?.id) return;
@@ -2093,14 +2107,14 @@ export default function AgendaModule() {
       setShowDeleteDialog(false);
       setShowFormDialog(false);
       setEditingAppointment(null);
-      setSnackbar({ open: true, message: 'Agendamento excluido.', severity: 'info' });
+      setSnackbar({ open: true, message: t('agenda.appointmentDeleted', 'Agendamento excluído.'), severity: 'info' });
     } catch (err) {
       console.error('Error deleting appointment:', err);
-      setSnackbar({ open: true, message: 'Erro ao excluir agendamento.', severity: 'error' });
+      setSnackbar({ open: true, message: t('agenda.errorDeletingAppointment', 'Erro ao excluir agendamento.'), severity: 'error' });
     } finally {
       setDeleteLoading(false);
     }
-  }, [editingAppointment, business?.id, queryClient]);
+  }, [editingAppointment, business?.id, queryClient, t]);
 
   const handleCancelAppointment = useCallback(async () => {
     if (!editingAppointment || !business?.id) return;
@@ -2114,14 +2128,14 @@ export default function AgendaModule() {
       setShowDeleteDialog(false);
       setShowFormDialog(false);
       setEditingAppointment(null);
-      setSnackbar({ open: true, message: 'Agendamento cancelado.', severity: 'info' });
+      setSnackbar({ open: true, message: t('agenda.appointmentCancelled', 'Agendamento cancelado.'), severity: 'info' });
     } catch (err) {
       console.error('Error cancelling appointment:', err);
-      setSnackbar({ open: true, message: 'Erro ao cancelar agendamento.', severity: 'error' });
+      setSnackbar({ open: true, message: t('agenda.errorCancellingAppointment', 'Erro ao cancelar agendamento.'), severity: 'error' });
     } finally {
       setDeleteLoading(false);
     }
-  }, [editingAppointment, business?.id, queryClient]);
+  }, [editingAppointment, business?.id, queryClient, t]);
 
   const handleStatusChange = useCallback(async (status: AppointmentStatus) => {
     if (!selectedAppointment || !business?.id) return;
@@ -2135,16 +2149,16 @@ export default function AgendaModule() {
       setSelectedAppointment((prev) => (prev ? { ...prev, status } : null));
       setSnackbar({
         open: true,
-        message: `Status alterado para "${getStatusLabel(status)}"`,
+        message: t('agenda.statusChanged', `Status alterado para "${getStatusLabel(status)}"`, { status: getStatusLabel(status) }),
         severity: 'success',
       });
     } catch (err) {
       console.error('Error changing status:', err);
-      setSnackbar({ open: true, message: 'Erro ao alterar status.', severity: 'error' });
+      setSnackbar({ open: true, message: t('agenda.errorChangingStatus', 'Erro ao alterar status.'), severity: 'error' });
     } finally {
       setStatusChanging(false);
     }
-  }, [selectedAppointment, business?.id, queryClient]);
+  }, [selectedAppointment, business?.id, queryClient, t]);
 
   // ---- Computed values ----
   const weekStart = useMemo(() => startOfWeek(currentDate, { weekStartsOn: 0 }), [currentDate]);
@@ -2227,19 +2241,27 @@ export default function AgendaModule() {
   const periodText = useMemo(() => {
     switch (viewMode) {
       case 'day':
-        return format(currentDate, "EEEE, dd 'de' MMMM", { locale: ptBR });
+        return i18n.language === 'en-US'
+          ? format(currentDate, 'EEEE, MMMM dd', { locale: dateLocale })
+          : format(currentDate, "EEEE, dd 'de' MMMM", { locale: dateLocale });
       case 'week': {
         const wStart = weekStart;
         const wEnd = weekEnd;
         if (isSameMonth(wStart, wEnd)) {
-          return `${format(wStart, 'dd', { locale: ptBR })} - ${format(wEnd, "dd 'de' MMMM yyyy", { locale: ptBR })}`;
+          return i18n.language === 'en-US'
+            ? `${format(wStart, 'MMM dd', { locale: dateLocale })} - ${format(wEnd, 'dd, yyyy', { locale: dateLocale })}`
+            : `${format(wStart, 'dd', { locale: dateLocale })} - ${format(wEnd, "dd 'de' MMMM yyyy", { locale: dateLocale })}`;
         }
-        return `${format(wStart, "dd 'de' MMM", { locale: ptBR })} - ${format(wEnd, "dd 'de' MMM yyyy", { locale: ptBR })}`;
+        return i18n.language === 'en-US'
+          ? `${format(wStart, 'MMM dd', { locale: dateLocale })} - ${format(wEnd, 'MMM dd, yyyy', { locale: dateLocale })}`
+          : `${format(wStart, "dd 'de' MMM", { locale: dateLocale })} - ${format(wEnd, "dd 'de' MMM yyyy", { locale: dateLocale })}`;
       }
       case 'month':
-        return format(currentDate, "MMMM 'de' yyyy", { locale: ptBR });
+        return i18n.language === 'en-US'
+          ? format(currentDate, 'MMMM yyyy', { locale: dateLocale })
+          : format(currentDate, "MMMM 'de' yyyy", { locale: dateLocale });
     }
-  }, [viewMode, currentDate, weekStart, weekEnd]);
+  }, [viewMode, currentDate, weekStart, weekEnd, dateLocale, i18n.language]);
 
   // ---- Appointment Actions ----
   const handleAppointmentClick = useCallback((appt: Appointment) => {
@@ -2367,7 +2389,7 @@ export default function AgendaModule() {
               'text-xs font-medium uppercase tracking-wider',
               isToday(currentDate) ? 'text-red-600' : 'text-gray-500 dark:text-gray-400',
             )}>
-              {format(currentDate, 'EEEE', { locale: ptBR })}
+              {format(currentDate, 'EEEE', { locale: dateLocale })}
             </div>
             <div className={cn(
               'inline-flex items-center justify-center w-10 h-10 rounded-full text-lg font-semibold mt-1',
@@ -2424,8 +2446,8 @@ export default function AgendaModule() {
                 <div className="absolute inset-0 flex items-center justify-center z-0 pointer-events-none">
                   <div className="text-center">
                     <CalendarIcon className="w-10 h-10 mx-auto text-gray-200 dark:text-gray-700 mb-2" />
-                    <p className="text-sm text-gray-400 dark:text-gray-500">Nenhum agendamento neste dia</p>
-                    <p className="text-xs text-gray-300 dark:text-gray-600 mt-1">Clique em um horario para agendar</p>
+                    <p className="text-sm text-gray-400 dark:text-gray-500">{t('agenda.noAppointmentsThisDay', 'Nenhum agendamento neste dia')}</p>
+                    <p className="text-xs text-gray-300 dark:text-gray-600 mt-1">{t('agenda.clickSlotToSchedule', 'Clique em um horário para agendar')}</p>
                   </div>
                 </div>
               )}
@@ -2454,6 +2476,7 @@ export default function AgendaModule() {
         {weekDays.map((day, i) => {
           const isTodayCol = isToday(day);
           const dayAppointmentsCount = appointmentsByDate.get(format(day, 'yyyy-MM-dd'))?.length || 0;
+          const weekdayLabels = i18n.language === 'en-US' ? WEEKDAY_LABELS_EN : WEEKDAY_LABELS_PT;
           return (
             <div
               key={i}
@@ -2466,7 +2489,7 @@ export default function AgendaModule() {
                 'text-[11px] font-medium uppercase tracking-wider',
                 isTodayCol ? 'text-red-600' : 'text-gray-400 dark:text-gray-500',
               )}>
-                {WEEKDAY_LABELS[i]}
+                {weekdayLabels[i]}
               </div>
               <div
                 className={cn(
@@ -2484,7 +2507,7 @@ export default function AgendaModule() {
               </div>
               {dayAppointmentsCount > 0 && (
                 <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">
-                  {dayAppointmentsCount} agend.
+                  {dayAppointmentsCount} {t('agenda.apptAbbr', 'agend.')}
                 </div>
               )}
             </div>
@@ -2565,7 +2588,7 @@ export default function AgendaModule() {
     >
       {/* Weekday headers */}
       <div className="grid grid-cols-7 border-b border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900">
-        {WEEKDAY_LABELS.map((label, i) => (
+        {(i18n.language === 'en-US' ? WEEKDAY_LABELS_EN : WEEKDAY_LABELS_PT).map((label, i) => (
           <div key={i} className="text-center py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500 border-r border-gray-100 dark:border-gray-800 last:border-r-0">
             {label}
           </div>
@@ -2639,7 +2662,7 @@ export default function AgendaModule() {
                   ))}
                   {overflow > 0 && (
                     <div className="text-[10px] text-gray-500 dark:text-gray-400 font-medium text-center py-0.5">
-                      +{overflow} mais
+                      +{overflow} {t('agenda.more', 'mais')}
                     </div>
                   )}
                 </div>
@@ -2683,7 +2706,7 @@ export default function AgendaModule() {
             <button
               onClick={navigatePrev}
               className="p-2 hover:bg-white dark:hover:bg-gray-700 rounded-lg transition-all duration-200 hover:shadow-sm"
-              title="Anterior"
+              title={t('agenda.previous', 'Anterior')}
             >
               <ChevronLeft className="w-4 h-4 text-gray-600 dark:text-gray-400" />
             </button>
@@ -2696,12 +2719,12 @@ export default function AgendaModule() {
                   : 'text-gray-600 dark:text-gray-400 hover:bg-white dark:hover:bg-gray-700 hover:shadow-sm',
               )}
             >
-              Hoje
+              {t('agenda.today', 'Hoje')}
             </button>
             <button
               onClick={navigateNext}
               className="p-2 hover:bg-white dark:hover:bg-gray-700 rounded-lg transition-all duration-200 hover:shadow-sm"
-              title="Proximo"
+              title={t('agenda.next', 'Próximo')}
             >
               <ChevronRight className="w-4 h-4 text-gray-600 dark:text-gray-400" />
             </button>
@@ -2747,9 +2770,9 @@ export default function AgendaModule() {
           {/* View mode toggle */}
           <div className="flex items-center bg-gray-50 dark:bg-gray-800 rounded-xl p-0.5">
             {([
-              { mode: 'day' as ViewMode, icon: CalendarDays, label: 'Dia' },
-              { mode: 'week' as ViewMode, icon: Columns3, label: 'Semana' },
-              { mode: 'month' as ViewMode, icon: LayoutGrid, label: 'Mes' },
+              { mode: 'day' as ViewMode, icon: CalendarDays, label: t('agenda.day', 'Dia') },
+              { mode: 'week' as ViewMode, icon: Columns3, label: t('agenda.week', 'Semana') },
+              { mode: 'month' as ViewMode, icon: LayoutGrid, label: t('agenda.month', 'Mês') },
             ]).map(({ mode, icon: Icon, label }) => (
               <button
                 key={mode}
@@ -2777,7 +2800,7 @@ export default function AgendaModule() {
             )}
           >
             <Settings2 className="w-4 h-4" />
-            <span className="hidden sm:inline">Servicos</span>
+            <span className="hidden sm:inline">{t('agenda.services', 'Serviços')}</span>
           </button>
 
           {/* New appointment button */}
@@ -2792,8 +2815,8 @@ export default function AgendaModule() {
             )}
           >
             <Plus className="w-4 h-4" />
-            <span className="hidden sm:inline">Novo Agendamento</span>
-            <span className="sm:hidden">Novo</span>
+            <span className="hidden sm:inline">{t('agenda.newAppointment', 'Novo Agendamento')}</span>
+            <span className="sm:hidden">{t('agenda.new', 'Novo')}</span>
           </button>
         </div>
       </div>
@@ -2801,7 +2824,7 @@ export default function AgendaModule() {
       {/* ========== STATUS SUMMARY ========== */}
       <div className="flex items-center gap-1.5 px-4 sm:px-6 py-2 bg-gray-50/50 dark:bg-gray-800/50 border-b border-gray-100 dark:border-gray-800 overflow-x-auto">
         <span className="text-xs text-gray-400 dark:text-gray-500 mr-1 whitespace-nowrap">
-          {visibleAppointments.length} agendamento{visibleAppointments.length !== 1 ? 's' : ''}
+          {visibleAppointments.length} {visibleAppointments.length !== 1 ? t('agenda.appointments', 'agendamentos') : t('agenda.appointment', 'agendamento')}
         </span>
         <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-1" />
         {STATUS_OPTIONS.filter((s) => statusSummary[s.value] > 0).map((s) => (
@@ -2817,7 +2840,7 @@ export default function AgendaModule() {
               className="w-1.5 h-1.5 rounded-full"
               style={{ backgroundColor: STATUS_COLORS[s.value] }}
             />
-            {statusSummary[s.value]} {s.label}
+            {statusSummary[s.value]} {t(`agenda.status_${s.value}`, s.label)}
           </span>
         ))}
       </div>
@@ -2835,7 +2858,7 @@ export default function AgendaModule() {
                 : 'bg-white dark:bg-gray-800 border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:border-slate-300 dark:hover:border-gray-600',
             )}
           >
-            Todos
+            {t('agenda.all', 'Todos')}
           </button>
           {members.map((member) => {
             const initials = member.name

@@ -9,6 +9,7 @@ import {
   Clock, Sun, Moon, Sunset,
   ArrowRight, Gauge,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import type { IntegrationConfig, IntegrationProvider, User as UserType } from '@/lib/types';
 import { INTEGRATION_PROVIDERS, ROLE_LABELS } from '@/lib/types';
@@ -340,14 +341,15 @@ function BudgetAlert({
   limit,
   color,
   onAction,
+  viewDetailsLabel = 'Ver detalhes',
 }: {
   label: string;
   used: number;
   limit: number;
   color: string;
   onAction?: () => void;
+  viewDetailsLabel?: string;
 }) {
-  const pct = Math.round((used / limit) * 100);
   return (
     <motion.div
       variants={STAGGER_ITEM}
@@ -356,7 +358,7 @@ function BudgetAlert({
       <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0" />
       <div className="flex-1 min-w-0">
         <p className="text-sm text-amber-800 dark:text-amber-300 font-medium">
-          {label} atingiu {pct}% do budget mensal
+          {label}
         </p>
         <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">
           {formatUSD(used)} / {formatUSD(limit)}
@@ -369,7 +371,7 @@ function BudgetAlert({
             onClick={onAction}
             className="text-xs font-semibold text-amber-700 dark:text-amber-300 hover:text-amber-900 dark:hover:text-amber-200 transition-colors"
           >
-            Ver detalhes
+            {viewDetailsLabel}
           </button>
         )}
       </div>
@@ -405,6 +407,7 @@ function QuickActionButton({
 // ============================================
 
 export default function OverviewTab({ integrations, members, onNavigate }: OverviewTabProps) {
+  const { t } = useTranslation();
   const { user } = useAuth();
   const [data, setData] = useState<OverviewData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -604,7 +607,7 @@ export default function OverviewTab({ integrations, members, onNavigate }: Overv
       {/* Demo Banner */}
       {isDemo && (
         <motion.div variants={STAGGER_ITEM}>
-          <DemoDataBanner message="Conecte suas integrações nas Configurações Enterprise para ver dados reais." />
+          <DemoDataBanner message={t('integrations.demo.connectMessage', 'Conecte suas integrações nas Configurações Enterprise para ver dados reais.')} />
         </motion.div>
       )}
 
@@ -638,27 +641,27 @@ export default function OverviewTab({ integrations, members, onNavigate }: Overv
           <div className="grid grid-cols-2 lg:grid-cols-5 gap-2.5">
             <QuickStatsPill
               icon={<DollarSign className="w-3.5 h-3.5" />}
-              label="Receita Total"
+              label={t('integrations.overview.totalRevenue', 'Receita Total')}
               value={formatCurrency(data.stripe.mrr)}
             />
             <QuickStatsPill
               icon={<Cloud className="w-3.5 h-3.5" />}
-              label="Custos AWS"
+              label={t('integrations.overview.awsCosts', 'Custos AWS')}
               value={formatUSD(data.aws.currentCost)}
             />
             <QuickStatsPill
               icon={<Shield className="w-3.5 h-3.5" />}
-              label="Cache Hit Rate"
+              label={t('integrations.kpi.cacheHitRate', 'Cache Hit Rate')}
               value={`${data.cloudflare.cacheHitRate}%`}
             />
             <QuickStatsPill
               icon={<Gauge className="w-3.5 h-3.5" />}
-              label="Deploy Success"
+              label={t('integrations.kpi.deploySuccessRate', 'Deploy Success Rate')}
               value={`${data.vercel.successRate}%`}
             />
             <QuickStatsPill
               icon={<Bug className="w-3.5 h-3.5" />}
-              label="Erros Ativos"
+              label={t('integrations.overview.activeErrors', 'Erros Ativos')}
               value={formatNumber(data.sentry.unresolvedIssues)}
             />
           </div>
@@ -671,7 +674,7 @@ export default function OverviewTab({ integrations, members, onNavigate }: Overv
       <motion.div variants={STAGGER_ITEM}>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <KPICard
-            title="MRR"
+            title={t('integrations.kpi.mrr', 'MRR')}
             value={formatCurrency(data.stripe.mrr)}
             change={data.stripe.mrrChange}
             icon={<DollarSign className="w-4 h-4" />}
@@ -680,7 +683,7 @@ export default function OverviewTab({ integrations, members, onNavigate }: Overv
             budget={{ used: data.stripe.mrr, limit: 50000 }}
           />
           <KPICard
-            title="Custo Cloud (mês)"
+            title={t('integrations.kpi.cloudCost', 'Custo Cloud (mês)')}
             value={formatUSD(data.aws.currentCost)}
             change={data.aws.costChange}
             icon={<Cloud className="w-4 h-4" />}
@@ -690,7 +693,7 @@ export default function OverviewTab({ integrations, members, onNavigate }: Overv
             warning={data.aws.currentCost / 2500 > 0.8}
           />
           <KPICard
-            title="Threats Bloqueadas"
+            title={t('integrations.kpi.threatsBlocked', 'Threats Bloqueadas')}
             value={formatNumber(data.cloudflare.threatsBlocked)}
             subtitle={`Cache hit: ${data.cloudflare.cacheHitRate}%`}
             icon={<Shield className="w-4 h-4" />}
@@ -698,9 +701,9 @@ export default function OverviewTab({ integrations, members, onNavigate }: Overv
             delay={0.15}
           />
           <KPICard
-            title="Equipe Online"
+            title={t('integrations.kpi.teamOnline', 'Equipe Online')}
             value={`${teamOnline}/${members.length}`}
-            subtitle={`${members.length - teamOnline} offline agora`}
+            subtitle={t('integrations.kpi.offlineNow', '{{count}} offline agora', { count: members.length - teamOnline })}
             icon={<Users className="w-4 h-4" />}
             color="amber"
             delay={0.2}
@@ -717,17 +720,17 @@ export default function OverviewTab({ integrations, members, onNavigate }: Overv
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-semibold font-display text-gray-900 dark:text-white flex items-center gap-2">
               <Activity className="w-4 h-4 text-violet-500" />
-              Feed de Atividades
+              {t('integrations.overview.activityFeed', 'Feed de Atividades')}
             </h3>
             <span className="text-[11px] text-gray-400 dark:text-gray-500 font-medium">
-              {feedItems.length} evento{feedItems.length !== 1 ? 's' : ''}
+              {t('integrations.overview.events', '{{count}} evento(s)', { count: feedItems.length })}
             </span>
           </div>
 
           {feedItems.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-10 text-center">
               <Clock className="w-8 h-8 text-gray-300 dark:text-gray-600 mb-3" />
-              <p className="text-sm text-gray-400 dark:text-gray-500">Nenhuma atividade recente</p>
+              <p className="text-sm text-gray-400 dark:text-gray-500">{t('integrations.overview.noRecentActivity', 'Nenhuma atividade recente')}</p>
             </div>
           ) : (
             <motion.div
@@ -747,7 +750,7 @@ export default function OverviewTab({ integrations, members, onNavigate }: Overv
                   onClick={() => setFeedExpanded(!feedExpanded)}
                   className="w-full mt-3 py-2 rounded-xl text-xs font-semibold text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-500/10 transition-colors flex items-center justify-center gap-1.5"
                 >
-                  {feedExpanded ? 'Ver menos' : 'Ver mais'}
+                  {feedExpanded ? t('integrations.overview.showLess', 'Ver menos') : t('integrations.overview.showMore', 'Ver mais')}
                   <ChevronRight className={`w-3.5 h-3.5 transition-transform ${feedExpanded ? 'rotate-90' : ''}`} />
                 </motion.button>
               )}
@@ -760,21 +763,21 @@ export default function OverviewTab({ integrations, members, onNavigate }: Overv
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-semibold font-display text-gray-900 dark:text-white flex items-center gap-2">
               <Users className="w-4 h-4 text-violet-500" />
-              Equipe
+              {t('integrations.overview.teamSection', 'Equipe')}
             </h3>
             <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-md ${
               teamOnline > 0
                 ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
                 : 'bg-gray-100 dark:bg-gray-800 text-gray-500'
             }`}>
-              {teamOnline} online
+              {t('integrations.overview.onlineCount', '{{count}} online', { count: teamOnline })}
             </span>
           </div>
 
           {members.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-10 text-center">
               <Users className="w-8 h-8 text-gray-300 dark:text-gray-600 mb-3" />
-              <p className="text-sm text-gray-400 dark:text-gray-500">Nenhum membro encontrado</p>
+              <p className="text-sm text-gray-400 dark:text-gray-500">{t('integrations.overview.noMembersFound', 'Nenhum membro encontrado')}</p>
             </div>
           ) : (
             <motion.div
@@ -805,11 +808,15 @@ export default function OverviewTab({ integrations, members, onNavigate }: Overv
             {budgetAlerts.map((alert) => (
               <BudgetAlert
                 key={alert.label}
-                label={alert.label}
+                label={t('integrations.overview.budgetAlert', '{{label}} atingiu {{pct}}% do budget mensal', {
+                  label: alert.label,
+                  pct: Math.round(alert.used / alert.limit * 100),
+                })}
                 used={alert.used}
                 limit={alert.limit}
                 color={alert.color}
                 onAction={() => navigate(alert.tab)}
+                viewDetailsLabel={t('integrations.overview.viewDetails', 'Ver detalhes')}
               />
             ))}
           </motion.div>
@@ -822,22 +829,22 @@ export default function OverviewTab({ integrations, members, onNavigate }: Overv
       <motion.div variants={STAGGER_ITEM}>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
           <QuickActionButton
-            label="Ver Receita"
+            label={t('integrations.overview.viewRevenue', 'Ver Receita')}
             icon={<TrendingUp className="w-4 h-4" />}
             onClick={() => navigate('receita')}
           />
           <QuickActionButton
-            label="Custos Cloud"
+            label={t('integrations.tabs.custos', 'Custos Cloud')}
             icon={<Cloud className="w-4 h-4" />}
             onClick={() => navigate('custos')}
           />
           <QuickActionButton
-            label="Infraestrutura"
+            label={t('integrations.overview.viewInfra', 'Infraestrutura')}
             icon={<Shield className="w-4 h-4" />}
             onClick={() => navigate('infra')}
           />
           <QuickActionButton
-            label="Monitoramento"
+            label={t('integrations.overview.viewMonitoring', 'Monitoramento')}
             icon={<Bug className="w-4 h-4" />}
             onClick={() => navigate('monitoramento')}
           />

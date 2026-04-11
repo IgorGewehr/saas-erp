@@ -2,6 +2,7 @@
 
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { getInitials } from '@/lib/utils/format';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -70,6 +71,14 @@ const PRIORITY_CONFIG: Record<KanbanPriority, { label: string; color: string; bg
   high:   { label: 'Alta',    color: 'text-orange-600 dark:text-orange-400', bgColor: 'bg-orange-50 dark:bg-orange-500/10 border-orange-200 dark:border-orange-500/20', icon: ArrowUp },
   medium: { label: 'Média',   color: 'text-blue-600 dark:text-blue-400', bgColor: 'bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-500/20', icon: Minus },
   low:    { label: 'Baixa',   color: 'text-gray-500 dark:text-gray-400', bgColor: 'bg-gray-50 dark:bg-gray-800/50 border-gray-200 dark:border-gray-700', icon: ArrowDown },
+};
+
+// ─── Priority label translation keys ─────────────────────
+const PRIORITY_LABEL_KEYS: Record<KanbanPriority, string> = {
+  urgent: 'kanban.priority.urgent',
+  high:   'kanban.priority.high',
+  medium: 'kanban.priority.medium',
+  low:    'kanban.priority.low',
 };
 
 // ─── Default Labels ───────────────────────────────────────
@@ -180,12 +189,14 @@ function AvatarStack({
 // PRIORITY BADGE
 // ═══════════════════════════════════════════════════════════
 function PriorityBadge({ priority, compact = false }: { priority: KanbanPriority; compact?: boolean }) {
+  const { t } = useTranslation();
   const config = PRIORITY_CONFIG[priority];
   const Icon = config.icon;
+  const label = t(PRIORITY_LABEL_KEYS[priority], config.label);
 
   if (compact) {
     return (
-      <div className={cn('flex items-center justify-center w-5 h-5 rounded', config.bgColor, 'border')} title={config.label}>
+      <div className={cn('flex items-center justify-center w-5 h-5 rounded', config.bgColor, 'border')} title={label}>
         <Icon className={cn('w-3 h-3', config.color)} />
       </div>
     );
@@ -194,7 +205,7 @@ function PriorityBadge({ priority, compact = false }: { priority: KanbanPriority
   return (
     <span className={cn('inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium border', config.bgColor, config.color)}>
       <Icon className="w-3 h-3" />
-      {config.label}
+      {label}
     </span>
   );
 }
@@ -377,6 +388,7 @@ function KanbanColumnComponent({
   dragOverColumnId: string | null;
   draggingCardId: string | null;
 }) {
+  const { t } = useTranslation();
   const isOverLimit = column.cardLimit ? cards.length >= column.cardLimit : false;
   const isDragTarget = dragOverColumnId === column.id;
 
@@ -450,7 +462,7 @@ function KanbanColumnComponent({
         {cards.length === 0 && !isDragTarget && (
           <div className="flex flex-col items-center justify-center py-8 text-gray-300 dark:text-gray-600">
             <LayoutGrid className="w-8 h-8 mb-2 opacity-40" />
-            <p className="text-xs font-medium">Nenhum card</p>
+            <p className="text-xs font-medium">{t('kanban.noCard', 'Nenhum card')}</p>
           </div>
         )}
 
@@ -461,7 +473,7 @@ function KanbanColumnComponent({
             animate={{ opacity: 1, height: 48 }}
             className="border-2 border-dashed border-blue-300 dark:border-blue-500/40 rounded-xl bg-blue-50/50 dark:bg-blue-500/10 flex items-center justify-center"
           >
-            <p className="text-xs text-blue-400 font-medium">Soltar aqui</p>
+            <p className="text-xs text-blue-400 font-medium">{t('kanban.dropHere', 'Soltar aqui')}</p>
           </motion.div>
         )}
       </div>
@@ -485,6 +497,7 @@ function CardDetailDialog({
   onUpdate: (updated: KanbanCard) => void;
   onDelete: (id: string) => void;
 }) {
+  const { t } = useTranslation();
   const [editingTitle, setEditingTitle] = useState(false);
   const [title, setTitle] = useState(card.title);
   const [description, setDescription] = useState(card.description || '');
@@ -614,7 +627,7 @@ function CardDetailDialog({
 
                 {/* Column badge */}
                 <div className="flex items-center gap-2 mt-2">
-                  <span className="text-xs text-gray-400 dark:text-gray-500">em</span>
+                  <span className="text-xs text-gray-400 dark:text-gray-500">{t('kanban.inColumn', 'em')}</span>
                   <select
                     value={card.columnId}
                     onChange={(e) => handleChangeColumn(e.target.value)}
@@ -643,14 +656,14 @@ function CardDetailDialog({
                 <div>
                   <div className="flex items-center gap-2 mb-2">
                     <AlignLeft className="w-4 h-4 text-gray-400 dark:text-gray-500" />
-                    <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Descrição</h4>
+                    <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300">{t('kanban.description', 'Descrição')}</h4>
                   </div>
                   {editingDescription ? (
                     <div className="space-y-2">
                       <textarea
                         value={description}
                         onChange={(e) => setDescription(e.target.value)}
-                        placeholder="Adicione uma descrição..."
+                        placeholder={t('kanban.addDescriptionPlaceholder', 'Adicione uma descrição...')}
                         className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30 focus:ring-2 focus:ring-red-100 dark:focus:ring-red-500/20 min-h-[100px] resize-y"
                         autoFocus
                       />
@@ -659,13 +672,13 @@ function CardDetailDialog({
                           onClick={handleSaveDescription}
                           className="px-3 py-1.5 rounded-lg bg-red-500 text-white text-xs font-medium hover:bg-red-600 transition-colors"
                         >
-                          Salvar
+                          {t('kanban.save', 'Salvar')}
                         </button>
                         <button
                           onClick={() => { setDescription(card.description || ''); setEditingDescription(false); }}
                           className="px-3 py-1.5 rounded-lg text-gray-500 dark:text-gray-400 text-xs font-medium hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
                         >
-                          Cancelar
+                          {t('kanban.cancel', 'Cancelar')}
                         </button>
                       </div>
                     </div>
@@ -680,7 +693,7 @@ function CardDetailDialog({
                         'transition-colors'
                       )}
                     >
-                      {description || 'Clique para adicionar uma descrição...'}
+                      {description || t('kanban.clickToAddDescription', 'Clique para adicionar uma descrição...')}
                     </div>
                   )}
                 </div>
@@ -690,7 +703,7 @@ function CardDetailDialog({
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
                       <CheckSquare className="w-4 h-4 text-gray-400 dark:text-gray-500" />
-                      <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Checklist</h4>
+                      <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300">{t('kanban.checklist', 'Checklist')}</h4>
                     </div>
                     {checkTotal > 0 && (
                       <span className={cn(
@@ -753,7 +766,7 @@ function CardDetailDialog({
                       value={newCheckItem}
                       onChange={(e) => setNewCheckItem(e.target.value)}
                       onKeyDown={(e) => { if (e.key === 'Enter') handleAddCheckItem(); }}
-                      placeholder="Adicionar item..."
+                      placeholder={t('kanban.addItemPlaceholder', 'Adicionar item...')}
                       className="flex-1 px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30 focus:ring-2 focus:ring-red-100 dark:focus:ring-red-500/20"
                     />
                     <button
@@ -761,7 +774,7 @@ function CardDetailDialog({
                       disabled={!newCheckItem.trim()}
                       className="px-3 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 text-xs font-medium hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors disabled:opacity-40"
                     >
-                      Adicionar
+                      {t('kanban.add', 'Adicionar')}
                     </button>
                   </div>
                 </div>
@@ -771,7 +784,7 @@ function CardDetailDialog({
               <div className="space-y-3">
                 {/* Priority */}
                 <div>
-                  <p className="text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1.5">Prioridade</p>
+                  <p className="text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1.5">{t('kanban.priority_label', 'Prioridade')}</p>
                   <div className="space-y-1">
                     {(Object.keys(PRIORITY_CONFIG) as KanbanPriority[]).map(p => {
                       const config = PRIORITY_CONFIG[p];
@@ -788,7 +801,7 @@ function CardDetailDialog({
                           )}
                         >
                           <Icon className="w-3.5 h-3.5" />
-                          {config.label}
+                          {t(PRIORITY_LABEL_KEYS[p], config.label)}
                         </button>
                       );
                     })}
@@ -797,7 +810,7 @@ function CardDetailDialog({
 
                 {/* Assignees */}
                 <div>
-                  <p className="text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1.5">Responsáveis</p>
+                  <p className="text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1.5">{t('kanban.assignees', 'Responsáveis')}</p>
                   <div className="space-y-1">
                     {card.assigneeNames.map((name, i) => (
                       <div key={i} className="flex items-center gap-2 px-2 py-1">
@@ -813,7 +826,7 @@ function CardDetailDialog({
                 {/* Due date */}
                 {card.dueDate && (
                   <div>
-                    <p className="text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1.5">Prazo</p>
+                    <p className="text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1.5">{t('kanban.dueDate', 'Prazo')}</p>
                     <DueDateBadge date={card.dueDate} />
                   </div>
                 )}
@@ -822,19 +835,19 @@ function CardDetailDialog({
                 <div className="pt-2 border-t border-gray-100 dark:border-gray-800">
                   {showDeleteConfirm ? (
                     <div className="space-y-2">
-                      <p className="text-xs text-red-600 dark:text-red-400 font-medium">Excluir este card?</p>
+                      <p className="text-xs text-red-600 dark:text-red-400 font-medium">{t('kanban.deleteConfirm', 'Excluir este card?')}</p>
                       <div className="flex gap-1.5">
                         <button
                           onClick={() => { onDelete(card.id); onClose(); }}
                           className="flex-1 px-2 py-1.5 rounded-lg bg-red-500 text-white text-xs font-medium hover:bg-red-600 transition-colors"
                         >
-                          Excluir
+                          {t('kanban.delete', 'Excluir')}
                         </button>
                         <button
                           onClick={() => setShowDeleteConfirm(false)}
                           className="flex-1 px-2 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 text-xs font-medium hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
                         >
-                          Cancelar
+                          {t('kanban.cancel', 'Cancelar')}
                         </button>
                       </div>
                     </div>
@@ -844,7 +857,7 @@ function CardDetailDialog({
                       className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-lg text-xs font-medium text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
-                      Excluir card
+                      {t('kanban.deleteCard', 'Excluir card')}
                     </button>
                   )}
                 </div>
@@ -873,6 +886,7 @@ function NewCardDialog({
   onClose: () => void;
   onCreate: (card: Partial<KanbanCard>) => void;
 }) {
+  const { t } = useTranslation();
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState<KanbanPriority>('medium');
@@ -932,7 +946,7 @@ function NewCardDialog({
       >
         <div className="p-6 space-y-4">
           <div className="flex items-center justify-between">
-            <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">Novo Card</h3>
+            <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">{t('kanban.newCard', 'Novo Card')}</h3>
             <button onClick={onClose} className="p-1.5 rounded-lg text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-all">
               <X className="w-4 h-4" />
             </button>
@@ -940,24 +954,24 @@ function NewCardDialog({
 
           {/* Title */}
           <div>
-            <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">Título *</label>
+            <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">{t('kanban.titleLabel', 'Título *')}</label>
             <input
               ref={titleRef}
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && title.trim()) handleCreate(); }}
-              placeholder="O que precisa ser feito?"
+              placeholder={t('kanban.titlePlaceholder', 'O que precisa ser feito?')}
               className="w-full px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30 focus:ring-2 focus:ring-red-100 dark:focus:ring-red-500/20"
             />
           </div>
 
           {/* Description */}
           <div>
-            <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">Descrição</label>
+            <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">{t('kanban.descriptionLabel', 'Descrição')}</label>
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="Detalhes opcionais..."
+              placeholder={t('kanban.descriptionPlaceholder', 'Detalhes opcionais...')}
               rows={2}
               className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-300 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30 focus:ring-2 focus:ring-red-100 dark:focus:ring-red-500/20 resize-none"
             />
@@ -966,7 +980,7 @@ function NewCardDialog({
           {/* Row: Column + Priority + Due Date */}
           <div className="grid grid-cols-3 gap-3">
             <div>
-              <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">Coluna</label>
+              <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">{t('kanban.column', 'Coluna')}</label>
               <select
                 value={selectedColumn}
                 onChange={(e) => setSelectedColumn(e.target.value)}
@@ -978,19 +992,19 @@ function NewCardDialog({
               </select>
             </div>
             <div>
-              <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">Prioridade</label>
+              <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">{t('kanban.priority_label', 'Prioridade')}</label>
               <select
                 value={priority}
                 onChange={(e) => setPriority(e.target.value as KanbanPriority)}
                 className="w-full px-2.5 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-700 dark:text-gray-300 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30 focus:ring-2 focus:ring-red-100 dark:focus:ring-red-500/20 bg-white dark:bg-gray-800"
               >
                 {(Object.keys(PRIORITY_CONFIG) as KanbanPriority[]).map(p => (
-                  <option key={p} value={p}>{PRIORITY_CONFIG[p].label}</option>
+                  <option key={p} value={p}>{t(PRIORITY_LABEL_KEYS[p], PRIORITY_CONFIG[p].label)}</option>
                 ))}
               </select>
             </div>
             <div>
-              <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">Prazo</label>
+              <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">{t('kanban.dueDate', 'Prazo')}</label>
               <input
                 type="date"
                 value={dueDate}
@@ -1002,7 +1016,7 @@ function NewCardDialog({
 
           {/* Labels */}
           <div>
-            <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">Etiquetas</label>
+            <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">{t('kanban.labels', 'Etiquetas')}</label>
             <div className="flex flex-wrap gap-1.5">
               {DEFAULT_LABELS.map(label => (
                 <button
@@ -1029,7 +1043,7 @@ function NewCardDialog({
           {/* Assignees */}
           {members.length > 0 && (
             <div>
-              <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">Responsáveis</label>
+              <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">{t('kanban.assignees', 'Responsáveis')}</label>
               <div className="flex flex-wrap gap-1.5">
                 {members.map(member => (
                   <button
@@ -1063,7 +1077,7 @@ function NewCardDialog({
               onClick={onClose}
               className="px-4 py-2 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
             >
-              Cancelar
+              {t('kanban.cancel', 'Cancelar')}
             </button>
             <button
               onClick={handleCreate}
@@ -1075,7 +1089,7 @@ function NewCardDialog({
                 'disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none'
               )}
             >
-              Criar Card
+              {t('kanban.createCard', 'Criar Card')}
             </button>
           </div>
         </div>
@@ -1094,6 +1108,7 @@ function NewColumnInline({
   onAdd: (title: string, color: string) => void;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation();
   const [title, setTitle] = useState('');
   const [color, setColor] = useState('#6B7280');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -1113,7 +1128,7 @@ function NewColumnInline({
         value={title}
         onChange={(e) => setTitle(e.target.value)}
         onKeyDown={(e) => { if (e.key === 'Enter' && title.trim()) { onAdd(title.trim(), color); } if (e.key === 'Escape') onCancel(); }}
-        placeholder="Nome da coluna..."
+        placeholder={t('kanban.columnNamePlaceholder', 'Nome da coluna...')}
         className="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30 focus:ring-2 focus:ring-red-100 dark:focus:ring-red-500/20"
       />
       <div className="flex items-center gap-1.5">
@@ -1135,13 +1150,13 @@ function NewColumnInline({
           disabled={!title.trim()}
           className="flex-1 px-3 py-1.5 rounded-lg bg-red-500 text-white text-sm font-medium hover:bg-red-600 transition-colors disabled:opacity-40"
         >
-          Adicionar
+          {t('kanban.add', 'Adicionar')}
         </button>
         <button
           onClick={onCancel}
           className="px-3 py-1.5 rounded-lg text-gray-500 dark:text-gray-400 text-sm font-medium hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
         >
-          Cancelar
+          {t('kanban.cancel', 'Cancelar')}
         </button>
       </div>
     </motion.div>
@@ -1158,6 +1173,7 @@ function NewBoardDialog({
   onClose: () => void;
   onCreate: (name: string, color: string) => void;
 }) {
+  const { t } = useTranslation();
   const [name, setName] = useState('');
   const [color, setColor] = useState('#DC2626');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -1188,26 +1204,26 @@ function NewBoardDialog({
       >
         <div className="p-6 space-y-4">
           <div className="flex items-center justify-between">
-            <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">Novo Board</h3>
+            <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">{t('kanban.newBoard', 'Novo Board')}</h3>
             <button onClick={onClose} className="p-1.5 rounded-lg text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-all">
               <X className="w-4 h-4" />
             </button>
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">Nome *</label>
+            <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">{t('kanban.nameLabel', 'Nome *')}</label>
             <input
               ref={inputRef}
               value={name}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && name.trim()) handleCreate(); if (e.key === 'Escape') onClose(); }}
-              placeholder="Nome do board..."
+              placeholder={t('kanban.boardNamePlaceholder', 'Nome do board...')}
               className="w-full px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30 focus:ring-2 focus:ring-red-100 dark:focus:ring-red-500/20"
             />
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">Cor</label>
+            <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">{t('kanban.colorLabel', 'Cor')}</label>
             <div className="flex items-center gap-2 flex-wrap">
               {BOARD_COLORS.map(c => (
                 <button
@@ -1225,7 +1241,7 @@ function NewBoardDialog({
               onClick={onClose}
               className="px-4 py-2 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
             >
-              Cancelar
+              {t('kanban.cancel', 'Cancelar')}
             </button>
             <button
               onClick={handleCreate}
@@ -1237,7 +1253,7 @@ function NewBoardDialog({
                 'disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none'
               )}
             >
-              Criar Board
+              {t('kanban.createBoard', 'Criar Board')}
             </button>
           </div>
         </div>
@@ -1278,6 +1294,7 @@ function BoardHeader({
   totalCards: number;
   filteredCards: number;
 }) {
+  const { t } = useTranslation();
   const [showFilters, setShowFilters] = useState(false);
   const hasFilters = filterPriority !== 'all' || filterAssignee !== 'all' || searchQuery.trim() !== '';
 
@@ -1323,7 +1340,7 @@ function BoardHeader({
               'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300',
               'hover:bg-white/50 dark:hover:bg-white/[0.06] transition-all duration-150 active:scale-90'
             )}
-            title="Novo board"
+            title={t('kanban.newBoardTooltip', 'Novo board')}
           >
             <Plus className="w-3.5 h-3.5" />
           </button>
@@ -1340,7 +1357,7 @@ function BoardHeader({
             <input
               value={searchQuery}
               onChange={(e) => onSearchChange(e.target.value)}
-              placeholder="Buscar cards..."
+              placeholder={t('kanban.searchPlaceholder', 'Buscar cards...')}
               className="w-44 pl-8 pr-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-700 dark:text-gray-300 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30 focus:ring-2 focus:ring-red-100 dark:focus:ring-red-500/20 bg-white dark:bg-gray-800 transition-all"
             />
           </div>
@@ -1356,7 +1373,7 @@ function BoardHeader({
             )}
           >
             <Filter className="w-3.5 h-3.5" />
-            Filtros
+            {t('kanban.filters', 'Filtros')}
             {hasFilters && (
               <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
             )}
@@ -1377,7 +1394,7 @@ function BoardHeader({
             <div className="flex items-center gap-3 flex-wrap py-2 px-1">
               {/* Priority filter */}
               <div className="flex items-center gap-1.5">
-                <span className="text-xs text-gray-400 dark:text-gray-500 font-medium">Prioridade:</span>
+                <span className="text-xs text-gray-400 dark:text-gray-500 font-medium">{t('kanban.priorityFilter', 'Prioridade:')}</span>
                 <div className="flex items-center gap-1">
                   {(['all', 'urgent', 'high', 'medium', 'low'] as const).map(p => (
                     <button
@@ -1390,7 +1407,7 @@ function BoardHeader({
                           : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06]'
                       )}
                     >
-                      {p === 'all' ? 'Todas' : PRIORITY_CONFIG[p].label}
+                      {p === 'all' ? t('kanban.allPriorities', 'Todas') : t(PRIORITY_LABEL_KEYS[p], PRIORITY_CONFIG[p].label)}
                     </button>
                   ))}
                 </div>
@@ -1398,13 +1415,13 @@ function BoardHeader({
 
               {/* Assignee filter */}
               <div className="flex items-center gap-1.5">
-                <span className="text-xs text-gray-400 dark:text-gray-500 font-medium">Responsável:</span>
+                <span className="text-xs text-gray-400 dark:text-gray-500 font-medium">{t('kanban.assigneeFilter', 'Responsável:')}</span>
                 <select
                   value={filterAssignee}
                   onChange={(e) => onFilterAssigneeChange(e.target.value)}
                   className="px-2.5 py-1 rounded-lg text-xs font-medium border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30"
                 >
-                  <option value="all">Todos</option>
+                  <option value="all">{t('kanban.allAssignees', 'Todos')}</option>
                   {members.map(m => (
                     <option key={m.id} value={m.id}>{m.name}</option>
                   ))}
@@ -1417,14 +1434,14 @@ function BoardHeader({
                   onClick={() => { onFilterPriorityChange('all'); onFilterAssigneeChange('all'); onSearchChange(''); }}
                   className="text-xs text-red-500 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300 font-medium transition-colors"
                 >
-                  Limpar filtros
+                  {t('kanban.clearFilters', 'Limpar filtros')}
                 </button>
               )}
 
               {/* Count */}
               {hasFilters && (
                 <span className="text-xs text-gray-400 dark:text-gray-500 ml-auto">
-                  {filteredCards} de {totalCards} cards
+                  {t('kanban.filteredCount', '{{filtered}} de {{total}} cards', { filtered: filteredCards, total: totalCards })}
                 </span>
               )}
             </div>
@@ -1466,6 +1483,7 @@ function KanbanSkeleton() {
 // EMPTY STATE (no boards yet)
 // ═══════════════════════════════════════════════════════════
 function EmptyBoards({ onCreateBoard }: { onCreateBoard: () => void }) {
+  const { t } = useTranslation();
   return (
     <motion.div
       initial={{ opacity: 0, y: 16 }}
@@ -1477,10 +1495,10 @@ function EmptyBoards({ onCreateBoard }: { onCreateBoard: () => void }) {
         <LayoutGrid className="w-8 h-8 text-red-400 dark:text-red-500" />
       </div>
       <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display mb-2">
-        Nenhum board ainda
+        {t('kanban.noBoardsYet', 'Nenhum board ainda')}
       </h3>
       <p className="text-sm text-gray-500 dark:text-gray-400 mb-6 max-w-xs">
-        Crie seu primeiro board para organizar as tarefas da sua equipe.
+        {t('kanban.noBoardsDesc', 'Crie seu primeiro board para organizar as tarefas da sua equipe.')}
       </p>
       <button
         onClick={onCreateBoard}
@@ -1491,7 +1509,7 @@ function EmptyBoards({ onCreateBoard }: { onCreateBoard: () => void }) {
         )}
       >
         <Plus className="w-4 h-4" />
-        Criar primeiro board
+        {t('kanban.createFirstBoard', 'Criar primeiro board')}
       </button>
     </motion.div>
   );
@@ -1501,6 +1519,7 @@ function EmptyBoards({ onCreateBoard }: { onCreateBoard: () => void }) {
 // MAIN MODULE
 // ═══════════════════════════════════════════════════════════
 export default function KanbanModule() {
+  const { t } = useTranslation();
   const { user, business, sectors, userSectorIds } = useAuth();
   const isAdmin = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['admin'];
 
@@ -1743,9 +1762,9 @@ export default function KanbanModule() {
   const handleCreateBoard = useCallback(async (name: string, color: string) => {
     if (!business?.id || !user) return;
     const defaultColumns: KanbanColumn[] = [
-      { id: genLocalId(), title: 'A Fazer',      color: '#3B82F6', order: 0 },
-      { id: genLocalId(), title: 'Em Progresso', color: '#F59E0B', order: 1 },
-      { id: genLocalId(), title: 'Concluído',    color: '#10B981', order: 2 },
+      { id: genLocalId(), title: t('kanban.defaultColTodo', 'A Fazer'),       color: '#3B82F6', order: 0 },
+      { id: genLocalId(), title: t('kanban.defaultColInProgress', 'Em Progresso'), color: '#F59E0B', order: 1 },
+      { id: genLocalId(), title: t('kanban.defaultColDone', 'Concluído'),     color: '#10B981', order: 2 },
     ];
     try {
       const docRef = await addDoc(collection(db, 'kanbanBoards'), {
@@ -1845,19 +1864,19 @@ export default function KanbanModule() {
             {loadingCards && (
               <div className="flex items-center gap-1.5 text-xs text-gray-400 dark:text-gray-500">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                <span>Sincronizando...</span>
+                <span>{t('kanban.syncing', 'Sincronizando...')}</span>
               </div>
             )}
             {urgentCount > 0 && (
               <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20">
                 <Flame className="w-4 h-4 text-red-500 dark:text-red-400" />
-                <span className="text-sm text-red-600 dark:text-red-400 font-medium">{urgentCount} urgente{urgentCount > 1 ? 's' : ''}</span>
+                <span className="text-sm text-red-600 dark:text-red-400 font-medium">{t(urgentCount === 1 ? 'kanban.urgentCount_one' : 'kanban.urgentCount_other', urgentCount === 1 ? '{{count}} urgente' : '{{count}} urgentes', { count: urgentCount })}</span>
               </div>
             )}
             {overdueCount > 0 && (
               <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20">
                 <AlertCircle className="w-4 h-4 text-amber-500 dark:text-amber-400" />
-                <span className="text-sm text-amber-600 dark:text-amber-400 font-medium">{overdueCount} atrasado{overdueCount > 1 ? 's' : ''}</span>
+                <span className="text-sm text-amber-600 dark:text-amber-400 font-medium">{t(overdueCount === 1 ? 'kanban.overdueCount_one' : 'kanban.overdueCount_other', overdueCount === 1 ? '{{count}} atrasado' : '{{count}} atrasados', { count: overdueCount })}</span>
               </div>
             )}
           </div>
@@ -1940,7 +1959,7 @@ export default function KanbanModule() {
                 )}
               >
                 <Plus className="w-4 h-4" />
-                Adicionar coluna
+                {t('kanban.addColumn', 'Adicionar coluna')}
               </motion.button>
             )}
           </AnimatePresence>
