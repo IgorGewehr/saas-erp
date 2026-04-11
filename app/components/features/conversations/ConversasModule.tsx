@@ -252,23 +252,27 @@ function ConversationItem({ conversation, isSelected, onClick }: ConversationIte
     >
       {/* Avatar */}
       <div className="relative flex-shrink-0">
-        {conversation.contactAvatarUrl ? (
-          <img
-            src={conversation.contactAvatarUrl}
-            alt={conversation.contactName}
-            className="w-10 h-10 rounded-full object-cover"
-          />
-        ) : (
+        <div className="relative w-10 h-10">
+          {/* Fallback iniciais — sempre renderizado embaixo */}
           <div
             className={cn(
-              'w-10 h-10 rounded-full flex items-center justify-center font-semibold text-sm',
+              'w-10 h-10 rounded-full flex items-center justify-center font-semibold text-sm absolute inset-0',
               cfg.avatarBg,
               cfg.textColor,
             )}
           >
             {initials}
           </div>
-        )}
+          {/* Foto do contato — sobreposta; some no erro sem precisar de state */}
+          {conversation.contactAvatarUrl && (
+            <img
+              src={conversation.contactAvatarUrl}
+              alt={conversation.contactName}
+              className="w-10 h-10 rounded-full object-cover absolute inset-0"
+              onError={(e) => { e.currentTarget.style.display = 'none'; }}
+            />
+          )}
+        </div>
         {/* Channel badge */}
         <div
           className={cn(
@@ -484,23 +488,27 @@ function ThreadHeader({
 
         {/* Avatar */}
         <div className="relative flex-shrink-0">
-          {conversation.contactAvatarUrl ? (
-            <img
-              src={conversation.contactAvatarUrl}
-              alt={conversation.contactName}
-              className="w-9 h-9 rounded-full object-cover"
-            />
-          ) : (
+          <div className="relative w-9 h-9">
+            {/* Fallback iniciais — sempre renderizado embaixo */}
             <div
               className={cn(
-                'w-9 h-9 rounded-full flex items-center justify-center font-semibold text-sm',
+                'w-9 h-9 rounded-full flex items-center justify-center font-semibold text-sm absolute inset-0',
                 cfg.avatarBg,
                 cfg.textColor,
               )}
             >
               {initials}
             </div>
-          )}
+            {/* Foto do contato — sobreposta; some no erro sem precisar de state */}
+            {conversation.contactAvatarUrl && (
+              <img
+                src={conversation.contactAvatarUrl}
+                alt={conversation.contactName}
+                className="w-9 h-9 rounded-full object-cover absolute inset-0"
+                onError={(e) => { e.currentTarget.style.display = 'none'; }}
+              />
+            )}
+          </div>
           <div
             className={cn(
               'absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full flex items-center justify-center',

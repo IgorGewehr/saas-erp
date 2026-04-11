@@ -796,12 +796,60 @@ async function resolveBusinessId(
   }
 }
 
+// ─── Profile Picture Persistence ─────────────────────────────────────────────
+
+/**
+ * Downloads a profile picture from Meta's temporary CDN and re-uploads it to
+ * Firebase Storage as a permanent file.
+ *
+ * Why: Meta CDN URLs (profile_pic) expire in a few hours. Storing them directly
+ * causes broken avatars in the Inbox. This function converts the ephemeral URL
+ * into a permanent Firebase Storage URL on the first contact interaction.
+ *
+ * Storage path: avatars/meta/{senderId}.jpg
+ *   - Overwriting the same path is intentional: if the user updates their
+ *     profile picture on Instagram/Facebook, the next webhook will refresh it.
+ *
+ * Fallback: if anything fails (network, storage quota, etc.) the original
+ * Meta URL is returned so the webhook flow is never interrupted.
+ */
+async function persistProfilePic(
+  tempUrl: string,
+  senderId: string,
+): Promise<string> {
+  try {
+    // Download from Meta's CDN (no auth required for profile_pic URLs)
+    const picRes = await fetch(tempUrl, { signal: AbortSignal.timeout(10000) });
+    if (!picRes.ok) {
+      console.warn(`[Profile Pic] CDN download failed (HTTP ${picRes.status}) — keeping temp URL`);
+      return tempUrl;
+    }
+
+    const contentType =
+      picRes.headers.get('content-type')?.split(';')[0]?.trim() || 'image/jpeg';
+    const buffer = Buffer.from(await picRes.arrayBuffer());
+
+    // Upload to Firebase Storage using the same client SDK already used for media
+    const storage = getStorageBucket();
+    const storageRef = ref(storage, `avatars/meta/${senderId}.jpg`);
+    await uploadBytes(storageRef, buffer, { contentType });
+
+    const permanentUrl = await getDownloadURL(storageRef);
+    console.log(`[Profile Pic] Persisted avatar for ${senderId} → Firebase Storage`);
+    return permanentUrl;
+  } catch (err) {
+    console.warn('[Profile Pic] Failed to persist to storage — using temp URL as fallback:', err);
+    return tempUrl;
+  }
+}
+
 // ─── Profile Fetching ─────────────────────────────────────────────────────────
 
 /**
- * Fetches sender profile (name + avatar) from Facebook/Instagram Graph API.
+ * Fetches sender profile (name + avatar) from Facebook/Instagram Graph API,
+ * then persists the profile picture to Firebase Storage for a permanent URL.
  *
- * Instagram: fields=name,username,profile_pic (username is the @handle)
+ * Instagram: fields=name,username,profile_pic
  * Facebook:  fields=first_name,last_name,name,profile_pic
  */
 async function fetchSenderProfile(
@@ -841,10 +889,13 @@ async function fetchSenderProfile(
       }
     }
 
-    return {
-      name,
-      profilePic: data.profile_pic || undefined,
-    };
+    // Persist the ephemeral Meta CDN URL to Firebase Storage so it never expires.
+    // Falls back to the original URL silently if storage is unavailable.
+    const profilePic = data.profile_pic
+      ? await persistProfilePic(data.profile_pic, senderId)
+      : undefined;
+
+    return { name, profilePic };
   } catch (err) {
     console.error(`[Meta Webhook] Error fetching ${channel} sender profile:`, err);
     return null;
