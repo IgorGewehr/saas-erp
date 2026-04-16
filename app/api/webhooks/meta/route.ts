@@ -1032,7 +1032,7 @@ async function saveInboundMessage(params: InboundMessageParams) {
           : 'channelIdentities.instagram';
 
         const contactQuery = query(
-          collection(db, 'crmContacts'),
+          collection(db, 'clients'),
           where('businessId', '==', businessId),
           where(channelField, '==', params.externalId),
           firestoreLimit(1),
@@ -1049,7 +1049,7 @@ async function saveInboundMessage(params: InboundMessageParams) {
             contactPhone: contactData.phone || (params.channel === 'whatsapp' ? params.externalId : null),
           });
           // Update CRM contact with last conversation reference
-          await updateDoc(doc(db, 'crmContacts', contact.id), {
+          await updateDoc(doc(db, 'clients', contact.id), {
             lastConversationId: conversationId,
             lastConversationAt: now,
             updatedAt: now,
@@ -1059,7 +1059,7 @@ async function saveInboundMessage(params: InboundMessageParams) {
           // Also try matching by phone for WhatsApp
           if (params.channel === 'whatsapp') {
             const phoneQuery = query(
-              collection(db, 'crmContacts'),
+              collection(db, 'clients'),
               where('businessId', '==', businessId),
               where('phone', '==', params.externalId),
               firestoreLimit(1),
@@ -1073,7 +1073,7 @@ async function saveInboundMessage(params: InboundMessageParams) {
                 contactName: contactData.name || params.senderName || params.externalId,
                 contactPhone: params.externalId,
               });
-              await updateDoc(doc(db, 'crmContacts', contact.id), {
+              await updateDoc(doc(db, 'clients', contact.id), {
                 lastConversationId: conversationId,
                 lastConversationAt: now,
                 'channelIdentities.whatsapp': params.externalId,
@@ -1141,7 +1141,7 @@ async function saveInboundMessage(params: InboundMessageParams) {
             : 'channelIdentities.instagram';
 
           const contactQuery = query(
-            collection(db, 'crmContacts'),
+            collection(db, 'clients'),
             where('businessId', '==', businessId),
             where(channelField, '==', params.externalId),
             firestoreLimit(1),
@@ -1153,7 +1153,7 @@ async function saveInboundMessage(params: InboundMessageParams) {
             await updateDoc(doc(db, 'conversations', conversationId), {
               crmContactId: contact.id,
             });
-            await updateDoc(doc(db, 'crmContacts', contact.id), {
+            await updateDoc(doc(db, 'clients', contact.id), {
               lastConversationId: conversationId,
               lastConversationAt: now,
               updatedAt: now,

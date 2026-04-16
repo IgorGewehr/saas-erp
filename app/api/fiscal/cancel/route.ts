@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { cancelarNFe } from '@/lib/services/sefaz-gateway';
+import { adminDb } from '@/lib/config/firebaseAdmin';
+import { cancelarNFe, resolveAmbiente, SefazAmbiente } from '@/lib/services/sefaz-gateway';
+import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
 
 const SEFAZ_API_URL = process.env.SEFAZ_API_URL;
 const SEFAZ_API_KEY = process.env.SEFAZ_API_KEY;
 
 interface CancelRequestBody {
   type: 'nfse' | 'nfe' | 'nfce';
+  businessId: string;
   chaveAcesso: string;
   protocolo?: string;
   justificativa: string;
@@ -34,8 +37,41 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Resolve certificate & ambiente from Firestore when businessId provided
+    let certificado = body.certificado;
+    let ambiente: SefazAmbiente = 'homologacao';
+
+    if (body.businessId) {
+      const businessDoc = await adminDb.collection('businesses').doc(body.businessId).get();
+      if (businessDoc.exists) {
+        const fiscal = businessDoc.data()?.fiscal;
+        const rawEnv =
+          type === 'nfce'
+            ? (fiscal?.nfceConfig?.environment ?? fiscal?.nfeConfig?.environment)
+            : fiscal?.nfeConfig?.environment;
+        ambiente = resolveAmbiente(rawEnv);
+      }
+
+      if (!certificado) {
+        try {
+          certificado = await getCertificadoPayload(body.businessId);
+        } catch {
+          return NextResponse.json(
+            { error: 'Certificado digital nao disponivel.' },
+            { status: 400 },
+          );
+        }
+      }
+    }
+
+    if (!certificado) {
+      return NextResponse.json(
+        { error: 'certificado e obrigatorio quando businessId nao e fornecido.' },
+        { status: 400 },
+      );
+    }
+
     if (type === 'nfse') {
-      // NFSe cancel (50-digit key) — no gateway function, use raw fetch
       if (!body.chaveAcesso || body.chaveAcesso.replace(/\D/g, '').length !== 50) {
         return NextResponse.json(
           { error: 'Chave de acesso NFSe deve conter 50 digitos.' },
@@ -60,7 +96,8 @@ export async function POST(request: NextRequest) {
         body: JSON.stringify({
           chaveAcesso: body.chaveAcesso,
           justificativa: body.justificativa.trim(),
-          certificado: body.certificado,
+          ambiente,
+          certificado,
         }),
       });
 
@@ -76,7 +113,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true, data: responseData });
     }
 
-    // NFe/NFCe cancel (44-digit key) — use centralized gateway
+    // NFe/NFCe cancel (44-digit key)
     if (!body.chaveAcesso || body.chaveAcesso.replace(/\D/g, '').length !== 44) {
       return NextResponse.json(
         { error: 'Chave de acesso deve conter 44 digitos.' },
@@ -89,7 +126,8 @@ export async function POST(request: NextRequest) {
       protocolo: body.protocolo || '',
       justificativa: body.justificativa.trim(),
       ufEmitente: body.ufEmitente || body.chaveAcesso.substring(0, 2),
-      certificado: body.certificado!,
+      ambiente,
+      certificado,
     });
 
     return NextResponse.json({ success: true, data: result });

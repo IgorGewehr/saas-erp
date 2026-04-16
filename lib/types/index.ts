@@ -412,10 +412,10 @@ export interface Transaction {
   id: string;
   businessId: string;
   type: TransactionType;
-  category: string;
+  category?: string;
   description: string;
   amount: number;
-  dueDate: string;
+  dueDate?: string;
   paymentDate?: string;
   status: TransactionStatus;
   clientId?: string;
@@ -769,7 +769,22 @@ export interface ContactScores {
   lastCalculatedAt?: string;
 }
 
-export interface CRMContact {
+// Flexible address for client profiles (all fields optional, vs. the strict fiscal Address)
+export interface ClientAddress {
+  logradouro?: string;
+  numero?: string;
+  complemento?: string;
+  bairro?: string;
+  municipio?: string;
+  uf?: string;
+  cep?: string;
+  codigoMunicipio?: string;
+  pais?: string;
+  codigoPais?: string;
+}
+
+// ---- Client (primary entity — replaces CRMContact) ----
+export interface Client {
   id: string;
   businessId: string;
   name: string;
@@ -778,6 +793,8 @@ export interface CRMContact {
   whatsapp?: string;
   company?: string;
   role?: string;
+
+  // ── CRM / Pipeline ─────────────────────────────────
   source: LeadSource;
   status: LeadStatus;
   score: number;
@@ -805,13 +822,13 @@ export interface CRMContact {
   optInMarketing?: boolean;
   optInAt?: string;
 
-  // ── Dados Cadastrais / Fiscal (ex-Client) ──────────
+  // ── Dados Cadastrais / Fiscal ───────────────────────
   tipo?: 'pf' | 'pj';
   cpfCnpj?: string;
   phone2?: string;
   birthDate?: string;
   gender?: 'M' | 'F' | 'O';
-  endereco?: Address;
+  endereco?: ClientAddress;
   inscricaoEstadual?: string;
   indicadorIE?: '1' | '2' | '9';
   inscricaoMunicipal?: string;
@@ -834,8 +851,8 @@ export interface CRMContact {
   updatedAt: string;
 }
 
-/** @deprecated Use CRMContact instead — unified contact model */
-export type Client = CRMContact;
+/** @deprecated Use Client instead — unified client model */
+export type CRMContact = Client;
 
 export interface CRMDeal {
   id: string;
@@ -1394,3 +1411,175 @@ export const LIFECYCLE_STAGE_COLORS: Record<LifecycleStage, string> = {
   customer: '#10B981',
   churned: '#EF4444',
 };
+
+// ============================================
+// Vendas (B2B Orders)
+// ============================================
+
+export type OrderStatus =
+  | 'pendente'
+  | 'confirmado'
+  | 'condicional'
+  | 'faturado'
+  | 'enviado'
+  | 'entregue'
+  | 'cancelado';
+
+export type OrderType = 'pdv' | 'b2b' | 'condicional';
+
+export const ORDER_STATUS_LABELS: Record<OrderStatus, string> = {
+  pendente:    'Pendente',
+  confirmado:  'Confirmado',
+  condicional: 'Condicional',
+  faturado:    'Faturado',
+  enviado:     'Enviado',
+  entregue:    'Entregue',
+  cancelado:   'Cancelado',
+};
+
+export const ORDER_STATUS_COLORS: Record<OrderStatus, string> = {
+  pendente:    'bg-gray-100 text-gray-700 dark:bg-gray-700/40 dark:text-gray-300',
+  confirmado:  'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300',
+  condicional: 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300',
+  faturado:    'bg-purple-100 text-purple-700 dark:bg-purple-500/20 dark:text-purple-300',
+  enviado:     'bg-cyan-100 text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-300',
+  entregue:    'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300',
+  cancelado:   'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300',
+};
+
+export interface OrderItem {
+  productId?: string;
+  productName: string;
+  sku?: string;
+  quantity: number;
+  unitPrice: number;
+  discount?: number;
+  total: number;
+  unit?: string;
+  ncm?: string;
+  cfop?: string;
+}
+
+export interface OrderStatusHistoryEntry {
+  status: OrderStatus;
+  timestamp: string;
+  note?: string;
+  userId: string;
+  userName: string;
+}
+
+export interface Order {
+  id: string;
+  businessId: string;
+  type: OrderType;
+  status: OrderStatus;
+  // Client
+  clientId?: string;
+  clientName?: string;
+  clientCpfCnpj?: string;
+  // Items & pricing
+  items: OrderItem[];
+  subtotal: number;
+  discount: number;
+  total: number;
+  // Payment
+  payments?: Payment[];
+  paymentTerms?: string;        // ex: "30/60/90 dias"
+  paymentMethod?: PaymentMethod;
+  // Delivery
+  deliveryDate?: string;
+  deliveryAddress?: Address;
+  // Fiscal
+  fiscalDocId?: string;
+  naturezaOperacao?: string;
+  // Conditional sale
+  conditionalExpiresAt?: string; // data limite para o cliente confirmar
+  conditionalReturnDate?: string; // data de retorno do produto se não confirmar
+  // Notes
+  notes?: string;
+  internalNotes?: string;
+  // Tracking
+  statusHistory?: OrderStatusHistoryEntry[];
+  operatorId: string;
+  operatorName: string;
+  sectorId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ============================================
+// Compras / Purchase Notes
+// ============================================
+
+export type PurchaseNoteStatus = 'pendente' | 'importada' | 'cancelada';
+
+export type PurchaseNoteItemAction = 'match' | 'create' | 'skip';
+
+export interface PurchaseNoteItem {
+  productId?: string;          // matched product in our catalog
+  productName: string;
+  cProd?: string;              // supplier product code
+  ncm?: string;
+  cfop?: string;
+  unit: string;
+  quantity: number;
+  unitPrice: number;
+  total: number;
+  // Taxes
+  icms?: number;
+  ipi?: number;
+  pis?: number;
+  cofins?: number;
+  // Import action
+  importAction?: PurchaseNoteItemAction;
+}
+
+export interface PurchaseNote {
+  id: string;
+  businessId: string;
+  accessKey: string;            // chave de acesso 44 digits
+  numero: string;
+  serie: string;
+  issueDate: string;
+  // Supplier
+  supplierName: string;
+  supplierCnpj: string;
+  supplierId?: string;
+  // Items & totals
+  items: PurchaseNoteItem[];
+  totalProducts: number;
+  totalTaxes: number;
+  totalValue: number;
+  // Status
+  status: PurchaseNoteStatus;
+  // Files
+  xmlUrl?: string;
+  xml?: string;
+  // Notes
+  notes?: string;
+  importedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ============================================
+// Suppliers
+// ============================================
+
+export interface Supplier {
+  id: string;
+  businessId: string;
+  razaoSocial: string;
+  nomeFantasia?: string;
+  cnpj: string;
+  inscricaoEstadual?: string;
+  phone?: string;
+  email?: string;
+  endereco?: Address;
+  notes?: string;
+  isActive: boolean;
+  totalPurchases?: number;
+  lastPurchaseAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}

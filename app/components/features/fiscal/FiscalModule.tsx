@@ -176,12 +176,13 @@ interface DocumentDetailDialogProps {
   onClose: () => void;
   document: FiscalDocument | null;
   onDocumentUpdated: () => void;
+  businessId: string | null;
   business: { razaoSocial: string; cnpj: string } | null;
   onPrintDanfe?: (document: FiscalDocument) => void;
   onCartaCorrecao?: (document: FiscalDocument) => void;
 }
 
-function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated, business, onPrintDanfe, onCartaCorrecao }: DocumentDetailDialogProps) {
+function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated, businessId, business, onPrintDanfe, onCartaCorrecao }: DocumentDetailDialogProps) {
   const { t } = useTranslation();
   const [showXml, setShowXml] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
@@ -244,6 +245,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           type: doc.type,
+          businessId,
           chaveAcesso: doc.accessKey,
           protocolo: doc.protocol,
           justificativa: cancelReason.trim(),
@@ -287,6 +289,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           type: doc.type,
+          businessId,
           chaveAcesso: doc.accessKey,
         }),
       });
@@ -1033,16 +1036,15 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
     }
     setIsCartaCorrecaoSending(true);
     try {
-      const certificado = await getCertificate();
       const sequencia = (cartaCorrecaoDoc.cartaCorrecao?.length || 0) + 1;
       const res = await fetch('/api/fiscal/carta-correcao', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          businessId: business?.id,
           chaveAcesso: cartaCorrecaoDoc.accessKey,
           sequencia,
           textoCorrecao: cartaCorrecaoText.trim(),
-          certificado,
         }),
       });
       const result = await res.json();
@@ -1087,11 +1089,11 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
     }
     setIsInutilizarSending(true);
     try {
-      const certificado = await getCertificate();
       const res = await fetch('/api/fiscal/inutilizar', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          businessId: business?.id,
           ano: new Date().getFullYear(),
           serie: inutilizarModelo === '55'
             ? (business.fiscal?.nfeConfig?.series || '1')
@@ -1102,7 +1104,6 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
           ufEmitente: business.endereco?.uf || 'SP',
           cnpj: business.cnpj || '',
           modelo: inutilizarModelo,
-          certificado,
         }),
       });
       const result = await res.json();
@@ -1622,6 +1623,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
         }}
         document={selectedDoc}
         onDocumentUpdated={handleRefresh}
+        businessId={business?.id ?? null}
         business={business ? { razaoSocial: business.razaoSocial, cnpj: business.cnpj } : null}
         onPrintDanfe={handlePrintDanfe}
         onCartaCorrecao={(doc) => { setCartaCorrecaoDoc(doc); setCartaCorrecaoOpen(true); }}

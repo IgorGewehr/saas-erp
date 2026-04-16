@@ -96,7 +96,7 @@ export function ScheduleActionDialog({ open, onClose, contact, businessId, userI
       }
 
       try {
-        await updateDoc(doc(db, 'crmContacts', contact.id), {
+        await updateDoc(doc(db, 'clients', contact.id), {
           lastContactDate: now,
           updatedAt: now,
         });

@@ -63,7 +63,7 @@ export async function GET(req: NextRequest) {
 
     // Build Firestore query — always filter by businessId
     let query: FirebaseFirestore.Query = adminDb
-      .collection('crmContacts')
+      .collection('clients')
       .where('businessId', '==', auth.businessId);
 
     if (status) {
@@ -298,7 +298,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const docRef = await adminDb.collection('crmContacts').add(contactData);
+    const docRef = await adminDb.collection('clients').add(contactData);
 
     return apiSuccess(
       { id: docRef.id, ...contactData },
@@ -330,7 +330,7 @@ export async function PUT(req: NextRequest) {
     }
 
     // Verify the document exists and belongs to this business
-    const docRef = adminDb.collection('crmContacts').doc(id);
+    const docRef = adminDb.collection('clients').doc(id);
     const docSnap = await docRef.get();
 
     if (!docSnap.exists) {
@@ -390,7 +390,7 @@ export async function DELETE(req: NextRequest) {
     }
 
     // Verify the document exists and belongs to this business
-    const docRef = adminDb.collection('crmContacts').doc(id);
+    const docRef = adminDb.collection('clients').doc(id);
     const docSnap = await docRef.get();
 
     if (!docSnap.exists) {

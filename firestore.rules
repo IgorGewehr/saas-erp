@@ -119,10 +119,14 @@ service cloud.firestore {
       allow create: if isAuthenticated()
                     && request.resource.data.ownerUserId == request.auth.uid;
 
-      // Only admin/founder can update business settings
+      // Only admin/founder can update business settings.
+      // Exception: any business member can add themselves to memberIds (invite-code signup).
       allow update: if isAuthenticated()
                     && belongsToBusiness(businessId)
-                    && isAdmin();
+                    && (isAdmin()
+                        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds'])
+                            && request.resource.data.memberIds.toSet().hasAll(resource.data.memberIds.toSet())
+                            && request.resource.data.memberIds.toSet().difference(resource.data.memberIds.toSet()).hasOnly([request.auth.uid])));
 
       // Only founder can delete
       allow delete: if isAuthenticated()
@@ -166,7 +170,7 @@ service cloud.firestore {
     }
 
     // ============================================
-    // CLIENTS COLLECTION
+    // CLIENTS COLLECTION (primary entity — replaces crmContacts)
     // ============================================
     match /clients/{clientId} {
       // Operators and above can read clients in their business
@@ -178,8 +182,7 @@ service cloud.firestore {
       allow create: if isAuthenticated()
                     && incomingBelongsToBusiness()
                     && isOperator()
-                    && isNonEmptyString(request.resource.data.nome)
-                    && request.resource.data.tipo in ['pf', 'pj'];
+                    && isNonEmptyString(request.resource.data.name);
 
       // Operators and above can update clients
       allow update: if isAuthenticated()
@@ -191,6 +194,49 @@ service cloud.firestore {
       allow delete: if isAuthenticated()
                     && isOwnBusiness()
                     && isManager();
+    }
+
+    // ============================================
+    // ORDERS COLLECTION (B2B sales / vendas)
+    // ============================================
+    match /orders/{orderId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isOperator();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator();
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isManager();
+    }
+
+    // ============================================
+    // PURCHASE NOTES COLLECTION (compras / NF-e de entrada)
+    // ============================================
+    match /purchaseNotes/{noteId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isManager();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isManager();
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isManager()
+                    && incomingBelongsToBusiness();
+
+      // Purchase notes are immutable fiscal records — no deletion
+      allow delete: if false;
     }
 
     // ============================================

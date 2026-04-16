@@ -200,7 +200,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
     if (!open || !business) return;
     const loadClients = async () => {
       try {
-        const q = query(collection(db, 'crmContacts'), where('businessId', '==', business.id));
+        const q = query(collection(db, 'clients'), where('businessId', '==', business.id));
         const snapshot = await getDocs(q);
         setClients(snapshot.docs.map(d => ({ ...d.data(), id: d.id }) as CRMContact));
       } catch { /* silent */ }

@@ -231,11 +231,11 @@ export default function FinancialModule() {
   });
 
   const { data: crmContacts = [] } = useTanstackQuery({
-    queryKey: ['crmContacts', business?.id],
+    queryKey: ['clients', business?.id],
     queryFn: async () => {
       if (!business?.id) return [];
       const q = query(
-        collection(db, 'crmContacts'),
+        collection(db, 'clients'),
         where('businessId', '==', business.id)
       );
       const snap = await getDocs(q);
@@ -384,9 +384,12 @@ export default function FinancialModule() {
   }, []);
 
   const handleSaveTransaction = useCallback(async () => {
-    if (!business?.id) return;
+    if (!business?.id) {
+      toast.error(t('financial.toast.businessNotLoaded', 'Dados da empresa não carregados. Recarregue a página.'));
+      return;
+    }
     const amount = parseFloat(formAmount);
-    if (!formDescription || !formCategory || isNaN(amount) || !formDueDate) return;
+    if (!formDescription || isNaN(amount) || amount <= 0) return;
 
     setIsSaving(true);
     try {
@@ -396,10 +399,10 @@ export default function FinancialModule() {
       const txData = {
         businessId: business.id,
         type: formType,
-        category: formCategory,
+        category: formCategory || null,
         description: formDescription,
         amount,
-        dueDate: formDueDate,
+        dueDate: formDueDate || null,
         paymentDate: formPaymentDate || null,
         status,
         paymentMethod: (formPaymentMethod as PaymentMethod) || null,
@@ -821,7 +824,7 @@ export default function FinancialModule() {
         <Divider />
         <DialogActions sx={{ px: 3, py: 2 }}>
           <Button onClick={() => setShowForm(false)} sx={{ color: '#64748B', textTransform: 'none', fontWeight: 600, borderRadius: '12px' }}>{t('financial.form.cancel', 'Cancelar')}</Button>
-          <Button onClick={handleSaveTransaction} variant="contained" disabled={!formDescription || !formCategory || !formAmount || !formDueDate || isSaving}
+          <Button onClick={handleSaveTransaction} variant="contained" disabled={!formDescription || !formAmount || parseFloat(formAmount) <= 0 || isSaving}
             sx={{ backgroundColor: '#DC2626', '&:hover': { backgroundColor: '#B91C1C' }, '&.Mui-disabled': { backgroundColor: '#FCA5A5', color: '#fff' }, borderRadius: '12px', textTransform: 'none', fontWeight: 700, px: 4 }}
           >
             {isSaving ? t('financial.form.saving', 'Salvando...') : editingTransaction ? t('financial.form.save', 'Salvar') : t('financial.form.createTransaction', 'Criar Transação')}

@@ -27,6 +27,13 @@ export interface CertificadoPayload {
   password: string;
 }
 
+export type SefazAmbiente = 'producao' | 'homologacao';
+
+/** Resolve o campo environment do Firestore ('production' | qualquer) para o valor aceito pelo SEFAZ-API */
+export function resolveAmbiente(environment?: string): SefazAmbiente {
+  return environment === 'production' ? 'producao' : 'homologacao';
+}
+
 // ---------------------------------------------------------------------------
 // Core request helper
 // ---------------------------------------------------------------------------
@@ -138,13 +145,13 @@ async function sefazRequest<T = SefazResponse>(
 // ---------------------------------------------------------------------------
 
 export async function emitirNFe(
-  payload: Record<string, unknown> & { certificado: CertificadoPayload },
+  payload: Record<string, unknown> & { certificado: CertificadoPayload; ambiente: SefazAmbiente },
 ): Promise<SefazResponse> {
   return sefazRequest('emitirNFe', '/nfe/emitir', payload);
 }
 
 export async function emitirNFCe(
-  payload: Record<string, unknown> & { certificado: CertificadoPayload },
+  payload: Record<string, unknown> & { certificado: CertificadoPayload; ambiente: SefazAmbiente },
 ): Promise<SefazResponse> {
   return sefazRequest('emitirNFCe', '/nfe/nfce/emitir', payload);
 }
@@ -154,6 +161,7 @@ export async function cancelarNFe(payload: {
   protocolo: string;
   justificativa: string;
   ufEmitente: string;
+  ambiente: SefazAmbiente;
   certificado: CertificadoPayload;
 }): Promise<SefazResponse> {
   return sefazRequest('cancelarNFe', '/nfe/cancelar', payload);
@@ -164,6 +172,7 @@ export async function cartaCorrecaoNFe(payload: {
   correcao: string;
   ufEmitente: string;
   sequencia?: number;
+  ambiente: SefazAmbiente;
   certificado: CertificadoPayload;
 }): Promise<SefazResponse> {
   return sefazRequest('cartaCorrecaoNFe', '/nfe/carta-correcao', payload);
@@ -178,6 +187,7 @@ export async function inutilizarNFe(payload: {
   modelo: '55' | '65';
   ano: string;
   ufEmitente: string;
+  ambiente: SefazAmbiente;
   certificado: CertificadoPayload;
 }): Promise<SefazResponse> {
   return sefazRequest('inutilizarNFe', '/nfe/inutilizar', payload);
@@ -186,6 +196,7 @@ export async function inutilizarNFe(payload: {
 export async function consultarNFe(payload: {
   chaveAcesso: string;
   ufEmitente: string;
+  ambiente: SefazAmbiente;
   certificado: CertificadoPayload;
 }): Promise<SefazResponse> {
   return sefazRequest('consultarNFe', '/nfe/consultar', payload);
@@ -193,6 +204,7 @@ export async function consultarNFe(payload: {
 
 export async function statusSefaz(payload: {
   ufEmitente: string;
+  ambiente: SefazAmbiente;
   certificado: CertificadoPayload;
 }): Promise<SefazResponse> {
   return sefazRequest('statusSefaz', '/nfe/status', payload);

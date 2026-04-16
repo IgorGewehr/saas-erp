@@ -1883,11 +1883,11 @@ export default function AgendaModule() {
 
   // Fetch contacts (CRM)
   const { data: clients = [] } = useQuery({
-    queryKey: ['crmContacts', business?.id],
+    queryKey: ['clients', business?.id],
     queryFn: async () => {
       if (!business?.id) return [];
       const q = query(
-        collection(db, 'crmContacts'),
+        collection(db, 'clients'),
         where('businessId', '==', business.id),
         where('isActive', '==', true),
         orderBy('name', 'asc')

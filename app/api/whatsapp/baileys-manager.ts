@@ -297,7 +297,7 @@ async function handleInboundMessage(
       // Auto-link CRM contact
       try {
         const crmQuery = query(
-          collection(db, 'crmContacts'),
+          collection(db, 'clients'),
           where('businessId', '==', businessId),
           where('channelIdentities.whatsapp', '==', senderPhone),
           firestoreLimit(1),
@@ -309,7 +309,7 @@ async function handleInboundMessage(
             crmContactId: crmContact.id,
             contactName: crmContact.data().name || contactName,
           });
-          await updateDoc(doc(db, 'crmContacts', crmContact.id), {
+          await updateDoc(doc(db, 'clients', crmContact.id), {
             lastConversationId: conversationId,
             lastConversationAt: now,
             updatedAt: now,

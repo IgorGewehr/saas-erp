@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils';
 
 // Lazy-loaded modules
 const DashboardModule  = lazy(() => import('@/app/components/features/dashboard/DashboardModule'));
+const ClientsModule    = lazy(() => import('@/app/components/features/clients/ClientsModule'));
 const AgendaModule     = lazy(() => import('@/app/components/features/agenda/AgendaModule'));
 const PDVModule        = lazy(() => import('@/app/components/features/pdv/PDVModule'));
 const FinancialModule  = lazy(() => import('@/app/components/features/financial/FinancialModule'));
@@ -16,6 +17,8 @@ const KanbanModule     = lazy(() => import('@/app/components/features/kanban/Kan
 const CRMModule        = lazy(() => import('@/app/components/features/crm/CRMModule'));
 const SettingsModule   = lazy(() => import('@/app/components/features/settings/SettingsModule'));
 const ConversasModule  = lazy(() => import('@/app/components/features/conversations/ConversasModule'));
+const VendasModule     = lazy(() => import('@/app/components/features/sales/VendasModule'));
+const ComprasModule    = lazy(() => import('@/app/components/features/purchases/ComprasModule'));
 
 
 // ─── Full-height page loading fallback (Agenda, PDV, Kanban, Conversas) ───────
@@ -124,17 +127,19 @@ export default function AppPage() {
   const renderModule = () => {
     switch (activePage) {
       case 'Dashboard':    return <Suspense fallback={fallback}><DashboardModule /></Suspense>;
+      case 'Clientes':     return <Suspense fallback={fallback}><ClientsModule /></Suspense>;
       case 'CRM':          return <Suspense fallback={fallback}><CRMModule /></Suspense>;
       case 'Agenda':       return <Suspense fallback={fallback}><AgendaModule /></Suspense>;
       case 'Conversas':    return <Suspense fallback={fallback}><ConversasModule /></Suspense>;
       case 'PDV':          return <Suspense fallback={fallback}><PDVModule /></Suspense>;
+      case 'Vendas':       return <Suspense fallback={fallback}><VendasModule /></Suspense>;
+      case 'Compras':      return <Suspense fallback={fallback}><ComprasModule /></Suspense>;
       case 'Kanban':       return <Suspense fallback={fallback}><KanbanModule /></Suspense>;
       case 'Financeiro':   return <Suspense fallback={fallback}><FinancialModule /></Suspense>;
       case 'Estoque':      return <Suspense fallback={fallback}><InventoryModule /></Suspense>;
       case 'NFSe':         return <Suspense fallback={fallback}><FiscalModule type="nfse" /></Suspense>;
       case 'NFCe':         return <Suspense fallback={fallback}><FiscalModule type="nfce" /></Suspense>;
       case 'NFe':          return <Suspense fallback={fallback}><FiscalModule type="nfe" /></Suspense>;
-
       case 'Configurações': return <Suspense fallback={fallback}><SettingsModule /></Suspense>;
       default:             return <Suspense fallback={fallback}><DashboardModule /></Suspense>;
     }

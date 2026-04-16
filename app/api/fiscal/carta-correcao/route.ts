@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { cartaCorrecaoNFe } from '@/lib/services/sefaz-gateway';
+import { adminDb } from '@/lib/config/firebaseAdmin';
+import { cartaCorrecaoNFe, resolveAmbiente, SefazAmbiente } from '@/lib/services/sefaz-gateway';
+import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
 
 interface CartaCorrecaoBody {
+  businessId: string;
   chaveAcesso: string;
   sequencia: number;
   textoCorrecao: string;
   ufEmitente?: string;
-  certificado: {
+  certificado?: {
     pfxBase64: string;
     password: string;
   };
@@ -37,12 +40,43 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Resolve certificate & ambiente from Firestore
+    let certificado = body.certificado;
+    let ambiente: SefazAmbiente = 'homologacao';
+
+    if (body.businessId) {
+      const businessDoc = await adminDb.collection('businesses').doc(body.businessId).get();
+      if (businessDoc.exists) {
+        const rawEnv = businessDoc.data()?.fiscal?.nfeConfig?.environment;
+        ambiente = resolveAmbiente(rawEnv);
+      }
+
+      if (!certificado) {
+        try {
+          certificado = await getCertificadoPayload(body.businessId);
+        } catch {
+          return NextResponse.json(
+            { error: 'Certificado digital nao disponivel.' },
+            { status: 400 },
+          );
+        }
+      }
+    }
+
+    if (!certificado) {
+      return NextResponse.json(
+        { error: 'certificado e obrigatorio quando businessId nao e fornecido.' },
+        { status: 400 },
+      );
+    }
+
     const result = await cartaCorrecaoNFe({
       chaveAcesso: body.chaveAcesso,
       correcao: body.textoCorrecao.trim(),
       ufEmitente: body.ufEmitente || body.chaveAcesso.substring(0, 2),
       sequencia: body.sequencia || 1,
-      certificado: body.certificado,
+      ambiente,
+      certificado,
     });
 
     return NextResponse.json({ success: true, data: result });

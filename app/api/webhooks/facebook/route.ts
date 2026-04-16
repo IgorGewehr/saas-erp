@@ -609,7 +609,7 @@ async function tryLinkCrmContact(
 ): Promise<void> {
   try {
     const contactQuery = query(
-      collection(db, 'crmContacts'),
+      collection(db, 'clients'),
       where('businessId', '==', businessId),
       where('channelIdentities.facebook', '==', senderId),
       firestoreLimit(1),
@@ -624,7 +624,7 @@ async function tryLinkCrmContact(
         crmContactId: contact.id,
         contactName: contactData.name || senderId,
       });
-      await updateDoc(doc(db, 'crmContacts', contact.id), {
+      await updateDoc(doc(db, 'clients', contact.id), {
         lastConversationId: conversationId,
         lastConversationAt: now,
         updatedAt: now,

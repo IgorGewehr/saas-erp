@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
-import { emitirNFe, emitirNFCe, CertificadoPayload } from '@/lib/services/sefaz-gateway';
+import { emitirNFe, emitirNFCe, CertificadoPayload, SefazAmbiente, resolveAmbiente } from '@/lib/services/sefaz-gateway';
 import {
   getNextInvoiceNumber,
   getCRT,
@@ -107,11 +107,18 @@ export async function POST(request: NextRequest) {
 
     const { number, series } = await getNextInvoiceNumber(businessId, type);
 
-    // 5. Determine tax regime and defaults --------------------------------------
+    // 5. Determine tax regime, defaults and ambiente ----------------------------
 
     const crt = getCRT(fiscal.taxRegime);
     const icmsDefaults = getICMSDefaults(crt);
     const pisCofsDefaults = getPISCOFINSDefaults(crt, fiscal.taxRegime);
+
+    // Resolve environment: read from the per-document-type config, fall back to nfeConfig
+    const rawEnvironment =
+      type === 'nfce'
+        ? (fiscal.nfceConfig?.environment ?? fiscal.nfeConfig?.environment)
+        : fiscal.nfeConfig?.environment;
+    const ambiente: SefazAmbiente = resolveAmbiente(rawEnvironment);
 
     // 6. Build items with tax blocks -------------------------------------------
 
@@ -246,6 +253,7 @@ export async function POST(request: NextRequest) {
         numero: number,
         serie: series,
         ufEmitente,
+        ambiente,
         naturezaOperacao: data.naturezaOperacao || 'VENDA AO CONSUMIDOR FINAL',
         consumidorFinal: 1,
         presencaComprador: data.presencaComprador ?? 1,
@@ -265,7 +273,7 @@ export async function POST(request: NextRequest) {
         certificado,
       });
 
-      const result = await emitirNFCe(nfcePayload as Record<string, unknown> & { certificado: CertificadoPayload });
+      const result = await emitirNFCe(nfcePayload as Record<string, unknown> & { certificado: CertificadoPayload; ambiente: SefazAmbiente });
 
       // Persist fiscal document
       if (result.chaveAcesso) {
@@ -330,6 +338,7 @@ export async function POST(request: NextRequest) {
       numero: number,
       serie: series,
       ufEmitente,
+      ambiente,
       naturezaOperacao: data.naturezaOperacao || 'VENDA DE MERCADORIA',
       finalidadeEmissao: data.finalidadeEmissao ?? 1,
       consumidorFinal: data.consumidorFinal ?? 0,
@@ -342,7 +351,7 @@ export async function POST(request: NextRequest) {
       certificado,
     });
 
-    const result = await emitirNFe(nfePayload as Record<string, unknown> & { certificado: CertificadoPayload });
+    const result = await emitirNFe(nfePayload as Record<string, unknown> & { certificado: CertificadoPayload; ambiente: SefazAmbiente });
 
     // Persist fiscal document
     if (result.chaveAcesso) {

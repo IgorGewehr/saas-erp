@@ -415,9 +415,9 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
   });
 
   const { data: searchContacts = [] } = useQuery({
-    queryKey: ['search-crmContacts', businessId],
+    queryKey: ['search-clients', businessId],
     queryFn: async () => {
-      const q = query(collection(db, 'crmContacts'), where('businessId', '==', businessId), orderBy('createdAt', 'desc'));
+      const q = query(collection(db, 'clients'), where('businessId', '==', businessId), orderBy('createdAt', 'desc'));
       const snap = await getDocs(q);
       return snap.docs.map(d => ({ ...d.data(), id: d.id } as CRMContact));
     },
@@ -459,7 +459,7 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
         || ct.phone?.includes(term)
         || ct.company?.toLowerCase().includes(term);
       if (match) {
-        results.push({ id: ct.id, type: 'contact', title: ct.name, subtitle: ct.company || ct.cpfCnpj || ct.email || '', page: 'CRM', icon: Contact });
+        results.push({ id: ct.id, type: 'contact', title: ct.name, subtitle: ct.company || ct.cpfCnpj || ct.email || '', page: 'Clientes', icon: Contact });
       }
     }
 

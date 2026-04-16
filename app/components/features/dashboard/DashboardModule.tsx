@@ -54,9 +54,9 @@ export default function DashboardModule() {
 
   // ── Firestore queries ──
   const { data: clients = [], isLoading: loadingClients } = useQuery({
-    queryKey: ['crmContacts', business?.id],
+    queryKey: ['clients', business?.id],
     queryFn: async () => {
-      const q = query(collection(db, 'crmContacts'), where('businessId', '==', business!.id), orderBy('name', 'asc'));
+      const q = query(collection(db, 'clients'), where('businessId', '==', business!.id), orderBy('name', 'asc'));
       const snap = await getDocs(q);
       return snap.docs.map(d => ({ ...d.data(), id: d.id } as CRMContact));
     },

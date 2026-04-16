@@ -244,7 +244,7 @@ export async function POST(req: NextRequest) {
 
     // ── Update client stats if clientId provided ──────────────────────────────
     if (body.clientId) {
-      const clientRef = adminDb.collection('crmContacts').doc(body.clientId);
+      const clientRef = adminDb.collection('clients').doc(body.clientId);
       const clientSnap = await clientRef.get();
 
       if (clientSnap.exists && clientSnap.data()?.businessId === auth.businessId) {

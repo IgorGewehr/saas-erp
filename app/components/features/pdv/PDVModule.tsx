@@ -208,10 +208,10 @@ export default function PDVModule() {
   });
 
   const { data: clients = [], isLoading: loadingClients } = useQuery({
-    queryKey: ['crmContacts', business?.id],
+    queryKey: ['clients', business?.id],
     queryFn: async () => {
       const q = query(
-        collection(db, 'crmContacts'),
+        collection(db, 'clients'),
         where('businessId', '==', business!.id),
         where('isActive', '==', true),
         orderBy('name', 'asc'),
@@ -473,7 +473,7 @@ export default function PDVModule() {
 
       // Update client stats
       if (selectedClient) {
-        await updateDoc(doc(db, 'crmContacts', selectedClient.id), {
+        await updateDoc(doc(db, 'clients', selectedClient.id), {
           totalSpent: (selectedClient.totalSpent || 0) + total,
           visitCount: (selectedClient.visitCount || 0) + 1,
           lastVisit: now,
@@ -485,7 +485,7 @@ export default function PDVModule() {
       queryClient.invalidateQueries({ queryKey: ['sales'] });
       queryClient.invalidateQueries({ queryKey: ['products'] });
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
-      queryClient.invalidateQueries({ queryKey: ['crmContacts'] });
+      queryClient.invalidateQueries({ queryKey: ['clients'] });
 
       setLastSaleId(docRef.id);
       setSaleComplete(true);

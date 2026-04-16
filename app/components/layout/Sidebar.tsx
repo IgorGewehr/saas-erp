@@ -22,17 +22,21 @@ import {
   Kanban,
   Target,
   MessageSquare,
-
+  Users,
+  ClipboardList,
+  ShoppingBag,
 } from 'lucide-react';
 
 export type MenuPage =
   | 'Dashboard'
+  | 'Clientes'
   | 'CRM'
   | 'Agenda'
   | 'Conversas'
   | 'Kanban'
-
   | 'PDV'
+  | 'Vendas'
+  | 'Compras'
   | 'Financeiro'
   | 'Estoque'
   | 'NFSe'
@@ -60,6 +64,7 @@ function useMenuSections(): MenuSection[] {
       title: t('sidebar.sections.principal'),
       items: [
         { id: 'Dashboard', label: t('sidebar.dashboard'), icon: LayoutDashboard },
+        { id: 'Clientes', label: t('sidebar.clientes'), icon: Users },
         { id: 'CRM', label: t('sidebar.crm'), icon: Target, enterpriseOnly: true },
         { id: 'Agenda', label: t('sidebar.agenda'), icon: Calendar },
         { id: 'Conversas', label: t('sidebar.conversas'), icon: MessageSquare },
@@ -69,9 +74,11 @@ function useMenuSections(): MenuSection[] {
     {
       title: t('sidebar.sections.gestao'),
       items: [
+        { id: 'Vendas', label: t('sidebar.vendas'), icon: ClipboardList },
         { id: 'Kanban', label: t('sidebar.kanban'), icon: Kanban, enterpriseOnly: true },
         { id: 'Financeiro', label: t('sidebar.financeiro'), icon: DollarSign },
         { id: 'Estoque', label: t('sidebar.estoque'), icon: Package },
+        { id: 'Compras', label: t('sidebar.compras'), icon: ShoppingBag },
       ],
     },
     {
