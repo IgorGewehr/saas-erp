@@ -531,6 +531,9 @@ function CardDetailDialog({
   const [comments, setComments] = useState<KanbanComment[]>(card.comments || []);
   const [newComment, setNewComment] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
+  const [localAssigneeIds, setLocalAssigneeIds] = useState<string[]>(card.assigneeIds);
+  const [localDueDate, setLocalDueDate] = useState(card.dueDate || '');
+  const [localLabels, setLocalLabels] = useState<KanbanLabel[]>(card.labels);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const commentInputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -545,7 +548,10 @@ function CardDetailDialog({
     if (!editingDescription) setDescription(card.description || '');
     setChecklist(card.checklist || []);
     setComments(card.comments || []);
-  }, [card.title, card.description, card.checklist, card.comments, editingTitle, editingDescription]);
+    setLocalAssigneeIds(card.assigneeIds);
+    setLocalDueDate(card.dueDate || '');
+    setLocalLabels(card.labels);
+  }, [card.title, card.description, card.checklist, card.comments, card.assigneeIds, card.dueDate, card.labels, editingTitle, editingDescription]);
 
   const handleSaveTitle = () => {
     if (title.trim()) {
@@ -611,6 +617,28 @@ function CardDetailDialog({
     const updated = comments.filter(c => c.id !== commentId);
     setComments(updated);
     onUpdate({ ...card, comments: updated, commentsCount: updated.length });
+  };
+
+  const handleToggleAssignee = (memberId: string) => {
+    const member = members.find(m => m.id === memberId);
+    if (!member) return;
+    const isSelected = localAssigneeIds.includes(memberId);
+    const newIds = isSelected ? localAssigneeIds.filter(id => id !== memberId) : [...localAssigneeIds, memberId];
+    const newNames = newIds.map(id => members.find(m => m.id === id)?.name || '');
+    setLocalAssigneeIds(newIds);
+    onUpdate({ ...card, assigneeIds: newIds, assigneeNames: newNames });
+  };
+
+  const handleDueDateChange = (date: string) => {
+    setLocalDueDate(date);
+    onUpdate({ ...card, dueDate: date || undefined });
+  };
+
+  const handleToggleLabel = (label: KanbanLabel) => {
+    const isSelected = localLabels.find(l => l.id === label.id);
+    const newLabels = isSelected ? localLabels.filter(l => l.id !== label.id) : [...localLabels, label];
+    setLocalLabels(newLabels);
+    onUpdate({ ...card, labels: newLabels });
   };
 
   useEffect(() => {
@@ -941,25 +969,82 @@ function CardDetailDialog({
                 {/* Assignees */}
                 <div>
                   <p className="text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1.5">{t('kanban.assignees', 'Responsáveis')}</p>
-                  <div className="space-y-1">
-                    {card.assigneeNames.map((name, i) => (
-                      <div key={i} className="flex items-center gap-2 px-2 py-1">
-                        <div className="w-5 h-5 rounded-full bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-700 dark:to-gray-600 flex items-center justify-center text-[9px] font-bold text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700">
-                          {getInitials(name)}
-                        </div>
-                        <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{name}</span>
-                      </div>
-                    ))}
-                  </div>
+                  {members.length > 0 ? (
+                    <div className="flex flex-wrap gap-1">
+                      {members.map(member => {
+                        const selected = localAssigneeIds.includes(member.id);
+                        return (
+                          <button
+                            key={member.id}
+                            onClick={() => handleToggleAssignee(member.id)}
+                            className={cn(
+                              'inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-all border',
+                              selected
+                                ? 'bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-400 border-red-200 dark:border-red-500/20'
+                                : 'bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-white/[0.04]'
+                            )}
+                          >
+                            <div className={cn(
+                              'w-3.5 h-3.5 rounded-full flex items-center justify-center text-[8px] font-bold flex-shrink-0',
+                              selected ? 'bg-red-200 dark:bg-red-500/30 text-red-700 dark:text-red-400' : 'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400'
+                            )}>
+                              {getInitials(member.name)}
+                            </div>
+                            {member.name.split(' ')[0]}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-400 dark:text-gray-500 px-1">{t('kanban.noMembers', 'Sem membros')}</p>
+                  )}
                 </div>
 
                 {/* Due date */}
-                {card.dueDate && (
-                  <div>
-                    <p className="text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1.5">{t('kanban.dueDate', 'Prazo')}</p>
-                    <DueDateBadge date={card.dueDate} />
+                <div>
+                  <p className="text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1.5">{t('kanban.dueDate', 'Prazo')}</p>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="date"
+                      value={localDueDate}
+                      onChange={(e) => handleDueDateChange(e.target.value)}
+                      className="flex-1 px-2 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-700 dark:text-gray-300 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30 focus:ring-1 focus:ring-red-100 dark:focus:ring-red-500/20"
+                    />
+                    {localDueDate && (
+                      <button
+                        onClick={() => handleDueDateChange('')}
+                        className="p-1 rounded text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 transition-colors flex-shrink-0"
+                        title={t('kanban.clearDate', 'Limpar prazo')}
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
-                )}
+                  {localDueDate && <div className="mt-1.5"><DueDateBadge date={localDueDate} /></div>}
+                </div>
+
+                {/* Labels */}
+                <div>
+                  <p className="text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1.5">{t('kanban.labels', 'Etiquetas')}</p>
+                  <div className="flex flex-wrap gap-1">
+                    {DEFAULT_LABELS.map(label => {
+                      const selected = localLabels.find(l => l.id === label.id);
+                      return (
+                        <button
+                          key={label.id}
+                          onClick={() => handleToggleLabel(label)}
+                          className={cn(
+                            'inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium transition-all',
+                            selected ? 'text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+                          )}
+                          style={selected ? { backgroundColor: label.color } : undefined}
+                        >
+                          {label.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
 
                 {/* Actions */}
                 <div className="pt-2 border-t border-gray-100 dark:border-gray-800">
@@ -1395,7 +1480,7 @@ function NewBoardDialog({
 // ═══════════════════════════════════════════════════════════
 // BOARD HEADER
 // ═══════════════════════════════════════════════════════════
-type KanbanViewMode = 'board' | 'list' | 'calendar';
+type KanbanViewMode = 'board' | 'list' | 'calendar' | 'mytasks';
 
 function BoardHeader({
   boards,
@@ -1512,6 +1597,7 @@ function BoardHeader({
               { mode: 'board' as KanbanViewMode, icon: LayoutGrid, label: t('kanban.viewBoard', 'Board') },
               { mode: 'list' as KanbanViewMode, icon: List, label: t('kanban.viewList', 'Lista') },
               { mode: 'calendar' as KanbanViewMode, icon: Calendar, label: t('kanban.viewCalendar', 'Calendário') },
+              { mode: 'mytasks' as KanbanViewMode, icon: Users, label: t('kanban.viewMyTasks', 'Minhas Tarefas') },
             ]).map(({ mode, icon: Icon, label }) => (
               <button
                 key={mode}
@@ -1637,6 +1723,131 @@ const PRIORITY_HEX: Record<KanbanPriority, string> = {
   medium: '#3B82F6',
   low:    '#6B7280',
 };
+
+// ═══════════════════════════════════════════════════════════
+// MY TASKS VIEW
+// ═══════════════════════════════════════════════════════════
+function MyTasksView({
+  cards,
+  boards,
+  onCardOpen,
+}: {
+  cards: KanbanCard[];
+  boards: KanbanBoard[];
+  onCardOpen: (card: KanbanCard) => void;
+}) {
+  const { t } = useTranslation();
+
+  type Group = 'overdue' | 'today' | 'week' | 'future' | 'none';
+
+  const getGroup = (card: KanbanCard): Group => {
+    if (!card.dueDate) return 'none';
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const d = new Date(card.dueDate + 'T00:00:00');
+    const diff = Math.ceil((d.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    if (diff < 0) return 'overdue';
+    if (diff === 0) return 'today';
+    if (diff <= 7) return 'week';
+    return 'future';
+  };
+
+  const groups: { key: Group; label: string; colorClass: string; emptyHide?: boolean }[] = [
+    { key: 'overdue', label: t('kanban.myTasks.overdue', 'Atrasado'), colorClass: 'text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/20' },
+    { key: 'today',   label: t('kanban.myTasks.today',   'Hoje'),     colorClass: 'text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-500/10 border-orange-200 dark:border-orange-500/20' },
+    { key: 'week',    label: t('kanban.myTasks.week',    'Esta semana'), colorClass: 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-500/20' },
+    { key: 'future',  label: t('kanban.myTasks.future',  'Futuro'),   colorClass: 'text-gray-600 dark:text-gray-400 bg-gray-100 dark:bg-gray-800 border-gray-200 dark:border-gray-700' },
+    { key: 'none',    label: t('kanban.myTasks.noDate',  'Sem prazo'), colorClass: 'text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800/50 border-gray-200 dark:border-gray-700', emptyHide: true },
+  ];
+
+  const grouped = useMemo(() => {
+    const map: Record<Group, KanbanCard[]> = { overdue: [], today: [], week: [], future: [], none: [] };
+    for (const card of cards) map[getGroup(card)].push(card);
+    const PRIO_ORDER: Record<KanbanPriority, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
+    for (const g of Object.keys(map) as Group[]) {
+      map[g].sort((a, b) => PRIO_ORDER[a.priority] - PRIO_ORDER[b.priority]);
+    }
+    return map;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cards]);
+
+  if (cards.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 text-center">
+        <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-50 to-emerald-100 dark:from-emerald-500/10 dark:to-emerald-500/5 flex items-center justify-center mb-4">
+          <CheckCircle2 className="w-7 h-7 text-emerald-500" />
+        </div>
+        <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">{t('kanban.myTasks.allDone', 'Tudo em dia!')}</h3>
+        <p className="text-sm text-gray-500 dark:text-gray-400">{t('kanban.myTasks.allDoneDesc', 'Você não tem nenhuma tarefa atribuída.')}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5 max-w-3xl">
+      {groups.map(({ key, label, colorClass, emptyHide }) => {
+        const groupCards = grouped[key];
+        if (emptyHide && groupCards.length === 0) return null;
+        return (
+          <div key={key}>
+            {/* Group header */}
+            <div className="flex items-center gap-2 mb-2">
+              <span className={cn('inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold border', colorClass)}>
+                {label}
+              </span>
+              <span className="text-xs text-gray-400 dark:text-gray-500 font-medium">{groupCards.length}</span>
+              <div className="flex-1 h-px bg-gray-100 dark:bg-gray-800" />
+            </div>
+
+            {groupCards.length === 0 ? (
+              <p className="text-xs text-gray-400 dark:text-gray-500 px-1 py-2 italic">{t('kanban.myTasks.empty', 'Nenhuma tarefa neste grupo')}</p>
+            ) : (
+              <div className="space-y-1.5">
+                {groupCards.map(card => {
+                  const board = boards.find(b => b.id === card.boardId);
+                  const col = board?.columns.find(c => c.id === card.columnId);
+                  return (
+                    <motion.div
+                      key={card.id}
+                      layout
+                      initial={{ opacity: 0, y: 6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      onClick={() => onCardOpen(card)}
+                      className="flex items-center gap-3 px-4 py-3 bg-white dark:bg-gray-900 rounded-xl border border-gray-200/80 dark:border-gray-700/50 shadow-sm hover:shadow-md hover:border-gray-300 dark:hover:border-gray-600 cursor-pointer transition-all group"
+                    >
+                      {/* Priority dot */}
+                      <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: PRIORITY_HEX[card.priority] }} />
+
+                      {/* Title */}
+                      <p className="flex-1 text-sm font-medium text-gray-800 dark:text-gray-200 truncate group-hover:text-red-600 dark:group-hover:text-red-400 transition-colors">
+                        {card.title}
+                      </p>
+
+                      {/* Board + column context */}
+                      {board && (
+                        <div className="hidden sm:flex items-center gap-1.5 flex-shrink-0">
+                          <span className="w-2 h-2 rounded-full" style={{ backgroundColor: board.color }} />
+                          <span className="text-[11px] text-gray-400 dark:text-gray-500 truncate max-w-[120px]">{board.name}</span>
+                          {col && <span className="text-[11px] text-gray-300 dark:text-gray-600">/ {col.title}</span>}
+                        </div>
+                      )}
+
+                      {/* Due date */}
+                      {card.dueDate && <DueDateBadge date={card.dueDate} />}
+
+                      {/* Priority badge */}
+                      <PriorityBadge priority={card.priority} compact />
+                    </motion.div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 // ═══════════════════════════════════════════════════════════
 // LIST VIEW
@@ -2077,6 +2288,22 @@ export default function KanbanModule() {
       setLoadingCards(false);
     };
   }, [business?.id, activeBoardId]);
+
+  // ─── Firestore: my tasks cross-board query ────────────────
+  const [myTasksCards, setMyTasksCards] = useState<KanbanCard[]>([]);
+
+  useEffect(() => {
+    if (!business?.id || !user?.uid || viewMode !== 'mytasks') return;
+    const q = query(
+      collection(db, 'kanbanCards'),
+      where('businessId', '==', business.id),
+      where('assigneeIds', 'array-contains', user.uid)
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      setMyTasksCards(snap.docs.map(d => ({ ...d.data(), id: d.id } as KanbanCard)));
+    });
+    return () => unsub();
+  }, [business?.id, user?.uid, viewMode]);
 
   // ─── Firestore: team members listener ─────────────────────
   useEffect(() => {
@@ -2560,6 +2787,23 @@ export default function KanbanModule() {
               const firstColId = sortedColumns[0]?.id;
               if (firstColId) setNewCardColumnId(firstColId);
             } : undefined}
+          />
+        </motion.div>
+      )}
+
+      {/* My Tasks view */}
+      {viewMode === 'mytasks' && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.2 }}
+          className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 pb-4"
+          style={{ scrollbarWidth: 'thin' }}
+        >
+          <MyTasksView
+            cards={myTasksCards}
+            boards={boards}
+            onCardOpen={setSelectedCard}
           />
         </motion.div>
       )}
