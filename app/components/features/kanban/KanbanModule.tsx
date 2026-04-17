@@ -27,7 +27,6 @@ import type {
   KanbanComment,
   KanbanVisibility,
   User,
-  Sector,
 } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import {
@@ -51,7 +50,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Trash2,
-  Edit3,
   Archive,
   AlignLeft,
   CheckCircle2,
@@ -551,7 +549,8 @@ function CardDetailDialog({
     setLocalAssigneeIds(card.assigneeIds);
     setLocalDueDate(card.dueDate || '');
     setLocalLabels(card.labels);
-  }, [card.title, card.description, card.checklist, card.comments, card.assigneeIds, card.dueDate, card.labels, editingTitle, editingDescription]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [card, editingTitle, editingDescription]);
 
   const handleSaveTitle = () => {
     if (title.trim()) {
@@ -1094,12 +1093,14 @@ function NewCardDialog({
   members,
   onClose,
   onCreate,
+  initialDueDate,
 }: {
   columnId: string;
   columns: KanbanColumn[];
   members: MemberDisplay[];
   onClose: () => void;
   onCreate: (card: Partial<KanbanCard>) => void;
+  initialDueDate?: string;
 }) {
   const { t } = useTranslation();
   const [title, setTitle] = useState('');
@@ -1108,7 +1109,7 @@ function NewCardDialog({
   const [selectedColumn, setSelectedColumn] = useState(columnId);
   const [selectedLabels, setSelectedLabels] = useState<KanbanLabel[]>([]);
   const [selectedAssignees, setSelectedAssignees] = useState<string[]>([]);
-  const [dueDate, setDueDate] = useState('');
+  const [dueDate, setDueDate] = useState(initialDueDate || '');
   const titleRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -2219,6 +2220,7 @@ export default function KanbanModule() {
   // Dialogs
   const [selectedCard, setSelectedCard] = useState<KanbanCard | null>(null);
   const [newCardColumnId, setNewCardColumnId] = useState<string | null>(null);
+  const [newCardDate, setNewCardDate] = useState<string | undefined>(undefined);
   const [showNewColumn, setShowNewColumn] = useState(false);
   const [showNewBoard, setShowNewBoard] = useState(false);
 
@@ -2293,7 +2295,7 @@ export default function KanbanModule() {
   const [myTasksCards, setMyTasksCards] = useState<KanbanCard[]>([]);
 
   useEffect(() => {
-    if (!business?.id || !user?.uid || viewMode !== 'mytasks') return;
+    if (!business?.id || !user?.uid) return;
     const q = query(
       collection(db, 'kanbanCards'),
       where('businessId', '==', business.id),
@@ -2303,7 +2305,7 @@ export default function KanbanModule() {
       setMyTasksCards(snap.docs.map(d => ({ ...d.data(), id: d.id } as KanbanCard)));
     });
     return () => unsub();
-  }, [business?.id, user?.uid, viewMode]);
+  }, [business?.id, user?.uid]);
 
   // ─── Firestore: team members listener ─────────────────────
   useEffect(() => {
@@ -2783,9 +2785,9 @@ export default function KanbanModule() {
           <CalendarView
             cards={filteredCards}
             onCardOpen={setSelectedCard}
-            onCreateCard={canEdit ? (_date) => {
+            onCreateCard={canEdit ? (date) => {
               const firstColId = sortedColumns[0]?.id;
-              if (firstColId) setNewCardColumnId(firstColId);
+              if (firstColId) { setNewCardDate(date); setNewCardColumnId(firstColId); }
             } : undefined}
           />
         </motion.div>
@@ -2832,8 +2834,9 @@ export default function KanbanModule() {
             columnId={newCardColumnId}
             columns={sortedColumns}
             members={members}
-            onClose={() => setNewCardColumnId(null)}
+            onClose={() => { setNewCardColumnId(null); setNewCardDate(undefined); }}
             onCreate={handleCreateCard}
+            initialDueDate={newCardDate}
           />
         )}
       </AnimatePresence>
