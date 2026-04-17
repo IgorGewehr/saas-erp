@@ -29,6 +29,10 @@ import type {
   KanbanAttachment,
   KanbanRecurrence,
   KanbanVisibility,
+  KanbanCardTemplate,
+  KanbanAutomation,
+  KanbanAutomationTrigger,
+  KanbanAutomationActionType,
   User,
 } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
@@ -66,6 +70,12 @@ import {
   Image as ImageIcon,
   Download,
   RefreshCw,
+  Copy,
+  Zap,
+  Settings,
+  Trash2 as TrashIcon,
+  ToggleLeft,
+  ToggleRight,
 } from 'lucide-react';
 
 // ─── Priority Config ──────────────────────────────────────
@@ -94,6 +104,14 @@ const DEFAULT_LABELS: KanbanLabel[] = [
   { id: 'l6', name: 'Frontend',   color: '#F59E0B' },
   { id: 'l7', name: 'Marketing',  color: '#06B6D4' },
   { id: 'l8', name: 'Financeiro', color: '#84CC16' },
+];
+
+// ─── Board template presets ───────────────────────────────
+const BOARD_PRESETS: { id: string; name: string; color: string; columns: { title: string; color: string }[] }[] = [
+  { id: 'sprint',    name: 'Sprint',       color: '#6366F1', columns: [{ title: 'Backlog', color: '#6B7280' }, { title: 'A Fazer', color: '#3B82F6' }, { title: 'Em Progresso', color: '#F59E0B' }, { title: 'Em Revisão', color: '#8B5CF6' }, { title: 'Concluído', color: '#10B981' }] },
+  { id: 'suporte',   name: 'Suporte',      color: '#EF4444', columns: [{ title: 'Novo', color: '#EF4444' }, { title: 'Em Atendimento', color: '#F97316' }, { title: 'Aguardando Cliente', color: '#F59E0B' }, { title: 'Resolvido', color: '#10B981' }] },
+  { id: 'marketing', name: 'Marketing',    color: '#EC4899', columns: [{ title: 'Ideias', color: '#8B5CF6' }, { title: 'Planejamento', color: '#3B82F6' }, { title: 'Produção', color: '#F97316' }, { title: 'Revisão', color: '#F59E0B' }, { title: 'Publicado', color: '#10B981' }] },
+  { id: 'custom',    name: 'Em branco',    color: '#6B7280', columns: [{ title: 'A Fazer', color: '#3B82F6' }, { title: 'Em Progresso', color: '#F59E0B' }, { title: 'Concluído', color: '#10B981' }] },
 ];
 
 // ─── Local ID for client-side entities (columns, checklist items) ─────────────
@@ -530,6 +548,7 @@ function CardDetailDialog({
   onClose,
   onUpdate,
   onDelete,
+  onSaveTemplate,
 }: {
   card: KanbanCard;
   columns: KanbanColumn[];
@@ -538,6 +557,7 @@ function CardDetailDialog({
   onClose: () => void;
   onUpdate: (updated: KanbanCard) => void;
   onDelete: (id: string) => void;
+  onSaveTemplate?: (card: KanbanCard, name: string) => void;
 }) {
   const { t } = useTranslation();
   const [editingTitle, setEditingTitle] = useState(false);
@@ -555,6 +575,8 @@ function CardDetailDialog({
   const [localLabels, setLocalLabels] = useState<KanbanLabel[]>(card.labels);
   const [attachments, setAttachments] = useState<KanbanAttachment[]>(card.attachments || []);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [showSaveTemplate, setShowSaveTemplate] = useState(false);
+  const [templateName, setTemplateName] = useState('');
   const titleInputRef = useRef<HTMLInputElement>(null);
   const commentInputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1219,6 +1241,48 @@ function CardDetailDialog({
                   )}
                 </div>
 
+                {/* Save as Template */}
+                {onSaveTemplate && (
+                  <div className="pt-2 border-t border-gray-100 dark:border-gray-800">
+                    {showSaveTemplate ? (
+                      <div className="flex gap-1.5 items-center">
+                        <input
+                          autoFocus
+                          value={templateName}
+                          onChange={(e) => setTemplateName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && templateName.trim()) {
+                              onSaveTemplate(card, templateName.trim());
+                              setShowSaveTemplate(false);
+                              setTemplateName('');
+                            }
+                            if (e.key === 'Escape') setShowSaveTemplate(false);
+                          }}
+                          placeholder={t('kanban.template.namePlaceholder', 'Nome do template...')}
+                          className="flex-1 px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-700 dark:text-gray-300 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30"
+                        />
+                        <button
+                          onClick={() => { if (templateName.trim()) { onSaveTemplate(card, templateName.trim()); setShowSaveTemplate(false); setTemplateName(''); } }}
+                          className="px-2.5 py-1.5 rounded-lg bg-red-500 text-white text-xs font-medium hover:bg-red-600 transition-colors"
+                        >
+                          {t('kanban.save', 'Salvar')}
+                        </button>
+                        <button onClick={() => setShowSaveTemplate(false)} className="p-1.5 rounded-lg text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => { setTemplateName(card.title); setShowSaveTemplate(true); }}
+                        className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-lg text-xs font-medium text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                        {t('kanban.template.saveAs', 'Salvar como template')}
+                      </button>
+                    )}
+                  </div>
+                )}
+
                 {/* Actions */}
                 <div className="pt-2 border-t border-gray-100 dark:border-gray-800">
                   {showDeleteConfirm ? (
@@ -1268,6 +1332,7 @@ function NewCardDialog({
   onClose,
   onCreate,
   initialDueDate,
+  templates,
 }: {
   columnId: string;
   columns: KanbanColumn[];
@@ -1275,6 +1340,7 @@ function NewCardDialog({
   onClose: () => void;
   onCreate: (card: Partial<KanbanCard>) => void;
   initialDueDate?: string;
+  templates?: KanbanCardTemplate[];
 }) {
   const { t } = useTranslation();
   const [title, setTitle] = useState('');
@@ -1289,6 +1355,15 @@ function NewCardDialog({
   useEffect(() => {
     titleRef.current?.focus();
   }, []);
+
+  const applyTemplate = (templateId: string) => {
+    const tmpl = templates?.find(t => t.id === templateId);
+    if (!tmpl) return;
+    setTitle(tmpl.title);
+    setDescription(tmpl.description || '');
+    setPriority(tmpl.priority);
+    setSelectedLabels(tmpl.labels || []);
+  };
 
   const toggleLabel = (label: KanbanLabel) => {
     setSelectedLabels(prev =>
@@ -1341,6 +1416,23 @@ function NewCardDialog({
               <X className="w-4 h-4" />
             </button>
           </div>
+
+          {/* Template picker */}
+          {templates && templates.length > 0 && (
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">{t('kanban.template.useTemplate', 'Usar template (opcional)')}</label>
+              <select
+                defaultValue=""
+                onChange={(e) => { if (e.target.value) applyTemplate(e.target.value); }}
+                className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-300 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30 focus:ring-2 focus:ring-red-100 dark:focus:ring-red-500/20"
+              >
+                <option value="">{t('kanban.template.noTemplate', '— Sem template —')}</option>
+                {templates.map(tmpl => (
+                  <option key={tmpl.id} value={tmpl.id}>{tmpl.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* Title */}
           <div>
@@ -1554,26 +1646,35 @@ function NewColumnInline({
 }
 
 // ═══════════════════════════════════════════════════════════
-// NEW BOARD DIALOG
+// NEW BOARD DIALOG (with preset templates)
 // ═══════════════════════════════════════════════════════════
 function NewBoardDialog({
   onClose,
   onCreate,
 }: {
   onClose: () => void;
-  onCreate: (name: string, color: string) => void;
+  onCreate: (name: string, color: string, presetId?: string) => void;
 }) {
   const { t } = useTranslation();
   const [name, setName] = useState('');
   const [color, setColor] = useState('#DC2626');
+  const [selectedPreset, setSelectedPreset] = useState<string>('custom');
   const inputRef = useRef<HTMLInputElement>(null);
   const BOARD_COLORS = ['#DC2626', '#8B5CF6', '#3B82F6', '#10B981', '#F59E0B', '#EC4899', '#06B6D4', '#84CC16'];
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
+  const handleSelectPreset = (presetId: string) => {
+    const preset = BOARD_PRESETS.find(p => p.id === presetId);
+    if (!preset) return;
+    setSelectedPreset(presetId);
+    setColor(preset.color);
+    if (!name) setName(preset.id !== 'custom' ? preset.name : '');
+  };
+
   const handleCreate = () => {
     if (!name.trim()) return;
-    onCreate(name.trim(), color);
+    onCreate(name.trim(), color, selectedPreset !== 'custom' ? selectedPreset : undefined);
     onClose();
   };
 
@@ -1582,7 +1683,7 @@ function NewBoardDialog({
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh] px-4 bg-black/40 backdrop-blur-[2px]"
+      className="fixed inset-0 z-50 flex items-start justify-center pt-[8vh] px-4 bg-black/40 backdrop-blur-[2px]"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <motion.div
@@ -1590,7 +1691,7 @@ function NewBoardDialog({
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: 20, scale: 0.97 }}
         transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-        className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-sm border border-gray-200/80 dark:border-gray-700/50 overflow-hidden"
+        className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-md border border-gray-200/80 dark:border-gray-700/50 overflow-hidden"
       >
         <div className="p-6 space-y-4">
           <div className="flex items-center justify-between">
@@ -1598,6 +1699,35 @@ function NewBoardDialog({
             <button onClick={onClose} className="p-1.5 rounded-lg text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-all">
               <X className="w-4 h-4" />
             </button>
+          </div>
+
+          {/* Preset templates */}
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-2">{t('kanban.boardTemplate', 'Template')}</label>
+            <div className="grid grid-cols-2 gap-2">
+              {BOARD_PRESETS.map(preset => (
+                <button
+                  key={preset.id}
+                  onClick={() => handleSelectPreset(preset.id)}
+                  className={cn(
+                    'flex flex-col gap-1.5 p-3 rounded-xl border text-left transition-all',
+                    selectedPreset === preset.id
+                      ? 'border-red-300 dark:border-red-500/40 bg-red-50 dark:bg-red-500/10'
+                      : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600 hover:bg-gray-50 dark:hover:bg-white/[0.03]'
+                  )}
+                >
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: preset.color }} />
+                    <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">{preset.name}</span>
+                  </div>
+                  <div className="flex gap-1 flex-wrap">
+                    {preset.columns.map((col, i) => (
+                      <span key={i} className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400">{col.title}</span>
+                    ))}
+                  </div>
+                </button>
+              ))}
+            </div>
           </div>
 
           <div>
@@ -1653,6 +1783,234 @@ function NewBoardDialog({
 }
 
 // ═══════════════════════════════════════════════════════════
+// AUTOMATION DIALOG
+// ═══════════════════════════════════════════════════════════
+function AutomationDialog({
+  board,
+  members,
+  onClose,
+  onSave,
+}: {
+  board: KanbanBoard;
+  members: MemberDisplay[];
+  onClose: () => void;
+  onSave: (automations: KanbanAutomation[]) => void;
+}) {
+  const { t } = useTranslation();
+  const [automations, setAutomations] = useState<KanbanAutomation[]>(board.automations || []);
+  const sortedColumns = [...board.columns].sort((a, b) => a.order - b.order);
+
+  const addAutomation = () => {
+    const newAuto: KanbanAutomation = {
+      id: genLocalId(),
+      trigger: 'move_to_column',
+      triggerColumnId: sortedColumns[sortedColumns.length - 1]?.id || '',
+      actions: [{ type: 'set_priority', value: 'urgent' }],
+      isEnabled: true,
+    };
+    setAutomations(prev => [...prev, newAuto]);
+  };
+
+  const updateAutomation = (id: string, patch: Partial<KanbanAutomation>) => {
+    setAutomations(prev => prev.map(a => a.id === id ? { ...a, ...patch } : a));
+  };
+
+  const updateAction = (autoId: string, actionIndex: number, patch: Partial<{ type: KanbanAutomationActionType; value: string }>) => {
+    setAutomations(prev => prev.map(a => {
+      if (a.id !== autoId) return a;
+      const actions = a.actions.map((act, i) => i === actionIndex ? { ...act, ...patch } : act);
+      return { ...a, actions };
+    }));
+  };
+
+  const removeAutomation = (id: string) => setAutomations(prev => prev.filter(a => a.id !== id));
+
+  const triggerLabel = (a: KanbanAutomation) => {
+    if (a.trigger === 'due_date_passed') return t('kanban.automation.triggerOverdue', 'Quando tarefa atrasar');
+    const col = board.columns.find(c => c.id === a.triggerColumnId);
+    return t('kanban.automation.triggerMove', `Ao mover para "${col?.title || '...'}"`, { col: col?.title || '...' });
+  };
+
+  const actionValueLabel = (act: { type: KanbanAutomationActionType; value: string }) => {
+    if (act.type === 'set_priority') {
+      const labels: Record<string, string> = { urgent: 'Urgente', high: 'Alta', medium: 'Média', low: 'Baixa' };
+      return labels[act.value] || act.value;
+    }
+    if (act.type === 'add_label') return DEFAULT_LABELS.find(l => l.id === act.value)?.name || act.value;
+    if (act.type === 'assign_user') return members.find(m => m.id === act.value)?.name || act.value;
+    return act.value;
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-start justify-center pt-[6vh] px-4 bg-black/40 backdrop-blur-[2px] overflow-y-auto pb-8"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <motion.div
+        initial={{ opacity: 0, y: 20, scale: 0.97 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 20, scale: 0.97 }}
+        transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+        className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-lg border border-gray-200/80 dark:border-gray-700/50"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800">
+          <div className="flex items-center gap-2">
+            <Zap className="w-4 h-4 text-amber-500" />
+            <h3 className="text-base font-bold text-gray-900 dark:text-gray-100 font-display">{t('kanban.automations', 'Automações')}</h3>
+            <span className="text-xs text-gray-400 dark:text-gray-500">— {board.name}</span>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-all">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="p-6 space-y-3">
+          {automations.length === 0 && (
+            <div className="py-8 text-center">
+              <Zap className="w-8 h-8 text-gray-200 dark:text-gray-700 mx-auto mb-2" />
+              <p className="text-sm text-gray-400 dark:text-gray-500">{t('kanban.automation.empty', 'Nenhuma automação configurada.')}</p>
+              <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">{t('kanban.automation.emptyHint', 'Automações executam ações automaticamente ao mover cards ou quando tarefas atrasam.')}</p>
+            </div>
+          )}
+
+          {automations.map((auto, idx) => (
+            <div key={auto.id} className="p-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-white/[0.02] space-y-3">
+              {/* Header row */}
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                  {t('kanban.automation.rule', 'Regra')} {idx + 1}
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => updateAutomation(auto.id, { isEnabled: !auto.isEnabled })}
+                    className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400"
+                    title={auto.isEnabled ? t('kanban.automation.disable', 'Desativar') : t('kanban.automation.enable', 'Ativar')}
+                  >
+                    {auto.isEnabled
+                      ? <ToggleRight className="w-4 h-4 text-emerald-500" />
+                      : <ToggleLeft className="w-4 h-4 text-gray-400 dark:text-gray-500" />}
+                    <span className={auto.isEnabled ? 'text-emerald-600 dark:text-emerald-400' : ''}>
+                      {auto.isEnabled ? t('kanban.automation.active', 'Ativa') : t('kanban.automation.inactive', 'Inativa')}
+                    </span>
+                  </button>
+                  <button onClick={() => removeAutomation(auto.id)} className="p-1 rounded text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 transition-colors">
+                    <TrashIcon className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Trigger */}
+              <div>
+                <label className="block text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1">{t('kanban.automation.when', 'Quando')}</label>
+                <select
+                  value={auto.trigger}
+                  onChange={(e) => updateAutomation(auto.id, { trigger: e.target.value as KanbanAutomationTrigger })}
+                  className="w-full px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-700 dark:text-gray-300 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30"
+                >
+                  <option value="move_to_column">{t('kanban.automation.triggerMoveOption', 'Card mover para coluna...')}</option>
+                  <option value="due_date_passed">{t('kanban.automation.triggerOverdueOption', 'Data de vencimento passar')}</option>
+                </select>
+                {auto.trigger === 'move_to_column' && (
+                  <select
+                    value={auto.triggerColumnId || ''}
+                    onChange={(e) => updateAutomation(auto.id, { triggerColumnId: e.target.value })}
+                    className="mt-1.5 w-full px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-700 dark:text-gray-300 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30"
+                  >
+                    <option value="">{t('kanban.automation.selectColumn', 'Selecione a coluna...')}</option>
+                    {sortedColumns.map(col => (
+                      <option key={col.id} value={col.id}>{col.title}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              {/* Actions */}
+              <div>
+                <label className="block text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1">{t('kanban.automation.then', 'Então')}</label>
+                {auto.actions.map((act, aIdx) => (
+                  <div key={aIdx} className="flex items-center gap-2 mb-1.5">
+                    <select
+                      value={act.type}
+                      onChange={(e) => updateAction(auto.id, aIdx, { type: e.target.value as KanbanAutomationActionType, value: '' })}
+                      className="flex-1 px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-700 dark:text-gray-300 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30"
+                    >
+                      <option value="set_priority">{t('kanban.automation.actionPriority', 'Definir prioridade')}</option>
+                      <option value="add_label">{t('kanban.automation.actionLabel', 'Adicionar label')}</option>
+                      <option value="assign_user">{t('kanban.automation.actionAssign', 'Atribuir para')}</option>
+                    </select>
+                    {act.type === 'set_priority' && (
+                      <select
+                        value={act.value}
+                        onChange={(e) => updateAction(auto.id, aIdx, { value: e.target.value })}
+                        className="flex-1 px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-700 dark:text-gray-300 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30"
+                      >
+                        <option value="urgent">{t('kanban.priority.urgent', 'Urgente')}</option>
+                        <option value="high">{t('kanban.priority.high', 'Alta')}</option>
+                        <option value="medium">{t('kanban.priority.medium', 'Média')}</option>
+                        <option value="low">{t('kanban.priority.low', 'Baixa')}</option>
+                      </select>
+                    )}
+                    {act.type === 'add_label' && (
+                      <select
+                        value={act.value}
+                        onChange={(e) => updateAction(auto.id, aIdx, { value: e.target.value })}
+                        className="flex-1 px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-700 dark:text-gray-300 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30"
+                      >
+                        <option value="">{t('kanban.automation.selectLabel', 'Selecione...')}</option>
+                        {DEFAULT_LABELS.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+                      </select>
+                    )}
+                    {act.type === 'assign_user' && (
+                      <select
+                        value={act.value}
+                        onChange={(e) => updateAction(auto.id, aIdx, { value: e.target.value })}
+                        className="flex-1 px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-700 dark:text-gray-300 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30"
+                      >
+                        <option value="">{t('kanban.automation.selectUser', 'Selecione...')}</option>
+                        {members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                      </select>
+                    )}
+                  </div>
+                ))}
+                <p className="text-[11px] text-gray-400 dark:text-gray-500 italic mt-1">
+                  → {triggerLabel(auto)}: {auto.actions.map(a => `${a.type === 'set_priority' ? 'definir prioridade como' : a.type === 'add_label' ? 'adicionar label' : 'atribuir para'} "${actionValueLabel(a)}"`).join(', ')}
+                </p>
+              </div>
+            </div>
+          ))}
+
+          <button
+            onClick={addAutomation}
+            className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border-2 border-dashed border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-400 dark:text-gray-500 hover:border-amber-300 dark:hover:border-amber-500/40 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-50/50 dark:hover:bg-amber-500/5 transition-all"
+          >
+            <Plus className="w-4 h-4" />
+            {t('kanban.automation.add', 'Adicionar automação')}
+          </button>
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-2 px-6 pb-5">
+          <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors">
+            {t('kanban.cancel', 'Cancelar')}
+          </button>
+          <button
+            onClick={() => { onSave(automations); onClose(); }}
+            className="px-4 py-2 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 shadow-md shadow-amber-500/25 transition-all"
+          >
+            {t('kanban.automation.save', 'Salvar automações')}
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
 // BOARD HEADER
 // ═══════════════════════════════════════════════════════════
 type KanbanViewMode = 'board' | 'list' | 'calendar' | 'mytasks';
@@ -1676,6 +2034,7 @@ function BoardHeader({
   viewMode,
   onViewModeChange,
   urgentTaskCount,
+  onOpenAutomations,
 }: {
   boards: KanbanBoard[];
   activeBoard: KanbanBoard;
@@ -1695,6 +2054,7 @@ function BoardHeader({
   viewMode: KanbanViewMode;
   onViewModeChange: (v: KanbanViewMode) => void;
   urgentTaskCount?: number;
+  onOpenAutomations?: () => void;
 }) {
   const { t } = useTranslation();
   const [showFilters, setShowFilters] = useState(false);
@@ -1824,6 +2184,26 @@ function BoardHeader({
               <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
             )}
           </button>
+
+          {/* Automations button */}
+          {onOpenAutomations && (
+            <button
+              onClick={onOpenAutomations}
+              title={t('kanban.automations', 'Automações')}
+              className={cn(
+                'flex items-center gap-1.5 px-3 py-2 rounded-xl border text-sm font-medium transition-all',
+                (activeBoard.automations?.some(a => a.isEnabled))
+                  ? 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20 text-amber-600 dark:text-amber-400'
+                  : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-white/[0.04]'
+              )}
+            >
+              <Zap className="w-3.5 h-3.5" />
+              {t('kanban.automations', 'Automações')}
+              {activeBoard.automations?.some(a => a.isEnabled) && (
+                <span className="text-[10px] font-bold px-1 rounded bg-amber-500 text-white">{activeBoard.automations.filter(a => a.isEnabled).length}</span>
+              )}
+            </button>
+          )}
         </div>
       </div>
 
@@ -2404,6 +2784,10 @@ export default function KanbanModule() {
   const [newCardDate, setNewCardDate] = useState<string | undefined>(undefined);
   const [showNewColumn, setShowNewColumn] = useState(false);
   const [showNewBoard, setShowNewBoard] = useState(false);
+  const [showAutomations, setShowAutomations] = useState(false);
+
+  // Templates
+  const [templates, setTemplates] = useState<KanbanCardTemplate[]>([]);
 
   // Drag state
   const [draggingCard, setDraggingCard] = useState<KanbanCard | null>(null);
@@ -2488,6 +2872,16 @@ export default function KanbanModule() {
     return () => unsub();
   }, [business?.id, user?.uid]);
 
+  // ─── Firestore: card templates listener ───────────────────
+  useEffect(() => {
+    if (!business?.id) return;
+    const q = query(collection(db, 'kanbanTemplates'), where('businessId', '==', business.id));
+    const unsub = onSnapshot(q, snap => {
+      setTemplates(snap.docs.map(d => ({ ...d.data(), id: d.id } as KanbanCardTemplate)));
+    });
+    return () => unsub();
+  }, [business?.id]);
+
   // ─── Firestore: team members listener ─────────────────────
   useEffect(() => {
     if (!business?.id) return;
@@ -2516,6 +2910,35 @@ export default function KanbanModule() {
   // ─── Derived ──────────────────────────────────────────────
   const activeBoard = boards.find(b => b.id === activeBoardId);
   const boardCards = cards; // already filtered by boardId via Firestore
+
+  // ─── Overdue automation: mark past-due cards as urgent ────
+  const processedOverdueRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    processedOverdueRef.current = new Set(); // reset when board changes
+  }, [activeBoardId]);
+
+  useEffect(() => {
+    if (!business?.id || !activeBoard?.automations) return;
+    const overdueAuto = activeBoard.automations.find(a => a.isEnabled && a.trigger === 'due_date_passed');
+    if (!overdueAuto) return;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const toProcess = boardCards.filter(c => {
+      if (!c.dueDate || processedOverdueRef.current.has(c.id)) return false;
+      return new Date(c.dueDate + 'T00:00:00') < today;
+    });
+    if (toProcess.length === 0) return;
+    toProcess.forEach(card => {
+      processedOverdueRef.current.add(card.id);
+      const updates: Record<string, unknown> = { updatedAt: new Date().toISOString() };
+      for (const action of overdueAuto.actions) {
+        if (action.type === 'set_priority') updates.priority = action.value;
+      }
+      updateDoc(doc(db, 'kanbanCards', card.id), updates).catch(console.error);
+    });
+    showToast(`${toProcess.length} card${toProcess.length > 1 ? 's' : ''} marcado${toProcess.length > 1 ? 's' : ''} como urgente por automação`, 'success');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardCards, activeBoard?.automations]);
 
   const filteredCards = useMemo(() => {
     return boardCards.filter(card => {
@@ -2563,6 +2986,42 @@ export default function KanbanModule() {
         order: newOrder,
         updatedAt: new Date().toISOString(),
       });
+
+      // Execute move_to_column automations
+      const moveAutomations = (activeBoard?.automations || []).filter(
+        a => a.isEnabled && a.trigger === 'move_to_column' && a.triggerColumnId === targetColumnId
+      );
+      if (moveAutomations.length > 0) {
+        const updates: Record<string, unknown> = { updatedAt: new Date().toISOString() };
+        let updatedLabels = [...draggingCard.labels];
+        let updatedAssigneeIds = [...draggingCard.assigneeIds];
+        let updatedAssigneeNames = [...draggingCard.assigneeNames];
+        for (const auto of moveAutomations) {
+          for (const action of auto.actions) {
+            if (action.type === 'set_priority') updates.priority = action.value;
+            if (action.type === 'add_label') {
+              const label = DEFAULT_LABELS.find(l => l.id === action.value);
+              if (label && !updatedLabels.find(l => l.id === action.value)) updatedLabels = [...updatedLabels, label];
+            }
+            if (action.type === 'assign_user') {
+              const member = members.find(m => m.id === action.value);
+              if (member && !updatedAssigneeIds.includes(action.value)) {
+                updatedAssigneeIds = [...updatedAssigneeIds, action.value];
+                updatedAssigneeNames = [...updatedAssigneeNames, member.name];
+              }
+            }
+          }
+        }
+        if (updatedLabels.length !== draggingCard.labels.length) updates.labels = updatedLabels;
+        if (updatedAssigneeIds.length !== draggingCard.assigneeIds.length) {
+          updates.assigneeIds = updatedAssigneeIds;
+          updates.assigneeNames = updatedAssigneeNames;
+        }
+        if (Object.keys(updates).length > 1) {
+          await updateDoc(doc(db, 'kanbanCards', draggingCard.id), updates);
+          showToast(t('kanban.automation.applied', 'Automação aplicada'), 'success');
+        }
+      }
 
       // Recurrence: if dropped into the last column, create next occurrence
       const isLastColumn = sortedColumns.length > 0 &&
@@ -2757,14 +3216,17 @@ export default function KanbanModule() {
   }, [business?.id, canManageBoard, showToast, t]);
 
   // ─── Board CRUD ───────────────────────────────────────────
-  const handleCreateBoard = useCallback(async (name: string, color: string) => {
+  const handleCreateBoard = useCallback(async (name: string, color: string, presetId?: string) => {
     if (!business?.id || !user) return;
     if (!canManageBoard) { showToast(t('kanban.errors.noPermission', 'Sem permissão para criar boards')); return; }
-    const defaultColumns: KanbanColumn[] = [
-      { id: genLocalId(), title: t('kanban.defaultColTodo', 'A Fazer'),       color: '#3B82F6', order: 0 },
-      { id: genLocalId(), title: t('kanban.defaultColInProgress', 'Em Progresso'), color: '#F59E0B', order: 1 },
-      { id: genLocalId(), title: t('kanban.defaultColDone', 'Concluído'),     color: '#10B981', order: 2 },
-    ];
+    const preset = BOARD_PRESETS.find(p => p.id === presetId);
+    const defaultColumns: KanbanColumn[] = preset
+      ? preset.columns.map((c, i) => ({ id: genLocalId(), title: c.title, color: c.color, order: i }))
+      : [
+          { id: genLocalId(), title: t('kanban.defaultColTodo', 'A Fazer'),       color: '#3B82F6', order: 0 },
+          { id: genLocalId(), title: t('kanban.defaultColInProgress', 'Em Progresso'), color: '#F59E0B', order: 1 },
+          { id: genLocalId(), title: t('kanban.defaultColDone', 'Concluído'),     color: '#10B981', order: 2 },
+        ];
     try {
       const docRef = await addDoc(collection(db, 'kanbanBoards'), {
         businessId: business.id,
@@ -2787,6 +3249,43 @@ export default function KanbanModule() {
     }
   }, [business?.id, user, canManageBoard, showToast, t]);
 
+  // ─── Template handlers ────────────────────────────────────
+  const handleSaveTemplate = useCallback(async (card: KanbanCard, templateName: string) => {
+    if (!business?.id || !user) return;
+    try {
+      await addDoc(collection(db, 'kanbanTemplates'), {
+        businessId: business.id,
+        name: templateName,
+        title: card.title,
+        description: card.description || null,
+        priority: card.priority,
+        labels: card.labels,
+        checklist: (card.checklist || []).map(item => ({ ...item, completed: false })),
+        createdBy: user.uid,
+        createdAt: new Date().toISOString(),
+      });
+      showToast(t('kanban.template.saved', 'Template salvo com sucesso'), 'success');
+    } catch (err) {
+      console.error('Error saving template:', err);
+      showToast(t('kanban.errors.saveTemplate', 'Erro ao salvar template'));
+    }
+  }, [business?.id, user, showToast, t]);
+
+  // ─── Automation handler ───────────────────────────────────
+  const handleSaveAutomations = useCallback(async (automations: KanbanAutomation[]) => {
+    if (!business?.id || !activeBoard) return;
+    try {
+      await updateDoc(doc(db, 'kanbanBoards', activeBoardId), {
+        automations,
+        updatedAt: new Date().toISOString(),
+      });
+      showToast(t('kanban.automation.saved', 'Automações salvas'), 'success');
+    } catch (err) {
+      console.error('Error saving automations:', err);
+      showToast(t('kanban.errors.saveAutomations', 'Erro ao salvar automações'));
+    }
+  }, [business?.id, activeBoardId, activeBoard, showToast, t]);
+
   // ─── Keyboard shortcuts ───────────────────────────────────
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -2795,6 +3294,7 @@ export default function KanbanModule() {
         else if (newCardColumnId) setNewCardColumnId(null);
         else if (showNewColumn) setShowNewColumn(false);
         else if (showNewBoard) setShowNewBoard(false);
+        else if (showAutomations) setShowAutomations(false);
       }
     };
     document.addEventListener('keydown', handler);
@@ -2803,7 +3303,7 @@ export default function KanbanModule() {
 
   // Body overflow lock when dialogs are open
   useEffect(() => {
-    const locked = !!(selectedCard || newCardColumnId || showNewBoard);
+    const locked = !!(selectedCard || newCardColumnId || showNewBoard || showAutomations);
     document.body.style.overflow = locked ? 'hidden' : '';
     return () => { document.body.style.overflow = ''; };
   }, [selectedCard, newCardColumnId, showNewBoard]);
@@ -2912,6 +3412,7 @@ export default function KanbanModule() {
           viewMode={viewMode}
           onViewModeChange={setViewMode}
           urgentTaskCount={urgentTaskCount}
+          onOpenAutomations={canManageBoard ? () => setShowAutomations(true) : undefined}
         />
       </motion.div>
 
@@ -3049,6 +3550,7 @@ export default function KanbanModule() {
             onClose={() => setSelectedCard(null)}
             onUpdate={handleUpdateCard}
             onDelete={handleDeleteCard}
+            onSaveTemplate={canEdit ? handleSaveTemplate : undefined}
           />
         )}
       </AnimatePresence>
@@ -3064,6 +3566,20 @@ export default function KanbanModule() {
             onClose={() => { setNewCardColumnId(null); setNewCardDate(undefined); }}
             onCreate={handleCreateCard}
             initialDueDate={newCardDate}
+            templates={templates}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Automation dialog */}
+      <AnimatePresence>
+        {showAutomations && activeBoard && (
+          <AutomationDialog
+            key="automation-dialog"
+            board={activeBoard}
+            members={members}
+            onClose={() => setShowAutomations(false)}
+            onSave={handleSaveAutomations}
           />
         )}
       </AnimatePresence>

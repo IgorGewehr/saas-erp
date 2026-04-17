@@ -674,6 +674,7 @@ export interface KanbanBoard {
   visibility: KanbanVisibility;
   createdBy: string;
   isArchived: boolean;
+  automations?: KanbanAutomation[];
   createdAt: string;
   updatedAt: string;
 }
@@ -743,6 +744,35 @@ export interface KanbanChecklistItem {
   id: string;
   text: string;
   completed: boolean;
+}
+
+export interface KanbanCardTemplate {
+  id: string;
+  businessId: string;
+  name: string;
+  title: string;
+  description?: string;
+  priority: KanbanPriority;
+  labels: KanbanLabel[];
+  checklist?: KanbanChecklistItem[];
+  createdBy: string;
+  createdAt: string;
+}
+
+export type KanbanAutomationTrigger = 'move_to_column' | 'due_date_passed';
+export type KanbanAutomationActionType = 'set_priority' | 'add_label' | 'assign_user';
+
+export interface KanbanAutomationAction {
+  type: KanbanAutomationActionType;
+  value: string;
+}
+
+export interface KanbanAutomation {
+  id: string;
+  trigger: KanbanAutomationTrigger;
+  triggerColumnId?: string;
+  actions: KanbanAutomationAction[];
+  isEnabled: boolean;
 }
 
 // ---- CRM ----
