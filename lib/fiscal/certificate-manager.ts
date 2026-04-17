@@ -122,12 +122,45 @@ export async function getCertificadoPayload(
   }
 
   const [fileBuffer] = await file.download();
-  const pfxBase64 = fileBuffer.toString('base64');
 
   // 4. Decrypt password
   const password = decryptPassword(fiscal.certPasswordEncrypted);
 
-  // 5. Cache for 30 minutes
+  // 5. Re-export to 3DES preserving full ICP-Brasil CA chain
+  //    Some SEFAZ APIs require 3DES-encoded certificates for compatibility
+  let pfxBase64: string;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const forge = require('node-forge');
+    const p12Der = forge.util.createBuffer(fileBuffer.toString('binary'));
+    const p12Asn1 = forge.asn1.fromDer(p12Der);
+    const p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, false, password);
+
+    const certBags = p12.getBags({ bagType: forge.pki.oids.certBag });
+    const keyBags = p12.getBags({ bagType: forge.pki.oids.pkcs8ShroudedKeyBag });
+    const privateKey = keyBags[forge.pki.oids.pkcs8ShroudedKeyBag]?.[0]?.key;
+    const allCerts = (certBags[forge.pki.oids.certBag] ?? [])
+      .map((b: { cert?: unknown }) => b.cert)
+      .filter((c: unknown): c is object => !!c);
+
+    if (privateKey && allCerts.length > 0) {
+      const subject = (allCerts[0] as { subject: { getField: (s: string) => { value: string } | null } })
+        .subject.getField('CN')?.value || 'Certificado Digital';
+      const newP12Asn1 = forge.pkcs12.toPkcs12Asn1(privateKey, allCerts, password, {
+        algorithm: '3des',
+        friendlyName: subject,
+      });
+      const newP12Der = forge.asn1.toDer(newP12Asn1).getBytes();
+      pfxBase64 = Buffer.from(newP12Der, 'binary').toString('base64');
+    } else {
+      pfxBase64 = fileBuffer.toString('base64');
+    }
+  } catch {
+    // If 3DES conversion fails, fall back to original buffer
+    pfxBase64 = fileBuffer.toString('base64');
+  }
+
+  // 6. Cache for 30 minutes
   certCache.set(businessId, {
     pfxBase64,
     password,

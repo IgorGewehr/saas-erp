@@ -163,6 +163,20 @@ export default function PDVModule() {
   const [saleError, setSaleError] = useState<string | null>(null);
   const [lastSaleId, setLastSaleId] = useState<string | null>(null);
 
+  // NFC-e state
+  const [emitirNfce, setEmitirNfce] = useState(false);
+  const [cpfConsumidor, setCpfConsumidor] = useState('');
+  const [nfceModalState, setNfceModalState] = useState<'idle' | 'emitting' | 'authorized' | 'error'>('idle');
+  const [nfceResult, setNfceResult] = useState<{ accessKey?: string; danfeUrl?: string; error?: string } | null>(null);
+  const pendingNfceRef = useRef<{
+    saleId: string;
+    cart: CartItem[];
+    total: number;
+    payments: Payment[];
+    clientName: string;
+    cpf: string;
+  } | null>(null);
+
   // History view state
   const [historySearch, setHistorySearch] = useState('');
   const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
@@ -393,6 +407,16 @@ export default function PDVModule() {
 
   const confirmSale = useCallback(async () => {
     if (!user || !business) return;
+
+    // Validate CPF if NFC-e enabled and partially filled
+    if (emitirNfce && cpfConsumidor) {
+      const cpfDigits = cpfConsumidor.replace(/\D/g, '');
+      if (cpfDigits.length > 0 && cpfDigits.length < 11) {
+        setSaleError('CPF incompleto. Preencha os 11 dígitos ou deixe em branco.');
+        return;
+      }
+    }
+
     setIsSaving(true);
     setSaleError(null);
 
@@ -488,6 +512,36 @@ export default function PDVModule() {
       queryClient.invalidateQueries({ queryKey: ['clients'] });
 
       setLastSaleId(docRef.id);
+
+      // NFC-e emission (if toggled on)
+      if (emitirNfce) {
+        // Save context for retry capability
+        pendingNfceRef.current = {
+          saleId: docRef.id,
+          cart: [...cart],
+          total,
+          payments: [...payments],
+          clientName: selectedClient?.name || '',
+          cpf: cpfConsumidor,
+        };
+
+        // Close confirmation, show NFC-e modal
+        setShowConfirmation(false);
+        setIsSaving(false);
+
+        await emitNfce(
+          docRef.id,
+          cart,
+          total,
+          payments,
+          selectedClient?.name || '',
+          cpfConsumidor,
+        );
+
+        // Don't auto-reset — user will close NFC-e modal manually
+        return;
+      }
+
       setSaleComplete(true);
 
       setTimeout(() => {
@@ -500,6 +554,8 @@ export default function PDVModule() {
         setActivePaymentMethod(null);
         setPaymentAmount('');
         setInstallments(1);
+        setEmitirNfce(false);
+        setCpfConsumidor('');
         setLastSaleId(null);
       }, 2500);
     } catch (error) {
@@ -508,7 +564,7 @@ export default function PDVModule() {
     } finally {
       setIsSaving(false);
     }
-  }, [user, business, cart, selectedClient, payments, subtotal, discountAmount, total, products, queryClient]);
+  }, [user, business, cart, selectedClient, payments, subtotal, discountAmount, total, products, queryClient, emitirNfce, cpfConsumidor, emitNfce]);
 
   const cancelSale = useCallback(() => {
     setCart([]);
@@ -518,6 +574,165 @@ export default function PDVModule() {
     setActivePaymentMethod(null);
     setPaymentAmount('');
     setInstallments(1);
+    setEmitirNfce(false);
+    setCpfConsumidor('');
+  }, []);
+
+  // ==========================================
+  // NFC-e EMISSION
+  // ==========================================
+
+  const emitNfce = useCallback(async (
+    saleId: string,
+    cartSnapshot: CartItem[],
+    saleTotal: number,
+    salePayments: Payment[],
+    clientName: string,
+    cpf: string,
+  ) => {
+    if (!business) return { success: false };
+
+    setNfceModalState('emitting');
+    setNfceResult(null);
+
+    try {
+      // Build items with fiscal data from products
+      const nfceItems = cartSnapshot.map((item) => {
+        const prod = item.productId ? products.find(p => p.id === item.productId) : null;
+        return {
+          description: item.description,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          discount: (item.discount || 0) > 0 ? item.discount : undefined,
+          ncm: prod?.ncm || undefined,
+          cfop: prod?.cfop ? Number(prod.cfop) : undefined,
+          barcode: prod?.barcode || undefined,
+          code: prod?.sku || item.productId || item.serviceId || undefined,
+          unit: 'UN',
+        };
+      });
+
+      // Map primary payment method
+      const primaryPayment = salePayments[0];
+      const paymentMethod = primaryPayment?.method || 'dinheiro';
+
+      const nfcePayload = {
+        type: 'nfce' as const,
+        businessId: business.id,
+        items: nfceItems,
+        paymentMethod,
+        paymentValue: saleTotal,
+        cpfConsumidor: cpf.replace(/\D/g, '') || undefined,
+        nomeConsumidor: clientName.trim() || undefined,
+        presencaComprador: 1,
+        naturezaOperacao: 'VENDA AO CONSUMIDOR FINAL',
+      };
+
+      const res = await fetch('/api/fiscal/emit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(nfcePayload),
+      });
+
+      const json = await res.json();
+
+      if (res.ok && json.success && json.data?.status === 'autorizado') {
+        setNfceResult({
+          accessKey: json.data.chaveAcesso,
+        });
+        setNfceModalState('authorized');
+
+        // Invalidate fiscal documents cache
+        queryClient.invalidateQueries({ queryKey: ['fiscalDocuments'] });
+
+        return { success: true, accessKey: json.data.chaveAcesso };
+      } else {
+        const errorMsg = json.error || json.data?.mensagem || 'Erro desconhecido na emissão da NFC-e';
+        setNfceResult({ error: errorMsg });
+        setNfceModalState('error');
+        return { success: false };
+      }
+    } catch (err) {
+      console.error('NFC-e emission error:', err);
+      setNfceResult({ error: err instanceof Error ? err.message : 'Erro de conexão ao emitir NFC-e' });
+      setNfceModalState('error');
+      return { success: false };
+    }
+  }, [business, products, queryClient]);
+
+  const handleNfceRetry = useCallback(async () => {
+    const ctx = pendingNfceRef.current;
+    if (!ctx) return;
+    await emitNfce(ctx.saleId, ctx.cart, ctx.total, ctx.payments, ctx.clientName, ctx.cpf);
+  }, [emitNfce]);
+
+  const handlePrintReceipt = useCallback(() => {
+    // Build a printable receipt in a new window
+    const receiptWindow = window.open('', '_blank', 'width=350,height=600');
+    if (!receiptWindow) return;
+
+    const itemsHtml = cart.map(item =>
+      `<tr>
+        <td style="text-align:left;padding:2px 0">${item.description}</td>
+        <td style="text-align:center;padding:2px 4px">${item.quantity}</td>
+        <td style="text-align:right;padding:2px 0">R$ ${(item.unitPrice * item.quantity).toFixed(2)}</td>
+      </tr>`
+    ).join('');
+
+    const paymentsHtml = payments.map(p =>
+      `<div style="display:flex;justify-content:space-between;font-size:12px">
+        <span>${PAYMENT_METHOD_LABELS[p.method]}${p.installments && p.installments > 1 ? ` (${p.installments}x)` : ''}</span>
+        <span>R$ ${p.amount.toFixed(2)}</span>
+      </div>`
+    ).join('');
+
+    const businessName = business?.nomeFantasia || business?.razaoSocial || 'ServicePro';
+    const businessCnpj = business?.cnpj || '';
+
+    receiptWindow.document.write(`<!DOCTYPE html>
+<html><head><title>Recibo</title>
+<style>
+  body{font-family:'Courier New',monospace;width:280px;margin:0 auto;padding:10px;font-size:12px}
+  h2{text-align:center;margin:0 0 4px;font-size:14px}
+  .center{text-align:center}
+  .divider{border-top:1px dashed #000;margin:8px 0}
+  table{width:100%;border-collapse:collapse}
+  th{text-align:left;border-bottom:1px solid #000;padding:2px 0;font-size:11px}
+  .total-row{font-weight:bold;font-size:14px}
+  @media print{body{width:72mm}}
+</style></head><body>
+  <h2>${businessName}</h2>
+  ${businessCnpj ? `<p class="center" style="margin:0;font-size:10px">CNPJ: ${businessCnpj}</p>` : ''}
+  <p class="center" style="margin:4px 0;font-size:10px">${new Date().toLocaleString('pt-BR')}</p>
+  ${selectedClient ? `<p style="margin:4px 0;font-size:11px">Cliente: ${selectedClient.name}</p>` : ''}
+  <div class="divider"></div>
+  <table>
+    <thead><tr><th>Item</th><th style="text-align:center">Qtd</th><th style="text-align:right">Valor</th></tr></thead>
+    <tbody>${itemsHtml}</tbody>
+  </table>
+  <div class="divider"></div>
+  <div style="display:flex;justify-content:space-between"><span>Subtotal</span><span>R$ ${subtotal.toFixed(2)}</span></div>
+  ${discountAmount > 0 ? `<div style="display:flex;justify-content:space-between"><span>Desconto</span><span>-R$ ${discountAmount.toFixed(2)}</span></div>` : ''}
+  <div class="divider"></div>
+  <div class="total-row" style="display:flex;justify-content:space-between"><span>TOTAL</span><span>R$ ${total.toFixed(2)}</span></div>
+  <div class="divider"></div>
+  <p style="font-size:11px;font-weight:bold;margin:4px 0">Pagamento:</p>
+  ${paymentsHtml}
+  ${change > 0 ? `<div style="display:flex;justify-content:space-between;font-size:12px;margin-top:4px"><span>Troco</span><span>R$ ${change.toFixed(2)}</span></div>` : ''}
+  ${nfceResult?.accessKey ? `<div class="divider"></div><p class="center" style="font-size:9px;word-break:break-all">Chave NFC-e: ${nfceResult.accessKey}</p>` : ''}
+  <div class="divider"></div>
+  <p class="center" style="font-size:10px;margin-top:8px">Obrigado pela preferência!</p>
+<script>window.onload=function(){window.print()}</script>
+</body></html>`);
+    receiptWindow.document.close();
+  }, [cart, payments, PAYMENT_METHOD_LABELS, business, selectedClient, subtotal, discountAmount, total, change, nfceResult]);
+
+  const formatCpfInput = useCallback((value: string) => {
+    const digits = value.replace(/\D/g, '').slice(0, 11);
+    if (digits.length <= 3) return digits;
+    if (digits.length <= 6) return `${digits.slice(0, 3)}.${digits.slice(3)}`;
+    if (digits.length <= 9) return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6)}`;
+    return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9)}`;
   }, []);
 
   // ==========================================
@@ -1344,6 +1559,62 @@ export default function PDVModule() {
               )}
             </div>
 
+            {/* NFC-e Toggle + CPF */}
+            <div className="mb-3">
+              <button
+                type="button"
+                onClick={() => setEmitirNfce(p => !p)}
+                className={cn(
+                  'flex items-center justify-between w-full px-3 py-2.5 rounded-xl border transition-all',
+                  emitirNfce
+                    ? 'border-red-300 dark:border-red-500/40 bg-red-50 dark:bg-red-500/10'
+                    : 'border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-800/50 hover:border-slate-300 dark:hover:border-gray-600',
+                )}
+              >
+                <div className="flex items-center gap-2">
+                  <FileText size={16} className={emitirNfce ? 'text-red-500 dark:text-red-400' : 'text-slate-400 dark:text-gray-500'} />
+                  <span className={cn('text-sm font-medium', emitirNfce ? 'text-red-700 dark:text-red-300' : 'text-slate-600 dark:text-gray-400')}>
+                    {t('pdv.checkout.emitNfce', 'Emitir NFC-e')}
+                  </span>
+                </div>
+                <div className={cn(
+                  'w-9 h-5 rounded-full transition-colors relative',
+                  emitirNfce ? 'bg-red-500' : 'bg-slate-300 dark:bg-gray-600',
+                )}>
+                  <motion.div
+                    className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm"
+                    animate={{ left: emitirNfce ? 18 : 2 }}
+                    transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                  />
+                </div>
+              </button>
+
+              <AnimatePresence>
+                {emitirNfce && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="mt-2 px-1">
+                      <label className="text-xs text-slate-500 dark:text-gray-400 mb-1 block">
+                        {t('pdv.checkout.cpfOnInvoice', 'CPF na nota (opcional)')}
+                      </label>
+                      <input
+                        type="text"
+                        value={cpfConsumidor}
+                        onChange={(e) => setCpfConsumidor(formatCpfInput(e.target.value))}
+                        placeholder="000.000.000-00"
+                        className="w-full px-3 py-2 bg-white dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-lg text-sm text-slate-900 dark:text-gray-100 placeholder:text-slate-300 dark:placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
+                      />
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
             {/* Actions */}
             <div className="flex gap-2">
               <Button
@@ -1361,18 +1632,6 @@ export default function PDVModule() {
               >
                 Cancelar
               </Button>
-              <Tooltip title={t('pdv.checkout.emitNf', 'Emitir Nota Fiscal')}>
-                <IconButton
-                  sx={{
-                    border: `1px solid ${isDark ? '#374151' : '#CBD5E1'}`,
-                    borderRadius: '12px',
-                    color: isDark ? '#9ca3af' : '#64748B',
-                    '&:hover': { borderColor: isDark ? '#4b5563' : '#94A3B8', backgroundColor: isDark ? '#1f2937' : '#F8FAFC' },
-                  }}
-                >
-                  <FileText size={18} />
-                </IconButton>
-              </Tooltip>
               <Button
                 onClick={openConfirmation}
                 variant="contained"
@@ -1552,6 +1811,7 @@ export default function PDVModule() {
               <DialogActions sx={{ px: 3, py: 2, gap: 1, backgroundColor: isDark ? '#1f2937' : undefined }}>
                 <Tooltip title={t('pdv.modal.printTooltip', 'Imprimir recibo')}>
                   <IconButton
+                    onClick={handlePrintReceipt}
                     sx={{
                       border: `1px solid ${isDark ? '#374151' : '#E2E8F0'}`,
                       borderRadius: '12px',
@@ -1593,6 +1853,251 @@ export default function PDVModule() {
                   )}
                 </Button>
               </DialogActions>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </Dialog>
+
+      {/* ========== NFC-e EMISSION MODAL ========== */}
+      <Dialog
+        open={nfceModalState !== 'idle'}
+        onClose={() => {
+          if (nfceModalState === 'emitting') return; // can't close while emitting
+          setNfceModalState('idle');
+          setNfceResult(null);
+          pendingNfceRef.current = null;
+          // Reset sale state
+          setCart([]);
+          setPayments([]);
+          setSelectedClient(null);
+          setDiscountValue('');
+          setActivePaymentMethod(null);
+          setPaymentAmount('');
+          setInstallments(1);
+          setEmitirNfce(false);
+          setCpfConsumidor('');
+          setLastSaleId(null);
+        }}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: '20px',
+            overflow: 'hidden',
+            backgroundColor: isDark ? '#1f2937' : '#fff',
+          },
+        }}
+      >
+        <AnimatePresence mode="wait">
+          {/* Emitting State */}
+          {nfceModalState === 'emitting' && (
+            <motion.div
+              key="nfce-emitting"
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="flex flex-col items-center justify-center py-16 px-8"
+            >
+              <motion.div
+                animate={{ rotate: 360 }}
+                transition={{ duration: 1.5, repeat: Infinity, ease: 'linear' }}
+                className="w-16 h-16 rounded-full border-4 border-red-100 dark:border-red-500/20 border-t-red-500 dark:border-t-red-400 mb-6"
+              />
+              <h3 className="text-lg font-display font-bold text-slate-900 dark:text-gray-100 mb-2">
+                {t('pdv.nfce.emittingTitle', 'Emitindo NFC-e...')}
+              </h3>
+              <p className="text-sm text-slate-500 dark:text-gray-400">
+                {t('pdv.nfce.emittingDesc', 'Comunicando com a SEFAZ...')}
+              </p>
+            </motion.div>
+          )}
+
+          {/* Authorized State */}
+          {nfceModalState === 'authorized' && (
+            <motion.div
+              key="nfce-authorized"
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex flex-col items-center justify-center py-12 px-8"
+            >
+              <motion.div
+                initial={{ scale: 0 }}
+                animate={{ scale: 1 }}
+                transition={{ type: 'spring', stiffness: 200, damping: 15, delay: 0.1 }}
+              >
+                <div className="w-20 h-20 rounded-full bg-emerald-100 dark:bg-emerald-500/10 flex items-center justify-center mb-6">
+                  <CheckCircle2 size={40} className="text-emerald-500 dark:text-emerald-400" />
+                </div>
+              </motion.div>
+              <motion.h3
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.3 }}
+                className="text-xl font-display font-bold text-slate-900 dark:text-gray-100 mb-2"
+              >
+                {t('pdv.nfce.authorizedTitle', 'NFC-e Autorizada!')}
+              </motion.h3>
+              <motion.p
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.4 }}
+                className="text-sm text-slate-500 dark:text-gray-400 mb-4"
+              >
+                {t('pdv.nfce.authorizedDesc', 'Nota fiscal emitida com sucesso')}
+              </motion.p>
+              {nfceResult?.accessKey && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.5 }}
+                  className="w-full bg-slate-50 dark:bg-gray-800/50 rounded-xl p-3 border border-slate-100 dark:border-gray-700/50 mb-6"
+                >
+                  <p className="text-xs text-slate-400 dark:text-gray-500 mb-1">{t('pdv.nfce.accessKey', 'Chave de Acesso')}</p>
+                  <p className="text-xs font-mono text-slate-700 dark:text-gray-300 break-all leading-relaxed">
+                    {nfceResult.accessKey}
+                  </p>
+                </motion.div>
+              )}
+              <div className="flex gap-3 w-full">
+                <Button
+                  onClick={handlePrintReceipt}
+                  variant="outlined"
+                  startIcon={<Printer size={16} />}
+                  sx={{
+                    flex: 1,
+                    color: isDark ? '#9ca3af' : '#64748B',
+                    borderColor: isDark ? '#374151' : '#CBD5E1',
+                    '&:hover': { borderColor: isDark ? '#4b5563' : '#94A3B8', backgroundColor: isDark ? '#1f2937' : '#F8FAFC' },
+                    borderRadius: '12px',
+                    textTransform: 'none',
+                    fontWeight: 600,
+                  }}
+                >
+                  {t('pdv.nfce.printReceipt', 'Imprimir Cupom')}
+                </Button>
+                <Button
+                  onClick={() => {
+                    setNfceModalState('idle');
+                    setNfceResult(null);
+                    pendingNfceRef.current = null;
+                    setCart([]);
+                    setPayments([]);
+                    setSelectedClient(null);
+                    setDiscountValue('');
+                    setActivePaymentMethod(null);
+                    setPaymentAmount('');
+                    setInstallments(1);
+                    setEmitirNfce(false);
+                    setCpfConsumidor('');
+                    setLastSaleId(null);
+                  }}
+                  variant="contained"
+                  sx={{
+                    flex: 1,
+                    backgroundColor: '#DC2626',
+                    '&:hover': { backgroundColor: '#B91C1C' },
+                    borderRadius: '12px',
+                    textTransform: 'none',
+                    fontWeight: 700,
+                  }}
+                >
+                  {t('pdv.nfce.close', 'Fechar')}
+                </Button>
+              </div>
+            </motion.div>
+          )}
+
+          {/* Error State */}
+          {nfceModalState === 'error' && (
+            <motion.div
+              key="nfce-error"
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex flex-col items-center justify-center py-12 px-8"
+            >
+              <motion.div
+                initial={{ scale: 0 }}
+                animate={{ scale: 1 }}
+                transition={{ type: 'spring', stiffness: 200, damping: 15, delay: 0.1 }}
+              >
+                <div className="w-20 h-20 rounded-full bg-red-100 dark:bg-red-500/10 flex items-center justify-center mb-6">
+                  <X size={40} className="text-red-500 dark:text-red-400" />
+                </div>
+              </motion.div>
+              <motion.h3
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.3 }}
+                className="text-xl font-display font-bold text-slate-900 dark:text-gray-100 mb-2"
+              >
+                {t('pdv.nfce.errorTitle', 'Falha na Emissão')}
+              </motion.h3>
+              {nfceResult?.error && (
+                <motion.p
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.4 }}
+                  className="text-sm text-slate-500 dark:text-gray-400 mb-2 text-center max-w-sm"
+                >
+                  {nfceResult.error}
+                </motion.p>
+              )}
+              <motion.p
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.45 }}
+                className="text-xs text-slate-400 dark:text-gray-500 mb-6 text-center"
+              >
+                {t('pdv.nfce.saleRegistered', 'A venda foi registrada com sucesso. Apenas a emissão fiscal falhou.')}
+              </motion.p>
+              <div className="flex gap-3 w-full">
+                <Button
+                  onClick={handleNfceRetry}
+                  variant="contained"
+                  startIcon={<Loader2 size={16} />}
+                  sx={{
+                    flex: 1,
+                    backgroundColor: '#DC2626',
+                    '&:hover': { backgroundColor: '#B91C1C' },
+                    borderRadius: '12px',
+                    textTransform: 'none',
+                    fontWeight: 700,
+                  }}
+                >
+                  {t('pdv.nfce.retry', 'Tentar Novamente')}
+                </Button>
+                <Button
+                  onClick={() => {
+                    setNfceModalState('idle');
+                    setNfceResult(null);
+                    pendingNfceRef.current = null;
+                    setCart([]);
+                    setPayments([]);
+                    setSelectedClient(null);
+                    setDiscountValue('');
+                    setActivePaymentMethod(null);
+                    setPaymentAmount('');
+                    setInstallments(1);
+                    setEmitirNfce(false);
+                    setCpfConsumidor('');
+                    setLastSaleId(null);
+                  }}
+                  variant="outlined"
+                  sx={{
+                    flex: 1,
+                    color: isDark ? '#9ca3af' : '#64748B',
+                    borderColor: isDark ? '#374151' : '#CBD5E1',
+                    '&:hover': { borderColor: isDark ? '#4b5563' : '#94A3B8', backgroundColor: isDark ? '#1f2937' : '#F8FAFC' },
+                    borderRadius: '12px',
+                    textTransform: 'none',
+                    fontWeight: 600,
+                  }}
+                >
+                  {t('pdv.nfce.closeWithoutEmit', 'Fechar sem emitir')}
+                </Button>
+              </div>
             </motion.div>
           )}
         </AnimatePresence>

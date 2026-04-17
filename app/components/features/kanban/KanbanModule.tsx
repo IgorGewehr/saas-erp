@@ -24,6 +24,7 @@ import type {
   KanbanLabel,
   KanbanPriority,
   KanbanChecklistItem,
+  KanbanComment,
   KanbanVisibility,
   User,
   Sector,
@@ -31,7 +32,6 @@ import type {
 import { ROLE_HIERARCHY } from '@/lib/types';
 import {
   Plus,
-  MoreHorizontal,
   Calendar,
   CheckSquare,
   MessageSquare,
@@ -48,21 +48,18 @@ import {
   X,
   GripVertical,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Trash2,
   Edit3,
-  Copy,
   Archive,
-  Tag,
-  User as UserIcon,
-  CalendarDays,
   AlignLeft,
   CheckCircle2,
   Circle,
-  Square,
   LayoutGrid,
-  Star,
-  Sparkles,
+  List,
   Loader2,
+  Send,
 } from 'lucide-react';
 
 // ─── Priority Config ──────────────────────────────────────
@@ -100,6 +97,28 @@ const genLocalId = () => `${Date.now()}_${Math.random().toString(36).slice(2, 9)
 type MemberDisplay = Pick<User, 'id' | 'name'> & { photoURL?: string | null };
 
 // ─── Animations ───────────────────────────────────────────
+// ─── Toast Component ─────────────────────────────────────
+function KanbanToast({ message, type, onClose }: { message: string; type: 'error' | 'success'; onClose: () => void }) {
+  useEffect(() => { const t = setTimeout(onClose, 4000); return () => clearTimeout(t); }, [onClose]);
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20, scale: 0.95 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: 20, scale: 0.95 }}
+      className={cn(
+        'fixed bottom-6 right-6 z-[100] flex items-center gap-2 px-4 py-3 rounded-xl shadow-lg text-sm font-medium',
+        type === 'error'
+          ? 'bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 text-red-700 dark:text-red-300'
+          : 'bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 text-emerald-700 dark:text-emerald-300',
+      )}
+    >
+      {type === 'error' ? <AlertCircle size={16} /> : <CheckCircle2 size={16} />}
+      {message}
+      <button onClick={onClose} className="ml-2 opacity-60 hover:opacity-100"><X size={14} /></button>
+    </motion.div>
+  );
+}
+
 const containerVariants = {
   hidden: { opacity: 0 },
   visible: {
@@ -381,7 +400,7 @@ function KanbanColumnComponent({
   cards: KanbanCard[];
   members: MemberDisplay[];
   onCardOpen: (card: KanbanCard) => void;
-  onAddCard: (columnId: string) => void;
+  onAddCard?: (columnId: string) => void;
   onDragStart: (e: React.DragEvent, card: KanbanCard) => void;
   onDragOver: (e: React.DragEvent, columnId: string) => void;
   onDrop: (e: React.DragEvent, columnId: string) => void;
@@ -421,7 +440,7 @@ function KanbanColumnComponent({
           </span>
         </div>
 
-        <button
+        {onAddCard && <button
           onClick={() => onAddCard(column.id)}
           className={cn(
             'flex items-center justify-center w-7 h-7 rounded-lg',
@@ -430,7 +449,7 @@ function KanbanColumnComponent({
           )}
         >
           <Plus className="w-4 h-4" />
-        </button>
+        </button>}
       </div>
 
       {/* Cards area */}
@@ -487,12 +506,16 @@ function KanbanColumnComponent({
 function CardDetailDialog({
   card,
   columns,
+  currentUser,
+  members,
   onClose,
   onUpdate,
   onDelete,
 }: {
   card: KanbanCard;
   columns: KanbanColumn[];
+  currentUser: User | null;
+  members: MemberDisplay[];
   onClose: () => void;
   onUpdate: (updated: KanbanCard) => void;
   onDelete: (id: string) => void;
@@ -505,7 +528,11 @@ function CardDetailDialog({
   const [checklist, setChecklist] = useState<KanbanChecklistItem[]>(card.checklist || []);
   const [newCheckItem, setNewCheckItem] = useState('');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [comments, setComments] = useState<KanbanComment[]>(card.comments || []);
+  const [newComment, setNewComment] = useState('');
+  const [submittingComment, setSubmittingComment] = useState(false);
   const titleInputRef = useRef<HTMLInputElement>(null);
+  const commentInputRef = useRef<HTMLTextAreaElement>(null);
 
   const column = columns.find(c => c.id === card.columnId);
   const checkDone = checklist.filter(c => c.completed).length;
@@ -517,7 +544,8 @@ function CardDetailDialog({
     if (!editingTitle) setTitle(card.title);
     if (!editingDescription) setDescription(card.description || '');
     setChecklist(card.checklist || []);
-  }, [card.title, card.description, card.checklist, editingTitle, editingDescription]);
+    setComments(card.comments || []);
+  }, [card.title, card.description, card.checklist, card.comments, editingTitle, editingDescription]);
 
   const handleSaveTitle = () => {
     if (title.trim()) {
@@ -560,6 +588,29 @@ function CardDetailDialog({
 
   const handleChangeColumn = (columnId: string) => {
     onUpdate({ ...card, columnId });
+  };
+
+  const handleAddComment = async () => {
+    if (!newComment.trim() || !currentUser) return;
+    setSubmittingComment(true);
+    const comment: KanbanComment = {
+      id: `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      text: newComment.trim(),
+      authorId: currentUser.uid,
+      authorName: currentUser.name,
+      createdAt: new Date().toISOString(),
+    };
+    const updated = [...comments, comment];
+    setComments(updated);
+    setNewComment('');
+    onUpdate({ ...card, comments: updated, commentsCount: updated.length });
+    setSubmittingComment(false);
+  };
+
+  const handleDeleteComment = (commentId: string) => {
+    const updated = comments.filter(c => c.id !== commentId);
+    setComments(updated);
+    onUpdate({ ...card, comments: updated, commentsCount: updated.length });
   };
 
   useEffect(() => {
@@ -776,6 +827,85 @@ function CardDetailDialog({
                     >
                       {t('kanban.add', 'Adicionar')}
                     </button>
+                  </div>
+                </div>
+
+                {/* Comments */}
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <MessageSquare className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+                    <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300">{t('kanban.comments', 'Comentários')}</h4>
+                    {comments.length > 0 && (
+                      <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400">
+                        {comments.length}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Thread */}
+                  {comments.length > 0 && (
+                    <div className="space-y-3 mb-3">
+                      {comments.map(comment => {
+                        const isOwn = comment.authorId === currentUser?.uid;
+                        return (
+                          <div key={comment.id} className="flex gap-2.5 group">
+                            <div className="flex-shrink-0 w-7 h-7 rounded-full bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-700 dark:to-gray-600 flex items-center justify-center text-[10px] font-bold text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700 shadow-sm mt-0.5">
+                              {getInitials(comment.authorName)}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-0.5">
+                                <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">{comment.authorName}</span>
+                                <span className="text-[10px] text-gray-400 dark:text-gray-500">
+                                  {new Date(comment.createdAt).toLocaleString('pt-BR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                                </span>
+                              </div>
+                              <div className="text-sm text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-800/60 rounded-xl px-3 py-2 leading-relaxed whitespace-pre-wrap break-words">
+                                {comment.text}
+                              </div>
+                            </div>
+                            {isOwn && (
+                              <button
+                                onClick={() => handleDeleteComment(comment.id)}
+                                className="opacity-0 group-hover:opacity-100 flex-shrink-0 p-1 rounded text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 transition-all mt-1 self-start"
+                                title={t('kanban.deleteComment', 'Excluir comentário')}
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* New comment input */}
+                  <div className="flex gap-2.5 items-start">
+                    <div className="flex-shrink-0 w-7 h-7 rounded-full bg-gradient-to-br from-red-50 to-red-100 dark:from-red-500/20 dark:to-red-500/10 flex items-center justify-center text-[10px] font-bold text-red-600 dark:text-red-400 border border-red-200 dark:border-red-500/30 mt-0.5">
+                      {getInitials(currentUser?.name || 'U')}
+                    </div>
+                    <div className="flex-1 space-y-2">
+                      <textarea
+                        ref={commentInputRef}
+                        value={newComment}
+                        onChange={(e) => setNewComment(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleAddComment(); }}
+                        placeholder={t('kanban.addCommentPlaceholder', 'Adicionar comentário... (Ctrl+Enter para enviar)')}
+                        rows={2}
+                        className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-300 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30 focus:ring-2 focus:ring-red-100 dark:focus:ring-red-500/20 resize-none"
+                      />
+                      <button
+                        onClick={handleAddComment}
+                        disabled={!newComment.trim() || submittingComment}
+                        className={cn(
+                          'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all',
+                          'bg-red-500 text-white hover:bg-red-600',
+                          'disabled:opacity-40 disabled:cursor-not-allowed'
+                        )}
+                      >
+                        <Send className="w-3 h-3" />
+                        {t('kanban.sendComment', 'Comentar')}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1265,12 +1395,16 @@ function NewBoardDialog({
 // ═══════════════════════════════════════════════════════════
 // BOARD HEADER
 // ═══════════════════════════════════════════════════════════
+type KanbanViewMode = 'board' | 'list' | 'calendar';
+
 function BoardHeader({
   boards,
   activeBoard,
   members,
   onSelectBoard,
   onNewBoard,
+  onArchiveBoard,
+  canManageBoard: canManage,
   searchQuery,
   onSearchChange,
   filterPriority,
@@ -1279,12 +1413,16 @@ function BoardHeader({
   onFilterAssigneeChange,
   totalCards,
   filteredCards,
+  viewMode,
+  onViewModeChange,
 }: {
   boards: KanbanBoard[];
   activeBoard: KanbanBoard;
   members: MemberDisplay[];
   onSelectBoard: (id: string) => void;
   onNewBoard: () => void;
+  onArchiveBoard?: (id: string) => void;
+  canManageBoard?: boolean;
   searchQuery: string;
   onSearchChange: (q: string) => void;
   filterPriority: KanbanPriority | 'all';
@@ -1293,6 +1431,8 @@ function BoardHeader({
   onFilterAssigneeChange: (a: string | 'all') => void;
   totalCards: number;
   filteredCards: number;
+  viewMode: KanbanViewMode;
+  onViewModeChange: (v: KanbanViewMode) => void;
 }) {
   const { t } = useTranslation();
   const [showFilters, setShowFilters] = useState(false);
@@ -1332,24 +1472,62 @@ function BoardHeader({
             </button>
           ))}
 
+          {/* Board actions */}
+          {canManage && onArchiveBoard && boards.length > 1 && (
+            <button
+              onClick={() => onArchiveBoard(activeBoard.id)}
+              className={cn(
+                'flex items-center justify-center w-8 h-8 rounded-lg ml-0.5',
+                'text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400',
+                'hover:bg-red-50 dark:hover:bg-red-500/10 transition-all duration-150 active:scale-90'
+              )}
+              title={t('kanban.archiveBoardTooltip', 'Arquivar board')}
+            >
+              <Archive className="w-3.5 h-3.5" />
+            </button>
+          )}
+
           {/* New board button */}
-          <button
+          {canManage && <button
             onClick={onNewBoard}
             className={cn(
-              'flex items-center justify-center w-8 h-8 rounded-lg ml-1',
+              'flex items-center justify-center w-8 h-8 rounded-lg ml-0.5',
               'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300',
               'hover:bg-white/50 dark:hover:bg-white/[0.06] transition-all duration-150 active:scale-90'
             )}
             title={t('kanban.newBoardTooltip', 'Novo board')}
           >
             <Plus className="w-3.5 h-3.5" />
-          </button>
+          </button>}
         </div>
 
         {/* Right actions */}
         <div className="flex items-center gap-2">
           {/* Members */}
           <AvatarStack userIds={activeBoard.memberIds} membersList={members} size="md" max={4} />
+
+          {/* View mode toggle */}
+          <div className="flex items-center bg-gray-100/80 dark:bg-gray-800/80 rounded-xl p-1 gap-0.5">
+            {([
+              { mode: 'board' as KanbanViewMode, icon: LayoutGrid, label: t('kanban.viewBoard', 'Board') },
+              { mode: 'list' as KanbanViewMode, icon: List, label: t('kanban.viewList', 'Lista') },
+              { mode: 'calendar' as KanbanViewMode, icon: Calendar, label: t('kanban.viewCalendar', 'Calendário') },
+            ]).map(({ mode, icon: Icon, label }) => (
+              <button
+                key={mode}
+                onClick={() => onViewModeChange(mode)}
+                title={label}
+                className={cn(
+                  'flex items-center justify-center w-7 h-7 rounded-lg transition-all duration-200',
+                  viewMode === mode
+                    ? 'bg-white dark:bg-gray-700 text-red-600 dark:text-red-400 shadow-sm'
+                    : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300'
+                )}
+              >
+                <Icon className="w-3.5 h-3.5" />
+              </button>
+            ))}
+          </div>
 
           {/* Search */}
           <div className="relative">
@@ -1452,6 +1630,296 @@ function BoardHeader({
   );
 }
 
+// ─── Priority color dots for list/calendar views ──────────
+const PRIORITY_HEX: Record<KanbanPriority, string> = {
+  urgent: '#EF4444',
+  high:   '#F97316',
+  medium: '#3B82F6',
+  low:    '#6B7280',
+};
+
+// ═══════════════════════════════════════════════════════════
+// LIST VIEW
+// ═══════════════════════════════════════════════════════════
+function ListView({
+  cards,
+  columns,
+  members,
+  onCardOpen,
+}: {
+  cards: KanbanCard[];
+  columns: KanbanColumn[];
+  members: MemberDisplay[];
+  onCardOpen: (card: KanbanCard) => void;
+}) {
+  const { t } = useTranslation();
+  type SortKey = 'priority' | 'dueDate' | 'title' | 'column';
+  const PRIORITY_ORDER: Record<KanbanPriority, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
+
+  const [sortKey, setSortKey] = useState<SortKey>('priority');
+  const [sortAsc, setSortAsc] = useState(true);
+
+  const handleSort = (key: SortKey) => {
+    if (sortKey === key) setSortAsc(prev => !prev);
+    else { setSortKey(key); setSortAsc(true); }
+  };
+
+  const sorted = [...cards].sort((a, b) => {
+    let cmp = 0;
+    if (sortKey === 'priority') cmp = PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
+    else if (sortKey === 'dueDate') {
+      if (!a.dueDate && !b.dueDate) cmp = 0;
+      else if (!a.dueDate) cmp = 1;
+      else if (!b.dueDate) cmp = -1;
+      else cmp = a.dueDate.localeCompare(b.dueDate);
+    } else if (sortKey === 'title') {
+      cmp = a.title.localeCompare(b.title);
+    } else if (sortKey === 'column') {
+      const colA = columns.find(c => c.id === a.columnId)?.title || '';
+      const colB = columns.find(c => c.id === b.columnId)?.title || '';
+      cmp = colA.localeCompare(colB);
+    }
+    return sortAsc ? cmp : -cmp;
+  });
+
+  const SortBtn = ({ label, k }: { label: string; k: SortKey }) => (
+    <button
+      onClick={() => handleSort(k)}
+      className={cn(
+        'flex items-center gap-1 text-xs font-semibold uppercase tracking-wider transition-colors',
+        sortKey === k ? 'text-red-500 dark:text-red-400' : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300'
+      )}
+    >
+      {label}
+      {sortKey === k && <ChevronDown className={cn('w-3 h-3 transition-transform', !sortAsc && 'rotate-180')} />}
+    </button>
+  );
+
+  if (sorted.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 text-gray-300 dark:text-gray-600">
+        <List className="w-10 h-10 mb-3 opacity-40" />
+        <p className="text-sm font-medium">{t('kanban.noCards', 'Nenhum card encontrado')}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 overflow-hidden shadow-sm">
+      {/* Header */}
+      <div className="grid grid-cols-[2fr_1fr_1fr_1fr_1fr] gap-4 px-4 py-2.5 border-b border-gray-100 dark:border-gray-800 bg-gray-50/80 dark:bg-gray-800/50">
+        <SortBtn label={t('kanban.listColTitle', 'Título')} k="title" />
+        <SortBtn label={t('kanban.listColStatus', 'Coluna')} k="column" />
+        <SortBtn label={t('kanban.listColPriority', 'Prioridade')} k="priority" />
+        <SortBtn label={t('kanban.listColDue', 'Prazo')} k="dueDate" />
+        <span className="text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">{t('kanban.listColAssignees', 'Resp.')}</span>
+      </div>
+
+      {/* Rows */}
+      <div className="divide-y divide-gray-100 dark:divide-gray-800">
+        <AnimatePresence mode="popLayout">
+          {sorted.map(card => {
+            const col = columns.find(c => c.id === card.columnId);
+            const checkDone = card.checklist?.filter(c => c.completed).length ?? 0;
+            const checkTotal = card.checklist?.length ?? 0;
+            return (
+              <motion.div
+                key={card.id}
+                layout
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -10 }}
+                transition={{ duration: 0.2 }}
+                onClick={() => onCardOpen(card)}
+                className="grid grid-cols-[2fr_1fr_1fr_1fr_1fr] gap-4 px-4 py-3 items-center hover:bg-gray-50/60 dark:hover:bg-white/[0.02] cursor-pointer transition-colors group"
+              >
+                {/* Title + checklist */}
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="w-1 h-8 rounded-full flex-shrink-0" style={{ backgroundColor: PRIORITY_HEX[card.priority] }} />
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate group-hover:text-red-600 dark:group-hover:text-red-400 transition-colors">
+                      {card.title}
+                    </p>
+                    {checkTotal > 0 && (
+                      <p className="text-[11px] text-gray-400 dark:text-gray-500">{checkDone}/{checkTotal} itens</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Column */}
+                <div className="flex items-center gap-1.5">
+                  {col && <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: col.color }} />}
+                  <span className="text-xs text-gray-600 dark:text-gray-400 truncate">{col?.title || '—'}</span>
+                </div>
+
+                {/* Priority */}
+                <PriorityBadge priority={card.priority} />
+
+                {/* Due date */}
+                <div>{card.dueDate ? <DueDateBadge date={card.dueDate} /> : <span className="text-xs text-gray-300 dark:text-gray-600">—</span>}</div>
+
+                {/* Assignees */}
+                <div>{card.assigneeIds.length > 0 ? <AvatarStack userIds={card.assigneeIds} membersList={members} size="sm" max={2} /> : <span className="text-xs text-gray-300 dark:text-gray-600">—</span>}</div>
+              </motion.div>
+            );
+          })}
+        </AnimatePresence>
+      </div>
+
+      <div className="px-4 py-2.5 border-t border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/30">
+        <span className="text-xs text-gray-400 dark:text-gray-500">{t('kanban.listTotal', '{{count}} cards', { count: sorted.length })}</span>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// CALENDAR VIEW
+// ═══════════════════════════════════════════════════════════
+function CalendarView({
+  cards,
+  onCardOpen,
+  onCreateCard,
+}: {
+  cards: KanbanCard[];
+  onCardOpen: (card: KanbanCard) => void;
+  onCreateCard?: (date: string) => void;
+}) {
+  const { t } = useTranslation();
+  const today = new Date();
+  const [year, setYear] = useState(today.getFullYear());
+  const [month, setMonth] = useState(today.getMonth()); // 0-indexed
+
+  const firstDay = new Date(year, month, 1);
+  const lastDay = new Date(year, month + 1, 0);
+  const startDow = firstDay.getDay(); // 0=Sun
+  const daysInMonth = lastDay.getDate();
+
+  const prevMonth = () => { if (month === 0) { setMonth(11); setYear(y => y - 1); } else setMonth(m => m - 1); };
+  const nextMonth = () => { if (month === 11) { setMonth(0); setYear(y => y + 1); } else setMonth(m => m + 1); };
+
+  const monthLabel = new Date(year, month, 1).toLocaleString('pt-BR', { month: 'long', year: 'numeric' });
+
+  // Group cards by dueDate day
+  const cardsByDay = useMemo(() => {
+    const map: Record<number, KanbanCard[]> = {};
+    for (const card of cards) {
+      if (!card.dueDate) continue;
+      const d = new Date(card.dueDate + 'T00:00:00');
+      if (d.getFullYear() === year && d.getMonth() === month) {
+        const day = d.getDate();
+        if (!map[day]) map[day] = [];
+        map[day].push(card);
+      }
+    }
+    return map;
+  }, [cards, year, month]);
+
+  const DOW_LABELS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
+  // Build grid cells: leading blanks + days
+  const cells: (number | null)[] = [];
+  for (let i = 0; i < startDow; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+  // pad to complete last row
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  return (
+    <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 overflow-hidden shadow-sm">
+      {/* Calendar header */}
+      <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-100 dark:border-gray-800">
+        <button
+          onClick={prevMonth}
+          className="flex items-center justify-center w-8 h-8 rounded-lg text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-all"
+        >
+          <ChevronLeft className="w-4 h-4" />
+        </button>
+        <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200 capitalize">{monthLabel}</h3>
+        <button
+          onClick={nextMonth}
+          className="flex items-center justify-center w-8 h-8 rounded-lg text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-all"
+        >
+          <ChevronRight className="w-4 h-4" />
+        </button>
+      </div>
+
+      {/* Day-of-week labels */}
+      <div className="grid grid-cols-7 border-b border-gray-100 dark:border-gray-800">
+        {DOW_LABELS.map(dow => (
+          <div key={dow} className="py-2 text-center text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">
+            {dow}
+          </div>
+        ))}
+      </div>
+
+      {/* Grid */}
+      <div className="grid grid-cols-7 auto-rows-[minmax(80px,_auto)]">
+        {cells.map((day, idx) => {
+          if (!day) {
+            return <div key={`blank-${idx}`} className="border-b border-r border-gray-100 dark:border-gray-800 bg-gray-50/30 dark:bg-white/[0.01]" />;
+          }
+          const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+          const isToday = dateStr === todayStr;
+          const dayCards = cardsByDay[day] || [];
+
+          return (
+            <div
+              key={day}
+              onClick={() => onCreateCard?.(dateStr)}
+              className={cn(
+                'border-b border-r border-gray-100 dark:border-gray-800 p-1.5 relative cursor-pointer',
+                'hover:bg-gray-50/60 dark:hover:bg-white/[0.02] transition-colors group',
+                isToday && 'bg-red-50/40 dark:bg-red-500/5'
+              )}
+            >
+              {/* Day number */}
+              <div className={cn(
+                'inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-semibold mb-1',
+                isToday
+                  ? 'bg-red-500 text-white'
+                  : 'text-gray-700 dark:text-gray-300'
+              )}>
+                {day}
+              </div>
+
+              {/* Cards */}
+              <div className="space-y-0.5">
+                {dayCards.slice(0, 3).map(card => (
+                  <div
+                    key={card.id}
+                    onClick={(e) => { e.stopPropagation(); onCardOpen(card); }}
+                    className={cn(
+                      'w-full text-left px-1.5 py-0.5 rounded text-[11px] font-medium truncate cursor-pointer transition-opacity hover:opacity-80',
+                      PRIORITY_CONFIG[card.priority].bgColor,
+                      PRIORITY_CONFIG[card.priority].color
+                    )}
+                    title={card.title}
+                  >
+                    {card.title}
+                  </div>
+                ))}
+                {dayCards.length > 3 && (
+                  <div className="text-[10px] text-gray-400 dark:text-gray-500 pl-1">
+                    +{dayCards.length - 3} {t('kanban.calendarMore', 'mais')}
+                  </div>
+                )}
+              </div>
+
+              {/* Add card hint */}
+              {onCreateCard && (
+                <div className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <Plus className="w-3 h-3 text-gray-400 dark:text-gray-500" />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════
 // LOADING SKELETON
 // ═══════════════════════════════════════════════════════════
@@ -1532,6 +2000,7 @@ export default function KanbanModule() {
 
   // ─── UI state ─────────────────────────────────────────────
   const [activeBoardId, setActiveBoardId] = useState<string>('');
+  const [viewMode, setViewMode] = useState<KanbanViewMode>('board');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterPriority, setFilterPriority] = useState<KanbanPriority | 'all'>('all');
   const [filterAssignee, setFilterAssignee] = useState<string | 'all'>('all');
@@ -1545,6 +2014,14 @@ export default function KanbanModule() {
   // Drag state
   const [draggingCard, setDraggingCard] = useState<KanbanCard | null>(null);
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
+
+  // Toast state
+  const [toast, setToast] = useState<{ message: string; type: 'error' | 'success' } | null>(null);
+  const showToast = useCallback((message: string, type: 'error' | 'success' = 'error') => setToast({ message, type }), []);
+
+  // Permission helpers
+  const canEdit = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['operator'];
+  const canManageBoard = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['manager'];
 
   // ─── Firestore: boards listener ───────────────────────────
   useEffect(() => {
@@ -1580,7 +2057,7 @@ export default function KanbanModule() {
       }
     }, () => setLoadingBoards(false));
     return () => unsub();
-  }, [business?.id]);
+  }, [business?.id, isAdmin, user?.uid, userSectorIds]);
 
   // ─── Firestore: cards listener (scoped to active board) ───
   useEffect(() => {
@@ -1663,20 +2140,26 @@ export default function KanbanModule() {
     e.preventDefault();
     setDragOverColumn(null);
     if (!draggingCard || !business?.id) return;
+    if (!canEdit) { showToast(t('kanban.errors.noPermission', 'Sem permissão para mover cards')); setDraggingCard(null); return; }
     if (draggingCard.columnId === targetColumnId) {
       setDraggingCard(null);
       return;
     }
     try {
+      // Calculate new order — append to end of target column
+      const targetColumnCards = cards.filter(c => c.columnId === targetColumnId);
+      const newOrder = targetColumnCards.length;
       await updateDoc(doc(db, 'kanbanCards', draggingCard.id), {
         columnId: targetColumnId,
+        order: newOrder,
         updatedAt: new Date().toISOString(),
       });
     } catch (err) {
-      console.error('Erro ao mover card:', err);
+      console.error('Error moving card:', err);
+      showToast(t('kanban.errors.moveCard', 'Erro ao mover card'));
     }
     setDraggingCard(null);
-  }, [draggingCard, business?.id]);
+  }, [draggingCard, business?.id, canEdit, cards, showToast, t]);
 
   const handleDragEnd = useCallback(() => {
     setDraggingCard(null);
@@ -1686,6 +2169,7 @@ export default function KanbanModule() {
   // ─── Card CRUD ────────────────────────────────────────────
   const handleCreateCard = useCallback(async (partial: Partial<KanbanCard>) => {
     if (!business?.id || !user || !activeBoardId) return;
+    if (!canEdit) { showToast(t('kanban.errors.noPermission', 'Sem permissão para criar cards')); return; }
     const columnCards = cards.filter(c => c.columnId === partial.columnId);
     try {
       await addDoc(collection(db, 'kanbanCards'), {
@@ -1709,38 +2193,46 @@ export default function KanbanModule() {
         updatedAt: new Date().toISOString(),
       });
     } catch (err) {
-      console.error('Erro ao criar card:', err);
+      console.error('Error creating card:', err);
+      showToast(t('kanban.errors.createCard', 'Erro ao criar card'));
     }
-  }, [business?.id, user, activeBoardId, cards]);
+  }, [business?.id, user, activeBoardId, cards, canEdit, showToast, t]);
 
   const handleUpdateCard = useCallback(async (updated: KanbanCard) => {
     if (!business?.id) return;
+    if (!canEdit) { showToast(t('kanban.errors.noPermission', 'Sem permissão para editar cards')); return; }
     const { id, ...data } = updated;
     const now = new Date().toISOString();
-    // Optimistic update for responsive dialog UI
     setSelectedCard({ ...updated, updatedAt: now });
     try {
+      // Only send mutable fields to Firestore
+      const { businessId: _b, boardId: _bo, createdBy: _c, createdAt: _ca, ...mutableData } = data;
       await updateDoc(doc(db, 'kanbanCards', id), {
-        ...data,
+        ...mutableData,
         updatedAt: now,
       });
     } catch (err) {
-      console.error('Erro ao atualizar card:', err);
+      console.error('Error updating card:', err);
+      showToast(t('kanban.errors.updateCard', 'Erro ao atualizar card'));
     }
-  }, [business?.id]);
+  }, [business?.id, canEdit, showToast, t]);
 
   const handleDeleteCard = useCallback(async (cardId: string) => {
     if (!business?.id) return;
+    if (!canEdit) { showToast(t('kanban.errors.noPermission', 'Sem permissão para excluir cards')); return; }
     try {
       await deleteDoc(doc(db, 'kanbanCards', cardId));
+      setSelectedCard(null);
     } catch (err) {
-      console.error('Erro ao excluir card:', err);
+      console.error('Error deleting card:', err);
+      showToast(t('kanban.errors.deleteCard', 'Erro ao excluir card'));
     }
-  }, [business?.id]);
+  }, [business?.id, canEdit, showToast, t]);
 
   // ─── Column CRUD ──────────────────────────────────────────
   const handleAddColumn = useCallback(async (title: string, color: string) => {
     if (!business?.id || !activeBoard) return;
+    if (!canManageBoard) { showToast(t('kanban.errors.noPermission', 'Sem permissão para adicionar colunas')); return; }
     const newCol: KanbanColumn = {
       id: genLocalId(),
       title,
@@ -1753,14 +2245,75 @@ export default function KanbanModule() {
         updatedAt: new Date().toISOString(),
       });
     } catch (err) {
-      console.error('Erro ao adicionar coluna:', err);
+      console.error('Error adding column:', err);
+      showToast(t('kanban.errors.addColumn', 'Erro ao adicionar coluna'));
     }
     setShowNewColumn(false);
-  }, [business?.id, activeBoardId, activeBoard]);
+  }, [business?.id, activeBoardId, activeBoard, canManageBoard, showToast, t]);
+
+  const handleDeleteColumn = useCallback(async (columnId: string) => {
+    if (!business?.id || !activeBoard) return;
+    if (!canManageBoard) { showToast(t('kanban.errors.noPermission', 'Sem permissão')); return; }
+    const columnCards = cards.filter(c => c.columnId === columnId);
+    if (columnCards.length > 0) {
+      showToast(t('kanban.errors.columnNotEmpty', 'Remova todos os cards da coluna antes de excluí-la'));
+      return;
+    }
+    if (activeBoard.columns.length <= 1) {
+      showToast(t('kanban.errors.lastColumn', 'O board precisa ter pelo menos uma coluna'));
+      return;
+    }
+    try {
+      const updatedColumns = activeBoard.columns
+        .filter(c => c.id !== columnId)
+        .map((c, i) => ({ ...c, order: i }));
+      await updateDoc(doc(db, 'kanbanBoards', activeBoardId), {
+        columns: updatedColumns,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('Error deleting column:', err);
+      showToast(t('kanban.errors.deleteColumn', 'Erro ao excluir coluna'));
+    }
+  }, [business?.id, activeBoardId, activeBoard, cards, canManageBoard, showToast, t]);
+
+  const handleArchiveBoard = useCallback(async (boardId: string) => {
+    if (!business?.id) return;
+    if (!canManageBoard) { showToast(t('kanban.errors.noPermission', 'Sem permissão')); return; }
+    try {
+      await updateDoc(doc(db, 'kanbanBoards', boardId), {
+        isArchived: true,
+        updatedAt: new Date().toISOString(),
+      });
+      if (activeBoardId === boardId) {
+        const remaining = boards.filter(b => b.id !== boardId);
+        setActiveBoardId(remaining.length > 0 ? remaining[0].id : '');
+      }
+      showToast(t('kanban.boardArchived', 'Board arquivado'), 'success');
+    } catch (err) {
+      console.error('Error archiving board:', err);
+      showToast(t('kanban.errors.archiveBoard', 'Erro ao arquivar board'));
+    }
+  }, [business?.id, activeBoardId, boards, canManageBoard, showToast, t]);
+
+  const handleRenameBoard = useCallback(async (boardId: string, newName: string) => {
+    if (!business?.id || !newName.trim()) return;
+    if (!canManageBoard) { showToast(t('kanban.errors.noPermission', 'Sem permissão')); return; }
+    try {
+      await updateDoc(doc(db, 'kanbanBoards', boardId), {
+        name: newName.trim(),
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('Error renaming board:', err);
+      showToast(t('kanban.errors.renameBoard', 'Erro ao renomear board'));
+    }
+  }, [business?.id, canManageBoard, showToast, t]);
 
   // ─── Board CRUD ───────────────────────────────────────────
   const handleCreateBoard = useCallback(async (name: string, color: string) => {
     if (!business?.id || !user) return;
+    if (!canManageBoard) { showToast(t('kanban.errors.noPermission', 'Sem permissão para criar boards')); return; }
     const defaultColumns: KanbanColumn[] = [
       { id: genLocalId(), title: t('kanban.defaultColTodo', 'A Fazer'),       color: '#3B82F6', order: 0 },
       { id: genLocalId(), title: t('kanban.defaultColInProgress', 'Em Progresso'), color: '#F59E0B', order: 1 },
@@ -1774,6 +2327,7 @@ export default function KanbanModule() {
         color,
         columns: defaultColumns,
         memberIds: [user.uid],
+        sectorIds: [],
         visibility: 'all' as KanbanVisibility,
         createdBy: user.uid,
         isArchived: false,
@@ -1782,9 +2336,10 @@ export default function KanbanModule() {
       });
       setActiveBoardId(docRef.id);
     } catch (err) {
-      console.error('Erro ao criar board:', err);
+      console.error('Error creating board:', err);
+      showToast(t('kanban.errors.createBoard', 'Erro ao criar board'));
     }
-  }, [business?.id, user]);
+  }, [business?.id, user, canManageBoard, showToast, t]);
 
   // ─── Keyboard shortcuts ───────────────────────────────────
   useEffect(() => {
@@ -1889,6 +2444,8 @@ export default function KanbanModule() {
           members={members}
           onSelectBoard={setActiveBoardId}
           onNewBoard={() => setShowNewBoard(true)}
+          onArchiveBoard={handleArchiveBoard}
+          canManageBoard={canManageBoard}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
           filterPriority={filterPriority}
@@ -1897,14 +2454,17 @@ export default function KanbanModule() {
           onFilterAssigneeChange={setFilterAssignee}
           totalCards={boardCards.length}
           filteredCards={filteredCards.length}
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
         />
       </motion.div>
 
-      {/* Columns container — fills remaining height, horizontal scroll */}
+      {/* Content area — switches based on viewMode */}
+      {/* Board view — always rendered in DOM to avoid height/scroll issues on remount */}
       <motion.div
         variants={itemVariants}
         className="flex-1 overflow-x-auto overflow-y-hidden px-4 sm:px-6 lg:px-8 pb-4"
-        style={{ scrollbarWidth: 'thin' }}
+        style={{ scrollbarWidth: 'thin', display: viewMode === 'board' ? undefined : 'none' }}
       >
         <motion.div
           variants={containerVariants}
@@ -1924,7 +2484,7 @@ export default function KanbanModule() {
                 cards={columnCards}
                 members={members}
                 onCardOpen={setSelectedCard}
-                onAddCard={(colId) => setNewCardColumnId(colId)}
+                onAddCard={canEdit ? (colId) => setNewCardColumnId(colId) : undefined}
                 onDragStart={handleDragStart}
                 onDragOver={handleDragOver}
                 onDrop={handleDrop}
@@ -1934,8 +2494,8 @@ export default function KanbanModule() {
             );
           })}
 
-          {/* Add column button */}
-          <AnimatePresence mode="wait">
+          {/* Add column button — managers/admins only */}
+          {canManageBoard && <AnimatePresence mode="wait">
             {showNewColumn ? (
               <NewColumnInline
                 key="new-column-form"
@@ -1962,9 +2522,47 @@ export default function KanbanModule() {
                 {t('kanban.addColumn', 'Adicionar coluna')}
               </motion.button>
             )}
-          </AnimatePresence>
+          </AnimatePresence>}
         </motion.div>
       </motion.div>
+
+      {/* List view */}
+      {viewMode === 'list' && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.2 }}
+          className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 pb-4"
+          style={{ scrollbarWidth: 'thin' }}
+        >
+          <ListView
+            cards={filteredCards}
+            columns={sortedColumns}
+            members={members}
+            onCardOpen={setSelectedCard}
+          />
+        </motion.div>
+      )}
+
+      {/* Calendar view */}
+      {viewMode === 'calendar' && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.2 }}
+          className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 pb-4"
+          style={{ scrollbarWidth: 'thin' }}
+        >
+          <CalendarView
+            cards={filteredCards}
+            onCardOpen={setSelectedCard}
+            onCreateCard={canEdit ? (_date) => {
+              const firstColId = sortedColumns[0]?.id;
+              if (firstColId) setNewCardColumnId(firstColId);
+            } : undefined}
+          />
+        </motion.div>
+      )}
 
       {/* Card detail dialog */}
       <AnimatePresence>
@@ -1973,6 +2571,8 @@ export default function KanbanModule() {
             key="card-detail"
             card={selectedCard}
             columns={sortedColumns}
+            currentUser={user}
+            members={members}
             onClose={() => setSelectedCard(null)}
             onUpdate={handleUpdateCard}
             onDelete={handleDeleteCard}
@@ -2001,6 +2601,18 @@ export default function KanbanModule() {
             key="new-board"
             onClose={() => setShowNewBoard(false)}
             onCreate={handleCreateBoard}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Toast notifications */}
+      <AnimatePresence>
+        {toast && (
+          <KanbanToast
+            key="kanban-toast"
+            message={toast.message}
+            type={toast.type}
+            onClose={() => setToast(null)}
           />
         )}
       </AnimatePresence>

@@ -1,17 +1,72 @@
 import { adminDb } from '@/lib/config/firebaseAdmin';
-import { FieldValue } from 'firebase-admin/firestore';
+
+type FiscalConfigKey = 'nfeConfig' | 'nfceConfig' | 'nfseConfig';
+
+function resolveConfigKey(type: 'nfe' | 'nfce' | 'nfse'): FiscalConfigKey {
+  const map: Record<string, FiscalConfigKey> = {
+    nfe: 'nfeConfig',
+    nfce: 'nfceConfig',
+    nfse: 'nfseConfig',
+  };
+  return map[type] || 'nfeConfig';
+}
 
 /**
- * Atomically get and increment the next invoice number for NFe or NFCe.
- * Uses Firestore transaction to prevent race conditions.
+ * Peek at the next invoice number WITHOUT incrementing.
+ * Use this before calling SEFAZ — only commit after successful emission.
+ * This prevents wasting numbers on rejected/failed emissions.
+ */
+export async function peekNextInvoiceNumber(
+  businessId: string,
+  type: 'nfe' | 'nfce' | 'nfse',
+): Promise<{ number: number; series: string }> {
+  const configKey = resolveConfigKey(type);
+  const docRef = adminDb.collection('businesses').doc(businessId);
+  const doc = await docRef.get();
+
+  if (!doc.exists) throw new Error('Business not found');
+
+  const config = doc.data()?.fiscal?.[configKey] ?? {};
+  const defaultSeries = type === 'nfse' ? 'NFS' : '1';
+
+  return {
+    number: typeof config.nextNumber === 'number' ? config.nextNumber : 1,
+    series: String(config.series ?? defaultSeries),
+  };
+}
+
+/**
+ * Commit (increment) the invoice number AFTER successful SEFAZ emission.
+ * Uses Math.max to prevent regression in concurrent scenarios.
+ */
+export async function commitInvoiceNumber(
+  businessId: string,
+  type: 'nfe' | 'nfce' | 'nfse',
+  usedNumber: number,
+): Promise<void> {
+  const configKey = resolveConfigKey(type);
+  const docRef = adminDb.collection('businesses').doc(businessId);
+
+  await adminDb.runTransaction(async (tx) => {
+    const snap = await tx.get(docRef);
+    const current = snap.data()?.fiscal?.[configKey]?.nextNumber ?? 1;
+    const next = Math.max(current, usedNumber + 1);
+    if (next !== current) {
+      tx.update(docRef, { [`fiscal.${configKey}.nextNumber`]: next });
+    }
+  });
+}
+
+/**
+ * Legacy wrapper — atomically get-and-increment in one step.
+ * Prefer peekNextInvoiceNumber + commitInvoiceNumber for new code.
  */
 export async function getNextInvoiceNumber(
   businessId: string,
-  type: 'nfe' | 'nfce'
+  type: 'nfe' | 'nfce' | 'nfse',
 ): Promise<{ number: number; series: string }> {
-  const configField = type === 'nfe' ? 'fiscal.nfeConfig' : 'fiscal.nfceConfig';
-  const numberField = `${configField}.nextNumber`;
-  const seriesField = `${configField}.series`;
+  const configKey = resolveConfigKey(type);
+  const numberField = `fiscal.${configKey}.nextNumber`;
 
   return adminDb.runTransaction(async (transaction) => {
     const docRef = adminDb.collection('businesses').doc(businessId);
@@ -19,13 +74,11 @@ export async function getNextInvoiceNumber(
 
     if (!doc.exists) throw new Error('Business not found');
 
-    const data = doc.data();
-    const config = type === 'nfe' ? data?.fiscal?.nfeConfig : data?.fiscal?.nfceConfig;
+    const config = doc.data()?.fiscal?.[configKey] ?? {};
+    const defaultSeries = type === 'nfse' ? 'NFS' : '1';
+    const currentNumber = typeof config.nextNumber === 'number' ? config.nextNumber : 1;
+    const series = String(config.series ?? defaultSeries);
 
-    const currentNumber = config?.nextNumber || 1;
-    const series = config?.series || '1';
-
-    // Increment atomically
     transaction.update(docRef, { [numberField]: currentNumber + 1 });
 
     return { number: currentNumber, series };

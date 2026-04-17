@@ -686,6 +686,14 @@ export interface KanbanColumn {
   order: number;
 }
 
+export interface KanbanComment {
+  id: string;
+  text: string;
+  authorId: string;
+  authorName: string;
+  createdAt: string;
+}
+
 export interface KanbanCard {
   id: string;
   businessId: string;
@@ -699,6 +707,7 @@ export interface KanbanCard {
   assigneeNames: string[];
   dueDate?: string;
   checklist?: KanbanChecklistItem[];
+  comments?: KanbanComment[];
   commentsCount: number;
   attachmentsCount: number;
   coverColor?: string;

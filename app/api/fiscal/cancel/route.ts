@@ -110,6 +110,11 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      // Reverse linked financial transactions atomically
+      if (body.businessId) {
+        await reverseLinkedTransactions(body.businessId, body.chaveAcesso, body.justificativa.trim());
+      }
+
       return NextResponse.json({ success: true, data: responseData });
     }
 
@@ -130,6 +135,11 @@ export async function POST(request: NextRequest) {
       certificado,
     });
 
+    // Reverse linked financial transactions atomically
+    if (body.businessId && (result.status === 'cancelado' || result.success)) {
+      await reverseLinkedTransactions(body.businessId, body.chaveAcesso, body.justificativa.trim());
+    }
+
     return NextResponse.json({ success: true, data: result });
   } catch (error) {
     console.error('[Fiscal Cancel] Erro:', error);
@@ -137,5 +147,69 @@ export async function POST(request: NextRequest) {
       { error: 'Erro interno ao cancelar documento fiscal.', details: error instanceof Error ? error.message : 'Erro desconhecido' },
       { status: 500 },
     );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Atomic financial reversal on cancellation
+// ---------------------------------------------------------------------------
+
+async function reverseLinkedTransactions(
+  businessId: string,
+  chaveAcesso: string,
+  justificativa: string,
+): Promise<void> {
+  const now = new Date().toISOString();
+
+  try {
+    const batch = adminDb.batch();
+    let hasUpdates = false;
+
+    // 1. Find and update the fiscal document
+    const fiscalSnap = await adminDb
+      .collection('fiscalDocuments')
+      .where('businessId', '==', businessId)
+      .where('accessKey', '==', chaveAcesso)
+      .limit(1)
+      .get();
+
+    for (const doc of fiscalSnap.docs) {
+      batch.update(doc.ref, {
+        status: 'cancelada',
+        canceledAt: now,
+        cancelReason: justificativa,
+        updatedAt: now,
+      });
+      hasUpdates = true;
+
+      // 2. Find and reverse linked financial transactions
+      //    Transactions may be linked by saleId (from PDV) or by fiscal doc reference
+      const saleId = doc.data().saleId;
+      if (saleId) {
+        const txSnap = await adminDb
+          .collection('transactions')
+          .where('businessId', '==', businessId)
+          .where('saleId', '==', saleId)
+          .where('status', '==', 'pago')
+          .get();
+
+        for (const txDoc of txSnap.docs) {
+          batch.update(txDoc.ref, {
+            status: 'cancelado',
+            canceledAt: now,
+            cancelReason: `Cancelamento fiscal: ${justificativa}`,
+            updatedAt: now,
+          });
+        }
+      }
+    }
+
+    if (hasUpdates) {
+      await batch.commit();
+      console.log(`[Fiscal Cancel] Reversed financial transactions for ${chaveAcesso}`);
+    }
+  } catch (err) {
+    // Non-fatal — the SEFAZ cancellation already succeeded
+    console.warn('[Fiscal Cancel] Failed to reverse financial transactions (non-fatal):', err);
   }
 }

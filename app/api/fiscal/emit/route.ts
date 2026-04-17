@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
-import { emitirNFe, emitirNFCe, CertificadoPayload, SefazAmbiente, resolveAmbiente } from '@/lib/services/sefaz-gateway';
+import { emitirNFe, emitirNFCe, emitirNFSe, CertificadoPayload, SefazAmbiente, resolveAmbiente } from '@/lib/services/sefaz-gateway';
 import {
-  getNextInvoiceNumber,
+  peekNextInvoiceNumber,
+  commitInvoiceNumber,
   getCRT,
   getPaymentCode,
   getICMSDefaults,
@@ -43,9 +44,9 @@ export async function POST(request: NextRequest) {
 
     // 1. Validate required fields ------------------------------------------------
 
-    if (!type || !['nfe', 'nfce'].includes(type)) {
+    if (!type || !['nfe', 'nfce', 'nfse'].includes(type)) {
       return NextResponse.json(
-        { error: 'Tipo de documento fiscal invalido. Use: nfe ou nfce.' },
+        { error: 'Tipo de documento fiscal invalido. Use: nfe, nfce ou nfse.' },
         { status: 400 },
       );
     }
@@ -103,9 +104,9 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 4. Get next invoice number atomically -------------------------------------
+    // 4. Peek at next invoice number (commit only after SEFAZ accepts) ----------
 
-    const { number, series } = await getNextInvoiceNumber(businessId, type);
+    const { number, series } = await peekNextInvoiceNumber(businessId, type);
 
     // 5. Determine tax regime, defaults and ambiente ----------------------------
 
@@ -136,109 +137,264 @@ export async function POST(request: NextRequest) {
       const vProd = +(qty * price).toFixed(2);
       const vDesc = +(Number(item.discount) || 0).toFixed(2);
       const baseCalc = +(vProd - vDesc).toFixed(2);
+      const ean = String(item.barcode || 'SEM GTIN');
+      const unitStr = String(item.unit || 'UN');
 
-      const result: Record<string, unknown> = {
-        numero: i + 1,
-        codigo: item.code || String(i + 1),
-        descricao: item.description,
-        ncm: item.ncm || '00000000',
-        cfop: item.cfop || 5102,
-        unidade: item.unit || 'UN',
-        quantidade: qty,
-        valorUnitario: price,
-        valorTotal: vProd,
-        valorDesconto: vDesc > 0 ? vDesc : undefined,
-        codigoBarras: item.barcode || 'SEM GTIN',
-        codigoBarrasTrib: item.barcode || 'SEM GTIN',
-      };
+      // -- Tax blocks --
 
-      // -- ICMS --
+      // ICMS
+      let icmsBlock: Record<string, unknown>;
       if (crt === '3') {
         const aliq = Number(item.icmsAliquota ?? icmsDefaults.aliquota);
-        result.icms = {
-          origem: Number(item.icmsOrigem ?? icmsDefaults.origem),
+        icmsBlock = {
+          orig: String(Number(item.icmsOrigem ?? icmsDefaults.origem)),
           cst: item.icmsSituacaoTributaria || icmsDefaults.cst,
-          baseCalculo: baseCalc,
+          modBC: '0',
+          valorBC: baseCalc,
           aliquota: aliq,
           valor: +((baseCalc * aliq) / 100).toFixed(2),
         };
       } else {
-        result.icms = {
-          origem: Number(item.icmsOrigem ?? icmsDefaults.origem),
+        icmsBlock = {
+          orig: String(Number(item.icmsOrigem ?? icmsDefaults.origem)),
           csosn: item.icmsSituacaoTributaria || icmsDefaults.csosn,
         };
       }
 
-      // -- PIS --
+      // PIS
       const pisCST = item.pisSituacaoTributaria || pisCofsDefaults.pisCST;
       const pisAliq = pisCofsDefaults.pisAliquota;
-      result.pis = {
+      const pisBlock: Record<string, unknown> = {
         cst: pisCST,
-        baseCalculo: pisAliq > 0 ? baseCalc : undefined,
+        valorBC: pisAliq > 0 ? baseCalc : undefined,
         aliquota: pisAliq > 0 ? pisAliq : undefined,
         valor: pisAliq > 0 ? +((baseCalc * pisAliq) / 100).toFixed(2) : undefined,
       };
 
-      // -- COFINS --
+      // COFINS
       const cofinsCST = item.cofinsSituacaoTributaria || pisCofsDefaults.cofinsCST;
       const cofinsAliq = pisCofsDefaults.cofinsAliquota;
-      result.cofins = {
+      const cofinsBlock: Record<string, unknown> = {
         cst: cofinsCST,
-        baseCalculo: cofinsAliq > 0 ? baseCalc : undefined,
+        valorBC: cofinsAliq > 0 ? baseCalc : undefined,
         aliquota: cofinsAliq > 0 ? cofinsAliq : undefined,
         valor: cofinsAliq > 0 ? +((baseCalc * cofinsAliq) / 100).toFixed(2) : undefined,
       };
 
-      return result;
+      // IPI (optional)
+      let ipiBlock: Record<string, unknown> | undefined;
+      if (item.ipiSituacaoTributaria) {
+        const ipiCST = String(item.ipiSituacaoTributaria);
+        const ipiEnq = String(item.ipiCodigoEnquadramento || '999');
+        const ipiTaxable = ['00', '49', '50', '99'].includes(ipiCST);
+        const ipiAliq = ipiTaxable ? Number(item.ipiAliquota || 0) : 0;
+        ipiBlock = {
+          cst: ipiCST,
+          cEnq: ipiEnq,
+          baseCalculo: ipiAliq > 0 ? baseCalc : undefined,
+          aliquota: ipiAliq > 0 ? ipiAliq : undefined,
+          valor: ipiAliq > 0 ? +((baseCalc * ipiAliq) / 100).toFixed(2) : undefined,
+        };
+      }
+
+      // -- Build item in nested format (matches TensorRoot API) --
+      return {
+        numero: i + 1,
+        produto: {
+          codigo: item.code || String(i + 1),
+          cEAN: ean,
+          descricao: item.description,
+          ncm: String(item.ncm || '00000000').replace(/\D/g, ''),
+          ...(item.cest ? { cest: String(item.cest) } : {}),
+          cfop: String(item.cfop || 5102),
+          unidade: unitStr,
+          quantidade: qty,
+          valorUnitario: price,
+          valorTotal: vProd,
+          cEANTrib: ean,
+          unidadeTrib: unitStr,
+          quantidadeTrib: qty,
+          valorUnitarioTrib: price,
+          valorDesconto: vDesc > 0 ? vDesc : undefined,
+          indTot: '1',
+        },
+        imposto: {
+          icms: icmsBlock,
+          pis: pisBlock,
+          cofins: cofinsBlock,
+          ...(ipiBlock ? { ipi: ipiBlock } : {}),
+        },
+      };
     });
 
-    // 7. Build emitente from business data --------------------------------------
+    // 7. CFOP auto-adjustment for interstate operations -------------------------
+    //    5xxx = intrastate, 6xxx = interstate — SEFAZ rejects mismatches
+    const ufEmitente = business.endereco?.uf?.toUpperCase() || 'SP';
+    const ufDestinatario = data.recipient?.address?.uf?.toUpperCase();
+    if (ufDestinatario && type === 'nfe') {
+      const interestadual = ufEmitente !== ufDestinatario;
+      for (const item of items) {
+        const cfop = String(item.produto.cfop);
+        if (interestadual && cfop.startsWith('5')) {
+          item.produto.cfop = '6' + cfop.slice(1);
+        } else if (!interestadual && cfop.startsWith('6')) {
+          item.produto.cfop = '5' + cfop.slice(1);
+        }
+      }
+    }
+
+    // 8. Build emitente from business data --------------------------------------
 
     const emitente: Record<string, unknown> = {
       cnpj: business.cnpj?.replace(/\D/g, ''),
-      inscricaoEstadual: fiscal.inscricaoEstadual,
-      razaoSocial: business.razaoSocial,
+      nome: business.razaoSocial,
       nomeFantasia: business.nomeFantasia,
+      inscricaoEstadual: fiscal.inscricaoEstadual,
+      inscricaoMunicipal: fiscal.inscricaoMunicipal || undefined,
       crt,
     };
 
     if (business.endereco) {
       emitente.endereco = {
         logradouro: business.endereco.logradouro,
-        numero: business.endereco.numero,
+        numero: business.endereco.numero || 'SN',
         complemento: business.endereco.complemento || undefined,
         bairro: business.endereco.bairro,
         codigoMunicipio: fiscal.ibgeCodigoMunicipio,
         municipio: business.endereco.municipio,
         uf: business.endereco.uf,
         cep: business.endereco.cep?.replace(/\D/g, ''),
+        codigoPais: '1058',
+        pais: 'BRASIL',
+        telefone: business.phone?.replace(/\D/g, '') || undefined,
       };
     }
 
-    // 8. Payment ----------------------------------------------------------------
+    // 9. Payment ----------------------------------------------------------------
 
     const paymentCode = getPaymentCode(data.paymentMethod || 'dinheiro');
     const totalNF = items.reduce(
-      (sum: number, it: Record<string, unknown>) =>
-        sum + (Number(it.valorTotal) || 0) - (Number(it.valorDesconto) || 0),
+      (sum: number, it: { produto: { valorTotal: number; valorDesconto?: number } }) =>
+        sum + (it.produto.valorTotal || 0) - (it.produto.valorDesconto || 0),
       0,
     );
 
+    // Card info for electronic payment methods (crédito, débito, pix)
+    const needsCardInfo = ['03', '04', '17'].includes(paymentCode);
     const pagamento = {
-      indicador: 1,
+      indicadorPagamento: '0',
       formas: [
         {
-          meio: paymentCode,
+          tipo: paymentCode,
           valor: +(Number(data.paymentValue) || totalNF).toFixed(2),
+          ...(needsCardInfo ? { cartao: { tipoIntegracao: '2' } } : {}),
         },
       ],
     };
 
-    const ufEmitente = business.endereco?.uf || 'SP';
     const now = new Date().toISOString();
 
     // 9. Emit depending on type -------------------------------------------------
 
+    // -- NFS-e ----------------------------------------------------------------
+    if (type === 'nfse') {
+      if (!fiscal.inscricaoMunicipal) {
+        return NextResponse.json(
+          { error: 'Inscricao Municipal nao configurada. Configure em Configuracoes → Fiscal.' },
+          { status: 400 },
+        );
+      }
+      if (!fiscal.ibgeCodigoMunicipio || String(fiscal.ibgeCodigoMunicipio).length !== 7) {
+        return NextResponse.json(
+          { error: 'Codigo IBGE do municipio invalido. Deve ter 7 digitos.' },
+          { status: 400 },
+        );
+      }
+
+      const isSimples = crt === '1' || crt === '2';
+      const baseCalculo = +(Number(data.valorServicos) || 0).toFixed(2);
+      const aliquotaIss = Number(data.aliquotaIss) || 0;
+      const valorISS = +((baseCalculo * aliquotaIss) / 100).toFixed(2);
+
+      const nfsePayload = stripEmpty({
+        numeroDPS: number,
+        serie: series,
+        codigoMunicipioEmissao: String(fiscal.ibgeCodigoMunicipio),
+        prestador: {
+          cnpj: business.cnpj?.replace(/\D/g, ''),
+          inscricaoMunicipal: fiscal.inscricaoMunicipal,
+          nome: business.razaoSocial,
+          nomeFantasia: business.nomeFantasia,
+          simplesNacional: isSimples ? '1' : '2',
+        },
+        tomador: data.tomador
+          ? {
+              nome: data.tomador.nome,
+              cpf: data.tomador.cpf?.replace(/\D/g, '') || undefined,
+              cnpj: data.tomador.cnpj?.replace(/\D/g, '') || undefined,
+              email: data.tomador.email,
+            }
+          : undefined,
+        servico: {
+          codigoTributacaoNacional: (data.codigoServico || '').replace(/\D/g, '').padEnd(6, '0'),
+          codigoTributacaoMunicipal: data.codigoServicoMunicipal || undefined,
+          discriminacao: data.discriminacao || data.descricaoServico,
+          localPrestacao: { codigoMunicipio: String(fiscal.ibgeCodigoMunicipio) },
+          nbs: data.nbs,
+        },
+        valores: {
+          valorServicos: baseCalculo,
+          valorDeducoes: data.valorDeducoes ? +Number(data.valorDeducoes).toFixed(2) : undefined,
+          valorDescontoIncondicionado: data.valorDesconto ? +Number(data.valorDesconto).toFixed(2) : undefined,
+        },
+        issqn: {
+          tipoRetencaoISSQN: data.issRetido ? '2' : '1',
+          baseCalculo,
+          aliquota: aliquotaIss,
+          valorISS,
+          valorISSRetido: data.issRetido ? valorISS : undefined,
+        },
+        informacoesComplementares: data.informacoesAdicionais,
+        ambiente,
+        certificado,
+      });
+
+      const result = await emitirNFSe(nfsePayload);
+
+      // Commit number only after success
+      if (result.status === 'autorizado') {
+        await commitInvoiceNumber(businessId, 'nfse', number);
+      }
+
+      // Persist fiscal document
+      if (result.chaveAcesso || result.status === 'autorizado') {
+        await adminDb.collection('fiscalDocuments').add(
+          stripEmpty({
+            businessId,
+            type: 'nfse',
+            number,
+            series,
+            accessKey: result.chaveAcesso,
+            protocol: result.protocolo,
+            status: result.status === 'autorizado' ? 'autorizada' : result.status,
+            xml: result.xml,
+            sefazResponse: result,
+            totalValue: baseCalculo,
+            clientName: data.tomador?.nome,
+            clientCpfCnpj: data.tomador?.cpf || data.tomador?.cnpj,
+            createdAt: now,
+            updatedAt: now,
+          }),
+        );
+      }
+
+      return NextResponse.json(
+        { success: result.success, data: result },
+        { status: result.status === 'autorizado' ? 201 : 200 },
+      );
+    }
+
+    // -- NFC-e ----------------------------------------------------------------
     if (type === 'nfce') {
       // Validate NFC-e specific fields (CSC)
       if (!fiscal.nfceConfig?.cscId || !fiscal.nfceConfig?.cscToken) {
@@ -255,25 +411,37 @@ export async function POST(request: NextRequest) {
         ufEmitente,
         ambiente,
         naturezaOperacao: data.naturezaOperacao || 'VENDA AO CONSUMIDOR FINAL',
-        consumidorFinal: 1,
-        presencaComprador: data.presencaComprador ?? 1,
-        itens: items,
-        pagamento,
-        csc: {
-          id: fiscal.nfceConfig.cscId,
-          token: fiscal.nfceConfig.cscToken,
-        },
+        tipoOperacao: '1',
+        finalidade: '1',
+        consumidorFinal: '1',
+        presencaComprador: String(data.presencaComprador ?? 1),
         consumidor: data.cpfConsumidor
           ? {
               cpf: data.cpfConsumidor.replace(/\D/g, ''),
               nome: data.nomeConsumidor,
             }
+          : data.nomeConsumidor
+            ? { nome: data.nomeConsumidor }
+            : undefined,
+        itens: items,
+        pagamento,
+        transporte: { modFrete: '9' },
+        csc: {
+          id: fiscal.nfceConfig.cscId,
+          token: fiscal.nfceConfig.cscToken,
+        },
+        informacoesAdicionais: data.informacoesAdicionais
+          ? { contribuinte: data.informacoesAdicionais }
           : undefined,
-        informacoesAdicionais: data.informacoesAdicionais,
         certificado,
       });
 
       const result = await emitirNFCe(nfcePayload as Record<string, unknown> & { certificado: CertificadoPayload; ambiente: SefazAmbiente });
+
+      // Commit number only after SEFAZ accepts
+      if (result.status === 'autorizado') {
+        await commitInvoiceNumber(businessId, 'nfce', number);
+      }
 
       // Persist fiscal document
       if (result.chaveAcesso) {
@@ -321,13 +489,15 @@ export async function POST(request: NextRequest) {
           endereco: data.recipient.address
             ? {
                 logradouro: data.recipient.address.logradouro,
-                numero: data.recipient.address.numero,
+                numero: data.recipient.address.numero || 'SN',
                 complemento: data.recipient.address.complemento || undefined,
                 bairro: data.recipient.address.bairro,
                 codigoMunicipio: data.recipient.address.codigoMunicipio,
                 municipio: data.recipient.address.municipio,
                 uf: data.recipient.address.uf,
                 cep: data.recipient.address.cep?.replace(/\D/g, ''),
+                codigoPais: '1058',
+                pais: 'BRASIL',
               }
             : undefined,
         })
@@ -340,18 +510,28 @@ export async function POST(request: NextRequest) {
       ufEmitente,
       ambiente,
       naturezaOperacao: data.naturezaOperacao || 'VENDA DE MERCADORIA',
-      finalidadeEmissao: data.finalidadeEmissao ?? 1,
-      consumidorFinal: data.consumidorFinal ?? 0,
-      presencaComprador: data.presencaComprador ?? 1,
+      tipoOperacao: '1',
+      finalidade: String(data.finalidadeEmissao ?? 1),
+      consumidorFinal: String(data.consumidorFinal ?? 0),
+      presencaComprador: String(data.presencaComprador ?? 1),
       destinatario,
       itens: items,
       pagamento,
-      modalidadeFrete: data.modalidadeFrete ?? 9,
-      informacoesAdicionais: data.informacoesAdicionais,
+      transporte: {
+        modFrete: String(data.modalidadeFrete ?? 9),
+      },
+      informacoesAdicionais: data.informacoesAdicionais
+        ? { contribuinte: data.informacoesAdicionais }
+        : undefined,
       certificado,
     });
 
     const result = await emitirNFe(nfePayload as Record<string, unknown> & { certificado: CertificadoPayload; ambiente: SefazAmbiente });
+
+    // Commit number only after SEFAZ accepts
+    if (result.status === 'autorizado' || result.status === 'processando') {
+      await commitInvoiceNumber(businessId, 'nfe', number);
+    }
 
     // Persist fiscal document
     if (result.chaveAcesso) {
