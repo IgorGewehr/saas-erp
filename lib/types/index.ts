@@ -694,6 +694,20 @@ export interface KanbanComment {
   createdAt: string;
 }
 
+export type KanbanRecurrence = 'daily' | 'weekly' | 'monthly';
+
+export interface KanbanAttachment {
+  id: string;
+  name: string;
+  url: string;
+  storagePath: string;
+  type: string;
+  size: number;
+  uploadedBy: string;
+  uploadedByName: string;
+  uploadedAt: string;
+}
+
 export interface KanbanCard {
   id: string;
   businessId: string;
@@ -708,6 +722,8 @@ export interface KanbanCard {
   dueDate?: string;
   checklist?: KanbanChecklistItem[];
   comments?: KanbanComment[];
+  attachments?: KanbanAttachment[];
+  recurrence?: KanbanRecurrence;
   commentsCount: number;
   attachmentsCount: number;
   coverColor?: string;

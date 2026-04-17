@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
-import { emitirNFe, emitirNFCe, emitirNFSe, CertificadoPayload, SefazAmbiente, resolveAmbiente } from '@/lib/services/sefaz-gateway';
+import { emitirNFe, emitirNFCe, emitirNFSe, NfsePayload, CertificadoPayload, SefazAmbiente, resolveAmbiente } from '@/lib/services/sefaz-gateway';
 import {
   peekNextInvoiceNumber,
   commitInvoiceNumber,
@@ -359,7 +359,7 @@ export async function POST(request: NextRequest) {
         certificado,
       });
 
-      const result = await emitirNFSe(nfsePayload);
+      const result = await emitirNFSe(nfsePayload as NfsePayload);
 
       // Commit number only after success
       if (result.status === 'autorizado') {

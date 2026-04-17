@@ -268,7 +268,7 @@ export default function FinancialModule() {
       const q = txSearch.toLowerCase();
       filtered = filtered.filter((t) =>
         t.description.toLowerCase().includes(q) ||
-        t.category.toLowerCase().includes(q) ||
+        (t.category || '').toLowerCase().includes(q) ||
         (t.clientName && t.clientName.toLowerCase().includes(q))
       );
     }
@@ -307,9 +307,9 @@ export default function FinancialModule() {
   const expenseBreakdown = useMemo(() => {
     const cats: Record<string, number> = {};
     transactions
-      .filter(t => t.type === 'despesa' && t.status === 'pago')
+      .filter(t => t.type === 'despesa' && t.status === 'pago' && t.category)
       .forEach(t => {
-        cats[t.category] = (cats[t.category] || 0) + t.amount;
+        cats[t.category!] = (cats[t.category!] || 0) + t.amount;
       });
     const total = Object.values(cats).reduce((s, v) => s + v, 0);
     const colors = ['#DC2626', '#3B82F6', '#F59E0B', '#10B981', '#8B5CF6', '#EC4899', '#F97316', '#06B6D4', '#6366F1', '#6B7280'];
@@ -370,9 +370,9 @@ export default function FinancialModule() {
     setEditingTransaction(transaction);
     setFormType(transaction.type);
     setFormDescription(transaction.description);
-    setFormCategory(transaction.category);
+    setFormCategory(transaction.category ?? '');
     setFormAmount(transaction.amount.toString());
-    setFormDueDate(transaction.dueDate);
+    setFormDueDate(transaction.dueDate ?? '');
     setFormPaymentDate(transaction.paymentDate || '');
     setFormPaymentMethod(transaction.paymentMethod || '');
     setFormNotes(transaction.notes || '');

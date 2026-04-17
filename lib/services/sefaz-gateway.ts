@@ -355,7 +355,7 @@ export interface NfsePayload {
     nomeFantasia?: string;
     simplesNacional?: '1' | '2';
   };
-  tomador: {
+  tomador?: {
     nome: string;
     cpf?: string;
     cnpj?: string;

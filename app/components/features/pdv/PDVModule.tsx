@@ -405,6 +405,88 @@ export default function PDVModule() {
     setShowConfirmation(true);
   }, [cart.length, remaining]);
 
+  // ==========================================
+  // NFC-e EMISSION
+  // ==========================================
+
+  const emitNfce = useCallback(async (
+    saleId: string,
+    cartSnapshot: CartItem[],
+    saleTotal: number,
+    salePayments: Payment[],
+    clientName: string,
+    cpf: string,
+  ) => {
+    if (!business) return { success: false };
+
+    setNfceModalState('emitting');
+    setNfceResult(null);
+
+    try {
+      // Build items with fiscal data from products
+      const nfceItems = cartSnapshot.map((item) => {
+        const prod = item.productId ? products.find(p => p.id === item.productId) : null;
+        return {
+          description: item.description,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          discount: (item.discount || 0) > 0 ? item.discount : undefined,
+          ncm: prod?.ncm || undefined,
+          cfop: prod?.cfop ? Number(prod.cfop) : undefined,
+          barcode: prod?.barcode || undefined,
+          code: prod?.sku || item.productId || item.serviceId || undefined,
+          unit: 'UN',
+        };
+      });
+
+      // Map primary payment method
+      const primaryPayment = salePayments[0];
+      const paymentMethod = primaryPayment?.method || 'dinheiro';
+
+      const nfcePayload = {
+        type: 'nfce' as const,
+        businessId: business.id,
+        items: nfceItems,
+        paymentMethod,
+        paymentValue: saleTotal,
+        cpfConsumidor: cpf.replace(/\D/g, '') || undefined,
+        nomeConsumidor: clientName.trim() || undefined,
+        presencaComprador: 1,
+        naturezaOperacao: 'VENDA AO CONSUMIDOR FINAL',
+      };
+
+      const res = await fetch('/api/fiscal/emit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(nfcePayload),
+      });
+
+      const json = await res.json();
+
+      if (res.ok && json.success && json.data?.status === 'autorizado') {
+        setNfceResult({
+          accessKey: json.data.chaveAcesso,
+        });
+        setNfceModalState('authorized');
+
+        // Invalidate fiscal documents cache
+        queryClient.invalidateQueries({ queryKey: ['fiscalDocuments'] });
+
+        return { success: true, accessKey: json.data.chaveAcesso };
+      } else {
+        const errorMsg = json.error || json.data?.mensagem || 'Erro desconhecido na emissão da NFC-e';
+        setNfceResult({ error: errorMsg });
+        setNfceModalState('error');
+        return { success: false };
+      }
+    } catch (err) {
+      console.error('NFC-e emission error:', err);
+      setNfceResult({ error: err instanceof Error ? err.message : 'Erro de conexão ao emitir NFC-e' });
+      setNfceModalState('error');
+      return { success: false };
+    }
+  }, [business, products, queryClient]);
+
   const confirmSale = useCallback(async () => {
     if (!user || !business) return;
 
@@ -577,88 +659,6 @@ export default function PDVModule() {
     setEmitirNfce(false);
     setCpfConsumidor('');
   }, []);
-
-  // ==========================================
-  // NFC-e EMISSION
-  // ==========================================
-
-  const emitNfce = useCallback(async (
-    saleId: string,
-    cartSnapshot: CartItem[],
-    saleTotal: number,
-    salePayments: Payment[],
-    clientName: string,
-    cpf: string,
-  ) => {
-    if (!business) return { success: false };
-
-    setNfceModalState('emitting');
-    setNfceResult(null);
-
-    try {
-      // Build items with fiscal data from products
-      const nfceItems = cartSnapshot.map((item) => {
-        const prod = item.productId ? products.find(p => p.id === item.productId) : null;
-        return {
-          description: item.description,
-          quantity: item.quantity,
-          unitPrice: item.unitPrice,
-          discount: (item.discount || 0) > 0 ? item.discount : undefined,
-          ncm: prod?.ncm || undefined,
-          cfop: prod?.cfop ? Number(prod.cfop) : undefined,
-          barcode: prod?.barcode || undefined,
-          code: prod?.sku || item.productId || item.serviceId || undefined,
-          unit: 'UN',
-        };
-      });
-
-      // Map primary payment method
-      const primaryPayment = salePayments[0];
-      const paymentMethod = primaryPayment?.method || 'dinheiro';
-
-      const nfcePayload = {
-        type: 'nfce' as const,
-        businessId: business.id,
-        items: nfceItems,
-        paymentMethod,
-        paymentValue: saleTotal,
-        cpfConsumidor: cpf.replace(/\D/g, '') || undefined,
-        nomeConsumidor: clientName.trim() || undefined,
-        presencaComprador: 1,
-        naturezaOperacao: 'VENDA AO CONSUMIDOR FINAL',
-      };
-
-      const res = await fetch('/api/fiscal/emit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(nfcePayload),
-      });
-
-      const json = await res.json();
-
-      if (res.ok && json.success && json.data?.status === 'autorizado') {
-        setNfceResult({
-          accessKey: json.data.chaveAcesso,
-        });
-        setNfceModalState('authorized');
-
-        // Invalidate fiscal documents cache
-        queryClient.invalidateQueries({ queryKey: ['fiscalDocuments'] });
-
-        return { success: true, accessKey: json.data.chaveAcesso };
-      } else {
-        const errorMsg = json.error || json.data?.mensagem || 'Erro desconhecido na emissão da NFC-e';
-        setNfceResult({ error: errorMsg });
-        setNfceModalState('error');
-        return { success: false };
-      }
-    } catch (err) {
-      console.error('NFC-e emission error:', err);
-      setNfceResult({ error: err instanceof Error ? err.message : 'Erro de conexão ao emitir NFC-e' });
-      setNfceModalState('error');
-      return { success: false };
-    }
-  }, [business, products, queryClient]);
 
   const handleNfceRetry = useCallback(async () => {
     const ctx = pendingNfceRef.current;

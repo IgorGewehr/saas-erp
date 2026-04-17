@@ -16,7 +16,8 @@ import {
   deleteDoc,
   doc,
 } from 'firebase/firestore';
-import { db } from '@/lib/config/firebase';
+import { db, storage } from '@/lib/config/firebase';
+import { ref, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
 import type {
   KanbanBoard,
   KanbanColumn,
@@ -25,6 +26,8 @@ import type {
   KanbanPriority,
   KanbanChecklistItem,
   KanbanComment,
+  KanbanAttachment,
+  KanbanRecurrence,
   KanbanVisibility,
   User,
 } from '@/lib/types';
@@ -58,6 +61,11 @@ import {
   List,
   Loader2,
   Send,
+  Upload,
+  FileText,
+  Image as ImageIcon,
+  Download,
+  RefreshCw,
 } from 'lucide-react';
 
 // ─── Priority Config ──────────────────────────────────────
@@ -90,6 +98,19 @@ const DEFAULT_LABELS: KanbanLabel[] = [
 
 // ─── Local ID for client-side entities (columns, checklist items) ─────────────
 const genLocalId = () => `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+
+// ─── Attachment helpers ───────────────────────────────────
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function getFileIcon(type: string): React.ElementType {
+  if (type.startsWith('image/')) return ImageIcon;
+  if (type === 'application/pdf' || type.includes('document')) return FileText;
+  return Paperclip;
+}
 
 // ─── Member display type ──────────────────────────────────
 type MemberDisplay = Pick<User, 'id' | 'name'> & { photoURL?: string | null };
@@ -532,8 +553,11 @@ function CardDetailDialog({
   const [localAssigneeIds, setLocalAssigneeIds] = useState<string[]>(card.assigneeIds);
   const [localDueDate, setLocalDueDate] = useState(card.dueDate || '');
   const [localLabels, setLocalLabels] = useState<KanbanLabel[]>(card.labels);
+  const [attachments, setAttachments] = useState<KanbanAttachment[]>(card.attachments || []);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const commentInputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const column = columns.find(c => c.id === card.columnId);
   const checkDone = checklist.filter(c => c.completed).length;
@@ -549,6 +573,7 @@ function CardDetailDialog({
     setLocalAssigneeIds(card.assigneeIds);
     setLocalDueDate(card.dueDate || '');
     setLocalLabels(card.labels);
+    setAttachments(card.attachments || []);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [card, editingTitle, editingDescription]);
 
@@ -638,6 +663,52 @@ function CardDetailDialog({
     const newLabels = isSelected ? localLabels.filter(l => l.id !== label.id) : [...localLabels, label];
     setLocalLabels(newLabels);
     onUpdate({ ...card, labels: newLabels });
+  };
+
+  const handleUploadFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !currentUser || !card.businessId) return;
+    if (file.size > 10 * 1024 * 1024) {
+      alert('Arquivo muito grande. Limite: 10MB');
+      return;
+    }
+    const attachId = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const storagePath = `kanban/${card.businessId}/${card.id}/${attachId}_${file.name}`;
+    const storageRef = ref(storage, storagePath);
+    const task = uploadBytesResumable(storageRef, file);
+    setUploadProgress(0);
+    task.on('state_changed',
+      (snap) => setUploadProgress(Math.round((snap.bytesTransferred / snap.totalBytes) * 100)),
+      () => { setUploadProgress(null); },
+      async () => {
+        const url = await getDownloadURL(task.snapshot.ref);
+        const newAttach: KanbanAttachment = {
+          id: attachId,
+          name: file.name,
+          url,
+          storagePath,
+          type: file.type,
+          size: file.size,
+          uploadedBy: currentUser.uid,
+          uploadedByName: currentUser.name,
+          uploadedAt: new Date().toISOString(),
+        };
+        const updated = [...attachments, newAttach];
+        setAttachments(updated);
+        onUpdate({ ...card, attachments: updated, attachmentsCount: updated.length });
+        setUploadProgress(null);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      }
+    );
+  };
+
+  const handleDeleteAttachment = async (attach: KanbanAttachment) => {
+    try {
+      await deleteObject(ref(storage, attach.storagePath));
+    } catch { /* file may already be deleted */ }
+    const updated = attachments.filter(a => a.id !== attach.id);
+    setAttachments(updated);
+    onUpdate({ ...card, attachments: updated, attachmentsCount: updated.length });
   };
 
   useEffect(() => {
@@ -935,6 +1006,88 @@ function CardDetailDialog({
                     </div>
                   </div>
                 </div>
+
+                {/* Attachments */}
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <Paperclip className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+                      <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300">{t('kanban.attachments.title', 'Anexos')}</h4>
+                      {attachments.length > 0 && (
+                        <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400">{attachments.length}</span>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={uploadProgress !== null}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors disabled:opacity-40"
+                    >
+                      <Upload className="w-3 h-3" />
+                      {t('kanban.attachments.upload', 'Anexar')}
+                    </button>
+                    <input ref={fileInputRef} type="file" className="hidden" onChange={handleUploadFile} />
+                  </div>
+
+                  {/* Upload progress */}
+                  {uploadProgress !== null && (
+                    <div className="mb-3">
+                      <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400 mb-1">
+                        <span>{t('kanban.attachments.uploading', 'Enviando...')}</span>
+                        <span>{uploadProgress}%</span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-gray-100 dark:bg-gray-800 overflow-hidden">
+                        <motion.div
+                          className="h-full rounded-full bg-red-500"
+                          animate={{ width: `${uploadProgress}%` }}
+                          transition={{ duration: 0.3 }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* File list */}
+                  {attachments.length > 0 ? (
+                    <div className="space-y-1.5">
+                      {attachments.map(attach => {
+                        const FileIcon = getFileIcon(attach.type);
+                        const isOwn = attach.uploadedBy === currentUser?.uid;
+                        return (
+                          <div key={attach.id} className="group flex items-center gap-2.5 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors">
+                            <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
+                              <FileIcon className="w-4 h-4 text-gray-500 dark:text-gray-400" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-medium text-gray-700 dark:text-gray-300 truncate">{attach.name}</p>
+                              <p className="text-[11px] text-gray-400 dark:text-gray-500">{formatFileSize(attach.size)} · {attach.uploadedByName}</p>
+                            </div>
+                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <a
+                                href={attach.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="p-1.5 rounded text-gray-400 dark:text-gray-500 hover:text-blue-500 dark:hover:text-blue-400 transition-colors"
+                                title={t('kanban.attachments.download', 'Baixar')}
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                              </a>
+                              {isOwn && (
+                                <button
+                                  onClick={() => handleDeleteAttachment(attach)}
+                                  className="p-1.5 rounded text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                                  title={t('kanban.attachments.delete', 'Excluir')}
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-400 dark:text-gray-500 italic">{t('kanban.attachments.empty', 'Nenhum anexo ainda.')}</p>
+                  )}
+                </div>
               </div>
 
               {/* Right: sidebar */}
@@ -1043,6 +1196,27 @@ function CardDetailDialog({
                       );
                     })}
                   </div>
+                </div>
+
+                {/* Recurrence */}
+                <div>
+                  <p className="text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1.5">{t('kanban.recurrence.label', 'Recorrência')}</p>
+                  <select
+                    value={card.recurrence || ''}
+                    onChange={(e) => onUpdate({ ...card, recurrence: (e.target.value as KanbanRecurrence) || undefined })}
+                    className="w-full px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-700 dark:text-gray-300 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30 focus:ring-1 focus:ring-red-100 dark:focus:ring-red-500/20"
+                  >
+                    <option value="">{t('kanban.recurrence.none', 'Não repete')}</option>
+                    <option value="daily">{t('kanban.recurrence.daily', 'Diária')}</option>
+                    <option value="weekly">{t('kanban.recurrence.weekly', 'Semanal')}</option>
+                    <option value="monthly">{t('kanban.recurrence.monthly', 'Mensal')}</option>
+                  </select>
+                  {card.recurrence && (
+                    <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1 flex items-center gap-1">
+                      <RefreshCw className="w-3 h-3" />
+                      {t('kanban.recurrence.hint', 'Nova ocorrência criada ao concluir')}
+                    </p>
+                  )}
                 </div>
 
                 {/* Actions */}
@@ -1501,6 +1675,7 @@ function BoardHeader({
   filteredCards,
   viewMode,
   onViewModeChange,
+  urgentTaskCount,
 }: {
   boards: KanbanBoard[];
   activeBoard: KanbanBoard;
@@ -1519,6 +1694,7 @@ function BoardHeader({
   filteredCards: number;
   viewMode: KanbanViewMode;
   onViewModeChange: (v: KanbanViewMode) => void;
+  urgentTaskCount?: number;
 }) {
   const { t } = useTranslation();
   const [showFilters, setShowFilters] = useState(false);
@@ -1605,13 +1781,18 @@ function BoardHeader({
                 onClick={() => onViewModeChange(mode)}
                 title={label}
                 className={cn(
-                  'flex items-center justify-center w-7 h-7 rounded-lg transition-all duration-200',
+                  'relative flex items-center justify-center w-7 h-7 rounded-lg transition-all duration-200',
                   viewMode === mode
                     ? 'bg-white dark:bg-gray-700 text-red-600 dark:text-red-400 shadow-sm'
                     : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300'
                 )}
               >
                 <Icon className="w-3.5 h-3.5" />
+                {mode === 'mytasks' && urgentTaskCount && urgentTaskCount > 0 ? (
+                  <span className="absolute -top-1 -right-1 flex items-center justify-center min-w-[14px] h-[14px] px-0.5 rounded-full bg-red-500 text-white text-[9px] font-bold leading-none">
+                    {urgentTaskCount > 9 ? '9+' : urgentTaskCount}
+                  </span>
+                ) : null}
               </button>
             ))}
           </div>
@@ -2375,7 +2556,6 @@ export default function KanbanModule() {
       return;
     }
     try {
-      // Calculate new order — append to end of target column
       const targetColumnCards = cards.filter(c => c.columnId === targetColumnId);
       const newOrder = targetColumnCards.length;
       await updateDoc(doc(db, 'kanbanCards', draggingCard.id), {
@@ -2383,12 +2563,49 @@ export default function KanbanModule() {
         order: newOrder,
         updatedAt: new Date().toISOString(),
       });
+
+      // Recurrence: if dropped into the last column, create next occurrence
+      const isLastColumn = sortedColumns.length > 0 &&
+        sortedColumns[sortedColumns.length - 1].id === targetColumnId;
+      if (isLastColumn && draggingCard.recurrence && draggingCard.dueDate && business?.id) {
+        const currentDue = new Date(draggingCard.dueDate + 'T00:00:00');
+        if (draggingCard.recurrence === 'daily') currentDue.setDate(currentDue.getDate() + 1);
+        else if (draggingCard.recurrence === 'weekly') currentDue.setDate(currentDue.getDate() + 7);
+        else if (draggingCard.recurrence === 'monthly') currentDue.setMonth(currentDue.getMonth() + 1);
+        const nextDue = currentDue.toISOString().split('T')[0];
+        const firstColId = sortedColumns[0].id;
+        const firstColCards = cards.filter(c => c.columnId === firstColId);
+        await addDoc(collection(db, 'kanbanCards'), {
+          businessId: business.id,
+          boardId: draggingCard.boardId,
+          columnId: firstColId,
+          title: draggingCard.title,
+          description: draggingCard.description || null,
+          priority: draggingCard.priority,
+          labels: draggingCard.labels,
+          assigneeIds: draggingCard.assigneeIds,
+          assigneeNames: draggingCard.assigneeNames,
+          dueDate: nextDue,
+          checklist: (draggingCard.checklist || []).map(item => ({ ...item, completed: false })),
+          comments: [],
+          attachments: [],
+          recurrence: draggingCard.recurrence,
+          commentsCount: 0,
+          attachmentsCount: 0,
+          coverColor: draggingCard.coverColor || null,
+          order: firstColCards.length,
+          createdBy: draggingCard.createdBy,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+        showToast(t('kanban.recurrence.created', 'Próxima ocorrência criada automaticamente'), 'success');
+      }
     } catch (err) {
       console.error('Error moving card:', err);
       showToast(t('kanban.errors.moveCard', 'Erro ao mover card'));
     }
     setDraggingCard(null);
-  }, [draggingCard, business?.id, canEdit, cards, showToast, t]);
+  }, [draggingCard, business?.id, canEdit, cards, sortedColumns, showToast, t]);
 
   const handleDragEnd = useCallback(() => {
     setDraggingCard(null);
@@ -2601,6 +2818,15 @@ export default function KanbanModule() {
     return d < today;
   }).length;
 
+  const urgentTaskCount = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return myTasksCards.filter(c => {
+      if (!c.dueDate) return false;
+      return new Date(c.dueDate + 'T00:00:00') <= today;
+    }).length;
+  }, [myTasksCards]);
+
   // ─── Loading ──────────────────────────────────────────────
   if (loadingBoards) {
     return <KanbanSkeleton />;
@@ -2685,6 +2911,7 @@ export default function KanbanModule() {
           filteredCards={filteredCards.length}
           viewMode={viewMode}
           onViewModeChange={setViewMode}
+          urgentTaskCount={urgentTaskCount}
         />
       </motion.div>
 
