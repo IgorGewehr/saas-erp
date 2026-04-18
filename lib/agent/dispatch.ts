@@ -72,6 +72,19 @@ export async function dispatchInboundToAgent(
         content: typeof m.content === 'string' ? m.content : '',
       }));
 
+    // If the conversation is already linked to a Client, pull their aiSummary
+    // for long-term memory across conversations. 5 lines max — enforced at write.
+    let clientMemory: string | undefined;
+    if (conv.crmContactId) {
+      try {
+        const clientSnap = await db.collection('clients').doc(conv.crmContactId).get();
+        if (clientSnap.exists) {
+          const summary = (clientSnap.data() as { aiSummary?: string }).aiSummary;
+          if (summary && summary.trim()) clientMemory = summary.trim().slice(0, 800);
+        }
+      } catch { /* non-fatal */ }
+    }
+
     const payload = {
       message_id: input.messageId,
       conversation_id: input.conversationId,
@@ -88,6 +101,8 @@ export async function dispatchInboundToAgent(
       // Configurações específicas por modo — vão para o prompt do agente
       pedidos_settings: business.settings?.aiAgent?.pedidos || null,
       agenda_settings: business.settings?.aiAgent?.agenda || null,
+      // Long-term memory carried over from previous conversations
+      client_memory: clientMemory || null,
     };
 
     const raw = JSON.stringify(payload);

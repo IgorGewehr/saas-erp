@@ -15,6 +15,7 @@ type Action =
   | 'get'
   | 'list_by_client'
   | 'update_status'
+  | 'update_items'
   | 'cancel'
   | 'list_recent';
 
@@ -63,6 +64,12 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true, data: await listByClient(businessId, (body.params.clientId || body.params.phone) as string, (body.params.limit as number) || 10) });
       case 'update_status':
         return NextResponse.json({ ok: true, data: await updateStatus(businessId, body.params.id as string, body.params.status as DeliveryOrderStatus) });
+      case 'update_items':
+        return NextResponse.json({ ok: true, data: await updateItems(
+          businessId,
+          body.params.id as string,
+          body.params.items as Array<{ productId: string; quantity: number; notes?: string }>,
+        ) });
       case 'cancel':
         return NextResponse.json({ ok: true, data: await cancelOrder(businessId, body.params.id as string, body.params.reason as string | undefined) });
       case 'list_recent':
@@ -85,10 +92,50 @@ async function createOrder(businessId: string, params: CreateParams) {
   if (!params.clientName) throw new Error('clientName required');
   if (!params.items?.length) throw new Error('items required');
 
-  // Validate products exist & are deliverable, compute prices
+  // Validate products exist & are deliverable, compute prices, pre-check stock (incl BOM)
   const productRefs = await Promise.all(
     params.items.map(i => adminDb.collection('products').doc(i.productId).get()),
   );
+  const productIndex = new Map<string, Product>();
+  for (let i = 0; i < params.items.length; i++) {
+    const snap = productRefs[i];
+    if (snap.exists) productIndex.set(snap.id, snap.data() as Product);
+  }
+
+  // Stock validation — expands BOM and sums totals per leaf SKU
+  const stockBucket = new Map<string, number>();
+  for (let i = 0; i < params.items.length; i++) {
+    const line = params.items[i];
+    const product = productIndex.get(line.productId);
+    if (!product) throw new Error(`Produto não encontrado: ${line.productId}`);
+    if (product.components && product.components.length > 0) {
+      for (const comp of product.components) {
+        stockBucket.set(comp.productId, (stockBucket.get(comp.productId) || 0) + comp.quantity * line.quantity);
+      }
+    } else {
+      stockBucket.set(product.id, (stockBucket.get(product.id) || 0) + line.quantity);
+    }
+  }
+  // Fetch any leaf products that aren't already in the index
+  const missingLeafIds = Array.from(stockBucket.keys()).filter(id => !productIndex.has(id));
+  if (missingLeafIds.length > 0) {
+    const extra = await Promise.all(
+      missingLeafIds.map(id => adminDb.collection('products').doc(id).get()),
+    );
+    extra.forEach(s => { if (s.exists) productIndex.set(s.id, s.data() as Product); });
+  }
+  const shortages: string[] = [];
+  for (const [pid, qty] of stockBucket.entries()) {
+    const prod = productIndex.get(pid);
+    if (!prod) continue;
+    if ((prod.currentStock || 0) < qty) {
+      shortages.push(`${prod.name} (pedido: ${qty}, disponível: ${prod.currentStock || 0})`);
+    }
+  }
+  if (shortages.length > 0) {
+    throw new Error(`Estoque insuficiente: ${shortages.join('; ')}`);
+  }
+
   const resolvedItems: DeliveryOrderItem[] = [];
   for (let i = 0; i < params.items.length; i++) {
     const line = params.items[i];
@@ -194,6 +241,62 @@ async function updateStatus(businessId: string, orderId: string, status: Deliver
   if (status === 'entregue') patch.deliveredAt = new Date().toISOString();
   await ref.update(patch);
   return { id: orderId, status };
+}
+
+async function updateItems(
+  businessId: string,
+  orderId: string,
+  newItems: Array<{ productId: string; quantity: number; notes?: string }>,
+) {
+  if (!newItems?.length) throw new Error('items required');
+
+  const ref = adminDb.collection('deliveryOrders').doc(orderId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new Error('Pedido não encontrado');
+  const existing = snap.data() as DeliveryOrder;
+  if (existing.businessId !== businessId) throw new Error('Cross-tenant access denied');
+
+  // Only allow item edits before the kitchen starts
+  if (existing.status === 'preparando' || existing.status === 'pronto' || existing.status === 'saiu_entrega' || existing.status === 'entregue') {
+    throw new Error(`Não é possível editar itens — pedido já está com status "${existing.status}"`);
+  }
+  // Block if stock was already deducted (defense in depth)
+  if (existing.stockDeductedAt) {
+    throw new Error('Itens não podem ser alterados após dedução de estoque');
+  }
+
+  // Resolve new items + recompute totals
+  const productRefs = await Promise.all(
+    newItems.map(i => adminDb.collection('products').doc(i.productId).get()),
+  );
+  const resolvedItems: DeliveryOrderItem[] = [];
+  for (let i = 0; i < newItems.length; i++) {
+    const line = newItems[i];
+    const s = productRefs[i];
+    if (!s.exists) throw new Error(`Produto não encontrado: ${line.productId}`);
+    const p = s.data() as Product;
+    if (p.businessId !== businessId) throw new Error('Cross-tenant product access denied');
+    if (!p.isDeliverable) throw new Error(`Produto "${p.name}" não está no cardápio`);
+    resolvedItems.push({
+      productId: s.id,
+      productName: p.name,
+      quantity: line.quantity,
+      unitPrice: p.salePrice,
+      total: p.salePrice * line.quantity,
+      ...(line.notes ? { notes: line.notes } : {}),
+      ...(p.imageUrl ? { imageUrl: p.imageUrl } : {}),
+    });
+  }
+
+  const subtotal = resolvedItems.reduce((s, i) => s + i.total, 0);
+  const total = Math.max(0, subtotal + (existing.deliveryFee || 0) - (existing.discount || 0));
+  await ref.update({
+    items: resolvedItems,
+    subtotal,
+    total,
+    updatedAt: new Date().toISOString(),
+  });
+  return { id: orderId, itemsCount: resolvedItems.length, subtotal, total };
 }
 
 async function cancelOrder(businessId: string, orderId: string, reason?: string) {

@@ -15,10 +15,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from ..auth import verify_inbound
 from ..config import get_settings
 from ..graph.graph import run_agent
+from ..graph.state import AgentRunResult
 from ..logging_config import get_logger
 from ..schemas import ProcessRequest, ProcessResponse
 from ..store.runs import persist_run
-from ..tools.client import send_final_message
+from ..tools.client import call_tool, send_final_message
 
 router = APIRouter()
 log = get_logger("api")
@@ -27,6 +28,58 @@ log = get_logger("api")
 @router.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "servicepro-agent"}
+
+
+async def _update_client_memory(business_id: str, result: AgentRunResult) -> None:
+    """If the run referenced a client, append a short summary to Client.aiSummary.
+
+    We only update when there's something worth remembering: a tool created/
+    modified an order, appointment, or client record. Pure Q&A doesn't change
+    the memory — keeps tokens bounded.
+    """
+    client_id: str | None = None
+    noteworthy = False
+    for t in (result.tool_calls or []):
+        name = t.get("name", "")
+        args = t.get("arguments") or {}
+        if name in ("orders_create", "agenda_book", "clients_create", "agenda_update", "agenda_cancel", "orders_cancel", "orders_update_items", "clients_update"):
+            noteworthy = True
+            # Try to harvest client_id from any tool we can
+            if name == "clients_create" and t.get("result"):
+                client_id = (t.get("result") or {}).get("id") or client_id
+            elif "clientId" in args and args["clientId"]:
+                client_id = args["clientId"]
+            elif "id" in args and name.startswith("clients_"):
+                client_id = args["id"]
+    if not noteworthy or not client_id:
+        return
+
+    # Compose a terse summary (1 line) from intent + final response
+    snippet = (result.final_response or "")[:160].replace("\n", " ").strip()
+    if not snippet:
+        return
+    date_tag = time.strftime("%Y-%m-%d", time.gmtime())
+    memory_line = f"{date_tag}: {snippet}"
+
+    # Server-side append: fetch current aiSummary, append bounded to last 5 entries
+    try:
+        get_resp = await call_tool(business_id, "clients_get", {"id": client_id})
+    except Exception:
+        return
+    existing = (get_resp.get("aiSummary") or "") if isinstance(get_resp, dict) else ""
+    lines = [ln for ln in existing.splitlines() if ln.strip()]
+    lines.append(memory_line)
+    if len(lines) > 5:
+        lines = lines[-5:]
+    new_summary = "\n".join(lines)
+
+    try:
+        await call_tool(business_id, "clients_update", {
+            "id": client_id,
+            "patch": {"aiSummary": new_summary},
+        })
+    except Exception as err:
+        log.warning("memory.update_failed", error=str(err))
 
 
 @router.post("/process", response_model=ProcessResponse)
@@ -71,6 +124,14 @@ async def process(request: Request, auth: tuple[str, str] = Depends(verify_inbou
                 )
             except Exception as err:
                 log.error("process.send_failed", run_id=run_id, error=str(err))
+
+        # Best-effort: update persistent memory (Client.aiSummary) when the run
+        # touched a client. Keeps a rolling 1-2 line summary so the next run
+        # has context beyond the last 10 messages.
+        try:
+            await _update_client_memory(business_id, result)
+        except Exception as err:
+            log.warning("process.memory_update_failed", run_id=run_id, error=str(err))
 
         latency = int((time.time() - start) * 1000)
         log.info(

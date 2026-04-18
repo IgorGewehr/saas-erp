@@ -39,6 +39,16 @@ def _base_rules(business_context: dict[str, Any]) -> str:
     ]
     if description:
         lines += ["", "CONTEXTO DO NEGÓCIO:", description]
+
+    # Long-term memory of this specific client (compacted by past runs)
+    client_memory = business_context.get("client_memory") if isinstance(business_context, dict) else None
+    if client_memory:
+        lines += [
+            "",
+            "HISTÓRICO RESUMIDO DESTE CLIENTE (até 5 interações anteriores):",
+            client_memory,
+            "Use para personalizar sem mencionar que 'o sistema lembra'.",
+        ]
     return "\n".join(lines)
 
 

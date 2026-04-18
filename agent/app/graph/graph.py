@@ -99,6 +99,26 @@ async def run_agent(*, run_id: str, business_id: str, req: ProcessRequest) -> Ag
     model = settings.openai_model_default
     t0 = time.time()
 
+    # Daily budget gate — skip the run if the business already hit its cap
+    from ..budget import check_budget
+    allowed, usd_today, cap = await check_budget(business_id)
+    if not allowed:
+        log.warning("budget.exceeded", run_id=run_id, business_id=business_id, usd_today=usd_today, cap=cap)
+        return AgentRunResult(
+            run_id=run_id,
+            business_id=business_id,
+            conversation_id=req.conversation_id,
+            message_id=req.message_id,
+            user_message=req.message,
+            final_response=None,
+            intent="budget_exceeded",
+            iterations=0,
+            status="skipped",
+            error=f"Daily budget exceeded: ${usd_today:.2f} / ${cap:.2f}",
+            total_latency_ms=0,
+            model=model,
+        )
+
     # Prepare initial state from the HTTP payload
     initial_messages: list[BaseMessage] = []
     # Append any prior turn context (compact) — the webhook sends the last N
@@ -126,6 +146,8 @@ async def run_agent(*, run_id: str, business_id: str, req: ProcessRequest) -> Ag
             # Settings específicas por modo — consumidas pelos prompts
             "pedidos": req.pedidos_settings or {},
             "agenda": req.agenda_settings or {},
+            # Long-term memory of this client (past interactions)
+            "client_memory": req.client_memory or "",
         },
         "contact": {
             "name": req.contact_name,

@@ -1,11 +1,13 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
-import type { Appointment, AppointmentStatus, Service, User } from '@/lib/types';
+import type { Appointment, AppointmentStatus, Service, User, WorkSchedule } from '@/lib/types';
 
 type Action =
   | 'list_services'
+  | 'list_professionals'
   | 'check_availability'
+  | 'get_next_available'
   | 'book'
   | 'list_by_client'
   | 'get'
@@ -41,12 +43,24 @@ export async function POST(req: NextRequest) {
     switch (body.action) {
       case 'list_services':
         return NextResponse.json({ ok: true, data: await listServices(businessId) });
+      case 'list_professionals':
+        return NextResponse.json({ ok: true, data: await listProfessionals(businessId, body.params.serviceId as string | undefined) });
+      case 'get_next_available':
+        return NextResponse.json({ ok: true, data: await getNextAvailable(
+          businessId,
+          body.params.serviceId as string | undefined,
+          body.params.professionalId as string | undefined,
+          (body.params.durationMinutes as number) || 60,
+          (body.params.daysAhead as number) || 7,
+          body.params.fromDate as string | undefined,
+        ) });
       case 'check_availability':
         return NextResponse.json({ ok: true, data: await checkAvailability(
           businessId,
           body.params.date as string,
           body.params.professionalId as string | undefined,
           (body.params.durationMinutes as number) || 60,
+          body.params.serviceId as string | undefined,
         ) });
       case 'book':
         return NextResponse.json({ ok: true, data: await bookAppointment(businessId, body.params as unknown as BookParams) });
@@ -81,6 +95,51 @@ async function listServices(businessId: string) {
   return snap.docs.map(d => ({ ...(d.data() as Service), id: d.id }));
 }
 
+async function listProfessionals(businessId: string, serviceId?: string) {
+  const snap = await adminDb.collection('users')
+    .where('businessId', '==', businessId)
+    .get();
+  const users = snap.docs
+    .map(d => ({ ...(d.data() as User), id: d.id }))
+    .filter(u => u.isActive !== false);
+
+  const filtered = serviceId
+    ? users.filter(u => !u.serviceIds || u.serviceIds.length === 0 || u.serviceIds.includes(serviceId))
+    : users;
+
+  // Return only what the agent needs — strip auth/session sensitive fields
+  return filtered.map(u => ({
+    id: u.id,
+    name: u.name,
+    role: u.role,
+    serviceIds: u.serviceIds || [],
+  }));
+}
+
+async function getNextAvailable(
+  businessId: string,
+  serviceId: string | undefined,
+  professionalId: string | undefined,
+  durationMinutes: number,
+  daysAhead: number,
+  fromDate?: string,
+) {
+  const start = fromDate ? new Date(fromDate + 'T12:00:00') : new Date();
+  const cap = Math.min(30, daysAhead);
+
+  for (let i = 0; i < cap; i++) {
+    const d = new Date(start);
+    d.setDate(d.getDate() + i);
+    const dateStr = d.toISOString().slice(0, 10);
+    const result = await checkAvailability(businessId, dateStr, professionalId, durationMinutes, serviceId);
+    if (result.slots.length > 0) {
+      // Return up to 5 slots from the first day that has any
+      return { date: dateStr, slots: result.slots.slice(0, 5), searchedDays: i + 1 };
+    }
+  }
+  return { date: null, slots: [], searchedDays: cap };
+}
+
 interface AvailabilitySlot {
   startTime: string;
   endTime: string;
@@ -93,7 +152,18 @@ async function checkAvailability(
   date: string,
   professionalId: string | undefined,
   durationMinutes: number,
+  serviceId?: string,
 ): Promise<{ date: string; slots: AvailabilitySlot[] }> {
+  // Load business openingHours for fallback when professional has none
+  const bizSnap = await adminDb.collection('businesses').doc(businessId).get();
+  const bizHours = bizSnap.exists ? (bizSnap.data()?.settings?.openingHours as Array<{ isOpen: boolean; openTime: string; closeTime: string }> | undefined) : undefined;
+  const dayOfWeek = new Date(date + 'T12:00:00').getDay(); // 0=Sun..6=Sat
+
+  // If business is explicitly closed that day, short-circuit
+  if (bizHours && bizHours[dayOfWeek] && bizHours[dayOfWeek].isOpen === false) {
+    return { date, slots: [] };
+  }
+
   // Load existing appointments for the day
   const apptsSnap = await adminDb.collection('appointments')
     .where('businessId', '==', businessId)
@@ -108,26 +178,50 @@ async function checkAvailability(
     ? [await adminDb.collection('users').doc(professionalId).get()]
     : (await adminDb.collection('users').where('businessId', '==', businessId).get()).docs;
 
-  const professionals: User[] = usersSnap
+  let professionals: User[] = usersSnap
     .filter(d => d.exists)
     .map(d => ({ ...(d.data() as User), id: d.id }))
     .filter(u => u.businessId === businessId);
 
-  // Generate candidate slots 08:00..18:00 every 30min
-  const candidates: string[] = [];
-  for (let h = 8; h < 18; h++) {
-    candidates.push(`${String(h).padStart(2, '0')}:00`);
-    candidates.push(`${String(h).padStart(2, '0')}:30`);
+  // Filter by serviceId — the professional must offer it (or have no restriction configured)
+  if (serviceId) {
+    professionals = professionals.filter(u => {
+      const ids = u.serviceIds;
+      if (!ids || ids.length === 0) return true; // sem lista = faz tudo
+      return ids.includes(serviceId);
+    });
   }
 
   const slots: AvailabilitySlot[] = [];
   for (const prof of professionals) {
+    // Determine working window for this professional on this day of week
+    const profSchedule = (prof.workingHours as unknown as Record<string, WorkSchedule[]> | undefined);
+    let windowStart = '08:00';
+    let windowEnd = '18:30';
+
+    if (profSchedule && Array.isArray(profSchedule[String(dayOfWeek)])) {
+      const entries = profSchedule[String(dayOfWeek)].filter(w => w.isActive !== false);
+      if (entries.length === 0) continue; // professional não trabalha nesse dia
+      // Use the widest window across their entries (we don't respect breaks here — kept simple)
+      windowStart = entries.reduce((min, e) => e.startTime < min ? e.startTime : min, '23:59');
+      windowEnd = entries.reduce((max, e) => e.endTime > max ? e.endTime : max, '00:00');
+    } else if (bizHours && bizHours[dayOfWeek]?.isOpen) {
+      windowStart = bizHours[dayOfWeek].openTime || windowStart;
+      windowEnd = bizHours[dayOfWeek].closeTime || windowEnd;
+    }
+
+    // Generate 30-min candidate slots within the working window
+    const candidates: string[] = [];
+    const startMins = parseInt(windowStart.slice(0, 2)) * 60 + parseInt(windowStart.slice(3, 5));
+    const endMins = parseInt(windowEnd.slice(0, 2)) * 60 + parseInt(windowEnd.slice(3, 5));
+    for (let m = startMins; m + durationMinutes <= endMins; m += 30) {
+      candidates.push(`${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`);
+    }
+
     for (const start of candidates) {
       const end = addMinutes(start, durationMinutes);
-      if (end > '18:30') continue;
-
       const conflict = appts.some(a =>
-        (professionalId ? a.professionalId === professionalId : a.professionalId === prof.id) &&
+        a.professionalId === prof.id &&
         intervalsOverlap(start, end, a.startTime, a.endTime),
       );
       if (!conflict) {
@@ -162,6 +256,18 @@ interface BookParams {
 
 async function bookAppointment(businessId: string, p: BookParams) {
   if (!p.clientName || !p.date || !p.startTime) throw new Error('clientName, date, startTime required');
+
+  // Validate professional offers this service (when both are provided)
+  if (p.professionalId && p.serviceId) {
+    const profSnap = await adminDb.collection('users').doc(p.professionalId).get();
+    if (!profSnap.exists) throw new Error('Profissional não encontrado');
+    const prof = profSnap.data() as User;
+    if (prof.businessId !== businessId) throw new Error('Profissional não pertence a esta empresa');
+    const ids = prof.serviceIds;
+    if (ids && ids.length > 0 && !ids.includes(p.serviceId)) {
+      throw new Error('Este profissional não oferece o serviço solicitado');
+    }
+  }
 
   const endTime = addMinutes(p.startTime, p.durationMinutes);
 

@@ -27,6 +27,8 @@ class ProcessRequest(BaseModel):
     # Per-mode granular settings that influence the prompt
     pedidos_settings: dict[str, Any] | None = None
     agenda_settings: dict[str, Any] | None = None
+    # Long-term memory summary of the client (last ~5 interactions, 1 line each)
+    client_memory: str | None = None
 
 
 class ProcessResponse(BaseModel):

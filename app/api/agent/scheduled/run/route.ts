@@ -1,0 +1,206 @@
+/**
+ * Scheduled automation runner — fires reminders, confirmation asks, and
+ * follow-ups for appointments across ALL businesses.
+ *
+ * Intended to run hourly via Vercel Cron or Cloud Scheduler:
+ *   vercel.json: { "crons": [{ "path": "/api/agent/scheduled/run", "schedule": "0 * * * *" }] }
+ *
+ * Auth: Bearer CRON_SECRET. Vercel adds its own header on internal cron calls,
+ * but we require explicit secret so manual triggers from other environments
+ * are also safe.
+ *
+ * Idempotency: each appointment stores *SentAt timestamps; we never re-send.
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import crypto from 'crypto';
+import { adminDb } from '@/lib/config/firebaseAdmin';
+import type { Appointment, Business, Conversation } from '@/lib/types';
+
+function requireAuth(req: NextRequest): boolean {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) return false; // not configured = refuse all
+  const header = req.headers.get('authorization');
+  if (header === `Bearer ${secret}`) return true;
+  // Vercel's built-in cron adds x-vercel-cron; accept if secret matches & header present
+  if (req.headers.get('x-vercel-cron') && header === `Bearer ${secret}`) return true;
+  return false;
+}
+
+interface RunStats {
+  remindersSent: number;
+  confirmationsAsked: number;
+  followUpsSent: number;
+  errors: Array<{ appointmentId: string; phase: string; error: string }>;
+}
+
+export async function GET(req: NextRequest) {
+  if (!requireAuth(req)) {
+    return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+  }
+
+  const stats: RunStats = { remindersSent: 0, confirmationsAsked: 0, followUpsSent: 0, errors: [] };
+
+  try {
+    // Fetch all businesses with agent enabled — skip everyone else to save work
+    const bizSnap = await adminDb.collection('businesses').get();
+    const activeBusinesses = bizSnap.docs.filter(d => {
+      const b = d.data() as Business;
+      return b.settings?.aiAgent?.enabled && b.settings?.useCase === 'servicos';
+    });
+
+    // Process each business in sequence (parallel would hammer Firestore)
+    for (const bDoc of activeBusinesses) {
+      const business = { ...(bDoc.data() as Business), id: bDoc.id };
+      await processBusiness(business, stats);
+    }
+
+    return NextResponse.json({ ok: true, data: stats });
+  } catch (err) {
+    console.error('[scheduled] fatal:', err);
+    return NextResponse.json(
+      { ok: false, error: err instanceof Error ? err.message : 'Internal error', partialStats: stats },
+      { status: 500 },
+    );
+  }
+}
+
+// ─── Per-business sweep ──────────────────────────────────────────────────────
+
+async function processBusiness(business: Business, stats: RunStats): Promise<void> {
+  const agenda = business.settings?.aiAgent?.agenda;
+  if (!agenda) return;
+
+  const now = new Date();
+  const nowMs = now.getTime();
+
+  // Fetch active (non-cancelled, non-completed) appointments in the relevant windows
+  // Widest window we need: -48h (for follow-ups) to +7 days (for long-horizon reminders)
+  const startOfWindow = new Date(nowMs - 48 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const endOfWindow = new Date(nowMs + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  const snap = await adminDb.collection('appointments')
+    .where('businessId', '==', business.id)
+    .where('date', '>=', startOfWindow)
+    .where('date', '<=', endOfWindow)
+    .get();
+
+  for (const doc of snap.docs) {
+    const appt = { ...(doc.data() as Appointment), id: doc.id };
+    if (appt.status === 'cancelado') continue;
+    // Absolute time of the appointment
+    const apptAt = new Date(`${appt.date}T${appt.startTime}:00`);
+    const diffMs = apptAt.getTime() - nowMs;
+    const diffHours = diffMs / (60 * 60 * 1000);
+
+    // ── Reminder ──
+    if (agenda.sendReminder && !appt.reminderSentAt && diffHours > 0) {
+      const target = agenda.reminderHoursBefore || 24;
+      // Fire if we're within 30 minutes of the target window
+      if (diffHours <= target && diffHours > target - 1) {
+        try {
+          const msg = `Olá ${firstName(appt.clientName)}! Lembrete: você tem ${appt.serviceName} marcado ${diffHours < 2 ? 'em breve' : 'amanhã'} às ${appt.startTime}. Até lá! 📅`;
+          await sendToContact(business, appt, msg);
+          await doc.ref.update({ reminderSentAt: new Date().toISOString() });
+          stats.remindersSent++;
+        } catch (err) {
+          stats.errors.push({ appointmentId: appt.id, phase: 'reminder', error: String(err) });
+        }
+      }
+    }
+
+    // ── Confirmation request (24–26h before) ──
+    if (agenda.confirmationBeforeAppointment && !appt.confirmationRequestedAt && diffHours > 0) {
+      if (diffHours <= 26 && diffHours >= 24 && appt.status !== 'confirmado') {
+        try {
+          const msg = `Oi ${firstName(appt.clientName)}, posso confirmar seu horário de ${appt.serviceName} amanhã às ${appt.startTime}? Responda "confirmo" para reservar ou "cancelar" caso precise desmarcar.`;
+          await sendToContact(business, appt, msg);
+          await doc.ref.update({ confirmationRequestedAt: new Date().toISOString() });
+          stats.confirmationsAsked++;
+        } catch (err) {
+          stats.errors.push({ appointmentId: appt.id, phase: 'confirmation', error: String(err) });
+        }
+      }
+    }
+
+    // ── Follow-up (12–24h after appointment ended, only if completed) ──
+    if (agenda.followUpAfter && !appt.followUpSentAt && appt.status === 'concluido') {
+      const apptEndAt = new Date(`${appt.date}T${appt.endTime}:00`);
+      const hoursAfter = (nowMs - apptEndAt.getTime()) / (60 * 60 * 1000);
+      if (hoursAfter >= 12 && hoursAfter <= 36) {
+        try {
+          const msg = `Oi ${firstName(appt.clientName)}! Como foi seu ${appt.serviceName}? Ficamos à disposição para qualquer coisa. 🙏`;
+          await sendToContact(business, appt, msg);
+          await doc.ref.update({ followUpSentAt: new Date().toISOString() });
+          stats.followUpsSent++;
+        } catch (err) {
+          stats.errors.push({ appointmentId: appt.id, phase: 'follow-up', error: String(err) });
+        }
+      }
+    }
+  }
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function firstName(full: string): string {
+  return (full || '').trim().split(/\s+/)[0] || '';
+}
+
+/**
+ * Find the client's most recent conversation and dispatch a message via
+ * /api/conversations/send using HMAC auth (same scheme as the agent).
+ *
+ * If no conversation exists, silently skip — we don't open a new thread out of
+ * the blue (would violate WhatsApp 24h window rules without templates).
+ */
+async function sendToContact(business: Business, appt: Appointment, content: string): Promise<void> {
+  const phoneDigits = (appt.clientPhone || '').replace(/\D/g, '');
+  if (!phoneDigits) throw new Error('no phone');
+
+  // Find most recent conversation by phone match
+  const convSnap = await adminDb.collection('conversations')
+    .where('businessId', '==', business.id)
+    .where('contactExternalId', '==', phoneDigits)
+    .orderBy('lastMessageAt', 'desc')
+    .limit(1)
+    .get();
+
+  if (convSnap.empty) throw new Error('no conversation found for phone');
+  const conv = { ...(convSnap.docs[0].data() as Conversation), id: convSnap.docs[0].id };
+
+  // Build HMAC-signed send request (same scheme as lib/agent/auth.ts)
+  const secret = process.env.AGENT_SHARED_SECRET;
+  if (!secret) throw new Error('AGENT_SHARED_SECRET not configured');
+
+  const body = JSON.stringify({
+    businessId: business.id,
+    conversationId: conv.id,
+    channel: conv.channel,
+    recipientId: phoneDigits,
+    content,
+    type: 'text',
+  });
+  const ts = Date.now();
+  const sig = crypto.createHmac('sha256', secret).update(`${ts}.${business.id}.${body}`).digest('hex');
+
+  // Internal URL — we're running inside the same Next.js deployment
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL || process.env.NEXT_PUBLIC_APP_URL?.replace(/^https?:\/\//, '')}`
+    : 'http://localhost:3000';
+
+  const resp = await fetch(`${baseUrl}/api/conversations/send`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-agent-signature': sig,
+      'x-agent-timestamp': String(ts),
+      'x-business-id': business.id,
+    },
+    body,
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`send failed ${resp.status}: ${text}`);
+  }
+}

@@ -3,7 +3,7 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
 import type { Client } from '@/lib/types';
 
-type Action = 'lookup_by_phone' | 'create' | 'get' | 'update_address';
+type Action = 'lookup_by_phone' | 'create' | 'get' | 'update' | 'update_address' | 'get_full_history';
 
 const digits = (v: string | undefined) => (v || '').replace(/\D/g, '');
 
@@ -30,6 +30,10 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true, data: await getClient(businessId, body.params.id as string) });
       case 'update_address':
         return NextResponse.json({ ok: true, data: await updateAddress(businessId, body.params.id as string, body.params.address) });
+      case 'update':
+        return NextResponse.json({ ok: true, data: await updateClient(businessId, body.params.id as string, body.params.patch as Record<string, unknown>) });
+      case 'get_full_history':
+        return NextResponse.json({ ok: true, data: await getFullHistory(businessId, body.params.id as string) });
       default:
         return NextResponse.json({ ok: false, error: `Unknown action: ${body.action}` }, { status: 400 });
     }
@@ -59,6 +63,9 @@ async function createClient(businessId: string, params: Record<string, unknown>)
   if (!name) throw new Error('name required');
   const phone = digits(params.phone as string | undefined);
   const whatsapp = digits(params.whatsapp as string | undefined) || phone;
+  // Source is typed as a channel for auto-link (whatsapp/facebook/instagram) or a generic acquisition source
+  const source = (params.source as Client['source']) || 'whatsapp';
+  const channel = params.channel as 'whatsapp' | 'facebook' | 'instagram' | undefined;
 
   // Dedupe check
   if (phone) {
@@ -67,24 +74,103 @@ async function createClient(businessId: string, params: Record<string, unknown>)
   }
 
   const now = new Date().toISOString();
+  // Populate channelIdentities so the next inbound webhook auto-links this client
+  const channelIdentities: Record<string, string> = {};
+  const externalId = digits(params.externalId as string | undefined);
+  if (channel === 'whatsapp' && (whatsapp || externalId)) channelIdentities.whatsapp = whatsapp || externalId;
+  if (channel === 'facebook' && externalId) channelIdentities.facebook = externalId;
+  if (channel === 'instagram' && externalId) channelIdentities.instagram = externalId;
+  // If source is a channel name and externalId given, mirror into channelIdentities too
+  if (source === 'whatsapp' && whatsapp && !channelIdentities.whatsapp) channelIdentities.whatsapp = whatsapp;
+
   const doc: Partial<Client> = {
     businessId,
     name,
     phone: phone || undefined,
     whatsapp: whatsapp || undefined,
     email: (params.email as string | undefined) || undefined,
-    source: (params.source as Client['source']) || 'whatsapp',
+    source,
     status: 'novo',
     score: 0,
     isActive: true,
     totalSpent: 0,
     visitCount: 0,
+    ...(Object.keys(channelIdentities).length > 0 ? { channelIdentities } : {}),
     createdAt: now,
     updatedAt: now,
   };
   const cleaned = Object.fromEntries(Object.entries(doc).filter(([, v]) => v !== undefined));
   const ref = await adminDb.collection('clients').add(cleaned);
   return { id: ref.id, ...cleaned };
+}
+
+async function updateClient(businessId: string, id: string, patch: Record<string, unknown>) {
+  const ref = adminDb.collection('clients').doc(id);
+  const snap = await ref.get();
+  if (!snap.exists) throw new Error('Client not found');
+  const data = snap.data() as Client;
+  if (data.businessId !== businessId) throw new Error('Cross-tenant access denied');
+
+  // Whitelist of safe-to-update fields the agent may touch
+  const allowed: (keyof Client)[] = [
+    'name', 'email', 'phone', 'whatsapp', 'company',
+    'notes', 'tags', 'status', 'lifecycleStage', 'source',
+    'preferredChannel', 'optInMarketing', 'birthDate', 'gender',
+    'aiSummary',
+  ];
+  const cleanPatch: Record<string, unknown> = { updatedAt: new Date().toISOString() };
+  for (const key of allowed) {
+    if (patch[key] !== undefined) cleanPatch[key] = patch[key];
+  }
+  // Normalize phone/whatsapp digits
+  if (cleanPatch.phone) cleanPatch.phone = digits(String(cleanPatch.phone));
+  if (cleanPatch.whatsapp) cleanPatch.whatsapp = digits(String(cleanPatch.whatsapp));
+
+  await ref.update(cleanPatch);
+  return { id, ...cleanPatch };
+}
+
+async function getFullHistory(businessId: string, id: string) {
+  // Client profile
+  const snap = await adminDb.collection('clients').doc(id).get();
+  if (!snap.exists) throw new Error('Client not found');
+  const client = snap.data() as Client;
+  if (client.businessId !== businessId) throw new Error('Cross-tenant access denied');
+
+  // Parallel fetch: orders, appointments (up to 20 of each, newest first)
+  const [ordersSnap, apptsSnap] = await Promise.all([
+    adminDb.collection('deliveryOrders')
+      .where('businessId', '==', businessId)
+      .where('clientId', '==', id)
+      .orderBy('createdAt', 'desc')
+      .limit(20)
+      .get(),
+    adminDb.collection('appointments')
+      .where('businessId', '==', businessId)
+      .where('clientId', '==', id)
+      .orderBy('date', 'desc')
+      .limit(20)
+      .get(),
+  ]);
+
+  return {
+    client: { ...client, id: snap.id },
+    orders: ordersSnap.docs.map(d => {
+      const o = d.data();
+      return { id: d.id, number: o.number, status: o.status, total: o.total, createdAt: o.createdAt, items: (o.items || []).map((i: { productName: string; quantity: number }) => `${i.quantity}× ${i.productName}`) };
+    }),
+    appointments: apptsSnap.docs.map(d => {
+      const a = d.data();
+      return { id: d.id, date: a.date, startTime: a.startTime, serviceName: a.serviceName, professionalName: a.professionalName, status: a.status, price: a.price };
+    }),
+    stats: {
+      totalOrders: ordersSnap.size,
+      totalAppointments: apptsSnap.size,
+      totalSpent: client.totalSpent || 0,
+      visitCount: client.visitCount || 0,
+      lastVisit: client.lastVisit,
+    },
+  };
 }
 
 async function getClient(businessId: string, id: string) {

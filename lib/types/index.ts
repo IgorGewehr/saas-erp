@@ -201,12 +201,46 @@ export const USE_CASE_DESCRIPTIONS: Record<UseCase, string> = {
   simples: 'Apenas o essencial: clientes, conversas, CRM e financeiro. Sem módulos operacionais.',
 };
 
+export interface BusinessHoursDay {
+  isOpen: boolean;
+  openTime: string;       // 'HH:mm'
+  closeTime: string;      // 'HH:mm'
+}
+
+export type DeliveryFeeRule = { maxKm: number; fee: number };
+
+export interface DeliveryConfig {
+  radiusKm?: number;
+  feeRules?: DeliveryFeeRule[];    // múltiplas faixas (0-3km = R$ 8, 3-7km = R$ 12)
+  freeDeliveryMinValue?: number;    // acima desse valor, entrega grátis
+  estimatedMinutes?: number;
+  acceptOffHours?: boolean;         // espelha aiAgent.pedidos.acceptOrdersOffHours
+}
+
+export interface BusinessPromotion {
+  id: string;
+  code?: string;
+  name: string;
+  description?: string;
+  type: 'percentage' | 'fixed' | 'free_shipping';
+  value: number;
+  minOrderValue?: number;
+  validUntil?: string;
+  isActive: boolean;
+}
+
 export interface BusinessSettings {
   timezone?: string;
   currency?: string;
   language?: string;
   useCase?: UseCase;
   aiAgent?: AiAgentSettings;
+  /** Horário de funcionamento — 7 posições (0=Domingo, 6=Sábado) */
+  openingHours?: BusinessHoursDay[];
+  /** Configuração de entrega (usada no modo pedidos e em prompts do agente) */
+  delivery?: DeliveryConfig;
+  /** Promoções ativas */
+  promotions?: BusinessPromotion[];
 }
 
 export interface AiAgentSettings {
@@ -373,6 +407,10 @@ export interface Appointment {
   notes?: string;
   color?: string;
   recurrenceId?: string;
+  // Agent-driven automation tracking (idempotência)
+  reminderSentAt?: string;
+  confirmationRequestedAt?: string;
+  followUpSentAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -630,6 +668,8 @@ export interface Product {
   menuCategory?: string;        // Ex: "Pizzas", "Bebidas", "Sobremesas"
   menuDescription?: string;     // Short description for the menu card
   preparationTime?: number;     // Minutes — for delivery ETA
+  /** Dietary markers — usados no cardápio e pelo agente para filtrar */
+  dietary?: Array<'vegan' | 'vegetarian' | 'glutenfree' | 'lactosefree' | 'organic' | 'picante' | 'alcool' | 'kids'>;
   // Composite / BOM — when set, parent product deducts each component on sale,
   // and parent itself carries no stock of its own.
   components?: ProductComponent[];

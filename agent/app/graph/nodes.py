@@ -87,7 +87,7 @@ async def router_node(state: AgentState) -> dict[str, Any]:
             break
 
     t0 = time.time()
-    result = await llm.ainvoke([
+    result = await _invoke_with_retry(llm, [
         SystemMessage(content=prompts.ROUTER_SYSTEM),
         HumanMessage(content=user_message),
     ])
@@ -135,6 +135,28 @@ def _planner_llm(model: str, tools: list[dict[str, Any]]) -> ChatOpenAI:
     return llm.bind_tools(tools) if tools else llm  # type: ignore[return-value]
 
 
+async def _invoke_with_retry(llm: Any, messages: list[Any], max_attempts: int = 3) -> Any:
+    """Wrap an LLM invoke with exponential backoff for transient errors.
+
+    OpenAI rate limits + network hiccups are retried; schema/auth errors are NOT.
+    """
+    last_err: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            return await llm.ainvoke(messages)
+        except Exception as err:  # noqa: BLE001 — we look at the message
+            last_err = err
+            msg = str(err).lower()
+            retryable = any(k in msg for k in ["rate limit", "timeout", "timed out", "connection", "server error", "503", "502", "500"])
+            if not retryable or attempt == max_attempts - 1:
+                raise
+            backoff = 0.5 * (2 ** attempt)  # 0.5s, 1s, 2s
+            log.warning("llm.retry", attempt=attempt + 1, backoff_s=backoff, error=str(err)[:120])
+            await asyncio.sleep(backoff)
+    # Unreachable, but makes type checkers happy
+    raise last_err or RuntimeError("LLM invoke failed")
+
+
 async def planner_node(state: AgentState) -> dict[str, Any]:
     settings = get_settings()
     use_case = state.get("use_case") or "servicos"
@@ -151,7 +173,7 @@ async def planner_node(state: AgentState) -> dict[str, Any]:
 
     conv_messages = state.get("messages") or []
     t0 = time.time()
-    ai_msg = await llm.ainvoke([SystemMessage(content=system), *conv_messages])
+    ai_msg = await _invoke_with_retry(llm, [SystemMessage(content=system), *conv_messages])
     latency = int((time.time() - t0) * 1000)
 
     usage = getattr(ai_msg, "response_metadata", {}).get("token_usage", {}) or {}
@@ -280,7 +302,7 @@ async def responder_node(state: AgentState) -> dict[str, Any]:
     )
 
     t0 = time.time()
-    result = await llm.ainvoke([
+    result = await _invoke_with_retry(llm, [
         SystemMessage(content=prompts.responder_system(business_ctx)),
         HumanMessage(content=(
             "Rascunho que o sistema gerou (pode conter informações técnicas ou linguagem robótica):\n\n"

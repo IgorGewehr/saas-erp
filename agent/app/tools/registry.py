@@ -119,6 +119,35 @@ ORDERS_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "orders_update_items",
+            "description": (
+                "Replace the items list of an existing order (for adds/removes before the kitchen starts). "
+                "Only works when status is still 'recebido'. Fails once items are being prepared."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "productId": {"type": "string"},
+                                "quantity": {"type": "integer", "minimum": 1},
+                                "notes": {"type": "string"},
+                            },
+                            "required": ["productId", "quantity"],
+                        },
+                    },
+                },
+                "required": ["id", "items"],
+            },
+        },
+    },
 ]
 
 
@@ -136,19 +165,58 @@ AGENDA_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "agenda_list_professionals",
+            "description": (
+                "List professionals available. Pass serviceId to filter to those who "
+                "offer that specific service."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "serviceId": {"type": "string"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "agenda_check_availability",
             "description": (
                 "Return free time slots for a given date. Always call before booking. "
-                "If the user mentions a relative date, resolve it to YYYY-MM-DD first."
+                "If the user mentions a relative date, resolve it to YYYY-MM-DD first. "
+                "Pass serviceId to filter professionals that actually offer the service, "
+                "and the correct durationMinutes from the service catalog."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "date": {"type": "string", "description": "YYYY-MM-DD"},
                     "professionalId": {"type": "string"},
+                    "serviceId": {"type": "string"},
                     "durationMinutes": {"type": "integer", "default": 60},
                 },
                 "required": ["date"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "agenda_get_next_available",
+            "description": (
+                "Find the FIRST day in the next `daysAhead` days that has available slots. "
+                "Use when customer asks for the earliest available slot without specifying a date."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "serviceId": {"type": "string"},
+                    "professionalId": {"type": "string"},
+                    "durationMinutes": {"type": "integer", "default": 60},
+                    "daysAhead": {"type": "integer", "default": 7, "description": "Max 30"},
+                    "fromDate": {"type": "string", "description": "YYYY-MM-DD (default: today)"},
+                },
             },
         },
     },
@@ -244,21 +312,58 @@ CATALOG_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "catalog_list_menu",
-            "description": "List all deliverable products. Optional category filter.",
+            "description": (
+                "List all deliverable products. Optional filters by category and/or dietary. "
+                "Use when the customer asks 'what do you have?' or wants a full menu."
+            ),
             "parameters": {
                 "type": "object",
-                "properties": {"category": {"type": "string"}},
+                "properties": {
+                    "category": {"type": "string"},
+                    "dietary": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["vegan", "vegetarian", "glutenfree", "lactosefree",
+                                     "organic", "picante", "alcool", "kids"],
+                        },
+                    },
+                },
             },
         },
     },
     {
         "type": "function",
         "function": {
+            "name": "catalog_list_categories",
+            "description": (
+                "List all menu categories with item counts. Use before offering options to "
+                "understand what's available without loading every product."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "catalog_search",
-            "description": "Search the menu by name/category/description (substring match).",
+            "description": (
+                "Fuzzy search the menu by name/category/description. Tolerant to typos "
+                "(e.g., 'margueritta' matches 'margherita'). Optional dietary filter."
+            ),
             "parameters": {
                 "type": "object",
-                "properties": {"query": {"type": "string"}},
+                "properties": {
+                    "query": {"type": "string"},
+                    "dietary": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["vegan", "vegetarian", "glutenfree", "lactosefree",
+                                     "organic", "picante", "alcool", "kids"],
+                        },
+                    },
+                },
                 "required": ["query"],
             },
         },
@@ -285,7 +390,11 @@ CLIENT_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "clients_create",
-            "description": "Create a new client record. Called when lookup returns null.",
+            "description": (
+                "Create a new client record. Called when lookup returns null. "
+                "Pass `channel` + `externalId` (phone or Meta userId) so future inbound "
+                "messages from the same contact auto-link."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -298,8 +407,49 @@ CLIENT_TOOLS: list[dict[str, Any]] = [
                         "enum": ["site", "indicacao", "whatsapp", "instagram", "facebook",
                                  "google_ads", "linkedin", "evento", "email", "telefone", "outro"],
                     },
+                    "channel": {
+                        "type": "string",
+                        "enum": ["whatsapp", "facebook", "instagram"],
+                        "description": "The channel this contact reached us through (for auto-link).",
+                    },
+                    "externalId": {
+                        "type": "string",
+                        "description": "Meta user id / phone — stored in channelIdentities for future auto-linking.",
+                    },
                 },
                 "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clients_update",
+            "description": (
+                "Generic field updater for a client. Use for corrections (name, email, tags, "
+                "phone) or CRM moves (status, lifecycleStage). Whitelisted fields only."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "patch": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "email": {"type": "string"},
+                            "phone": {"type": "string"},
+                            "whatsapp": {"type": "string"},
+                            "company": {"type": "string"},
+                            "notes": {"type": "string"},
+                            "tags": {"type": "array", "items": {"type": "string"}},
+                            "status": {"type": "string", "enum": ["novo", "contatado", "qualificado", "proposta", "negociacao", "ganho", "perdido"]},
+                            "preferredChannel": {"type": "string", "enum": ["whatsapp", "facebook", "instagram"]},
+                            "optInMarketing": {"type": "boolean"},
+                        },
+                    },
+                },
+                "required": ["id", "patch"],
             },
         },
     },
@@ -326,6 +476,22 @@ CLIENT_TOOLS: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["id", "address"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clients_get_full_history",
+            "description": (
+                "Fetch a client's complete history in one call: profile + recent orders + "
+                "recent appointments + lifetime stats. Use before upsell or when the customer "
+                "asks about past purchases/visits."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}},
+                "required": ["id"],
             },
         },
     },
