@@ -1184,9 +1184,27 @@ async function saveInboundMessage(params: InboundMessageParams) {
     if (params.mediaMimeType) msgDoc.mediaMimeType = params.mediaMimeType;
     if (params.replyToMessageId) msgDoc.replyToMessageId = params.replyToMessageId;
     if (params.senderAvatarUrl) msgDoc.senderAvatarUrl = params.senderAvatarUrl;
-    await addDoc(collection(db, 'conversationMessages'), msgDoc);
+    const msgRef = await addDoc(collection(db, 'conversationMessages'), msgDoc);
 
     console.log('[Meta Webhook] Saved inbound message for conversation:', conversationId);
+
+    // Dispatch to AI agent (fire-and-forget). Checks business/conversation gates internally.
+    try {
+      const { adminDb } = await import('@/lib/config/firebaseAdmin');
+      const { dispatchInboundToAgent } = await import('@/lib/agent/dispatch');
+      await dispatchInboundToAgent(adminDb, {
+        businessId,
+        conversationId,
+        messageId: msgRef.id,
+        channel: params.channel,
+        message: params.content,
+        contactName: params.senderName || params.externalId,
+        contactPhone: params.externalId,
+        recipientId: params.externalId,
+      });
+    } catch (agentErr) {
+      console.warn('[Meta Webhook] Agent dispatch failed:', agentErr);
+    }
   } catch (err) {
     console.error('[Meta Webhook] Error saving inbound message:', err);
   }

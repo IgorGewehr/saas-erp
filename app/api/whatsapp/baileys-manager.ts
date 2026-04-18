@@ -14,6 +14,7 @@ import makeWASocket, {
   Browsers,
   proto,
   WAMessage,
+  WAMessageUpdate,
   MessageUpsertType,
 } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
@@ -339,7 +340,7 @@ async function handleInboundMessage(
       await updateDoc(doc(db, 'conversations', conversationId), convUpdate);
     }
 
-    await addDoc(collection(db, 'conversationMessages'), {
+    const msgRef = await addDoc(collection(db, 'conversationMessages'), {
       conversationId,
       businessId,
       channel: 'whatsapp',
@@ -353,8 +354,91 @@ async function handleInboundMessage(
       sentAt: timestamp,
       createdAt: now,
     });
+
+    // Dispatch to AI agent — uses admin SDK for consistent tenant checks
+    try {
+      const { adminDb } = await import('@/lib/config/firebaseAdmin');
+      const { dispatchInboundToAgent } = await import('@/lib/agent/dispatch');
+      await dispatchInboundToAgent(adminDb, {
+        businessId,
+        conversationId,
+        messageId: msgRef.id,
+        channel: 'whatsapp',
+        message: displayText,
+        contactName,
+        contactPhone: senderPhone,
+        recipientId: senderPhone,
+      });
+    } catch (agentErr) {
+      console.warn('[Baileys] Agent dispatch failed:', agentErr);
+    }
   } catch (err) {
     console.error('[Baileys] Erro ao salvar mensagem inbound:', err);
+  }
+}
+
+// ─── Outbound message status updates ────────────────────────────────────────
+// Baileys emits messages.update with numeric proto.WebMessageInfo.Status values.
+// We mirror the Meta Cloud API webhook flow so outbound messages don't stay 'sending'.
+async function handleOutboundStatusUpdate(
+  businessId: string,
+  updates: WAMessageUpdate[],
+): Promise<void> {
+  const db = getDb();
+  const now = new Date().toISOString();
+
+  for (const u of updates) {
+    // Only process our own sent messages (fromMe). Inbound receipts arrive here too.
+    if (!u.key?.fromMe) continue;
+
+    const externalMessageId = u.key.id;
+    if (!externalMessageId) continue;
+
+    const statusCode = u.update?.status;
+    if (statusCode == null) continue;
+
+    // proto.WebMessageInfo.Status: 0=ERROR 1=PENDING 2=SERVER_ACK 3=DELIVERY_ACK 4=READ 5=PLAYED
+    let nextStatus: 'sent' | 'delivered' | 'read' | 'failed' | null = null;
+    const patch: Record<string, unknown> = {};
+
+    if (statusCode === 0) {
+      nextStatus = 'failed';
+    } else if (statusCode === 2) {
+      nextStatus = 'sent';
+    } else if (statusCode === 3) {
+      nextStatus = 'delivered';
+      patch.deliveredAt = now;
+    } else if (statusCode >= 4) {
+      nextStatus = 'read';
+      patch.readAt = now;
+      patch.deliveredAt = now;
+    }
+
+    if (!nextStatus) continue;
+    patch.status = nextStatus;
+
+    try {
+      const q = query(
+        collection(db, 'conversationMessages'),
+        where('externalMessageId', '==', externalMessageId),
+        where('businessId', '==', businessId),
+        firestoreLimit(1),
+      );
+      const snap = await getDocs(q);
+      if (snap.empty) continue;
+
+      const msgDoc = snap.docs[0];
+      const existing = msgDoc.data() as { status?: string };
+      // Never regress: once 'read', ignore 'delivered'/'sent' updates.
+      const rank = { sending: 0, sent: 1, delivered: 2, read: 3, failed: -1 } as const;
+      const existingRank = rank[(existing.status as keyof typeof rank) || 'sending'] ?? 0;
+      const nextRank = rank[nextStatus];
+      if (nextStatus !== 'failed' && nextRank <= existingRank) continue;
+
+      await updateDoc(msgDoc.ref, patch);
+    } catch (err) {
+      console.error('[Baileys] Failed to apply status update:', err);
+    }
   }
 }
 
@@ -457,6 +541,15 @@ export async function createBaileysSession(
         } catch (err) {
           console.error('[Baileys] Erro ao processar mensagem:', err);
         }
+      }
+    });
+
+    // ── Outbound status receipts (sent / delivered / read) ──
+    sock.ev.on('messages.update', async (updates: WAMessageUpdate[]) => {
+      try {
+        await handleOutboundStatusUpdate(businessId, updates);
+      } catch (err) {
+        console.error('[Baileys] Erro em messages.update:', err);
       }
     });
 

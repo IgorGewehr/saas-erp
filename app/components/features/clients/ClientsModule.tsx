@@ -8,7 +8,7 @@ import {
   TrendingUp, ShoppingCart, Star, MoreVertical, Eye, FileText,
   Download, Upload, UserCheck,
 } from 'lucide-react';
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, limit as firestoreLimit } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -52,6 +52,7 @@ interface ClientFormData {
   source: LeadSource;
   status: LeadStatus;
   notes: string;
+  tags: string[];
   cep: string;
   logradouro: string;
   numero: string;
@@ -64,25 +65,118 @@ interface ClientFormData {
 const emptyForm: ClientFormData = {
   name: '', email: '', phone: '', whatsapp: '', company: '',
   tipo: 'pf', cpfCnpj: '', inscricaoEstadual: '', indicadorIE: '',
-  source: 'outro', status: 'ganho', notes: '',
+  source: 'outro', status: 'ganho', notes: '', tags: [],
   cep: '', logradouro: '', numero: '', complemento: '', bairro: '', municipio: '', uf: '',
 };
+
+// ─── Duplicate detection helpers ─────────────────────────────────────────────
+const digits = (v: string | undefined | null) => (v || '').replace(/\D/g, '');
+const normEmail = (v: string | undefined | null) => (v || '').trim().toLowerCase();
+
+function findDuplicate(form: ClientFormData, clients: Client[], editingId?: string): { client: Client; field: string } | null {
+  const cpfCnpj = digits(form.cpfCnpj);
+  const phone = digits(form.phone);
+  const whatsapp = digits(form.whatsapp);
+  const email = normEmail(form.email);
+
+  for (const c of clients) {
+    if (editingId && c.id === editingId) continue;
+    if (cpfCnpj && digits(c.cpfCnpj) === cpfCnpj) return { client: c, field: form.tipo === 'pj' ? 'CNPJ' : 'CPF' };
+    if (email && normEmail(c.email) === email) return { client: c, field: 'e-mail' };
+    if (phone) {
+      if (digits(c.phone) === phone) return { client: c, field: 'telefone' };
+      if (digits(c.whatsapp) === phone) return { client: c, field: 'telefone' };
+    }
+    if (whatsapp) {
+      if (digits(c.whatsapp) === whatsapp) return { client: c, field: 'WhatsApp' };
+      if (digits(c.phone) === whatsapp) return { client: c, field: 'WhatsApp' };
+    }
+  }
+  return null;
+}
+
+function TagEditor({ tags, suggestions, onChange }: { tags: string[]; suggestions: string[]; onChange: (next: string[]) => void }) {
+  const [input, setInput] = useState('');
+  const normalized = (v: string) => v.trim().replace(/\s+/g, ' ');
+
+  const add = (raw: string) => {
+    const v = normalized(raw);
+    if (!v) return;
+    if (tags.some(t => t.toLowerCase() === v.toLowerCase())) return;
+    onChange([...tags, v]);
+    setInput('');
+  };
+
+  const remove = (tag: string) => onChange(tags.filter(t => t !== tag));
+
+  const filteredSuggestions = useMemo(() => {
+    const q = input.trim().toLowerCase();
+    return suggestions
+      .filter(s => !tags.some(t => t.toLowerCase() === s.toLowerCase()))
+      .filter(s => !q || s.toLowerCase().includes(q))
+      .slice(0, 6);
+  }, [input, suggestions, tags]);
+
+  return (
+    <div>
+      <div className="flex flex-wrap gap-1.5 mb-2">
+        {tags.map(tag => (
+          <span key={tag} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 border border-red-200/60 dark:border-red-500/20">
+            <Tag className="w-3 h-3" />
+            {tag}
+            <button type="button" onClick={() => remove(tag)} className="hover:text-red-800 dark:hover:text-red-300">
+              <X className="w-3 h-3" />
+            </button>
+          </span>
+        ))}
+      </div>
+      <div className="relative">
+        <input
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter' || e.key === ',') {
+              e.preventDefault();
+              add(input);
+            } else if (e.key === 'Backspace' && !input && tags.length) {
+              remove(tags[tags.length - 1]);
+            }
+          }}
+          placeholder="Digite uma tag e pressione Enter..."
+          className="w-full bg-gray-50 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:border-red-400 transition-all"
+        />
+        {input && filteredSuggestions.length > 0 && (
+          <div className="absolute z-10 left-0 right-0 mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg overflow-hidden">
+            {filteredSuggestions.map(s => (
+              <button key={s} type="button" onClick={() => add(s)}
+                className="w-full text-left px-3 py-2 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/60 transition-colors">
+                <Tag className="w-3 h-3 inline mr-1.5 text-gray-400" />{s}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function ClientForm({
   initial,
   onSave,
   onCancel,
   isSaving,
+  tagSuggestions,
 }: {
   initial: ClientFormData;
   onSave: (data: ClientFormData) => void;
   onCancel: () => void;
   isSaving: boolean;
+  tagSuggestions: string[];
 }) {
   const [form, setForm] = useState<ClientFormData>(initial);
   const [cepLoading, setCepLoading] = useState(false);
 
-  const set = (key: keyof ClientFormData, value: string) =>
+  const set = <K extends keyof ClientFormData>(key: K, value: ClientFormData[K]) =>
     setForm(f => ({ ...f, [key]: value }));
 
   const searchCep = async () => {
@@ -221,6 +315,16 @@ function ClientForm({
         </div>
       </div>
 
+      {/* Tags */}
+      <div>
+        <label className={labelCls}>Tags</label>
+        <TagEditor
+          tags={form.tags}
+          suggestions={tagSuggestions}
+          onChange={next => set('tags', next)}
+        />
+      </div>
+
       {/* Notes */}
       <div>
         <label className={labelCls}>Observações</label>
@@ -290,6 +394,18 @@ function ClientDetailPanel({ client, onClose, onEdit }: { client: Client; onClos
             {TIPO_LABELS[client.tipo || 'pf']}
           </span>
         </div>
+
+        {/* Tags */}
+        {client.tags && client.tags.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {client.tags.map(tag => (
+              <span key={tag} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 border border-red-200/60 dark:border-red-500/20">
+                <Tag className="w-2.5 h-2.5" />
+                {tag}
+              </span>
+            ))}
+          </div>
+        )}
 
         {/* Stats */}
         <div className="grid grid-cols-2 gap-3">
@@ -400,6 +516,7 @@ export default function ClientsModule() {
   const [search, setSearch] = useState('');
   const [filterTipo, setFilterTipo] = useState<'all' | 'pf' | 'pj'>('all');
   const [filterStatus, setFilterStatus] = useState<LeadStatus | 'all'>('all');
+  const [filterTags, setFilterTags] = useState<string[]>([]);
   const [sortBy, setSortBy] = useState<'name' | 'totalSpent' | 'createdAt'>('name');
   const [showFilters, setShowFilters] = useState(false);
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
@@ -427,6 +544,11 @@ export default function ClientsModule() {
   // ─── Mutations ──────────────────────────────────────────────────────────────
   const { mutate: saveClient, isPending: isSaving } = useMutation({
     mutationFn: async (data: ClientFormData) => {
+      const dup = findDuplicate(data, clients, editingClient?.id);
+      if (dup) {
+        throw new Error(`Já existe um cliente com esse ${dup.field}: "${dup.client.name}"`);
+      }
+
       const now = new Date().toISOString();
       const payload: Partial<Client> = {
         name: data.name.trim(),
@@ -441,6 +563,7 @@ export default function ClientsModule() {
         source: data.source,
         status: data.status,
         notes: data.notes.trim() || undefined,
+        tags: data.tags.length ? data.tags : undefined,
         updatedAt: now,
       };
 
@@ -476,9 +599,9 @@ export default function ClientsModule() {
       setShowForm(false);
       setEditingClient(null);
     },
-    onError: (err) => {
+    onError: (err: Error) => {
       console.error('[Clients] Save error:', err);
-      toast.error('Erro ao salvar cliente');
+      toast.error(err?.message || 'Erro ao salvar cliente');
     },
   });
 
@@ -510,6 +633,13 @@ export default function ClientsModule() {
     }
     if (filterTipo !== 'all') list = list.filter(c => c.tipo === filterTipo);
     if (filterStatus !== 'all') list = list.filter(c => c.status === filterStatus);
+    if (filterTags.length) {
+      const wanted = filterTags.map(t => t.toLowerCase());
+      list = list.filter(c => {
+        const cTags = (c.tags || []).map(t => t.toLowerCase());
+        return wanted.every(w => cTags.includes(w));
+      });
+    }
 
     list.sort((a, b) => {
       if (sortBy === 'totalSpent') return (b.totalSpent || 0) - (a.totalSpent || 0);
@@ -518,7 +648,7 @@ export default function ClientsModule() {
     });
 
     return list;
-  }, [clients, search, filterTipo, filterStatus, sortBy]);
+  }, [clients, search, filterTipo, filterStatus, filterTags, sortBy]);
 
   // ─── KPIs ────────────────────────────────────────────────────────────────────
   const kpis = useMemo(() => {
@@ -555,6 +685,7 @@ export default function ClientsModule() {
         source: editingClient.source,
         status: editingClient.status,
         notes: editingClient.notes || '',
+        tags: editingClient.tags ? [...editingClient.tags] : [],
         cep: editingClient.endereco?.cep || '',
         logradouro: editingClient.endereco?.logradouro || '',
         numero: editingClient.endereco?.numero || '',
@@ -564,6 +695,18 @@ export default function ClientsModule() {
         uf: editingClient.endereco?.uf || '',
       }
     : emptyForm;
+
+  // Aggregated tag suggestions across all clients (dedup, case-insensitive)
+  const allTags = useMemo(() => {
+    const seen = new Map<string, string>(); // lowercase → original
+    for (const c of clients) {
+      for (const t of c.tags || []) {
+        const k = t.toLowerCase();
+        if (!seen.has(k)) seen.set(k, t);
+      }
+    }
+    return Array.from(seen.values()).sort((a, b) => a.localeCompare(b));
+  }, [clients]);
 
   // ─── Render ──────────────────────────────────────────────────────────────────
   return (
@@ -646,7 +789,7 @@ export default function ClientsModule() {
           >
             <Filter className="w-4 h-4" />
             Filtros
-            {(filterTipo !== 'all' || filterStatus !== 'all') && (
+            {(filterTipo !== 'all' || filterStatus !== 'all' || filterTags.length > 0) && (
               <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
             )}
           </button>
@@ -710,6 +853,35 @@ export default function ClientsModule() {
                   ))}
                 </div>
               </div>
+              {allTags.length > 0 && (
+                <div>
+                  <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2 block flex items-center justify-between">
+                    <span>Tags</span>
+                    {filterTags.length > 0 && (
+                      <button onClick={() => setFilterTags([])} className="text-[10px] text-red-500 hover:text-red-700 normal-case tracking-normal">Limpar</button>
+                    )}
+                  </label>
+                  <div className="flex flex-wrap gap-2 max-w-xl">
+                    {allTags.map(tag => {
+                      const active = filterTags.some(t => t.toLowerCase() === tag.toLowerCase());
+                      return (
+                        <button
+                          key={tag}
+                          onClick={() => setFilterTags(prev => active ? prev.filter(t => t.toLowerCase() !== tag.toLowerCase()) : [...prev, tag])}
+                          className={cn('inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors border',
+                            active
+                              ? 'bg-red-600 text-white border-red-600'
+                              : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:border-red-300'
+                          )}
+                        >
+                          <Tag className="w-2.5 h-2.5" />
+                          {tag}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           </motion.div>
         )}
@@ -773,6 +945,18 @@ export default function ClientsModule() {
                       <p className="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
                         {client.cpfCnpj || client.phone || client.email || client.company || '—'}
                       </p>
+                      {client.tags && client.tags.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1.5">
+                          {client.tags.slice(0, 3).map(tag => (
+                            <span key={tag} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-medium bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400">
+                              <Tag className="w-2 h-2" />{tag}
+                            </span>
+                          ))}
+                          {client.tags.length > 3 && (
+                            <span className="text-[9px] text-gray-400 self-center">+{client.tags.length - 3}</span>
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     {/* Right col */}
@@ -861,6 +1045,7 @@ export default function ClientsModule() {
                   onSave={saveClient}
                   onCancel={() => { setShowForm(false); setEditingClient(null); }}
                   isSaving={isSaving}
+                  tagSuggestions={allTags}
                 />
               </div>
             </motion.div>

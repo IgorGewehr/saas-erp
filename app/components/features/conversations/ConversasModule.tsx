@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
+import { useAppContext } from '@/app/app/AppContext';
 import { getInitials } from '@/lib/utils/format';
 import {
   collection,
@@ -56,6 +57,12 @@ import {
   Slash,
   ChevronUp,
   Loader2,
+  ClipboardCheck,
+  Sparkles,
+  SparklesIcon,
+  Activity,
+  Bot,
+  BotOff,
 } from 'lucide-react';
 import { getDocs } from 'firebase/firestore';
 import type {
@@ -66,6 +73,7 @@ import type {
   Sector,
   Snippet,
   User,
+  AgentRun,
 } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
 
@@ -456,12 +464,20 @@ function ThreadHeader({
   onBack,
   onStatusChange,
   onSectorAssign,
+  onCreateOrder,
+  onToggleAi,
+  onOpenAgentDebug,
+  aiEnabledBusinessWide,
   sectors: sectorsList,
 }: {
   conversation: Conversation;
   onBack: () => void;
   onStatusChange: (status: ConversationStatus) => void;
   onSectorAssign?: () => void;
+  onCreateOrder?: () => void;
+  onToggleAi?: () => void;
+  onOpenAgentDebug?: () => void;
+  aiEnabledBusinessWide?: boolean;
   sectors?: Sector[];
 }) {
   const { t } = useTranslation();
@@ -591,6 +607,59 @@ function ThreadHeader({
 
       {/* Actions */}
       <div className="flex items-center gap-1.5 flex-shrink-0">
+        {/* AI toggle — visível apenas quando business tem agente habilitado */}
+        {aiEnabledBusinessWide && onToggleAi && (() => {
+          const aiOn = conversation.aiEnabled !== false; // default true
+          return (
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={onToggleAi}
+              className={cn(
+                'relative inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] font-bold transition-colors border',
+                aiOn
+                  ? 'bg-gradient-to-r from-violet-500 to-purple-500 text-white border-violet-500 shadow-sm shadow-violet-500/20'
+                  : 'bg-gray-100 dark:bg-white/[0.06] text-gray-400 border-gray-200 dark:border-gray-700',
+              )}
+              title={aiOn ? 'Agente IA ativo — clique para desligar' : 'Agente IA desligado — clique para ligar'}
+            >
+              {aiOn ? <Bot className="w-3.5 h-3.5" /> : <BotOff className="w-3.5 h-3.5" />}
+              <span className="hidden md:inline">{aiOn ? 'IA ON' : 'IA OFF'}</span>
+              {aiOn && (
+                <motion.span
+                  className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-emerald-400 rounded-full"
+                  animate={{ scale: [1, 1.3, 1], opacity: [0.8, 1, 0.8] }}
+                  transition={{ duration: 1.5, repeat: Infinity }}
+                />
+              )}
+            </motion.button>
+          );
+        })()}
+        {/* Debug agente */}
+        {aiEnabledBusinessWide && onOpenAgentDebug && (
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={onOpenAgentDebug}
+            className="w-8 h-8 rounded-xl bg-gray-100 dark:bg-white/[0.06] flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-violet-500 transition-colors"
+            title="Inspecionar runs do agente"
+          >
+            <Activity className="w-4 h-4" />
+          </motion.button>
+        )}
+        {/* Criar pedido — modo pedidos */}
+        {onCreateOrder && (
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={onCreateOrder}
+            className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-sm shadow-red-600/20 transition-colors"
+            title="Criar pedido a partir desta conversa"
+          >
+            <ClipboardCheck className="w-3.5 h-3.5" />
+            Criar Pedido
+          </motion.button>
+        )}
         {/* Sector assign button */}
         {onSectorAssign && sectorsList && sectorsList.length > 0 && (
           <motion.button
@@ -1241,11 +1310,227 @@ function ConversationListSkeleton() {
   );
 }
 
+// ─── Agent Debug Drawer ──────────────────────────────────────────────────────
+
+const RUN_STATUS_CONFIG: Record<string, { bg: string; text: string; label: string }> = {
+  success: { bg: 'bg-emerald-100 dark:bg-emerald-500/20', text: 'text-emerald-700 dark:text-emerald-400', label: 'Sucesso' },
+  error:   { bg: 'bg-red-100 dark:bg-red-500/20',         text: 'text-red-700 dark:text-red-400',         label: 'Erro' },
+  running: { bg: 'bg-amber-100 dark:bg-amber-500/20',     text: 'text-amber-700 dark:text-amber-400',     label: 'Executando' },
+  skipped: { bg: 'bg-gray-100 dark:bg-gray-700',          text: 'text-gray-600 dark:text-gray-300',       label: 'Pulado' },
+};
+
+function AgentDebugDrawer({
+  businessId,
+  conversationId,
+  onClose,
+}: {
+  businessId: string;
+  conversationId: string;
+  onClose: () => void;
+}) {
+  const [runs, setRuns] = useState<AgentRun[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!businessId || !conversationId) return;
+    setLoading(true);
+    import('firebase/firestore').then(({ collection, query, where, orderBy, limit, onSnapshot }) => {
+      const q = query(
+        collection(db, 'agentRuns'),
+        where('businessId', '==', businessId),
+        where('conversationId', '==', conversationId),
+        orderBy('createdAt', 'desc'),
+        limit(10),
+      );
+      const unsub = onSnapshot(q,
+        (snap) => {
+          setRuns(snap.docs.map(d => ({ ...(d.data() as AgentRun), id: d.id })));
+          setLoading(false);
+        },
+        () => setLoading(false),
+      );
+      return () => unsub();
+    });
+  }, [businessId, conversationId]);
+
+  return (
+    <motion.div
+      initial={{ x: '100%' }}
+      animate={{ x: 0 }}
+      exit={{ x: '100%' }}
+      transition={{ type: 'spring', damping: 30, stiffness: 300 }}
+      className="fixed top-0 right-0 bottom-0 z-40 w-full max-w-md bg-white dark:bg-[#0f172a] border-l border-gray-200 dark:border-gray-800 shadow-2xl flex flex-col"
+    >
+      <div className="flex-shrink-0 flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800 bg-gradient-to-r from-violet-50 to-purple-50 dark:from-violet-500/10 dark:to-purple-500/5">
+        <div>
+          <h3 className="text-sm font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+            <Activity className="w-4 h-4 text-violet-500" />
+            Execuções do Agente IA
+          </h3>
+          <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+            Últimas 10 runs desta conversa
+          </p>
+        </div>
+        <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-white/70 dark:hover:bg-black/20 text-gray-500">
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-4 space-y-3">
+        {loading ? (
+          <div className="space-y-2">
+            {[...Array(3)].map((_, i) => <div key={i} className="h-24 rounded-xl shimmer" />)}
+          </div>
+        ) : runs.length === 0 ? (
+          <div className="text-center py-10">
+            <Bot className="w-10 h-10 text-gray-300 dark:text-gray-700 mx-auto mb-3" />
+            <p className="text-sm text-gray-500 dark:text-gray-400">Nenhuma execução ainda</p>
+            <p className="text-xs text-gray-400 mt-1">Runs aparecem aqui em tempo real</p>
+          </div>
+        ) : (
+          runs.map(run => {
+            const cfg = RUN_STATUS_CONFIG[run.status || 'success'] || RUN_STATUS_CONFIG.success;
+            const isExpanded = expandedId === run.id;
+            return (
+              <motion.div
+                key={run.id}
+                layout
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl overflow-hidden"
+              >
+                <button
+                  onClick={() => setExpandedId(isExpanded ? null : run.id)}
+                  className="w-full text-left p-3 hover:bg-gray-50 dark:hover:bg-gray-800/40 transition-colors"
+                >
+                  <div className="flex items-start justify-between gap-2 mb-1">
+                    <span className={cn('px-2 py-0.5 rounded-full text-[10px] font-bold', cfg.bg, cfg.text)}>
+                      {cfg.label}
+                    </span>
+                    <div className="flex items-center gap-1.5 text-[10px] text-gray-400">
+                      {run.intent && <span className="px-1.5 py-0.5 rounded bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 font-semibold uppercase">{run.intent}</span>}
+                      <span>{run.totalLatencyMs}ms</span>
+                      <span>·</span>
+                      <span>${run.costUsd?.toFixed(4) || '0.0000'}</span>
+                    </div>
+                  </div>
+                  <p className="text-xs text-gray-700 dark:text-gray-300 font-medium truncate">
+                    <span className="text-gray-400">↳</span> {run.userMessage}
+                  </p>
+                  {run.finalResponse && (
+                    <p className="text-xs text-gray-600 dark:text-gray-400 mt-1 line-clamp-2">
+                      <span className="text-emerald-500">→</span> {run.finalResponse}
+                    </p>
+                  )}
+                </button>
+
+                {isExpanded && (
+                  <div className="border-t border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/60 p-3 space-y-3">
+                    {/* Node trace */}
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1.5">Pipeline</p>
+                      <div className="flex items-center gap-1 flex-wrap">
+                        {(run.nodes || []).map((n, i) => (
+                          <div key={i} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-[10px]">
+                            <span className="font-semibold text-violet-600 dark:text-violet-400">{n.node}</span>
+                            <span className="text-gray-400">{n.latencyMs}ms</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    {/* Tool calls */}
+                    {run.tools && run.tools.length > 0 && (
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1.5">Ferramentas chamadas</p>
+                        <div className="space-y-1">
+                          {run.tools.map((t, i) => (
+                            <div key={i} className="bg-white dark:bg-gray-800 rounded-lg p-2 border border-gray-200 dark:border-gray-700">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[11px] font-mono font-semibold text-gray-900 dark:text-gray-100">{t.name}</span>
+                                <span className="text-[9px] text-gray-400">{t.latencyMs}ms</span>
+                              </div>
+                              {t.error ? (
+                                <p className="text-[10px] text-red-500 mt-1">{t.error}</p>
+                              ) : (
+                                <pre className="text-[10px] text-gray-500 dark:text-gray-400 mt-1 overflow-x-auto whitespace-pre-wrap max-h-24">
+                                  {JSON.stringify(t.arguments, null, 2)}
+                                </pre>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {/* Token stats */}
+                    <div className="grid grid-cols-3 gap-2 text-center">
+                      <div className="bg-white dark:bg-gray-800 rounded-lg p-2 border border-gray-200 dark:border-gray-700">
+                        <p className="text-[10px] text-gray-400">Tokens in</p>
+                        <p className="text-xs font-bold text-gray-900 dark:text-gray-100">{run.totalTokensIn || 0}</p>
+                      </div>
+                      <div className="bg-white dark:bg-gray-800 rounded-lg p-2 border border-gray-200 dark:border-gray-700">
+                        <p className="text-[10px] text-gray-400">Tokens out</p>
+                        <p className="text-xs font-bold text-gray-900 dark:text-gray-100">{run.totalTokensOut || 0}</p>
+                      </div>
+                      <div className="bg-white dark:bg-gray-800 rounded-lg p-2 border border-gray-200 dark:border-gray-700">
+                        <p className="text-[10px] text-gray-400">Iter.</p>
+                        <p className="text-xs font-bold text-gray-900 dark:text-gray-100">{run.iterations || 0}</p>
+                      </div>
+                    </div>
+                    {run.errorMessage && (
+                      <div className="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 rounded-lg p-2 text-[11px] text-red-700 dark:text-red-400">
+                        {run.errorMessage}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </motion.div>
+            );
+          })
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function ConversasModule() {
   const { t } = useTranslation();
   const { user, business, sectors, userSectorIds } = useAuth();
+  const { setActivePage } = useAppContext();
+
+  const isPedidosMode = business?.settings?.useCase === 'pedidos';
+  const aiAgentEnabled = !!business?.settings?.aiAgent?.enabled;
+  const [agentDebugOpen, setAgentDebugOpen] = useState(false);
+
+  const handleToggleAi = useCallback(async (conv: Conversation) => {
+    if (!business?.id) return;
+    const nextValue = conv.aiEnabled === false ? true : false;
+    try {
+      await updateDoc(doc(db, 'conversations', conv.id), {
+        aiEnabled: nextValue,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('[Conversations] Toggle AI failed:', err);
+    }
+  }, [business?.id]);
+
+  const handleCreateOrderFromConversation = useCallback((conv: Conversation) => {
+    // Stash prefill for OrdersModule to pick up on mount.
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem('pendingOrderPrefill', JSON.stringify({
+        clientId: conv.crmContactId || '',
+        clientName: conv.contactName,
+        clientPhone: conv.contactPhone || '',
+        channel: conv.channel,
+        conversationId: conv.id,
+        contactExternalId: conv.contactExternalId || '',
+      }));
+    }
+    setActivePage('Pedidos');
+  }, [setActivePage]);
 
   const [activeChannel, setActiveChannel] = useState<ConversationChannel | 'all'>('all');
   const [activeStatus, setActiveStatus] = useState<ConversationStatus | 'all'>('all');
@@ -2298,6 +2583,10 @@ export default function ConversasModule() {
                     updateConversationStatus(selectedConversation.id, status);
                   }}
                   onSectorAssign={() => setShowSectorAssign(prev => !prev)}
+                  onCreateOrder={isPedidosMode ? () => handleCreateOrderFromConversation(selectedConversation) : undefined}
+                  onToggleAi={aiAgentEnabled ? () => handleToggleAi(selectedConversation) : undefined}
+                  onOpenAgentDebug={aiAgentEnabled ? () => setAgentDebugOpen(true) : undefined}
+                  aiEnabledBusinessWide={aiAgentEnabled}
                   sectors={sectors}
                 />
 
@@ -2510,6 +2799,26 @@ export default function ConversasModule() {
       {/* Settings Dialog */}
       <AnimatePresence>
         {showSettings && <IntegrationSettingsDialog onClose={() => setShowSettings(false)} />}
+      </AnimatePresence>
+
+      {/* Agent Debug Drawer */}
+      <AnimatePresence>
+        {agentDebugOpen && selectedConversation && business?.id && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setAgentDebugOpen(false)}
+              className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm"
+            />
+            <AgentDebugDrawer
+              businessId={business.id}
+              conversationId={selectedConversation.id}
+              onClose={() => setAgentDebugOpen(false)}
+            />
+          </>
+        )}
       </AnimatePresence>
     </div>
   );

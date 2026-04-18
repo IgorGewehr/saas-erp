@@ -70,7 +70,7 @@ import { cn } from '@/lib/utils';
 import { formatCurrency, getStatusColor, getStatusLabel } from '@/lib/utils/format';
 import type { Appointment, AppointmentStatus, Service, CRMContact, User } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot, increment, writeBatch } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -179,6 +179,45 @@ const TIME_OPTIONS = generateTimeOptions();
 function addDurationToTime(startTime: string, duration: number): string {
   const totalMinutes = timeToMinutes(startTime) + duration;
   return minutesToTime(totalMinutes);
+}
+
+// Gera datas para uma série recorrente a partir da data inicial.
+function generateRecurrenceDates(startDateISO: string, frequency: RecurrenceFrequency, occurrences: number): string[] {
+  if (!frequency || frequency === 'none' || occurrences <= 1) return [startDateISO];
+  const start = parseISO(startDateISO);
+  const dates: string[] = [];
+  for (let i = 0; i < occurrences; i++) {
+    let d: Date;
+    switch (frequency) {
+      case 'daily': d = addDays(start, i); break;
+      case 'weekly': d = addWeeks(start, i); break;
+      case 'biweekly': d = addWeeks(start, i * 2); break;
+      case 'monthly': d = addMonths(start, i); break;
+      default: d = start;
+    }
+    dates.push(format(d, 'yyyy-MM-dd'));
+  }
+  return dates;
+}
+
+// Mantém Client.totalSpent / visitCount / lastVisit em sincronia com o ciclo de conclusão do Appointment.
+// Why: esses campos eram puramente manuais, deixando a régua de valor do cliente sempre desatualizada.
+async function syncClientMetrics(params: {
+  clientId: string;
+  visitDelta: number;
+  priceDelta: number;
+  lastVisitDate?: string;
+}) {
+  if (!params.clientId) return;
+  const update: Record<string, unknown> = { updatedAt: new Date().toISOString() };
+  if (params.visitDelta !== 0) update.visitCount = increment(params.visitDelta);
+  if (params.priceDelta !== 0) update.totalSpent = increment(params.priceDelta);
+  if (params.lastVisitDate) update.lastVisit = params.lastVisitDate;
+  try {
+    await updateDoc(doc(db, 'clients', params.clientId), update);
+  } catch (err) {
+    console.warn('[Agenda] syncClientMetrics failed:', err);
+  }
 }
 
 // ==========================================
@@ -895,11 +934,13 @@ interface DeleteConfirmDialogProps {
   onClose: () => void;
   onCancel: () => void;
   onDelete: () => void;
+  onDeleteSeries?: () => void;
+  hasRecurrence?: boolean;
   loading: boolean;
   appointmentName?: string;
 }
 
-function DeleteConfirmDialog({ open, onClose, onCancel, onDelete, loading, appointmentName }: DeleteConfirmDialogProps) {
+function DeleteConfirmDialog({ open, onClose, onCancel, onDelete, onDeleteSeries, hasRecurrence, loading, appointmentName }: DeleteConfirmDialogProps) {
   const { t } = useTranslation();
   return (
     <Dialog
@@ -948,6 +989,21 @@ function DeleteConfirmDialog({ open, onClose, onCancel, onDelete, loading, appoi
           >
             {loading ? t('agenda.deleting', 'Excluindo...') : t('agenda.deletePermanently', 'Excluir Permanentemente')}
           </button>
+          {hasRecurrence && onDeleteSeries && (
+            <button
+              onClick={onDeleteSeries}
+              disabled={loading}
+              className={cn(
+                'w-full px-4 py-2.5 rounded-xl text-sm font-semibold',
+                'text-red-700 dark:text-red-400 bg-red-100 dark:bg-red-500/15 hover:bg-red-200 dark:hover:bg-red-500/25',
+                'border border-red-200 dark:border-red-500/30',
+                'transition-all duration-200',
+                'disabled:opacity-50',
+              )}
+            >
+              {loading ? t('agenda.deleting', 'Excluindo...') : t('agenda.deleteSeries', 'Excluir Série Completa')}
+            </button>
+          )}
           <button
             onClick={onClose}
             disabled={loading}
@@ -966,6 +1022,8 @@ function DeleteConfirmDialog({ open, onClose, onCancel, onDelete, loading, appoi
 }
 
 // ---- New/Edit Appointment Dialog ----
+type RecurrenceFrequency = 'none' | 'daily' | 'weekly' | 'biweekly' | 'monthly';
+
 interface AppointmentFormData {
   clientId: string;
   clientName: string;
@@ -981,6 +1039,8 @@ interface AppointmentFormData {
   status: AppointmentStatus;
   price: number;
   color: string;
+  recurrenceFrequency?: RecurrenceFrequency;
+  recurrenceOccurrences?: number;
 }
 
 interface AppointmentDialogProps {
@@ -1028,6 +1088,8 @@ function AppointmentFormDialog({
     status: 'agendado',
     price: 0,
     color: '#3B82F6',
+    recurrenceFrequency: 'none',
+    recurrenceOccurrences: 4,
   });
   const [clientSearch, setClientSearch] = useState('');
   const [showClientDropdown, setShowClientDropdown] = useState(false);
@@ -1428,6 +1490,61 @@ function AppointmentFormDialog({
               />
             </div>
           </div>
+
+          {/* Recurrence (create only) */}
+          {!isEditing && (
+            <div className="pt-1">
+              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                {t('agenda.repeat', 'Repetir')}
+              </label>
+              <div className="flex gap-2 flex-wrap">
+                {([
+                  { value: 'none', label: t('agenda.repeatNone', 'Não') },
+                  { value: 'daily', label: t('agenda.repeatDaily', 'Diário') },
+                  { value: 'weekly', label: t('agenda.repeatWeekly', 'Semanal') },
+                  { value: 'biweekly', label: t('agenda.repeatBiweekly', 'Quinzenal') },
+                  { value: 'monthly', label: t('agenda.repeatMonthly', 'Mensal') },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setFormData((prev) => ({ ...prev, recurrenceFrequency: opt.value }))}
+                    className={cn(
+                      'px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border',
+                      formData.recurrenceFrequency === opt.value
+                        ? 'bg-red-600 text-white border-red-600'
+                        : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:border-red-300',
+                    )}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              {formData.recurrenceFrequency && formData.recurrenceFrequency !== 'none' && (
+                <div className="mt-2.5 flex items-center gap-2">
+                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                    {t('agenda.occurrences', 'Ocorrências')}:
+                  </span>
+                  <input
+                    type="number"
+                    min={2}
+                    max={52}
+                    value={formData.recurrenceOccurrences ?? 4}
+                    onChange={(e) =>
+                      setFormData((prev) => ({
+                        ...prev,
+                        recurrenceOccurrences: Math.max(2, Math.min(52, Number(e.target.value) || 2)),
+                      }))
+                    }
+                    className="w-20 px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
+                  />
+                  <span className="text-[11px] text-gray-400 dark:text-gray-500">
+                    {t('agenda.recurrenceHint', 'agendamentos vinculados (máx. 52)')}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Notes */}
           <div>
@@ -2079,15 +2196,77 @@ export default function AgendaModule() {
 
       if (editingAppointment) {
         await updateDoc(doc(db, 'appointments', editingAppointment.id), payload);
+
+        // Sync Client metrics for the edit paths that affect "concluído" state/price/clientId.
+        const wasDone = editingAppointment.status === 'concluido';
+        const isDone = data.status === 'concluido';
+        const oldClientId = editingAppointment.clientId || '';
+        const newClientId = data.clientId || '';
+        const oldPrice = editingAppointment.price || 0;
+        const newPrice = data.price || 0;
+
+        if (wasDone && isDone && oldClientId === newClientId) {
+          // same client, same completion state — adjust only price diff
+          if (newPrice !== oldPrice && newClientId) {
+            await syncClientMetrics({ clientId: newClientId, visitDelta: 0, priceDelta: newPrice - oldPrice });
+          }
+        } else {
+          if (wasDone && oldClientId) {
+            await syncClientMetrics({ clientId: oldClientId, visitDelta: -1, priceDelta: -oldPrice });
+          }
+          if (isDone && newClientId) {
+            await syncClientMetrics({ clientId: newClientId, visitDelta: 1, priceDelta: newPrice, lastVisitDate: data.date });
+          }
+        }
+
         setSnackbar({ open: true, message: t('agenda.appointmentUpdated', 'Agendamento atualizado com sucesso!'), severity: 'success' });
       } else {
         payload.businessId = business.id;
         payload.createdAt = new Date().toISOString();
-        await addDoc(collection(db, 'appointments'), payload);
-        setSnackbar({ open: true, message: t('agenda.appointmentCreated', 'Agendamento criado com sucesso!'), severity: 'success' });
+
+        const freq: RecurrenceFrequency = data.recurrenceFrequency || 'none';
+        const occurrences = freq === 'none' ? 1 : Math.max(2, Math.min(52, data.recurrenceOccurrences || 2));
+
+        if (occurrences > 1) {
+          // Recurring series — one shared recurrenceId links all instances.
+          const recurrenceId = `rec_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          const dates = generateRecurrenceDates(data.date, freq, occurrences);
+          const batch = writeBatch(db);
+          for (const d of dates) {
+            const ref = doc(collection(db, 'appointments'));
+            batch.set(ref, { ...payload, date: d, recurrenceId });
+          }
+          await batch.commit();
+          if (data.status === 'concluido' && data.clientId) {
+            // Backfill metrics for every occurrence created as 'concluído'.
+            await syncClientMetrics({
+              clientId: data.clientId,
+              visitDelta: dates.length,
+              priceDelta: (data.price || 0) * dates.length,
+              lastVisitDate: dates[dates.length - 1],
+            });
+          }
+          setSnackbar({
+            open: true,
+            message: t('agenda.seriesCreated', `Série criada com ${dates.length} agendamentos`, { count: dates.length }),
+            severity: 'success',
+          });
+        } else {
+          await addDoc(collection(db, 'appointments'), payload);
+          if (data.status === 'concluido' && data.clientId) {
+            await syncClientMetrics({
+              clientId: data.clientId,
+              visitDelta: 1,
+              priceDelta: data.price || 0,
+              lastVisitDate: data.date,
+            });
+          }
+          setSnackbar({ open: true, message: t('agenda.appointmentCreated', 'Agendamento criado com sucesso!'), severity: 'success' });
+        }
       }
 
       queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
+      queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
       setShowFormDialog(false);
       setEditingAppointment(null);
     } catch (err) {
@@ -2103,7 +2282,15 @@ export default function AgendaModule() {
     setDeleteLoading(true);
     try {
       await deleteDoc(doc(db, 'appointments', editingAppointment.id));
+      if (editingAppointment.status === 'concluido' && editingAppointment.clientId) {
+        await syncClientMetrics({
+          clientId: editingAppointment.clientId,
+          visitDelta: -1,
+          priceDelta: -(editingAppointment.price || 0),
+        });
+      }
       queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
+      queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
       setShowDeleteDialog(false);
       setShowFormDialog(false);
       setEditingAppointment(null);
@@ -2111,6 +2298,57 @@ export default function AgendaModule() {
     } catch (err) {
       console.error('Error deleting appointment:', err);
       setSnackbar({ open: true, message: t('agenda.errorDeletingAppointment', 'Erro ao excluir agendamento.'), severity: 'error' });
+    } finally {
+      setDeleteLoading(false);
+    }
+  }, [editingAppointment, business?.id, queryClient, t]);
+
+  const handleDeleteSeries = useCallback(async () => {
+    if (!editingAppointment?.recurrenceId || !business?.id) return;
+    setDeleteLoading(true);
+    try {
+      // Fetch all appointments with the same recurrenceId + businessId (multi-tenant safety).
+      const seriesQuery = query(
+        collection(db, 'appointments'),
+        where('businessId', '==', business.id),
+        where('recurrenceId', '==', editingAppointment.recurrenceId),
+      );
+      const snap = await getDocs(seriesQuery);
+
+      // Aggregate client metric deltas from any 'concluido' items in the series.
+      const clientDeltas = new Map<string, { visits: number; price: number }>();
+      const batch = writeBatch(db);
+      for (const docSnap of snap.docs) {
+        const a = docSnap.data() as Appointment;
+        if (a.status === 'concluido' && a.clientId) {
+          const d = clientDeltas.get(a.clientId) || { visits: 0, price: 0 };
+          d.visits += 1;
+          d.price += a.price || 0;
+          clientDeltas.set(a.clientId, d);
+        }
+        batch.delete(docSnap.ref);
+      }
+      await batch.commit();
+
+      await Promise.all(
+        Array.from(clientDeltas.entries()).map(([clientId, d]) =>
+          syncClientMetrics({ clientId, visitDelta: -d.visits, priceDelta: -d.price }),
+        ),
+      );
+
+      queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
+      queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
+      setShowDeleteDialog(false);
+      setShowFormDialog(false);
+      setEditingAppointment(null);
+      setSnackbar({
+        open: true,
+        message: t('agenda.seriesDeleted', `Série excluída (${snap.size} agendamentos)`, { count: snap.size }),
+        severity: 'info',
+      });
+    } catch (err) {
+      console.error('Error deleting series:', err);
+      setSnackbar({ open: true, message: t('agenda.errorDeletingSeries', 'Erro ao excluir série.'), severity: 'error' });
     } finally {
       setDeleteLoading(false);
     }
@@ -2124,7 +2362,15 @@ export default function AgendaModule() {
         status: 'cancelado',
         updatedAt: new Date().toISOString(),
       });
+      if (editingAppointment.status === 'concluido' && editingAppointment.clientId) {
+        await syncClientMetrics({
+          clientId: editingAppointment.clientId,
+          visitDelta: -1,
+          priceDelta: -(editingAppointment.price || 0),
+        });
+      }
       queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
+      queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
       setShowDeleteDialog(false);
       setShowFormDialog(false);
       setEditingAppointment(null);
@@ -2145,7 +2391,46 @@ export default function AgendaModule() {
         status,
         updatedAt: new Date().toISOString(),
       });
+
+      // Auto-notify customer if agent notifications enabled
+      if (business.settings?.aiAgent?.notifyOnStatus) {
+        void (async () => {
+          try {
+            const { getAuth } = await import('firebase/auth');
+            const token = await getAuth().currentUser?.getIdToken();
+            if (!token) return;
+            await fetch('/api/conversations/status-notify', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+              body: JSON.stringify({ businessId: business.id, kind: 'appointment', id: selectedAppointment.id, newStatus: status }),
+            });
+          } catch (err) {
+            console.warn('[Agenda] status-notify failed:', err);
+          }
+        })();
+      }
+      const prevStatus = selectedAppointment.status;
+      const clientId = selectedAppointment.clientId;
+      if (clientId) {
+        const wasDone = prevStatus === 'concluido';
+        const isDone = status === 'concluido';
+        if (!wasDone && isDone) {
+          await syncClientMetrics({
+            clientId,
+            visitDelta: 1,
+            priceDelta: selectedAppointment.price || 0,
+            lastVisitDate: selectedAppointment.date,
+          });
+        } else if (wasDone && !isDone) {
+          await syncClientMetrics({
+            clientId,
+            visitDelta: -1,
+            priceDelta: -(selectedAppointment.price || 0),
+          });
+        }
+      }
       queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
+      queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
       setSelectedAppointment((prev) => (prev ? { ...prev, status } : null));
       setSnackbar({
         open: true,
@@ -2955,6 +3240,8 @@ export default function AgendaModule() {
         onClose={() => setShowDeleteDialog(false)}
         onCancel={handleCancelAppointment}
         onDelete={handleDeleteAppointment}
+        onDeleteSeries={editingAppointment?.recurrenceId ? handleDeleteSeries : undefined}
+        hasRecurrence={!!editingAppointment?.recurrenceId}
         loading={deleteLoading}
         appointmentName={editingAppointment?.clientName}
       />

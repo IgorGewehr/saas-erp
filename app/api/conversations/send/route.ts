@@ -12,6 +12,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
+import crypto from 'crypto';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   getFirestore,
@@ -140,13 +141,38 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    // Parse body first so we can verify businessId ownership
-    const body: SendRequestBody = await req.json();
+    // Read the body as text first so we can (a) verify HMAC when agent-signed and (b) reuse it as JSON.
+    const rawBody = await req.text();
+    const body: SendRequestBody = JSON.parse(rawBody);
     const { businessId, conversationId, messageId, messageDocId, channel, recipientId, content, type, templateName, templateLanguage, templateParams, mediaUrl, mediaType } = body;
 
-    // Verify authentication and business ownership
-    const authResult = await verifyAuth(req, businessId);
-    if (isAuthError(authResult)) return authResult;
+    // Authentication: accept either a Firebase session (UI) or an HMAC-signed agent call.
+    const agentSignature = req.headers.get('x-agent-signature');
+    if (agentSignature) {
+      const timestampStr = req.headers.get('x-agent-timestamp');
+      const headerBusinessId = req.headers.get('x-business-id');
+      const secret = process.env.AGENT_SHARED_SECRET;
+      if (!secret) {
+        return NextResponse.json({ error: 'Agent auth not configured' }, { status: 500 });
+      }
+      if (!timestampStr || !headerBusinessId || headerBusinessId !== businessId) {
+        return NextResponse.json({ error: 'Invalid agent headers' }, { status: 401 });
+      }
+      const ts = Number(timestampStr);
+      if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > 5 * 60 * 1000) {
+        return NextResponse.json({ error: 'Stale agent timestamp' }, { status: 401 });
+      }
+      const message = `${ts}.${headerBusinessId}.${rawBody}`;
+      const expected = crypto.createHmac('sha256', secret).update(message).digest('hex');
+      const ok = agentSignature.length === expected.length &&
+        crypto.timingSafeEqual(Buffer.from(agentSignature, 'hex'), Buffer.from(expected, 'hex'));
+      if (!ok) {
+        return NextResponse.json({ error: 'Invalid agent signature' }, { status: 401 });
+      }
+    } else {
+      const authResult = await verifyAuth(req, businessId);
+      if (isAuthError(authResult)) return authResult;
+    }
 
     // Validate required fields
     const isMedia = type === 'media';

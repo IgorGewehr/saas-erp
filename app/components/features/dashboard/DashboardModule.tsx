@@ -5,7 +5,8 @@ import { motion } from 'framer-motion';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
 import { useTranslation } from 'react-i18next';
-import type { Appointment, CRMContact, Sale, Transaction } from '@/lib/types';
+import type { Appointment, CRMContact, Sale, Transaction, DeliveryOrder, KanbanCard, UseCase } from '@/lib/types';
+import { DELIVERY_ORDER_STATUS_LABELS } from '@/lib/types';
 import {
   Users,
   CalendarCheck,
@@ -24,6 +25,10 @@ import {
   Clock,
   Wallet,
   AlertTriangle,
+  ClipboardCheck,
+  Kanban as KanbanIcon,
+  Bike,
+  Timer,
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -51,6 +56,14 @@ export default function DashboardModule() {
   const { setActivePage } = useAppContext();
   const [clientSearch, setClientSearch] = useState('');
   const dateLocale = i18n.language === 'en-US' ? enUSLocale : ptBR;
+
+  // ── Use case driven visibility ─────────────────────────
+  const useCase: UseCase = (business?.settings?.useCase as UseCase) || 'servicos';
+  const showAgenda = useCase === 'servicos';
+  const showOrders = useCase === 'pedidos';
+  const showTasks = useCase === 'times';
+  const showRevenue = useCase !== 'times';
+  const showFinancial = useCase !== 'times';
 
   // ── Firestore queries ──
   const { data: clients = [], isLoading: loadingClients } = useQuery({
@@ -91,6 +104,28 @@ export default function DashboardModule() {
       return snap.docs.map(d => ({ ...d.data(), id: d.id } as Transaction));
     },
     enabled: !!business?.id,
+  });
+
+  const { data: deliveryOrders = [] } = useQuery({
+    queryKey: ['delivery-orders-dashboard', business?.id],
+    queryFn: async () => {
+      const q = query(collection(db, 'deliveryOrders'), where('businessId', '==', business!.id), orderBy('createdAt', 'desc'));
+      const snap = await getDocs(q);
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as DeliveryOrder));
+    },
+    enabled: !!business?.id && showOrders,
+    staleTime: 60 * 1000,
+  });
+
+  const { data: kanbanCards = [] } = useQuery({
+    queryKey: ['kanban-cards-dashboard', business?.id],
+    queryFn: async () => {
+      const q = query(collection(db, 'kanbanCards'), where('businessId', '==', business!.id));
+      const snap = await getDocs(q);
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as KanbanCard));
+    },
+    enabled: !!business?.id && showTasks,
+    staleTime: 60 * 1000,
   });
 
   // ── Computed data ──
@@ -227,6 +262,48 @@ export default function DashboardModule() {
     [overdueTransactions]
   );
 
+  // ── Delivery Orders metrics (pedidos mode) ──
+  const ordersToday = useMemo(
+    () => deliveryOrders.filter(o => o.createdAt?.startsWith(todayStr)),
+    [deliveryOrders, todayStr]
+  );
+  const ordersActive = useMemo(
+    () => deliveryOrders.filter(o => o.status !== 'entregue' && o.status !== 'cancelado'),
+    [deliveryOrders]
+  );
+  const ordersRevenueToday = useMemo(
+    () => ordersToday.filter(o => o.status !== 'cancelado').reduce((s, o) => s + o.total, 0),
+    [ordersToday]
+  );
+  const ordersUrgent = useMemo(
+    () => deliveryOrders.filter(o => {
+      if (o.status === 'entregue' || o.status === 'cancelado') return false;
+      if (o.estimatedDeliveryAt) return new Date(o.estimatedDeliveryAt).getTime() < Date.now();
+      return (Date.now() - new Date(o.createdAt).getTime()) / 60000 > 45;
+    }),
+    [deliveryOrders]
+  );
+  const ordersAvgTime = useMemo(() => {
+    const delivered = ordersToday.filter(o => o.status === 'entregue' && o.deliveredAt);
+    if (delivered.length === 0) return 0;
+    const total = delivered.reduce((s, o) => s + (new Date(o.deliveredAt!).getTime() - new Date(o.createdAt).getTime()), 0);
+    return Math.round(total / delivered.length / 60000);
+  }, [ordersToday]);
+
+  // ── Task metrics (times mode) ──
+  const tasksOpen = useMemo(
+    () => kanbanCards,
+    [kanbanCards]
+  );
+  const tasksAssignedToMe = useMemo(
+    () => tasksOpen.filter(c => (c.assigneeIds || []).includes(user?.uid || '')),
+    [tasksOpen, user?.uid]
+  );
+  const tasksOverdue = useMemo(
+    () => tasksOpen.filter(c => c.dueDate && c.dueDate < todayStr),
+    [tasksOpen, todayStr]
+  );
+
   // ── Today's Schedule ──
   const todaySchedule = useMemo(
     () => appointments
@@ -323,9 +400,10 @@ export default function DashboardModule() {
         </div>
       </motion.div>
 
-      {/* ━━━ Hero Row: Revenue Today + Monthly Revenue + Next Appointment ━━━ */}
+      {/* ━━━ Hero Row: Revenue Today + Monthly Revenue + Mode-specific card ━━━ */}
       <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-        {/* Revenue Today Card */}
+        {/* Revenue Today Card — oculto em modo times */}
+        {showRevenue && (
         <motion.div
           variants={fadeUp}
           className={cn(
@@ -411,8 +489,10 @@ export default function DashboardModule() {
             </div>
           )}
         </motion.div>
+        )}
 
-        {/* Monthly Revenue Card (NEW) */}
+        {/* Monthly Revenue Card — oculto em modo times */}
+        {showRevenue && (
         <motion.div
           variants={fadeUp}
           className={cn(
@@ -473,8 +553,10 @@ export default function DashboardModule() {
             </div>
           )}
         </motion.div>
+        )}
 
         {/* Next Appointment Card */}
+        {showAgenda && (
         <motion.div
           variants={fadeUp}
           className={cn(
@@ -529,6 +611,98 @@ export default function DashboardModule() {
           <div className="absolute -right-8 -bottom-8 w-40 h-40 rounded-full bg-white/[0.06]" />
           <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-white/[0.04]" />
         </motion.div>
+        )}
+
+        {showOrders && (
+          <motion.div
+            variants={fadeUp}
+            className="md:col-span-5 rounded-2xl p-5 relative overflow-hidden bg-gradient-to-br from-orange-600 via-red-500 to-red-600 shadow-red dark:shadow-none text-white"
+          >
+            <div className="relative z-10">
+              <div className="flex items-center justify-between mb-4">
+                <p className="text-sm font-medium text-white/80">Pedidos em andamento</p>
+                {ordersUrgent.length > 0 && (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white text-red-700 text-[11px] font-bold">
+                    <Timer className="w-3 h-3" />
+                    {ordersUrgent.length} atrasado{ordersUrgent.length > 1 ? 's' : ''}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-end gap-6 mb-4">
+                <div>
+                  <p className="text-[11px] uppercase tracking-wider text-white/70">Ativos agora</p>
+                  <p className="text-4xl font-black">{ordersActive.length}</p>
+                </div>
+                {ordersAvgTime > 0 && (
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wider text-white/70">Tempo médio</p>
+                    <p className="text-2xl font-bold">{ordersAvgTime} min</p>
+                  </div>
+                )}
+              </div>
+              <motion.button
+                whileHover={{ scale: 1.03 }}
+                whileTap={{ scale: 0.97 }}
+                onClick={() => setActivePage('Pedidos')}
+                className="inline-flex items-center gap-1.5 text-sm font-bold text-red-700 bg-white hover:bg-white/90 px-4 py-2 rounded-xl transition-colors"
+              >
+                <ClipboardCheck className="w-4 h-4" />
+                Abrir Gerenciador
+              </motion.button>
+            </div>
+            <Bike className="absolute -right-6 -bottom-4 w-40 h-40 text-white/[0.08]" />
+          </motion.div>
+        )}
+
+        {showTasks && (
+          <motion.div
+            variants={fadeUp}
+            className="md:col-span-5 rounded-2xl p-5 relative overflow-hidden bg-gradient-to-br from-violet-600 to-purple-600 shadow-md shadow-violet-500/20 text-white"
+          >
+            <div className="relative z-10">
+              <p className="text-sm font-medium text-white/80 mb-3">Produtividade do time</p>
+              <div className="flex items-end gap-6 mb-4">
+                <div>
+                  <p className="text-[11px] uppercase tracking-wider text-white/70">Tarefas abertas</p>
+                  <p className="text-4xl font-black">{tasksOpen.length}</p>
+                </div>
+                <div>
+                  <p className="text-[11px] uppercase tracking-wider text-white/70">Minhas</p>
+                  <p className="text-2xl font-bold">{tasksAssignedToMe.length}</p>
+                </div>
+                {tasksOverdue.length > 0 && (
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wider text-amber-200">Atrasadas</p>
+                    <p className="text-2xl font-bold text-amber-100">{tasksOverdue.length}</p>
+                  </div>
+                )}
+              </div>
+              <motion.button
+                whileHover={{ scale: 1.03 }}
+                whileTap={{ scale: 0.97 }}
+                onClick={() => setActivePage('Kanban')}
+                className="inline-flex items-center gap-1.5 text-sm font-bold text-violet-700 bg-white hover:bg-white/90 px-4 py-2 rounded-xl transition-colors"
+              >
+                <KanbanIcon className="w-4 h-4" />
+                Abrir Kanban
+              </motion.button>
+            </div>
+            <KanbanIcon className="absolute -right-6 -bottom-4 w-40 h-40 text-white/[0.08]" />
+          </motion.div>
+        )}
+
+        {!showAgenda && !showOrders && !showTasks && (
+          <motion.div
+            variants={fadeUp}
+            className="md:col-span-5 rounded-2xl p-6 bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-md"
+          >
+            <p className="text-sm font-medium text-white/80 mb-2">Modo essencial</p>
+            <p className="text-lg font-bold mb-3">Foco no que importa.</p>
+            <p className="text-sm text-white/85">
+              Gerencie seus clientes, conversas e financeiro sem distração. Mude o modo em Configurações a qualquer momento.
+            </p>
+          </motion.div>
+        )}
       </div>
 
       {/* ━━━ KPI Cards (4 cards) ━━━ */}
@@ -559,7 +733,8 @@ export default function DashboardModule() {
           </div>
         </motion.div>
 
-        {/* Agendamentos Hoje */}
+        {/* Agendamentos Hoje — apenas no modo serviços */}
+        {showAgenda && (
         <motion.div
           variants={fadeUp}
           className={cn(
@@ -584,8 +759,10 @@ export default function DashboardModule() {
             </div>
           </div>
         </motion.div>
+        )}
 
-        {/* Próximos */}
+        {/* Próximos — apenas no modo serviços */}
+        {showAgenda && (
         <motion.div
           variants={fadeUp}
           className={cn(
@@ -610,6 +787,84 @@ export default function DashboardModule() {
             </div>
           </div>
         </motion.div>
+        )}
+
+        {/* Pedidos Hoje — apenas no modo pedidos */}
+        {showOrders && (
+          <motion.div variants={fadeUp}
+            className="rounded-2xl p-5 bg-white dark:bg-gray-800/60 border border-gray-100 dark:border-gray-700/50 shadow-sm border-l-[3px] border-l-orange-500"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Pedidos Hoje</p>
+                <p className="text-3xl font-bold text-gray-900 dark:text-white mt-1 tracking-tight">{ordersToday.length}</p>
+                <p className="text-[11px] text-gray-400 mt-0.5">{formatCurrency(ordersRevenueToday)}</p>
+              </div>
+              <div className="w-10 h-10 rounded-xl bg-orange-50 dark:bg-orange-500/10 flex items-center justify-center">
+                <ClipboardCheck className="w-5 h-5 text-orange-500 dark:text-orange-400" />
+              </div>
+            </div>
+          </motion.div>
+        )}
+
+        {showOrders && (
+          <motion.div variants={fadeUp}
+            className="rounded-2xl p-5 bg-white dark:bg-gray-800/60 border border-gray-100 dark:border-gray-700/50 shadow-sm border-l-[3px] border-l-amber-500"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Em andamento</p>
+                <p className="text-3xl font-bold text-gray-900 dark:text-white mt-1 tracking-tight">{ordersActive.length}</p>
+                {ordersUrgent.length > 0 && (
+                  <p className="text-[11px] text-red-500 font-semibold mt-0.5">
+                    {ordersUrgent.length} atrasado{ordersUrgent.length > 1 ? 's' : ''}
+                  </p>
+                )}
+              </div>
+              <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center">
+                <Bike className="w-5 h-5 text-amber-500 dark:text-amber-400" />
+              </div>
+            </div>
+          </motion.div>
+        )}
+
+        {/* Tasks — apenas no modo times */}
+        {showTasks && (
+          <motion.div variants={fadeUp}
+            className="rounded-2xl p-5 bg-white dark:bg-gray-800/60 border border-gray-100 dark:border-gray-700/50 shadow-sm border-l-[3px] border-l-violet-500"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Tarefas Abertas</p>
+                <p className="text-3xl font-bold text-gray-900 dark:text-white mt-1 tracking-tight">{tasksOpen.length}</p>
+              </div>
+              <div className="w-10 h-10 rounded-xl bg-violet-50 dark:bg-violet-500/10 flex items-center justify-center">
+                <KanbanIcon className="w-5 h-5 text-violet-500 dark:text-violet-400" />
+              </div>
+            </div>
+          </motion.div>
+        )}
+
+        {showTasks && (
+          <motion.div variants={fadeUp}
+            className="rounded-2xl p-5 bg-white dark:bg-gray-800/60 border border-gray-100 dark:border-gray-700/50 shadow-sm border-l-[3px] border-l-amber-500"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Minhas Tarefas</p>
+                <p className="text-3xl font-bold text-gray-900 dark:text-white mt-1 tracking-tight">{tasksAssignedToMe.length}</p>
+                {tasksOverdue.length > 0 && (
+                  <p className="text-[11px] text-red-500 font-semibold mt-0.5">
+                    {tasksOverdue.length} atrasada{tasksOverdue.length > 1 ? 's' : ''}
+                  </p>
+                )}
+              </div>
+              <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center">
+                <Clock className="w-5 h-5 text-amber-500 dark:text-amber-400" />
+              </div>
+            </div>
+          </motion.div>
+        )}
 
         {/* Financeiro — Pendências */}
         <motion.div
@@ -803,7 +1058,8 @@ export default function DashboardModule() {
 
         {/* Right Sidebar */}
         <div className="lg:col-span-5 space-y-4">
-          {/* Today's Schedule */}
+          {/* Today's Schedule — apenas no modo serviços */}
+          {showAgenda && (
           <motion.div
             variants={fadeUp}
             className={cn(
@@ -913,9 +1169,54 @@ export default function DashboardModule() {
               )}
             </div>
           </motion.div>
+          )}
 
-          {/* Financial Alerts */}
-          {!isLoading && (overdueTransactions.length > 0 || pendingTransactions.length > 0) && (
+          {/* Pedidos Ativos (substitui Agenda de Hoje no modo pedidos) */}
+          {showOrders && (
+            <motion.div variants={fadeUp}
+              className="rounded-2xl bg-white dark:bg-gray-800/60 border border-gray-100 dark:border-gray-700/50 shadow-sm overflow-hidden"
+            >
+              <div className="px-5 py-3.5 border-b border-gray-100 dark:border-gray-700/40 flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                  <ClipboardCheck className="w-4 h-4 text-red-500" />
+                  Pedidos em tempo real
+                </h3>
+                <button onClick={() => setActivePage('Pedidos')}
+                  className="text-xs font-medium text-red-500 hover:text-red-600 inline-flex items-center gap-1">
+                  Abrir <ChevronRight className="w-3 h-3" />
+                </button>
+              </div>
+              <div className="p-4">
+                {ordersActive.length === 0 ? (
+                  <p className="text-center text-sm text-gray-400 py-6">Nenhum pedido ativo agora</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {ordersActive.slice(0, 6).map(o => (
+                      <button
+                        key={o.id}
+                        onClick={() => setActivePage('Pedidos')}
+                        className="w-full text-left flex items-center gap-3 p-2.5 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800/40 transition-colors"
+                      >
+                        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+                          #{o.number}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">{o.clientName}</p>
+                          <p className="text-[11px] text-gray-500 truncate">
+                            {DELIVERY_ORDER_STATUS_LABELS[o.status]} · {o.items.length} {o.items.length === 1 ? 'item' : 'itens'}
+                          </p>
+                        </div>
+                        <p className="text-sm font-bold text-gray-700 dark:text-gray-300">{formatCurrency(o.total)}</p>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          )}
+
+          {/* Financial Alerts — ocultos em modo times */}
+          {showFinancial && !isLoading && (overdueTransactions.length > 0 || pendingTransactions.length > 0) && (
             <motion.div
               variants={fadeUp}
               className={cn(

@@ -25,7 +25,10 @@ import {
   Users,
   ClipboardList,
   ShoppingBag,
+  ClipboardCheck,
+  UtensilsCrossed,
 } from 'lucide-react';
+import type { UseCase } from '@/lib/types';
 
 export type MenuPage =
   | 'Dashboard'
@@ -39,10 +42,15 @@ export type MenuPage =
   | 'Compras'
   | 'Financeiro'
   | 'Estoque'
+  | 'Pedidos'
+  | 'Cardápio'
   | 'NFSe'
   | 'NFCe'
   | 'NFe'
   | 'Configurações';
+
+// Which use cases each module appears under. `undefined` means "always visible".
+const ALL_USE_CASES: UseCase[] = ['pedidos', 'servicos', 'times', 'simples'];
 
 interface MenuItemConfig {
   id: MenuPage;
@@ -50,6 +58,7 @@ interface MenuItemConfig {
   icon: React.ElementType;
   comingSoon?: boolean;
   enterpriseOnly?: boolean;
+  useCases?: UseCase[];
 }
 
 interface MenuSection {
@@ -65,28 +74,30 @@ function useMenuSections(): MenuSection[] {
       items: [
         { id: 'Dashboard', label: t('sidebar.dashboard'), icon: LayoutDashboard },
         { id: 'Clientes', label: t('sidebar.clientes'), icon: Users },
-        { id: 'CRM', label: t('sidebar.crm'), icon: Target, enterpriseOnly: true },
-        { id: 'Agenda', label: t('sidebar.agenda'), icon: Calendar },
+        { id: 'CRM', label: t('sidebar.crm'), icon: Target, enterpriseOnly: true, useCases: ['pedidos', 'servicos', 'simples'] },
+        { id: 'Agenda', label: t('sidebar.agenda'), icon: Calendar, useCases: ['servicos'] },
         { id: 'Conversas', label: t('sidebar.conversas'), icon: MessageSquare },
-        { id: 'PDV', label: t('sidebar.pdv'), icon: ShoppingCart },
+        { id: 'PDV', label: t('sidebar.pdv'), icon: ShoppingCart, useCases: ['pedidos', 'servicos', 'simples'] },
       ],
     },
     {
       title: t('sidebar.sections.gestao'),
       items: [
-        { id: 'Vendas', label: t('sidebar.vendas'), icon: ClipboardList },
-        { id: 'Kanban', label: t('sidebar.kanban'), icon: Kanban, enterpriseOnly: true },
-        { id: 'Financeiro', label: t('sidebar.financeiro'), icon: DollarSign },
-        { id: 'Estoque', label: t('sidebar.estoque'), icon: Package },
-        { id: 'Compras', label: t('sidebar.compras'), icon: ShoppingBag },
+        { id: 'Pedidos', label: t('sidebar.pedidos', 'Pedidos'), icon: ClipboardCheck, useCases: ['pedidos'] },
+        { id: 'Cardápio', label: t('sidebar.cardapio', 'Cardápio'), icon: UtensilsCrossed, useCases: ['pedidos'] },
+        { id: 'Vendas', label: t('sidebar.vendas'), icon: ClipboardList, useCases: ['pedidos', 'servicos', 'simples'] },
+        { id: 'Kanban', label: t('sidebar.kanban'), icon: Kanban, enterpriseOnly: true, useCases: ['times'] },
+        { id: 'Financeiro', label: t('sidebar.financeiro'), icon: DollarSign, useCases: ['pedidos', 'servicos', 'simples'] },
+        { id: 'Estoque', label: t('sidebar.estoque'), icon: Package, useCases: ['pedidos', 'servicos', 'simples'] },
+        { id: 'Compras', label: t('sidebar.compras'), icon: ShoppingBag, useCases: ['pedidos', 'servicos', 'simples'] },
       ],
     },
     {
       title: t('sidebar.sections.fiscal'),
       items: [
-        { id: 'NFSe', label: t('sidebar.nfse'), icon: FileCheck2 },
-        { id: 'NFCe', label: t('sidebar.nfce'), icon: Receipt },
-        { id: 'NFe', label: t('sidebar.nfe'), icon: FileText },
+        { id: 'NFSe', label: t('sidebar.nfse'), icon: FileCheck2, useCases: ['pedidos', 'servicos', 'simples'] },
+        { id: 'NFCe', label: t('sidebar.nfce'), icon: Receipt, useCases: ['pedidos', 'servicos', 'simples'] },
+        { id: 'NFe', label: t('sidebar.nfe'), icon: FileText, useCases: ['pedidos', 'servicos', 'simples'] },
       ],
     },
     {
@@ -270,6 +281,14 @@ function SidebarContent({
   const menuSections = useMenuSections();
   const collapsed = isCollapsed && !isMobile;
   const isEnterprise = !!business?.enterprise?.isEnabled;
+  const currentUseCase: UseCase = (business?.settings?.useCase as UseCase) || 'servicos';
+
+  const filterItems = (items: MenuItemConfig[]) =>
+    items.filter((item) => {
+      if (item.enterpriseOnly && !isEnterprise) return false;
+      if (item.useCases && !item.useCases.includes(currentUseCase)) return false;
+      return true;
+    });
 
   return (
     <div
@@ -338,13 +357,15 @@ function SidebarContent({
         )}
         style={{ scrollbarWidth: 'none' }}
       >
-        {menuSections.map((section, sectionIdx) => (
+        {menuSections.map((section, sectionIdx) => {
+          const visibleItems = filterItems(section.items);
+          if (visibleItems.length === 0) return null;
+          return (
           <div key={section.title} className={cn(sectionIdx > 0 && 'mt-1')}>
             <SectionHeader title={section.title} isCollapsed={collapsed} />
 
             <div className="space-y-0.5">
-              {section.items
-                .filter((item) => !item.enterpriseOnly || isEnterprise)
+              {visibleItems
                 .map((item) => (
                 <MenuItem
                   key={item.id}
@@ -359,7 +380,8 @@ function SidebarContent({
               ))}
             </div>
           </div>
-        ))}
+          );
+        })}
       </nav>
 
       {/* ── Footer ── */}

@@ -75,9 +75,13 @@ import {
   Smartphone,
   QrCode,
   Calendar,
+  Package,
+  Kanban,
+  ShoppingBag,
+  Sparkles,
 } from 'lucide-react';
-import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector, Service, WorkingHours, DaySchedule } from '@/lib/types';
-import { ROLE_LABELS, ROLE_HIERARCHY, USER_STATUS_LABELS, INTEGRATION_PROVIDERS, API_KEY_SCOPES, API_KEY_SCOPE_GROUPS, SECTOR_COLORS, DEFAULT_WORKING_HOURS } from '@/lib/types';
+import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector, Service, WorkingHours, DaySchedule, UseCase } from '@/lib/types';
+import { ROLE_LABELS, ROLE_HIERARCHY, USER_STATUS_LABELS, INTEGRATION_PROVIDERS, API_KEY_SCOPES, API_KEY_SCOPE_GROUPS, SECTOR_COLORS, DEFAULT_WORKING_HOURS, USE_CASE_LABELS, USE_CASE_DESCRIPTIONS } from '@/lib/types';
 import { formatDate, formatCurrency } from '@/lib/utils/format';
 // encryptToken/decryptToken no longer needed — channel credentials handled by Embedded Signup
 import {
@@ -93,7 +97,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'setores' | 'enterprise' | 'canais';
+type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'setores' | 'enterprise' | 'canais' | 'modo' | 'agente';
 
 interface CertStatus {
   hasCertificate: boolean;
@@ -2549,6 +2553,372 @@ function IntegrationRow({
   );
 }
 
+// ─── Agente IA Tab ────────────────────────────────────────────────────────────
+
+function AgenteToggleSwitch({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!checked)}
+      className={cn(
+        'relative inline-flex h-7 w-12 items-center rounded-full transition-colors',
+        checked ? 'bg-violet-600' : 'bg-gray-300 dark:bg-gray-700',
+      )}
+    >
+      <span
+        className={cn(
+          'inline-block h-5 w-5 transform rounded-full bg-white transition-transform shadow-sm',
+          checked ? 'translate-x-6' : 'translate-x-1',
+        )}
+      />
+    </button>
+  );
+}
+
+function AgenteTab() {
+  const { business, refreshUser } = useAuth();
+  const current = business?.settings?.aiAgent;
+  const [enabled, setEnabled] = useState<boolean>(current?.enabled ?? false);
+  const [model, setModel] = useState<string>(current?.model || 'gpt-4o-mini');
+  const [notifyOnStatus, setNotifyOnStatus] = useState<boolean>(current?.notifyOnStatus ?? true);
+  const [tone, setTone] = useState<'formal' | 'casual' | 'friendly'>(current?.tone || 'friendly');
+  const [businessDescription, setBusinessDescription] = useState<string>(current?.businessDescription || '');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setEnabled(current?.enabled ?? false);
+    setModel(current?.model || 'gpt-4o-mini');
+    setNotifyOnStatus(current?.notifyOnStatus ?? true);
+    setTone(current?.tone || 'friendly');
+    setBusinessDescription(current?.businessDescription || '');
+  }, [current?.enabled, current?.model, current?.notifyOnStatus, current?.tone, current?.businessDescription]);
+
+  const handleSave = async () => {
+    if (!business?.id) return;
+    setSaving(true);
+    try {
+      const payload: Record<string, unknown> = {
+        'settings.aiAgent': {
+          enabled,
+          model,
+          notifyOnStatus,
+          tone,
+          businessDescription: businessDescription.trim() || null,
+          enabledAt: enabled && !current?.enabledAt ? new Date().toISOString() : (current?.enabledAt || null),
+        },
+        updatedAt: new Date().toISOString(),
+      };
+      await updateDoc(doc(db, 'businesses', business.id), payload);
+      await refreshUser();
+      toast.success('Configurações do agente salvas!');
+    } catch (err) {
+      console.error('[AI Agent Settings] Save failed:', err);
+      toast.error('Erro ao salvar');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const models = [
+    { id: 'gpt-4o-mini', label: 'GPT-4o mini', description: 'Rápido e econômico (recomendado)' },
+    { id: 'gpt-4o', label: 'GPT-4o', description: 'Mais poderoso, maior custo' },
+    { id: 'gpt-4-turbo', label: 'GPT-4 Turbo', description: 'Balanço entre qualidade e custo' },
+  ];
+
+  const tones = [
+    { id: 'friendly', label: 'Amigável', emoji: '😊' },
+    { id: 'casual', label: 'Casual', emoji: '👋' },
+    { id: 'formal', label: 'Formal', emoji: '🎩' },
+  ] as const;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -4 }}
+      transition={{ duration: 0.25 }}
+      className="space-y-6"
+    >
+      {/* Enable card */}
+      <div className="bg-gradient-to-br from-violet-50 to-purple-50 dark:from-violet-500/10 dark:to-purple-500/5 border border-violet-200/60 dark:border-violet-500/20 rounded-2xl p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex items-start gap-3 flex-1">
+            <div className="w-10 h-10 rounded-xl bg-white dark:bg-gray-900 flex items-center justify-center shadow-sm flex-shrink-0">
+              <Sparkles className="w-5 h-5 text-violet-500" />
+            </div>
+            <div>
+              <h3 className="font-semibold text-gray-900 dark:text-gray-100 mb-0.5">Agente Autônomo de Atendimento</h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
+                IA responde automaticamente conversas no WhatsApp, Facebook e Instagram. Entende pedidos,
+                agenda serviços, consulta cardápio e acompanha status — tudo sem sua intervenção.
+              </p>
+            </div>
+          </div>
+          <AgenteToggleSwitch checked={enabled} onChange={setEnabled} />
+        </div>
+      </div>
+
+      {enabled && (
+        <motion.div
+          initial={{ opacity: 0, height: 0 }}
+          animate={{ opacity: 1, height: 'auto' }}
+          transition={{ duration: 0.25 }}
+          className="space-y-6"
+        >
+          {/* Modelo */}
+          <SectionCard title="Modelo de IA" icon={Bug}>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {models.map(m => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => setModel(m.id)}
+                  className={cn(
+                    'text-left p-3 rounded-xl border-2 transition-all',
+                    model === m.id
+                      ? 'border-violet-500 bg-violet-50 dark:bg-violet-500/10'
+                      : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600 bg-white dark:bg-gray-900',
+                  )}
+                >
+                  <p className="text-sm font-bold text-gray-900 dark:text-gray-100">{m.label}</p>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">{m.description}</p>
+                </button>
+              ))}
+            </div>
+          </SectionCard>
+
+          {/* Tom */}
+          <SectionCard title="Tom de voz" icon={MessageCircle}>
+            <div className="flex gap-2 flex-wrap">
+              {tones.map(t => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setTone(t.id)}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border-2 text-sm font-medium transition-all',
+                    tone === t.id
+                      ? 'border-violet-500 bg-violet-50 dark:bg-violet-500/10 text-violet-700 dark:text-violet-400'
+                      : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400',
+                  )}
+                >
+                  <span>{t.emoji}</span>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </SectionCard>
+
+          {/* Contexto */}
+          <SectionCard title="Contexto do negócio (opcional)" icon={Info}>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+              Descreva seu negócio, diferenciais, horário de atendimento, políticas de entrega — tudo que ajuda
+              a IA a responder melhor. Máximo 2000 caracteres.
+            </p>
+            <textarea
+              value={businessDescription}
+              onChange={(e) => setBusinessDescription(e.target.value.slice(0, 2000))}
+              rows={5}
+              placeholder="Ex.: Pizzaria familiar em São Paulo, aberta de terça a domingo das 18h às 23h. Especialidade em pizzas artesanais. Entrega em até 3km com taxa fixa de R$ 8. Aceitamos PIX, cartão e dinheiro."
+              className="w-full px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+            />
+            <p className="text-[10px] text-gray-400 mt-1 text-right">{businessDescription.length}/2000</p>
+          </SectionCard>
+
+          {/* Notificações automáticas */}
+          <SectionCard title="Notificações automáticas" icon={MessageCircle}>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  Avisar cliente em mudanças de status
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  Ex.: "Seu pedido #42 saiu para entrega! 🏍️" — enviado automaticamente pelo canal original.
+                </p>
+              </div>
+              <AgenteToggleSwitch checked={notifyOnStatus} onChange={setNotifyOnStatus} />
+            </div>
+          </SectionCard>
+
+          {/* Save */}
+          <div className="flex justify-end">
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-bold shadow-md shadow-violet-500/20 transition-colors"
+            >
+              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+              {saving ? 'Salvando...' : 'Salvar configurações'}
+            </button>
+          </div>
+        </motion.div>
+      )}
+    </motion.div>
+  );
+}
+
+// ─── Modo do Sistema Tab ──────────────────────────────────────────────────────
+
+function ModoSistemaTab() {
+  const { business, refreshUser } = useAuth();
+  const [saving, setSaving] = useState<UseCase | null>(null);
+  const currentUseCase: UseCase = (business?.settings?.useCase as UseCase) || 'servicos';
+
+  const handleSelect = async (useCase: UseCase) => {
+    if (!business?.id || useCase === currentUseCase) return;
+    setSaving(useCase);
+    try {
+      await updateDoc(doc(db, 'businesses', business.id), {
+        'settings.useCase': useCase,
+        updatedAt: new Date().toISOString(),
+      });
+      await refreshUser();
+      toast.success(`Modo alterado para ${USE_CASE_LABELS[useCase]}`);
+    } catch (err) {
+      console.error('[ModoSistema] Failed to update:', err);
+      toast.error('Erro ao alterar modo do sistema');
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const modes: { id: UseCase; icon: React.ElementType; accent: string; modules: string[] }[] = [
+    {
+      id: 'pedidos',
+      icon: ShoppingBag,
+      accent: 'from-orange-500 to-red-500',
+      modules: ['Pedidos', 'Cardápio', 'Estoque', 'PDV', 'Financeiro', 'Fiscal'],
+    },
+    {
+      id: 'servicos',
+      icon: Calendar,
+      accent: 'from-blue-500 to-indigo-500',
+      modules: ['Agenda', 'PDV', 'Estoque', 'Financeiro', 'Fiscal'],
+    },
+    {
+      id: 'times',
+      icon: Kanban,
+      accent: 'from-violet-500 to-purple-500',
+      modules: ['Kanban', 'Clientes', 'CRM', 'Conversas'],
+    },
+    {
+      id: 'simples',
+      icon: Sparkles,
+      accent: 'from-emerald-500 to-teal-500',
+      modules: ['Clientes', 'CRM', 'Conversas', 'Financeiro'],
+    },
+  ];
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -4 }}
+      transition={{ duration: 0.25 }}
+      className="space-y-6"
+    >
+      <div className="bg-gradient-to-br from-red-50 to-orange-50 dark:from-red-500/10 dark:to-orange-500/5 border border-red-200/60 dark:border-red-500/20 rounded-2xl p-5">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-xl bg-white dark:bg-gray-900 flex items-center justify-center shadow-sm">
+            <Zap className="w-5 h-5 text-red-500" />
+          </div>
+          <div>
+            <h3 className="font-semibold text-gray-900 dark:text-gray-100 mb-0.5">Modo do Sistema</h3>
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              Escolha o modo que melhor reflete o seu negócio. A interface se adapta automaticamente — módulos irrelevantes ficam ocultos e o dashboard mostra apenas métricas úteis.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {modes.map((mode, i) => {
+          const Icon = mode.icon;
+          const isActive = currentUseCase === mode.id;
+          const isLoading = saving === mode.id;
+
+          return (
+            <motion.button
+              key={mode.id}
+              type="button"
+              onClick={() => handleSelect(mode.id)}
+              disabled={!!saving}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: i * 0.05 }}
+              whileHover={!isActive && !saving ? { y: -2 } : {}}
+              whileTap={!saving ? { scale: 0.98 } : {}}
+              className={cn(
+                'group relative text-left p-5 rounded-2xl border-2 transition-all overflow-hidden',
+                isActive
+                  ? 'border-red-500 bg-red-50/50 dark:bg-red-500/10 shadow-lg shadow-red-500/10'
+                  : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:border-gray-300 dark:hover:border-gray-600',
+                saving && !isActive && 'opacity-40 pointer-events-none',
+                saving === mode.id && 'opacity-80',
+              )}
+            >
+              {isActive && (
+                <motion.div
+                  layoutId="usecase-active-indicator"
+                  className="absolute top-3 right-3 flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-500 text-white text-[10px] font-bold shadow-sm"
+                >
+                  <CheckCircle className="w-3 h-3" />
+                  ATIVO
+                </motion.div>
+              )}
+
+              <div className="flex items-start gap-3 mb-3">
+                <div
+                  className={cn(
+                    'w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0 shadow-sm bg-gradient-to-br text-white',
+                    mode.accent,
+                  )}
+                >
+                  {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Icon className="w-6 h-6" />}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h4 className="font-semibold text-gray-900 dark:text-gray-100 mb-0.5">{USE_CASE_LABELS[mode.id]}</h4>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+                    {USE_CASE_DESCRIPTIONS[mode.id]}
+                  </p>
+                </div>
+              </div>
+
+              <div className="pt-3 border-t border-gray-100 dark:border-gray-800">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500 mb-2">
+                  Módulos principais
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {mode.modules.map(m => (
+                    <span
+                      key={m}
+                      className={cn(
+                        'px-2 py-0.5 rounded-md text-[10px] font-medium',
+                        isActive
+                          ? 'bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-300'
+                          : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400',
+                      )}
+                    >
+                      {m}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </motion.button>
+          );
+        })}
+      </div>
+
+      <div className="text-xs text-gray-500 dark:text-gray-500 bg-gray-50 dark:bg-gray-800/40 rounded-xl p-4 flex items-start gap-2">
+        <Info className="w-4 h-4 flex-shrink-0 mt-0.5 text-gray-400" />
+        <p>
+          Mudar o modo não apaga dados — apenas ajusta a visibilidade dos módulos e do dashboard. Você pode trocar a qualquer momento sem perder nada.
+        </p>
+      </div>
+    </motion.div>
+  );
+}
+
 // ─── Sectors Tab ──────────────────────────────────────────────────────────────
 
 function SectorsTab() {
@@ -4464,6 +4834,8 @@ export default function SettingsModule() {
 
   const allTabs = [
     { id: 'perfil'     as Tab, label: t('settings.tabs.perfil',   'Meu Perfil'), icon: UserCircle },
+    { id: 'modo'       as Tab, label: t('settings.tabs.modo',     'Modo do Sistema'), icon: Zap   },
+    { id: 'agente'     as Tab, label: t('settings.tabs.agente',   'Agente IA'), icon: Sparkles },
     { id: 'empresa'    as Tab, label: t('settings.tabs.empresa',  'Empresa'),    icon: Building2  },
     { id: 'fiscal'     as Tab, label: t('settings.tabs.fiscal',   'Fiscal'),     icon: FileText   },
     { id: 'usuarios'   as Tab, label: t('settings.tabs.usuarios', 'Usuários'),   icon: Users      },
@@ -4529,6 +4901,8 @@ export default function SettingsModule() {
       {/* Tab Content */}
       <AnimatePresence mode="wait" initial={false}>
         {activeTab === 'perfil'     && <ProfileTab key="perfil" />}
+        {activeTab === 'modo'       && <ModoSistemaTab key="modo" />}
+        {activeTab === 'agente'     && <AgenteTab key="agente" />}
         {activeTab === 'empresa'    && <EmpresaTab key="empresa" />}
         {activeTab === 'fiscal'     && <FiscalTab key="fiscal" />}
         {activeTab === 'usuarios'   && <UsersTab key="usuarios" />}

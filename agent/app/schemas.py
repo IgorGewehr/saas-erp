@@ -1,0 +1,36 @@
+"""Request/response contracts shared between Next.js and the agent."""
+
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+
+class ProcessRequest(BaseModel):
+    """Sent by Next.js webhook handler when a new inbound message arrives."""
+
+    message_id: str
+    conversation_id: str
+    message: str
+    contact_name: str
+    contact_phone: str | None = None
+    channel: Literal["whatsapp", "facebook", "instagram"] = "whatsapp"
+    recipient_id: str  # Meta user id or phone for outbound send
+    # Prior messages to ground the model (most recent last), optional
+    history: list[dict[str, Any]] = Field(default_factory=list)
+    # Business-level config — passed by the webhook so we don't re-fetch
+    use_case: Literal["pedidos", "servicos", "simples", "times"] = "servicos"
+    business_name: str | None = None
+    business_description: str | None = None
+    tone: Literal["formal", "casual", "friendly"] = "friendly"
+    model: str | None = None
+
+
+class ProcessResponse(BaseModel):
+    run_id: str
+    final_response: str | None
+    intent: str | None
+    iterations: int
+    status: Literal["success", "error", "skipped"]
+    error: str | None = None

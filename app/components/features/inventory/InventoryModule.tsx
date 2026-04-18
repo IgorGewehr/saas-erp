@@ -61,7 +61,7 @@ import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { Product, StockMovement } from '@/lib/types';
+import type { Product, StockMovement, ProductComponent } from '@/lib/types';
 import { toast } from 'react-toastify';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
@@ -106,6 +106,12 @@ interface ProductFormData {
   imageFile: File | null;
   imagePreview: string;
   existingImageUrl: string;
+  // Delivery / Cardápio
+  isDeliverable: boolean;
+  menuCategory: string;
+  menuDescription: string;
+  preparationTime: string;
+  components: ProductComponent[];
 }
 
 interface MovementFormData {
@@ -164,6 +170,11 @@ const EMPTY_PRODUCT_FORM: ProductFormData = {
   imageFile: null,
   imagePreview: '',
   existingImageUrl: '',
+  isDeliverable: false,
+  menuCategory: '',
+  menuDescription: '',
+  preparationTime: '',
+  components: [],
 };
 
 const EMPTY_MOVEMENT_FORM: MovementFormData = {
@@ -1148,9 +1159,11 @@ interface ProductDialogProps {
   onClose: () => void;
   onSave: (data: ProductFormData) => Promise<void>;
   product?: Product | null;
+  allProducts?: Product[];
+  deliveryEnabled?: boolean;
 }
 
-function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
+function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliveryEnabled = false }: ProductDialogProps) {
   const { t } = useTranslation();
   const [form, setForm] = useState<ProductFormData>(EMPTY_PRODUCT_FORM);
   const [isSaving, setIsSaving] = useState(false);
@@ -1189,6 +1202,11 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
           imageFile: null,
           imagePreview: '',
           existingImageUrl: product.imageUrl || '',
+          isDeliverable: product.isDeliverable ?? false,
+          menuCategory: product.menuCategory || '',
+          menuDescription: product.menuDescription || '',
+          preparationTime: product.preparationTime ? String(product.preparationTime) : '',
+          components: product.components ? [...product.components] : [],
         });
       } else {
         setForm(EMPTY_PRODUCT_FORM);
@@ -1518,6 +1536,148 @@ function ProductDialog({ open, onClose, onSave, product }: ProductDialogProps) {
               </div>
             </div>
 
+            {/* ======= Entrega / Cardápio ======= */}
+            {deliveryEnabled && (
+              <div className="pt-4 border-t border-gray-100 dark:border-gray-800 space-y-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+                      <span className="text-base">🍽️</span> Entrega & Cardápio
+                    </h3>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      Marque para exibir este produto no cardápio e permitir pedidos de entrega.
+                    </p>
+                  </div>
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={form.isDeliverable}
+                        onChange={(e) => updateField('isDeliverable', e.target.checked)}
+                        sx={{
+                          '& .MuiSwitch-switchBase.Mui-checked': { color: '#DC2626' },
+                          '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#DC2626' },
+                        }}
+                      />
+                    }
+                    label=""
+                  />
+                </div>
+
+                <AnimatePresence initial={false}>
+                  {form.isDeliverable && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      transition={{ duration: 0.22 }}
+                      className="space-y-3 overflow-hidden"
+                    >
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <TextField
+                          label="Categoria no cardápio"
+                          placeholder="Pizzas, Bebidas, Sobremesas..."
+                          value={form.menuCategory}
+                          onChange={(e) => updateField('menuCategory', e.target.value)}
+                          size="small"
+                          fullWidth
+                        />
+                        <TextField
+                          label="Tempo de preparo (min)"
+                          type="number"
+                          value={form.preparationTime}
+                          onChange={(e) => updateField('preparationTime', e.target.value)}
+                          inputProps={{ min: 0, max: 240 }}
+                          size="small"
+                          fullWidth
+                        />
+                      </div>
+                      <TextField
+                        label="Descrição para o cardápio"
+                        placeholder="Massa fininha, molho de tomate fresco, mozzarella..."
+                        value={form.menuDescription}
+                        onChange={(e) => updateField('menuDescription', e.target.value)}
+                        multiline
+                        rows={2}
+                        size="small"
+                        fullWidth
+                      />
+
+                      {/* Composição (BOM) */}
+                      <div className="bg-gray-50 dark:bg-gray-800/40 rounded-xl p-3 border border-gray-200 dark:border-gray-700">
+                        <div className="flex items-center justify-between mb-2">
+                          <div>
+                            <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">Composição (opcional)</p>
+                            <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                              Use para kits/cestas. Ao vender, o estoque é descontado dos componentes (não do próprio produto).
+                            </p>
+                          </div>
+                        </div>
+
+                        {form.components.length > 0 && (
+                          <div className="space-y-1.5 mb-2">
+                            {form.components.map((comp, idx) => (
+                              <div key={idx} className="flex items-center gap-2 bg-white dark:bg-gray-900 rounded-lg p-2 border border-gray-200 dark:border-gray-700">
+                                <span className="flex-1 text-sm text-gray-900 dark:text-gray-100 truncate">
+                                  {comp.productName}
+                                </span>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  value={comp.quantity}
+                                  onChange={(e) => {
+                                    const next = [...form.components];
+                                    next[idx] = { ...next[idx], quantity: Math.max(1, Number(e.target.value) || 1) };
+                                    setForm(f => ({ ...f, components: next }));
+                                  }}
+                                  className="w-16 px-2 py-1 text-sm border border-gray-200 dark:border-gray-700 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20"
+                                />
+                                <span className="text-xs text-gray-500 dark:text-gray-400 min-w-[24px]">un</span>
+                                <IconButton
+                                  size="small"
+                                  onClick={() => {
+                                    setForm(f => ({ ...f, components: f.components.filter((_, i) => i !== idx) }));
+                                  }}
+                                >
+                                  <X size={14} />
+                                </IconButton>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        <select
+                          value=""
+                          onChange={(e) => {
+                            const id = e.target.value;
+                            if (!id) return;
+                            const p = allProducts.find(pp => pp.id === id);
+                            if (!p) return;
+                            if (form.components.some(c => c.productId === id)) return;
+                            setForm(f => ({
+                              ...f,
+                              components: [...f.components, { productId: p.id, productName: p.name, quantity: 1 }],
+                            }));
+                            e.target.value = '';
+                          }}
+                          className="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20"
+                        >
+                          <option value="">+ Adicionar componente...</option>
+                          {allProducts
+                            .filter(p => p.id !== product?.id && !p.components?.length)
+                            .filter(p => !form.components.some(c => c.productId === p.id))
+                            .map(p => (
+                              <option key={p.id} value={p.id}>
+                                {p.name} ({p.currentStock} em estoque)
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            )}
+
             {/* Active Toggle */}
             <FormControlLabel
               control={
@@ -1813,6 +1973,11 @@ export default function InventoryModule() {
         gtin: data.gtin.trim() || undefined,
         isActive: data.isActive,
         imageUrl: imageUrl || null,
+        isDeliverable: data.isDeliverable,
+        menuCategory: data.isDeliverable ? (data.menuCategory.trim() || null) : null,
+        menuDescription: data.isDeliverable ? (data.menuDescription.trim() || null) : null,
+        preparationTime: data.isDeliverable && data.preparationTime ? Number(data.preparationTime) : null,
+        components: data.isDeliverable && data.components.length > 0 ? data.components : null,
         updatedAt: new Date().toISOString(),
       };
 
@@ -1825,7 +1990,7 @@ export default function InventoryModule() {
       toast.success(t('inventory.toast.productUpdated', 'Produto atualizado com sucesso!'));
     } else {
       // CREATE
-      const productData = {
+      const productData: Record<string, unknown> = {
         businessId: business.id,
         name: data.name.trim(),
         description: data.description.trim() || '',
@@ -1845,9 +2010,17 @@ export default function InventoryModule() {
         gtin: data.gtin.trim() || '',
         isActive: data.isActive,
         imageUrl: '',
+        isDeliverable: data.isDeliverable,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
+
+      if (data.isDeliverable) {
+        if (data.menuCategory.trim()) productData.menuCategory = data.menuCategory.trim();
+        if (data.menuDescription.trim()) productData.menuDescription = data.menuDescription.trim();
+        if (data.preparationTime) productData.preparationTime = Number(data.preparationTime);
+        if (data.components.length > 0) productData.components = data.components;
+      }
 
       const docRef = await addDoc(collection(db, 'products'), productData);
 
@@ -2062,6 +2235,8 @@ export default function InventoryModule() {
           }}
           onSave={handleSaveProduct}
           product={editingProduct}
+          allProducts={products}
+          deliveryEnabled={business?.settings?.useCase === 'pedidos'}
         />
       </div>
     );
@@ -2359,6 +2534,8 @@ export default function InventoryModule() {
         }}
         onSave={handleSaveProduct}
         product={editingProduct}
+        allProducts={products}
+        deliveryEnabled={business?.settings?.useCase === 'pedidos'}
       />
 
       <StockMovementDialog

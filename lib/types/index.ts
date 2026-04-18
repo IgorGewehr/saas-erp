@@ -185,10 +185,37 @@ export const COMPANY_TYPE_LABELS: Record<string, string> = {
   individual: 'Empresário Individual',
 };
 
+export type UseCase = 'pedidos' | 'servicos' | 'times' | 'simples';
+
+export const USE_CASE_LABELS: Record<UseCase, string> = {
+  pedidos: 'Pedidos & Entregas',
+  servicos: 'Prestador de Serviços',
+  times: 'Gestão de Times',
+  simples: 'Essencial',
+};
+
+export const USE_CASE_DESCRIPTIONS: Record<UseCase, string> = {
+  pedidos: 'Para restaurantes, confeitarias e comércios que recebem pedidos para entrega. Inclui gerenciador de pedidos, cardápio e estoque com composições.',
+  servicos: 'Para profissionais e clínicas com agendamentos. Inclui agenda com recorrência, controle de serviços e sincronização de métricas de clientes.',
+  times: 'Para equipes que organizam trabalho em quadros Kanban. Foco em produtividade, atribuição e fluxo de tarefas.',
+  simples: 'Apenas o essencial: clientes, conversas, CRM e financeiro. Sem módulos operacionais.',
+};
+
 export interface BusinessSettings {
   timezone?: string;
   currency?: string;
   language?: string;
+  useCase?: UseCase;
+  aiAgent?: AiAgentSettings;
+}
+
+export interface AiAgentSettings {
+  enabled: boolean;
+  model?: string;                // ex.: 'gpt-4o', 'gpt-4o-mini'
+  notifyOnStatus?: boolean;       // enviar mensagens quando Order/Appointment mudam de status
+  businessDescription?: string;   // contexto customizado para o prompt
+  tone?: 'formal' | 'casual' | 'friendly';
+  enabledAt?: string;
 }
 
 // ---- Fiscal Configuration ----
@@ -547,8 +574,22 @@ export interface Product {
   };
   isActive: boolean;
   imageUrl?: string;
+  // Delivery / Cardápio (used when business.settings.useCase === 'pedidos')
+  isDeliverable?: boolean;
+  menuCategory?: string;        // Ex: "Pizzas", "Bebidas", "Sobremesas"
+  menuDescription?: string;     // Short description for the menu card
+  preparationTime?: number;     // Minutes — for delivery ETA
+  // Composite / BOM — when set, parent product deducts each component on sale,
+  // and parent itself carries no stock of its own.
+  components?: ProductComponent[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ProductComponent {
+  productId: string;
+  productName: string;  // denormalized for display
+  quantity: number;
 }
 
 export interface StockMovement {
@@ -567,6 +608,153 @@ export interface StockMovement {
   operatorName: string;
   createdAt: string;
 }
+
+// ---- AI Agent (LangGraph orchestration) ----
+export type AgentRunStatus = 'running' | 'success' | 'error' | 'skipped';
+
+export interface AgentToolCall {
+  name: string;
+  arguments: Record<string, unknown>;
+  result?: unknown;
+  error?: string;
+  latencyMs: number;
+  startedAt: string;
+}
+
+export interface AgentNodeTrace {
+  node: string;                  // 'router' | 'planner' | 'executor' | 'evaluator' | 'responder'
+  input?: unknown;
+  output?: unknown;
+  tokensIn?: number;
+  tokensOut?: number;
+  latencyMs: number;
+  startedAt: string;
+}
+
+export interface AgentRun {
+  id: string;
+  businessId: string;
+  conversationId: string;
+  messageId: string;            // id da mensagem inbound que disparou a run
+  userMessage: string;
+  status: AgentRunStatus;
+  finalResponse?: string;        // mensagem efetivamente enviada ao contato
+  intent?: string;               // pedido | agenda | info | outro
+  nodes: AgentNodeTrace[];
+  tools: AgentToolCall[];
+  iterations: number;
+  totalLatencyMs: number;
+  totalTokensIn: number;
+  totalTokensOut: number;
+  costUsd: number;
+  model: string;
+  errorMessage?: string;
+  createdAt: string;
+  completedAt?: string;
+}
+
+// ---- Delivery Orders (Pedidos — modo "pedidos", distinto do Order de Vendas B2B) ----
+export type DeliveryOrderStatus =
+  | 'recebido'
+  | 'preparando'
+  | 'pronto'
+  | 'saiu_entrega'
+  | 'entregue'
+  | 'cancelado';
+
+export type DeliveryOrderPaymentStatus = 'pendente' | 'pago' | 'estornado';
+
+export type DeliveryOrderChannel = 'whatsapp' | 'facebook' | 'instagram' | 'manual' | 'site';
+
+export type DeliveryType = 'entrega' | 'retirada';
+
+export type DeliveryOrderPaymentMethod =
+  | 'dinheiro'
+  | 'cartao_credito'
+  | 'cartao_debito'
+  | 'pix'
+  | 'voucher'
+  | 'outro';
+
+export interface DeliveryOrderItem {
+  productId: string;
+  productName: string;
+  quantity: number;
+  unitPrice: number;
+  total: number;
+  notes?: string;
+  imageUrl?: string;
+}
+
+export interface DeliveryOrderAddress {
+  cep?: string;
+  logradouro?: string;
+  numero?: string;
+  complemento?: string;
+  bairro?: string;
+  municipio?: string;
+  uf?: string;
+  reference?: string;
+}
+
+export interface DeliveryOrder {
+  id: string;
+  businessId: string;
+  number: number;
+  status: DeliveryOrderStatus;
+
+  clientId?: string;
+  clientName: string;
+  clientPhone?: string;
+
+  channel?: DeliveryOrderChannel;
+  conversationId?: string;
+  contactExternalId?: string;
+
+  items: DeliveryOrderItem[];
+  subtotal: number;
+  deliveryFee?: number;
+  discount?: number;
+  total: number;
+
+  deliveryType: DeliveryType;
+  deliveryAddress?: DeliveryOrderAddress;
+  deliveryPersonId?: string;
+  deliveryPersonName?: string;
+  estimatedDeliveryAt?: string;
+  deliveredAt?: string;
+
+  paymentMethod?: DeliveryOrderPaymentMethod;
+  paymentStatus: DeliveryOrderPaymentStatus;
+  changeFor?: number;
+
+  customerNotes?: string;
+  internalNotes?: string;
+
+  // Tracks when stock was deducted so transitions stay idempotent.
+  stockDeductedAt?: string;
+
+  createdAt: string;
+  updatedAt: string;
+  sectorId?: string;
+}
+
+export const DELIVERY_ORDER_STATUS_FLOW: DeliveryOrderStatus[] = [
+  'recebido',
+  'preparando',
+  'pronto',
+  'saiu_entrega',
+  'entregue',
+];
+
+export const DELIVERY_ORDER_STATUS_LABELS: Record<DeliveryOrderStatus, string> = {
+  recebido: 'Recebido',
+  preparando: 'Preparando',
+  pronto: 'Pronto',
+  saiu_entrega: 'Saiu para Entrega',
+  entregue: 'Entregue',
+  cancelado: 'Cancelado',
+};
 
 // ---- Fiscal ----
 export type FiscalDocType = 'nfse' | 'nfce' | 'nfe';
@@ -990,6 +1178,8 @@ export interface Conversation {
   contactPhone?: string;
   contactExternalId?: string;
   contactAvatarUrl?: string;
+  crmContactId?: string;
+  aiEnabled?: boolean;            // toggle do agente IA — default: herda de business.settings.aiAgent.enabled
   lastMessage: string;
   lastMessageAt: string;
   lastMessageDirection: MessageDirection;
@@ -1005,6 +1195,8 @@ export interface Conversation {
   tags?: string[];
   createdAt: string;
   updatedAt: string;
+  isDeleted?: boolean;
+  deletedAt?: string;
 }
 
 export interface ConversationMessage {

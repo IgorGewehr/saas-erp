@@ -53,6 +53,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, doc } from 'firebase/firestore';
+import { deductStock } from '@/lib/services/stock';
 import { db } from '@/lib/config/firebase';
 import type { Product, Service, CRMContact, Sale, SaleItem, Payment, PaymentMethod } from '@/lib/types';
 
@@ -532,31 +533,20 @@ export default function PDVModule() {
 
       const docRef = await addDoc(collection(db, 'sales'), saleData);
 
-      // Update stock for product items
-      for (const item of cart) {
-        if (item.productId) {
-          const product = products.find(p => p.id === item.productId);
-          if (product) {
-            await updateDoc(doc(db, 'products', item.productId), {
-              currentStock: product.currentStock - item.quantity,
-              updatedAt: now,
-            });
-            await addDoc(collection(db, 'stockMovements'), {
-              businessId: business.id,
-              productId: item.productId,
-              productName: item.description,
-              type: 'saida',
-              quantity: item.quantity,
-              previousStock: product.currentStock,
-              newStock: product.currentStock - item.quantity,
-              reason: `Venda #${docRef.id.substring(0, 6)}`,
-              saleId: docRef.id,
-              operatorId: user.uid,
-              operatorName: user.name,
-              createdAt: now,
-            });
-          }
-        }
+      // Deduct stock via centralized helper (supports composite products/BOM).
+      const productIndex = new Map(products.map(p => [p.id, p]));
+      const stockLines = cart
+        .filter(item => item.productId)
+        .map(item => ({ productId: item.productId!, quantity: item.quantity }));
+      if (stockLines.length > 0) {
+        await deductStock(db, stockLines, {
+          businessId: business.id,
+          operatorId: user.uid,
+          operatorName: user.name,
+          sourceId: docRef.id,
+          reason: `Venda #${docRef.id.substring(0, 6)}`,
+          productIndex,
+        });
       }
 
       // Create financial transaction for the sale
