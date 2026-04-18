@@ -44,6 +44,9 @@ import {
   AlertCircle,
   AlertTriangle,
   ChevronDown,
+  ChevronRight,
+  Plus,
+  UserPlus,
   FileText,
   Headphones,
   Video,
@@ -75,6 +78,7 @@ import type {
   Snippet,
   User,
   AgentRun,
+  Client,
 } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import { CachedImage } from '@/app/components/ui/CachedImage';
@@ -471,6 +475,8 @@ function ThreadHeader({
   onGoToAgentSettings,
   onOpenAgentDebug,
   onOpenContact,
+  onLinkClient,
+  linkedClientName,
   onDeleteConversation,
   onMarkUnread,
   onTogglePrivate,
@@ -487,6 +493,8 @@ function ThreadHeader({
   onGoToAgentSettings?: () => void;
   onOpenAgentDebug?: () => void;
   onOpenContact?: () => void;
+  onLinkClient?: () => void;
+  linkedClientName?: string;
   onDeleteConversation?: () => void;
   onMarkUnread?: () => void;
   onTogglePrivate?: () => void;
@@ -563,7 +571,7 @@ function ThreadHeader({
         </div>
 
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="font-semibold text-sm text-gray-900 dark:text-white truncate">
               {conversation.contactName}
             </span>
@@ -577,6 +585,24 @@ function ThreadHeader({
               <ChannelIcon channel={conversation.channel} size="sm" />
               {cfg.label}
             </span>
+            {onLinkClient && (
+              <button
+                type="button"
+                onClick={onLinkClient}
+                className={cn(
+                  'inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full border transition-colors',
+                  linkedClientName
+                    ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-500/30 hover:bg-emerald-100 dark:hover:bg-emerald-500/20'
+                    : 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-500/30 hover:bg-amber-100 dark:hover:bg-amber-500/20',
+                )}
+                title={linkedClientName ? `Cliente: ${linkedClientName}` : 'Contato não vinculado a cliente'}
+              >
+                {linkedClientName ? <UserIcon className="w-2.5 h-2.5" /> : <UserPlus className="w-2.5 h-2.5" />}
+                <span className="max-w-[12ch] truncate">
+                  {linkedClientName || 'Vincular cliente'}
+                </span>
+              </button>
+            )}
           </div>
           <div className="flex items-center gap-1.5 mt-0.5">
             <StatusDot status={conversation.status} />
@@ -1397,6 +1423,310 @@ function ConversationListSkeleton() {
   );
 }
 
+// ─── Link Contact Drawer ─────────────────────────────────────────────────────
+
+const digits = (s: string | undefined | null) => (s || '').replace(/\D/g, '');
+
+function scoreMatch(conv: Conversation, client: Client): number {
+  // Higher = better. 0 means no signal, we don't show.
+  let score = 0;
+  const convPhone = digits(conv.contactPhone || conv.contactExternalId);
+  if (convPhone) {
+    if (digits(client.phone) === convPhone) score += 100;
+    if (digits(client.whatsapp) === convPhone) score += 100;
+    // Partial suffix (same last 8 digits handles +55 variance)
+    if (convPhone.length >= 8) {
+      const suf = convPhone.slice(-8);
+      if (digits(client.phone).endsWith(suf)) score += 60;
+      if (digits(client.whatsapp).endsWith(suf)) score += 60;
+    }
+  }
+  const convName = (conv.contactName || '').toLowerCase().trim();
+  const clientName = (client.name || '').toLowerCase().trim();
+  if (convName && clientName) {
+    if (clientName === convName) score += 40;
+    else {
+      const convTokens = convName.split(/\s+/).filter(Boolean);
+      const clientTokens = clientName.split(/\s+/).filter(Boolean);
+      for (const t of convTokens) {
+        if (t.length >= 3 && clientTokens.includes(t)) score += 12;
+      }
+    }
+  }
+  return score;
+}
+
+function LinkContactDrawer({
+  conversation,
+  clients,
+  businessId,
+  onClose,
+  onLinked,
+}: {
+  conversation: Conversation;
+  clients: Client[];
+  businessId: string;
+  onClose: () => void;
+  onLinked: (clientId: string | null) => void;
+}) {
+  const [search, setSearch] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [linkingId, setLinkingId] = useState<string | null>(null);
+
+  const linkedClient = useMemo(
+    () => conversation.crmContactId ? clients.find(c => c.id === conversation.crmContactId) : undefined,
+    [conversation.crmContactId, clients],
+  );
+
+  // Suggestions: matches + general search
+  const { suggestions, searchResults } = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (q) {
+      const filtered = clients
+        .filter(c => c.id !== linkedClient?.id)
+        .filter(c =>
+          (c.name || '').toLowerCase().includes(q) ||
+          digits(c.phone).includes(digits(q)) ||
+          digits(c.whatsapp).includes(digits(q)) ||
+          c.email?.toLowerCase().includes(q),
+        )
+        .slice(0, 10);
+      return { suggestions: [], searchResults: filtered };
+    }
+    const scored = clients
+      .filter(c => c.id !== linkedClient?.id)
+      .map(c => ({ client: c, score: scoreMatch(conversation, c) }))
+      .filter(s => s.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5)
+      .map(s => s.client);
+    return { suggestions: scored, searchResults: [] };
+  }, [clients, search, conversation, linkedClient?.id]);
+
+  const link = async (clientId: string | null) => {
+    setLinkingId(clientId || '__unlink');
+    try {
+      const now = new Date().toISOString();
+      await updateDoc(doc(db, 'conversations', conversation.id), {
+        crmContactId: clientId || null,
+        updatedAt: now,
+      });
+      if (clientId) {
+        // Mirror onto Client for future auto-link
+        const client = clients.find(c => c.id === clientId);
+        if (client) {
+          const convExternal = digits(conversation.contactExternalId);
+          const patch: Record<string, unknown> = {
+            lastConversationId: conversation.id,
+            lastConversationAt: now,
+            updatedAt: now,
+          };
+          // Save the channel identity so future inbound messages auto-link
+          if (convExternal) {
+            const key = conversation.channel === 'whatsapp' ? 'channelIdentities.whatsapp'
+              : conversation.channel === 'facebook' ? 'channelIdentities.facebook'
+              : 'channelIdentities.instagram';
+            patch[key] = convExternal;
+          }
+          await updateDoc(doc(db, 'clients', clientId), patch);
+        }
+      }
+      onLinked(clientId);
+    } catch (err) {
+      console.error('[Conversations] Link failed:', err);
+    } finally {
+      setLinkingId(null);
+    }
+  };
+
+  const quickCreate = async () => {
+    setCreating(true);
+    try {
+      const now = new Date().toISOString();
+      const phoneDigits = digits(conversation.contactPhone || conversation.contactExternalId);
+      const payload: Record<string, unknown> = {
+        businessId,
+        name: conversation.contactName || 'Novo contato',
+        source: conversation.channel,
+        status: 'novo',
+        score: 0,
+        isActive: true,
+        totalSpent: 0,
+        visitCount: 0,
+        createdAt: now,
+        updatedAt: now,
+      };
+      if (phoneDigits) {
+        if (conversation.channel === 'whatsapp') payload.whatsapp = phoneDigits;
+        else payload.phone = phoneDigits;
+        payload.channelIdentities = { [conversation.channel]: phoneDigits };
+      }
+      const { addDoc, collection } = await import('firebase/firestore');
+      const ref = await addDoc(collection(db, 'clients'), payload);
+      await link(ref.id);
+    } catch (err) {
+      console.error('[Conversations] Quick-create failed:', err);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ x: '100%' }}
+      animate={{ x: 0 }}
+      exit={{ x: '100%' }}
+      transition={{ type: 'spring', damping: 30, stiffness: 300 }}
+      className="fixed top-0 right-0 bottom-0 z-40 w-full max-w-md bg-white dark:bg-[#0f172a] border-l border-gray-200 dark:border-gray-800 shadow-2xl flex flex-col"
+    >
+      <div className="flex-shrink-0 flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800">
+        <div>
+          <h3 className="text-sm font-bold text-gray-900 dark:text-gray-100">Vincular cliente</h3>
+          <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+            Associe este contato a um cliente do CRM
+          </p>
+        </div>
+        <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400">
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {/* Already linked */}
+        {linkedClient && (
+          <div className="bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 rounded-xl p-3">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400 mb-2">
+              Cliente vinculado
+            </p>
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center text-white font-bold text-sm flex-shrink-0">
+                {(linkedClient.name?.[0] || '?').toUpperCase()}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-bold text-gray-900 dark:text-gray-100 truncate">{linkedClient.name}</p>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                  {linkedClient.phone || linkedClient.whatsapp || linkedClient.email || 'Sem contato'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => link(null)}
+                disabled={linkingId === '__unlink'}
+                className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:text-red-500 hover:border-red-300 disabled:opacity-50"
+              >
+                {linkingId === '__unlink' ? '...' : 'Desvincular'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Quick create — always offered unless already linked */}
+        {!linkedClient && (
+          <button
+            type="button"
+            onClick={quickCreate}
+            disabled={creating}
+            className="w-full group bg-gradient-to-br from-red-50 to-orange-50 dark:from-red-500/10 dark:to-orange-500/5 border border-red-200 dark:border-red-500/30 rounded-xl p-4 text-left hover:shadow-md transition-all disabled:opacity-50"
+          >
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-white dark:bg-gray-900 flex items-center justify-center shadow-sm flex-shrink-0">
+                {creating ? <Loader2 className="w-5 h-5 animate-spin text-red-500" /> : <Plus className="w-5 h-5 text-red-500" />}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-bold text-gray-900 dark:text-gray-100">
+                  {creating ? 'Criando...' : 'Criar novo cliente'}
+                </p>
+                <p className="text-[11px] text-gray-600 dark:text-gray-400 mt-0.5 leading-relaxed">
+                  Cria <strong>{conversation.contactName || 'este contato'}</strong>
+                  {conversation.contactPhone && <> com telefone <strong>{conversation.contactPhone}</strong></>}
+                  {' '}e vincula automaticamente.
+                </p>
+              </div>
+            </div>
+          </button>
+        )}
+
+        {/* Suggestions — exibido quando sem busca */}
+        {!search && suggestions.length > 0 && (
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2">
+              Possíveis correspondências
+            </p>
+            <div className="space-y-1.5">
+              {suggestions.map(c => (
+                <ClientResultRow key={c.id} client={c} loading={linkingId === c.id}
+                  onLink={() => link(c.id)} highlighted />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Search */}
+        <div>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Buscar por nome, telefone ou e-mail..."
+              className="w-full pl-10 pr-4 py-2.5 bg-white dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30"
+              autoFocus
+            />
+          </div>
+          {search && (
+            <div className="mt-2 space-y-1">
+              {searchResults.length === 0 ? (
+                <p className="text-xs text-gray-500 text-center py-6">Nenhum cliente encontrado</p>
+              ) : (
+                searchResults.map(c => (
+                  <ClientResultRow key={c.id} client={c} loading={linkingId === c.id}
+                    onLink={() => link(c.id)} />
+                ))
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+function ClientResultRow({
+  client, loading, highlighted, onLink,
+}: {
+  client: Client;
+  loading: boolean;
+  highlighted?: boolean;
+  onLink: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onLink}
+      disabled={loading}
+      className={cn(
+        'w-full text-left p-2.5 rounded-xl border transition-all flex items-center gap-3 hover:shadow-sm disabled:opacity-50',
+        highlighted
+          ? 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30'
+          : 'bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800 hover:border-red-300',
+      )}
+    >
+      <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center text-white font-bold text-xs flex-shrink-0">
+        {(client.name?.[0] || '?').toUpperCase()}
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{client.name}</p>
+        <p className="text-[10px] text-gray-500 dark:text-gray-400 truncate">
+          {client.phone || client.whatsapp || client.email || '—'}
+        </p>
+      </div>
+      {loading
+        ? <Loader2 className="w-4 h-4 animate-spin text-red-500 flex-shrink-0" />
+        : <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />}
+    </button>
+  );
+}
+
 // ─── Agent Debug Drawer ──────────────────────────────────────────────────────
 
 const RUN_STATUS_CONFIG: Record<string, { bg: string; text: string; label: string }> = {
@@ -1590,6 +1920,17 @@ export default function ConversasModule() {
   const isPedidosMode = business?.settings?.useCase === 'pedidos';
   const aiAgentEnabled = !!business?.settings?.aiAgent?.enabled;
   const [agentDebugOpen, setAgentDebugOpen] = useState(false);
+  const [linkContactOpen, setLinkContactOpen] = useState(false);
+  const [clientsList, setClientsList] = useState<Client[]>([]);
+
+  useEffect(() => {
+    if (!business?.id) return;
+    const q = query(collection(db, 'clients'), where('businessId', '==', business.id));
+    const unsub = onSnapshot(q, (snap) => {
+      setClientsList(snap.docs.map(d => ({ ...(d.data() as Client), id: d.id })));
+    });
+    return () => unsub();
+  }, [business?.id]);
 
   const handleToggleAi = useCallback(async (conv: Conversation) => {
     if (!business?.id) return;
@@ -2740,6 +3081,12 @@ export default function ConversasModule() {
                   onGoToAgentSettings={handleGoToAgentSettings}
                   onOpenAgentDebug={aiAgentEnabled ? () => setAgentDebugOpen(true) : undefined}
                   onOpenContact={() => handleOpenContact(selectedConversation)}
+                  onLinkClient={() => setLinkContactOpen(true)}
+                  linkedClientName={
+                    selectedConversation.crmContactId
+                      ? clientsList.find(c => c.id === selectedConversation.crmContactId)?.name
+                      : undefined
+                  }
                   onDeleteConversation={() => handleDeleteConversation(selectedConversation)}
                   onMarkUnread={() => handleMarkUnread(selectedConversation)}
                   onTogglePrivate={handleTogglePrivate}
@@ -2957,6 +3304,31 @@ export default function ConversasModule() {
       {/* Settings Dialog */}
       <AnimatePresence>
         {showSettings && <IntegrationSettingsDialog onClose={() => setShowSettings(false)} />}
+      </AnimatePresence>
+
+      {/* Link Contact Drawer */}
+      <AnimatePresence>
+        {linkContactOpen && selectedConversation && business?.id && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setLinkContactOpen(false)}
+              className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm"
+            />
+            <LinkContactDrawer
+              conversation={selectedConversation}
+              clients={clientsList}
+              businessId={business.id}
+              onClose={() => setLinkContactOpen(false)}
+              onLinked={(clientId) => {
+                setSelectedConversation(prev => prev ? { ...prev, crmContactId: clientId || undefined } : prev);
+                setLinkContactOpen(false);
+              }}
+            />
+          </>
+        )}
       </AnimatePresence>
 
       {/* Agent Debug Drawer */}

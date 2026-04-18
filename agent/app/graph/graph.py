@@ -94,7 +94,9 @@ async def run_agent(*, run_id: str, business_id: str, req: ProcessRequest) -> Ag
     Never raises: surfaces the error inside the result object.
     """
     settings = get_settings()
-    model = req.model or settings.openai_model_default
+    # Model is now enforced server-side (no per-business override) — the operator
+    # shouldn't be picking models; we pick the best cost/quality tradeoff.
+    model = settings.openai_model_default
     t0 = time.time()
 
     # Prepare initial state from the HTTP payload
@@ -121,6 +123,9 @@ async def run_agent(*, run_id: str, business_id: str, req: ProcessRequest) -> Ag
             "description": req.business_description,
             "tone": req.tone,
             "model": model,
+            # Settings específicas por modo — consumidas pelos prompts
+            "pedidos": req.pedidos_settings or {},
+            "agenda": req.agenda_settings or {},
         },
         "contact": {
             "name": req.contact_name,

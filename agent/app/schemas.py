@@ -24,7 +24,9 @@ class ProcessRequest(BaseModel):
     business_name: str | None = None
     business_description: str | None = None
     tone: Literal["formal", "casual", "friendly"] = "friendly"
-    model: str | None = None
+    # Per-mode granular settings that influence the prompt
+    pedidos_settings: dict[str, Any] | None = None
+    agenda_settings: dict[str, Any] | None = None
 
 
 class ProcessResponse(BaseModel):

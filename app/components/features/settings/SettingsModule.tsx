@@ -3429,32 +3429,56 @@ function AgenteToggleSwitch({ checked, onChange }: { checked: boolean; onChange:
 function AgenteTab() {
   const { business, refreshUser } = useAuth();
   const current = business?.settings?.aiAgent;
+  const useCase: UseCase = (business?.settings?.useCase as UseCase) || 'servicos';
+
   const [enabled, setEnabled] = useState<boolean>(current?.enabled ?? false);
-  const [model, setModel] = useState<string>(current?.model || 'gpt-4o-mini');
-  const [notifyOnStatus, setNotifyOnStatus] = useState<boolean>(current?.notifyOnStatus ?? true);
   const [tone, setTone] = useState<'formal' | 'casual' | 'friendly'>(current?.tone || 'friendly');
   const [businessDescription, setBusinessDescription] = useState<string>(current?.businessDescription || '');
+
+  // Pedidos-specific
+  const [notifyOnStatusChange, setNotifyOnStatusChange] = useState<boolean>(current?.pedidos?.notifyOnStatusChange ?? true);
+  const [acceptOrdersOffHours, setAcceptOrdersOffHours] = useState<boolean>(current?.pedidos?.acceptOrdersOffHours ?? false);
+
+  // Agenda-specific
+  const [sendReminder, setSendReminder] = useState<boolean>(current?.agenda?.sendReminder ?? true);
+  const [reminderHoursBefore, setReminderHoursBefore] = useState<number>(current?.agenda?.reminderHoursBefore ?? 24);
+  const [confirmationBeforeAppointment, setConfirmationBeforeAppointment] = useState<boolean>(current?.agenda?.confirmationBeforeAppointment ?? true);
+  const [followUpAfter, setFollowUpAfter] = useState<boolean>(current?.agenda?.followUpAfter ?? false);
+
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     setEnabled(current?.enabled ?? false);
-    setModel(current?.model || 'gpt-4o-mini');
-    setNotifyOnStatus(current?.notifyOnStatus ?? true);
     setTone(current?.tone || 'friendly');
     setBusinessDescription(current?.businessDescription || '');
-  }, [current?.enabled, current?.model, current?.notifyOnStatus, current?.tone, current?.businessDescription]);
+    setNotifyOnStatusChange(current?.pedidos?.notifyOnStatusChange ?? true);
+    setAcceptOrdersOffHours(current?.pedidos?.acceptOrdersOffHours ?? false);
+    setSendReminder(current?.agenda?.sendReminder ?? true);
+    setReminderHoursBefore(current?.agenda?.reminderHoursBefore ?? 24);
+    setConfirmationBeforeAppointment(current?.agenda?.confirmationBeforeAppointment ?? true);
+    setFollowUpAfter(current?.agenda?.followUpAfter ?? false);
+  }, [current]);
 
   const handleSave = async () => {
     if (!business?.id) return;
     setSaving(true);
     try {
+      // Build nested settings — keeps Firestore doc clean and lets server-side
+      // prompt builder know exactly what user opted into.
+      const pedidos = useCase === 'pedidos'
+        ? { notifyOnStatusChange, acceptOrdersOffHours }
+        : undefined;
+      const agenda = useCase === 'servicos'
+        ? { sendReminder, reminderHoursBefore, confirmationBeforeAppointment, followUpAfter }
+        : undefined;
+
       const payload: Record<string, unknown> = {
         'settings.aiAgent': {
           enabled,
-          model,
-          notifyOnStatus,
           tone,
           businessDescription: businessDescription.trim() || null,
+          pedidos: pedidos || null,
+          agenda: agenda || null,
           enabledAt: enabled && !current?.enabledAt ? new Date().toISOString() : (current?.enabledAt || null),
         },
         updatedAt: new Date().toISOString(),
@@ -3470,17 +3494,13 @@ function AgenteTab() {
     }
   };
 
-  const models = [
-    { id: 'gpt-4o-mini', label: 'GPT-4o mini', description: 'Rápido e econômico (recomendado)' },
-    { id: 'gpt-4o', label: 'GPT-4o', description: 'Mais poderoso, maior custo' },
-    { id: 'gpt-4-turbo', label: 'GPT-4 Turbo', description: 'Balanço entre qualidade e custo' },
-  ];
-
   const tones = [
     { id: 'friendly', label: 'Amigável', emoji: '😊' },
     { id: 'casual', label: 'Casual', emoji: '👋' },
     { id: 'formal', label: 'Formal', emoji: '🎩' },
   ] as const;
+
+  const modeLabel = useCase === 'pedidos' ? 'Pedidos' : useCase === 'servicos' ? 'Serviços' : USE_CASE_LABELS[useCase];
 
   return (
     <motion.div
@@ -3500,8 +3520,8 @@ function AgenteTab() {
             <div>
               <h3 className="font-semibold text-gray-900 dark:text-gray-100 mb-0.5">Agente Autônomo de Atendimento</h3>
               <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
-                IA responde automaticamente conversas no WhatsApp, Facebook e Instagram. Entende pedidos,
-                agenda serviços, consulta cardápio e acompanha status — tudo sem sua intervenção.
+                IA responde automaticamente conversas no WhatsApp, Facebook e Instagram.
+                O comportamento do agente adapta ao <strong>modo {modeLabel}</strong> configurado em Modo do Sistema.
               </p>
             </div>
           </div>
@@ -3516,28 +3536,6 @@ function AgenteTab() {
           transition={{ duration: 0.25 }}
           className="space-y-6"
         >
-          {/* Modelo */}
-          <SectionCard title="Modelo de IA" icon={Bug}>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {models.map(m => (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => setModel(m.id)}
-                  className={cn(
-                    'text-left p-3 rounded-xl border-2 transition-all',
-                    model === m.id
-                      ? 'border-violet-500 bg-violet-50 dark:bg-violet-500/10'
-                      : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600 bg-white dark:bg-gray-900',
-                  )}
-                >
-                  <p className="text-sm font-bold text-gray-900 dark:text-gray-100">{m.label}</p>
-                  <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">{m.description}</p>
-                </button>
-              ))}
-            </div>
-          </SectionCard>
-
           {/* Tom */}
           <SectionCard title="Tom de voz" icon={MessageCircle}>
             <div className="flex gap-2 flex-wrap">
@@ -3561,35 +3559,126 @@ function AgenteTab() {
           </SectionCard>
 
           {/* Contexto */}
-          <SectionCard title="Contexto do negócio (opcional)" icon={Info}>
+          <SectionCard title="Contexto do negócio" icon={Info}>
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-              Descreva seu negócio, diferenciais, horário de atendimento, políticas de entrega — tudo que ajuda
-              a IA a responder melhor. Máximo 2000 caracteres.
+              Descreva seu negócio: horário, especialidades, políticas, diferenciais. Vai direto no prompt do agente.
             </p>
             <textarea
               value={businessDescription}
               onChange={(e) => setBusinessDescription(e.target.value.slice(0, 2000))}
               rows={5}
-              placeholder="Ex.: Pizzaria familiar em São Paulo, aberta de terça a domingo das 18h às 23h. Especialidade em pizzas artesanais. Entrega em até 3km com taxa fixa de R$ 8. Aceitamos PIX, cartão e dinheiro."
+              placeholder={
+                useCase === 'pedidos'
+                  ? 'Ex.: Pizzaria familiar, aberta ter–dom 18h–23h. Pizzas artesanais. Entrega em até 3km por R$ 8. PIX / cartão / dinheiro.'
+                  : useCase === 'servicos'
+                    ? 'Ex.: Clínica odontológica na Zona Sul, atendimento seg–sex 8h–18h, especialidade em ortodontia. Chegada 15min antes.'
+                    : 'Descreva seu negócio em poucas linhas.'
+              }
               className="w-full px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-violet-500/30"
             />
             <p className="text-[10px] text-gray-400 mt-1 text-right">{businessDescription.length}/2000</p>
           </SectionCard>
 
-          {/* Notificações automáticas */}
-          <SectionCard title="Notificações automáticas" icon={MessageCircle}>
-            <div className="flex items-start justify-between gap-4">
+          {/* === Configurações específicas por modo === */}
+          {useCase === 'pedidos' && (
+            <SectionCard title="Automações de pedidos" icon={MessageCircle}>
+              <div className="space-y-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                      Avisar cliente em cada mudança de status
+                    </p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      Pedido recebido, em preparo, pronto, saiu para entrega, entregue — cada transição envia uma
+                      mensagem automática no canal original.
+                    </p>
+                  </div>
+                  <AgenteToggleSwitch checked={notifyOnStatusChange} onChange={setNotifyOnStatusChange} />
+                </div>
+                <div className="flex items-start justify-between gap-4 pt-3 border-t border-gray-100 dark:border-gray-800">
+                  <div>
+                    <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                      Aceitar pedidos fora do horário
+                    </p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      Se desligado, a IA informa ao cliente que o estabelecimento está fechado e sugere retorno no próximo dia útil.
+                    </p>
+                  </div>
+                  <AgenteToggleSwitch checked={acceptOrdersOffHours} onChange={setAcceptOrdersOffHours} />
+                </div>
+              </div>
+            </SectionCard>
+          )}
+
+          {useCase === 'servicos' && (
+            <SectionCard title="Automações de agenda" icon={MessageCircle}>
+              <div className="space-y-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex-1">
+                    <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                      Enviar lembrete antes da consulta
+                    </p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      A IA manda mensagem educada lembrando do horário marcado.
+                    </p>
+                    {sendReminder && (
+                      <div className="mt-2 flex items-center gap-2">
+                        <label className="text-xs text-gray-500">Quantas horas antes?</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={168}
+                          value={reminderHoursBefore}
+                          onChange={(e) => setReminderHoursBefore(Math.max(1, Math.min(168, Number(e.target.value) || 24)))}
+                          className="w-16 px-2 py-1 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-center"
+                        />
+                        <span className="text-xs text-gray-500">horas</span>
+                      </div>
+                    )}
+                  </div>
+                  <AgenteToggleSwitch checked={sendReminder} onChange={setSendReminder} />
+                </div>
+
+                <div className="flex items-start justify-between gap-4 pt-3 border-t border-gray-100 dark:border-gray-800">
+                  <div>
+                    <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                      Pedir confirmação de presença
+                    </p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      Um dia antes da consulta, a IA pergunta se está confirmado — resposta marca o appointment como "confirmado".
+                    </p>
+                  </div>
+                  <AgenteToggleSwitch checked={confirmationBeforeAppointment} onChange={setConfirmationBeforeAppointment} />
+                </div>
+
+                <div className="flex items-start justify-between gap-4 pt-3 border-t border-gray-100 dark:border-gray-800">
+                  <div>
+                    <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                      Follow-up após a consulta
+                    </p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      Agradecimento breve e pergunta se correu tudo bem. Útil para medir satisfação sem sobrecarregar.
+                    </p>
+                  </div>
+                  <AgenteToggleSwitch checked={followUpAfter} onChange={setFollowUpAfter} />
+                </div>
+              </div>
+            </SectionCard>
+          )}
+
+          {useCase !== 'pedidos' && useCase !== 'servicos' && (
+            <div className="bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-xl p-4 flex items-start gap-3">
+              <Info className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
               <div>
-                <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                  Avisar cliente em mudanças de status
+                <p className="text-sm font-semibold text-amber-700 dark:text-amber-300">
+                  Automações específicas ficam disponíveis nos modos Pedidos ou Serviços
                 </p>
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                  Ex.: "Seu pedido #42 saiu para entrega! 🏍️" — enviado automaticamente pelo canal original.
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                  Troque o modo em <strong>Modo do Sistema</strong> para habilitar lembretes de agenda ou notificações de pedidos.
                 </p>
               </div>
-              <AgenteToggleSwitch checked={notifyOnStatus} onChange={setNotifyOnStatus} />
             </div>
-          </SectionCard>
+          )}
 
           {/* Save */}
           <div className="flex justify-end">

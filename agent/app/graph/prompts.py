@@ -61,9 +61,19 @@ Responda APENAS com a categoria (uma palavra)."""
 
 
 def planner_system_pedidos(business_context: dict[str, Any]) -> str:
+    # Leitura de preferências específicas do modo pedidos
+    p = (business_context.get("pedidos") or {}) if isinstance(business_context, dict) else {}
+    accept_off_hours = bool(p.get("acceptOrdersOffHours", False))
+
+    off_hours_line = (
+        "- Aceite pedidos em qualquer horário — a operação se organiza internamente."
+        if accept_off_hours
+        else "- Fora do horário comercial: informe que estamos fechados e ofereça anotar o pedido para processamento no próximo horário; se o cliente insistir, registre mas explique que a entrega só sai quando abrir."
+    )
+
     return (
         _base_rules(business_context)
-        + """
+        + f"""
 
 MODO: PEDIDOS & ENTREGAS
 
@@ -82,14 +92,39 @@ REGRAS ESPECÍFICAS:
 - Nunca invente preços ou disponibilidade. Se um produto não aparece em catalog_search, diga que não há.
 - Produtos marcados como "outOfStock: true" NÃO podem ser vendidos.
 - Ao confirmar o pedido final, mostre: itens, subtotal, taxa de entrega (se houver), total, forma de pagamento, previsão de entrega.
+{off_hours_line}
+
+NOTA: Atualizações de status (em preparo, saiu para entrega, etc.) são enviadas pelo sistema automaticamente — você NÃO precisa enviar essas mensagens. Foque em novos pedidos e dúvidas.
 """
     )
 
 
 def planner_system_agenda(business_context: dict[str, Any]) -> str:
+    # Preferências de agenda
+    a = (business_context.get("agenda") or {}) if isinstance(business_context, dict) else {}
+    reminder = bool(a.get("sendReminder", True))
+    reminder_hours = int(a.get("reminderHoursBefore", 24))
+    confirmation = bool(a.get("confirmationBeforeAppointment", True))
+    follow_up = bool(a.get("followUpAfter", False))
+
+    automation_block_lines = []
+    if reminder:
+        automation_block_lines.append(
+            f"- Lembretes {reminder_hours}h antes da consulta são enviados automaticamente pelo sistema — NÃO tente enviar isso proativamente."
+        )
+    if confirmation:
+        automation_block_lines.append(
+            "- Um dia antes da consulta o sistema pergunta se está confirmado. Se o cliente responder 'confirmo/sim' nessa janela, use agenda_update com status='confirmado'."
+        )
+    if follow_up:
+        automation_block_lines.append(
+            "- Após consulta concluída, o sistema dispara follow-up. Se o cliente responder com queixa, classifique internamente e transfira o tom para empático."
+        )
+    automation_block = "\n".join(automation_block_lines) if automation_block_lines else "- Automações de agenda desligadas nas configurações."
+
     return (
         _base_rules(business_context)
-        + """
+        + f"""
 
 MODO: AGENDA DE SERVIÇOS
 
@@ -106,6 +141,9 @@ REGRAS ESPECÍFICAS:
 - Nunca marque sem confirmar horário exato com o cliente.
 - Se não houver vaga no dia pedido, ofereça os próximos 2 dias úteis.
 - Ao confirmar, mostre: serviço, profissional, data, horário e preço.
+
+AUTOMAÇÕES CONFIGURADAS NESTE NEGÓCIO:
+{automation_block}
 """
     )
 

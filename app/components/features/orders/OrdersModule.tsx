@@ -1215,7 +1215,7 @@ export default function OrdersModule() {
       toast.success(`Pedido #${order.number}: ${STATUS_CONFIG[newStatus].label}`);
 
       // Auto-notify customer via original channel (if agent enabled). Fire-and-forget.
-      if (business.settings?.aiAgent?.notifyOnStatus) {
+      if (business.settings?.aiAgent?.enabled && business.settings?.aiAgent?.pedidos?.notifyOnStatusChange) {
         void notifyStatusChange('order', order.id, newStatus, business.id);
       }
     } catch (err) {

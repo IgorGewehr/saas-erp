@@ -211,11 +211,31 @@ export interface BusinessSettings {
 
 export interface AiAgentSettings {
   enabled: boolean;
-  model?: string;                // ex.: 'gpt-4o', 'gpt-4o-mini'
-  notifyOnStatus?: boolean;       // enviar mensagens quando Order/Appointment mudam de status
-  businessDescription?: string;   // contexto customizado para o prompt
+  /** Contexto de negócio inserido no prompt do agente */
+  businessDescription?: string;
   tone?: 'formal' | 'casual' | 'friendly';
   enabledAt?: string;
+
+  /** === Modo: pedidos === */
+  pedidos?: {
+    /** Notificar cliente automaticamente em cada mudança de status do pedido */
+    notifyOnStatusChange?: boolean;
+    /** Aceitar novos pedidos fora do horário (ou mostrar mensagem de fechado) */
+    acceptOrdersOffHours?: boolean;
+    /** Tempo máximo de espera antes do agente sugerir alternativas (min) */
+    maxWaitMinutes?: number;
+  };
+
+  /** === Modo: serviços (agenda) === */
+  agenda?: {
+    /** Enviar lembrete algumas horas antes da consulta */
+    sendReminder?: boolean;
+    reminderHoursBefore?: number; // ex: 24
+    /** Pedir confirmação de presença via IA 1 dia antes */
+    confirmationBeforeAppointment?: boolean;
+    /** Follow-up depois da consulta (pesquisa de satisfação leve) */
+    followUpAfter?: boolean;
+  };
 }
 
 // ---- Fiscal Configuration ----

@@ -2392,8 +2392,8 @@ export default function AgendaModule() {
         updatedAt: new Date().toISOString(),
       });
 
-      // Auto-notify customer if agent notifications enabled
-      if (business.settings?.aiAgent?.notifyOnStatus) {
+      // Auto-notify customer if agent enabled (appointment notifications always on when agent is on)
+      if (business.settings?.aiAgent?.enabled) {
         void (async () => {
           try {
             const { getAuth } = await import('firebase/auth');

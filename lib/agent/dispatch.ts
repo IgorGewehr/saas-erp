@@ -85,7 +85,9 @@ export async function dispatchInboundToAgent(
       business_name: business.nomeFantasia || business.razaoSocial,
       business_description: business.settings?.aiAgent?.businessDescription,
       tone: business.settings?.aiAgent?.tone || 'friendly',
-      model: business.settings?.aiAgent?.model,
+      // Configurações específicas por modo — vão para o prompt do agente
+      pedidos_settings: business.settings?.aiAgent?.pedidos || null,
+      agenda_settings: business.settings?.aiAgent?.agenda || null,
     };
 
     const raw = JSON.stringify(payload);

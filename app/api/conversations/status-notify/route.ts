@@ -63,12 +63,18 @@ export async function POST(req: NextRequest) {
   const authResult = await verifyAuth(req, body.businessId);
   if (isAuthError(authResult)) return authResult;
 
-  // Check setting
+  // Check setting — granular: orders use pedidos.notifyOnStatusChange
   const bizSnap = await adminDb.collection('businesses').doc(body.businessId).get();
   if (!bizSnap.exists) return NextResponse.json({ ok: false, error: 'Business not found' }, { status: 404 });
   const business = bizSnap.data() as Business;
-  if (!business.settings?.aiAgent?.notifyOnStatus) {
-    return NextResponse.json({ ok: true, data: { skipped: 'notifications disabled' } });
+  const aiAgent = business.settings?.aiAgent;
+  if (!aiAgent?.enabled) {
+    return NextResponse.json({ ok: true, data: { skipped: 'agent disabled' } });
+  }
+  const wantsOrderNotify = body.kind === 'order' && aiAgent.pedidos?.notifyOnStatusChange;
+  const wantsAppointmentNotify = body.kind === 'appointment'; // appointment notifications always on when agent enabled
+  if (!wantsOrderNotify && !wantsAppointmentNotify) {
+    return NextResponse.json({ ok: true, data: { skipped: 'notifications disabled for this kind' } });
   }
 
   // Fetch entity + build message
