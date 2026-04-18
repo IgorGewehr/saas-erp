@@ -712,6 +712,97 @@ service cloud.firestore {
     }
 
     // ============================================
+    // DELIVERY ORDERS (novo módulo Pedidos — modo 'pedidos')
+    // ============================================
+    match /deliveryOrders/{orderId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator();
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isManager();
+    }
+
+    // Contadores sequenciais (subcollection businesses/{id}/counters/{name})
+    match /businesses/{businessId}/counters/{counterId} {
+      allow read, write: if isAuthenticated() && belongsToBusiness(businessId);
+    }
+
+    // ============================================
+    // AGENT RUNS (logs do agente IA)
+    // ============================================
+    match /agentRuns/{runId} {
+      // Apenas admin+ pode ver logs do agente — informação sensível (pode conter dados do cliente)
+      allow read: if isAuthenticated() && isOwnBusiness() && isAdmin();
+
+      // Writes são feitos pelo Python agent via admin SDK (bypassa regras). Permitimos
+      // writes autenticados no mesmo tenant para uso de desenvolvimento/debug.
+      allow create, update: if isAuthenticated() && incomingBelongsToBusiness() && isAdmin();
+
+      allow delete: if isAuthenticated() && isOwnBusiness() && hasMinRole('founder');
+    }
+
+    // ============================================
+    // FINANCIAL AUDIT LOG (trilha imutável de mudanças)
+    // ============================================
+    match /financialAuditLog/{logId} {
+      // Qualquer membro com acesso a financeiro vê o log
+      allow read: if isAuthenticated() && isOwnBusiness() && isOperator();
+
+      // Create: qualquer operator+ (o sistema loga sua própria ação)
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator()
+                    && request.resource.data.actorUid == request.auth.uid;
+
+      // Imutável — ninguém edita ou apaga logs
+      allow update, delete: if false;
+    }
+
+    // ============================================
+    // PASSWORD VAULT (shared admin credential store)
+    // ============================================
+    // Writes/reads happen via server API routes using admin SDK (bypasses rules),
+    // but defense in depth: enforce admin-only + tenant isolation + access scope.
+    match /passwordVaultEntries/{entryId} {
+      // Read: admin+ of the business AND either scope is 'admins' OR uid is in sharedWith
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isAdmin()
+                  && (
+                    resource.data.accessScope == 'admins' ||
+                    resource.data.createdBy == request.auth.uid ||
+                    (resource.data.sharedWith is list && resource.data.sharedWith.hasAny([request.auth.uid]))
+                  );
+
+      // Create: admin+ of the business, ciphertext + required fields
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isAdmin()
+                    && isNonEmptyString(request.resource.data.title)
+                    && isNonEmptyString(request.resource.data.encryptedPassword);
+
+      // Update: admin+ of the business, same tenant
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isAdmin()
+                    && incomingBelongsToBusiness();
+
+      // Delete: creator or founder
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && (resource.data.createdBy == request.auth.uid || hasMinRole('founder'));
+    }
+
+    // ============================================
     // CATCH-ALL: Deny everything else
     // ============================================
     match /{document=**} {

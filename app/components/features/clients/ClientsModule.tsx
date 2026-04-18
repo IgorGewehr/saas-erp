@@ -365,7 +365,7 @@ function ClientDetailPanel({ client, onClose, onEdit }: { client: Client; onClos
       <div className="flex items-start justify-between p-5 border-b border-gray-100 dark:border-gray-800">
         <div className="flex items-center gap-3">
           <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center text-white font-bold text-lg shadow-sm">
-            {(client.name[0] || '?').toUpperCase()}
+            {(client.name?.[0] || '?').toUpperCase()}
           </div>
           <div>
             <h3 className="font-semibold text-gray-900 dark:text-white">{client.name}</h3>
@@ -620,7 +620,8 @@ export default function ClientsModule() {
 
   // ─── Filtered & sorted list ──────────────────────────────────────────────────
   const filtered = useMemo(() => {
-    let list = [...clients];
+    // Drop any malformed entries (corrupted docs missing name) before rendering.
+    let list = clients.filter(c => c && typeof c.name === 'string' && c.name.length > 0);
     const term = search.trim().toLowerCase();
     if (term) {
       list = list.filter(c =>
@@ -643,7 +644,7 @@ export default function ClientsModule() {
 
     list.sort((a, b) => {
       if (sortBy === 'totalSpent') return (b.totalSpent || 0) - (a.totalSpent || 0);
-      if (sortBy === 'createdAt') return b.createdAt.localeCompare(a.createdAt);
+      if (sortBy === 'createdAt') return (b.createdAt || '').localeCompare(a.createdAt || '');
       return a.name.localeCompare(b.name);
     });
 
@@ -933,7 +934,7 @@ export default function ClientsModule() {
                   >
                     {/* Avatar */}
                     <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center text-white font-bold text-sm flex-shrink-0">
-                      {(client.name[0] || '?').toUpperCase()}
+                      {(client.name?.[0] || '?').toUpperCase()}
                     </div>
 
                     {/* Info */}

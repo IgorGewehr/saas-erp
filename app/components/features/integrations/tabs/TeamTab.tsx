@@ -13,6 +13,7 @@ import KPICard from '../shared/KPICard';
 import DemoDataBanner from '../shared/DemoDataBanner';
 import IntegrationSkeleton from '../shared/IntegrationSkeleton';
 import { formatUSD, formatNumber, timeAgo, timeAgoShort } from '../shared/utils';
+import { CachedImage } from '@/app/components/ui/CachedImage';
 
 // ============================================
 // TYPES
@@ -457,7 +458,7 @@ export default function TeamTab({ integrations, members }: TeamTabProps) {
                     <td className="py-3 pr-4">
                       <div className="flex items-center gap-2.5">
                         {row.photoURL ? (
-                          <img src={row.photoURL} alt={row.name} className="w-7 h-7 rounded-full object-cover" />
+                          <CachedImage src={row.photoURL} alt={row.name} className="w-7 h-7 rounded-full object-cover" />
                         ) : (
                           <div className="w-7 h-7 rounded-full bg-gradient-to-br from-gray-300 to-gray-400 dark:from-gray-600 dark:to-gray-700 flex items-center justify-center text-white text-[10px] font-bold">
                             {initials}

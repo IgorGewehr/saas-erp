@@ -29,8 +29,9 @@ import {
   Search,
   Send,
   Phone,
-  Info,
   MoreVertical,
+  Trash2,
+  User as UserIcon,
   Check,
   CheckCheck,
   Smile,
@@ -76,6 +77,7 @@ import type {
   AgentRun,
 } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
+import { CachedImage } from '@/app/components/ui/CachedImage';
 
 // ─── Timestamp helpers ───────────────────────────────────────────────────────
 
@@ -273,7 +275,7 @@ function ConversationItem({ conversation, isSelected, onClick }: ConversationIte
           </div>
           {/* Foto do contato — sobreposta; some no erro sem precisar de state */}
           {conversation.contactAvatarUrl && (
-            <img
+            <CachedImage
               src={conversation.contactAvatarUrl}
               alt={conversation.contactName}
               className="w-10 h-10 rounded-full object-cover absolute inset-0"
@@ -466,7 +468,13 @@ function ThreadHeader({
   onSectorAssign,
   onCreateOrder,
   onToggleAi,
+  onGoToAgentSettings,
   onOpenAgentDebug,
+  onOpenContact,
+  onDeleteConversation,
+  onMarkUnread,
+  onTogglePrivate,
+  onExport,
   aiEnabledBusinessWide,
   sectors: sectorsList,
 }: {
@@ -476,7 +484,13 @@ function ThreadHeader({
   onSectorAssign?: () => void;
   onCreateOrder?: () => void;
   onToggleAi?: () => void;
+  onGoToAgentSettings?: () => void;
   onOpenAgentDebug?: () => void;
+  onOpenContact?: () => void;
+  onDeleteConversation?: () => void;
+  onMarkUnread?: () => void;
+  onTogglePrivate?: () => void;
+  onExport?: () => void;
   aiEnabledBusinessWide?: boolean;
   sectors?: Sector[];
 }) {
@@ -484,6 +498,19 @@ function ThreadHeader({
   const cfg = CHANNEL_CONFIG[conversation.channel];
   const initials = getInitials(conversation.contactName);
   const [showStatusMenu, setShowStatusMenu] = useState(false);
+  const [showOverflowMenu, setShowOverflowMenu] = useState(false);
+  const overflowRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!showOverflowMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (overflowRef.current && !overflowRef.current.contains(e.target as Node)) {
+        setShowOverflowMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showOverflowMenu]);
 
   const statusOptions: { value: ConversationStatus; label: string; color: string }[] = [
     { value: 'open', label: t('conversations.statusOpen', 'Aberta'), color: 'text-emerald-600 dark:text-emerald-400' },
@@ -517,7 +544,7 @@ function ThreadHeader({
             </div>
             {/* Foto do contato — sobreposta; some no erro sem precisar de state */}
             {conversation.contactAvatarUrl && (
-              <img
+              <CachedImage
                 src={conversation.contactAvatarUrl}
                 alt={conversation.contactName}
                 className="w-9 h-9 rounded-full object-cover absolute inset-0"
@@ -607,24 +634,35 @@ function ThreadHeader({
 
       {/* Actions */}
       <div className="flex items-center gap-1.5 flex-shrink-0">
-        {/* AI toggle — visível apenas quando business tem agente habilitado */}
-        {aiEnabledBusinessWide && onToggleAi && (() => {
-          const aiOn = conversation.aiEnabled !== false; // default true
+        {/* AI toggle — sempre visível; estado reflete business-wide + conversation-level */}
+        {onToggleAi && (() => {
+          const aiOn = aiEnabledBusinessWide && conversation.aiEnabled !== false;
+          const disabled = !aiEnabledBusinessWide;
           return (
             <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={onToggleAi}
+              whileHover={!disabled ? { scale: 1.05 } : {}}
+              whileTap={!disabled ? { scale: 0.95 } : {}}
+              onClick={disabled ? onGoToAgentSettings : onToggleAi}
               className={cn(
                 'relative inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] font-bold transition-colors border',
                 aiOn
                   ? 'bg-gradient-to-r from-violet-500 to-purple-500 text-white border-violet-500 shadow-sm shadow-violet-500/20'
-                  : 'bg-gray-100 dark:bg-white/[0.06] text-gray-400 border-gray-200 dark:border-gray-700',
+                  : disabled
+                    ? 'bg-gray-50 dark:bg-white/[0.03] text-gray-400 border-dashed border-gray-300 dark:border-gray-700 cursor-help'
+                    : 'bg-gray-100 dark:bg-white/[0.06] text-gray-400 border-gray-200 dark:border-gray-700',
               )}
-              title={aiOn ? 'Agente IA ativo — clique para desligar' : 'Agente IA desligado — clique para ligar'}
+              title={
+                disabled
+                  ? 'Agente IA desativado em nível de empresa. Clique para ir para Configurações.'
+                  : aiOn
+                    ? 'Agente IA ativo nesta conversa — clique para desligar só aqui'
+                    : 'Agente IA desligado nesta conversa — clique para ligar'
+              }
             >
               {aiOn ? <Bot className="w-3.5 h-3.5" /> : <BotOff className="w-3.5 h-3.5" />}
-              <span className="hidden md:inline">{aiOn ? 'IA ON' : 'IA OFF'}</span>
+              <span className="hidden md:inline">
+                {disabled ? 'IA —' : aiOn ? 'IA ON' : 'IA OFF'}
+              </span>
               {aiOn && (
                 <motion.span
                   className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-emerald-400 rounded-full"
@@ -672,23 +710,6 @@ function ThreadHeader({
             <Layers className="w-4 h-4" />
           </motion.button>
         )}
-        {conversation.channel === 'whatsapp' && (
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            className="w-8 h-8 rounded-xl bg-gray-100 dark:bg-white/[0.06] flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
-          >
-            <Phone className="w-4 h-4" />
-          </motion.button>
-        )}
-        <motion.button
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-          className="w-8 h-8 rounded-xl bg-gray-100 dark:bg-white/[0.06] flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
-        >
-          <Info className="w-4 h-4" />
-        </motion.button>
-
         {/* Status change */}
         <div className="relative">
           <motion.button
@@ -742,13 +763,79 @@ function ThreadHeader({
           </AnimatePresence>
         </div>
 
-        <motion.button
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-          className="w-8 h-8 rounded-xl bg-gray-100 dark:bg-white/[0.06] flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
-        >
-          <MoreVertical className="w-4 h-4" />
-        </motion.button>
+        {/* Overflow menu */}
+        <div className="relative" ref={overflowRef}>
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={() => setShowOverflowMenu(v => !v)}
+            className="w-8 h-8 rounded-xl bg-gray-100 dark:bg-white/[0.06] flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+            title="Mais opções"
+          >
+            <MoreVertical className="w-4 h-4" />
+          </motion.button>
+
+          <AnimatePresence>
+            {showOverflowMenu && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: -5 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: -5 }}
+                transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+                className="absolute right-0 top-full mt-1 w-52 bg-white dark:bg-[#1e293b] rounded-xl shadow-xl border border-gray-100 dark:border-white/[0.08] overflow-hidden z-30 py-1"
+              >
+                {onOpenContact && (
+                  <button
+                    onClick={() => { onOpenContact(); setShowOverflowMenu(false); }}
+                    className="w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs text-gray-700 dark:text-gray-300"
+                  >
+                    <UserIcon className="w-3.5 h-3.5 text-gray-400" />
+                    Ver/editar contato
+                  </button>
+                )}
+                {onMarkUnread && (
+                  <button
+                    onClick={() => { onMarkUnread(); setShowOverflowMenu(false); }}
+                    className="w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs text-gray-700 dark:text-gray-300"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5 text-gray-400" />
+                    Marcar como não lida
+                  </button>
+                )}
+                {onTogglePrivate && (
+                  <button
+                    onClick={() => { onTogglePrivate(); setShowOverflowMenu(false); }}
+                    className="w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs text-gray-700 dark:text-gray-300"
+                  >
+                    <Lock className="w-3.5 h-3.5 text-gray-400" />
+                    {conversation.isPrivate ? 'Tornar pública' : 'Tornar privada'}
+                  </button>
+                )}
+                {onExport && (
+                  <button
+                    onClick={() => { onExport(); setShowOverflowMenu(false); }}
+                    className="w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs text-gray-700 dark:text-gray-300"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-gray-400" />
+                    Exportar histórico (.txt)
+                  </button>
+                )}
+                {onDeleteConversation && (
+                  <>
+                    <div className="border-t border-gray-100 dark:border-white/[0.06] my-1" />
+                    <button
+                      onClick={() => { onDeleteConversation(); setShowOverflowMenu(false); }}
+                      className="w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-red-50 dark:hover:bg-red-500/10 text-xs text-red-600 dark:text-red-400"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      Excluir conversa
+                    </button>
+                  </>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
       </div>
     </div>
   );
@@ -1516,6 +1603,71 @@ export default function ConversasModule() {
       console.error('[Conversations] Toggle AI failed:', err);
     }
   }, [business?.id]);
+
+  const handleGoToAgentSettings = useCallback(() => {
+    setActivePage('Configurações');
+  }, [setActivePage]);
+
+  const handleDeleteConversation = useCallback(async (conv: Conversation) => {
+    if (!business?.id) return;
+    if (!confirm(`Excluir a conversa com ${conv.contactName}? As mensagens ficam preservadas; a conversa pode ser restaurada se uma nova mensagem chegar.`)) return;
+    try {
+      await updateDoc(doc(db, 'conversations', conv.id), {
+        isDeleted: true,
+        deletedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      setSelectedConversation(null);
+      setShowMobileThread(false);
+    } catch (err) {
+      console.error('[Conversations] Delete failed:', err);
+    }
+  }, [business?.id]);
+
+  const handleMarkUnread = useCallback(async (conv: Conversation) => {
+    if (!business?.id) return;
+    try {
+      await updateDoc(doc(db, 'conversations', conv.id), {
+        unreadCount: Math.max(1, conv.unreadCount || 0) + 1,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('[Conversations] Mark unread failed:', err);
+    }
+  }, [business?.id]);
+
+  const handleOpenContact = useCallback((conv: Conversation) => {
+    // Navigate to the clients page — they can find/edit there
+    setActivePage('Clientes');
+  }, [setActivePage]);
+
+  const handleExportHistory = useCallback(async (conv: Conversation) => {
+    try {
+      const snap = await (await import('firebase/firestore')).getDocs(
+        (await import('firebase/firestore')).query(
+          (await import('firebase/firestore')).collection(db, 'conversationMessages'),
+          (await import('firebase/firestore')).where('conversationId', '==', conv.id),
+          (await import('firebase/firestore')).orderBy('sentAt', 'asc'),
+        ),
+      );
+      const lines = snap.docs.map(d => {
+        const m = d.data();
+        const time = m.sentAt ? new Date(m.sentAt).toLocaleString('pt-BR') : '?';
+        const who = m.direction === 'inbound' ? conv.contactName : (m.senderName || 'Equipe');
+        return `[${time}] ${who}: ${typeof m.content === 'string' ? m.content : '[mídia]'}`;
+      });
+      const content = `Conversa com ${conv.contactName}\nCanal: ${conv.channel}\nExportado em: ${new Date().toLocaleString('pt-BR')}\n\n${lines.join('\n')}\n`;
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `conversa-${conv.contactName.replace(/\s+/g, '_')}-${new Date().toISOString().slice(0, 10)}.txt`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      console.error('[Conversations] Export failed:', err);
+    }
+  }, []);
 
   const handleCreateOrderFromConversation = useCallback((conv: Conversation) => {
     // Stash prefill for OrdersModule to pick up on mount.
@@ -2584,8 +2736,14 @@ export default function ConversasModule() {
                   }}
                   onSectorAssign={() => setShowSectorAssign(prev => !prev)}
                   onCreateOrder={isPedidosMode ? () => handleCreateOrderFromConversation(selectedConversation) : undefined}
-                  onToggleAi={aiAgentEnabled ? () => handleToggleAi(selectedConversation) : undefined}
+                  onToggleAi={() => handleToggleAi(selectedConversation)}
+                  onGoToAgentSettings={handleGoToAgentSettings}
                   onOpenAgentDebug={aiAgentEnabled ? () => setAgentDebugOpen(true) : undefined}
+                  onOpenContact={() => handleOpenContact(selectedConversation)}
+                  onDeleteConversation={() => handleDeleteConversation(selectedConversation)}
+                  onMarkUnread={() => handleMarkUnread(selectedConversation)}
+                  onTogglePrivate={handleTogglePrivate}
+                  onExport={() => handleExportHistory(selectedConversation)}
                   aiEnabledBusinessWide={aiAgentEnabled}
                   sectors={sectors}
                 />

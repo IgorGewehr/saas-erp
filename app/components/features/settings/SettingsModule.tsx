@@ -79,8 +79,10 @@ import {
   Kanban,
   ShoppingBag,
   Sparkles,
+  Search,
 } from 'lucide-react';
 import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector, Service, WorkingHours, DaySchedule, UseCase } from '@/lib/types';
+import { CachedImage } from '@/app/components/ui/CachedImage';
 import { ROLE_LABELS, ROLE_HIERARCHY, USER_STATUS_LABELS, INTEGRATION_PROVIDERS, API_KEY_SCOPES, API_KEY_SCOPE_GROUPS, SECTOR_COLORS, DEFAULT_WORKING_HOURS, USE_CASE_LABELS, USE_CASE_DESCRIPTIONS } from '@/lib/types';
 import { formatDate, formatCurrency } from '@/lib/utils/format';
 // encryptToken/decryptToken no longer needed — channel credentials handled by Embedded Signup
@@ -97,7 +99,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'setores' | 'enterprise' | 'canais' | 'modo' | 'agente';
+type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'setores' | 'enterprise' | 'canais' | 'modo' | 'agente' | 'cofre';
 
 interface CertStatus {
   hasCertificate: boolean;
@@ -2081,7 +2083,12 @@ function UsersTab() {
   const [selectedRole, setSelectedRole] = useState<UserRole>('operator');
   const [copiedCode, setCopiedCode]     = useState<string | null>(null);
   const [revokingCode, setRevokingCode] = useState<string | null>(null);
+  const [savingRole, setSavingRole] = useState<string | null>(null);
+  const [removingMember, setRemovingMember] = useState<UserType | null>(null);
+  const [removingLoading, setRemovingLoading] = useState(false);
+  const [editingRoleFor, setEditingRoleFor] = useState<string | null>(null);
   const isOwner = user?.role === 'founder' || user?.role === 'admin';
+  const isFounder = user?.role === 'founder';
 
   // ── Live members ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -2151,6 +2158,83 @@ function UsersTab() {
     });
   };
 
+  // ── Change member role ───────────────────────────────────────────────────
+  const handleChangeRole = async (member: UserType, newRole: UserRole) => {
+    if (!user || !business) return;
+    if (member.uid === user.uid) {
+      toast.error('Você não pode alterar seu próprio papel');
+      return;
+    }
+    const myRank = ROLE_HIERARCHY[user.role];
+    const targetCurrentRank = ROLE_HIERARCHY[member.role];
+    const targetNewRank = ROLE_HIERARCHY[newRole];
+    // Cannot escalate someone to >= your own rank unless you're founder
+    if (user.role !== 'founder' && targetNewRank >= myRank) {
+      toast.error('Você não pode definir um papel igual ou superior ao seu');
+      return;
+    }
+    // Cannot modify someone at >= your own rank
+    if (targetCurrentRank >= myRank && user.role !== 'founder') {
+      toast.error('Você não pode alterar o papel deste membro');
+      return;
+    }
+    setSavingRole(member.id);
+    try {
+      await updateDoc(doc(db, 'users', member.uid), {
+        role: newRole,
+        updatedAt: new Date().toISOString(),
+      });
+      toast.success(`${member.name} agora é ${ROLE_LABELS[newRole]}`);
+      setEditingRoleFor(null);
+    } catch (err) {
+      console.error('[Users] change role failed:', err);
+      toast.error('Erro ao alterar papel');
+    } finally {
+      setSavingRole(null);
+    }
+  };
+
+  // ── Remove member (founder only) ─────────────────────────────────────────
+  const handleRemoveMember = async () => {
+    if (!removingMember || !business || !user) return;
+    if (user.role !== 'founder') {
+      toast.error('Apenas o fundador pode remover membros');
+      return;
+    }
+    if (removingMember.uid === user.uid) {
+      toast.error('Você não pode remover a si mesmo');
+      return;
+    }
+    setRemovingLoading(true);
+    try {
+      // Soft remove: mark as inactive + strip business link
+      // (keeps historical records pointing to a valid uid)
+      await updateDoc(doc(db, 'users', removingMember.uid), {
+        businessId: null,
+        role: 'viewer',
+        isActive: false,
+        removedAt: new Date().toISOString(),
+        removedBy: user.uid,
+        updatedAt: new Date().toISOString(),
+      });
+      // Remove from business.memberIds array
+      const bizRef = doc(db, 'businesses', business.id);
+      const bizSnap = await getDocs(query(collection(db, 'businesses'), where('__name__', '==', business.id)));
+      const memberIds = (bizSnap.docs[0]?.data()?.memberIds as string[] | undefined) || [];
+      await updateDoc(bizRef, {
+        memberIds: memberIds.filter(id => id !== removingMember.uid),
+        updatedAt: new Date().toISOString(),
+      });
+      toast.success(`${removingMember.name} removido da empresa`);
+      setRemovingMember(null);
+    } catch (err) {
+      console.error('[Users] remove member failed:', err);
+      toast.error('Erro ao remover membro');
+    } finally {
+      setRemovingLoading(false);
+    }
+  };
+
   // ── Revoke code ──────────────────────────────────────────────────────────
   const handleRevoke = async (code: string) => {
     setRevokingCode(code);
@@ -2206,7 +2290,7 @@ function UsersTab() {
                   <div className="relative flex-shrink-0">
                     <div className="w-9 h-9 rounded-full bg-gradient-to-br from-red-100 to-rose-100 dark:from-red-900/40 dark:to-rose-900/30 border border-red-200/60 dark:border-red-800/40 flex items-center justify-center text-xs font-bold text-red-700 dark:text-red-400 shadow-sm">
                       {member.photoURL
-                        ? <img src={member.photoURL} alt={member.name} className="w-full h-full rounded-full object-cover" />
+                        ? <CachedImage src={member.photoURL} alt={member.name} className="w-full h-full rounded-full object-cover" />
                         : member.name.split(' ').map(n => n[0]).slice(0, 2).join('').toUpperCase()
                       }
                     </div>
@@ -2248,13 +2332,76 @@ function UsersTab() {
                       )}
                     </div>
 
-                    {/* Role badge */}
-                    <span className={cn(
-                      'text-[11px] font-semibold px-2 py-0.5 rounded-lg border',
-                      ROLE_COLORS[member.role]
-                    )}>
-                      {ROLE_LABELS[member.role]}
-                    </span>
+                    {/* Role — clickable dropdown for admins, badge for the rest */}
+                    {isOwner && !isCurrentUser && (user?.role === 'founder' || ROLE_HIERARCHY[member.role] < ROLE_HIERARCHY[user!.role]) ? (
+                      <div className="relative">
+                        <button
+                          type="button"
+                          onClick={() => setEditingRoleFor(editingRoleFor === member.id ? null : member.id)}
+                          disabled={savingRole === member.id}
+                          className={cn(
+                            'inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-lg border transition-colors',
+                            ROLE_COLORS[member.role],
+                            'hover:opacity-80',
+                            savingRole === member.id && 'opacity-50',
+                          )}
+                        >
+                          {savingRole === member.id ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                          {ROLE_LABELS[member.role]}
+                          <ChevronRight className={cn('w-3 h-3 transition-transform', editingRoleFor === member.id && 'rotate-90')} />
+                        </button>
+                        <AnimatePresence>
+                          {editingRoleFor === member.id && (
+                            <motion.div
+                              initial={{ opacity: 0, y: -4, scale: 0.95 }}
+                              animate={{ opacity: 1, y: 0, scale: 1 }}
+                              exit={{ opacity: 0, y: -4, scale: 0.95 }}
+                              transition={{ duration: 0.15 }}
+                              className="absolute right-0 top-full mt-1 z-20 w-40 rounded-xl bg-white dark:bg-[#1e293b] shadow-xl border border-gray-200 dark:border-white/[0.08] overflow-hidden"
+                            >
+                              {(['founder', 'admin', 'manager', 'operator', 'viewer'] as UserRole[])
+                                .filter(r => user?.role === 'founder' || ROLE_HIERARCHY[r] < ROLE_HIERARCHY[user!.role])
+                                .map(r => (
+                                <button
+                                  key={r}
+                                  type="button"
+                                  onClick={() => handleChangeRole(member, r)}
+                                  disabled={r === member.role}
+                                  className={cn(
+                                    'w-full text-left px-3 py-2 flex items-center justify-between text-xs transition-colors',
+                                    r === member.role
+                                      ? 'bg-gray-100 dark:bg-white/[0.04] text-gray-500 cursor-default'
+                                      : 'hover:bg-gray-50 dark:hover:bg-white/[0.04] text-gray-700 dark:text-gray-300',
+                                  )}
+                                >
+                                  <span className="font-medium">{ROLE_LABELS[r]}</span>
+                                  {r === member.role && <Check className="w-3 h-3 text-emerald-500" />}
+                                </button>
+                              ))}
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
+                    ) : (
+                      <span className={cn(
+                        'text-[11px] font-semibold px-2 py-0.5 rounded-lg border',
+                        ROLE_COLORS[member.role]
+                      )}>
+                        {ROLE_LABELS[member.role]}
+                      </span>
+                    )}
+
+                    {/* Remove button — founder only, not self */}
+                    {isFounder && !isCurrentUser && (
+                      <button
+                        type="button"
+                        onClick={() => setRemovingMember(member)}
+                        className="p-1 rounded-md text-gray-300 dark:text-gray-600 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+                        title="Remover da equipe"
+                      >
+                        <UserMinus className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                 </motion.div>
               );
@@ -2262,6 +2409,53 @@ function UsersTab() {
           </div>
         )}
       </SectionCard>
+
+      {/* ── Remove member confirmation ─────────────────────────────────────── */}
+      <AnimatePresence>
+        {removingMember && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={(e) => { if (e.target === e.currentTarget && !removingLoading) setRemovingMember(null); }}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 16 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="w-full max-w-md bg-white dark:bg-gray-900 rounded-2xl shadow-2xl p-6"
+            >
+              <div className="w-12 h-12 rounded-2xl bg-red-50 dark:bg-red-500/10 flex items-center justify-center mx-auto mb-4">
+                <UserMinus className="w-6 h-6 text-red-500" />
+              </div>
+              <h3 className="text-lg font-bold text-gray-900 dark:text-white text-center mb-2">
+                Remover membro da equipe?
+              </h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400 text-center mb-6">
+                <strong className="text-gray-900 dark:text-white">{removingMember.name}</strong> perderá acesso ao sistema.
+                Os registros criados por ele(a) serão mantidos no histórico.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setRemovingMember(null)}
+                  disabled={removingLoading}
+                  className="flex-1 px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleRemoveMember}
+                  disabled={removingLoading}
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-bold shadow-sm"
+                >
+                  {removingLoading ? 'Removendo...' : 'Remover'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* ── Invite codes (admin/founder only) ────────────────────────────── */}
       {isOwner && (
@@ -2554,6 +2748,663 @@ function IntegrationRow({
 }
 
 // ─── Agente IA Tab ────────────────────────────────────────────────────────────
+
+// ─── Password Vault Tab ──────────────────────────────────────────────────────
+
+interface VaultListItem extends Omit<import('@/lib/types').VaultEntry, 'encryptedPassword'> {}
+
+interface VaultFormState {
+  id?: string;
+  title: string;
+  username: string;
+  password: string;
+  url: string;
+  notes: string;
+  category: string;
+  accessScope: 'admins' | 'specific';
+  sharedWith: string[];
+}
+
+const EMPTY_VAULT_FORM: VaultFormState = {
+  title: '', username: '', password: '', url: '', notes: '', category: '',
+  accessScope: 'admins', sharedWith: [],
+};
+
+function generatePassword(length: number, opts: { upper: boolean; lower: boolean; numbers: boolean; symbols: boolean }): string {
+  const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const lower = 'abcdefghijkmnpqrstuvwxyz';
+  const nums = '23456789';
+  const syms = '!@#$%^&*()-_=+[]{};:,.<>?/';
+  let pool = '';
+  if (opts.upper) pool += upper;
+  if (opts.lower) pool += lower;
+  if (opts.numbers) pool += nums;
+  if (opts.symbols) pool += syms;
+  if (!pool) pool = lower;
+  // Use crypto for entropy
+  const out: string[] = [];
+  const cryptoObj = typeof window !== 'undefined' ? window.crypto : null;
+  if (cryptoObj) {
+    const arr = new Uint32Array(length);
+    cryptoObj.getRandomValues(arr);
+    for (let i = 0; i < length; i++) out.push(pool[arr[i] % pool.length]);
+  } else {
+    for (let i = 0; i < length; i++) out.push(pool[Math.floor(Math.random() * pool.length)]);
+  }
+  return out.join('');
+}
+
+function passwordStrength(pw: string): { score: 0 | 1 | 2 | 3 | 4; label: string; color: string } {
+  if (!pw) return { score: 0, label: '—', color: 'bg-gray-300' };
+  let score = 0;
+  if (pw.length >= 8) score++;
+  if (pw.length >= 12) score++;
+  if (/[A-Z]/.test(pw) && /[a-z]/.test(pw)) score++;
+  if (/[0-9]/.test(pw)) score++;
+  if (/[^A-Za-z0-9]/.test(pw)) score++;
+  const capped = Math.min(4, score) as 0 | 1 | 2 | 3 | 4;
+  const labels = ['Muito fraca', 'Fraca', 'Ok', 'Boa', 'Excelente'];
+  const colors = ['bg-red-500', 'bg-orange-500', 'bg-amber-500', 'bg-emerald-500', 'bg-violet-500'];
+  return { score: capped, label: labels[capped], color: colors[capped] };
+}
+
+function VaultTab() {
+  const { user, business } = useAuth();
+  const [entries, setEntries] = useState<VaultListItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState<string>('all');
+  const [formOpen, setFormOpen] = useState(false);
+  const [form, setForm] = useState<VaultFormState>(EMPTY_VAULT_FORM);
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [revealedId, setRevealedId] = useState<string | null>(null);
+  const [revealedValue, setRevealedValue] = useState<string | null>(null);
+  const [revealTimer, setRevealTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
+  const [revealing, setRevealing] = useState<string | null>(null);
+
+  const REVEAL_TIMEOUT_MS = 15_000;
+
+  // Real-time list via Firestore onSnapshot (faster than polling /list)
+  useEffect(() => {
+    if (!business?.id) return;
+    setLoading(true);
+    const q = query(
+      collection(db, 'passwordVaultEntries'),
+      where('businessId', '==', business.id),
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      const list = snap.docs.map(d => {
+        const data = d.data();
+        // Strip encryptedPassword from client-side view
+        const { encryptedPassword: _ignore, ...safe } = data;
+        void _ignore;
+        return { ...safe, id: d.id } as VaultListItem;
+      });
+      list.sort((a, b) => a.title.localeCompare(b.title));
+      setEntries(list);
+      setLoading(false);
+    }, (err) => {
+      console.error('[Vault] snapshot error:', err);
+      setLoading(false);
+    });
+    return () => unsub();
+  }, [business?.id]);
+
+  // Auto-hide revealed password
+  useEffect(() => {
+    return () => { if (revealTimer) clearTimeout(revealTimer); };
+  }, [revealTimer]);
+
+  const categories = useMemo(() => {
+    const s = new Set<string>();
+    for (const e of entries) if (e.category) s.add(e.category);
+    return Array.from(s).sort();
+  }, [entries]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return entries.filter(e => {
+      if (categoryFilter !== 'all' && e.category !== categoryFilter) return false;
+      if (!q) return true;
+      return (
+        e.title.toLowerCase().includes(q) ||
+        e.username?.toLowerCase().includes(q) ||
+        e.category?.toLowerCase().includes(q) ||
+        e.url?.toLowerCase().includes(q)
+      );
+    });
+  }, [entries, search, categoryFilter]);
+
+  const callApi = async (action: 'list' | 'save' | 'reveal' | 'delete', params: Record<string, unknown>) => {
+    if (!business?.id) throw new Error('Sem business');
+    const { getAuth } = await import('firebase/auth');
+    const token = await getAuth().currentUser?.getIdToken();
+    if (!token) throw new Error('Não autenticado');
+    const resp = await fetch('/api/vault', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ action, businessId: business.id, params }),
+    });
+    const json = await resp.json();
+    if (!resp.ok || !json.ok) throw new Error(json.error || 'Erro na API');
+    return json.data;
+  };
+
+  const openCreate = () => {
+    setForm(EMPTY_VAULT_FORM);
+    setEditing(false);
+    setFormOpen(true);
+  };
+
+  const openEdit = (e: VaultListItem) => {
+    setForm({
+      id: e.id,
+      title: e.title,
+      username: e.username || '',
+      password: '',
+      url: e.url || '',
+      notes: e.notes || '',
+      category: e.category || '',
+      accessScope: e.accessScope || 'admins',
+      sharedWith: e.sharedWith || [],
+    });
+    setEditing(true);
+    setFormOpen(true);
+  };
+
+  const handleSave = async () => {
+    if (!form.title.trim()) return;
+    if (!editing && !form.password) {
+      toast.error('Defina uma senha');
+      return;
+    }
+    setSaving(true);
+    try {
+      await callApi('save', {
+        id: form.id,
+        title: form.title.trim(),
+        username: form.username.trim() || undefined,
+        password: form.password || undefined,
+        url: form.url.trim() || undefined,
+        notes: form.notes.trim() || undefined,
+        category: form.category.trim() || undefined,
+        accessScope: form.accessScope,
+        sharedWith: form.accessScope === 'specific' ? form.sharedWith : undefined,
+      });
+      toast.success(editing ? 'Entrada atualizada' : 'Senha salva no cofre');
+      setFormOpen(false);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao salvar');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Excluir esta senha do cofre? Esta ação não pode ser desfeita.')) return;
+    setDeleting(id);
+    try {
+      await callApi('delete', { id });
+      toast.info('Entrada removida');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao excluir');
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  const handleReveal = async (id: string) => {
+    if (revealedId === id) {
+      // Hide
+      setRevealedId(null);
+      setRevealedValue(null);
+      if (revealTimer) { clearTimeout(revealTimer); setRevealTimer(null); }
+      return;
+    }
+    setRevealing(id);
+    try {
+      const data = await callApi('reveal', { id });
+      setRevealedId(id);
+      setRevealedValue(data.password);
+      if (revealTimer) clearTimeout(revealTimer);
+      const t = setTimeout(() => {
+        setRevealedId(null);
+        setRevealedValue(null);
+        setRevealTimer(null);
+      }, REVEAL_TIMEOUT_MS);
+      setRevealTimer(t);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao revelar');
+    } finally {
+      setRevealing(null);
+    }
+  };
+
+  const copyRevealed = async () => {
+    if (!revealedValue) return;
+    try {
+      await navigator.clipboard.writeText(revealedValue);
+      toast.success('Senha copiada (limpa em 20s)');
+      setTimeout(() => navigator.clipboard.writeText('').catch(() => {}), 20_000);
+    } catch {
+      toast.error('Falha ao copiar');
+    }
+  };
+
+  const copyUsername = async (u: string) => {
+    try { await navigator.clipboard.writeText(u); toast.success('Usuário copiado'); }
+    catch { toast.error('Falha ao copiar'); }
+  };
+
+  return (
+    <motion.div
+      key="cofre"
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
+      transition={{ duration: 0.25 }}
+      className="space-y-5"
+    >
+      {/* Header */}
+      <div className="bg-gradient-to-br from-emerald-50 to-teal-50 dark:from-emerald-500/10 dark:to-teal-500/5 border border-emerald-200/60 dark:border-emerald-500/20 rounded-2xl p-5">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-xl bg-white dark:bg-gray-900 flex items-center justify-center shadow-sm">
+            <Shield className="w-5 h-5 text-emerald-500" />
+          </div>
+          <div className="flex-1">
+            <h3 className="font-semibold text-gray-900 dark:text-gray-100 mb-0.5">Cofre de Senhas da Empresa</h3>
+            <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
+              Armazene credenciais compartilhadas (contas bancárias, emails, serviços) de forma segura.
+              Senhas são criptografadas no servidor com AES-256-GCM. Acesso restrito a administradores.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Search + filters + new */}
+      <div className="flex flex-col sm:flex-row gap-2">
+        <div className="relative flex-1">
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Buscar por título, usuário ou URL..."
+            className="w-full pl-10 pr-4 py-2.5 bg-white dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400"
+          />
+        </div>
+        {categories.length > 0 && (
+          <select
+            value={categoryFilter}
+            onChange={e => setCategoryFilter(e.target.value)}
+            className="px-3 py-2.5 bg-white dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 rounded-xl text-sm focus:outline-none"
+          >
+            <option value="all">Todas categorias</option>
+            {categories.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        )}
+        <button
+          onClick={openCreate}
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold shadow-sm"
+        >
+          <Plus className="w-4 h-4" />
+          Nova Senha
+        </button>
+      </div>
+
+      {/* Entries */}
+      {loading ? (
+        <div className="space-y-2">
+          {[...Array(3)].map((_, i) => <div key={i} className="h-20 rounded-xl shimmer" />)}
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16 text-center">
+          <div className="w-16 h-16 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 flex items-center justify-center mb-4">
+            <Lock className="w-7 h-7 text-emerald-500" />
+          </div>
+          <p className="text-gray-700 dark:text-gray-200 font-semibold">
+            {entries.length === 0 ? 'Nenhuma senha salva ainda' : 'Nenhuma entrada corresponde à busca'}
+          </p>
+          {entries.length === 0 && (
+            <p className="text-sm text-gray-500 mt-1">Clique em "Nova Senha" para criar a primeira</p>
+          )}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {filtered.map(e => {
+            const isRevealed = revealedId === e.id;
+            const canDelete = e.createdBy === user?.uid || user?.role === 'founder';
+            return (
+              <motion.div
+                key={e.id}
+                layout
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="group bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 hover:shadow-md transition-shadow"
+              >
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <h4 className="text-sm font-bold text-gray-900 dark:text-gray-100 truncate">{e.title}</h4>
+                      {e.category && (
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400">
+                          {e.category}
+                        </span>
+                      )}
+                      {e.accessScope === 'specific' && (
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 inline-flex items-center gap-0.5">
+                          <Lock className="w-2.5 h-2.5" /> Restrita
+                        </span>
+                      )}
+                    </div>
+                    {e.username && (
+                      <button
+                        type="button"
+                        onClick={() => copyUsername(e.username!)}
+                        className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-gray-500 dark:text-gray-400 hover:text-emerald-600 dark:hover:text-emerald-400 truncate max-w-full"
+                        title="Clique para copiar"
+                      >
+                        <span className="truncate">{e.username}</span>
+                        <Copy className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 flex-shrink-0" />
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button
+                      type="button"
+                      onClick={() => openEdit(e)}
+                      className="p-1 rounded text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800"
+                      title="Editar"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                    </button>
+                    {canDelete && (
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(e.id)}
+                        disabled={deleting === e.id}
+                        className="p-1 rounded text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 disabled:opacity-30"
+                        title="Excluir"
+                      >
+                        {deleting === e.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* URL */}
+                {e.url && (
+                  <a
+                    href={e.url.startsWith('http') ? e.url : `https://${e.url}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-[11px] text-blue-500 hover:underline truncate max-w-full mb-2"
+                  >
+                    <ExternalLink className="w-2.5 h-2.5 flex-shrink-0" />
+                    <span className="truncate">{e.url}</span>
+                  </a>
+                )}
+
+                {/* Reveal button / revealed password */}
+                <div className="flex items-center gap-2 mt-2">
+                  {isRevealed && revealedValue ? (
+                    <>
+                      <div className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-gray-50 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 font-mono text-xs text-gray-900 dark:text-gray-100 truncate">
+                        {revealedValue}
+                      </div>
+                      <button
+                        onClick={copyRevealed}
+                        className="p-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white"
+                        title="Copiar"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleReveal(e.id)}
+                        className="p-1.5 rounded-lg border border-gray-200 dark:border-gray-700 text-gray-500 hover:text-gray-700 dark:hover:text-gray-200"
+                        title="Ocultar"
+                      >
+                        <EyeOff className="w-3.5 h-3.5" />
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      onClick={() => handleReveal(e.id)}
+                      disabled={revealing === e.id}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-100 dark:bg-white/[0.04] hover:bg-gray-200 dark:hover:bg-white/[0.08] text-xs font-semibold text-gray-700 dark:text-gray-300 disabled:opacity-50"
+                    >
+                      {revealing === e.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Eye className="w-3 h-3" />}
+                      Revelar senha
+                    </button>
+                  )}
+                </div>
+
+                {/* Meta */}
+                <div className="mt-2 pt-2 border-t border-gray-100 dark:border-gray-800 flex items-center justify-between text-[10px] text-gray-400 dark:text-gray-500">
+                  <span>Criado por {e.createdByName}</span>
+                  {e.accessCount ? <span>{e.accessCount} {e.accessCount === 1 ? 'consulta' : 'consultas'}</span> : <span>Nunca acessada</span>}
+                </div>
+              </motion.div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Form modal */}
+      <AnimatePresence>
+        {formOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={e => { if (e.target === e.currentTarget && !saving) setFormOpen(false); }}
+          >
+            <VaultForm
+              form={form}
+              setForm={setForm}
+              editing={editing}
+              saving={saving}
+              onSave={handleSave}
+              onClose={() => setFormOpen(false)}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+}
+
+function VaultForm({
+  form, setForm, editing, saving, onSave, onClose,
+}: {
+  form: VaultFormState;
+  setForm: (v: VaultFormState | ((prev: VaultFormState) => VaultFormState)) => void;
+  editing: boolean;
+  saving: boolean;
+  onSave: () => void;
+  onClose: () => void;
+}) {
+  const [showPw, setShowPw] = useState(false);
+  const [genLength, setGenLength] = useState(20);
+  const [genOpts, setGenOpts] = useState({ upper: true, lower: true, numbers: true, symbols: true });
+
+  const strength = passwordStrength(form.password);
+  const inputCls = 'w-full px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400';
+  const labelCls = 'block text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1';
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.95, y: 16 }}
+      animate={{ opacity: 1, scale: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.95 }}
+      transition={{ duration: 0.22 }}
+      className="w-full max-w-2xl max-h-[90vh] overflow-hidden bg-white dark:bg-gray-900 rounded-2xl shadow-2xl flex flex-col"
+    >
+      <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+        <h2 className="text-lg font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+          <Shield className="w-5 h-5 text-emerald-500" />
+          {editing ? 'Editar senha' : 'Nova senha'}
+        </h2>
+        <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400">
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-6 space-y-4">
+        <div>
+          <label className={labelCls}>Título *</label>
+          <input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
+            placeholder="AWS Console, Stripe, Gmail..." className={inputCls} autoFocus />
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className={labelCls}>Usuário / Email</label>
+            <input value={form.username} onChange={e => setForm(f => ({ ...f, username: e.target.value }))}
+              placeholder="admin@empresa.com" className={inputCls} />
+          </div>
+          <div>
+            <label className={labelCls}>Categoria</label>
+            <input value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
+              placeholder="Financeiro, Dev, Social..." className={inputCls} list="vault-categories" />
+          </div>
+        </div>
+
+        {/* Password with generator */}
+        <div>
+          <label className={labelCls}>{editing ? 'Senha (vazio = manter atual)' : 'Senha *'}</label>
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <input
+                type={showPw ? 'text' : 'password'}
+                value={form.password}
+                onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
+                placeholder={editing ? 'Deixe em branco para manter' : 'Use o gerador ou digite'}
+                className={cn(inputCls, 'pr-10 font-mono')}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPw(v => !v)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-md text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+              >
+                {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => setForm(f => ({ ...f, password: generatePassword(genLength, genOpts) }))}
+              className="px-3 py-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30 text-xs font-bold hover:bg-emerald-100 dark:hover:bg-emerald-500/20 inline-flex items-center gap-1"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              Gerar
+            </button>
+          </div>
+          {form.password && (
+            <div className="mt-2 flex items-center gap-2">
+              <div className="flex-1 h-1 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                <motion.div
+                  className={cn('h-full rounded-full', strength.color)}
+                  animate={{ width: `${(strength.score / 4) * 100}%` }}
+                  transition={{ duration: 0.3 }}
+                />
+              </div>
+              <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400">{strength.label}</span>
+            </div>
+          )}
+
+          {/* Generator options */}
+          <details className="mt-2 group">
+            <summary className="cursor-pointer text-[11px] text-gray-500 dark:text-gray-400 hover:text-emerald-600 inline-flex items-center gap-1">
+              <ChevronRight className="w-3 h-3 transition-transform group-open:rotate-90" />
+              Opções do gerador
+            </summary>
+            <div className="mt-2 p-3 rounded-xl bg-gray-50 dark:bg-gray-800/40 space-y-2">
+              <div className="flex items-center gap-3">
+                <label className="text-[11px] text-gray-600 dark:text-gray-400 flex-shrink-0 w-24">Tamanho: {genLength}</label>
+                <input type="range" min={8} max={64} value={genLength} onChange={e => setGenLength(Number(e.target.value))}
+                  className="flex-1 accent-emerald-500" />
+              </div>
+              <div className="flex flex-wrap gap-3 text-[11px]">
+                {([
+                  ['upper', 'Maiúsculas'],
+                  ['lower', 'Minúsculas'],
+                  ['numbers', 'Números'],
+                  ['symbols', 'Símbolos'],
+                ] as [keyof typeof genOpts, string][]).map(([k, label]) => (
+                  <label key={k} className="inline-flex items-center gap-1.5 cursor-pointer">
+                    <input type="checkbox" checked={genOpts[k]} onChange={e => setGenOpts(o => ({ ...o, [k]: e.target.checked }))}
+                      className="accent-emerald-500" />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </div>
+          </details>
+        </div>
+
+        <div>
+          <label className={labelCls}>URL</label>
+          <input value={form.url} onChange={e => setForm(f => ({ ...f, url: e.target.value }))}
+            placeholder="https://console.aws.amazon.com" className={inputCls} />
+        </div>
+
+        <div>
+          <label className={labelCls}>Notas</label>
+          <textarea rows={3} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+            placeholder="MFA ativo, usar código do app, etc."
+            className={cn(inputCls, 'resize-none')} />
+        </div>
+
+        {/* Access scope */}
+        <div>
+          <label className={labelCls}>Acesso</label>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setForm(f => ({ ...f, accessScope: 'admins' }))}
+              className={cn(
+                'text-left p-3 rounded-xl border-2 text-xs transition-all',
+                form.accessScope === 'admins'
+                  ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10'
+                  : 'border-gray-200 dark:border-gray-700',
+              )}
+            >
+              <p className="font-bold text-gray-900 dark:text-gray-100">Todos admins</p>
+              <p className="text-[10px] text-gray-500 mt-0.5">Visível para administradores e founder</p>
+            </button>
+            <button
+              type="button"
+              onClick={() => setForm(f => ({ ...f, accessScope: 'specific' }))}
+              className={cn(
+                'text-left p-3 rounded-xl border-2 text-xs transition-all',
+                form.accessScope === 'specific'
+                  ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10'
+                  : 'border-gray-200 dark:border-gray-700',
+              )}
+            >
+              <p className="font-bold text-gray-900 dark:text-gray-100">Apenas criador</p>
+              <p className="text-[10px] text-gray-500 mt-0.5">Restrita — só você (e founder)</p>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="px-6 py-4 border-t border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/60 flex justify-end gap-2">
+        <button onClick={onClose} disabled={saving}
+          className="px-4 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800">
+          Cancelar
+        </button>
+        <button onClick={onSave} disabled={saving || !form.title.trim()}
+          className="inline-flex items-center gap-2 px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-bold">
+          {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+          {saving ? 'Salvando...' : 'Salvar no cofre'}
+        </button>
+      </div>
+    </motion.div>
+  );
+}
 
 function AgenteToggleSwitch({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   return (
@@ -3165,7 +4016,7 @@ function SectorsTab() {
                         title={member.name}
                       >
                         {member.photoURL ? (
-                          <img src={member.photoURL} alt={member.name} className="w-full h-full rounded-full object-cover" />
+                          <CachedImage src={member.photoURL} alt={member.name} className="w-full h-full rounded-full object-cover" />
                         ) : (
                           member.name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
                         )}
@@ -3292,7 +4143,7 @@ function SectorsTab() {
                         <div className="flex items-center gap-2 flex-1 min-w-0">
                           <div className="w-7 h-7 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-[10px] font-semibold text-gray-600 dark:text-gray-300">
                             {m.photoURL ? (
-                              <img src={m.photoURL} alt={m.name} className="w-full h-full rounded-full object-cover" />
+                              <CachedImage src={m.photoURL} alt={m.name} className="w-full h-full rounded-full object-cover" />
                             ) : (
                               m.name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
                             )}
@@ -4836,6 +5687,7 @@ export default function SettingsModule() {
     { id: 'perfil'     as Tab, label: t('settings.tabs.perfil',   'Meu Perfil'), icon: UserCircle },
     { id: 'modo'       as Tab, label: t('settings.tabs.modo',     'Modo do Sistema'), icon: Zap   },
     { id: 'agente'     as Tab, label: t('settings.tabs.agente',   'Agente IA'), icon: Sparkles },
+    { id: 'cofre'      as Tab, label: t('settings.tabs.cofre',    'Cofre'),      icon: Shield    },
     { id: 'empresa'    as Tab, label: t('settings.tabs.empresa',  'Empresa'),    icon: Building2  },
     { id: 'fiscal'     as Tab, label: t('settings.tabs.fiscal',   'Fiscal'),     icon: FileText   },
     { id: 'usuarios'   as Tab, label: t('settings.tabs.usuarios', 'Usuários'),   icon: Users      },
@@ -4903,6 +5755,7 @@ export default function SettingsModule() {
         {activeTab === 'perfil'     && <ProfileTab key="perfil" />}
         {activeTab === 'modo'       && <ModoSistemaTab key="modo" />}
         {activeTab === 'agente'     && <AgenteTab key="agente" />}
+        {activeTab === 'cofre'      && <VaultTab key="cofre" />}
         {activeTab === 'empresa'    && <EmpresaTab key="empresa" />}
         {activeTab === 'fiscal'     && <FiscalTab key="fiscal" />}
         {activeTab === 'usuarios'   && <UsersTab key="usuarios" />}

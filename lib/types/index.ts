@@ -459,8 +459,39 @@ export interface Transaction {
   contactId?: string;
   campaignId?: string;
   sectorId?: string;
+  /** Parcelamento: grupo compartilhado entre todas as parcelas */
+  installmentGroupId?: string;
+  installmentNumber?: number;   // ex: 1 de 3
+  installmentTotal?: number;
+  /** Auditoria: identidade de quem criou/modificou. Preenchido nas mutações. */
+  createdBy?: string;
+  createdByName?: string;
+  updatedBy?: string;
+  updatedByName?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+// ---- Audit log (alterações em entidades financeiras) ----
+export type AuditAction = 'create' | 'update' | 'delete' | 'pay' | 'cancel' | 'restore';
+
+export interface FinancialAuditLog {
+  id: string;
+  businessId: string;
+  entity: 'transaction' | 'bankAccount';
+  entityId: string;
+  action: AuditAction;
+  actorUid: string;
+  actorName: string;
+  /** Snapshot de campos relevantes antes da mudança (para update/delete) */
+  before?: Record<string, unknown>;
+  /** Snapshot depois (para create/update) */
+  after?: Record<string, unknown>;
+  /** Diff resumido: lista de campos que mudaram */
+  changedFields?: string[];
+  amount?: number;               // denormalizado para facilitar filtros/relatórios
+  description?: string;          // snapshot do texto da transação para exibição histórica
+  createdAt: string;
 }
 
 export interface FinancialCategory {
@@ -607,6 +638,44 @@ export interface StockMovement {
   operatorId: string;
   operatorName: string;
   createdAt: string;
+}
+
+// ---- Password Vault (cofre de senhas compartilhado com admins) ----
+export type VaultAccessScope = 'admins' | 'specific';
+
+export interface VaultAccessLogEntry {
+  uid: string;
+  userName: string;
+  action: 'revealed' | 'copied' | 'created' | 'updated' | 'deleted';
+  at: string;
+}
+
+export interface VaultEntry {
+  id: string;
+  businessId: string;
+  title: string;
+  username?: string;
+  /** Ciphertext (AES-256-GCM, base64). Never sent to client as plaintext. */
+  encryptedPassword: string;
+  url?: string;
+  notes?: string;
+  category?: string;
+  tags?: string[];
+  /**
+   * Access scope — default 'admins' means every admin/founder of the business
+   * can view/edit. 'specific' restricts to a curated list of uids.
+   */
+  accessScope: VaultAccessScope;
+  sharedWith?: string[]; // uids when accessScope === 'specific'
+  createdBy: string;
+  createdByName: string;
+  updatedBy?: string;
+  updatedByName?: string;
+  createdAt: string;
+  updatedAt: string;
+  lastAccessedAt?: string;
+  lastAccessedBy?: string;
+  accessCount?: number;
 }
 
 // ---- AI Agent (LangGraph orchestration) ----

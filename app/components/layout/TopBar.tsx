@@ -33,6 +33,7 @@ import {
 } from 'lucide-react';
 import type { UserStatus } from '@/lib/types';
 import type { MenuPage } from './Sidebar';
+import { CachedImage } from '@/app/components/ui/CachedImage';
 
 interface TopBarProps {
   activePage?: MenuPage;
@@ -199,7 +200,7 @@ function TeamPresencePanel() {
                         <div className="relative flex-shrink-0">
                           <div className="w-8 h-8 rounded-full bg-gradient-to-br from-red-100 to-rose-100 dark:from-red-900/40 dark:to-rose-900/30 border border-red-200/60 dark:border-red-800/40 flex items-center justify-center text-[11px] font-bold text-red-700 dark:text-red-400">
                             {member.photoURL
-                              ? <img src={member.photoURL} alt={member.name} className="w-full h-full rounded-full object-cover" />
+                              ? <CachedImage src={member.photoURL} alt={member.name} className="w-full h-full rounded-full object-cover" />
                               : getInitials(member.name)
                             }
                           </div>
@@ -675,7 +676,7 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
                   'border border-red-200/60 dark:border-red-800/40 shadow-sm'
                 )}>
                   {user?.photoURL
-                    ? <img src={user.photoURL} alt={userName} className="w-full h-full rounded-lg object-cover" />
+                    ? <CachedImage src={user.photoURL} alt={userName} className="w-full h-full rounded-lg object-cover" />
                     : getInitials(userName)
                   }
                 </div>
@@ -714,7 +715,7 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
                       <div className="relative flex-shrink-0">
                         <div className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold bg-gradient-to-br from-red-100 to-rose-100 dark:from-red-900/40 dark:to-rose-900/30 text-red-700 dark:text-red-400 border border-red-200/60 dark:border-red-800/40">
                           {user?.photoURL
-                            ? <img src={user.photoURL} alt={userName} className="w-full h-full rounded-lg object-cover" />
+                            ? <CachedImage src={user.photoURL} alt={userName} className="w-full h-full rounded-lg object-cover" />
                             : getInitials(userName)
                           }
                         </div>

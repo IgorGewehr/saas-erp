@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   Dialog,
   DialogTitle,
@@ -22,6 +22,7 @@ import {
 } from '@mui/material';
 import {
   TrendingUp,
+  History,
   TrendingDown,
   DollarSign,
   Clock,
@@ -64,8 +65,9 @@ import {
   Pie,
   Cell,
 } from 'recharts';
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
+import { logAudit } from '@/lib/services/audit';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery as useTanstackQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'react-toastify';
@@ -100,7 +102,7 @@ const PRESET_COLORS = [
   '#820AD1', '#FF7A00', '#1A1A2E', '#14532D', '#7C2D12',
 ];
 
-type FinancialTab = 'visao-geral' | 'lancamentos' | 'contas';
+type FinancialTab = 'visao-geral' | 'lancamentos' | 'contas' | 'fluxo' | 'auditoria';
 
 const inputSx = { '& .MuiOutlinedInput-root': { borderRadius: '12px' } };
 
@@ -117,7 +119,9 @@ export default function FinancialModule() {
   const TABS: { key: FinancialTab; label: string; icon: React.ReactNode }[] = [
     { key: 'visao-geral', label: t('financial.tabs.overview', 'Visão Geral'), icon: <BarChart3 size={16} /> },
     { key: 'lancamentos', label: t('financial.tabs.transactions', 'Transações'), icon: <ArrowRightLeft size={16} /> },
-    { key: 'contas', label: t('financial.tabs.accounts', 'Contas Bancárias'), icon: <Landmark size={16} /> },
+    { key: 'fluxo',      label: t('financial.tabs.cashflow',  'Fluxo de Caixa'), icon: <TrendingUp size={16} /> },
+    { key: 'contas',     label: t('financial.tabs.accounts',  'Contas Bancárias'), icon: <Landmark size={16} /> },
+    { key: 'auditoria',  label: t('financial.tabs.audit',     'Auditoria'), icon: <History size={16} /> },
   ];
 
   const PAYMENT_METHODS: { value: PaymentMethod; label: string }[] = [
@@ -173,6 +177,8 @@ export default function FinancialModule() {
 
   // Sector form (enterprise)
   const [formSectorId, setFormSectorId] = useState('');
+  const [formInstallments, setFormInstallments] = useState(1);
+  const [formInstallmentInterval, setFormInstallmentInterval] = useState<'monthly' | 'weekly'>('monthly');
 
   // Transactions tab state
   const [txFilterTab, setTxFilterTab] = useState<'todas' | 'receitas' | 'despesas' | 'pendentes' | 'atrasadas'>('todas');
@@ -363,6 +369,8 @@ export default function FinancialModule() {
     setFormBankAccount('');
     setFormStatus('pendente');
     setFormSectorId('');
+    setFormInstallments(1);
+    setFormInstallmentInterval('monthly');
     setShowForm(true);
   }, []);
 
@@ -384,7 +392,7 @@ export default function FinancialModule() {
   }, []);
 
   const handleSaveTransaction = useCallback(async () => {
-    if (!business?.id) {
+    if (!business?.id || !user) {
       toast.error(t('financial.toast.businessNotLoaded', 'Dados da empresa não carregados. Recarregue a página.'));
       return;
     }
@@ -395,8 +403,9 @@ export default function FinancialModule() {
     try {
       const now = new Date().toISOString();
       const status: TransactionStatus = formPaymentDate ? 'pago' : formStatus;
+      const actor = { uid: user.uid, name: user.name };
 
-      const txData = {
+      const baseTx: Record<string, unknown> = {
         businessId: business.id,
         type: formType,
         category: formCategory || null,
@@ -410,17 +419,86 @@ export default function FinancialModule() {
         clientName: formClientName || null,
         bankAccountId: formBankAccount || null,
         sectorId: formSectorId || null,
+        updatedByName: user.name,
+        updatedBy: user.uid,
         updatedAt: now,
       };
 
       if (editingTransaction) {
         const docRef = doc(db, 'transactions', editingTransaction.id);
-        await updateDoc(docRef, txData);
+        const before = { ...editingTransaction };
+        await updateDoc(docRef, baseTx);
+        await logAudit(db, {
+          businessId: business.id,
+          entity: 'transaction',
+          entityId: editingTransaction.id,
+          action: 'update',
+          actor,
+          before,
+          after: { ...editingTransaction, ...baseTx },
+          amount,
+          description: formDescription,
+        });
         toast.success(t('financial.toast.transactionUpdated', 'Transação atualizada'));
+      } else if (formInstallments > 1 && formDueDate) {
+        // Split into N linked installments via batch write
+        const groupId = `inst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const perAmount = Math.round((amount / formInstallments) * 100) / 100;
+        const roundingGap = Math.round((amount - perAmount * formInstallments) * 100) / 100;
+        const batch = writeBatch(db);
+        const createdIds: string[] = [];
+        const baseDate = new Date(formDueDate + 'T12:00:00');
+        for (let i = 0; i < formInstallments; i++) {
+          const ref = doc(collection(db, 'transactions'));
+          createdIds.push(ref.id);
+          const due = new Date(baseDate);
+          if (formInstallmentInterval === 'monthly') due.setMonth(due.getMonth() + i);
+          else due.setDate(due.getDate() + i * 7);
+          // Tack the rounding gap onto the last installment so totals always match
+          const instAmount = i === formInstallments - 1 ? perAmount + roundingGap : perAmount;
+          batch.set(ref, {
+            ...baseTx,
+            amount: instAmount,
+            dueDate: due.toISOString().slice(0, 10),
+            paymentDate: null,       // parcels default to pending
+            status: 'pendente',
+            installmentGroupId: groupId,
+            installmentNumber: i + 1,
+            installmentTotal: formInstallments,
+            description: `${formDescription} (${i + 1}/${formInstallments})`,
+            createdBy: user.uid,
+            createdByName: user.name,
+            createdAt: now,
+          });
+        }
+        await batch.commit();
+        for (const id of createdIds) {
+          await logAudit(db, {
+            businessId: business.id,
+            entity: 'transaction',
+            entityId: id,
+            action: 'create',
+            actor,
+            amount: perAmount,
+            description: `${formDescription} (parcelada ${formInstallments}x)`,
+          });
+        }
+        toast.success(`${formInstallments} parcelas criadas`);
       } else {
-        await addDoc(collection(db, 'transactions'), {
-          ...txData,
+        const ref = await addDoc(collection(db, 'transactions'), {
+          ...baseTx,
+          createdBy: user.uid,
+          createdByName: user.name,
           createdAt: now,
+        });
+        await logAudit(db, {
+          businessId: business.id,
+          entity: 'transaction',
+          entityId: ref.id,
+          action: 'create',
+          actor,
+          amount,
+          description: formDescription,
         });
         toast.success(t('financial.toast.transactionCreated', 'Transação criada'));
       }
@@ -433,12 +511,27 @@ export default function FinancialModule() {
     } finally {
       setIsSaving(false);
     }
-  }, [business?.id, formType, formDescription, formCategory, formAmount, formDueDate, formPaymentDate, formPaymentMethod, formNotes, formClientName, formBankAccount, formStatus, formSectorId, editingTransaction, queryClient]);
+  }, [business?.id, user, formType, formDescription, formCategory, formAmount, formDueDate, formPaymentDate, formPaymentMethod, formNotes, formClientName, formBankAccount, formStatus, formSectorId, formInstallments, formInstallmentInterval, editingTransaction, queryClient, t]);
 
   const handleDeleteTransaction = useCallback(async (id: string) => {
-    if (!business?.id) return;
+    if (!business?.id || !user) return;
     try {
+      // Fetch before-state for the audit log
+      const snap = await getDocs(query(collection(db, 'transactions'), where('__name__', '==', id)));
+      const before = snap.docs[0]?.data() as Transaction | undefined;
       await deleteDoc(doc(db, 'transactions', id));
+      if (before) {
+        await logAudit(db, {
+          businessId: business.id,
+          entity: 'transaction',
+          entityId: id,
+          action: 'delete',
+          actor: { uid: user.uid, name: user.name },
+          before: before as unknown as Record<string, unknown>,
+          amount: before.amount,
+          description: before.description,
+        });
+      }
       queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
       setShowDeleteConfirm(null);
       toast.success(t('financial.toast.transactionDeleted', 'Transação excluída'));
@@ -446,7 +539,7 @@ export default function FinancialModule() {
       console.error('Error deleting transaction:', err);
       toast.error(t('financial.toast.deleteError', 'Erro ao excluir transação'));
     }
-  }, [business?.id, queryClient]);
+  }, [business?.id, user, queryClient, t]);
 
   // ---- Bank Account Handlers ----
   const openNewBankForm = useCallback(() => {
@@ -718,6 +811,14 @@ export default function FinancialModule() {
                 onDelete={(id) => setShowDeleteBankConfirm(id)}
               />
             )}
+
+            {activeTab === 'fluxo' && (
+              <CashFlowProjection transactions={transactions} />
+            )}
+
+            {activeTab === 'auditoria' && (
+              <AuditLogView businessId={business?.id} />
+            )}
           </motion.div>
         </AnimatePresence>
       </div>
@@ -816,6 +917,36 @@ export default function FinancialModule() {
                   ))}
                 </Select>
               </FormControl>
+            )}
+
+            {/* Parcelamento — apenas ao criar (não edita série existente aqui) */}
+            {!editingTransaction && (
+              <div className="grid grid-cols-2 gap-3 p-3 rounded-xl bg-gray-50 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-700">
+                <TextField
+                  label="Parcelas"
+                  type="number"
+                  value={formInstallments}
+                  onChange={(e) => setFormInstallments(Math.max(1, Math.min(36, Number(e.target.value) || 1)))}
+                  inputProps={{ min: 1, max: 36 }}
+                  size="small"
+                  helperText={formInstallments > 1 ? `${formInstallments}× de ${formAmount ? formatCurrency(parseFloat(formAmount) / formInstallments) : '—'}` : 'À vista'}
+                  sx={inputSx}
+                />
+                {formInstallments > 1 && (
+                  <FormControl size="small">
+                    <InputLabel>Intervalo</InputLabel>
+                    <Select
+                      value={formInstallmentInterval}
+                      onChange={(e) => setFormInstallmentInterval(e.target.value as 'monthly' | 'weekly')}
+                      label="Intervalo"
+                      sx={{ borderRadius: '12px' }}
+                    >
+                      <MenuItem value="monthly">Mensal</MenuItem>
+                      <MenuItem value="weekly">Semanal</MenuItem>
+                    </Select>
+                  </FormControl>
+                )}
+              </div>
             )}
 
             <TextField label={t('financial.form.notes', 'Observações')} value={formNotes} onChange={(e) => setFormNotes(e.target.value)} fullWidth multiline rows={2} size="small" sx={inputSx} />
@@ -1553,6 +1684,257 @@ function EnterpriseFinancialCards({
 // ==========================================
 // TAB: TRANSACOES
 // ==========================================
+
+// ==========================================
+// CASH FLOW PROJECTION (30/60/90 day)
+// ==========================================
+
+function CashFlowProjection({ transactions }: { transactions: Transaction[] }) {
+  const [horizon, setHorizon] = useState<30 | 60 | 90>(30);
+
+  const projection = useMemo(() => {
+    const today = new Date();
+    const cutoff = new Date(today);
+    cutoff.setDate(cutoff.getDate() + horizon);
+
+    // Use due date for unpaid, payment date for paid (past context)
+    const relevant = transactions.filter(t => {
+      if (t.status === 'cancelado') return false;
+      const dateStr = t.dueDate || t.paymentDate;
+      if (!dateStr) return false;
+      const d = new Date(dateStr + 'T12:00:00');
+      return d >= new Date(today.toISOString().slice(0, 10)) && d <= cutoff;
+    });
+
+    // Bucket by date
+    const byDate = new Map<string, { receitas: number; despesas: number; items: Transaction[] }>();
+    for (const tx of relevant) {
+      const key = (tx.dueDate || tx.paymentDate)!;
+      const bucket = byDate.get(key) || { receitas: 0, despesas: 0, items: [] };
+      if (tx.type === 'receita') bucket.receitas += tx.amount;
+      else bucket.despesas += tx.amount;
+      bucket.items.push(tx);
+      byDate.set(key, bucket);
+    }
+
+    const sorted = Array.from(byDate.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, b]) => ({
+        date,
+        receitas: b.receitas,
+        despesas: b.despesas,
+        saldo: b.receitas - b.despesas,
+        count: b.items.length,
+      }));
+
+    // Cumulative balance over the horizon
+    let running = 0;
+    const withCumulative = sorted.map(s => {
+      running += s.saldo;
+      return { ...s, acumulado: running };
+    });
+
+    const totals = {
+      receitas: withCumulative.reduce((s, d) => s + d.receitas, 0),
+      despesas: withCumulative.reduce((s, d) => s + d.despesas, 0),
+      pendingCount: relevant.filter(t => t.status === 'pendente' || t.status === 'atrasado').length,
+    };
+
+    return { data: withCumulative, totals };
+  }, [transactions, horizon]);
+
+  return (
+    <div className="space-y-5">
+      {/* Controls */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">
+            Projeção de Fluxo de Caixa
+          </h3>
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            Entradas e saídas previstas nos próximos {horizon} dias
+          </p>
+        </div>
+        <div className="inline-flex bg-gray-100 dark:bg-gray-800/60 rounded-xl p-0.5">
+          {([30, 60, 90] as const).map(h => (
+            <button
+              key={h}
+              onClick={() => setHorizon(h)}
+              className={cn(
+                'px-3 py-1.5 rounded-lg text-xs font-bold transition-colors',
+                horizon === h
+                  ? 'bg-white dark:bg-gray-900 shadow-sm text-gray-900 dark:text-gray-100'
+                  : 'text-gray-500 dark:text-gray-400',
+              )}
+            >
+              {h} dias
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* KPIs */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 rounded-xl p-4">
+          <p className="text-[10px] uppercase tracking-wider text-emerald-700 dark:text-emerald-400 font-bold">Receitas previstas</p>
+          <p className="text-2xl font-bold text-emerald-700 dark:text-emerald-300 mt-1">{formatCurrency(projection.totals.receitas)}</p>
+        </div>
+        <div className="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 rounded-xl p-4">
+          <p className="text-[10px] uppercase tracking-wider text-red-700 dark:text-red-400 font-bold">Despesas previstas</p>
+          <p className="text-2xl font-bold text-red-700 dark:text-red-300 mt-1">{formatCurrency(projection.totals.despesas)}</p>
+        </div>
+        <div className={cn(
+          'rounded-xl p-4 border',
+          projection.totals.receitas - projection.totals.despesas >= 0
+            ? 'bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-500/30'
+            : 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30',
+        )}>
+          <p className={cn(
+            'text-[10px] uppercase tracking-wider font-bold',
+            projection.totals.receitas - projection.totals.despesas >= 0
+              ? 'text-blue-700 dark:text-blue-400'
+              : 'text-amber-700 dark:text-amber-400',
+          )}>Resultado previsto</p>
+          <p className={cn(
+            'text-2xl font-bold mt-1',
+            projection.totals.receitas - projection.totals.despesas >= 0
+              ? 'text-blue-700 dark:text-blue-300'
+              : 'text-amber-700 dark:text-amber-300',
+          )}>
+            {formatCurrency(projection.totals.receitas - projection.totals.despesas)}
+          </p>
+        </div>
+      </div>
+
+      {/* Chart */}
+      {projection.data.length === 0 ? (
+        <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-12 text-center">
+          <TrendingUp className="w-10 h-10 text-gray-300 dark:text-gray-700 mx-auto mb-3" />
+          <p className="text-sm font-semibold text-gray-700 dark:text-gray-300">Nenhum lançamento previsto neste horizonte</p>
+          <p className="text-xs text-gray-500 mt-1">Transações com data de vencimento nos próximos {horizon} dias aparecem aqui</p>
+        </div>
+      ) : (
+        <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4">
+          <ResponsiveContainer width="100%" height={300}>
+            <ComposedChart data={projection.data}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" opacity={0.3} />
+              <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} />
+              {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+              <Tooltip {...({
+                formatter: (value: number) => formatCurrency(value),
+                contentStyle: { borderRadius: '12px', border: 'none', boxShadow: '0 4px 16px rgba(0,0,0,0.1)' },
+              } as any)} />
+              <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
+              <Bar dataKey="receitas" fill="#10B981" name="Receitas" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="despesas" fill="#EF4444" name="Despesas" radius={[4, 4, 0, 0]} />
+              <Line type="monotone" dataKey="acumulado" stroke="#3B82F6" name="Saldo acumulado" strokeWidth={2} dot={{ r: 3 }} />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ==========================================
+// AUDIT LOG VIEW
+// ==========================================
+
+function AuditLogView({ businessId }: { businessId?: string }) {
+  const [logs, setLogs] = useState<import('@/lib/types').FinancialAuditLog[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!businessId) return;
+    const q = query(
+      collection(db, 'financialAuditLog'),
+      where('businessId', '==', businessId),
+      orderBy('createdAt', 'desc'),
+    );
+    getDocs(q).then(snap => {
+      setLogs(snap.docs.slice(0, 100).map(d => ({ ...(d.data() as import('@/lib/types').FinancialAuditLog), id: d.id })));
+      setLoading(false);
+    }).catch(err => {
+      console.error('[audit] fetch failed:', err);
+      setLoading(false);
+    });
+  }, [businessId]);
+
+  const ACTION_CFG: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
+    create: { label: 'Criação', color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400', icon: '+' },
+    update: { label: 'Edição', color: 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-400', icon: '~' },
+    delete: { label: 'Exclusão', color: 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-400', icon: '−' },
+    pay: { label: 'Pagamento', color: 'bg-violet-100 text-violet-700 dark:bg-violet-500/20 dark:text-violet-400', icon: '✓' },
+    cancel: { label: 'Cancelamento', color: 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400', icon: '×' },
+    restore: { label: 'Restauração', color: 'bg-gray-100 text-gray-700 dark:bg-gray-500/20 dark:text-gray-400', icon: '↺' },
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">Auditoria Financeira</h3>
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          Histórico imutável de todas as mudanças em transações. Últimas 100 ações.
+        </p>
+      </div>
+
+      {loading ? (
+        <div className="space-y-2">
+          {[...Array(5)].map((_, i) => <div key={i} className="h-16 rounded-xl shimmer" />)}
+        </div>
+      ) : logs.length === 0 ? (
+        <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-12 text-center">
+          <History className="w-10 h-10 text-gray-300 dark:text-gray-700 mx-auto mb-3" />
+          <p className="text-sm font-semibold text-gray-700 dark:text-gray-300">Nenhum registro ainda</p>
+          <p className="text-xs text-gray-500 mt-1">Toda criação, edição ou exclusão de transação fica registrada aqui</p>
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          {logs.map(log => {
+            const cfg = ACTION_CFG[log.action] || ACTION_CFG.update;
+            return (
+              <motion.div
+                key={log.id}
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-3 flex items-center gap-3"
+              >
+                <div className={cn(
+                  'w-8 h-8 rounded-lg flex items-center justify-center font-bold text-sm flex-shrink-0',
+                  cfg.color,
+                )}>
+                  {cfg.icon}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={cn('px-1.5 py-0.5 rounded text-[10px] font-bold', cfg.color)}>
+                      {cfg.label}
+                    </span>
+                    <span className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">
+                      {log.description || 'Transação'}
+                    </span>
+                    {log.amount != null && (
+                      <span className="text-xs font-bold text-gray-700 dark:text-gray-300">
+                        {formatCurrency(log.amount)}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                    por <strong>{log.actorName}</strong> · {formatDate(log.createdAt)} {new Date(log.createdAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                    {log.changedFields && log.changedFields.length > 0 && (
+                      <> · campos: {log.changedFields.join(', ')}</>
+                    )}
+                  </p>
+                </div>
+              </motion.div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function TransactionsContent({
   transactions,
