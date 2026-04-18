@@ -508,6 +508,35 @@ input:focus, textarea:focus, select:focus {
 .MuiOutlinedInput-root {
   border-radius: 10px !important;
 }
+
+/* ─── MUI Input Label Fix ─────────────────────────────
+   Move shrunk labels ABOVE the border stroke instead of
+   sitting on it. Also hides the notch (gap in the border)
+   since the label no longer straddles the line.         */
+.MuiInputLabel-shrink {
+  transform: translate(14px, -14px) scale(0.75) !important;
+}
+.MuiOutlinedInput-notchedOutline legend {
+  display: none;
+}
+.MuiOutlinedInput-notchedOutline {
+  top: 0 !important;
+}
+/* Dark mode — label & border colors */
+.dark .MuiInputLabel-root {
+  color: #94a3b8 !important;
+}
+.dark .MuiOutlinedInput-notchedOutline {
+  border-color: #374151 !important;
+}
+.dark .MuiOutlinedInput-root:hover .MuiOutlinedInput-notchedOutline {
+  border-color: #4b5563 !important;
+}
+.dark .MuiOutlinedInput-input,
+.dark .MuiSelect-select {
+  color: #e2e8f0 !important;
+}
+
 .MuiDialog-paper {
   border-radius: 20px !important;
 }
