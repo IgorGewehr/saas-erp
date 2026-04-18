@@ -5,6 +5,7 @@ import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  deleteUser,
   signOut as firebaseSignOut,
   GoogleAuthProvider,
   signInWithPopup,
@@ -100,6 +101,7 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
   // ── Auth state observer ────────────────────────────────────────────────────
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (fbUser) => {
+      setIsLoading(true); // keep loading until user data is fully hydrated
       setFirebaseUser(fbUser);
       if (fbUser) {
         await fetchUserData(fbUser);
@@ -143,12 +145,8 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
 
   // ── signIn ─────────────────────────────────────────────────────────────────
   const signIn = async (email: string, password: string) => {
-    setIsLoading(true);
-    try {
-      await signInWithEmailAndPassword(auth, email, password);
-    } finally {
-      setIsLoading(false);
-    }
+    await signInWithEmailAndPassword(auth, email, password);
+    // isLoading is managed by onAuthStateChanged — don't reset it here
   };
 
   // ── signUp (two modes: new business OR join via invite code) ───────────────
@@ -158,21 +156,29 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
       const now = new Date().toISOString();
 
       if (inviteCode) {
-        // ── Validate invite code ────────────────────────────────────────────
         const code = inviteCode.trim().toUpperCase();
-        const codeSnap = await getDoc(doc(db, 'inviteCodes', code));
 
-        if (!codeSnap.exists() || !codeSnap.data().isActive) {
-          throw { code: 'invite/invalid-code' };
-        }
-        const codeData = codeSnap.data();
-        if (new Date(codeData.expiresAt) < new Date()) {
-          throw { code: 'invite/code-expired' };
-        }
-
-        // ── Create auth user ────────────────────────────────────────────────
+        // ── Create auth user FIRST so subsequent Firestore reads are authenticated
         const { user: fbUser } = await createUserWithEmailAndPassword(auth, email, password);
         await updateProfile(fbUser, { displayName: name });
+
+        let codeData: Record<string, unknown>;
+        try {
+          // ── Validate invite code (now authenticated) ────────────────────────
+          const codeSnap = await getDoc(doc(db, 'inviteCodes', code));
+          if (!codeSnap.exists() || !codeSnap.data().isActive) {
+            await deleteUser(fbUser);
+            throw { code: 'invite/invalid-code' };
+          }
+          codeData = codeSnap.data() as Record<string, unknown>;
+          if (new Date(codeData.expiresAt as string) < new Date()) {
+            await deleteUser(fbUser);
+            throw { code: 'invite/code-expired' };
+          }
+        } catch (err) {
+          // Re-throw validation errors; other errors also abort
+          throw err;
+        }
 
         // ── Create user profile linked to existing business ─────────────────
         await setDoc(doc(db, 'users', fbUser.uid), {
@@ -191,7 +197,7 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
         });
 
         // ── Add to business memberIds ────────────────────────────────────────
-        await setDoc(doc(db, 'businesses', codeData.businessId), {
+        await setDoc(doc(db, 'businesses', codeData.businessId as string), {
           memberIds: arrayUnion(fbUser.uid),
         }, { merge: true });
 
@@ -250,50 +256,44 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
 
   // ── signInWithGoogle ───────────────────────────────────────────────────────
   const signInWithGoogle = async () => {
-    setIsLoading(true);
-    try {
-      const provider = new GoogleAuthProvider();
-      const { user: fbUser } = await signInWithPopup(auth, provider);
-      const now = new Date().toISOString();
+    const provider = new GoogleAuthProvider();
+    const { user: fbUser } = await signInWithPopup(auth, provider);
+    const now = new Date().toISOString();
 
-      const userSnap = await getDoc(doc(db, 'users', fbUser.uid));
-      if (!userSnap.exists()) {
-        const businessRef = doc(db, 'businesses', fbUser.uid + '_biz');
-        await setDoc(businessRef, {
-          razaoSocial: fbUser.displayName || 'Meu Negócio',
-          nomeFantasia: fbUser.displayName || 'Meu Negócio',
-          cnpj: '',
-          crt: '1',
-          ownerUserId: fbUser.uid,
-          memberIds: [fbUser.uid],
-          endereco: { logradouro: '', numero: '', bairro: '', municipio: '', codigoMunicipio: '', uf: '', cep: '' },
-          phone: '',
-          email: fbUser.email || '',
-          isActive: true,
-          createdAt: now,
-          updatedAt: now,
-        });
+    const userSnap = await getDoc(doc(db, 'users', fbUser.uid));
+    if (!userSnap.exists()) {
+      const businessRef = doc(db, 'businesses', fbUser.uid + '_biz');
+      await setDoc(businessRef, {
+        razaoSocial: fbUser.displayName || 'Meu Negócio',
+        nomeFantasia: fbUser.displayName || 'Meu Negócio',
+        cnpj: '',
+        crt: '1',
+        ownerUserId: fbUser.uid,
+        memberIds: [fbUser.uid],
+        endereco: { logradouro: '', numero: '', bairro: '', municipio: '', codigoMunicipio: '', uf: '', cep: '' },
+        phone: '',
+        email: fbUser.email || '',
+        isActive: true,
+        createdAt: now,
+        updatedAt: now,
+      });
 
-        await setDoc(doc(db, 'users', fbUser.uid), {
-          uid: fbUser.uid,
-          email: fbUser.email,
-          name: fbUser.displayName || 'Usuário',
-          photoURL: fbUser.photoURL,
-          role: 'admin',
-          businessId: businessRef.id,
-          isActive: true,
-          isOnline: true,
-          lastLoginAt: now,
-          lastSeenAt: now,
-          createdAt: now,
-          updatedAt: now,
-        });
-      }
-
-      await fetchUserData(fbUser);
-    } finally {
-      setIsLoading(false);
+      await setDoc(doc(db, 'users', fbUser.uid), {
+        uid: fbUser.uid,
+        email: fbUser.email,
+        name: fbUser.displayName || 'Usuário',
+        photoURL: fbUser.photoURL,
+        role: 'admin',
+        businessId: businessRef.id,
+        isActive: true,
+        isOnline: true,
+        lastLoginAt: now,
+        lastSeenAt: now,
+        createdAt: now,
+        updatedAt: now,
+      });
     }
+    // onAuthStateChanged will fire and handle fetchUserData + isLoading
   };
 
   // ── signOut ────────────────────────────────────────────────────────────────

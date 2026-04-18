@@ -56,7 +56,7 @@ export default function LoginPage() {
       } else {
         await signUp(email, password, name, useInviteCode ? inviteCode.trim().toUpperCase() : undefined);
       }
-      router.push('/app');
+      // redirect is handled by the useEffect watching isAuthenticated
     } catch (err: unknown) {
       const fe = err as { code?: string; message?: string };
       const msgs: Record<string, string> = {
@@ -70,6 +70,7 @@ export default function LoginPage() {
         'auth/too-many-requests': t('login.errors.tooManyRequests'),
         'auth/network-request-failed': t('login.errors.networkFailed'),
         'auth/operation-not-allowed': t('login.errors.operationNotAllowed'),
+        'permission-denied': t('login.errors.permissionDenied'),
         'invite/invalid-code': t('login.errors.invalidInviteCode'),
         'invite/code-expired': t('login.errors.inviteCodeExpired'),
       };
@@ -84,7 +85,7 @@ export default function LoginPage() {
     setIsSubmitting(true);
     try {
       await signInWithGoogle();
-      router.push('/app');
+      // redirect is handled by the useEffect watching isAuthenticated
     } catch (err: unknown) {
       const fe = err as { message?: string };
       setError(fe.message || t('login.errors.generic'));

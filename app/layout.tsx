@@ -67,6 +67,7 @@ export default function RootLayout({
                 draggable
                 pauseOnHover
                 theme="colored"
+                style={{ zIndex: 9999 }}
               />
               </I18nProvider>
             </AuthProvider>
