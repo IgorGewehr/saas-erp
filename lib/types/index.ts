@@ -278,6 +278,8 @@ export type TaxRegime = 'simples_nacional' | 'simples_nacional_excesso' | 'lucro
 export interface FiscalCertificate {
   serialNumber: string;
   subject: string;
+  issuer?: string;
+  thumbprint?: string;
   validFrom: string;
   expiresAt: string;
   storagePath: string;

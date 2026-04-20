@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb, adminStorage } from '@/lib/config/firebaseAdmin';
+import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import {
   encryptPassword,
   invalidateCertCache,
   parseCertificateInfo,
 } from '@/lib/fiscal/certificate-manager';
+import { ROLE_HIERARCHY } from '@/lib/types';
+import type { UserRole } from '@/lib/types';
 import { FieldValue } from 'firebase-admin/firestore';
 
 const MAX_FILE_SIZE = 256 * 1024; // 256 KB
@@ -25,6 +28,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { error: 'businessId is required (form field or x-business-id header).' },
         { status: 400 },
+      );
+    }
+
+    // Auth: admin+ in target business
+    const auth = await verifyAuth(req, businessId);
+    if (isAuthError(auth)) return auth;
+    if (ROLE_HIERARCHY[auth.role as UserRole] < ROLE_HIERARCHY['admin']) {
+      return NextResponse.json(
+        { error: 'Apenas administradores podem gerenciar o certificado digital.' },
+        { status: 403 },
       );
     }
 
@@ -120,6 +133,8 @@ export async function POST(req: NextRequest) {
         'fiscal.certificate': {
           serialNumber: certInfo.serialNumber,
           subject: certInfo.subject,
+          issuer: certInfo.issuer,
+          thumbprint: certInfo.thumbprint,
           validFrom: certInfo.validFrom,
           expiresAt: certInfo.expiresAt,
           storagePath,
@@ -132,17 +147,25 @@ export async function POST(req: NextRequest) {
     // 7. Invalidate cache so next getCertificadoPayload fetches fresh data
     invalidateCertCache(businessId);
 
-    // 8. Return certificate info
+    // 8. Return certificate info + expiry flags
+    const daysUntilExpiry = Math.floor(
+      (new Date(certInfo.expiresAt).getTime() - Date.now()) / (24 * 60 * 60 * 1000),
+    );
+
     return NextResponse.json({
       success: true,
       certificate: {
         serialNumber: certInfo.serialNumber,
         subject: certInfo.subject,
+        issuer: certInfo.issuer,
+        thumbprint: certInfo.thumbprint,
         validFrom: certInfo.validFrom,
         expiresAt: certInfo.expiresAt,
         storagePath,
         uploadedAt: now,
       },
+      daysUntilExpiry,
+      isExpiringSoon: daysUntilExpiry <= 30,
     });
   } catch (error) {
     console.error('[Certificate Upload] Error:', error);

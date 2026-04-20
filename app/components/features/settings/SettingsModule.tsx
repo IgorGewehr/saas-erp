@@ -1469,28 +1469,39 @@ function FiscalTab() {
     if (!certFile || !certPassword.trim() || !business) return;
     setIsUploadingCert(true);
     try {
-      // Upload cert to storage
-      const storagePath = `businesses/${business.id}/certificates/cert.pfx`;
-      const storageRef = ref(storage, storagePath);
-      await uploadBytes(storageRef, certFile);
+      const { getAuth } = await import('firebase/auth');
+      const token = await getAuth().currentUser?.getIdToken();
+      if (!token) throw new Error('Sessão expirada — faça login novamente');
 
-      // Save certificate metadata
-      await saveFiscalField({
-        certificate: {
-          serialNumber: 'pending-parse',
-          expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
-          storagePath,
-          uploadedAt: new Date().toISOString(),
-          subject: certFile.name,
-        },
+      // Server-side upload — parses PFX + validates password + encrypts + persists
+      const form = new FormData();
+      form.append('file', certFile);
+      form.append('password', certPassword);
+      form.append('businessId', business.id);
+
+      const resp = await fetch('/api/fiscal/certificate/upload', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
       });
+      const json = await resp.json();
+      if (!resp.ok || !json.success) {
+        throw new Error(json.error || 'Falha ao enviar certificado');
+      }
 
-      toast.success(t('settings.fiscal.certUploadSuccess', 'Certificado digital enviado com sucesso!'));
+      const daysLeft = json.daysUntilExpiry as number | undefined;
+      if (typeof daysLeft === 'number' && daysLeft <= 30) {
+        toast.warning(`Certificado enviado, mas expira em ${daysLeft} dias. Considere renovar em breve.`);
+      } else {
+        toast.success(t('settings.fiscal.certUploadSuccess', 'Certificado digital enviado e validado!'));
+      }
       setCertFile(null);
       setCertPassword('');
+      // Force a refresh of the business doc so the new certificate info renders
+      window.location.reload();
     } catch (error) {
       console.error('Error uploading cert:', error);
-      toast.error(t('settings.fiscal.certUploadError', 'Erro ao enviar certificado'));
+      toast.error(error instanceof Error ? error.message : t('settings.fiscal.certUploadError', 'Erro ao enviar certificado'));
     } finally {
       setIsUploadingCert(false);
     }
@@ -1500,9 +1511,21 @@ function FiscalTab() {
     if (!business) return;
     if (!confirm('Tem certeza que deseja remover o certificado digital?')) return;
     try {
-      await saveFiscalField({ certificate: null });
+      const { getAuth } = await import('firebase/auth');
+      const token = await getAuth().currentUser?.getIdToken();
+      if (!token) throw new Error('Sessão expirada');
+      const resp = await fetch('/api/fiscal/certificate/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ businessId: business.id }),
+      });
+      const json = await resp.json();
+      if (!resp.ok || !json.success) throw new Error(json.error || 'Falha ao remover');
       toast.success('Certificado removido!');
-    } catch { toast.error('Erro ao remover certificado'); }
+      window.location.reload();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao remover certificado');
+    }
   };
 
   // ── CST/CSOSN options ──

@@ -177,6 +177,8 @@ export async function getCertificadoPayload(
 export interface CertificateInfo {
   serialNumber: string;
   subject: string;
+  issuer: string;
+  thumbprint: string;
   validFrom: string;
   expiresAt: string;
 }
@@ -242,10 +244,21 @@ export function parseCertificateInfo(
   }
   const subject = subjectParts.join(', ') || 'Unknown';
 
+  // Issuer CN for the details panel
+  const issuer = (cert.issuer.getField('CN')?.value as string) || 'Unknown';
+
+  // SHA-1 thumbprint (hex) — used to detect re-uploads of the same cert
+  const certDerBytes = forge.asn1
+    .toDer(forge.pki.certificateToAsn1(cert))
+    .getBytes();
+  const md = forge.md.sha1.create();
+  md.update(certDerBytes);
+  const thumbprint = md.digest().toHex().toUpperCase();
+
   // Serial number as hex
   const serialNumber = cert.serialNumber
     ? cert.serialNumber.toUpperCase()
     : 'Unknown';
 
-  return { serialNumber, subject, validFrom, expiresAt };
+  return { serialNumber, subject, issuer, thumbprint, validFrom, expiresAt };
 }
