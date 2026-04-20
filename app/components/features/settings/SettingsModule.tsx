@@ -7,7 +7,7 @@ import { useQuery } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import { doc, setDoc, collection, query, where, onSnapshot, updateDoc, getDocs, addDoc, deleteDoc } from 'firebase/firestore';
+import { doc, setDoc, collection, query, where, onSnapshot, updateDoc, getDocs, addDoc, deleteDoc, arrayRemove } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '@/lib/config/firebase';
 import { toast } from 'react-toastify';
@@ -798,8 +798,8 @@ function ProfileTab() {
 
 function EmpresaTab() {
   const { t } = useTranslation();
-  const { business, refreshUser } = useAuth();
-  const canEditSettings = true;
+  const { user, business, refreshUser } = useAuth();
+  const canEditSettings = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
   const [isSaving, setIsSaving] = useState(false);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -1298,7 +1298,7 @@ function EmpresaTab() {
 function FiscalTab() {
   const { t } = useTranslation();
   const { user, business, refreshUser } = useAuth();
-  const canEditFiscal = true;
+  const canEditFiscal = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
 
   // ── Fiscal state ──
   const [environment, setEnvironment] = useState<'homologation' | 'production'>('homologation');
@@ -2118,9 +2118,11 @@ function generateCode(): string {
   return Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
 }
 
-function isUserOnline(member: UserType): boolean {
-  if (!member.isOnline || !member.lastSeenAt) return false;
-  return Date.now() - new Date(member.lastSeenAt).getTime() < 3 * 60 * 1000;
+function getMemberDisplayStatus(member: UserType): 'online' | 'busy' | 'offline' {
+  if (member.userStatus === 'invisible') return 'offline';
+  if (!member.isOnline || !member.lastSeenAt) return 'offline';
+  if (Date.now() - new Date(member.lastSeenAt).getTime() >= 3 * 60 * 1000) return 'offline';
+  return member.userStatus === 'busy' ? 'busy' : 'online';
 }
 
 function relativeTime(dateStr?: string): string {
@@ -2139,12 +2141,13 @@ function daysUntil(dateStr: string): number {
 
 function UsersTab() {
   const { t } = useTranslation();
-  const { user, business } = useAuth();
+  const { user, business, sectors } = useAuth();
   const [members, setMembers]           = useState<UserType[]>([]);
   const [inviteCodes, setInviteCodes]   = useState<InviteCode[]>([]);
   const [loadingMembers, setLoadingMembers] = useState(true);
   const [generatingCode, setGeneratingCode] = useState(false);
   const [selectedRole, setSelectedRole] = useState<UserRole>('operator');
+  const [selectedSectorId, setSelectedSectorId] = useState<string>('');
   const [copiedCode, setCopiedCode]     = useState<string | null>(null);
   const [revokingCode, setRevokingCode] = useState<string | null>(null);
   const [savingRole, setSavingRole] = useState<string | null>(null);
@@ -2153,6 +2156,7 @@ function UsersTab() {
   const [editingRoleFor, setEditingRoleFor] = useState<string | null>(null);
   const isOwner = user?.role === 'founder' || user?.role === 'admin';
   const isFounder = user?.role === 'founder';
+  const activeSectors = sectors.filter(s => s.isActive);
 
   // ── Live members ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -2196,7 +2200,7 @@ function UsersTab() {
         code = generateCode();
       }
       const expiresAt = new Date(Date.now() + 7 * 86_400_000).toISOString();
-      await setDoc(doc(db, 'inviteCodes', code), {
+      const invitePayload: Record<string, unknown> = {
         businessId: business.id,
         code,
         role: selectedRole,
@@ -2205,8 +2209,11 @@ function UsersTab() {
         expiresAt,
         isActive: true,
         createdAt: new Date().toISOString(),
-      });
-      toast.success(`Código ${code} gerado! Válido por 7 dias.`);
+      };
+      if (selectedSectorId) invitePayload.sectorId = selectedSectorId;
+      await setDoc(doc(db, 'inviteCodes', code), invitePayload);
+      const sectorName = activeSectors.find(s => s.id === selectedSectorId)?.name;
+      toast.success(`Código ${code} gerado!${sectorName ? ` Setor: ${sectorName}.` : ''} Válido por 7 dias.`);
     } catch {
       toast.error(t('settings.users.codeGenerateError', 'Erro ao gerar código. Tente novamente.'));
     } finally {
@@ -2281,12 +2288,9 @@ function UsersTab() {
         removedBy: user.uid,
         updatedAt: new Date().toISOString(),
       });
-      // Remove from business.memberIds array
-      const bizRef = doc(db, 'businesses', business.id);
-      const bizSnap = await getDocs(query(collection(db, 'businesses'), where('__name__', '==', business.id)));
-      const memberIds = (bizSnap.docs[0]?.data()?.memberIds as string[] | undefined) || [];
-      await updateDoc(bizRef, {
-        memberIds: memberIds.filter(id => id !== removingMember.uid),
+      // Remove from business.memberIds array atomically (no read needed)
+      await updateDoc(doc(db, 'businesses', business.id), {
+        memberIds: arrayRemove(removingMember.uid),
         updatedAt: new Date().toISOString(),
       });
       toast.success(`${removingMember.name} removido da empresa`);
@@ -2340,7 +2344,7 @@ function UsersTab() {
         ) : (
           <div className="divide-y divide-gray-100 dark:divide-gray-800/80 -mx-6 -mb-6">
             {members.map((member, i) => {
-              const online = isUserOnline(member);
+              const displayStatus = getMemberDisplayStatus(member);
               const isCurrentUser = member.uid === user?.uid;
               return (
                 <motion.div
@@ -2358,10 +2362,12 @@ function UsersTab() {
                         : member.name.split(' ').map(n => n[0]).slice(0, 2).join('').toUpperCase()
                       }
                     </div>
-                    {/* Online indicator */}
+                    {/* Presence dot — 3 states: online (green) | busy (amber) | offline (gray) */}
                     <div className={cn(
                       'absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-[#111827] transition-colors',
-                      online ? 'bg-emerald-400' : 'bg-gray-300 dark:bg-gray-600'
+                      displayStatus === 'online' ? 'bg-emerald-400' :
+                      displayStatus === 'busy'   ? 'bg-amber-400' :
+                      'bg-gray-300 dark:bg-gray-600'
                     )} />
                   </div>
 
@@ -2381,10 +2387,15 @@ function UsersTab() {
                   <div className="flex items-center gap-3 flex-shrink-0">
                     {/* Online status */}
                     <div className="hidden sm:flex items-center gap-1.5 text-[11.5px]">
-                      {online ? (
+                      {displayStatus === 'online' ? (
                         <>
                           <Wifi className="w-3 h-3 text-emerald-500" />
                           <span className="text-emerald-600 dark:text-emerald-400 font-medium">Online</span>
+                        </>
+                      ) : displayStatus === 'busy' ? (
+                        <>
+                          <Wifi className="w-3 h-3 text-amber-500" />
+                          <span className="text-amber-600 dark:text-amber-400 font-medium">Ocupado</span>
                         </>
                       ) : (
                         <>
@@ -2548,7 +2559,50 @@ function UsersTab() {
                     </button>
                   ))}
                 </div>
-                <p className="text-[11.5px] text-gray-400 dark:text-gray-500 mt-1.5">
+                {/* Sector selector (optional) */}
+                {activeSectors.length > 0 && (
+                  <div className="mt-3">
+                    <label className="block text-[12px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5">
+                      Setor <span className="text-gray-400 font-normal normal-case">(opcional)</span>
+                    </label>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedSectorId('')}
+                        className={cn(
+                          'text-[12px] font-medium px-3 py-1.5 rounded-lg border transition-all duration-150',
+                          selectedSectorId === ''
+                            ? 'bg-gray-800 dark:bg-gray-200 text-white dark:text-gray-900 border-gray-800 dark:border-gray-200'
+                            : 'bg-white dark:bg-white/[0.04] text-gray-500 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:border-gray-300'
+                        )}
+                      >
+                        Nenhum
+                      </button>
+                      {activeSectors.map(sector => (
+                        <button
+                          key={sector.id}
+                          type="button"
+                          onClick={() => setSelectedSectorId(sector.id)}
+                          className={cn(
+                            'text-[12px] font-medium px-3 py-1.5 rounded-lg border transition-all duration-150 flex items-center gap-1.5',
+                            selectedSectorId === sector.id
+                              ? 'text-white border-transparent'
+                              : 'bg-white dark:bg-white/[0.04] text-gray-500 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:border-gray-300'
+                          )}
+                          style={selectedSectorId === sector.id ? { backgroundColor: sector.color, borderColor: sector.color } : {}}
+                        >
+                          <span
+                            className="w-2 h-2 rounded-full flex-shrink-0"
+                            style={{ backgroundColor: selectedSectorId === sector.id ? 'rgba(255,255,255,0.7)' : sector.color }}
+                          />
+                          {sector.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <p className="text-[11.5px] text-gray-400 dark:text-gray-500 mt-2">
                   O código expira em <span className="font-semibold">7 dias</span> e só pode ser usado <span className="font-semibold">uma vez</span>.
                 </p>
               </div>
@@ -2601,13 +2655,24 @@ function UsersTab() {
 
                         {/* Meta */}
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-0.5">
+                          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                             <span className={cn(
                               'text-[11px] font-semibold px-2 py-0.5 rounded-md border',
                               ROLE_COLORS[ic.role]
                             )}>
                               {ROLE_LABELS[ic.role]}
                             </span>
+                            {ic.sectorId && (() => {
+                              const sector = activeSectors.find(s => s.id === ic.sectorId);
+                              return sector ? (
+                                <span
+                                  className="text-[11px] font-medium px-2 py-0.5 rounded-md text-white flex items-center gap-1"
+                                  style={{ backgroundColor: sector.color }}
+                                >
+                                  {sector.name}
+                                </span>
+                              ) : null;
+                            })()}
                           </div>
                           <div className="flex items-center gap-1 text-[11.5px] text-gray-400 dark:text-gray-500">
                             <Clock className="w-3 h-3 flex-shrink-0" />

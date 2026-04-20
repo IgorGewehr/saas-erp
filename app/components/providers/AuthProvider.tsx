@@ -193,6 +193,7 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
         }
 
         // ── Create user profile linked to existing business ─────────────────
+        const sectorId = codeData.sectorId as string | undefined;
         await setDoc(doc(db, 'users', fbUser.uid), {
           uid: fbUser.uid,
           email,
@@ -200,6 +201,7 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
           role: codeData.role,
           businessId: codeData.businessId,
           invitedBy: codeData.createdBy,
+          ...(sectorId ? { sectorIds: [sectorId] } : {}),
           isActive: true,
           isOnline: true,
           lastLoginAt: now,
@@ -212,6 +214,14 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
         await setDoc(doc(db, 'businesses', codeData.businessId as string), {
           memberIds: arrayUnion(fbUser.uid),
         }, { merge: true });
+
+        // ── Add to sector memberIds if sectorId was set on the invite ────────
+        if (sectorId) {
+          await updateDoc(doc(db, 'sectors', sectorId), {
+            memberIds: arrayUnion(fbUser.uid),
+            updatedAt: now,
+          }).catch(() => { /* sector may have been deleted — non-fatal */ });
+        }
 
         // ── Mark code as used (one-time) ─────────────────────────────────────
         await updateDoc(doc(db, 'inviteCodes', code), {
