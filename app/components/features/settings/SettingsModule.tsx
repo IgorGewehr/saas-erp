@@ -2,7 +2,8 @@
 
 import { useTranslation } from 'react-i18next';
 
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useQuery } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -59,6 +60,7 @@ import {
   AlertCircle,
   CreditCard,
   Triangle,
+  ChevronLeft,
   ChevronRight,
   Bug,
   Cloud,
@@ -2167,6 +2169,7 @@ function UsersTab() {
   const [removingMember, setRemovingMember] = useState<UserType | null>(null);
   const [removingLoading, setRemovingLoading] = useState(false);
   const [editingRoleFor, setEditingRoleFor] = useState<string | null>(null);
+  const [roleDropdownPos, setRoleDropdownPos] = useState<{ top: number; right: number } | null>(null);
   const [editingCommissionFor, setEditingCommissionFor] = useState<string | null>(null);
   const [commissionInput, setCommissionInput] = useState('');
   const [savingCommission, setSavingCommission] = useState<string | null>(null);
@@ -2202,6 +2205,14 @@ function UsersTab() {
     });
     return () => unsub();
   }, [business?.id, isOwner]);
+
+  // ── Close role dropdown on outside click ─────────────────────────────────
+  useEffect(() => {
+    if (!editingRoleFor) return;
+    const handler = () => { setEditingRoleFor(null); setRoleDropdownPos(null); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [editingRoleFor]);
 
   // ── Generate invite code ─────────────────────────────────────────────────
   const handleGenerateCode = async () => {
@@ -2273,6 +2284,7 @@ function UsersTab() {
       });
       toast.success(`${member.name} agora é ${ROLE_LABELS[newRole]}`);
       setEditingRoleFor(null);
+      setRoleDropdownPos(null);
     } catch (err) {
       console.error('[Users] change role failed:', err);
       toast.error('Erro ao alterar papel');
@@ -2503,10 +2515,20 @@ function UsersTab() {
 
                     {/* Role — clickable dropdown for admins, badge for the rest */}
                     {isOwner && !isCurrentUser && (user?.role === 'founder' || ROLE_HIERARCHY[member.role] < ROLE_HIERARCHY[user!.role]) ? (
-                      <div className="relative">
+                      <div>
                         <button
                           type="button"
-                          onClick={() => setEditingRoleFor(editingRoleFor === member.id ? null : member.id)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (editingRoleFor === member.id) {
+                              setEditingRoleFor(null);
+                              setRoleDropdownPos(null);
+                            } else {
+                              const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
+                              setRoleDropdownPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
+                              setEditingRoleFor(member.id);
+                            }
+                          }}
                           disabled={savingRole === member.id}
                           className={cn(
                             'inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-lg border transition-colors',
@@ -2519,37 +2541,6 @@ function UsersTab() {
                           {ROLE_LABELS[member.role]}
                           <ChevronRight className={cn('w-3 h-3 transition-transform', editingRoleFor === member.id && 'rotate-90')} />
                         </button>
-                        <AnimatePresence>
-                          {editingRoleFor === member.id && (
-                            <motion.div
-                              initial={{ opacity: 0, y: -4, scale: 0.95 }}
-                              animate={{ opacity: 1, y: 0, scale: 1 }}
-                              exit={{ opacity: 0, y: -4, scale: 0.95 }}
-                              transition={{ duration: 0.15 }}
-                              className="absolute right-0 top-full mt-1 z-20 w-40 rounded-xl bg-white dark:bg-[#1e293b] shadow-xl border border-gray-200 dark:border-white/[0.08] overflow-hidden"
-                            >
-                              {(['founder', 'admin', 'manager', 'operator', 'viewer'] as UserRole[])
-                                .filter(r => user?.role === 'founder' || ROLE_HIERARCHY[r] < ROLE_HIERARCHY[user!.role])
-                                .map(r => (
-                                <button
-                                  key={r}
-                                  type="button"
-                                  onClick={() => handleChangeRole(member, r)}
-                                  disabled={r === member.role}
-                                  className={cn(
-                                    'w-full text-left px-3 py-2 flex items-center justify-between text-xs transition-colors',
-                                    r === member.role
-                                      ? 'bg-gray-100 dark:bg-white/[0.04] text-gray-500 cursor-default'
-                                      : 'hover:bg-gray-50 dark:hover:bg-white/[0.04] text-gray-700 dark:text-gray-300',
-                                  )}
-                                >
-                                  <span className="font-medium">{ROLE_LABELS[r]}</span>
-                                  {r === member.role && <Check className="w-3 h-3 text-emerald-500" />}
-                                </button>
-                              ))}
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
                       </div>
                     ) : (
                       <span className={cn(
@@ -2820,6 +2811,46 @@ function UsersTab() {
           <Shield className="w-4 h-4 flex-shrink-0 mt-0.5" />
           <p>Somente administradores e fundadores podem gerar códigos de convite.</p>
         </div>
+      )}
+
+      {/* Role dropdown portal — escapes overflow:hidden of parent cards */}
+      {typeof document !== 'undefined' && editingRoleFor && roleDropdownPos && createPortal(
+        <AnimatePresence>
+          <motion.div
+            key={editingRoleFor}
+            initial={{ opacity: 0, y: -4, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -4, scale: 0.95 }}
+            transition={{ duration: 0.15 }}
+            onMouseDown={e => e.stopPropagation()}
+            style={{ position: 'fixed', top: roleDropdownPos.top, right: roleDropdownPos.right, zIndex: 9999 }}
+            className="w-40 rounded-xl bg-white dark:bg-[#1e293b] shadow-xl border border-gray-200 dark:border-white/[0.08] overflow-hidden"
+          >
+            {(['founder', 'admin', 'manager', 'operator', 'viewer'] as UserRole[])
+              .filter(r => user?.role === 'founder' || ROLE_HIERARCHY[r] < ROLE_HIERARCHY[user!.role])
+              .map(r => {
+                const targetMember = members.find(m => m.id === editingRoleFor);
+                return (
+                  <button
+                    key={r}
+                    type="button"
+                    onClick={() => targetMember && handleChangeRole(targetMember, r)}
+                    disabled={r === targetMember?.role}
+                    className={cn(
+                      'w-full text-left px-3 py-2 flex items-center justify-between text-xs transition-colors',
+                      r === targetMember?.role
+                        ? 'bg-gray-100 dark:bg-white/[0.04] text-gray-500 cursor-default'
+                        : 'hover:bg-gray-50 dark:hover:bg-white/[0.04] text-gray-700 dark:text-gray-300',
+                    )}
+                  >
+                    <span className="font-medium">{ROLE_LABELS[r]}</span>
+                    {r === targetMember?.role && <Check className="w-3 h-3 text-emerald-500" />}
+                  </button>
+                );
+              })}
+          </motion.div>
+        </AnimatePresence>,
+        document.body
       )}
     </motion.div>
   );
@@ -6013,6 +6044,43 @@ export default function SettingsModule() {
   const isAdmin = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['admin'];
   const [activeTab, setActiveTab] = useState<Tab>('perfil');
 
+  // ── Scrollable tab bar ────────────────────────────────────────────────────
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft]   = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  const checkScroll = useCallback(() => {
+    const el = tabsRef.current;
+    if (!el) return;
+    setCanScrollLeft(el.scrollLeft > 1);
+    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+  }, []);
+
+  const scrollTabsBy = useCallback((amount: number) => {
+    tabsRef.current?.scrollBy({ left: amount, behavior: 'smooth' });
+  }, []);
+
+  // Non-passive wheel listener so we can call preventDefault
+  useEffect(() => {
+    const el = tabsRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY === 0) return;
+      e.preventDefault();
+      el.scrollLeft += e.deltaY;
+      checkScroll();
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [checkScroll]);
+
+  // Update arrows on resize and whenever the tab list changes
+  useEffect(() => {
+    checkScroll();
+    window.addEventListener('resize', checkScroll);
+    return () => window.removeEventListener('resize', checkScroll);
+  }, [checkScroll]);
+
   const allTabs = [
     { id: 'perfil'     as Tab, label: t('settings.tabs.perfil',   'Meu Perfil'), icon: UserCircle },
     { id: 'modo'       as Tab, label: t('settings.tabs.modo',     'Modo do Sistema'), icon: Zap   },
@@ -6051,34 +6119,81 @@ export default function SettingsModule() {
       </div>
 
       {/* Tab Navigation */}
-      <div className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800/80 rounded-2xl w-fit border border-gray-200 dark:border-gray-700/50 mb-8">
-        {tabs.map((tab) => {
-          const Icon = tab.icon;
-          const isActive = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setActiveTab(tab.id)}
-              className="relative px-4 py-2 rounded-xl flex items-center gap-2 text-sm font-medium outline-none"
+      <div className="relative mb-8">
+        {/* Left fade + arrow */}
+        <AnimatePresence>
+          {canScrollLeft && (
+            <motion.div
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              className="absolute left-0 top-0 bottom-0 w-14 z-10 flex items-center justify-start pointer-events-none rounded-l-2xl bg-gradient-to-r from-gray-50 dark:from-[#111827] to-transparent"
             >
-              {isActive && (
-                <motion.div
-                  layoutId="settings-tab-pill"
-                  className="absolute inset-0 rounded-xl bg-white dark:bg-[#1E293B] shadow-sm border border-gray-200 dark:border-gray-600/60"
-                  transition={{ type: 'spring', stiffness: 500, damping: 35 }}
-                />
-              )}
-              <span className={cn(
-                'relative z-10 flex items-center gap-2 transition-colors duration-150',
-                isActive ? 'text-gray-900 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300',
-              )}>
-                <Icon className={cn('h-4 w-4', isActive && 'text-red-500 dark:text-red-400')} />
-                {tab.label}
-              </span>
-            </button>
-          );
-        })}
+              <button
+                type="button"
+                onClick={() => scrollTabsBy(-160)}
+                className="pointer-events-auto ml-1.5 w-7 h-7 rounded-full bg-white dark:bg-gray-700 shadow-md border border-gray-200 dark:border-gray-600 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Scrollable container */}
+        <div
+          ref={tabsRef}
+          onScroll={checkScroll}
+          className="overflow-x-auto scrollbar-hide"
+        >
+          <div className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800/80 rounded-2xl w-max border border-gray-200 dark:border-gray-700/50">
+            {tabs.map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setActiveTab(tab.id)}
+                  className="relative px-4 py-2 rounded-xl flex items-center gap-2 text-sm font-medium outline-none"
+                >
+                  {isActive && (
+                    <motion.div
+                      layoutId="settings-tab-pill"
+                      className="absolute inset-0 rounded-xl bg-white dark:bg-[#1E293B] shadow-sm border border-gray-200 dark:border-gray-600/60"
+                      transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+                    />
+                  )}
+                  <span className={cn(
+                    'relative z-10 flex items-center gap-2 transition-colors duration-150',
+                    isActive ? 'text-gray-900 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300',
+                  )}>
+                    <Icon className={cn('h-4 w-4', isActive && 'text-red-500 dark:text-red-400')} />
+                    {tab.label}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Right fade + arrow */}
+        <AnimatePresence>
+          {canScrollRight && (
+            <motion.div
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              className="absolute right-0 top-0 bottom-0 w-14 z-10 flex items-center justify-end pointer-events-none rounded-r-2xl bg-gradient-to-l from-gray-50 dark:from-[#111827] to-transparent"
+            >
+              <button
+                type="button"
+                onClick={() => scrollTabsBy(160)}
+                className="pointer-events-auto mr-1.5 w-7 h-7 rounded-full bg-white dark:bg-gray-700 shadow-md border border-gray-200 dark:border-gray-600 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Tab Content */}

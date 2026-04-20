@@ -12,7 +12,7 @@ import {
   User as FirebaseUser,
   updateProfile,
 } from 'firebase/auth';
-import { doc, getDoc, setDoc, updateDoc, arrayUnion, collection, query, where, getDocs } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, onSnapshot, arrayUnion, collection, query, where, getDocs } from 'firebase/firestore';
 import { auth, db } from '@/lib/config/firebase';
 import type { User, Business, Sector } from '@/lib/types';
 
@@ -79,58 +79,84 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
     return sectors.filter(s => s.memberIds.includes(user.uid)).map(s => s.id);
   }, [user, sectors]);
 
-  // ── Fetch user + business + sectors data from Firestore ─────────────────────
-  const fetchUserData = useCallback(async (fbUser: FirebaseUser) => {
-    try {
-      const userSnap = await getDoc(doc(db, 'users', fbUser.uid));
-      if (userSnap.exists()) {
-        const userData = { ...userSnap.data(), id: userSnap.id } as User;
-        setUser(userData);
-        if (userData.businessId) {
-          const bizSnap = await getDoc(doc(db, 'businesses', userData.businessId));
-          if (bizSnap.exists()) {
-            setBusiness({ ...bizSnap.data(), id: bizSnap.id } as Business);
-          }
-          // Fetch sectors for the business
-          try {
+  // ── Real-time user + business listeners ──────────────────────────────────────
+  // Uses onSnapshot so role/name/status changes made by an admin are reflected
+  // immediately across all open sessions without requiring a logout/login.
+  useEffect(() => {
+    let unsubUser: (() => void) | null = null;
+    let unsubBiz: (() => void) | null = null;
+
+    const unsubAuth = onAuthStateChanged(auth, (fbUser) => {
+      // Tear down previous listeners whenever auth state changes
+      unsubUser?.();
+      unsubBiz?.();
+      unsubUser = null;
+      unsubBiz = null;
+
+      setFirebaseUser(fbUser);
+
+      if (!fbUser) {
+        setUser(null);
+        setBusiness(null);
+        setIsLoading(false);
+        return;
+      }
+
+      setIsLoading(true);
+
+      // Mark online on login
+      setDoc(doc(db, 'users', fbUser.uid), {
+        isOnline: true,
+        lastLoginAt: new Date().toISOString(),
+        lastSeenAt: new Date().toISOString(),
+      }, { merge: true }).catch(() => {});
+
+      // Listen to user doc — reacts to role changes, name edits, status updates
+      unsubUser = onSnapshot(
+        doc(db, 'users', fbUser.uid),
+        (snap) => {
+          if (!snap.exists()) { setIsLoading(false); return; }
+          const userData = { ...snap.data(), id: snap.id } as User;
+          setUser(userData);
+          setIsLoading(false);
+
+          if (userData.businessId) {
+            // Listen to business doc — reacts to plan/enterprise/settings changes
+            unsubBiz?.();
+            unsubBiz = onSnapshot(
+              doc(db, 'businesses', userData.businessId),
+              (bizSnap) => {
+                if (bizSnap.exists()) {
+                  setBusiness({ ...bizSnap.data(), id: bizSnap.id } as Business);
+                }
+              },
+              () => { /* ignore permission errors on business doc */ },
+            );
+
+            // Sectors are less volatile — one-time fetch is fine
             const sectorsQuery = query(
               collection(db, 'sectors'),
               where('businessId', '==', userData.businessId),
-              where('isActive', '==', true)
+              where('isActive', '==', true),
             );
-            const sectorsSnap = await getDocs(sectorsQuery);
-            setSectors(sectorsSnap.docs.map(d => ({ ...d.data(), id: d.id } as Sector)));
-          } catch {
-            // Sectors are optional — fail silently
+            getDocs(sectorsQuery)
+              .then((snap) => setSectors(snap.docs.map(d => ({ ...d.data(), id: d.id } as Sector))))
+              .catch(() => {});
           }
-        }
-      }
-    } catch (err) {
-      console.error('Error fetching user data:', err);
-    }
-  }, []);
-
-  // ── Auth state observer ────────────────────────────────────────────────────
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (fbUser) => {
-      setIsLoading(true); // keep loading until user data is fully hydrated
-      setFirebaseUser(fbUser);
-      if (fbUser) {
-        await fetchUserData(fbUser);
-        // Mark online + record login time
-        setDoc(doc(db, 'users', fbUser.uid), {
-          isOnline: true,
-          lastLoginAt: new Date().toISOString(),
-          lastSeenAt: new Date().toISOString(),
-        }, { merge: true }).catch(() => {});
-      } else {
-        setUser(null);
-        setBusiness(null);
-      }
-      setIsLoading(false);
+        },
+        (err) => {
+          console.error('Error listening to user doc:', err);
+          setIsLoading(false);
+        },
+      );
     });
-    return () => unsub();
-  }, [fetchUserData]);
+
+    return () => {
+      unsubAuth();
+      unsubUser?.();
+      unsubBiz?.();
+    };
+  }, []);
 
   // ── Online presence: heartbeat + visibility ────────────────────────────────
   useEffect(() => {
@@ -231,8 +257,7 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
           usedAt: now,
         });
 
-        // Ensure state is hydrated after all writes
-        await fetchUserData(fbUser);
+        // onSnapshot listener reacts to the writes above automatically
 
       } else {
         // ── Create new business (default flow) ──────────────────────────────
@@ -270,7 +295,7 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
           updatedAt: now,
         });
 
-        await fetchUserData(fbUser);
+        // onSnapshot listener reacts to the writes above automatically
       }
     } finally {
       setIsLoading(false);
@@ -339,9 +364,8 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   // ── refreshUser ────────────────────────────────────────────────────────────
-  const refreshUser = async () => {
-    if (firebaseUser) await fetchUserData(firebaseUser);
-  };
+  // onSnapshot keeps user data live — this is a no-op kept for API compatibility
+  const refreshUser = async () => {};
 
   return (
     <AuthContext.Provider value={{
