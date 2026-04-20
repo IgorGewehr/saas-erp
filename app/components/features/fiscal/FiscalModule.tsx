@@ -48,6 +48,7 @@ import { db, storage } from '@/lib/config/firebase';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import type { FiscalDocument, FiscalDocType, FiscalDocStatus, FiscalItem } from '@/lib/types';
+import { ROLE_HIERARCHY } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatCPFCNPJ, formatDateTime, getStatusColor } from '@/lib/utils/format';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
@@ -865,7 +866,8 @@ function TableSkeleton() {
 // ==============================================
 
 export default function FiscalModule({ type }: FiscalModuleProps) {
-  const { business } = useAuth();
+  const { business, user } = useAuth();
+  const isManager = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['manager'];
   const { isDark } = useTheme();
   const { t } = useTranslation();
   const [documents, setDocuments] = useState<FiscalDocument[]>([]);
@@ -911,7 +913,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
 
   // Fetch documents from Firestore
   const fetchDocuments = useCallback(async (showRefreshIndicator = false) => {
-    if (!business?.id) return;
+    if (!business?.id || !isManager) return;
 
     if (showRefreshIndicator) {
       setIsRefreshing(true);

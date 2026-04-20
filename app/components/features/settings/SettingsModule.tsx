@@ -2,7 +2,7 @@
 
 import { useTranslation } from 'react-i18next';
 
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -60,6 +60,7 @@ import {
   AlertCircle,
   CreditCard,
   Triangle,
+  ChevronLeft,
   ChevronRight,
   Bug,
   Cloud,
@@ -6049,6 +6050,43 @@ export default function SettingsModule() {
   const isAdmin = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['admin'];
   const [activeTab, setActiveTab] = useState<Tab>('perfil');
 
+  // ── Scrollable tab bar ────────────────────────────────────────────────────
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft]   = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  const checkScroll = useCallback(() => {
+    const el = tabsRef.current;
+    if (!el) return;
+    setCanScrollLeft(el.scrollLeft > 1);
+    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+  }, []);
+
+  const scrollTabsBy = useCallback((amount: number) => {
+    tabsRef.current?.scrollBy({ left: amount, behavior: 'smooth' });
+  }, []);
+
+  // Non-passive wheel listener so we can call preventDefault
+  useEffect(() => {
+    const el = tabsRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY === 0) return;
+      e.preventDefault();
+      el.scrollLeft += e.deltaY;
+      checkScroll();
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [checkScroll]);
+
+  // Update arrows on resize and whenever the tab list changes
+  useEffect(() => {
+    checkScroll();
+    window.addEventListener('resize', checkScroll);
+    return () => window.removeEventListener('resize', checkScroll);
+  }, [checkScroll]);
+
   const allTabs = [
     { id: 'perfil'     as Tab, label: t('settings.tabs.perfil',   'Meu Perfil'), icon: UserCircle },
     { id: 'modo'       as Tab, label: t('settings.tabs.modo',     'Modo do Sistema'), icon: Zap   },
@@ -6087,36 +6125,81 @@ export default function SettingsModule() {
       </div>
 
       {/* Tab Navigation */}
-      <div className="overflow-x-auto scrollbar-hide mb-8">
-      <div className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800/80 rounded-2xl w-max border border-gray-200 dark:border-gray-700/50">
-        {tabs.map((tab) => {
-          const Icon = tab.icon;
-          const isActive = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setActiveTab(tab.id)}
-              className="relative px-4 py-2 rounded-xl flex items-center gap-2 text-sm font-medium outline-none"
+      <div className="relative mb-8">
+        {/* Left fade + arrow */}
+        <AnimatePresence>
+          {canScrollLeft && (
+            <motion.div
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              className="absolute left-0 top-0 bottom-0 w-14 z-10 flex items-center justify-start pointer-events-none rounded-l-2xl bg-gradient-to-r from-gray-50 dark:from-[#111827] to-transparent"
             >
-              {isActive && (
-                <motion.div
-                  layoutId="settings-tab-pill"
-                  className="absolute inset-0 rounded-xl bg-white dark:bg-[#1E293B] shadow-sm border border-gray-200 dark:border-gray-600/60"
-                  transition={{ type: 'spring', stiffness: 500, damping: 35 }}
-                />
-              )}
-              <span className={cn(
-                'relative z-10 flex items-center gap-2 transition-colors duration-150',
-                isActive ? 'text-gray-900 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300',
-              )}>
-                <Icon className={cn('h-4 w-4', isActive && 'text-red-500 dark:text-red-400')} />
-                {tab.label}
-              </span>
-            </button>
-          );
-        })}
-      </div>
+              <button
+                type="button"
+                onClick={() => scrollTabsBy(-160)}
+                className="pointer-events-auto ml-1.5 w-7 h-7 rounded-full bg-white dark:bg-gray-700 shadow-md border border-gray-200 dark:border-gray-600 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Scrollable container */}
+        <div
+          ref={tabsRef}
+          onScroll={checkScroll}
+          className="overflow-x-auto scrollbar-hide"
+        >
+          <div className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800/80 rounded-2xl w-max border border-gray-200 dark:border-gray-700/50">
+            {tabs.map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setActiveTab(tab.id)}
+                  className="relative px-4 py-2 rounded-xl flex items-center gap-2 text-sm font-medium outline-none"
+                >
+                  {isActive && (
+                    <motion.div
+                      layoutId="settings-tab-pill"
+                      className="absolute inset-0 rounded-xl bg-white dark:bg-[#1E293B] shadow-sm border border-gray-200 dark:border-gray-600/60"
+                      transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+                    />
+                  )}
+                  <span className={cn(
+                    'relative z-10 flex items-center gap-2 transition-colors duration-150',
+                    isActive ? 'text-gray-900 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300',
+                  )}>
+                    <Icon className={cn('h-4 w-4', isActive && 'text-red-500 dark:text-red-400')} />
+                    {tab.label}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Right fade + arrow */}
+        <AnimatePresence>
+          {canScrollRight && (
+            <motion.div
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              className="absolute right-0 top-0 bottom-0 w-14 z-10 flex items-center justify-end pointer-events-none rounded-r-2xl bg-gradient-to-l from-gray-50 dark:from-[#111827] to-transparent"
+            >
+              <button
+                type="button"
+                onClick={() => scrollTabsBy(160)}
+                className="pointer-events-auto mr-1.5 w-7 h-7 rounded-full bg-white dark:bg-gray-700 shadow-md border border-gray-200 dark:border-gray-600 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Tab Content */}

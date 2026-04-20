@@ -28,7 +28,8 @@ import {
   ClipboardCheck,
   UtensilsCrossed,
 } from 'lucide-react';
-import type { UseCase } from '@/lib/types';
+import type { UseCase, UserRole } from '@/lib/types';
+import { ROLE_HIERARCHY } from '@/lib/types';
 
 export type MenuPage =
   | 'Dashboard'
@@ -59,6 +60,7 @@ interface MenuItemConfig {
   comingSoon?: boolean;
   enterpriseOnly?: boolean;
   useCases?: UseCase[];
+  minRole?: UserRole;
 }
 
 interface MenuSection {
@@ -95,9 +97,9 @@ function useMenuSections(): MenuSection[] {
     {
       title: t('sidebar.sections.fiscal'),
       items: [
-        { id: 'NFSe', label: t('sidebar.nfse'), icon: FileCheck2, useCases: ['pedidos', 'servicos', 'simples'] },
-        { id: 'NFCe', label: t('sidebar.nfce'), icon: Receipt, useCases: ['pedidos', 'servicos', 'simples'] },
-        { id: 'NFe', label: t('sidebar.nfe'), icon: FileText, useCases: ['pedidos', 'servicos', 'simples'] },
+        { id: 'NFSe', label: t('sidebar.nfse'), icon: FileCheck2, useCases: ['pedidos', 'servicos', 'simples'], minRole: 'manager' },
+        { id: 'NFCe', label: t('sidebar.nfce'), icon: Receipt, useCases: ['pedidos', 'servicos', 'simples'], minRole: 'manager' },
+        { id: 'NFe', label: t('sidebar.nfe'), icon: FileText, useCases: ['pedidos', 'servicos', 'simples'], minRole: 'manager' },
       ],
     },
     {
@@ -276,17 +278,19 @@ function SidebarContent({
   isMobile,
   onMobileClose,
 }: SidebarProps & { isMobile?: boolean }) {
-  const { signOut, business } = useAuth();
+  const { signOut, business, user } = useAuth();
   const { t } = useTranslation();
   const menuSections = useMenuSections();
   const collapsed = isCollapsed && !isMobile;
   const isEnterprise = !!business?.enterprise?.isEnabled;
   const currentUseCase: UseCase = (business?.settings?.useCase as UseCase) || 'servicos';
+  const userRoleValue = ROLE_HIERARCHY[user?.role ?? 'viewer'];
 
   const filterItems = (items: MenuItemConfig[]) =>
     items.filter((item) => {
       if (item.enterpriseOnly && !isEnterprise) return false;
       if (item.useCases && !item.useCases.includes(currentUseCase)) return false;
+      if (item.minRole && userRoleValue < ROLE_HIERARCHY[item.minRole]) return false;
       return true;
     });
 
