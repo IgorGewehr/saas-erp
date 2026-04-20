@@ -17,7 +17,7 @@ import { getInitials } from '@/lib/utils/format';
 import KPICard from '../shared/KPICard';
 import DemoDataBanner from '../shared/DemoDataBanner';
 import IntegrationSkeleton from '../shared/IntegrationSkeleton';
-import { formatCurrency, formatUSD, formatNumber, timeAgo, getGreeting } from '../shared/utils';
+import { formatCurrency, formatUSD, formatNumber, timeAgo, getGreeting, getAuthHeaders } from '../shared/utils';
 
 // ============================================
 // TYPES
@@ -430,7 +430,7 @@ export default function OverviewTab({ integrations, members, onNavigate }: Overv
       if (!config?.apiKey) return null;
       try {
         const res = await fetch(`/api/integrations/${provider}`, {
-          headers: { 'x-api-key': config.apiKey },
+          headers: { ...await getAuthHeaders(), 'x-api-key': config.apiKey },
         });
         if (!res.ok) return null;
         return await res.json();

@@ -278,15 +278,23 @@ export default function DashboardModule() {
   const ordersUrgent = useMemo(
     () => deliveryOrders.filter(o => {
       if (o.status === 'entregue' || o.status === 'cancelado') return false;
-      if (o.estimatedDeliveryAt) return new Date(o.estimatedDeliveryAt).getTime() < Date.now();
-      return (Date.now() - new Date(o.createdAt).getTime()) / 60000 > 45;
+      if (o.estimatedDeliveryAt) {
+        const t = new Date(o.estimatedDeliveryAt).getTime();
+        return !isNaN(t) && t < Date.now();
+      }
+      const created = new Date(o.createdAt).getTime();
+      return !isNaN(created) && (Date.now() - created) / 60000 > 45;
     }),
     [deliveryOrders]
   );
   const ordersAvgTime = useMemo(() => {
     const delivered = ordersToday.filter(o => o.status === 'entregue' && o.deliveredAt);
     if (delivered.length === 0) return 0;
-    const total = delivered.reduce((s, o) => s + (new Date(o.deliveredAt!).getTime() - new Date(o.createdAt).getTime()), 0);
+    const total = delivered.reduce((s, o) => {
+      const end = new Date(o.deliveredAt as string).getTime();
+      const start = new Date(o.createdAt).getTime();
+      return isNaN(end) || isNaN(start) ? s : s + (end - start);
+    }, 0);
     return Math.round(total / delivered.length / 60000);
   }, [ordersToday]);
 

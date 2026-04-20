@@ -2,10 +2,16 @@
  * Simple in-memory rate limiter for API routes.
  * Uses a sliding window per key (IP, businessId, etc.)
  *
- * NOTE: In-memory only — resets on deploy/restart.
- * For distributed rate limiting, replace with Redis.
+ * NOTE: In-memory only — resets on cold starts in serverless.
+ * For production at scale, replace with Redis-backed solution.
+ *
+ * Hardened for serverless:
+ *  - Max entries cap prevents memory leaks across warm instances
+ *  - Periodic cleanup of stale entries
+ *  - Response headers helper for standard rate-limit headers
  */
 
+const MAX_ENTRIES = 10_000;
 const store = new Map<string, { count: number; resetAt: number }>();
 
 // Cleanup stale entries every 5 minutes
@@ -16,6 +22,17 @@ if (typeof setInterval !== 'undefined') {
       if (now >= entry.resetAt) store.delete(key);
     }
   }, 5 * 60 * 1000);
+}
+
+/** Evict oldest entries when store exceeds capacity. */
+function evictIfNeeded(): void {
+  if (store.size <= MAX_ENTRIES) return;
+  // Delete the oldest ~20% entries by resetAt
+  const entries = [...store.entries()].sort((a, b) => a[1].resetAt - b[1].resetAt);
+  const toDelete = Math.max(1, Math.floor(entries.length * 0.2));
+  for (let i = 0; i < toDelete; i++) {
+    store.delete(entries[i][0]);
+  }
 }
 
 interface RateLimitResult {
@@ -40,6 +57,7 @@ export function checkRateLimit(
   const entry = store.get(key);
 
   if (!entry || now >= entry.resetAt) {
+    evictIfNeeded();
     store.set(key, { count: 1, resetAt: now + windowMs });
     return { allowed: true, remaining: limit - 1, resetAt: now + windowMs };
   }
@@ -61,4 +79,20 @@ export function getClientIp(req: Request): string {
     req.headers.get('x-real-ip') ||
     'unknown'
   );
+}
+
+/**
+ * Returns standard rate-limit headers for the response.
+ * Usage: `return NextResponse.json(body, { headers: rateLimitHeaders(result, limit) })`
+ */
+export function rateLimitHeaders(
+  result: RateLimitResult,
+  limit: number,
+): Record<string, string> {
+  return {
+    'X-RateLimit-Limit': String(limit),
+    'X-RateLimit-Remaining': String(result.remaining),
+    'X-RateLimit-Reset': String(Math.ceil(result.resetAt / 1000)),
+    ...(result.allowed ? {} : { 'Retry-After': String(Math.ceil((result.resetAt - Date.now()) / 1000)) }),
+  };
 }

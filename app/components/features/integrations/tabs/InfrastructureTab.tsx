@@ -12,7 +12,7 @@ import type { IntegrationConfig } from '@/lib/types';
 import KPICard from '../shared/KPICard';
 import DemoDataBanner from '../shared/DemoDataBanner';
 import IntegrationSkeleton from '../shared/IntegrationSkeleton';
-import { formatNumber, timeAgo } from '../shared/utils';
+import { formatNumber, timeAgo, getAuthHeaders } from '../shared/utils';
 
 // ============================================
 // TYPES
@@ -109,7 +109,7 @@ export default function InfrastructureTab({ cloudflareConfig, vercelConfig, memb
     // Fetch Cloudflare data
     if (cloudflareConfig?.apiKey) {
       try {
-        const res = await fetch('/api/integrations/cloudflare', { headers: { 'x-api-key': cloudflareConfig.apiKey } });
+        const res = await fetch('/api/integrations/cloudflare', { headers: { ...await getAuthHeaders(), 'x-api-key': cloudflareConfig.apiKey } });
         if (res.ok) cfData = await res.json();
         else throw new Error('Cloudflare API error');
       } catch {
@@ -120,7 +120,7 @@ export default function InfrastructureTab({ cloudflareConfig, vercelConfig, memb
     // Fetch Vercel data
     if (vercelConfig?.apiKey) {
       try {
-        const res = await fetch('/api/integrations/vercel', { headers: { 'x-api-key': vercelConfig.apiKey } });
+        const res = await fetch('/api/integrations/vercel', { headers: { ...await getAuthHeaders(), 'x-api-key': vercelConfig.apiKey } });
         if (res.ok) vercelData = await res.json();
         else throw new Error('Vercel API error');
       } catch {

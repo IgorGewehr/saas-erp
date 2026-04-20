@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 
 export async function GET(request: NextRequest) {
+  const auth = await verifyAuth(request);
+  if (isAuthError(auth)) return auth;
+
   const apiKey = request.headers.get('x-api-key');
   if (!apiKey) {
     return NextResponse.json({ error: 'API key required' }, { status: 401 });

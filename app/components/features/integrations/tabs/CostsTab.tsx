@@ -12,7 +12,7 @@ import type { IntegrationConfig } from '@/lib/types';
 import KPICard from '../shared/KPICard';
 import DemoDataBanner from '../shared/DemoDataBanner';
 import IntegrationSkeleton from '../shared/IntegrationSkeleton';
-import { formatUSD, formatNumber, formatPercent, timeAgoShort } from '../shared/utils';
+import { formatUSD, formatNumber, formatPercent, timeAgoShort, getAuthHeaders } from '../shared/utils';
 
 // ============================================
 // TYPES
@@ -148,6 +148,7 @@ export default function CostsTab({ awsConfig }: CostsTabProps) {
       if (!awsConfig?.apiKey) throw new Error('AWS não configurada');
 
       const headers: Record<string, string> = {
+        ...await getAuthHeaders(),
         'x-api-key': awsConfig.apiKey,
       };
       if (awsConfig.metadata?.secretKey) {

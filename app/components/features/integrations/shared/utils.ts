@@ -1,3 +1,14 @@
+import { getAuth } from 'firebase/auth';
+
+/**
+ * Returns Authorization header with Firebase Auth token for API routes.
+ * Merge into your fetch headers: `{ ...await getAuthHeaders(), 'x-api-key': key }`
+ */
+export async function getAuthHeaders(): Promise<Record<string, string>> {
+  const token = await getAuth().currentUser?.getIdToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export function formatCurrency(value: number, currency: string = 'BRL'): string {
   if (currency === 'USD') {
     return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);

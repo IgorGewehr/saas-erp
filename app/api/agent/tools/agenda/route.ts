@@ -360,7 +360,8 @@ async function updateAppointment(businessId: string, id: string, patch: Partial<
   const data = snap.data() as Appointment;
   if (data.businessId !== businessId) throw new Error('Cross-tenant access denied');
 
-  const cleanPatch: Record<string, unknown> = { updatedAt: new Date().toISOString() };
+  const now = new Date().toISOString();
+  const cleanPatch: Record<string, unknown> = { updatedAt: now };
   const allowed: (keyof Appointment)[] = ['date', 'startTime', 'endTime', 'duration', 'status', 'notes'];
   for (const key of allowed) {
     if (patch[key] !== undefined) cleanPatch[key] = patch[key];
@@ -373,9 +374,82 @@ async function updateAppointment(businessId: string, id: string, patch: Partial<
   }
 
   await ref.update(cleanPatch);
+
+  // ── Commission handling on status change ──
+  const wasDone = data.status === 'concluido';
+  const isDone = cleanPatch.status === 'concluido';
+  if (!wasDone && isDone) {
+    await maybeCreateCommissionServer({ ...data, id }, businessId).catch(err =>
+      console.warn('[agent/agenda] commission creation failed:', err),
+    );
+  } else if (wasDone && !isDone && cleanPatch.status) {
+    await maybeCancelCommissionServer(data.commissionTransactionId).catch(err =>
+      console.warn('[agent/agenda] commission cancel failed:', err),
+    );
+  }
+
   return { id, ...cleanPatch };
 }
 
 async function cancelAppointment(businessId: string, id: string) {
   return updateAppointment(businessId, id, { status: 'cancelado' as AppointmentStatus });
+}
+
+// ── Server-side commission helpers (mirror of lib/services/commission.ts for adminDb) ──
+
+async function maybeCreateCommissionServer(appointment: Appointment, businessId: string): Promise<string | null> {
+  if (appointment.commissionTransactionId) return appointment.commissionTransactionId;
+  if (!appointment.professionalId) return null;
+
+  // Load professional
+  const profSnap = await adminDb.collection('users').doc(appointment.professionalId).get();
+  if (!profSnap.exists) return null;
+  const professional = profSnap.data() as User;
+
+  // Load service (if linked)
+  let serviceRate: number | undefined;
+  if (appointment.serviceId) {
+    const svcSnap = await adminDb.collection('services').doc(appointment.serviceId).get();
+    if (svcSnap.exists) {
+      serviceRate = (svcSnap.data() as Service).commissionRate;
+    }
+  }
+
+  const rate = (serviceRate != null && serviceRate > 0) ? serviceRate : (professional.commissionRate ?? 0);
+  if (rate <= 0) return null;
+  if (!appointment.price || appointment.price <= 0) return null;
+
+  const commissionAmount = Math.round((appointment.price * rate) / 100 * 100) / 100;
+  const now = new Date().toISOString();
+
+  const txRef = await adminDb.collection('transactions').add({
+    businessId,
+    type: 'despesa',
+    category: 'Comissoes',
+    description: `Comissão — ${appointment.professionalName || professional.name} — ${appointment.serviceName}`,
+    amount: commissionAmount,
+    dueDate: appointment.date,
+    status: 'pendente',
+    clientId: professional.uid || appointment.professionalId,
+    clientName: appointment.professionalName || professional.name,
+    appointmentId: appointment.id,
+    notes: `Taxa: ${rate}% sobre R$ ${appointment.price.toFixed(2)}`,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  await adminDb.collection('appointments').doc(appointment.id).update({
+    commissionTransactionId: txRef.id,
+    updatedAt: now,
+  });
+
+  return txRef.id;
+}
+
+async function maybeCancelCommissionServer(commissionTransactionId: string | undefined): Promise<void> {
+  if (!commissionTransactionId) return;
+  await adminDb.collection('transactions').doc(commissionTransactionId).update({
+    status: 'cancelado',
+    updatedAt: new Date().toISOString(),
+  });
 }

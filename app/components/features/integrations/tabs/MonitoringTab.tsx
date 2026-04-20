@@ -13,7 +13,7 @@ import type { IntegrationConfig } from '@/lib/types';
 import KPICard from '../shared/KPICard';
 import DemoDataBanner from '../shared/DemoDataBanner';
 import IntegrationSkeleton from '../shared/IntegrationSkeleton';
-import { formatNumber, timeAgo, timeAgoShort } from '../shared/utils';
+import { formatNumber, timeAgo, timeAgoShort, getAuthHeaders } from '../shared/utils';
 
 // ============================================
 // TYPES
@@ -151,6 +151,7 @@ export default function MonitoringTab({ sentryConfig }: MonitoringTabProps) {
       if (!sentryConfig?.apiKey) throw new Error('Sentry não configurado');
 
       const headers: Record<string, string> = {
+        ...await getAuthHeaders(),
         'x-api-key': sentryConfig.apiKey,
       };
       if (sentryConfig.metadata?.org) {

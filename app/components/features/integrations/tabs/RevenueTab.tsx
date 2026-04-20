@@ -13,7 +13,7 @@ import KPICard from '../shared/KPICard';
 import DemoDataBanner from '../shared/DemoDataBanner';
 import IntegrationSkeleton from '../shared/IntegrationSkeleton';
 import ProgressBar from '../shared/ProgressBar';
-import { formatCurrency, formatUSD, formatNumber, formatPercent, timeAgo, timeAgoShort } from '../shared/utils';
+import { formatCurrency, formatUSD, formatNumber, formatPercent, timeAgo, timeAgoShort, getAuthHeaders } from '../shared/utils';
 
 // ============================================
 // TYPES
@@ -123,7 +123,7 @@ export default function RevenueTab({ stripeConfig, members }: RevenueTabProps) {
       if (!stripeConfig?.apiKey) throw new Error('Stripe não configurada');
 
       const res = await fetch('/api/integrations/stripe', {
-        headers: { 'x-api-key': stripeConfig.apiKey },
+        headers: { ...await getAuthHeaders(), 'x-api-key': stripeConfig.apiKey },
       });
       if (!res.ok) throw new Error('Falha ao buscar dados da Stripe');
       const result = await res.json();

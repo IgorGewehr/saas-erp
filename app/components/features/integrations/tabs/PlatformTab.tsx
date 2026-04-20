@@ -13,7 +13,7 @@ import type { IntegrationConfig } from '@/lib/types';
 import KPICard from '../shared/KPICard';
 import DemoDataBanner from '../shared/DemoDataBanner';
 import IntegrationSkeleton from '../shared/IntegrationSkeleton';
-import { formatNumber, timeAgo } from '../shared/utils';
+import { formatNumber, timeAgo, getAuthHeaders } from '../shared/utils';
 
 // ============================================
 // TYPES
@@ -138,7 +138,7 @@ export default function PlatformTab({ supabaseConfig, godaddyConfig }: PlatformT
     if (supabaseConfig?.apiKey) {
       try {
         const res = await fetch('/api/integrations/supabase', {
-          headers: { 'x-api-key': supabaseConfig.apiKey },
+          headers: { ...await getAuthHeaders(), 'x-api-key': supabaseConfig.apiKey },
         });
         if (res.ok) supabaseData = await res.json();
         else throw new Error('Supabase API error');
@@ -151,6 +151,7 @@ export default function PlatformTab({ supabaseConfig, godaddyConfig }: PlatformT
     if (godaddyConfig?.apiKey) {
       try {
         const headers: Record<string, string> = {
+          ...await getAuthHeaders(),
           'x-api-key': godaddyConfig.apiKey,
         };
         if (godaddyConfig.metadata?.apiSecret) {

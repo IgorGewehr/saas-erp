@@ -11,7 +11,7 @@ import type { IntegrationConfig } from '@/lib/types';
 import KPICard from '../shared/KPICard';
 import DemoDataBanner from '../shared/DemoDataBanner';
 import IntegrationSkeleton from '../shared/IntegrationSkeleton';
-import { formatNumber, timeAgo } from '../shared/utils';
+import { formatNumber, timeAgo, getAuthHeaders } from '../shared/utils';
 
 // ============================================
 // TYPES
@@ -74,7 +74,7 @@ export default function CommunicationTab({ resendConfig }: CommunicationTabProps
     // Fetch Resend data
     if (resendConfig?.apiKey) {
       try {
-        const res = await fetch('/api/integrations/resend', { headers: { 'x-api-key': resendConfig.apiKey } });
+        const res = await fetch('/api/integrations/resend', { headers: { ...await getAuthHeaders(), 'x-api-key': resendConfig.apiKey } });
         if (res.ok) resendData = await res.json();
         else throw new Error('Resend API error');
       } catch {
