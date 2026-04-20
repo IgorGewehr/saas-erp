@@ -3,6 +3,7 @@
 import { useTranslation } from 'react-i18next';
 
 import { useState, useEffect, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useQuery } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -2167,6 +2168,7 @@ function UsersTab() {
   const [removingMember, setRemovingMember] = useState<UserType | null>(null);
   const [removingLoading, setRemovingLoading] = useState(false);
   const [editingRoleFor, setEditingRoleFor] = useState<string | null>(null);
+  const [roleDropdownPos, setRoleDropdownPos] = useState<{ top: number; right: number } | null>(null);
   const [editingCommissionFor, setEditingCommissionFor] = useState<string | null>(null);
   const [commissionInput, setCommissionInput] = useState('');
   const [savingCommission, setSavingCommission] = useState<string | null>(null);
@@ -2202,6 +2204,14 @@ function UsersTab() {
     });
     return () => unsub();
   }, [business?.id, isOwner]);
+
+  // ── Close role dropdown on outside click ─────────────────────────────────
+  useEffect(() => {
+    if (!editingRoleFor) return;
+    const handler = () => { setEditingRoleFor(null); setRoleDropdownPos(null); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [editingRoleFor]);
 
   // ── Generate invite code ─────────────────────────────────────────────────
   const handleGenerateCode = async () => {
@@ -2273,6 +2283,7 @@ function UsersTab() {
       });
       toast.success(`${member.name} agora é ${ROLE_LABELS[newRole]}`);
       setEditingRoleFor(null);
+      setRoleDropdownPos(null);
     } catch (err) {
       console.error('[Users] change role failed:', err);
       toast.error('Erro ao alterar papel');
@@ -2503,10 +2514,20 @@ function UsersTab() {
 
                     {/* Role — clickable dropdown for admins, badge for the rest */}
                     {isOwner && !isCurrentUser && (user?.role === 'founder' || ROLE_HIERARCHY[member.role] < ROLE_HIERARCHY[user!.role]) ? (
-                      <div className="relative">
+                      <div>
                         <button
                           type="button"
-                          onClick={() => setEditingRoleFor(editingRoleFor === member.id ? null : member.id)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (editingRoleFor === member.id) {
+                              setEditingRoleFor(null);
+                              setRoleDropdownPos(null);
+                            } else {
+                              const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
+                              setRoleDropdownPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
+                              setEditingRoleFor(member.id);
+                            }
+                          }}
                           disabled={savingRole === member.id}
                           className={cn(
                             'inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-lg border transition-colors',
@@ -2519,37 +2540,6 @@ function UsersTab() {
                           {ROLE_LABELS[member.role]}
                           <ChevronRight className={cn('w-3 h-3 transition-transform', editingRoleFor === member.id && 'rotate-90')} />
                         </button>
-                        <AnimatePresence>
-                          {editingRoleFor === member.id && (
-                            <motion.div
-                              initial={{ opacity: 0, y: -4, scale: 0.95 }}
-                              animate={{ opacity: 1, y: 0, scale: 1 }}
-                              exit={{ opacity: 0, y: -4, scale: 0.95 }}
-                              transition={{ duration: 0.15 }}
-                              className="absolute right-0 top-full mt-1 z-20 w-40 rounded-xl bg-white dark:bg-[#1e293b] shadow-xl border border-gray-200 dark:border-white/[0.08] overflow-hidden"
-                            >
-                              {(['founder', 'admin', 'manager', 'operator', 'viewer'] as UserRole[])
-                                .filter(r => user?.role === 'founder' || ROLE_HIERARCHY[r] < ROLE_HIERARCHY[user!.role])
-                                .map(r => (
-                                <button
-                                  key={r}
-                                  type="button"
-                                  onClick={() => handleChangeRole(member, r)}
-                                  disabled={r === member.role}
-                                  className={cn(
-                                    'w-full text-left px-3 py-2 flex items-center justify-between text-xs transition-colors',
-                                    r === member.role
-                                      ? 'bg-gray-100 dark:bg-white/[0.04] text-gray-500 cursor-default'
-                                      : 'hover:bg-gray-50 dark:hover:bg-white/[0.04] text-gray-700 dark:text-gray-300',
-                                  )}
-                                >
-                                  <span className="font-medium">{ROLE_LABELS[r]}</span>
-                                  {r === member.role && <Check className="w-3 h-3 text-emerald-500" />}
-                                </button>
-                              ))}
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
                       </div>
                     ) : (
                       <span className={cn(
@@ -2820,6 +2810,46 @@ function UsersTab() {
           <Shield className="w-4 h-4 flex-shrink-0 mt-0.5" />
           <p>Somente administradores e fundadores podem gerar códigos de convite.</p>
         </div>
+      )}
+
+      {/* Role dropdown portal — escapes overflow:hidden of parent cards */}
+      {typeof document !== 'undefined' && editingRoleFor && roleDropdownPos && createPortal(
+        <AnimatePresence>
+          <motion.div
+            key={editingRoleFor}
+            initial={{ opacity: 0, y: -4, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -4, scale: 0.95 }}
+            transition={{ duration: 0.15 }}
+            onMouseDown={e => e.stopPropagation()}
+            style={{ position: 'fixed', top: roleDropdownPos.top, right: roleDropdownPos.right, zIndex: 9999 }}
+            className="w-40 rounded-xl bg-white dark:bg-[#1e293b] shadow-xl border border-gray-200 dark:border-white/[0.08] overflow-hidden"
+          >
+            {(['founder', 'admin', 'manager', 'operator', 'viewer'] as UserRole[])
+              .filter(r => user?.role === 'founder' || ROLE_HIERARCHY[r] < ROLE_HIERARCHY[user!.role])
+              .map(r => {
+                const targetMember = members.find(m => m.id === editingRoleFor);
+                return (
+                  <button
+                    key={r}
+                    type="button"
+                    onClick={() => targetMember && handleChangeRole(targetMember, r)}
+                    disabled={r === targetMember?.role}
+                    className={cn(
+                      'w-full text-left px-3 py-2 flex items-center justify-between text-xs transition-colors',
+                      r === targetMember?.role
+                        ? 'bg-gray-100 dark:bg-white/[0.04] text-gray-500 cursor-default'
+                        : 'hover:bg-gray-50 dark:hover:bg-white/[0.04] text-gray-700 dark:text-gray-300',
+                    )}
+                  >
+                    <span className="font-medium">{ROLE_LABELS[r]}</span>
+                    {r === targetMember?.role && <Check className="w-3 h-3 text-emerald-500" />}
+                  </button>
+                );
+              })}
+          </motion.div>
+        </AnimatePresence>,
+        document.body
       )}
     </motion.div>
   );
@@ -6057,7 +6087,8 @@ export default function SettingsModule() {
       </div>
 
       {/* Tab Navigation */}
-      <div className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800/80 rounded-2xl w-fit border border-gray-200 dark:border-gray-700/50 mb-8">
+      <div className="overflow-x-auto scrollbar-hide mb-8">
+      <div className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800/80 rounded-2xl w-max border border-gray-200 dark:border-gray-700/50">
         {tabs.map((tab) => {
           const Icon = tab.icon;
           const isActive = activeTab === tab.id;
@@ -6085,6 +6116,7 @@ export default function SettingsModule() {
             </button>
           );
         })}
+      </div>
       </div>
 
       {/* Tab Content */}
