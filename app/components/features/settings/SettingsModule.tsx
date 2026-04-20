@@ -3950,25 +3950,19 @@ function ModoSistemaTab() {
       id: 'pedidos',
       icon: ShoppingBag,
       accent: 'from-orange-500 to-red-500',
-      modules: ['Pedidos', 'Cardápio', 'Estoque', 'PDV', 'Financeiro', 'Fiscal'],
+      modules: ['Pedidos', 'Cardápio', 'Estoque', 'PDV', 'Kanban', 'Financeiro', 'Fiscal'],
     },
     {
       id: 'servicos',
       icon: Calendar,
       accent: 'from-blue-500 to-indigo-500',
-      modules: ['Agenda', 'PDV', 'Estoque', 'Financeiro', 'Fiscal'],
-    },
-    {
-      id: 'times',
-      icon: Kanban,
-      accent: 'from-violet-500 to-purple-500',
-      modules: ['Kanban', 'Clientes', 'CRM', 'Conversas'],
+      modules: ['Agenda', 'PDV', 'Estoque', 'Kanban', 'Financeiro', 'Fiscal'],
     },
     {
       id: 'simples',
       icon: Sparkles,
       accent: 'from-emerald-500 to-teal-500',
-      modules: ['Clientes', 'CRM', 'Conversas', 'Financeiro'],
+      modules: ['Clientes', 'CRM', 'Conversas', 'Kanban', 'Financeiro'],
     },
   ];
 

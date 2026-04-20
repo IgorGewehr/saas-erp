@@ -20,7 +20,7 @@ class ProcessRequest(BaseModel):
     # Prior messages to ground the model (most recent last), optional
     history: list[dict[str, Any]] = Field(default_factory=list)
     # Business-level config — passed by the webhook so we don't re-fetch
-    use_case: Literal["pedidos", "servicos", "simples", "times"] = "servicos"
+    use_case: Literal["pedidos", "servicos", "simples"] = "servicos"
     business_name: str | None = None
     business_description: str | None = None
     tone: Literal["formal", "casual", "friendly"] = "friendly"

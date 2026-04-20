@@ -187,19 +187,17 @@ export const COMPANY_TYPE_LABELS: Record<string, string> = {
   individual: 'Empresário Individual',
 };
 
-export type UseCase = 'pedidos' | 'servicos' | 'times' | 'simples';
+export type UseCase = 'pedidos' | 'servicos' | 'simples';
 
 export const USE_CASE_LABELS: Record<UseCase, string> = {
   pedidos: 'Pedidos & Entregas',
   servicos: 'Prestador de Serviços',
-  times: 'Gestão de Times',
   simples: 'Essencial',
 };
 
 export const USE_CASE_DESCRIPTIONS: Record<UseCase, string> = {
   pedidos: 'Para restaurantes, confeitarias e comércios que recebem pedidos para entrega. Inclui gerenciador de pedidos, cardápio e estoque com composições.',
   servicos: 'Para profissionais e clínicas com agendamentos. Inclui agenda com recorrência, controle de serviços e sincronização de métricas de clientes.',
-  times: 'Para equipes que organizam trabalho em quadros Kanban. Foco em produtividade, atribuição e fluxo de tarefas.',
   simples: 'Apenas o essencial: clientes, conversas, CRM e financeiro. Sem módulos operacionais.',
 };
 
