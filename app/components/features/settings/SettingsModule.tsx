@@ -1239,6 +1239,47 @@ function EmpresaTab() {
           </div>
         </SectionCard>
 
+        {/* Booking Link */}
+        {business?.slug && (
+          <SectionCard title="Link de Agendamento" icon={ExternalLink}>
+            <div className="space-y-3">
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                Compartilhe este link com seus clientes para que eles possam agendar diretamente — sem precisar entrar no sistema.
+              </p>
+              <div className="flex items-center gap-2">
+                <div className="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700/50 font-mono text-sm text-gray-700 dark:text-gray-300 overflow-hidden">
+                  <ExternalLink className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+                  <span className="truncate">{typeof window !== 'undefined' ? window.location.origin : ''}/booking/{business.slug}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const url = `${window.location.origin}/booking/${business.slug}`;
+                    navigator.clipboard.writeText(url);
+                    toast.success('Link copiado!');
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition-colors duration-150"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  Copiar
+                </button>
+                <a
+                  href={`/booking/${business.slug}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-800/50 text-gray-600 dark:text-gray-400 text-sm font-medium transition-colors duration-150"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  Abrir
+                </a>
+              </div>
+              <p className="text-xs text-gray-400 dark:text-gray-500">
+                O slug pode ser alterado diretamente no Firestore (campo <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">slug</code> em <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">businesses/{business.id}</code>).
+              </p>
+            </div>
+          </SectionCard>
+        )}
+
         {/* Save */}
         {canEditSettings && (
           <div className="flex justify-end pt-2">

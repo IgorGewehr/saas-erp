@@ -15,7 +15,7 @@ class ProcessRequest(BaseModel):
     message: str
     contact_name: str
     contact_phone: str | None = None
-    channel: Literal["whatsapp", "facebook", "instagram"] = "whatsapp"
+    channel: Literal["whatsapp", "facebook", "instagram", "web"] = "whatsapp"
     recipient_id: str  # Meta user id or phone for outbound send
     # Prior messages to ground the model (most recent last), optional
     history: list[dict[str, Any]] = Field(default_factory=list)

@@ -138,7 +138,13 @@ async def send_final_message(
 
     Next.js validates the HMAC headers, then routes through the right channel (WA Cloud, Baileys,
     FB Messenger, IG) based on `conversation.channel` and the business's stored credentials.
+
+    For `channel='web'`, the response is returned directly in the HTTP response from /process,
+    so there is no outbound channel to send to — skip silently.
     """
+    if channel == "web":
+        return {"ok": True, "skipped": "web channel — response returned via HTTP"}
+
     return await _post(
         business_id,
         "/api/conversations/send",

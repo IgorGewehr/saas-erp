@@ -99,6 +99,7 @@ export interface Business {
   // Basic Info
   razaoSocial: string;
   nomeFantasia: string;
+  slug?: string;           // URL-safe identifier for public booking page (e.g. "salao-da-ana")
   cnpj: string;
   cpf?: string;
   inscricaoEstadual?: string;

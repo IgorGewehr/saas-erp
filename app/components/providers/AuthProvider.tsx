@@ -16,6 +16,18 @@ import { doc, getDoc, setDoc, updateDoc, arrayUnion, collection, query, where, g
 import { auth, db } from '@/lib/config/firebase';
 import type { User, Business, Sector } from '@/lib/types';
 
+function generateSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // remove accents
+    .replace(/[^a-z0-9\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .slice(0, 40);
+}
+
 interface AuthContextType {
   user: User | null;
   firebaseUser: FirebaseUser | null;
@@ -221,6 +233,7 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
         await setDoc(businessRef, {
           razaoSocial: name,
           nomeFantasia: name,
+          slug: generateSlug(name),
           cnpj: '',
           crt: '1',
           ownerUserId: fbUser.uid,
@@ -266,6 +279,7 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
       await setDoc(businessRef, {
         razaoSocial: fbUser.displayName || 'Meu Negócio',
         nomeFantasia: fbUser.displayName || 'Meu Negócio',
+        slug: generateSlug(fbUser.displayName || 'meu-negocio'),
         cnpj: '',
         crt: '1',
         ownerUserId: fbUser.uid,
