@@ -5266,6 +5266,7 @@ function CanaisTab() {
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
   const [needsAttention, setNeedsAttention] = useState(false);
   const [showQrModal, setShowQrModal] = useState(false);
+  const [forceReconnect, setForceReconnect] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [waConnecting, setWaConnecting] = useState(false);
   const [waStatus, setWaStatus] = useState<'idle' | 'connecting' | 'scanning' | 'connected'>('idle');
@@ -5722,13 +5723,29 @@ function CanaisTab() {
                     </div>
                   </div>
                   {isBaileys && (
-                    <button
-                      onClick={() => handleDisconnect('whatsapp')}
-                      disabled={disconnecting === 'whatsapp'}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
-                    >
-                      {disconnecting === 'whatsapp' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : t('settings.channelsTab.disconnect', 'Desconectar')}
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => {
+                          setForceReconnect(true);
+                          setShowQrModal(true);
+                          setQrDataUrl(null);
+                          setWaStatus('connecting');
+                          setWaConnecting(true);
+                        }}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-[#25D366] hover:bg-[#25D366]/10 transition-colors"
+                        title="Se mensagens não estão chegando, force uma reconexão"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        Reconectar
+                      </button>
+                      <button
+                        onClick={() => handleDisconnect('whatsapp')}
+                        disabled={disconnecting === 'whatsapp'}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+                      >
+                        {disconnecting === 'whatsapp' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : t('settings.channelsTab.disconnect', 'Desconectar')}
+                      </button>
+                    </div>
                   )}
                 </div>
                 {!isBaileys && (
@@ -5763,11 +5780,13 @@ function CanaisTab() {
       {showQrModal && (
         <WhatsAppQrModal
           businessId={business?.id || ''}
+          forceReconnect={forceReconnect}
           onClose={() => {
             setShowQrModal(false);
             setWaConnecting(false);
             setWaStatus('idle');
             setQrDataUrl(null);
+            setForceReconnect(false);
           }}
           onConnected={(phoneNumber) => {
             setWaConnected(true);
@@ -5775,6 +5794,7 @@ function CanaisTab() {
             setShowQrModal(false);
             setWaConnecting(false);
             setWaStatus('connected');
+            setForceReconnect(false);
             refreshUser();
             toast.success(t('settings.channelsTab.connected', 'WhatsApp conectado com sucesso!'));
           }}
@@ -5788,10 +5808,12 @@ function CanaisTab() {
 
 function WhatsAppQrModal({
   businessId,
+  forceReconnect = false,
   onClose,
   onConnected,
 }: {
   businessId: string;
+  forceReconnect?: boolean;
   onClose: () => void;
   onConnected: (phoneNumber: string | null) => void;
 }) {
@@ -5811,7 +5833,9 @@ function WhatsAppQrModal({
         const token = await firebaseUser?.getIdToken();
         if (!token || cancelled) return;
 
-        const url = `/api/whatsapp/connect?businessId=${encodeURIComponent(businessId)}`;
+        const qs = new URLSearchParams({ businessId });
+        if (forceReconnect) qs.set('force', '1');
+        const url = `/api/whatsapp/connect?${qs.toString()}`;
 
         const response = await fetch(url, {
           headers: { Authorization: `Bearer ${token}` },

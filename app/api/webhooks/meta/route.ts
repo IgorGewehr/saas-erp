@@ -1010,6 +1010,9 @@ async function saveInboundMessage(params: InboundMessageParams) {
       const newConvRef = await addDoc(collection(db, 'conversations'), {
         businessId,
         channel: params.channel,
+        // All Meta webhooks come from the official APIs (Embedded Signup). Tag it so
+        // the UI can distinguish from Baileys (WhatsApp Web).
+        ...(params.channel === 'whatsapp' ? { connectedVia: 'embedded_signup' } : {}),
         contactName: params.senderName ?? params.externalId,
         contactExternalId: params.externalId,
         ...(params.senderAvatarUrl ? { contactAvatarUrl: params.senderAvatarUrl } : {}),

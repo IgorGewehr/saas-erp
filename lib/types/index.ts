@@ -1310,6 +1310,13 @@ export interface Conversation {
   id: string;
   businessId: string;
   channel: ConversationChannel;
+  /**
+   * Para canal 'whatsapp', subdivide em dois transportes com labels distintos na UI:
+   *   'embedded_signup' → WhatsApp Business (Meta Cloud API, oficial)
+   *   'baileys'         → WhatsApp Web (conexão via app do celular)
+   * Outros canais (facebook/instagram) ignoram este campo.
+   */
+  connectedVia?: 'embedded_signup' | 'baileys';
   status: ConversationStatus;
   contactName: string;
   contactPhone?: string;

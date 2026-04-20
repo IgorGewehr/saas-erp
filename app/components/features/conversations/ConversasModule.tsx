@@ -153,9 +153,10 @@ interface ChannelConfig {
   avatarBg: string;
 }
 
+// Default config per canonical channel — WhatsApp oficial (Cloud API / Embedded Signup)
 const CHANNEL_CONFIG: Record<ConversationChannel, ChannelConfig> = {
   whatsapp: {
-    label: 'WhatsApp',
+    label: 'WhatsApp Business',
     color: '#25D366',
     bgColor: 'bg-[#25D366]/10',
     borderColor: 'border-[#25D366]/30',
@@ -182,6 +183,32 @@ const CHANNEL_CONFIG: Record<ConversationChannel, ChannelConfig> = {
     avatarBg: 'bg-[#E1306C]/20',
   },
 };
+
+/**
+ * Variação do WhatsApp quando a conexão é via celular do dono (Baileys).
+ * Tem verde mais escuro + label distinto — para o operador entender que essa
+ * conversa tem limitações (status de entrega parcial, templates não aplicam, etc.)
+ */
+const WHATSAPP_WEB_CONFIG: ChannelConfig = {
+  label: 'WhatsApp Web',
+  color: '#128C7E',
+  bgColor: 'bg-[#128C7E]/10',
+  borderColor: 'border-[#128C7E]/30',
+  textColor: 'text-[#128C7E]',
+  dotColor: 'bg-[#128C7E]',
+  avatarBg: 'bg-[#128C7E]/20',
+};
+
+/**
+ * Resolve a configuração visual de uma conversa considerando a variante do WhatsApp.
+ * Usar este helper em qualquer lugar que acesse `CHANNEL_CONFIG[conv.channel]`.
+ */
+function getConvConfig(conv: Pick<Conversation, 'channel' | 'connectedVia'>): ChannelConfig {
+  if (conv.channel === 'whatsapp' && conv.connectedVia === 'baileys') {
+    return WHATSAPP_WEB_CONFIG;
+  }
+  return CHANNEL_CONFIG[conv.channel];
+}
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -249,7 +276,7 @@ interface ConversationItemProps {
 
 function ConversationItem({ conversation, isSelected, onClick }: ConversationItemProps) {
   const { t } = useTranslation();
-  const cfg = CHANNEL_CONFIG[conversation.channel];
+  const cfg = getConvConfig(conversation);
   const initials = getInitials(conversation.contactName);
 
   return (
@@ -401,7 +428,7 @@ function IntegrationSettingsDialog({ onClose }: { onClose: () => void }) {
         {/* Integrations list */}
         <div className="p-4 space-y-3">
           {integrations.map((item) => {
-            const cfg = CHANNEL_CONFIG[item.channel];
+            const cfg = getConvConfig(item);
             return (
               <div
                 key={item.channel}
@@ -503,7 +530,7 @@ function ThreadHeader({
   sectors?: Sector[];
 }) {
   const { t } = useTranslation();
-  const cfg = CHANNEL_CONFIG[conversation.channel];
+  const cfg = getConvConfig(conversation);
   const initials = getInitials(conversation.contactName);
   const [showStatusMenu, setShowStatusMenu] = useState(false);
   const [showOverflowMenu, setShowOverflowMenu] = useState(false);

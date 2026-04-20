@@ -18,7 +18,6 @@ def configure_logging(level: str = "INFO") -> None:
     shared_processors: list = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_log_level,
-        structlog.stdlib.add_logger_name,
         timestamper,
     ]
     structlog.configure(

@@ -21,6 +21,10 @@ export const runtime = 'nodejs';
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const businessId = searchParams.get('businessId');
+  // `?force=1` destroys any existing session first — used when the user explicitly
+  // clicks "reconnect" after a flaky state where Firestore says connected but no
+  // messages arrive (zombie socket on WhatsApp side).
+  const forceReconnect = searchParams.get('force') === '1';
 
   if (!businessId) {
     return new Response('data: {"type":"error","message":"businessId required"}\n\n', {
@@ -33,6 +37,9 @@ export async function GET(req: NextRequest) {
   if (isAuthError(authResult)) return authResult;
 
   // Get or create session (fresh = show QR)
+  if (forceReconnect) {
+    destroySession(businessId);
+  }
   let session = sessions.get(businessId);
   const isNewSession = !session;
 

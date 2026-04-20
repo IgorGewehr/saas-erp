@@ -281,6 +281,7 @@ async function handleInboundMessage(
       const newConvRef = await addDoc(collection(db, 'conversations'), {
         businessId,
         channel: 'whatsapp',
+        connectedVia: 'baileys',
         contactName,
         contactPhone: formatPhone(senderPhone),
         contactExternalId: senderPhone,
@@ -573,8 +574,17 @@ export async function createBaileysSession(
         const phoneNumber = sock.user?.id?.split(':')[0] || sock.user?.id?.split('@')[0] || null;
         console.log('[Baileys] Conectado! Tel:', phoneNumber, '| business:', businessId);
 
+        // Persist first — then notify the UI. This way `onSnapshot` listeners on
+        // `businesses/{id}.channels.whatsapp` already see the updated state when the
+        // modal closes. Writes failing is surfaced so the UI doesn't get stuck.
+        try {
+          await updateFirestoreConnection(businessId, phoneNumber);
+        } catch (err) {
+          console.error('[Baileys] Failed to persist connection to Firestore:', err);
+          broadcast(session, { type: 'error', message: 'Conectado, mas falhou ao salvar status. Tente reconectar.' });
+          return;
+        }
         broadcast(session, { type: 'connected', phoneNumber, status: 'connected' });
-        await updateFirestoreConnection(businessId, phoneNumber);
       }
 
       if (connection === 'close') {
