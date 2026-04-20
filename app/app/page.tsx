@@ -3,7 +3,6 @@
 import { Suspense, lazy } from 'react';
 import { motion } from 'framer-motion';
 import { useAppContext } from './AppContext';
-import { cn } from '@/lib/utils';
 
 // Lazy-loaded modules
 const DashboardModule  = lazy(() => import('@/app/components/features/dashboard/DashboardModule'));

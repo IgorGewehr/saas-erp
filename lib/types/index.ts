@@ -48,6 +48,7 @@ export interface User {
   sectorIds?: string[];
   serviceIds?: string[];            // Service IDs this professional offers
   workingHours?: WorkingHours;      // Weekly availability schedule
+  commissionRate?: number;          // Commission percentage (0–100). e.g. 30 = 30% of appointment price
   isActive: boolean;
   isOnline?: boolean;
   userStatus?: UserStatus;
@@ -414,6 +415,8 @@ export interface Appointment {
   reminderSentAt?: string;
   confirmationRequestedAt?: string;
   followUpSentAt?: string;
+  // Commission tracking — set when appointment is marked concluido
+  commissionTransactionId?: string; // Firestore ID of the linked Transaction (category: 'Comissoes')
   createdAt: string;
   updatedAt: string;
 }
@@ -429,6 +432,7 @@ export interface Service {
   price: number;
   category?: string;
   color: string;
+  commissionRate?: number; // Commission % override for this service (0–100). Takes precedence over professional's commissionRate
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
@@ -520,6 +524,7 @@ export interface Transaction {
   contactId?: string;
   campaignId?: string;
   sectorId?: string;
+  appointmentId?: string; // Link back to the originating appointment (for commission transactions)
   /** Parcelamento: grupo compartilhado entre todas as parcelas */
   installmentGroupId?: string;
   installmentNumber?: number;   // ex: 1 de 3

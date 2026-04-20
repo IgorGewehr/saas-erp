@@ -102,7 +102,7 @@ const PRESET_COLORS = [
   '#820AD1', '#FF7A00', '#1A1A2E', '#14532D', '#7C2D12',
 ];
 
-type FinancialTab = 'visao-geral' | 'lancamentos' | 'contas' | 'fluxo' | 'auditoria';
+type FinancialTab = 'visao-geral' | 'lancamentos' | 'contas' | 'fluxo' | 'auditoria' | 'comissoes';
 
 const inputSx = { '& .MuiOutlinedInput-root': { borderRadius: '12px' } };
 
@@ -121,6 +121,7 @@ export default function FinancialModule() {
     { key: 'lancamentos', label: t('financial.tabs.transactions', 'Transações'), icon: <ArrowRightLeft size={16} /> },
     { key: 'fluxo',      label: t('financial.tabs.cashflow',  'Fluxo de Caixa'), icon: <TrendingUp size={16} /> },
     { key: 'contas',     label: t('financial.tabs.accounts',  'Contas Bancárias'), icon: <Landmark size={16} /> },
+    { key: 'comissoes',  label: 'Comissões', icon: <Users size={16} /> },
     { key: 'auditoria',  label: t('financial.tabs.audit',     'Auditoria'), icon: <History size={16} /> },
   ];
 
@@ -818,6 +819,14 @@ export default function FinancialModule() {
 
             {activeTab === 'auditoria' && (
               <AuditLogView businessId={business?.id} />
+            )}
+
+            {activeTab === 'comissoes' && (
+              <CommissionsContent
+                transactions={transactions}
+                onMarkPaid={handleMarkAsPaid}
+                showBalances={showBalances}
+              />
             )}
           </motion.div>
         </AnimatePresence>
@@ -2092,6 +2101,240 @@ function TransactionsContent({
 
       <div className="px-6 py-3 border-t border-slate-100 dark:border-gray-800 text-sm text-slate-400 dark:text-gray-500">
         {t('financial.txList.count', '{{count}} transação(ões)', { count: transactions.length })}
+      </div>
+    </div>
+  );
+}
+
+// ==========================================
+// TAB: COMISSÕES
+// ==========================================
+
+type CommissionPeriod = 'mes' | 'mes_anterior' | 'todos';
+
+interface ProfessionalCommissionGroup {
+  professionalId: string;
+  professionalName: string;
+  totalPendente: number;
+  totalPago: number;
+  totalCancelado: number;
+  totalGeral: number;
+  transactions: Transaction[];
+}
+
+function CommissionsContent({
+  transactions,
+  onMarkPaid,
+  showBalances,
+}: {
+  transactions: Transaction[];
+  onMarkPaid: (id: string) => void;
+  showBalances: boolean;
+}) {
+  const [period, setPeriod] = useState<CommissionPeriod>('mes');
+  const [expandedProfessional, setExpandedProfessional] = useState<string | null>(null);
+  const [markingPaid, setMarkingPaid] = useState<string | null>(null);
+
+  // Filter commission transactions by period
+  const commissionTx = useMemo<Transaction[]>(() => {
+    const all = transactions.filter(t => t.category === 'Comissoes' && t.type === 'despesa');
+    if (period === 'todos') return all;
+    const now = new Date();
+    const monthOffset = period === 'mes_anterior' ? -1 : 0;
+    const y = now.getFullYear();
+    const m = now.getMonth() + monthOffset;
+    const start = new Date(y, m, 1).toISOString().slice(0, 10);
+    const end = new Date(y, m + 1, 0).toISOString().slice(0, 10);
+    return all.filter(t => t.dueDate && t.dueDate >= start && t.dueDate <= end);
+  }, [transactions, period]);
+
+  // Group by professional
+  const grouped = useMemo<ProfessionalCommissionGroup[]>(() => {
+    const map = new Map<string, ProfessionalCommissionGroup>();
+    for (const tx of commissionTx) {
+      const key = tx.clientId || tx.clientName || 'unknown';
+      const name = tx.clientName || 'Profissional';
+      if (!map.has(key)) {
+        map.set(key, { professionalId: key, professionalName: name, totalPendente: 0, totalPago: 0, totalCancelado: 0, totalGeral: 0, transactions: [] });
+      }
+      const g = map.get(key)!;
+      g.transactions.push(tx);
+      if (tx.status === 'pago') { g.totalPago += tx.amount; g.totalGeral += tx.amount; }
+      else if (tx.status === 'cancelado') { g.totalCancelado += tx.amount; }
+      else { g.totalPendente += tx.amount; g.totalGeral += tx.amount; }
+    }
+    return Array.from(map.values()).sort((a, b) => b.totalGeral - a.totalGeral);
+  }, [commissionTx]);
+
+  const kpis = useMemo(() => ({
+    pendente: commissionTx.filter(t => t.status === 'pendente').reduce((s, t) => s + t.amount, 0),
+    pago:     commissionTx.filter(t => t.status === 'pago').reduce((s, t) => s + t.amount, 0),
+    total:    commissionTx.filter(t => t.status !== 'cancelado').reduce((s, t) => s + t.amount, 0),
+  }), [commissionTx]);
+
+  const periodLabels: Record<CommissionPeriod, string> = {
+    mes: 'Este mês',
+    mes_anterior: 'Mês anterior',
+    todos: 'Todos',
+  };
+
+  const handleMarkPaid = async (id: string) => {
+    setMarkingPaid(id);
+    try { await onMarkPaid(id); } finally { setMarkingPaid(null); }
+  };
+
+  const statusChip = (status: TransactionStatus) => {
+    if (status === 'pago')      return 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-700/40';
+    if (status === 'cancelado') return 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 border-gray-200 dark:border-gray-700';
+    return 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-700/40';
+  };
+  const statusText = (status: TransactionStatus) => ({
+    pendente: 'Pendente', pago: 'Pago', cancelado: 'Cancelado', atrasado: 'Atrasado'
+  }[status] ?? status);
+
+  return (
+    <div className="space-y-4">
+      {/* KPI cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {[
+          { label: 'A Pagar', value: kpis.pendente, color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-500/10', border: 'border-amber-200/60 dark:border-amber-700/30' },
+          { label: 'Pagas',   value: kpis.pago,     color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-500/10', border: 'border-emerald-200/60 dark:border-emerald-700/30' },
+          { label: 'Total',   value: kpis.total,    color: 'text-slate-800 dark:text-gray-100', bg: 'bg-white dark:bg-gray-900', border: 'border-slate-200 dark:border-gray-800' },
+        ].map(kpi => (
+          <div key={kpi.label} className={`${kpi.bg} ${kpi.border} border rounded-2xl px-5 py-4`}>
+            <p className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1">{kpi.label}</p>
+            <p className={`text-2xl font-display font-bold ${kpi.color}`}>
+              {showBalances ? formatCurrency(kpi.value) : 'R$ ****'}
+            </p>
+          </div>
+        ))}
+      </div>
+
+      {/* List card */}
+      <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl overflow-hidden">
+        {/* Header + period filter */}
+        <div className="px-6 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-100 dark:border-gray-800">
+          <div>
+            <h3 className="text-base font-display font-bold text-slate-900 dark:text-gray-100">Por Profissional</h3>
+            <p className="text-xs text-slate-400 dark:text-gray-500 mt-0.5">Clique para expandir os lançamentos</p>
+          </div>
+          <div className="flex gap-1 p-1 bg-slate-50 dark:bg-gray-800 rounded-xl">
+            {(Object.entries(periodLabels) as [CommissionPeriod, string][]).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setPeriod(key)}
+                className={cn(
+                  'px-3 py-1.5 rounded-lg text-xs font-medium transition-all',
+                  period === key
+                    ? 'bg-white dark:bg-gray-700 text-slate-900 dark:text-gray-100 shadow-sm'
+                    : 'text-slate-500 dark:text-gray-400 hover:text-slate-700 dark:hover:text-gray-300'
+                )}
+              >{label}</button>
+            ))}
+          </div>
+        </div>
+
+        {grouped.length === 0 ? (
+          <div className="py-16 flex flex-col items-center text-slate-400 dark:text-gray-500">
+            <Users size={40} strokeWidth={1.5} />
+            <p className="mt-3 text-sm font-medium">Nenhuma comissão no período</p>
+            <p className="text-xs mt-1">Configure a taxa de comissão dos profissionais em Configurações → Usuários</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-100 dark:divide-gray-800">
+            {grouped.map(group => (
+              <div key={group.professionalId}>
+                {/* Professional row */}
+                <button
+                  type="button"
+                  onClick={() => setExpandedProfessional(expandedProfessional === group.professionalId ? null : group.professionalId)}
+                  className="w-full flex items-center gap-4 px-6 py-4 hover:bg-slate-50 dark:hover:bg-white/[0.02] transition-colors text-left"
+                >
+                  {/* Avatar */}
+                  <div className="w-9 h-9 rounded-full bg-gradient-to-br from-red-100 to-rose-100 dark:from-red-900/40 dark:to-rose-900/30 border border-red-200/60 dark:border-red-800/40 flex items-center justify-center text-xs font-bold text-red-700 dark:text-red-400 flex-shrink-0">
+                    {group.professionalName.split(' ').map(n => n[0]).slice(0, 2).join('').toUpperCase()}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-slate-900 dark:text-gray-100 truncate">{group.professionalName}</p>
+                    <p className="text-xs text-slate-400 dark:text-gray-500">{group.transactions.length} lançamento{group.transactions.length !== 1 ? 's' : ''}</p>
+                  </div>
+                  {/* Totals */}
+                  <div className="hidden sm:flex items-center gap-6 text-right">
+                    <div>
+                      <p className="text-[10px] text-slate-400 dark:text-gray-500 uppercase tracking-wide">Pendente</p>
+                      <p className="text-sm font-bold text-amber-600 dark:text-amber-400">
+                        {showBalances ? formatCurrency(group.totalPendente) : '****'}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-slate-400 dark:text-gray-500 uppercase tracking-wide">Pago</p>
+                      <p className="text-sm font-bold text-emerald-600 dark:text-emerald-400">
+                        {showBalances ? formatCurrency(group.totalPago) : '****'}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-slate-400 dark:text-gray-500 uppercase tracking-wide">Total</p>
+                      <p className="text-sm font-bold text-slate-800 dark:text-gray-100">
+                        {showBalances ? formatCurrency(group.totalGeral) : '****'}
+                      </p>
+                    </div>
+                  </div>
+                  <ChevronDown
+                    size={16}
+                    className={cn('text-slate-400 dark:text-gray-500 transition-transform flex-shrink-0', expandedProfessional === group.professionalId && 'rotate-180')}
+                  />
+                </button>
+
+                {/* Expanded transactions */}
+                <AnimatePresence>
+                  {expandedProfessional === group.professionalId && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.2 }}
+                      className="overflow-hidden"
+                    >
+                      <div className="bg-slate-50/70 dark:bg-white/[0.01] border-t border-slate-100 dark:border-gray-800/60">
+                        {group.transactions
+                          .sort((a, b) => (b.dueDate ?? '').localeCompare(a.dueDate ?? ''))
+                          .map(tx => (
+                          <div key={tx.id} className="flex items-center gap-3 px-6 py-3 border-b border-slate-100 dark:border-gray-800/40 last:border-0">
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm text-slate-800 dark:text-gray-200 truncate">{tx.description}</p>
+                              <div className="flex items-center gap-2 mt-0.5">
+                                <p className="text-[11px] text-slate-400 dark:text-gray-500">{formatDate(tx.dueDate)}</p>
+                                {tx.notes && <p className="text-[11px] text-slate-400 dark:text-gray-500 truncate">· {tx.notes}</p>}
+                              </div>
+                            </div>
+                            <p className="text-sm font-bold text-slate-800 dark:text-gray-100 flex-shrink-0">
+                              {showBalances ? formatCurrency(tx.amount) : '****'}
+                            </p>
+                            <span className={cn('text-[11px] font-semibold px-2 py-0.5 rounded-lg border flex-shrink-0', statusChip(tx.status))}>
+                              {statusText(tx.status)}
+                            </span>
+                            {tx.status === 'pendente' && (
+                              <button
+                                onClick={() => handleMarkPaid(tx.id)}
+                                disabled={markingPaid === tx.id}
+                                title="Marcar como pago"
+                                className="flex-shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-[11px] font-semibold transition-colors"
+                              >
+                                {markingPaid === tx.id
+                                  ? <><span className="w-3 h-3 border border-white/60 border-t-white rounded-full animate-spin" /></>
+                                  : <><CheckCircle2 size={12} /> Pagar</>}
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

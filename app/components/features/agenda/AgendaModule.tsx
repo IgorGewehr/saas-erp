@@ -70,6 +70,7 @@ import { cn } from '@/lib/utils';
 import { formatCurrency, getStatusColor, getStatusLabel } from '@/lib/utils/format';
 import type { Appointment, AppointmentStatus, Service, CRMContact, User } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
+import { maybeCreateCommission, maybeCancelCommission } from '@/lib/services/commission';
 import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot, increment, writeBatch } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -2219,6 +2220,21 @@ export default function AgendaModule() {
           }
         }
 
+        // ── Commission handling on edit ──────────────────────────────────
+        if (!wasDone && isDone && data.professionalId) {
+          const professional = members.find(m => m.id === data.professionalId);
+          const service = services.find(s => s.id === data.serviceId);
+          await maybeCreateCommission({
+            appointment: { ...editingAppointment, ...payload, id: editingAppointment.id } as Appointment,
+            professional,
+            service,
+            businessId: business.id,
+          }).catch(err => console.warn('[Agenda] commission creation on edit failed:', err));
+        } else if (wasDone && !isDone) {
+          await maybeCancelCommission(editingAppointment.commissionTransactionId)
+            .catch(err => console.warn('[Agenda] commission cancel on edit failed:', err));
+        }
+
         setSnackbar({ open: true, message: t('agenda.appointmentUpdated', 'Agendamento atualizado com sucesso!'), severity: 'success' });
       } else {
         payload.businessId = business.id;
@@ -2275,7 +2291,7 @@ export default function AgendaModule() {
     } finally {
       setSaving(false);
     }
-  }, [business?.id, editingAppointment, services, queryClient, checkConflicts, t]);
+  }, [business?.id, editingAppointment, services, queryClient, checkConflicts, t, members]);
 
   const handleDeleteAppointment = useCallback(async () => {
     if (!editingAppointment || !business?.id) return;
@@ -2288,6 +2304,12 @@ export default function AgendaModule() {
           visitDelta: -1,
           priceDelta: -(editingAppointment.price || 0),
         });
+      }
+      // Cancel commission if appointment was concluido — prevents orphaned pending transactions
+      if (editingAppointment.status === 'concluido') {
+        await maybeCancelCommission(editingAppointment.commissionTransactionId)
+          .catch(err => console.warn('[Agenda] commission cancel on delete:', err));
+        queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
       }
       queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
       queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
@@ -2317,24 +2339,35 @@ export default function AgendaModule() {
 
       // Aggregate client metric deltas from any 'concluido' items in the series.
       const clientDeltas = new Map<string, { visits: number; price: number }>();
+      const commissionIds: (string | undefined)[] = [];
       const batch = writeBatch(db);
       for (const docSnap of snap.docs) {
         const a = docSnap.data() as Appointment;
-        if (a.status === 'concluido' && a.clientId) {
-          const d = clientDeltas.get(a.clientId) || { visits: 0, price: 0 };
-          d.visits += 1;
-          d.price += a.price || 0;
-          clientDeltas.set(a.clientId, d);
+        if (a.status === 'concluido') {
+          if (a.clientId) {
+            const d = clientDeltas.get(a.clientId) || { visits: 0, price: 0 };
+            d.visits += 1;
+            d.price += a.price || 0;
+            clientDeltas.set(a.clientId, d);
+          }
+          // Collect commission IDs to cancel after batch delete
+          if (a.commissionTransactionId) commissionIds.push(a.commissionTransactionId);
         }
         batch.delete(docSnap.ref);
       }
       await batch.commit();
 
-      await Promise.all(
-        Array.from(clientDeltas.entries()).map(([clientId, d]) =>
+      await Promise.all([
+        ...Array.from(clientDeltas.entries()).map(([clientId, d]) =>
           syncClientMetrics({ clientId, visitDelta: -d.visits, priceDelta: -d.price }),
         ),
-      );
+        ...commissionIds.map(cid =>
+          maybeCancelCommission(cid).catch(err => console.warn('[Agenda] series commission cancel:', err))
+        ),
+      ]);
+      if (commissionIds.length > 0) {
+        queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
+      }
 
       queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
       queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
@@ -2368,6 +2401,12 @@ export default function AgendaModule() {
           visitDelta: -1,
           priceDelta: -(editingAppointment.price || 0),
         });
+      }
+      // Cancel commission if appointment was concluido — prevents orphaned pending transactions
+      if (editingAppointment.status === 'concluido') {
+        await maybeCancelCommission(editingAppointment.commissionTransactionId)
+          .catch(err => console.warn('[Agenda] commission cancel on cancel:', err));
+        queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
       }
       queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
       queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
@@ -2411,9 +2450,10 @@ export default function AgendaModule() {
       }
       const prevStatus = selectedAppointment.status;
       const clientId = selectedAppointment.clientId;
+      const wasDone = prevStatus === 'concluido';
+      const isDone = status === 'concluido';
+
       if (clientId) {
-        const wasDone = prevStatus === 'concluido';
-        const isDone = status === 'concluido';
         if (!wasDone && isDone) {
           await syncClientMetrics({
             clientId,
@@ -2429,9 +2469,34 @@ export default function AgendaModule() {
           });
         }
       }
+
+      // ── Automatic commission handling ────────────────────────────────────
+      if (!wasDone && isDone && selectedAppointment.professionalId) {
+        const professional = members.find(m => m.id === selectedAppointment.professionalId);
+        const service = services.find(s => s.id === selectedAppointment.serviceId);
+        const commissionTxId = await maybeCreateCommission({
+          appointment: selectedAppointment,
+          professional,
+          service,
+          businessId: business.id,
+        }).catch(err => { console.warn('[Agenda] commission creation failed:', err); return null; });
+        if (commissionTxId) {
+          setSelectedAppointment(prev => prev ? { ...prev, status, commissionTransactionId: commissionTxId } : null);
+          queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
+        } else {
+          setSelectedAppointment(prev => prev ? { ...prev, status } : null);
+        }
+      } else if (wasDone && !isDone) {
+        await maybeCancelCommission(selectedAppointment.commissionTransactionId)
+          .catch(err => console.warn('[Agenda] commission cancellation failed:', err));
+        setSelectedAppointment(prev => prev ? { ...prev, status } : null);
+        queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
+      } else {
+        setSelectedAppointment(prev => prev ? { ...prev, status } : null);
+      }
+
       queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
       queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
-      setSelectedAppointment((prev) => (prev ? { ...prev, status } : null));
       setSnackbar({
         open: true,
         message: t('agenda.statusChanged', `Status alterado para "${getStatusLabel(status)}"`, { status: getStatusLabel(status) }),
@@ -2443,7 +2508,7 @@ export default function AgendaModule() {
     } finally {
       setStatusChanging(false);
     }
-  }, [selectedAppointment, business?.id, queryClient, t]);
+  }, [selectedAppointment, business?.id, queryClient, t, members, services]);
 
   // ---- Computed values ----
   const weekStart = useMemo(() => startOfWeek(currentDate, { weekStartsOn: 0 }), [currentDate]);

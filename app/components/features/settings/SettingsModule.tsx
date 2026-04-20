@@ -2154,6 +2154,9 @@ function UsersTab() {
   const [removingMember, setRemovingMember] = useState<UserType | null>(null);
   const [removingLoading, setRemovingLoading] = useState(false);
   const [editingRoleFor, setEditingRoleFor] = useState<string | null>(null);
+  const [editingCommissionFor, setEditingCommissionFor] = useState<string | null>(null);
+  const [commissionInput, setCommissionInput] = useState('');
+  const [savingCommission, setSavingCommission] = useState<string | null>(null);
   const isOwner = user?.role === 'founder' || user?.role === 'admin';
   const isFounder = user?.role === 'founder';
   const activeSectors = sectors.filter(s => s.isActive);
@@ -2303,6 +2306,29 @@ function UsersTab() {
     }
   };
 
+  // ── Save commission rate ─────────────────────────────────────────────────
+  const handleSaveCommission = async (member: UserType) => {
+    const rate = parseFloat(commissionInput);
+    if (isNaN(rate) || rate < 0 || rate > 100) {
+      toast.error('Taxa deve ser entre 0% e 100%');
+      return;
+    }
+    setSavingCommission(member.id);
+    try {
+      await updateDoc(doc(db, 'users', member.uid), {
+        commissionRate: rate,
+        updatedAt: new Date().toISOString(),
+      });
+      toast.success(`Comissão de ${member.name}: ${rate}%`);
+      setEditingCommissionFor(null);
+    } catch (err) {
+      console.error('[Users] commission save failed:', err);
+      toast.error('Erro ao salvar comissão');
+    } finally {
+      setSavingCommission(null);
+    }
+  };
+
   // ── Revoke code ──────────────────────────────────────────────────────────
   const handleRevoke = async (code: string) => {
     setRevokingCode(code);
@@ -2406,6 +2432,61 @@ function UsersTab() {
                         </>
                       )}
                     </div>
+
+                    {/* Commission rate — editable for admins */}
+                    {isOwner && !isCurrentUser && (
+                      <div className="hidden sm:block">
+                        {editingCommissionFor === member.id ? (
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="number"
+                              min={0}
+                              max={100}
+                              step={0.5}
+                              value={commissionInput}
+                              onChange={e => setCommissionInput(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') handleSaveCommission(member);
+                                if (e.key === 'Escape') setEditingCommissionFor(null);
+                              }}
+                              className="w-14 text-xs px-2 py-0.5 rounded-lg border border-emerald-300 dark:border-emerald-700/50 bg-white dark:bg-white/[0.04] text-emerald-700 dark:text-emerald-400 text-center outline-none focus:ring-1 focus:ring-emerald-400"
+                              autoFocus
+                            />
+                            <span className="text-[10px] text-gray-400">%</span>
+                            <button
+                              onClick={() => handleSaveCommission(member)}
+                              disabled={savingCommission === member.id}
+                              className="p-0.5 rounded text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 transition-colors"
+                              title="Salvar"
+                            >
+                              {savingCommission === member.id
+                                ? <Loader2 className="w-3 h-3 animate-spin" />
+                                : <Check className="w-3 h-3" />}
+                            </button>
+                            <button
+                              onClick={() => setEditingCommissionFor(null)}
+                              className="p-0.5 rounded text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                              title="Cancelar"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingCommissionFor(member.id);
+                              setCommissionInput(String(member.commissionRate ?? 0));
+                            }}
+                            title="Taxa de comissão — clique para editar"
+                            className="inline-flex items-center gap-0.5 text-[11px] font-semibold px-2 py-0.5 rounded-lg border border-emerald-200 dark:border-emerald-700/40 text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 hover:opacity-80 transition-opacity"
+                          >
+                            <DollarSign className="w-2.5 h-2.5" />
+                            {member.commissionRate ? `${member.commissionRate}%` : '—'}
+                          </button>
+                        )}
+                      </div>
+                    )}
 
                     {/* Role — clickable dropdown for admins, badge for the rest */}
                     {isOwner && !isCurrentUser && (user?.role === 'founder' || ROLE_HIERARCHY[member.role] < ROLE_HIERARCHY[user!.role]) ? (
