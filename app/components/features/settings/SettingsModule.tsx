@@ -9,7 +9,7 @@ import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { doc, setDoc, collection, query, where, onSnapshot, updateDoc, getDocs, addDoc, deleteDoc, arrayRemove } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { db, storage } from '@/lib/config/firebase';
+import { auth as firebaseAuth, db, storage } from '@/lib/config/firebase';
 import { toast } from 'react-toastify';
 import {
   Building2,
@@ -1365,8 +1365,17 @@ function FiscalTab() {
     if (f.nfceConfig) {
       setNfceSeries(f.nfceConfig.series || '1');
       setNfceNextNumber(String(f.nfceConfig.nextNumber || 1));
-      setCscId(f.nfceConfig.cscId || '');
-      setCscToken(f.nfceConfig.cscToken || '');
+      // CSC loaded via encrypted API route
+      firebaseAuth.currentUser?.getIdToken().then(token => {
+        if (!token || !business?.id) return;
+        fetch(`/api/fiscal/csc?businessId=${business.id}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        }).then(r => r.ok ? r.json() : null).then(data => {
+          if (data) { setCscId(data.cscId || ''); setCscToken(data.cscToken || ''); }
+        }).catch(() => {
+          setCscId(f.nfceConfig?.cscId || '');
+        });
+      });
     }
     const fAny = f as Record<string, unknown>;
     const taxation = fAny.taxation as Record<string, Record<string, unknown>> | undefined;
@@ -1431,8 +1440,6 @@ function FiscalTab() {
         nfceConfig: {
           series: nfceSeries,
           nextNumber: Number(nfceNextNumber) || 1,
-          cscId: cscId || undefined,
-          cscToken: cscToken || undefined,
           environment,
         },
       });
@@ -1444,8 +1451,14 @@ function FiscalTab() {
   const handleSaveCsc = async () => {
     setIsSavingCsc(true);
     try {
-      const currentNfce = business?.fiscal?.nfceConfig || {};
-      await saveFiscalField({ nfceConfig: { ...currentNfce, cscId, cscToken } });
+      const token = await firebaseAuth.currentUser?.getIdToken();
+      const res = await fetch('/api/fiscal/csc', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ businessId: business?.id, cscId, cscToken }),
+      });
+      if (!res.ok) throw new Error('Failed to save CSC');
+      await refreshUser();
       toast.success(t('settings.fiscal.cscSaved', 'CSC salvo!'));
     } catch { toast.error(t('settings.fiscal.cscError', 'Erro ao salvar CSC')); }
     finally { setIsSavingCsc(false); }
@@ -6016,6 +6029,7 @@ export default function SettingsModule() {
     { id: 'usuarios'   as Tab, label: t('settings.tabs.usuarios', 'Usuários'),   icon: Users      },
     { id: 'setores'    as Tab, label: t('settings.tabs.setores',  'Setores'),    icon: Layers     },
     { id: 'canais'     as Tab, label: t('settings.tabs.canais',   'Canais'),     icon: Plug2      },
+    { id: 'enterprise' as Tab, label: t('settings.tabs.enterprise', 'Enterprise'), icon: Blocks     },
   ];
 
   const tabs = isAdmin ? allTabs : allTabs.filter(t => t.id === 'perfil');
@@ -6085,6 +6099,7 @@ export default function SettingsModule() {
         {activeTab === 'setores'    && <SectorsTab key="setores" />}
 
         {activeTab === 'canais'     && <CanaisTab key="canais" />}
+        {activeTab === 'enterprise' && <EnterpriseTab key="enterprise" />}
       </AnimatePresence>
     </motion.div>
   );

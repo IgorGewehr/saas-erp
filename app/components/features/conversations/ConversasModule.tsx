@@ -2680,11 +2680,11 @@ export default function ConversasModule() {
               const names: Record<string, string> = { whatsapp: 'WhatsApp', facebook: 'Facebook Messenger', instagram: 'Instagram' };
               toast.warn(t('conversations.disconnectedWarn', '{{channel}} está desconectado. Reconecte nas Configurações para enviar mensagens.', { channel: names[selectedConversation.channel] || 'Canal' }));
             }
-            await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(() => {});
+            await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(e => console.warn('[Conversations] Failed to mark message as failed:', e));
           }
         } catch {
           toast.error(t('conversations.connectionError', 'Erro de conexão. Verifique sua internet e tente novamente.'));
-          await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(() => {});
+          await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(e => console.warn('[Conversations] Failed to mark message as failed:', e));
         }
       }
     } catch (err) {

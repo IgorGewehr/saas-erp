@@ -309,12 +309,12 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
           } else {
             console.error('[OmnichannelInbox] Send failed:', errBody);
           }
-          await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(() => {});
+          await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(e => console.warn('[OmnichannelInbox] Failed to mark message as failed:', e));
         }
       } catch (apiErr) {
         console.error('[OmnichannelInbox] Network error:', apiErr);
         toast.error(t('crm.inbox.connectionError', 'Erro de conexão. Verifique sua internet e tente novamente.'));
-        await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(() => {});
+        await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(e => console.warn('[OmnichannelInbox] Failed to mark message as failed:', e));
       }
     } catch (err) {
       console.error('[OmnichannelInbox] Firestore write failed:', err);

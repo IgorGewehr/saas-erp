@@ -4,6 +4,7 @@ import { db } from '@/lib/config/firebase';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { encryptToken } from '@/lib/utils/encryption';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
+import { ROLE_HIERARCHY } from '@/lib/types';
 
 /**
  * Meta Embedded Signup — Token Exchange
@@ -35,8 +36,7 @@ export async function POST(req: NextRequest) {
     const authResult = await verifyAuth(req, businessId);
     if (isAuthError(authResult)) return authResult;
 
-    const ROLE_HIERARCHY: Record<string, number> = { founder: 100, admin: 80, manager: 60, operator: 40, viewer: 20 };
-    if ((ROLE_HIERARCHY[authResult.role] || 0) < ROLE_HIERARCHY['admin']) {
+    if ((ROLE_HIERARCHY[authResult.role as keyof typeof ROLE_HIERARCHY] || 0) < ROLE_HIERARCHY['admin']) {
       return NextResponse.json({ error: 'Forbidden — admin role required' }, { status: 403 });
     }
 
