@@ -40,8 +40,10 @@ export async function dispatchInboundToAgent(
     return;
   }
 
+  const DEBOUNCE_MS = parseInt(process.env.AGENT_DEBOUNCE_MS || '5000', 10);
+
   try {
-    // Parallel reads: business settings + conversation doc
+    // Fast pre-check: read business + conversation to gate immediately
     const [bizSnap, convSnap] = await Promise.all([
       db.collection('businesses').doc(input.businessId).get(),
       db.collection('conversations').doc(input.conversationId).get(),
@@ -54,9 +56,28 @@ export async function dispatchInboundToAgent(
     // Gates
     const agentEnabledOnBusiness = !!business.settings?.aiAgent?.enabled;
     if (!agentEnabledOnBusiness) return;
-    if (conv.aiEnabled === false) return; // default true when undefined
+    if (conv.aiEnabled === false) return;
 
-    // Build last-10-turns history for grounding
+    // Debounce: mark this message as the current pending dispatch token.
+    // If another message arrives within DEBOUNCE_MS it will overwrite this field
+    // and this invocation will silently bail, letting the newer message handle it.
+    const convRef = db.collection('conversations').doc(input.conversationId);
+    await convRef.update({ _agentPendingDispatch: input.messageId });
+    await new Promise(r => setTimeout(r, DEBOUNCE_MS));
+
+    // Re-read conversation — if the token changed, a newer message took over
+    const freshConvSnap = await convRef.get();
+    if (!freshConvSnap.exists) return;
+    const freshData = freshConvSnap.data() as Conversation & { _agentPendingDispatch?: string | null };
+    if (freshData._agentPendingDispatch !== input.messageId) return;
+    // Also re-check per-conversation toggle (user may have disabled during the wait)
+    if (freshData.aiEnabled === false) return;
+
+    // Clear the token (best-effort — non-fatal if it fails)
+    convRef.update({ _agentPendingDispatch: null }).catch(() => {});
+
+    // Build last-10-turns history — re-fetch AFTER the debounce window so
+    // any burst messages (saved during the 5s wait) are included.
     const historySnap = await db.collection('conversationMessages')
       .where('conversationId', '==', input.conversationId)
       .where('businessId', '==', input.businessId)
@@ -66,7 +87,7 @@ export async function dispatchInboundToAgent(
     const history = historySnap.docs
       .map(d => d.data())
       .reverse() // chronological asc
-      .filter(m => m.id !== input.messageId) // skip the just-saved message
+      .filter(m => m.id !== input.messageId) // skip the triggering message (passed separately)
       .map(m => ({
         role: m.direction === 'inbound' ? 'user' : 'assistant',
         content: typeof m.content === 'string' ? m.content : '',

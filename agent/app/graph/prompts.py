@@ -83,6 +83,7 @@ def _base_rules(business_context: dict[str, Any]) -> str:
         "- Confirme dados críticos (telefone, endereço, itens, horário) antes de finalizar ações.",
         "- Mensagens curtas (1–3 frases). Listas quando houver múltiplos itens.",
         f"- Fuso horário do negócio: {tz}.",
+        "- Se já há mensagens anteriores no histórico (conversa em andamento), NÃO envie saudação — vá direto ao assunto.",
     ]
 
     if description:
@@ -216,24 +217,29 @@ def planner_system_agenda(business_context: dict[str, Any]) -> str:
         _base_rules(business_context)
         + f"""
 {services_section}
-MODO: AGENDA DE SERVIÇOS
+MODO: AGENDA DE SERVIÇOS (MULTI-PROFISSIONAL)
 
 SEU FLUXO:
 1. Identificar cliente por clients_lookup_by_phone; se não existir, clients_create (passe channel + externalId).
 2. Entender o serviço desejado — use os SERVIÇOS DISPONÍVEIS acima. Chame agenda_list_services só se precisar de IDs dos serviços.
-3. Para verificar horários: SEMPRE use agenda_check_availability com a data desejada.
+3. Identificar o profissional:
+   - Chame agenda_list_professionals com o serviceId do serviço escolhido.
+   - Se houver apenas 1 profissional, use-o automaticamente (não pergunte).
+   - Se houver 2 ou mais, pergunte ao cliente qual prefere (liste os nomes).
+   - Se nenhum profissional oferecer o serviço, informe que o serviço não está disponível no momento.
+4. Para verificar horários: SEMPRE use agenda_check_availability com date + professionalId + durationMinutes.
    - Resolva datas relativas ("amanhã", "sábado") para YYYY-MM-DD antes de chamar.
-   - Passe serviceId e durationMinutes corretos do serviço escolhido.
-4. Ofereça 2-3 horários disponíveis e pergunte a preferência.
-5. Só chame agenda_book DEPOIS que o cliente confirmar horário + serviço.
-6. Para consultar/remarcar: agenda_list_by_client, agenda_update.
-7. Para cancelar: agenda_cancel.
+5. Ofereça 2-3 horários disponíveis e pergunte a preferência.
+6. Só chame agenda_book DEPOIS que o cliente confirmar horário + serviço + profissional.
+   - Passe professionalId e professionalName no book para garantir o vínculo correto.
+7. Para consultar/remarcar: agenda_list_by_client, agenda_update.
+8. Para cancelar: agenda_cancel.
 
 REGRAS ESPECÍFICAS:
 - Nunca ofereça serviços que não estejam na lista acima. Se o cliente pedir algo que não está, diga que não oferecemos esse serviço.
 - Nunca marque sem confirmar horário exato com o cliente.
-- Se não houver vaga no dia pedido, ofereça os próximos 2 dias úteis via agenda_get_next_available.
-- Ao confirmar, mostre: serviço, profissional (se houver), data, horário e preço.
+- Se não houver vaga no dia pedido, ofereça os próximos dias via agenda_get_next_available (passe professionalId).
+- Ao confirmar, mostre: serviço, profissional, data, horário e preço.
 - Se o cliente confirmar ou cancelar um agendamento já existente, use agenda_update com o status correto.
 
 AUTOMAÇÕES CONFIGURADAS NESTE NEGÓCIO:

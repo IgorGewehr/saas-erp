@@ -262,6 +262,7 @@ function ProfileTab() {
   const [uf, setUf]                             = useState('');
 
   // ─── Minha Agenda state ───
+  const [isProfessional, setIsProfessional] = useState(true);
   const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>([]);
   const [workingHours, setWorkingHours] = useState<WorkingHours>(DEFAULT_WORKING_HOURS);
   const [isSavingSchedule, setIsSavingSchedule] = useState(false);
@@ -319,6 +320,7 @@ function ProfileTab() {
         setUf(pa.uf || '');
       }
       // Schedule data
+      setIsProfessional(user.isProfessional !== false); // default true for backward compat
       setSelectedServiceIds(user.serviceIds || []);
       setWorkingHours(user.workingHours || DEFAULT_WORKING_HOURS);
     }
@@ -414,7 +416,8 @@ function ProfileTab() {
     setIsSavingSchedule(true);
     try {
       await updateUserProfile({
-        serviceIds: selectedServiceIds,
+        isProfessional,
+        serviceIds: isProfessional ? selectedServiceIds : [],
         workingHours,
       });
       toast.success(t('settings.profile.scheduleSaved', 'Agenda atualizada com sucesso!'));
@@ -626,160 +629,194 @@ function ProfileTab() {
 
       {/* ─── Minha Agenda ─────────────────────────────────────────────────── */}
 
-      {/* Services Selection */}
-      <SectionCard title={t('settings.profile.servicesTitle', 'Meus Serviços')} icon={Briefcase}>
-        <div className="space-y-3">
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            Selecione os serviços que você realiza. Eles aparecerão como opção na agenda.
-          </p>
-
-          {isLoadingServices ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {[1, 2, 3].map(i => (
-                <div key={i} className="h-[72px] rounded-xl shimmer" />
-              ))}
-            </div>
-          ) : services.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-8 text-center">
-              <Briefcase className="w-8 h-8 text-gray-300 dark:text-gray-600 mb-2" />
-              <p className="text-sm font-medium text-gray-500 dark:text-gray-400">{t('settings.profile.noServices', 'Nenhum serviço cadastrado')}</p>
-              <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{t('settings.profile.noServicesDesc', 'Cadastre serviços no módulo de Agenda.')}</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {services.map(service => {
-                const isSelected = selectedServiceIds.includes(service.id);
-                return (
-                  <button
-                    key={service.id}
-                    type="button"
-                    onClick={() => toggleServiceId(service.id)}
-                    className={cn(
-                      'flex items-start gap-3 p-3.5 rounded-xl border text-left transition-all duration-200',
-                      isSelected
-                        ? 'border-red-300 dark:border-red-500/40 bg-red-50/60 dark:bg-red-500/10 shadow-sm'
-                        : 'border-gray-200 dark:border-gray-700/50 bg-white dark:bg-white/[0.03] hover:border-gray-300 dark:hover:border-gray-600'
-                    )}
-                  >
-                    <div
-                      className={cn(
-                        'w-5 h-5 rounded-lg border-2 flex items-center justify-center flex-shrink-0 mt-0.5 transition-all duration-200',
-                        isSelected
-                          ? 'bg-red-600 border-red-600'
-                          : 'border-gray-300 dark:border-gray-600'
-                      )}
-                    >
-                      {isSelected && <Check className="w-3 h-3 text-white" />}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className={cn(
-                        'text-sm font-medium truncate',
-                        isSelected ? 'text-gray-900 dark:text-gray-100' : 'text-gray-700 dark:text-gray-300'
-                      )}>
-                        {service.name}
-                      </p>
-                      <div className="flex items-center gap-2 mt-0.5">
-                        <span className="text-xs text-gray-500 dark:text-gray-400">
-                          {service.duration}min
-                        </span>
-                        <span className="text-xs text-gray-300 dark:text-gray-600">·</span>
-                        <span className="text-xs font-medium text-gray-600 dark:text-gray-300">
-                          {formatCurrency(service.price)}
-                        </span>
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </SectionCard>
-
-      {/* Working Hours */}
-      <SectionCard title={t('settings.profile.workingHours', 'Horários de Trabalho')} icon={Calendar}>
-        <div className="space-y-3">
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            {t('settings.profile.workingHoursDesc', 'Configure seus horários de disponibilidade para cada dia da semana.')}
-          </p>
-
-          <div className="space-y-2">
-            {DAY_NAMES.map((dayName, dayIndex) => {
-              const day = workingHours[dayIndex];
-              const isWeekend = dayIndex === 0 || dayIndex === 6;
-              return (
-                <div
-                  key={dayIndex}
-                  className={cn(
-                    'flex flex-col sm:flex-row sm:items-center gap-3 p-3.5 rounded-xl border transition-all duration-200',
-                    day.enabled
-                      ? 'border-gray-200 dark:border-gray-700/50 bg-white dark:bg-white/[0.03]'
-                      : 'border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-white/[0.01]'
-                  )}
-                >
-                  {/* Day toggle */}
-                  <div className="flex items-center gap-3 sm:w-36 flex-shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => updateDaySchedule(dayIndex, 'enabled', !day.enabled)}
-                      className={cn(
-                        'relative w-10 h-[22px] rounded-full transition-all duration-200 flex-shrink-0',
-                        day.enabled
-                          ? 'bg-red-600'
-                          : 'bg-gray-300 dark:bg-gray-600'
-                      )}
-                    >
-                      <span
-                        className={cn(
-                          'absolute top-[2px] w-[18px] h-[18px] rounded-full bg-white shadow-sm transition-all duration-200',
-                          day.enabled ? 'left-[20px]' : 'left-[2px]'
-                        )}
-                      />
-                    </button>
-                    <span className={cn(
-                      'text-sm font-medium',
-                      day.enabled
-                        ? 'text-gray-900 dark:text-gray-100'
-                        : 'text-gray-400 dark:text-gray-500',
-                      isWeekend && 'text-gray-500 dark:text-gray-400'
-                    )}>
-                      {dayName}
-                    </span>
-                  </div>
-
-                  {/* Time selects */}
-                  {day.enabled ? (
-                    <div className="flex items-center gap-2 flex-1">
-                      <div className="flex items-center gap-2">
-                        <Clock className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500 flex-shrink-0 hidden sm:block" />
-                        <select
-                          value={day.start}
-                          onChange={e => updateDaySchedule(dayIndex, 'start', e.target.value)}
-                          className={cn(selectClasses, 'w-[110px] h-9 text-xs')}
-                        >
-                          {timeSlots.map(t => <option key={t} value={t}>{t}</option>)}
-                        </select>
-                      </div>
-                      <span className="text-xs text-gray-400 dark:text-gray-500 font-medium">{t('settings.profile.until', 'até')}</span>
-                      <select
-                        value={day.end}
-                        onChange={e => updateDaySchedule(dayIndex, 'end', e.target.value)}
-                        className={cn(selectClasses, 'w-[110px] h-9 text-xs')}
-                      >
-                        {timeSlots.map(t => <option key={t} value={t}>{t}</option>)}
-                      </select>
-                    </div>
-                  ) : (
-                    <span className="text-xs text-gray-400 dark:text-gray-500 italic">
-                      {t('settings.profile.unavailable', 'Indisponível')}
-                    </span>
-                  )}
-                </div>
-              );
-            })}
+      {/* isProfessional toggle */}
+      <SectionCard title={t('settings.profile.professionalTitle', 'Prestador de Serviço')} icon={Briefcase}>
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+              {t('settings.profile.isProfessionalLabel', 'Sou prestador de serviço')}
+            </p>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+              {isProfessional
+                ? t('settings.profile.isProfessionalOnDesc', 'Você aparece como opção de profissional na agenda e no agente de IA.')
+                : t('settings.profile.isProfessionalOffDesc', 'Você não aparece como opção de profissional para agendamentos.')}
+            </p>
           </div>
+          <button
+            type="button"
+            onClick={() => setIsProfessional(v => !v)}
+            className={cn(
+              'relative w-10 h-[22px] rounded-full transition-all duration-200 flex-shrink-0',
+              isProfessional ? 'bg-red-600' : 'bg-gray-300 dark:bg-gray-600'
+            )}
+          >
+            <span className={cn(
+              'absolute top-[2px] w-[18px] h-[18px] rounded-full bg-white shadow-sm transition-all duration-200',
+              isProfessional ? 'left-[20px]' : 'left-[2px]'
+            )} />
+          </button>
         </div>
       </SectionCard>
+
+      {/* Services + Hours — only shown when isProfessional */}
+      {isProfessional && (
+        <>
+          {/* Services Selection */}
+          <SectionCard title={t('settings.profile.servicesTitle', 'Meus Serviços')} icon={Briefcase}>
+            <div className="space-y-3">
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                Marque os serviços que você realiza. O agente de IA usará esta lista para apresentar sua agenda aos clientes.
+              </p>
+
+              {isLoadingServices ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {[1, 2, 3].map(i => (
+                    <div key={i} className="h-[72px] rounded-xl shimmer" />
+                  ))}
+                </div>
+              ) : services.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-8 text-center">
+                  <Briefcase className="w-8 h-8 text-gray-300 dark:text-gray-600 mb-2" />
+                  <p className="text-sm font-medium text-gray-500 dark:text-gray-400">{t('settings.profile.noServices', 'Nenhum serviço cadastrado')}</p>
+                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{t('settings.profile.noServicesDesc', 'Cadastre serviços no módulo de Agenda.')}</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {services.map(service => {
+                    const isSelected = selectedServiceIds.includes(service.id);
+                    return (
+                      <button
+                        key={service.id}
+                        type="button"
+                        onClick={() => toggleServiceId(service.id)}
+                        className={cn(
+                          'flex items-start gap-3 p-3.5 rounded-xl border text-left transition-all duration-200',
+                          isSelected
+                            ? 'border-red-300 dark:border-red-500/40 bg-red-50/60 dark:bg-red-500/10 shadow-sm'
+                            : 'border-gray-200 dark:border-gray-700/50 bg-white dark:bg-white/[0.03] hover:border-gray-300 dark:hover:border-gray-600'
+                        )}
+                      >
+                        <div
+                          className={cn(
+                            'w-5 h-5 rounded-lg border-2 flex items-center justify-center flex-shrink-0 mt-0.5 transition-all duration-200',
+                            isSelected
+                              ? 'bg-red-600 border-red-600'
+                              : 'border-gray-300 dark:border-gray-600'
+                          )}
+                        >
+                          {isSelected && <Check className="w-3 h-3 text-white" />}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className={cn(
+                            'text-sm font-medium truncate',
+                            isSelected ? 'text-gray-900 dark:text-gray-100' : 'text-gray-700 dark:text-gray-300'
+                          )}>
+                            {service.name}
+                          </p>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <span className="text-xs text-gray-500 dark:text-gray-400">
+                              {service.duration}min
+                            </span>
+                            <span className="text-xs text-gray-300 dark:text-gray-600">·</span>
+                            <span className="text-xs font-medium text-gray-600 dark:text-gray-300">
+                              {formatCurrency(service.price)}
+                            </span>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </SectionCard>
+
+          {/* Working Hours */}
+          <SectionCard title={t('settings.profile.workingHours', 'Horários de Trabalho')} icon={Calendar}>
+            <div className="space-y-3">
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                {t('settings.profile.workingHoursDesc', 'Configure seus horários de atendimento por dia. O agente usará esses horários para verificar disponibilidade.')}
+              </p>
+
+              <div className="space-y-2">
+                {DAY_NAMES.map((dayName, dayIndex) => {
+                  const day = workingHours[dayIndex];
+                  const isWeekend = dayIndex === 0 || dayIndex === 6;
+                  return (
+                    <div
+                      key={dayIndex}
+                      className={cn(
+                        'flex flex-col sm:flex-row sm:items-center gap-3 p-3.5 rounded-xl border transition-all duration-200',
+                        day.enabled
+                          ? 'border-gray-200 dark:border-gray-700/50 bg-white dark:bg-white/[0.03]'
+                          : 'border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-white/[0.01]'
+                      )}
+                    >
+                      {/* Day toggle */}
+                      <div className="flex items-center gap-3 sm:w-36 flex-shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => updateDaySchedule(dayIndex, 'enabled', !day.enabled)}
+                          className={cn(
+                            'relative w-10 h-[22px] rounded-full transition-all duration-200 flex-shrink-0',
+                            day.enabled
+                              ? 'bg-red-600'
+                              : 'bg-gray-300 dark:bg-gray-600'
+                          )}
+                        >
+                          <span
+                            className={cn(
+                              'absolute top-[2px] w-[18px] h-[18px] rounded-full bg-white shadow-sm transition-all duration-200',
+                              day.enabled ? 'left-[20px]' : 'left-[2px]'
+                            )}
+                          />
+                        </button>
+                        <span className={cn(
+                          'text-sm font-medium',
+                          day.enabled
+                            ? 'text-gray-900 dark:text-gray-100'
+                            : 'text-gray-400 dark:text-gray-500',
+                          isWeekend && 'text-gray-500 dark:text-gray-400'
+                        )}>
+                          {dayName}
+                        </span>
+                      </div>
+
+                      {/* Time selects */}
+                      {day.enabled ? (
+                        <div className="flex items-center gap-2 flex-1">
+                          <div className="flex items-center gap-2">
+                            <Clock className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500 flex-shrink-0 hidden sm:block" />
+                            <select
+                              value={day.start}
+                              onChange={e => updateDaySchedule(dayIndex, 'start', e.target.value)}
+                              className={cn(selectClasses, 'w-[110px] h-9 text-xs')}
+                            >
+                              {timeSlots.map(t => <option key={t} value={t}>{t}</option>)}
+                            </select>
+                          </div>
+                          <span className="text-xs text-gray-400 dark:text-gray-500 font-medium">{t('settings.profile.until', 'até')}</span>
+                          <select
+                            value={day.end}
+                            onChange={e => updateDaySchedule(dayIndex, 'end', e.target.value)}
+                            className={cn(selectClasses, 'w-[110px] h-9 text-xs')}
+                          >
+                            {timeSlots.map(t => <option key={t} value={t}>{t}</option>)}
+                          </select>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-gray-400 dark:text-gray-500 italic">
+                          {t('settings.profile.unavailable', 'Indisponível')}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </SectionCard>
+        </>
+      )}
 
       {/* Save Schedule */}
       <div className="flex justify-end">
@@ -3946,6 +3983,20 @@ function AgenteTab() {
             </button>
           </div>
         </motion.div>
+      )}
+
+      {/* Save button is always visible so disabling the agent can be persisted */}
+      {!enabled && (
+        <div className="flex justify-end">
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-bold shadow-md shadow-violet-500/20 transition-colors"
+          >
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+            {saving ? 'Salvando...' : 'Salvar configurações'}
+          </button>
+        </div>
       )}
     </motion.div>
   );

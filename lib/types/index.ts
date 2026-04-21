@@ -46,6 +46,7 @@ export interface User {
   role: UserRole;
   businessId: string;
   sectorIds?: string[];
+  isProfessional?: boolean;         // true = bookable service provider; false = staff only (hidden from scheduling)
   serviceIds?: string[];            // Service IDs this professional offers
   workingHours?: WorkingHours;      // Weekly availability schedule
   commissionRate?: number;          // Commission percentage (0–100). e.g. 30 = 30% of appointment price
