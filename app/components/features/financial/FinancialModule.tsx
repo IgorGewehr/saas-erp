@@ -47,6 +47,9 @@ import {
   Target,
   Users,
   Crown,
+  FileSpreadsheet,
+  Download,
+  ChevronRight,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -102,7 +105,7 @@ const PRESET_COLORS = [
   '#820AD1', '#FF7A00', '#1A1A2E', '#14532D', '#7C2D12',
 ];
 
-type FinancialTab = 'visao-geral' | 'lancamentos' | 'contas' | 'fluxo' | 'auditoria' | 'comissoes';
+type FinancialTab = 'visao-geral' | 'lancamentos' | 'contas' | 'fluxo' | 'dre' | 'comissoes' | 'auditoria';
 
 const inputSx = { '& .MuiOutlinedInput-root': { borderRadius: '12px' } };
 
@@ -120,6 +123,7 @@ export default function FinancialModule() {
     { key: 'visao-geral', label: t('financial.tabs.overview', 'Visão Geral'), icon: <BarChart3 size={16} /> },
     { key: 'lancamentos', label: t('financial.tabs.transactions', 'Transações'), icon: <ArrowRightLeft size={16} /> },
     { key: 'fluxo',      label: t('financial.tabs.cashflow',  'Fluxo de Caixa'), icon: <TrendingUp size={16} /> },
+    { key: 'dre',        label: 'DRE', icon: <FileSpreadsheet size={16} /> },
     { key: 'contas',     label: t('financial.tabs.accounts',  'Contas Bancárias'), icon: <Landmark size={16} /> },
     { key: 'comissoes',  label: 'Comissões', icon: <Users size={16} /> },
     { key: 'auditoria',  label: t('financial.tabs.audit',     'Auditoria'), icon: <History size={16} /> },
@@ -815,6 +819,10 @@ export default function FinancialModule() {
 
             {activeTab === 'fluxo' && (
               <CashFlowProjection transactions={transactions} />
+            )}
+
+            {activeTab === 'dre' && (
+              <DREContent transactions={transactions} businessName={business?.razaoSocial || business?.nomeFantasia || 'Empresa'} />
             )}
 
             {activeTab === 'auditoria' && (
@@ -2409,6 +2417,442 @@ function CommissionsContent({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ==========================================
+// TAB: DRE
+// ==========================================
+
+type DrePeriod = 'mensal' | 'trimestral' | 'anual';
+
+interface DreSection {
+  label: string;
+  value: number;
+  isTotal?: boolean;
+  isSubtotal?: boolean;
+  indent?: boolean;
+  positive?: boolean; // for coloring: green if positive result
+  items?: { label: string; value: number }[];
+}
+
+// Cost categories (direct costs of services/products)
+const CPV_CATEGORIES = new Set(['Infraestrutura', 'Software', 'Energia', 'Aluguel']);
+// Deductions (taxes)
+const DEDUCAO_CATEGORIES = new Set(['Impostos']);
+// Financial results
+const FINANCEIRO_RECEITA_CATEGORIES = new Set(['Juros']);
+
+function DREContent({ transactions, businessName }: { transactions: Transaction[]; businessName: string }) {
+  const [period, setPeriod] = useState<DrePeriod>('mensal');
+  const [selectedMonth, setSelectedMonth] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  });
+  const [selectedYear, setSelectedYear] = useState(() => String(new Date().getFullYear()));
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
+
+  // Filter transactions by period
+  const periodTransactions = useMemo(() => {
+    const paid = transactions.filter(t => t.status === 'pago' && t.paymentDate);
+    if (period === 'mensal') {
+      return paid.filter(t => t.paymentDate!.startsWith(selectedMonth));
+    }
+    if (period === 'trimestral') {
+      const [y, m] = selectedMonth.split('-').map(Number);
+      const months: string[] = [];
+      for (let i = 0; i < 3; i++) {
+        const date = new Date(y, m - 1 - i, 1);
+        months.push(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
+      }
+      return paid.filter(t => months.some(mo => t.paymentDate!.startsWith(mo)));
+    }
+    // anual
+    return paid.filter(t => t.paymentDate!.startsWith(selectedYear));
+  }, [transactions, period, selectedMonth, selectedYear]);
+
+  // DRE computation
+  const dre = useMemo(() => {
+    const receitas = periodTransactions.filter(t => t.type === 'receita');
+    const despesas = periodTransactions.filter(t => t.type === 'despesa');
+
+    // 1. Receita Bruta breakdown by category
+    const receitaByCategory = new Map<string, number>();
+    let receitaBruta = 0;
+    for (const t of receitas) {
+      if (FINANCEIRO_RECEITA_CATEGORIES.has(t.category || '')) continue; // juros handled separately
+      const cat = t.category || 'Outros';
+      receitaByCategory.set(cat, (receitaByCategory.get(cat) || 0) + t.amount);
+      receitaBruta += t.amount;
+    }
+
+    // 2. Deduções (taxes)
+    const deducaoByCategory = new Map<string, number>();
+    let totalDeducoes = 0;
+    for (const t of despesas) {
+      if (DEDUCAO_CATEGORIES.has(t.category || '')) {
+        const cat = t.category || 'Impostos';
+        deducaoByCategory.set(cat, (deducaoByCategory.get(cat) || 0) + t.amount);
+        totalDeducoes += t.amount;
+      }
+    }
+
+    const receitaLiquida = receitaBruta - totalDeducoes;
+
+    // 3. CPV/CSV (Custo das Mercadorias/Serviços Vendidos)
+    const cpvByCategory = new Map<string, number>();
+    let totalCPV = 0;
+    for (const t of despesas) {
+      if (CPV_CATEGORIES.has(t.category || '')) {
+        const cat = t.category || 'Outros';
+        cpvByCategory.set(cat, (cpvByCategory.get(cat) || 0) + t.amount);
+        totalCPV += t.amount;
+      }
+    }
+
+    const lucroBruto = receitaLiquida - totalCPV;
+
+    // 4. Despesas Operacionais (everything that's not CPV, not Impostos, not Juros)
+    const opexByCategory = new Map<string, number>();
+    let totalOpex = 0;
+    for (const t of despesas) {
+      const cat = t.category || 'Outros';
+      if (DEDUCAO_CATEGORIES.has(cat) || CPV_CATEGORIES.has(cat)) continue;
+      opexByCategory.set(cat, (opexByCategory.get(cat) || 0) + t.amount);
+      totalOpex += t.amount;
+    }
+
+    const resultadoOperacional = lucroBruto - totalOpex;
+
+    // 5. Resultado Financeiro
+    const receitaFinanceira = receitas.filter(t => FINANCEIRO_RECEITA_CATEGORIES.has(t.category || '')).reduce((s, t) => s + t.amount, 0);
+    const despesaFinanceira = despesas.filter(t => FINANCEIRO_RECEITA_CATEGORIES.has(t.category || '')).reduce((s, t) => s + t.amount, 0);
+    const resultadoFinanceiro = receitaFinanceira - despesaFinanceira;
+
+    const resultadoLiquido = resultadoOperacional + resultadoFinanceiro;
+    const margemBruta = receitaBruta > 0 ? (lucroBruto / receitaBruta) * 100 : 0;
+    const margemLiquida = receitaBruta > 0 ? (resultadoLiquido / receitaBruta) * 100 : 0;
+
+    return {
+      receitaBruta,
+      receitaByCategory,
+      totalDeducoes,
+      deducaoByCategory,
+      receitaLiquida,
+      totalCPV,
+      cpvByCategory,
+      lucroBruto,
+      totalOpex,
+      opexByCategory,
+      resultadoOperacional,
+      receitaFinanceira,
+      despesaFinanceira,
+      resultadoFinanceiro,
+      resultadoLiquido,
+      margemBruta,
+      margemLiquida,
+    };
+  }, [periodTransactions]);
+
+  const toggleSection = (key: string) => {
+    setExpandedSections(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  // Available months from transactions
+  const availableMonths = useMemo(() => {
+    const months = new Set<string>();
+    const now = new Date();
+    for (let i = 0; i < 24; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      months.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+    }
+    return Array.from(months).sort((a, b) => b.localeCompare(a));
+  }, []);
+
+  const availableYears = useMemo(() => {
+    const years = new Set<string>();
+    for (let y = new Date().getFullYear(); y >= new Date().getFullYear() - 5; y--) years.add(String(y));
+    return Array.from(years).sort((a, b) => b.localeCompare(a));
+  }, []);
+
+  const periodLabel = useMemo(() => {
+    if (period === 'anual') return `Ano ${selectedYear}`;
+    const [y, m] = selectedMonth.split('-').map(Number);
+    const monthName = new Date(y, m - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+    if (period === 'mensal') return monthName.charAt(0).toUpperCase() + monthName.slice(1);
+    const endDate = new Date(y, m - 1, 1);
+    const startDate = new Date(y, m - 3, 1);
+    return `${startDate.toLocaleDateString('pt-BR', { month: 'short' })} – ${endDate.toLocaleDateString('pt-BR', { month: 'short', year: 'numeric' })}`;
+  }, [period, selectedMonth, selectedYear]);
+
+  const handleExportPDF = async () => {
+    const { default: jsPDF } = await import('jspdf');
+    const { default: autoTable } = await import('jspdf-autotable');
+    const doc = new jsPDF({ orientation: 'portrait', format: 'a4' });
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(16);
+    doc.text('Demonstrativo de Resultado do Exercício', 14, 20);
+    doc.setFontSize(11);
+    doc.setFont('helvetica', 'normal');
+    doc.text(businessName, 14, 28);
+    doc.text(`Período: ${periodLabel}`, 14, 34);
+    doc.text(`Emitido em: ${new Date().toLocaleDateString('pt-BR')}`, 14, 40);
+
+    const rows: (string | number)[][] = [];
+    const addRow = (label: string, value: number, bold = false) => rows.push([label, formatCurrency(value)]);
+
+    addRow('RECEITA BRUTA', dre.receitaBruta, true);
+    Array.from(dre.receitaByCategory.entries()).forEach(([k, v]) => addRow(`  ${k}`, v));
+    addRow('(-) DEDUÇÕES', -dre.totalDeducoes, true);
+    Array.from(dre.deducaoByCategory.entries()).forEach(([k, v]) => addRow(`  ${k}`, -v));
+    addRow('(=) RECEITA LÍQUIDA', dre.receitaLiquida, true);
+    addRow('(-) CUSTO DOS SERVIÇOS (CPV)', -dre.totalCPV, true);
+    Array.from(dre.cpvByCategory.entries()).forEach(([k, v]) => addRow(`  ${k}`, -v));
+    addRow('(=) LUCRO BRUTO', dre.lucroBruto, true);
+    addRow('(-) DESPESAS OPERACIONAIS', -dre.totalOpex, true);
+    Array.from(dre.opexByCategory.entries()).forEach(([k, v]) => addRow(`  ${k}`, -v));
+    addRow('(=) RESULTADO OPERACIONAL (EBIT)', dre.resultadoOperacional, true);
+    if (dre.receitaFinanceira > 0 || dre.despesaFinanceira > 0) {
+      addRow('(+/-) RESULTADO FINANCEIRO', dre.resultadoFinanceiro, true);
+    }
+    addRow('(=) RESULTADO LÍQUIDO', dre.resultadoLiquido, true);
+
+    autoTable(doc, {
+      head: [['Descrição', 'Valor']],
+      body: rows,
+      startY: 48,
+      styles: { fontSize: 10, font: 'helvetica' },
+      headStyles: { fillColor: [220, 38, 38], textColor: 255 },
+      columnStyles: { 1: { halign: 'right' } },
+    });
+
+    doc.save(`DRE_${businessName.replace(/\s+/g, '_')}_${periodLabel.replace(/\s+/g, '_')}.pdf`);
+  };
+
+  const fmt = (v: number) => formatCurrency(Math.abs(v));
+  const isNeg = (v: number) => v < 0;
+
+  interface DreRowProps {
+    label: string;
+    value: number;
+    sign?: '+' | '-' | '=';
+    isHeader?: boolean;
+    isResult?: boolean;
+    indent?: boolean;
+    expandKey?: string;
+    items?: Map<string, number>;
+    valueSign?: -1 | 1; // multiply value by this for display purposes
+  }
+
+  function DreRow({ label, value, sign, isHeader, isResult, indent, expandKey, items, valueSign = 1 }: DreRowProps) {
+    const displayValue = value * valueSign;
+    const hasItems = items && items.size > 0;
+    const isExpanded = expandKey ? expandedSections.has(expandKey) : false;
+    const colorClass = isResult
+      ? displayValue >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'
+      : 'text-slate-700 dark:text-gray-300';
+
+    return (
+      <>
+        <div
+          className={cn(
+            'flex items-center justify-between py-2.5 px-4 border-b border-slate-100 dark:border-gray-800 transition-colors',
+            isHeader && 'bg-slate-50 dark:bg-gray-800/60 font-semibold',
+            isResult && 'bg-slate-100 dark:bg-gray-800 font-bold',
+            indent && 'pl-8',
+            hasItems && 'cursor-pointer hover:bg-slate-50 dark:hover:bg-gray-800/40',
+          )}
+          onClick={hasItems && expandKey ? () => toggleSection(expandKey) : undefined}
+        >
+          <div className="flex items-center gap-2">
+            {sign && (
+              <span className="text-xs font-mono w-4 text-slate-400 dark:text-gray-500 select-none">{sign}</span>
+            )}
+            <span className={cn('text-sm', isHeader ? 'text-slate-800 dark:text-gray-200' : isResult ? colorClass : 'text-slate-600 dark:text-gray-400', indent && 'text-[13px]')}>
+              {label}
+            </span>
+            {hasItems && (
+              <ChevronRight size={14} className={cn('text-slate-400 dark:text-gray-500 transition-transform', isExpanded && 'rotate-90')} />
+            )}
+          </div>
+          <span className={cn('text-sm font-mono tabular-nums', colorClass, isResult && 'text-base')}>
+            {fmt(displayValue)}
+          </span>
+        </div>
+        {hasItems && isExpanded && (
+          <div className="bg-slate-50/50 dark:bg-gray-900/30">
+            {Array.from(items!.entries()).sort(([, a], [, b]) => b - a).map(([cat, val]) => (
+              <div key={cat} className="flex items-center justify-between py-1.5 px-4 pl-12 border-b border-slate-100/70 dark:border-gray-800/50">
+                <span className="text-[12px] text-slate-500 dark:text-gray-500">{cat}</span>
+                <span className="text-[12px] font-mono tabular-nums text-slate-500 dark:text-gray-500">{fmt(val)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">
+            Demonstrativo de Resultado do Exercício
+          </h3>
+          <p className="text-sm text-slate-500 dark:text-gray-400 mt-0.5">{periodLabel}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {/* Period type selector */}
+          <div className="flex items-center gap-1 p-1 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl">
+            {(['mensal', 'trimestral', 'anual'] as DrePeriod[]).map(p => (
+              <button
+                key={p}
+                onClick={() => setPeriod(p)}
+                className={cn(
+                  'px-3 py-1.5 rounded-lg text-xs font-medium transition-all',
+                  period === p ? 'bg-red-600 text-white shadow-sm' : 'text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800'
+                )}
+              >
+                {p.charAt(0).toUpperCase() + p.slice(1)}
+              </button>
+            ))}
+          </div>
+          {/* Period value selector */}
+          {period === 'anual' ? (
+            <select
+              value={selectedYear}
+              onChange={e => setSelectedYear(e.target.value)}
+              className="px-3 py-1.5 rounded-xl text-xs font-medium bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 text-slate-700 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-red-500"
+            >
+              {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+          ) : (
+            <select
+              value={selectedMonth}
+              onChange={e => setSelectedMonth(e.target.value)}
+              className="px-3 py-1.5 rounded-xl text-xs font-medium bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 text-slate-700 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-red-500"
+            >
+              {availableMonths.map(m => {
+                const [y, mo] = m.split('-').map(Number);
+                const label = new Date(y, mo - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+                return <option key={m} value={m}>{label.charAt(0).toUpperCase() + label.slice(1)}</option>;
+              })}
+            </select>
+          )}
+          <motion.button
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            onClick={handleExportPDF}
+            className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl text-sm font-medium text-slate-700 dark:text-gray-300 hover:bg-slate-50 dark:hover:bg-gray-800 transition-all shadow-sm"
+          >
+            <Download size={15} />
+            PDF
+          </motion.button>
+        </div>
+      </div>
+
+      {/* KPI Cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          { label: 'Receita Bruta', value: dre.receitaBruta, color: 'emerald' },
+          { label: 'Lucro Bruto', value: dre.lucroBruto, color: dre.lucroBruto >= 0 ? 'emerald' : 'red' },
+          { label: 'Margem Bruta', value: null, pct: dre.margemBruta, color: dre.margemBruta >= 0 ? 'emerald' : 'red' },
+          { label: 'Resultado Líquido', value: dre.resultadoLiquido, color: dre.resultadoLiquido >= 0 ? 'emerald' : 'red' },
+        ].map(({ label, value, pct, color }) => (
+          <div key={label} className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-4 shadow-sm">
+            <p className="text-xs text-slate-500 dark:text-gray-400 mb-1">{label}</p>
+            <p className={cn('text-lg font-bold font-display', color === 'emerald' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+              {pct !== undefined ? `${pct.toFixed(1)}%` : formatCurrency(value!)}
+            </p>
+          </div>
+        ))}
+      </div>
+
+      {/* DRE Table */}
+      <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl overflow-hidden shadow-sm">
+        <div className="px-4 py-3 border-b border-slate-100 dark:border-gray-800 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <FileSpreadsheet size={16} className="text-red-500" />
+            <span className="text-sm font-semibold text-slate-800 dark:text-gray-200">Estrutura do DRE</span>
+          </div>
+          <button
+            onClick={() => {
+              const allKeys = ['receita', 'deducao', 'cpv', 'opex'];
+              const allExpanded = allKeys.every(k => expandedSections.has(k));
+              setExpandedSections(allExpanded ? new Set() : new Set(allKeys));
+            }}
+            className="text-xs text-red-500 hover:text-red-600 font-medium"
+          >
+            {['receita', 'deducao', 'cpv', 'opex'].every(k => expandedSections.has(k)) ? 'Recolher tudo' : 'Expandir tudo'}
+          </button>
+        </div>
+
+        <div className="divide-y-0">
+          <DreRow label="RECEITA BRUTA" value={dre.receitaBruta} isHeader expandKey="receita" items={dre.receitaByCategory} />
+          <DreRow label="Deduções da Receita" value={-dre.totalDeducoes} sign="-" expandKey="deducao" items={dre.deducaoByCategory} />
+          <DreRow label="RECEITA LÍQUIDA" value={dre.receitaLiquida} sign="=" isResult />
+
+          <div className="h-px bg-slate-200 dark:bg-gray-700 my-0.5" />
+
+          <DreRow label="Custo dos Serviços/Produtos (CPV)" value={-dre.totalCPV} sign="-" expandKey="cpv" items={dre.cpvByCategory} />
+          <DreRow label="LUCRO BRUTO" value={dre.lucroBruto} sign="=" isResult />
+
+          <div className="h-px bg-slate-200 dark:bg-gray-700 my-0.5" />
+
+          <DreRow label="Despesas Operacionais" value={-dre.totalOpex} sign="-" expandKey="opex" items={dre.opexByCategory} />
+          <DreRow label="RESULTADO OPERACIONAL (EBIT)" value={dre.resultadoOperacional} sign="=" isResult />
+
+          {(dre.receitaFinanceira > 0 || dre.despesaFinanceira > 0) && (
+            <>
+              <div className="h-px bg-slate-200 dark:bg-gray-700 my-0.5" />
+              {dre.receitaFinanceira > 0 && (
+                <DreRow label="Receita Financeira (Juros)" value={dre.receitaFinanceira} sign="+" />
+              )}
+              {dre.despesaFinanceira > 0 && (
+                <DreRow label="Despesa Financeira (Juros)" value={-dre.despesaFinanceira} sign="-" />
+              )}
+              <DreRow label="Resultado Financeiro" value={dre.resultadoFinanceiro} sign="=" isResult />
+            </>
+          )}
+
+          <div className="h-1 bg-red-600/10 dark:bg-red-500/10 my-0.5" />
+
+          <div className={cn(
+            'flex items-center justify-between py-4 px-4',
+            dre.resultadoLiquido >= 0 ? 'bg-emerald-50 dark:bg-emerald-900/20' : 'bg-red-50 dark:bg-red-900/20'
+          )}>
+            <div>
+              <p className="text-xs text-slate-500 dark:text-gray-400 font-medium mb-0.5">RESULTADO LÍQUIDO</p>
+              <p className={cn('text-2xl font-bold font-display', dre.resultadoLiquido >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+                {formatCurrency(dre.resultadoLiquido)}
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="text-xs text-slate-500 dark:text-gray-400 mb-0.5">Margem Líquida</p>
+              <p className={cn('text-lg font-bold font-display', dre.margemLiquida >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+                {dre.margemLiquida.toFixed(1)}%
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Empty state */}
+      {periodTransactions.length === 0 && (
+        <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
+          <FileSpreadsheet size={40} strokeWidth={1.5} />
+          <p className="mt-3 text-sm font-medium">Nenhum lançamento pago neste período</p>
+          <p className="text-xs mt-1">Apenas transações com status "pago" entram no DRE</p>
+        </div>
+      )}
     </div>
   );
 }
