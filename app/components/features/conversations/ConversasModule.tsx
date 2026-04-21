@@ -1634,8 +1634,14 @@ function LinkContactDrawer({
               Cliente vinculado
             </p>
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center text-white font-bold text-sm flex-shrink-0">
-                {(linkedClient.name?.[0] || '?').toUpperCase()}
+              <div className="w-10 h-10 rounded-xl overflow-hidden flex-shrink-0">
+                {linkedClient.avatarUrl ? (
+                  <img src={linkedClient.avatarUrl} alt={linkedClient.name} className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center text-white font-bold text-sm">
+                    {(linkedClient.name?.[0] || '?').toUpperCase()}
+                  </div>
+                )}
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-bold text-gray-900 dark:text-gray-100 truncate">{linkedClient.name}</p>
@@ -1746,8 +1752,14 @@ function ClientResultRow({
           : 'bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800 hover:border-red-300',
       )}
     >
-      <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center text-white font-bold text-xs flex-shrink-0">
-        {(client.name?.[0] || '?').toUpperCase()}
+      <div className="w-8 h-8 rounded-lg overflow-hidden flex-shrink-0">
+        {client.avatarUrl ? (
+          <img src={client.avatarUrl} alt={client.name} className="w-full h-full object-cover" />
+        ) : (
+          <div className="w-full h-full bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center text-white font-bold text-xs">
+            {(client.name?.[0] || '?').toUpperCase()}
+          </div>
+        )}
       </div>
       <div className="flex-1 min-w-0">
         <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{client.name}</p>
