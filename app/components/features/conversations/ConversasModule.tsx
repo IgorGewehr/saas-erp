@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'react-toastify';
@@ -1499,6 +1500,7 @@ function LinkContactDrawer({
   const [search, setSearch] = useState('');
   const [creating, setCreating] = useState(false);
   const [linkingId, setLinkingId] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
   const linkedClient = useMemo(
     () => conversation.crmContactId ? clients.find(c => c.id === conversation.crmContactId) : undefined,
@@ -1555,6 +1557,9 @@ function LinkContactDrawer({
               : 'channelIdentities.instagram';
             patch[key] = convExternal;
           }
+          if (conversation.contactAvatarUrl && !client.avatarUrl) {
+            patch.avatarUrl = conversation.contactAvatarUrl;
+          }
           await updateDoc(doc(db, 'clients', clientId), patch);
         }
       }
@@ -1574,8 +1579,9 @@ function LinkContactDrawer({
       const payload: Record<string, unknown> = {
         businessId,
         name: conversation.contactName || 'Novo contato',
+        tipo: 'pf',
         source: conversation.channel,
-        status: 'novo',
+        status: 'ganho',
         score: 0,
         isActive: true,
         totalSpent: 0,
@@ -1588,8 +1594,10 @@ function LinkContactDrawer({
         else payload.phone = phoneDigits;
         payload.channelIdentities = { [conversation.channel]: phoneDigits };
       }
+      if (conversation.contactAvatarUrl) payload.avatarUrl = conversation.contactAvatarUrl;
       const { addDoc, collection } = await import('firebase/firestore');
       const ref = await addDoc(collection(db, 'clients'), payload);
+      queryClient.invalidateQueries({ queryKey: ['clients', businessId] });
       await link(ref.id);
     } catch (err) {
       console.error('[Conversations] Quick-create failed:', err);
@@ -1610,7 +1618,7 @@ function LinkContactDrawer({
         <div>
           <h3 className="text-sm font-bold text-gray-900 dark:text-gray-100">Vincular cliente</h3>
           <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
-            Associe este contato a um cliente do CRM
+            Associe este contato a um cliente cadastrado
           </p>
         </div>
         <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400">
@@ -1626,8 +1634,14 @@ function LinkContactDrawer({
               Cliente vinculado
             </p>
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center text-white font-bold text-sm flex-shrink-0">
-                {(linkedClient.name?.[0] || '?').toUpperCase()}
+              <div className="w-10 h-10 rounded-xl overflow-hidden flex-shrink-0">
+                {linkedClient.avatarUrl ? (
+                  <img src={linkedClient.avatarUrl} alt={linkedClient.name} className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center text-white font-bold text-sm">
+                    {(linkedClient.name?.[0] || '?').toUpperCase()}
+                  </div>
+                )}
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-bold text-gray-900 dark:text-gray-100 truncate">{linkedClient.name}</p>
@@ -1673,8 +1687,8 @@ function LinkContactDrawer({
           </button>
         )}
 
-        {/* Suggestions — exibido quando sem busca */}
-        {!search && suggestions.length > 0 && (
+        {/* Suggestions — exibido quando sem busca e sem cliente vinculado */}
+        {!linkedClient && !search && suggestions.length > 0 && (
           <div>
             <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2">
               Possíveis correspondências
@@ -1738,8 +1752,14 @@ function ClientResultRow({
           : 'bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800 hover:border-red-300',
       )}
     >
-      <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center text-white font-bold text-xs flex-shrink-0">
-        {(client.name?.[0] || '?').toUpperCase()}
+      <div className="w-8 h-8 rounded-lg overflow-hidden flex-shrink-0">
+        {client.avatarUrl ? (
+          <img src={client.avatarUrl} alt={client.name} className="w-full h-full object-cover" />
+        ) : (
+          <div className="w-full h-full bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center text-white font-bold text-xs">
+            {(client.name?.[0] || '?').toUpperCase()}
+          </div>
+        )}
       </div>
       <div className="flex-1 min-w-0">
         <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{client.name}</p>

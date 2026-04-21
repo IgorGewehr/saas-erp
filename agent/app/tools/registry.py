@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-UseCase = Literal["pedidos", "servicos", "simples", "times"]
+UseCase = Literal["pedidos", "servicos", "simples"]
 
 
 # ─── Orders (pedidos) ────────────────────────────────────────────────────────

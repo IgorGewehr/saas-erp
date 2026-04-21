@@ -19,19 +19,8 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import pino from 'pino';
-import { initializeApp, getApps, getApp } from 'firebase/app';
-import {
-  getFirestore,
-  collection,
-  query,
-  where,
-  getDocs,
-  addDoc,
-  updateDoc,
-  doc,
-  increment,
-  limit as firestoreLimit,
-} from 'firebase/firestore';
+import { FieldValue } from 'firebase-admin/firestore';
+import { adminDb } from '@/lib/config/firebaseAdmin';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -65,21 +54,7 @@ if (!globalSessions.__baileySessions) {
 }
 export const sessions = globalSessions.__baileySessions as Map<string, BaileysSession>;
 
-// ─── Firebase ────────────────────────────────────────────────────────────────
 
-const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
-};
-
-function getDb() {
-  const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
-  return getFirestore(app);
-}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -152,8 +127,7 @@ function getMediaLabel(type: string | null): string {
 
 async function updateFirestoreConnection(businessId: string, phoneNumber: string | null) {
   try {
-    const db = getDb();
-    await updateDoc(doc(db, 'businesses', businessId), {
+    await adminDb.collection('businesses').doc(businessId).update({
       'channels.whatsapp': {
         isConnected: true,
         connectedAt: new Date().toISOString(),
@@ -240,17 +214,14 @@ async function handleInboundMessage(
 
   const displayText = text || getMediaLabel(mediaType);
   const now = new Date().toISOString();
-  const db = getDb();
 
   // Deduplicate
   try {
-    const dupQuery = query(
-      collection(db, 'conversationMessages'),
-      where('externalMessageId', '==', messageId),
-      where('businessId', '==', businessId),
-      firestoreLimit(1),
-    );
-    const dupSnap = await getDocs(dupQuery);
+    const dupSnap = await adminDb.collection('conversationMessages')
+      .where('externalMessageId', '==', messageId)
+      .where('businessId', '==', businessId)
+      .limit(1)
+      .get();
     if (!dupSnap.empty) return;
   } catch (err) {
     console.error('[Baileys] Erro ao verificar duplicata:', err);
@@ -267,18 +238,27 @@ async function handleInboundMessage(
   }
 
   try {
-    const convQuery = query(
-      collection(db, 'conversations'),
-      where('businessId', '==', businessId),
-      where('channel', '==', 'whatsapp'),
-      where('contactExternalId', '==', senderPhone),
-      firestoreLimit(1),
-    );
-    const convSnap = await getDocs(convQuery);
+    const altPhone = getAlternativePhone(senderPhone);
+    let convSnap = await adminDb.collection('conversations')
+      .where('businessId', '==', businessId)
+      .where('channel', '==', 'whatsapp')
+      .where('contactExternalId', '==', senderPhone)
+      .limit(1)
+      .get();
+      
+    if (convSnap.empty && altPhone) {
+      convSnap = await adminDb.collection('conversations')
+        .where('businessId', '==', businessId)
+        .where('channel', '==', 'whatsapp')
+        .where('contactExternalId', '==', altPhone)
+        .limit(1)
+        .get();
+    }
+        
     let conversationId: string;
 
     if (convSnap.empty) {
-      const newConvRef = await addDoc(collection(db, 'conversations'), {
+      const newConvRef = await adminDb.collection('conversations').add({
         businessId,
         channel: 'whatsapp',
         connectedVia: 'baileys',
@@ -298,20 +278,18 @@ async function handleInboundMessage(
 
       // Auto-link CRM contact
       try {
-        const crmQuery = query(
-          collection(db, 'clients'),
-          where('businessId', '==', businessId),
-          where('channelIdentities.whatsapp', '==', senderPhone),
-          firestoreLimit(1),
-        );
-        const crmSnap = await getDocs(crmQuery);
+        const crmSnap = await adminDb.collection('clients')
+          .where('businessId', '==', businessId)
+          .where('channelIdentities.whatsapp', '==', senderPhone)
+          .limit(1)
+          .get();
         if (!crmSnap.empty) {
           const crmContact = crmSnap.docs[0];
-          await updateDoc(doc(db, 'conversations', conversationId), {
+          await adminDb.collection('conversations').doc(conversationId).update({
             crmContactId: crmContact.id,
             contactName: crmContact.data().name || contactName,
           });
-          await updateDoc(doc(db, 'clients', crmContact.id), {
+          await adminDb.collection('clients').doc(crmContact.id).update({
             lastConversationId: conversationId,
             lastConversationAt: now,
             updatedAt: now,
@@ -326,7 +304,7 @@ async function handleInboundMessage(
         lastMessage: displayText,
         lastMessageAt: timestamp,
         lastMessageDirection: 'inbound',
-        unreadCount: increment(1),
+        unreadCount: FieldValue.increment(1),
         updatedAt: now,
       };
 
@@ -338,10 +316,10 @@ async function handleInboundMessage(
         convUpdate.contactAvatarUrl = avatarUrl;
       }
 
-      await updateDoc(doc(db, 'conversations', conversationId), convUpdate);
+      await adminDb.collection('conversations').doc(conversationId).update(convUpdate);
     }
 
-    const msgRef = await addDoc(collection(db, 'conversationMessages'), {
+    const msgRef = await adminDb.collection('conversationMessages').add({
       conversationId,
       businessId,
       channel: 'whatsapp',
@@ -356,11 +334,10 @@ async function handleInboundMessage(
       createdAt: now,
     });
 
-    // Dispatch to AI agent — uses admin SDK for consistent tenant checks
+    // Dispatch to AI agent — true fire-and-forget (debounce runs inside, do NOT await)
     try {
-      const { adminDb } = await import('@/lib/config/firebaseAdmin');
       const { dispatchInboundToAgent } = await import('@/lib/agent/dispatch');
-      await dispatchInboundToAgent(adminDb, {
+      dispatchInboundToAgent(adminDb, {
         businessId,
         conversationId,
         messageId: msgRef.id,
@@ -369,7 +346,7 @@ async function handleInboundMessage(
         contactName,
         contactPhone: senderPhone,
         recipientId: senderPhone,
-      });
+      }).catch(agentErr => console.warn('[Baileys] Agent dispatch failed:', agentErr));
     } catch (agentErr) {
       console.warn('[Baileys] Agent dispatch failed:', agentErr);
     }
@@ -385,7 +362,6 @@ async function handleOutboundStatusUpdate(
   businessId: string,
   updates: WAMessageUpdate[],
 ): Promise<void> {
-  const db = getDb();
   const now = new Date().toISOString();
 
   for (const u of updates) {
@@ -419,13 +395,11 @@ async function handleOutboundStatusUpdate(
     patch.status = nextStatus;
 
     try {
-      const q = query(
-        collection(db, 'conversationMessages'),
-        where('externalMessageId', '==', externalMessageId),
-        where('businessId', '==', businessId),
-        firestoreLimit(1),
-      );
-      const snap = await getDocs(q);
+      const snap = await adminDb.collection('conversationMessages')
+        .where('externalMessageId', '==', externalMessageId)
+        .where('businessId', '==', businessId)
+        .limit(1)
+        .get();
       if (snap.empty) continue;
 
       const msgDoc = snap.docs[0];
@@ -436,7 +410,7 @@ async function handleOutboundStatusUpdate(
       const nextRank = rank[nextStatus];
       if (nextStatus !== 'failed' && nextRank <= existingRank) continue;
 
-      await updateDoc(msgDoc.ref, patch);
+      await msgDoc.ref.update(patch);
     } catch (err) {
       console.error('[Baileys] Failed to apply status update:', err);
     }
@@ -444,6 +418,25 @@ async function handleOutboundStatusUpdate(
 }
 
 // ─── Session lifecycle ───────────────────────────────────────────────────────
+
+export function getConnectedSession(businessId: string): BaileysSession | null {
+  const session = sessions.get(businessId);
+  return session?.isConnected ? session : null;
+}
+
+function getAlternativePhone(phone: string): string | null {
+  if (!phone.startsWith('55')) return null;
+  const withoutCountry = phone.substring(2);
+  if (withoutCountry.length < 10) return null;
+  const ddd = withoutCountry.substring(0, 2);
+  const number = withoutCountry.substring(2);
+  if (number.length === 8) {
+    return `55${ddd}9${number}`;
+  } else if (number.length === 9 && number.startsWith('9')) {
+    return `55${ddd}${number.substring(1)}`;
+  }
+  return null;
+}
 
 export function destroySession(businessId: string) {
   const session = sessions.get(businessId);

@@ -13,41 +13,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import crypto from 'crypto';
-import { initializeApp, getApps, getApp } from 'firebase/app';
-import {
-  getFirestore,
-  doc,
-  getDoc,
-  collection,
-  query,
-  where,
-  getDocs,
-  updateDoc,
-} from 'firebase/firestore';
+import { adminDb } from '@/lib/config/firebaseAdmin';
 import { decryptToken } from '@/lib/utils/encryption';
 import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { sessions } from '@/app/api/whatsapp/baileys-manager';
-import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { storage as firebaseStorage } from '@/lib/config/firebase';
 import type {
   ConversationChannel,
   ChannelCredentials,
 } from '@/lib/types';
 
-// ─── Firebase init (server-side, client SDK) ─────────────────────────────────
 
-const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
-};
-
-function getDb() {
-  const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
-  return getFirestore(app);
-}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -209,11 +186,10 @@ export async function POST(req: NextRequest) {
     }
 
     // Fetch business document to get channel credentials
-    const db = getDb();
-    const businessRef = doc(db, 'businesses', businessId);
-    const businessSnap = await getDoc(businessRef);
+    const businessRef = adminDb.collection('businesses').doc(businessId);
+    const businessSnap = await businessRef.get();
 
-    if (!businessSnap.exists()) {
+    if (!businessSnap.exists) {
       return NextResponse.json(
         { error: 'Empresa não encontrada' },
         { status: 404 },
@@ -297,7 +273,7 @@ export async function POST(req: NextRequest) {
         const isBaileys = waConfig && 'connectedVia' in waConfig && waConfig.connectedVia === 'baileys';
 
         if (isBaileys) {
-          result = await sendWhatsAppBaileys(businessId, recipientId, content, conversationId, db);
+          result = await sendWhatsAppBaileys(businessId, recipientId, content, conversationId);
         } else {
           result = await sendWhatsApp(channels, recipientId, content, {
             type: type || 'text',
@@ -324,13 +300,17 @@ export async function POST(req: NextRequest) {
         );
     }
 
-    // Update message status from 'sending' to 'sent' in Firestore
+    // Update or create the message record in Firestore
     const docIdToUpdate = messageDocId || messageId;
     if (docIdToUpdate) {
-      await updateMessageAfterSend(db, docIdToUpdate, result.externalMessageId, businessId);
+      await updateMessageAfterSend(docIdToUpdate, result.externalMessageId, businessId);
+    } else if (conversationId) {
+      // Agent-originated send: no pre-existing doc — create one so it appears in the UI
+      await saveAgentMessage(businessId, conversationId, channel, content, result.externalMessageId);
     }
 
     return NextResponse.json({
+      ok: true,
       success: true,
       externalMessageId: result.externalMessageId,
     });
@@ -369,7 +349,6 @@ async function sendWhatsAppBaileys(
   recipientId: string,
   content: string,
   conversationId: string,
-  db: ReturnType<typeof getFirestore>,
 ): Promise<{ externalMessageId: string }> {
   const session = sessions.get(businessId);
 
@@ -389,9 +368,9 @@ async function sendWhatsAppBaileys(
 
   if (conversationId) {
     try {
-      const convSnap = await getDoc(doc(db, 'conversations', conversationId));
-      if (convSnap.exists()) {
-        const convData = convSnap.data();
+      const convSnap = await adminDb.collection('conversations').doc(conversationId).get();
+      if (convSnap.exists) {
+        const convData = convSnap.data()!;
 
         // Priority 1: contactPhone is always a real phone (formatted by our listener)
         // e.g. "+55 21 99999-9999" → strip to "5521999999999"
@@ -450,13 +429,9 @@ async function sendWhatsAppBaileys(
     if (result?.exists && result.jid) {
       targetJid = result.jid;
     } else {
-      throw new Error(`Numero ${phoneNumber} nao possui WhatsApp.`);
+      console.warn(`[Baileys Send] Numero ${phoneNumber} nao foi encontrado no onWhatsApp. Tentando enviar mesmo assim.`);
     }
   } catch (err) {
-    // If onWhatsApp itself throws (network issue), log and try sending anyway
-    if (err instanceof Error && err.message.includes('nao possui')) {
-      throw err; // Re-throw our own user-friendly error
-    }
     console.warn('[Baileys Send] onWhatsApp falhou, tentando envio direto:', (err as Error).message);
   }
 
@@ -680,10 +655,8 @@ async function convertOggToM4a(oggUrl: string, businessId: string): Promise<stri
   await unlink(outputPath).catch(() => {});
 
   // 4. Upload converted file to Firebase Storage
-  const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
-  const storage = getStorage(app);
   const storagePath = `conversations/${businessId}/converted/${Date.now()}_audio.m4a`;
-  const storageRef = ref(storage, storagePath);
+  const storageRef = ref(firebaseStorage, storagePath);
   await uploadBytes(storageRef, m4aBuffer, { contentType: 'audio/mp4' });
 
   return getDownloadURL(storageRef);
@@ -774,19 +747,50 @@ async function sendInstagram(
 
 // ─── Firestore Helpers ───────────────────────────────────────────────────────
 
+async function saveAgentMessage(
+  businessId: string,
+  conversationId: string,
+  channel: string,
+  content: string,
+  externalMessageId: string,
+) {
+  try {
+    const now = new Date().toISOString();
+    await adminDb.collection('conversationMessages').add({
+      conversationId,
+      businessId,
+      channel,
+      direction: 'outbound',
+      content,
+      status: 'sent',
+      senderName: 'IA',
+      externalMessageId,
+      sentAt: now,
+      createdAt: now,
+    });
+    await adminDb.collection('conversations').doc(conversationId).update({
+      lastMessage: content,
+      lastMessageAt: now,
+      lastMessageDirection: 'outbound',
+      updatedAt: now,
+    });
+  } catch (err) {
+    console.error('[Send Message] Failed to save agent message to Firestore:', err);
+  }
+}
+
 async function updateMessageAfterSend(
-  db: ReturnType<typeof getFirestore>,
   messageId: string,
   externalMessageId: string,
   businessId: string,
 ) {
   try {
     // Try direct doc update first (if messageId is the Firestore document ID)
-    const msgRef = doc(db, 'conversationMessages', messageId);
-    const msgSnap = await getDoc(msgRef);
+    const msgRef = adminDb.collection('conversationMessages').doc(messageId);
+    const msgSnap = await msgRef.get();
 
-    if (msgSnap.exists()) {
-      await updateDoc(msgRef, {
+    if (msgSnap.exists) {
+      await msgRef.update({
         status: 'sent',
         externalMessageId,
       });
@@ -794,15 +798,14 @@ async function updateMessageAfterSend(
     }
 
     // Fallback: query by a custom field if the ID is application-level
-    const q = query(
-      collection(db, 'conversationMessages'),
-      where('id', '==', messageId),
-      where('businessId', '==', businessId),
-    );
-    const snap = await getDocs(q);
+    const snap = await adminDb.collection('conversationMessages')
+      .where('id', '==', messageId)
+      .where('businessId', '==', businessId)
+      .limit(1)
+      .get();
 
     if (!snap.empty) {
-      await updateDoc(snap.docs[0].ref, {
+      await snap.docs[0].ref.update({
         status: 'sent',
         externalMessageId,
       });

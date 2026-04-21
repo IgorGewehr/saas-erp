@@ -46,6 +46,7 @@ export interface User {
   role: UserRole;
   businessId: string;
   sectorIds?: string[];
+  isProfessional?: boolean;         // true = bookable service provider; false = staff only (hidden from scheduling)
   serviceIds?: string[];            // Service IDs this professional offers
   workingHours?: WorkingHours;      // Weekly availability schedule
   commissionRate?: number;          // Commission percentage (0–100). e.g. 30 = 30% of appointment price
@@ -187,19 +188,17 @@ export const COMPANY_TYPE_LABELS: Record<string, string> = {
   individual: 'Empresário Individual',
 };
 
-export type UseCase = 'pedidos' | 'servicos' | 'times' | 'simples';
+export type UseCase = 'pedidos' | 'servicos' | 'simples';
 
 export const USE_CASE_LABELS: Record<UseCase, string> = {
   pedidos: 'Pedidos & Entregas',
   servicos: 'Prestador de Serviços',
-  times: 'Gestão de Times',
   simples: 'Essencial',
 };
 
 export const USE_CASE_DESCRIPTIONS: Record<UseCase, string> = {
   pedidos: 'Para restaurantes, confeitarias e comércios que recebem pedidos para entrega. Inclui gerenciador de pedidos, cardápio e estoque com composições.',
   servicos: 'Para profissionais e clínicas com agendamentos. Inclui agenda com recorrência, controle de serviços e sincronização de métricas de clientes.',
-  times: 'Para equipes que organizam trabalho em quadros Kanban. Foco em produtividade, atribuição e fluxo de tarefas.',
   simples: 'Apenas o essencial: clientes, conversas, CRM e financeiro. Sem módulos operacionais.',
 };
 
@@ -1215,6 +1214,7 @@ export interface Client {
   suframa?: string;
   nomeFantasia?: string;
   isActive?: boolean;
+  avatarUrl?: string;
   totalSpent?: number;
   visitCount?: number;
   lastVisit?: string;

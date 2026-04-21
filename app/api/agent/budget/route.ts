@@ -46,10 +46,11 @@ export async function POST(req: NextRequest) {
 
     const runsSnap = await adminDb.collection('agentRuns')
       .where('businessId', '==', ctx.businessId)
-      .where('createdAt', '>=', iso)
       .get();
 
-    const usdToday = runsSnap.docs.reduce((sum, d) => sum + ((d.data() as AgentRun).costUsd || 0), 0);
+    const usdToday = runsSnap.docs
+      .filter(d => (d.data() as AgentRun).createdAt >= iso)
+      .reduce((sum, d) => sum + ((d.data() as AgentRun).costUsd || 0), 0);
     const allowed = usdToday < cap;
 
     return NextResponse.json({

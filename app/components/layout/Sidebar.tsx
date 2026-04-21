@@ -53,7 +53,7 @@ export type MenuPage =
   | 'Configurações';
 
 // Which use cases each module appears under. `undefined` means "always visible".
-const ALL_USE_CASES: UseCase[] = ['pedidos', 'servicos', 'times', 'simples'];
+const ALL_USE_CASES: UseCase[] = ['pedidos', 'servicos', 'simples'];
 
 interface MenuItemConfig {
   id: MenuPage;
@@ -90,7 +90,9 @@ function useMenuSections(): MenuSection[] {
         { id: 'Pedidos', label: t('sidebar.pedidos', 'Pedidos'), icon: ClipboardCheck, useCases: ['pedidos'] },
         { id: 'Cardápio', label: t('sidebar.cardapio', 'Cardápio'), icon: UtensilsCrossed, useCases: ['pedidos'] },
         { id: 'Vendas', label: t('sidebar.vendas'), icon: ClipboardList, useCases: ['pedidos', 'servicos', 'simples'] },
-        { id: 'Kanban', label: t('sidebar.kanban'), icon: Kanban, enterpriseOnly: true, useCases: ['times'] },
+        // Kanban está disponível em todos os modos — útil para organizar tarefas
+        // internas independente do tipo de operação.
+        { id: 'Kanban', label: t('sidebar.kanban'), icon: Kanban, enterpriseOnly: true },
         { id: 'Financeiro', label: t('sidebar.financeiro'), icon: DollarSign, useCases: ['pedidos', 'servicos', 'simples'] },
         { id: 'Relatórios', label: t('sidebar.relatorios', 'Relatórios'), icon: BarChart3, useCases: ['pedidos', 'servicos', 'simples'] },
         { id: 'Estoque', label: t('sidebar.estoque'), icon: Package, useCases: ['pedidos', 'servicos', 'simples'] },

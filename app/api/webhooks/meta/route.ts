@@ -1191,11 +1191,11 @@ async function saveInboundMessage(params: InboundMessageParams) {
 
     console.log('[Meta Webhook] Saved inbound message for conversation:', conversationId);
 
-    // Dispatch to AI agent (fire-and-forget). Checks business/conversation gates internally.
+    // Dispatch to AI agent (true fire-and-forget — do NOT await, debounce runs inside).
     try {
       const { adminDb } = await import('@/lib/config/firebaseAdmin');
       const { dispatchInboundToAgent } = await import('@/lib/agent/dispatch');
-      await dispatchInboundToAgent(adminDb, {
+      dispatchInboundToAgent(adminDb, {
         businessId,
         conversationId,
         messageId: msgRef.id,
@@ -1204,7 +1204,7 @@ async function saveInboundMessage(params: InboundMessageParams) {
         contactName: params.senderName || params.externalId,
         contactPhone: params.externalId,
         recipientId: params.externalId,
-      });
+      }).catch(agentErr => console.warn('[Meta Webhook] Agent dispatch failed:', agentErr));
     } catch (agentErr) {
       console.warn('[Meta Webhook] Agent dispatch failed:', agentErr);
     }

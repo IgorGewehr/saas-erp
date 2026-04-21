@@ -101,10 +101,14 @@ async function listProfessionals(businessId: string, serviceId?: string) {
     .get();
   const users = snap.docs
     .map(d => ({ ...(d.data() as User), id: d.id }))
-    .filter(u => u.isActive !== false);
+    .filter(u => u.isActive !== false && u.isProfessional !== false);
 
   const filtered = serviceId
-    ? users.filter(u => !u.serviceIds || u.serviceIds.length === 0 || u.serviceIds.includes(serviceId))
+    ? users.filter(u => {
+        const ids = u.serviceIds;
+        if (!ids || ids.length === 0) return false; // must explicitly offer the service
+        return ids.includes(serviceId);
+      })
     : users;
 
   // Return only what the agent needs — strip auth/session sensitive fields
@@ -181,13 +185,13 @@ async function checkAvailability(
   let professionals: User[] = usersSnap
     .filter(d => d.exists)
     .map(d => ({ ...(d.data() as User), id: d.id }))
-    .filter(u => u.businessId === businessId);
+    .filter(u => u.businessId === businessId && u.isProfessional !== false);
 
-  // Filter by serviceId — the professional must offer it (or have no restriction configured)
+  // Filter by serviceId — professional must explicitly offer it
   if (serviceId) {
     professionals = professionals.filter(u => {
       const ids = u.serviceIds;
-      if (!ids || ids.length === 0) return true; // sem lista = faz tudo
+      if (!ids || ids.length === 0) return false;
       return ids.includes(serviceId);
     });
   }

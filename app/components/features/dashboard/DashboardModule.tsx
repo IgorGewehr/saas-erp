@@ -61,9 +61,11 @@ export default function DashboardModule() {
   const useCase: UseCase = (business?.settings?.useCase as UseCase) || 'servicos';
   const showAgenda = useCase === 'servicos';
   const showOrders = useCase === 'pedidos';
-  const showTasks = useCase === 'times';
-  const showRevenue = useCase !== 'times';
-  const showFinancial = useCase !== 'times';
+  // Kanban ainda aparece na sidebar em todos os modos; o dashboard só destaca o
+  // card de produtividade se o operador já usar o Kanban (tasksOpen > 0).
+  const showTasks = false; // removido o modo 'times' dedicado
+  const showRevenue = true;
+  const showFinancial = true;
 
   // ── Firestore queries ──
   const { data: clients = [], isLoading: loadingClients } = useQuery({

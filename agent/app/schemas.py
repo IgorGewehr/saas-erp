@@ -20,7 +20,7 @@ class ProcessRequest(BaseModel):
     # Prior messages to ground the model (most recent last), optional
     history: list[dict[str, Any]] = Field(default_factory=list)
     # Business-level config — passed by the webhook so we don't re-fetch
-    use_case: Literal["pedidos", "servicos", "simples", "times"] = "servicos"
+    use_case: Literal["pedidos", "servicos", "simples"] = "servicos"
     business_name: str | None = None
     business_description: str | None = None
     tone: Literal["formal", "casual", "friendly"] = "friendly"
@@ -29,6 +29,10 @@ class ProcessRequest(BaseModel):
     agenda_settings: dict[str, Any] | None = None
     # Long-term memory summary of the client (last ~5 interactions, 1 line each)
     client_memory: str | None = None
+    # Business operational context passed from Settings
+    opening_hours: list[dict[str, Any]] | None = None  # 7 BusinessHoursDay entries (0=Dom..6=Sáb)
+    address: dict[str, Any] | None = None              # business.endereco
+    services_list: list[dict[str, Any]] | None = None  # active services (agenda mode pre-load)
 
 
 class ProcessResponse(BaseModel):
