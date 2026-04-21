@@ -148,6 +148,10 @@ async def run_agent(*, run_id: str, business_id: str, req: ProcessRequest) -> Ag
             "agenda": req.agenda_settings or {},
             # Long-term memory of this client (past interactions)
             "client_memory": req.client_memory or "",
+            # Operational context from Settings (profile / company)
+            "opening_hours": req.opening_hours or [],
+            "address": req.address or {},
+            "services_list": req.services_list or [],
         },
         "contact": {
             "name": req.contact_name,

@@ -300,13 +300,17 @@ export async function POST(req: NextRequest) {
         );
     }
 
-    // Update message status from 'sending' to 'sent' in Firestore
+    // Update or create the message record in Firestore
     const docIdToUpdate = messageDocId || messageId;
     if (docIdToUpdate) {
       await updateMessageAfterSend(docIdToUpdate, result.externalMessageId, businessId);
+    } else if (conversationId) {
+      // Agent-originated send: no pre-existing doc — create one so it appears in the UI
+      await saveAgentMessage(businessId, conversationId, channel, content, result.externalMessageId);
     }
 
     return NextResponse.json({
+      ok: true,
       success: true,
       externalMessageId: result.externalMessageId,
     });
@@ -742,6 +746,38 @@ async function sendInstagram(
 }
 
 // ─── Firestore Helpers ───────────────────────────────────────────────────────
+
+async function saveAgentMessage(
+  businessId: string,
+  conversationId: string,
+  channel: string,
+  content: string,
+  externalMessageId: string,
+) {
+  try {
+    const now = new Date().toISOString();
+    await adminDb.collection('conversationMessages').add({
+      conversationId,
+      businessId,
+      channel,
+      direction: 'outbound',
+      content,
+      status: 'sent',
+      senderName: 'IA',
+      externalMessageId,
+      sentAt: now,
+      createdAt: now,
+    });
+    await adminDb.collection('conversations').doc(conversationId).update({
+      lastMessage: content,
+      lastMessageAt: now,
+      lastMessageDirection: 'outbound',
+      updatedAt: now,
+    });
+  } catch (err) {
+    console.error('[Send Message] Failed to save agent message to Firestore:', err);
+  }
+}
 
 async function updateMessageAfterSend(
   messageId: string,

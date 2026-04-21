@@ -287,7 +287,7 @@ export default function TeamTab({ integrations, members }: TeamTabProps) {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {memberCards.map((member, i) => {
             const roleCfg = ROLE_BADGE_CONFIG[member.role] || ROLE_BADGE_CONFIG.viewer;
-            const initials = member.name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
+            const initials = (member.name || '?').split(' ').map(n => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase();
 
             return (
               <motion.div
@@ -446,7 +446,7 @@ export default function TeamTab({ integrations, members }: TeamTabProps) {
             </thead>
             <tbody>
               {costs.map((row, i) => {
-                const initials = row.name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
+                const initials = (row.name || '?').split(' ').map(n => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase();
                 return (
                   <motion.tr
                     key={row.memberId}

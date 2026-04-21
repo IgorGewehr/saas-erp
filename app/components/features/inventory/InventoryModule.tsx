@@ -61,11 +61,15 @@ import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { Product, StockMovement, ProductComponent } from '@/lib/types';
+import type { Product, StockMovement, ProductComponent, ProductModifierGroup, MenuCategory } from '@/lib/types';
 import { toast } from 'react-toastify';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatDateTime } from '@/lib/utils/format';
+import ModifierGroupsEditor from './ModifierGroupsEditor';
+import MenuCategoriesManager from './MenuCategoriesManager';
+import { onSnapshot } from 'firebase/firestore';
+import { Tag, Sparkles } from 'lucide-react';
 
 // ==============================================
 // TYPES
@@ -109,9 +113,12 @@ interface ProductFormData {
   // Delivery / Cardápio
   isDeliverable: boolean;
   menuCategory: string;
+  menuCategoryId: string;
   menuDescription: string;
   preparationTime: string;
   components: ProductComponent[];
+  dietary: string[];
+  modifierGroups: ProductModifierGroup[];
 }
 
 interface MovementFormData {
@@ -172,9 +179,12 @@ const EMPTY_PRODUCT_FORM: ProductFormData = {
   existingImageUrl: '',
   isDeliverable: false,
   menuCategory: '',
+  menuCategoryId: '',
   menuDescription: '',
   preparationTime: '',
   components: [],
+  dietary: [],
+  modifierGroups: [],
 };
 
 const EMPTY_MOVEMENT_FORM: MovementFormData = {
@@ -187,6 +197,17 @@ const EMPTY_MOVEMENT_FORM: MovementFormData = {
 
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
 const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+
+const DIETARY_OPTIONS: { id: string; label: string; emoji: string }[] = [
+  { id: 'vegan', label: 'Vegano', emoji: '🌱' },
+  { id: 'vegetarian', label: 'Vegetariano', emoji: '🥦' },
+  { id: 'glutenfree', label: 'Sem Glúten', emoji: '🌾' },
+  { id: 'lactosefree', label: 'Sem Lactose', emoji: '🥛' },
+  { id: 'organic', label: 'Orgânico', emoji: '♻️' },
+  { id: 'picante', label: 'Picante', emoji: '🌶️' },
+  { id: 'alcool', label: 'Contém Álcool', emoji: '🍺' },
+  { id: 'kids', label: 'Kids', emoji: '👶' },
+];
 
 // ==============================================
 // ANIMATION VARIANTS
@@ -1161,9 +1182,11 @@ interface ProductDialogProps {
   product?: Product | null;
   allProducts?: Product[];
   deliveryEnabled?: boolean;
+  menuCategories?: MenuCategory[];
+  onOpenCategoriesManager?: () => void;
 }
 
-function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliveryEnabled = false }: ProductDialogProps) {
+function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliveryEnabled = false, menuCategories = [], onOpenCategoriesManager }: ProductDialogProps) {
   const { t } = useTranslation();
   const [form, setForm] = useState<ProductFormData>(EMPTY_PRODUCT_FORM);
   const [isSaving, setIsSaving] = useState(false);
@@ -1204,9 +1227,12 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
           existingImageUrl: product.imageUrl || '',
           isDeliverable: product.isDeliverable ?? false,
           menuCategory: product.menuCategory || '',
+          menuCategoryId: product.menuCategoryId || '',
           menuDescription: product.menuDescription || '',
           preparationTime: product.preparationTime ? String(product.preparationTime) : '',
           components: product.components ? [...product.components] : [],
+          dietary: product.dietary ? [...product.dietary] : [],
+          modifierGroups: product.modifierGroups ? JSON.parse(JSON.stringify(product.modifierGroups)) : [],
         });
       } else {
         setForm(EMPTY_PRODUCT_FORM);
@@ -1250,7 +1276,7 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
   const saleVal = currencyDisplayToNumber(form.salePrice);
   const margin = getMargin(costVal, saleVal);
 
-  function updateField(field: keyof ProductFormData, value: string | boolean) {
+  function updateField(field: keyof ProductFormData, value: string | boolean | string[]) {
     setForm((f) => ({ ...f, [field]: value }));
     if (errors[field]) setErrors((e) => ({ ...e, [field]: '' }));
   }
@@ -1573,14 +1599,58 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
                       className="space-y-3 overflow-hidden"
                     >
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <TextField
-                          label="Categoria no cardápio"
-                          placeholder="Pizzas, Bebidas, Sobremesas..."
-                          value={form.menuCategory}
-                          onChange={(e) => updateField('menuCategory', e.target.value)}
-                          size="small"
-                          fullWidth
-                        />
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1">
+                            Categoria no cardápio
+                          </label>
+                          {menuCategories.length > 0 ? (
+                            <div className="flex gap-2">
+                              <select
+                                value={form.menuCategoryId}
+                                onChange={(e) => {
+                                  const cat = menuCategories.find(c => c.id === e.target.value);
+                                  updateField('menuCategoryId', e.target.value);
+                                  updateField('menuCategory', cat?.name || '');
+                                }}
+                                className="flex-1 px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20"
+                              >
+                                <option value="">— Sem categoria —</option>
+                                {menuCategories.filter(c => c.isActive).map(cat => (
+                                  <option key={cat.id} value={cat.id}>{cat.name}</option>
+                                ))}
+                              </select>
+                              {onOpenCategoriesManager && (
+                                <button
+                                  type="button"
+                                  onClick={onOpenCategoriesManager}
+                                  title="Gerenciar categorias"
+                                  className="px-2.5 py-2 rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                                >
+                                  <Tag className="w-4 h-4 text-gray-500" />
+                                </button>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="flex gap-2 items-start">
+                              <input
+                                value={form.menuCategory}
+                                onChange={(e) => updateField('menuCategory', e.target.value)}
+                                placeholder="Pizzas, Bebidas, Sobremesas..."
+                                className="flex-1 px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20"
+                              />
+                              {onOpenCategoriesManager && (
+                                <button
+                                  type="button"
+                                  onClick={onOpenCategoriesManager}
+                                  className="inline-flex items-center gap-1 px-2.5 py-2 text-xs font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg border border-red-200 dark:border-red-800 transition-colors whitespace-nowrap"
+                                >
+                                  <Plus className="w-3.5 h-3.5" />
+                                  Criar
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
                         <TextField
                           label="Tempo de preparo (min)"
                           type="number"
@@ -1601,6 +1671,48 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
                         size="small"
                         fullWidth
                       />
+
+                      {/* Dietary tags */}
+                      <div>
+                        <p className="text-xs font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                          Informações dietéticas
+                          <span className="ml-1.5 text-gray-400 font-normal">(visíveis no cardápio e filtros do agente)</span>
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {DIETARY_OPTIONS.map(opt => {
+                            const active = form.dietary.includes(opt.id);
+                            return (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                onClick={() => {
+                                  const next = active
+                                    ? form.dietary.filter(d => d !== opt.id)
+                                    : [...form.dietary, opt.id];
+                                  updateField('dietary', next);
+                                }}
+                                className={cn(
+                                  'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-colors border',
+                                  active
+                                    ? 'bg-emerald-50 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-300 dark:border-emerald-500/40'
+                                    : 'bg-white dark:bg-gray-900 text-gray-500 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600',
+                                )}
+                              >
+                                <span>{opt.emoji}</span>
+                                {opt.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Modificadores / Personalização */}
+                      <div className="bg-gradient-to-br from-red-50/50 to-orange-50/30 dark:from-red-900/10 dark:to-orange-900/5 rounded-xl p-3 border border-red-100 dark:border-red-900/30">
+                        <ModifierGroupsEditor
+                          groups={form.modifierGroups}
+                          onChange={(groups) => setForm(f => ({ ...f, modifierGroups: groups }))}
+                        />
+                      </div>
 
                       {/* Composição (BOM) */}
                       <div className="bg-gray-50 dark:bg-gray-800/40 rounded-xl p-3 border border-gray-200 dark:border-gray-700">
@@ -1880,6 +1992,29 @@ export default function InventoryModule() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deletingProduct, setDeletingProduct] = useState<Product | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [categoriesManagerOpen, setCategoriesManagerOpen] = useState(false);
+  const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([]);
+
+  const deliveryEnabled = business?.settings?.useCase === 'pedidos';
+
+  // Subscribe to menu categories (pedidos mode)
+  React.useEffect(() => {
+    if (!business?.id || !deliveryEnabled) {
+      setMenuCategories([]);
+      return;
+    }
+    const q = query(
+      collection(db, 'menuCategories'),
+      where('businessId', '==', business.id),
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      const list = snap.docs
+        .map(d => ({ ...d.data(), id: d.id }) as MenuCategory)
+        .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+      setMenuCategories(list);
+    });
+    return () => unsub();
+  }, [business?.id, deliveryEnabled]);
 
   // ==========================================
   // FIRESTORE QUERIES
@@ -1975,9 +2110,13 @@ export default function InventoryModule() {
         imageUrl: imageUrl || null,
         isDeliverable: data.isDeliverable,
         menuCategory: data.isDeliverable ? (data.menuCategory.trim() || null) : null,
+        menuCategoryId: data.isDeliverable && data.menuCategoryId ? data.menuCategoryId : null,
         menuDescription: data.isDeliverable ? (data.menuDescription.trim() || null) : null,
         preparationTime: data.isDeliverable && data.preparationTime ? Number(data.preparationTime) : null,
         components: data.isDeliverable && data.components.length > 0 ? data.components : null,
+        dietary: data.isDeliverable && data.dietary.length > 0 ? data.dietary : null,
+        modifierGroups: data.isDeliverable && data.modifierGroups.length > 0 ? data.modifierGroups : null,
+        hasModifiers: data.isDeliverable && data.modifierGroups.length > 0,
         updatedAt: new Date().toISOString(),
       };
 
@@ -2017,9 +2156,15 @@ export default function InventoryModule() {
 
       if (data.isDeliverable) {
         if (data.menuCategory.trim()) productData.menuCategory = data.menuCategory.trim();
+        if (data.menuCategoryId) productData.menuCategoryId = data.menuCategoryId;
         if (data.menuDescription.trim()) productData.menuDescription = data.menuDescription.trim();
         if (data.preparationTime) productData.preparationTime = Number(data.preparationTime);
         if (data.components.length > 0) productData.components = data.components;
+        if (data.dietary.length > 0) productData.dietary = data.dietary;
+        if (data.modifierGroups.length > 0) {
+          productData.modifierGroups = data.modifierGroups;
+          productData.hasModifiers = true;
+        }
       }
 
       const docRef = await addDoc(collection(db, 'products'), productData);
@@ -2236,8 +2381,11 @@ export default function InventoryModule() {
           onSave={handleSaveProduct}
           product={editingProduct}
           allProducts={products}
-          deliveryEnabled={business?.settings?.useCase === 'pedidos'}
+          deliveryEnabled={deliveryEnabled}
+          menuCategories={menuCategories}
+          onOpenCategoriesManager={() => setCategoriesManagerOpen(true)}
         />
+        <MenuCategoriesManager open={categoriesManagerOpen} onClose={() => setCategoriesManagerOpen(false)} />
       </div>
     );
   }
@@ -2258,13 +2406,29 @@ export default function InventoryModule() {
             {t('inventory.header.productCount', '{{count}} produtos cadastrados', { count: stats.totalProducts })}
           </p>
         </div>
-        <button
-          onClick={handleNewProduct}
-          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-gradient-to-r from-red-600 to-red-500 text-white text-sm font-medium hover:from-red-700 hover:to-red-600 transition-all shadow-sm"
-        >
-          <Plus className="w-4 h-4" />
-          {t('inventory.header.newProduct', 'Novo Produto')}
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          {deliveryEnabled && (
+            <button
+              onClick={() => setCategoriesManagerOpen(true)}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-medium hover:border-red-300 dark:hover:border-red-700 hover:bg-red-50/50 dark:hover:bg-red-900/10 transition-all"
+            >
+              <Tag className="w-4 h-4 text-red-500" />
+              Categorias
+              {menuCategories.length > 0 && (
+                <span className="px-1.5 py-0.5 rounded-md bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-400 text-[10px] font-bold">
+                  {menuCategories.length}
+                </span>
+              )}
+            </button>
+          )}
+          <button
+            onClick={handleNewProduct}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-gradient-to-r from-red-600 to-red-500 text-white text-sm font-medium hover:from-red-700 hover:to-red-600 transition-all shadow-sm"
+          >
+            <Plus className="w-4 h-4" />
+            {t('inventory.header.newProduct', 'Novo Produto')}
+          </button>
+        </div>
       </div>
 
       {/* ============ FILTERS BAR ============ */}
@@ -2535,8 +2699,12 @@ export default function InventoryModule() {
         onSave={handleSaveProduct}
         product={editingProduct}
         allProducts={products}
-        deliveryEnabled={business?.settings?.useCase === 'pedidos'}
+        deliveryEnabled={deliveryEnabled}
+        menuCategories={menuCategories}
+        onOpenCategoriesManager={() => setCategoriesManagerOpen(true)}
       />
+
+      <MenuCategoriesManager open={categoriesManagerOpen} onClose={() => setCategoriesManagerOpen(false)} />
 
       <StockMovementDialog
         open={movementDialogOpen}

@@ -40,8 +40,10 @@ export async function dispatchInboundToAgent(
     return;
   }
 
+  const DEBOUNCE_MS = parseInt(process.env.AGENT_DEBOUNCE_MS || '5000', 10);
+
   try {
-    // Parallel reads: business settings + conversation doc
+    // Fast pre-check: read business + conversation to gate immediately
     const [bizSnap, convSnap] = await Promise.all([
       db.collection('businesses').doc(input.businessId).get(),
       db.collection('conversations').doc(input.conversationId).get(),
@@ -54,9 +56,28 @@ export async function dispatchInboundToAgent(
     // Gates
     const agentEnabledOnBusiness = !!business.settings?.aiAgent?.enabled;
     if (!agentEnabledOnBusiness) return;
-    if (conv.aiEnabled === false) return; // default true when undefined
+    if (conv.aiEnabled === false) return;
 
-    // Build last-10-turns history for grounding
+    // Debounce: mark this message as the current pending dispatch token.
+    // If another message arrives within DEBOUNCE_MS it will overwrite this field
+    // and this invocation will silently bail, letting the newer message handle it.
+    const convRef = db.collection('conversations').doc(input.conversationId);
+    await convRef.update({ _agentPendingDispatch: input.messageId });
+    await new Promise(r => setTimeout(r, DEBOUNCE_MS));
+
+    // Re-read conversation — if the token changed, a newer message took over
+    const freshConvSnap = await convRef.get();
+    if (!freshConvSnap.exists) return;
+    const freshData = freshConvSnap.data() as Conversation & { _agentPendingDispatch?: string | null };
+    if (freshData._agentPendingDispatch !== input.messageId) return;
+    // Also re-check per-conversation toggle (user may have disabled during the wait)
+    if (freshData.aiEnabled === false) return;
+
+    // Clear the token (best-effort — non-fatal if it fails)
+    convRef.update({ _agentPendingDispatch: null }).catch(() => {});
+
+    // Build last-10-turns history — re-fetch AFTER the debounce window so
+    // any burst messages (saved during the 5s wait) are included.
     const historySnap = await db.collection('conversationMessages')
       .where('conversationId', '==', input.conversationId)
       .where('businessId', '==', input.businessId)
@@ -66,7 +87,7 @@ export async function dispatchInboundToAgent(
     const history = historySnap.docs
       .map(d => d.data())
       .reverse() // chronological asc
-      .filter(m => m.id !== input.messageId) // skip the just-saved message
+      .filter(m => m.id !== input.messageId) // skip the triggering message (passed separately)
       .map(m => ({
         role: m.direction === 'inbound' ? 'user' : 'assistant',
         content: typeof m.content === 'string' ? m.content : '',
@@ -85,6 +106,30 @@ export async function dispatchInboundToAgent(
       } catch { /* non-fatal */ }
     }
 
+    const useCase = business.settings?.useCase || 'servicos';
+
+    // Pre-load services for agenda mode — avoids an extra tool call for "what services do you have?"
+    type ServiceSnapshot = { name: string; price: number; duration: number; category?: string; description?: string };
+    let servicesList: ServiceSnapshot[] = [];
+    if (useCase === 'servicos') {
+      try {
+        const servicesSnap = await db.collection('services')
+          .where('businessId', '==', input.businessId)
+          .where('isActive', '==', true)
+          .get();
+        servicesList = servicesSnap.docs.map(d => {
+          const s = d.data();
+          return {
+            name: s.name as string,
+            price: (s.price as number) || 0,
+            duration: (s.duration as number) || 60,
+            ...(s.category ? { category: s.category as string } : {}),
+            ...(s.description ? { description: s.description as string } : {}),
+          };
+        });
+      } catch { /* non-fatal — agent falls back to agenda_list_services tool */ }
+    }
+
     const payload = {
       message_id: input.messageId,
       conversation_id: input.conversationId,
@@ -94,7 +139,7 @@ export async function dispatchInboundToAgent(
       channel: input.channel,
       recipient_id: input.recipientId,
       history,
-      use_case: business.settings?.useCase || 'servicos',
+      use_case: useCase,
       business_name: business.nomeFantasia || business.razaoSocial,
       business_description: business.settings?.aiAgent?.businessDescription,
       tone: business.settings?.aiAgent?.tone || 'friendly',
@@ -103,6 +148,10 @@ export async function dispatchInboundToAgent(
       agenda_settings: business.settings?.aiAgent?.agenda || null,
       // Long-term memory carried over from previous conversations
       client_memory: clientMemory || null,
+      // Business operational context (profile / settings)
+      opening_hours: business.settings?.openingHours || null,
+      address: business.endereco || null,
+      services_list: servicesList.length > 0 ? servicesList : null,
     };
 
     const raw = JSON.stringify(payload);

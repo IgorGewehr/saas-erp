@@ -6,7 +6,7 @@ import type {
   DeliveryOrderPaymentMethod, DeliveryOrderPaymentStatus, DeliveryType,
   Product, DeliveryOrderAddress,
 } from '@/lib/types';
-import { Timestamp } from 'firebase-admin/firestore';
+import { Timestamp, FieldValue } from 'firebase-admin/firestore';
 
 // ─── Action schemas ──────────────────────────────────────────────────────────
 
@@ -199,6 +199,21 @@ async function createOrder(businessId: string, params: CreateParams) {
   const cleaned = Object.fromEntries(Object.entries(doc).filter(([, v]) => v !== undefined));
   const ref = await adminDb.collection('deliveryOrders').add(cleaned);
 
+  // Deduct stock atomically — batch write so all decrements commit together
+  try {
+    const batch = adminDb.batch();
+    for (const [pid, qty] of stockBucket.entries()) {
+      batch.update(adminDb.collection('products').doc(pid), {
+        currentStock: FieldValue.increment(-qty),
+        updatedAt: now,
+      });
+    }
+    batch.update(adminDb.collection('deliveryOrders').doc(ref.id), { stockDeductedAt: now });
+    await batch.commit();
+  } catch (stockErr) {
+    console.error('[orders/create] stock deduction failed (order saved):', stockErr);
+  }
+
   return { id: ref.id, number, total, subtotal, estimatedDeliveryAt };
 }
 
@@ -306,12 +321,63 @@ async function cancelOrder(businessId: string, orderId: string, reason?: string)
   const data = snap.data() as DeliveryOrder;
   if (data.businessId !== businessId) throw new Error('Cross-tenant access denied');
 
+  const now = new Date().toISOString();
   await ref.update({
     status: 'cancelado',
     internalNotes: reason ? `${data.internalNotes ? data.internalNotes + ' · ' : ''}Cancelado: ${reason}` : data.internalNotes,
-    updatedAt: new Date().toISOString(),
+    updatedAt: now,
   });
+
+  // Restore stock if it had been deducted when the order was created
+  if ((data as DeliveryOrder & { stockDeductedAt?: string }).stockDeductedAt) {
+    try {
+      const restoreBucket = await buildStockBucket(data.items);
+      const batch = adminDb.batch();
+      for (const [pid, qty] of restoreBucket.entries()) {
+        batch.update(adminDb.collection('products').doc(pid), {
+          currentStock: FieldValue.increment(qty),
+          updatedAt: now,
+        });
+      }
+      await batch.commit();
+    } catch (stockErr) {
+      console.error('[orders/cancel] stock restore failed:', stockErr);
+    }
+  }
+
   return { id: orderId, status: 'cancelado' };
+}
+
+async function buildStockBucket(items: DeliveryOrderItem[]): Promise<Map<string, number>> {
+  const bucket = new Map<string, number>();
+  const productSnaps = await Promise.all(items.map(i => adminDb.collection('products').doc(i.productId).get()));
+  const productIndex = new Map<string, Product>();
+  productSnaps.forEach(s => { if (s.exists) productIndex.set(s.id, s.data() as Product); });
+
+  // Fetch any BOM leaf products not in the top-level set
+  const leafIds = new Set<string>();
+  for (const item of items) {
+    const p = productIndex.get(item.productId);
+    if (p?.components?.length) p.components.forEach(c => leafIds.add(c.productId));
+  }
+  const missing = Array.from(leafIds).filter(id => !productIndex.has(id));
+  if (missing.length > 0) {
+    const extra = await Promise.all(missing.map(id => adminDb.collection('products').doc(id).get()));
+    extra.forEach(s => { if (s.exists) productIndex.set(s.id, s.data() as Product); });
+  }
+
+  for (const item of items) {
+    const p = productIndex.get(item.productId);
+    if (!p) continue;
+    if (p.components?.length) {
+      for (const comp of p.components) {
+        bucket.set(comp.productId, (bucket.get(comp.productId) || 0) + comp.quantity * item.quantity);
+      }
+    } else {
+      bucket.set(p.id, (bucket.get(p.id) || 0) + item.quantity);
+    }
+  }
+  return bucket;
 }
 
 async function listRecent(businessId: string, limit: number) {

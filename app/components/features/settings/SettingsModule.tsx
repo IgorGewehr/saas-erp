@@ -262,6 +262,7 @@ function ProfileTab() {
   const [uf, setUf]                             = useState('');
 
   // ─── Minha Agenda state ───
+  const [isProfessional, setIsProfessional] = useState(true);
   const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>([]);
   const [workingHours, setWorkingHours] = useState<WorkingHours>(DEFAULT_WORKING_HOURS);
   const [isSavingSchedule, setIsSavingSchedule] = useState(false);
@@ -319,6 +320,7 @@ function ProfileTab() {
         setUf(pa.uf || '');
       }
       // Schedule data
+      setIsProfessional(user.isProfessional !== false); // default true for backward compat
       setSelectedServiceIds(user.serviceIds || []);
       setWorkingHours(user.workingHours || DEFAULT_WORKING_HOURS);
     }
@@ -410,13 +412,30 @@ function ProfileTab() {
   };
 
   const handleSaveSchedule = async () => {
-    if (!user) return;
+    if (!user || !business) return;
     setIsSavingSchedule(true);
     try {
       await updateUserProfile({
-        serviceIds: selectedServiceIds,
+        isProfessional,
+        serviceIds: isProfessional ? selectedServiceIds : [],
         workingHours,
       });
+
+      // Sync to business.settings.openingHours (format expected by AI agent prompt)
+      // Converts {[day]: {enabled, start, end}} → [{isOpen, openTime, closeTime}] (7 elements)
+      const openingHours = Array.from({ length: 7 }, (_, i) => {
+        const day = (workingHours as Record<number, { enabled: boolean; start: string; end: string }>)[i];
+        return {
+          isOpen: day?.enabled ?? false,
+          openTime: day?.start ?? '09:00',
+          closeTime: day?.end ?? '18:00',
+        };
+      });
+      await updateDoc(doc(db, 'businesses', business.id), {
+        'settings.openingHours': openingHours,
+        updatedAt: new Date().toISOString(),
+      });
+
       toast.success(t('settings.profile.scheduleSaved', 'Agenda atualizada com sucesso!'));
     } catch {
       toast.error(t('settings.profile.scheduleError', 'Erro ao salvar a agenda'));
@@ -624,167 +643,204 @@ function ProfileTab() {
         </div>
       </SectionCard>
 
-      {/* ─── Minha Agenda ─────────────────────────────────────────────────── */}
+      {/* ─── Minha Agenda — oculto no modo pedidos ───────────────────────── */}
+      {(business?.settings?.useCase ?? 'servicos') !== 'pedidos' && <>
 
-      {/* Services Selection */}
-      <SectionCard title={t('settings.profile.servicesTitle', 'Meus Serviços')} icon={Briefcase}>
-        <div className="space-y-3">
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            Selecione os serviços que você realiza. Eles aparecerão como opção na agenda.
-          </p>
-
-          {isLoadingServices ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {[1, 2, 3].map(i => (
-                <div key={i} className="h-[72px] rounded-xl shimmer" />
-              ))}
-            </div>
-          ) : services.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-8 text-center">
-              <Briefcase className="w-8 h-8 text-gray-300 dark:text-gray-600 mb-2" />
-              <p className="text-sm font-medium text-gray-500 dark:text-gray-400">{t('settings.profile.noServices', 'Nenhum serviço cadastrado')}</p>
-              <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{t('settings.profile.noServicesDesc', 'Cadastre serviços no módulo de Agenda.')}</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {services.map(service => {
-                const isSelected = selectedServiceIds.includes(service.id);
-                return (
-                  <button
-                    key={service.id}
-                    type="button"
-                    onClick={() => toggleServiceId(service.id)}
-                    className={cn(
-                      'flex items-start gap-3 p-3.5 rounded-xl border text-left transition-all duration-200',
-                      isSelected
-                        ? 'border-red-300 dark:border-red-500/40 bg-red-50/60 dark:bg-red-500/10 shadow-sm'
-                        : 'border-gray-200 dark:border-gray-700/50 bg-white dark:bg-white/[0.03] hover:border-gray-300 dark:hover:border-gray-600'
-                    )}
-                  >
-                    <div
-                      className={cn(
-                        'w-5 h-5 rounded-lg border-2 flex items-center justify-center flex-shrink-0 mt-0.5 transition-all duration-200',
-                        isSelected
-                          ? 'bg-red-600 border-red-600'
-                          : 'border-gray-300 dark:border-gray-600'
-                      )}
-                    >
-                      {isSelected && <Check className="w-3 h-3 text-white" />}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className={cn(
-                        'text-sm font-medium truncate',
-                        isSelected ? 'text-gray-900 dark:text-gray-100' : 'text-gray-700 dark:text-gray-300'
-                      )}>
-                        {service.name}
-                      </p>
-                      <div className="flex items-center gap-2 mt-0.5">
-                        <span className="text-xs text-gray-500 dark:text-gray-400">
-                          {service.duration}min
-                        </span>
-                        <span className="text-xs text-gray-300 dark:text-gray-600">·</span>
-                        <span className="text-xs font-medium text-gray-600 dark:text-gray-300">
-                          {formatCurrency(service.price)}
-                        </span>
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </SectionCard>
-
-      {/* Working Hours */}
-      <SectionCard title={t('settings.profile.workingHours', 'Horários de Trabalho')} icon={Calendar}>
-        <div className="space-y-3">
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            {t('settings.profile.workingHoursDesc', 'Configure seus horários de disponibilidade para cada dia da semana.')}
-          </p>
-
-          <div className="space-y-2">
-            {DAY_NAMES.map((dayName, dayIndex) => {
-              const day = workingHours[dayIndex];
-              const isWeekend = dayIndex === 0 || dayIndex === 6;
-              return (
-                <div
-                  key={dayIndex}
-                  className={cn(
-                    'flex flex-col sm:flex-row sm:items-center gap-3 p-3.5 rounded-xl border transition-all duration-200',
-                    day.enabled
-                      ? 'border-gray-200 dark:border-gray-700/50 bg-white dark:bg-white/[0.03]'
-                      : 'border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-white/[0.01]'
-                  )}
-                >
-                  {/* Day toggle */}
-                  <div className="flex items-center gap-3 sm:w-36 flex-shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => updateDaySchedule(dayIndex, 'enabled', !day.enabled)}
-                      className={cn(
-                        'relative w-10 h-[22px] rounded-full transition-all duration-200 flex-shrink-0',
-                        day.enabled
-                          ? 'bg-red-600'
-                          : 'bg-gray-300 dark:bg-gray-600'
-                      )}
-                    >
-                      <span
-                        className={cn(
-                          'absolute top-[2px] w-[18px] h-[18px] rounded-full bg-white shadow-sm transition-all duration-200',
-                          day.enabled ? 'left-[20px]' : 'left-[2px]'
-                        )}
-                      />
-                    </button>
-                    <span className={cn(
-                      'text-sm font-medium',
-                      day.enabled
-                        ? 'text-gray-900 dark:text-gray-100'
-                        : 'text-gray-400 dark:text-gray-500',
-                      isWeekend && 'text-gray-500 dark:text-gray-400'
-                    )}>
-                      {dayName}
-                    </span>
-                  </div>
-
-                  {/* Time selects */}
-                  {day.enabled ? (
-                    <div className="flex items-center gap-2 flex-1">
-                      <div className="flex items-center gap-2">
-                        <Clock className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500 flex-shrink-0 hidden sm:block" />
-                        <select
-                          value={day.start}
-                          onChange={e => updateDaySchedule(dayIndex, 'start', e.target.value)}
-                          className={cn(selectClasses, 'w-[110px] h-9 text-xs')}
-                        >
-                          {timeSlots.map(t => <option key={t} value={t}>{t}</option>)}
-                        </select>
-                      </div>
-                      <span className="text-xs text-gray-400 dark:text-gray-500 font-medium">{t('settings.profile.until', 'até')}</span>
-                      <select
-                        value={day.end}
-                        onChange={e => updateDaySchedule(dayIndex, 'end', e.target.value)}
-                        className={cn(selectClasses, 'w-[110px] h-9 text-xs')}
-                      >
-                        {timeSlots.map(t => <option key={t} value={t}>{t}</option>)}
-                      </select>
-                    </div>
-                  ) : (
-                    <span className="text-xs text-gray-400 dark:text-gray-500 italic">
-                      {t('settings.profile.unavailable', 'Indisponível')}
-                    </span>
-                  )}
-                </div>
-              );
-            })}
+      {/* isProfessional toggle */}
+      <SectionCard title={t('settings.profile.professionalTitle', 'Prestador de Serviço')} icon={Briefcase}>
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+              {t('settings.profile.isProfessionalLabel', 'Sou prestador de serviço')}
+            </p>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+              {isProfessional
+                ? t('settings.profile.isProfessionalOnDesc', 'Você aparece como opção de profissional na agenda e no agente de IA.')
+                : t('settings.profile.isProfessionalOffDesc', 'Você não aparece como opção de profissional para agendamentos.')}
+            </p>
           </div>
+          <button
+            type="button"
+            onClick={() => setIsProfessional(v => !v)}
+            className={cn(
+              'relative w-10 h-[22px] rounded-full transition-all duration-200 flex-shrink-0',
+              isProfessional ? 'bg-red-600' : 'bg-gray-300 dark:bg-gray-600'
+            )}
+          >
+            <span className={cn(
+              'absolute top-[2px] w-[18px] h-[18px] rounded-full bg-white shadow-sm transition-all duration-200',
+              isProfessional ? 'left-[20px]' : 'left-[2px]'
+            )} />
+          </button>
         </div>
       </SectionCard>
+
+      {/* Services + Hours — only shown when isProfessional */}
+      {isProfessional && (
+        <>
+          {/* Services Selection */}
+          <SectionCard title={t('settings.profile.servicesTitle', 'Meus Serviços')} icon={Briefcase}>
+            <div className="space-y-3">
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                Marque os serviços que você realiza. O agente de IA usará esta lista para apresentar sua agenda aos clientes.
+              </p>
+
+              {isLoadingServices ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {[1, 2, 3].map(i => (
+                    <div key={i} className="h-[72px] rounded-xl shimmer" />
+                  ))}
+                </div>
+              ) : services.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-8 text-center">
+                  <Briefcase className="w-8 h-8 text-gray-300 dark:text-gray-600 mb-2" />
+                  <p className="text-sm font-medium text-gray-500 dark:text-gray-400">{t('settings.profile.noServices', 'Nenhum serviço cadastrado')}</p>
+                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{t('settings.profile.noServicesDesc', 'Cadastre serviços no módulo de Agenda.')}</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {services.map(service => {
+                    const isSelected = selectedServiceIds.includes(service.id);
+                    return (
+                      <button
+                        key={service.id}
+                        type="button"
+                        onClick={() => toggleServiceId(service.id)}
+                        className={cn(
+                          'flex items-start gap-3 p-3.5 rounded-xl border text-left transition-all duration-200',
+                          isSelected
+                            ? 'border-red-300 dark:border-red-500/40 bg-red-50/60 dark:bg-red-500/10 shadow-sm'
+                            : 'border-gray-200 dark:border-gray-700/50 bg-white dark:bg-white/[0.03] hover:border-gray-300 dark:hover:border-gray-600'
+                        )}
+                      >
+                        <div
+                          className={cn(
+                            'w-5 h-5 rounded-lg border-2 flex items-center justify-center flex-shrink-0 mt-0.5 transition-all duration-200',
+                            isSelected
+                              ? 'bg-red-600 border-red-600'
+                              : 'border-gray-300 dark:border-gray-600'
+                          )}
+                        >
+                          {isSelected && <Check className="w-3 h-3 text-white" />}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className={cn(
+                            'text-sm font-medium truncate',
+                            isSelected ? 'text-gray-900 dark:text-gray-100' : 'text-gray-700 dark:text-gray-300'
+                          )}>
+                            {service.name}
+                          </p>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <span className="text-xs text-gray-500 dark:text-gray-400">
+                              {service.duration}min
+                            </span>
+                            <span className="text-xs text-gray-300 dark:text-gray-600">·</span>
+                            <span className="text-xs font-medium text-gray-600 dark:text-gray-300">
+                              {formatCurrency(service.price)}
+                            </span>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </SectionCard>
+
+          {/* Working Hours */}
+          <SectionCard title={t('settings.profile.workingHours', 'Horários de Trabalho')} icon={Calendar}>
+            <div className="space-y-3">
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                {t('settings.profile.workingHoursDesc', 'Configure seus horários de atendimento por dia. O agente usará esses horários para verificar disponibilidade.')}
+              </p>
+
+              <div className="space-y-2">
+                {DAY_NAMES.map((dayName, dayIndex) => {
+                  const day = workingHours[dayIndex];
+                  const isWeekend = dayIndex === 0 || dayIndex === 6;
+                  return (
+                    <div
+                      key={dayIndex}
+                      className={cn(
+                        'flex flex-col sm:flex-row sm:items-center gap-3 p-3.5 rounded-xl border transition-all duration-200',
+                        day.enabled
+                          ? 'border-gray-200 dark:border-gray-700/50 bg-white dark:bg-white/[0.03]'
+                          : 'border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-white/[0.01]'
+                      )}
+                    >
+                      {/* Day toggle */}
+                      <div className="flex items-center gap-3 sm:w-36 flex-shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => updateDaySchedule(dayIndex, 'enabled', !day.enabled)}
+                          className={cn(
+                            'relative w-10 h-[22px] rounded-full transition-all duration-200 flex-shrink-0',
+                            day.enabled
+                              ? 'bg-red-600'
+                              : 'bg-gray-300 dark:bg-gray-600'
+                          )}
+                        >
+                          <span
+                            className={cn(
+                              'absolute top-[2px] w-[18px] h-[18px] rounded-full bg-white shadow-sm transition-all duration-200',
+                              day.enabled ? 'left-[20px]' : 'left-[2px]'
+                            )}
+                          />
+                        </button>
+                        <span className={cn(
+                          'text-sm font-medium',
+                          day.enabled
+                            ? 'text-gray-900 dark:text-gray-100'
+                            : 'text-gray-400 dark:text-gray-500',
+                          isWeekend && 'text-gray-500 dark:text-gray-400'
+                        )}>
+                          {dayName}
+                        </span>
+                      </div>
+
+                      {/* Time selects */}
+                      {day.enabled ? (
+                        <div className="flex items-center gap-2 flex-1">
+                          <div className="flex items-center gap-2">
+                            <Clock className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500 flex-shrink-0 hidden sm:block" />
+                            <select
+                              value={day.start}
+                              onChange={e => updateDaySchedule(dayIndex, 'start', e.target.value)}
+                              className={cn(selectClasses, 'w-[110px] h-9 text-xs')}
+                            >
+                              {timeSlots.map(t => <option key={t} value={t}>{t}</option>)}
+                            </select>
+                          </div>
+                          <span className="text-xs text-gray-400 dark:text-gray-500 font-medium">{t('settings.profile.until', 'até')}</span>
+                          <select
+                            value={day.end}
+                            onChange={e => updateDaySchedule(dayIndex, 'end', e.target.value)}
+                            className={cn(selectClasses, 'w-[110px] h-9 text-xs')}
+                          >
+                            {timeSlots.map(t => <option key={t} value={t}>{t}</option>)}
+                          </select>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-gray-400 dark:text-gray-500 italic">
+                          {t('settings.profile.unavailable', 'Indisponível')}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </SectionCard>
+        </>
+      )}
 
       {/* Save Schedule */}
       <div className="flex justify-end">
         <SaveButton onClick={handleSaveSchedule} loading={isSavingSchedule} label={t('settings.profile.saveSchedule', 'Salvar Agenda')} />
       </div>
+
+      </> /* end Minha Agenda block */}
 
       {/* Save Profile */}
       <div className="flex justify-end">
@@ -809,6 +865,9 @@ function EmpresaTab() {
   // Form state
   const [nomeFantasia, setNomeFantasia] = useState('');
   const [razaoSocial, setRazaoSocial] = useState('');
+  const [slug, setSlug] = useState('');
+  const [slugStatus, setSlugStatus] = useState<'idle' | 'checking' | 'available' | 'taken' | 'invalid'>('idle');
+  const slugTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [cnpj, setCnpj] = useState('');
   const [cpf, setCpf] = useState('');
   const [inscricaoEstadual, setInscricaoEstadual] = useState('');
@@ -831,6 +890,7 @@ function EmpresaTab() {
     if (business) {
       setNomeFantasia(business.nomeFantasia || '');
       setRazaoSocial(business.razaoSocial || '');
+      setSlug(business.slug || '');
       setCnpj(business.cnpj ? formatCNPJInput(business.cnpj) : '');
       setCpf(business.cpf ? formatCPFInput(business.cpf) : '');
       setInscricaoEstadual(business.inscricaoEstadual || '');
@@ -920,6 +980,10 @@ function EmpresaTab() {
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validate() || !business || !canEditSettings) return;
+    if (slugStatus === 'taken' || slugStatus === 'invalid') {
+      toast.error('Corrija o slug antes de salvar.');
+      return;
+    }
 
     setIsSaving(true);
     try {
@@ -928,6 +992,7 @@ function EmpresaTab() {
         {
           nomeFantasia,
           razaoSocial,
+          slug: slug.trim() || undefined,
           cnpj: cnpj.replace(/\D/g, ''),
           cpf: cpf.replace(/\D/g, ''),
           inscricaoEstadual,
@@ -1241,46 +1306,130 @@ function EmpresaTab() {
           </div>
         </SectionCard>
 
-        {/* Booking Link */}
-        {business?.slug && (
-          <SectionCard title="Link de Agendamento" icon={ExternalLink}>
-            <div className="space-y-3">
-              <p className="text-sm text-gray-500 dark:text-gray-400">
-                Compartilhe este link com seus clientes para que eles possam agendar diretamente — sem precisar entrar no sistema.
-              </p>
+        {/* Cardápio / Link público */}
+        <SectionCard title="Cardápio Online" icon={ExternalLink}>
+          <div className="space-y-4">
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              Defina um slug curto para o link do cardápio público. Compartilhe com clientes via WhatsApp ou QR Code.
+            </p>
+
+            {/* Slug input */}
+            <div className="flex items-center gap-2">
+              <div className={`flex items-center flex-1 border rounded-lg overflow-hidden transition-colors ${
+                slugStatus === 'available' ? 'border-emerald-400 bg-emerald-50/50 dark:bg-emerald-500/5' :
+                slugStatus === 'taken' || slugStatus === 'invalid' ? 'border-red-400 bg-red-50/50 dark:bg-red-500/5' :
+                'border-gray-200 dark:border-gray-700/50 bg-gray-50 dark:bg-gray-800/50'
+              }`}>
+                <span className="px-3 py-2 text-sm text-gray-400 border-r border-gray-200 dark:border-gray-700/50 flex-shrink-0 bg-gray-100 dark:bg-gray-800">
+                  /p/
+                </span>
+                <input
+                  value={slug}
+                  onChange={e => {
+                    const val = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/--+/g, '-');
+                    setSlug(val);
+                    setSlugStatus('checking');
+                    if (slugTimerRef.current) clearTimeout(slugTimerRef.current);
+                    if (!val || val.length < 3) { setSlugStatus(val.length > 0 ? 'invalid' : 'idle'); return; }
+                    slugTimerRef.current = setTimeout(async () => {
+                      try {
+                        const res = await fetch(`/api/businesses/check-slug?slug=${encodeURIComponent(val)}&businessId=${business?.id || ''}`);
+                        const data = await res.json();
+                        setSlugStatus(data.available ? 'available' : data.reason === 'invalid_format' ? 'invalid' : 'taken');
+                      } catch { setSlugStatus('idle'); }
+                    }, 500);
+                  }}
+                  placeholder="meu-negocio"
+                  disabled={!canEditSettings}
+                  className="flex-1 px-3 py-2 bg-transparent text-sm text-gray-900 dark:text-white outline-none placeholder-gray-400 font-mono"
+                />
+                {/* Status indicator */}
+                <div className="pr-2.5">
+                  {slugStatus === 'checking' && <div className="w-3.5 h-3.5 border-2 border-gray-300 border-t-gray-500 rounded-full animate-spin" />}
+                  {slugStatus === 'available' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />}
+                  {(slugStatus === 'taken' || slugStatus === 'invalid') && <X className="w-3.5 h-3.5 text-red-500" />}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const generated = (nomeFantasia || razaoSocial)
+                    .toLowerCase()
+                    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                    .replace(/[^a-z0-9\s-]/g, '')
+                    .trim()
+                    .replace(/\s+/g, '-')
+                    .slice(0, 40);
+                  setSlug(generated);
+                  setSlugStatus('checking');
+                  if (slugTimerRef.current) clearTimeout(slugTimerRef.current);
+                  slugTimerRef.current = setTimeout(async () => {
+                    try {
+                      const res = await fetch(`/api/businesses/check-slug?slug=${encodeURIComponent(generated)}&businessId=${business?.id || ''}`);
+                      const data = await res.json();
+                      setSlugStatus(data.available ? 'available' : 'taken');
+                    } catch { setSlugStatus('idle'); }
+                  }, 400);
+                }}
+                disabled={!canEditSettings}
+                className="px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-600 dark:text-gray-400 text-sm font-medium transition-colors disabled:opacity-40"
+              >
+                Gerar
+              </button>
+            </div>
+
+            {/* Status message */}
+            {slugStatus === 'taken' && (
+              <p className="text-xs text-red-500 font-medium">Este slug já está em uso. Escolha outro.</p>
+            )}
+            {slugStatus === 'invalid' && (
+              <p className="text-xs text-red-500 font-medium">Mínimo 3 caracteres. Apenas letras, números e hífens.</p>
+            )}
+            {slugStatus === 'available' && (
+              <p className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">Disponível!</p>
+            )}
+
+            {/* Preview + actions */}
+            {slug && slugStatus !== 'taken' && slugStatus !== 'invalid' && (
               <div className="flex items-center gap-2">
-                <div className="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700/50 font-mono text-sm text-gray-700 dark:text-gray-300 overflow-hidden">
-                  <ExternalLink className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
-                  <span className="truncate">{typeof window !== 'undefined' ? window.location.origin : ''}/booking/{business.slug}</span>
+                <div className="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700/50 font-mono text-xs text-gray-600 dark:text-gray-400 overflow-hidden">
+                  <ExternalLink className="w-3 h-3 text-gray-400 flex-shrink-0" />
+                  <span className="truncate">{typeof window !== 'undefined' ? window.location.origin : 'https://seudominio.com'}/p/{slug}</span>
                 </div>
                 <button
                   type="button"
                   onClick={() => {
-                    const url = `${window.location.origin}/booking/${business.slug}`;
-                    navigator.clipboard.writeText(url);
+                    navigator.clipboard.writeText(`${window.location.origin}/p/${slug}`);
                     toast.success('Link copiado!');
                   }}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition-colors duration-150"
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition-colors"
                 >
                   <Copy className="w-3.5 h-3.5" />
                   Copiar
                 </button>
-                <a
-                  href={`/booking/${business.slug}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-800/50 text-gray-600 dark:text-gray-400 text-sm font-medium transition-colors duration-150"
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  Abrir
-                </a>
+                {slug === (business?.slug || '') ? (
+                  <a
+                    href={`/p/${slug}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-800/50 text-gray-600 dark:text-gray-400 text-sm font-medium transition-colors"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    Abrir
+                  </a>
+                ) : (
+                  <span className="px-3 py-2 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 text-xs text-gray-400 font-medium">
+                    Salve primeiro
+                  </span>
+                )}
               </div>
-              <p className="text-xs text-gray-400 dark:text-gray-500">
-                O slug pode ser alterado diretamente no Firestore (campo <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">slug</code> em <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">businesses/{business.id}</code>).
-              </p>
-            </div>
-          </SectionCard>
-        )}
+            )}
+
+            <p className="text-xs text-gray-400 dark:text-gray-500">
+              Apenas letras minúsculas, números e hífens. Salve a empresa para aplicar.
+            </p>
+          </div>
+        </SectionCard>
 
         {/* Save */}
         {canEditSettings && (
@@ -2410,7 +2559,7 @@ function UsersTab() {
                     <div className="w-9 h-9 rounded-full bg-gradient-to-br from-red-100 to-rose-100 dark:from-red-900/40 dark:to-rose-900/30 border border-red-200/60 dark:border-red-800/40 flex items-center justify-center text-xs font-bold text-red-700 dark:text-red-400 shadow-sm">
                       {member.photoURL
                         ? <CachedImage src={member.photoURL} alt={member.name} className="w-full h-full rounded-full object-cover" />
-                        : member.name.split(' ').map(n => n[0]).slice(0, 2).join('').toUpperCase()
+                        : (member.name || '?').split(' ').map(n => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()
                       }
                     </div>
                     {/* Presence dot — 3 states: online (green) | busy (amber) | offline (gray) */}
@@ -3692,6 +3841,7 @@ function AgenteTab() {
   // Pedidos-specific
   const [notifyOnStatusChange, setNotifyOnStatusChange] = useState<boolean>(current?.pedidos?.notifyOnStatusChange ?? true);
   const [acceptOrdersOffHours, setAcceptOrdersOffHours] = useState<boolean>(current?.pedidos?.acceptOrdersOffHours ?? false);
+  const [deliveryFee, setDeliveryFee] = useState<number>(current?.pedidos?.deliveryFee ?? 0);
 
   // Agenda-specific
   const [sendReminder, setSendReminder] = useState<boolean>(current?.agenda?.sendReminder ?? true);
@@ -3707,6 +3857,7 @@ function AgenteTab() {
     setBusinessDescription(current?.businessDescription || '');
     setNotifyOnStatusChange(current?.pedidos?.notifyOnStatusChange ?? true);
     setAcceptOrdersOffHours(current?.pedidos?.acceptOrdersOffHours ?? false);
+    setDeliveryFee(current?.pedidos?.deliveryFee ?? 0);
     setSendReminder(current?.agenda?.sendReminder ?? true);
     setReminderHoursBefore(current?.agenda?.reminderHoursBefore ?? 24);
     setConfirmationBeforeAppointment(current?.agenda?.confirmationBeforeAppointment ?? true);
@@ -3720,7 +3871,7 @@ function AgenteTab() {
       // Build nested settings — keeps Firestore doc clean and lets server-side
       // prompt builder know exactly what user opted into.
       const pedidos = useCase === 'pedidos'
-        ? { notifyOnStatusChange, acceptOrdersOffHours }
+        ? { notifyOnStatusChange, acceptOrdersOffHours, deliveryFee: deliveryFee > 0 ? deliveryFee : null }
         : undefined;
       const agenda = useCase === 'servicos'
         ? { sendReminder, reminderHoursBefore, confirmationBeforeAppointment, followUpAfter }
@@ -3860,6 +4011,23 @@ function AgenteTab() {
                   </div>
                   <AgenteToggleSwitch checked={acceptOrdersOffHours} onChange={setAcceptOrdersOffHours} />
                 </div>
+                <div className="pt-3 border-t border-gray-100 dark:border-gray-800">
+                  <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Taxa de entrega padrão</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                    Valor cobrado pelo agente automaticamente em pedidos do tipo entrega. Use 0 para não cobrar ou variar por região.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-gray-500">R$</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.5}
+                      value={deliveryFee}
+                      onChange={(e) => setDeliveryFee(Math.max(0, Number(e.target.value) || 0))}
+                      className="w-24 px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                    />
+                  </div>
+                </div>
               </div>
             </SectionCard>
           )}
@@ -3946,6 +4114,20 @@ function AgenteTab() {
             </button>
           </div>
         </motion.div>
+      )}
+
+      {/* Save button is always visible so disabling the agent can be persisted */}
+      {!enabled && (
+        <div className="flex justify-end">
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-bold shadow-md shadow-violet-500/20 transition-colors"
+          >
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+            {saving ? 'Salvando...' : 'Salvar configurações'}
+          </button>
+        </div>
       )}
     </motion.div>
   );
@@ -4355,7 +4537,7 @@ function SectorsTab() {
                         {member.photoURL ? (
                           <CachedImage src={member.photoURL} alt={member.name} className="w-full h-full rounded-full object-cover" />
                         ) : (
-                          member.name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
+                          (member.name || '?').split(' ').map(n => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()
                         )}
                       </div>
                     );
@@ -4482,7 +4664,7 @@ function SectorsTab() {
                             {m.photoURL ? (
                               <CachedImage src={m.photoURL} alt={m.name} className="w-full h-full rounded-full object-cover" />
                             ) : (
-                              m.name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
+                              (m.name || '?').split(' ').map(n => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()
                             )}
                           </div>
                           <div className="min-w-0">

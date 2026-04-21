@@ -1164,7 +1164,7 @@ function CardDetailDialog({
                             )}>
                               {getInitials(member.name)}
                             </div>
-                            {member.name.split(' ')[0]}
+                            {(member.name || '?').split(' ')[0]}
                           </button>
                         );
                       })}
@@ -1546,7 +1546,7 @@ function NewCardDialog({
                     )}>
                       {getInitials(member.name)}
                     </div>
-                    {member.name.split(' ')[0]}
+                    {(member.name || '?').split(' ')[0]}
                   </button>
                 ))}
               </div>

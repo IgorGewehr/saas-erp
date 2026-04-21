@@ -334,10 +334,10 @@ async function handleInboundMessage(
       createdAt: now,
     });
 
-    // Dispatch to AI agent — uses admin SDK for consistent tenant checks
+    // Dispatch to AI agent — true fire-and-forget (debounce runs inside, do NOT await)
     try {
       const { dispatchInboundToAgent } = await import('@/lib/agent/dispatch');
-      await dispatchInboundToAgent(adminDb, {
+      dispatchInboundToAgent(adminDb, {
         businessId,
         conversationId,
         messageId: msgRef.id,
@@ -346,7 +346,7 @@ async function handleInboundMessage(
         contactName,
         contactPhone: senderPhone,
         recipientId: senderPhone,
-      });
+      }).catch(agentErr => console.warn('[Baileys] Agent dispatch failed:', agentErr));
     } catch (agentErr) {
       console.warn('[Baileys] Agent dispatch failed:', agentErr);
     }

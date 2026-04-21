@@ -616,7 +616,7 @@ function ServiceManagementDialog({
                           : 'bg-white dark:bg-gray-800 border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:border-slate-300 dark:hover:border-gray-600',
                       )}
                     >
-                      {m.name.split(' ')[0]}
+                      {(m.name || '?').split(' ')[0]}
                     </button>
                   ))}
                 </div>
@@ -1318,7 +1318,7 @@ function AppointmentFormDialog({
                       className="w-full px-4 py-2.5 text-left hover:bg-gray-50 dark:hover:bg-white/[0.04] flex items-center gap-3 transition-colors first:rounded-t-xl last:rounded-b-xl"
                     >
                       <div className="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-xs font-semibold text-gray-500 dark:text-gray-400">
-                        {client.name.split(' ').map((n) => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()}
+                        {(client.name || '?').split(' ').map((n) => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()}
                       </div>
                       <div>
                         <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{client.name}</div>
@@ -1720,7 +1720,7 @@ function ViewAppointmentDialog({
               className="w-12 h-12 rounded-xl flex items-center justify-center text-white text-lg font-bold flex-shrink-0"
               style={{ backgroundColor: color }}
             >
-              {appointment.clientName.split(' ').map((n) => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()}
+              {(appointment.clientName || '?').split(' ').map((n) => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()}
             </div>
             <div className="flex-1 min-w-0">
               <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
@@ -3050,7 +3050,7 @@ export default function AgendaModule() {
                       }}
                     >
                       <span className="font-semibold">{appt.startTime}</span>{' '}
-                      {appt.clientName.split(' ')[0]}
+                      {(appt.clientName || '?').split(' ')[0]}
                     </motion.div>
                   ))}
                   {overflow > 0 && (
@@ -3254,7 +3254,7 @@ export default function AgendaModule() {
             {t('agenda.all', 'Todos')}
           </button>
           {members.map((member) => {
-            const initials = member.name
+            const initials = (member.name || '?')
               .split(' ')
               .map((n) => n[0])
               .filter(Boolean)
@@ -3283,7 +3283,7 @@ export default function AgendaModule() {
                 >
                   {initials}
                 </span>
-                <span className="hidden sm:inline">{member.name.split(' ')[0]}</span>
+                <span className="hidden sm:inline">{(member.name || '?').split(' ')[0]}</span>
               </button>
             );
           })}

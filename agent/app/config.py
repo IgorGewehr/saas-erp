@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# APP_ENV controls which .env.{env} override file is loaded after the base .env.
+# Usage: APP_ENV=test uv run python main.py
+_APP_ENV = os.getenv("APP_ENV", "development")
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=(".env", f".env.{_APP_ENV}"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     # --- Core ---
     agent_shared_secret: str = Field(..., alias="AGENT_SHARED_SECRET")
