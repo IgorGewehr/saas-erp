@@ -1208,6 +1208,79 @@ function OverviewContent({
         </motion.div>
       )}
 
+      {/* Aging Report */}
+      {(() => {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const pending = transactions.filter(tx =>
+          (tx.status === 'pendente' || tx.status === 'atrasado') && tx.dueDate
+        );
+        if (pending.length === 0) return null;
+
+        const buckets = [
+          { label: t('financial.aging.current', 'A vencer'), range: '0', min: 0, max: 0, color: 'emerald', txs: [] as typeof pending },
+          { label: t('financial.aging.d30', '1–30 dias'), range: '30', min: 1, max: 30, color: 'amber', txs: [] as typeof pending },
+          { label: t('financial.aging.d60', '31–60 dias'), range: '60', min: 31, max: 60, color: 'orange', txs: [] as typeof pending },
+          { label: t('financial.aging.d90', '61–90 dias'), range: '90', min: 61, max: 90, color: 'red', txs: [] as typeof pending },
+          { label: t('financial.aging.d90plus', '+90 dias'), range: '90+', min: 91, max: Infinity, color: 'rose', txs: [] as typeof pending },
+        ];
+
+        pending.forEach(tx => {
+          const due = new Date(tx.dueDate + 'T00:00:00');
+          const diffDays = Math.round((today.getTime() - due.getTime()) / 86400000);
+          // diffDays > 0 means overdue, < 0 means not yet due
+          if (diffDays <= 0) buckets[0].txs.push(tx);
+          else if (diffDays <= 30) buckets[1].txs.push(tx);
+          else if (diffDays <= 60) buckets[2].txs.push(tx);
+          else if (diffDays <= 90) buckets[3].txs.push(tx);
+          else buckets[4].txs.push(tx);
+        });
+
+        const colorMap: Record<string, { bar: string; badge: string; text: string }> = {
+          emerald: { bar: 'bg-emerald-500', badge: 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400', text: 'text-emerald-600 dark:text-emerald-400' },
+          amber:   { bar: 'bg-amber-400',   badge: 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30 text-amber-700 dark:text-amber-400', text: 'text-amber-600 dark:text-amber-400' },
+          orange:  { bar: 'bg-orange-500',  badge: 'bg-orange-50 dark:bg-orange-500/10 border-orange-200 dark:border-orange-500/30 text-orange-700 dark:text-orange-400', text: 'text-orange-600 dark:text-orange-400' },
+          red:     { bar: 'bg-red-500',     badge: 'bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-400', text: 'text-red-600 dark:text-red-400' },
+          rose:    { bar: 'bg-rose-600',    badge: 'bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/30 text-rose-700 dark:text-rose-400', text: 'text-rose-600 dark:text-rose-400' },
+        };
+
+        const totalPending = pending.reduce((s, tx) => s + tx.amount, 0);
+
+        return (
+          <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
+            className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-5 hover:shadow-md transition-all"
+          >
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-sm font-display font-bold text-slate-900 dark:text-gray-100">{t('financial.aging.title', 'Aging Report — Contas Pendentes')}</h3>
+                <p className="text-xs text-slate-400 dark:text-gray-500 mt-0.5">{t('financial.aging.subtitle', 'Distribuição por tempo de vencimento')}</p>
+              </div>
+              <span className="text-xs font-semibold text-slate-500 dark:text-gray-400">
+                {t('financial.aging.total', 'Total: {{v}}', { v: formatCurrency(totalPending) })}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+              {buckets.map(b => {
+                if (b.txs.length === 0) return null;
+                const bTotal = b.txs.reduce((s, tx) => s + tx.amount, 0);
+                const pct = totalPending > 0 ? (bTotal / totalPending) * 100 : 0;
+                const c = colorMap[b.color];
+                return (
+                  <div key={b.range} className={`rounded-xl border p-3 ${c.badge}`}>
+                    <p className="text-[10px] font-semibold uppercase tracking-wider mb-1 opacity-70">{b.label}</p>
+                    <p className="text-sm font-bold mb-0.5">{formatCurrency(bTotal)}</p>
+                    <p className="text-[10px] opacity-60 mb-2">{b.txs.length} {b.txs.length === 1 ? t('financial.aging.transaction', 'transação') : t('financial.aging.transactions', 'transações')}</p>
+                    <div className="h-1 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                      <div className={`h-full rounded-full ${c.bar}`} style={{ width: `${pct}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </motion.div>
+        );
+      })()}
+
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Cash Flow */}
