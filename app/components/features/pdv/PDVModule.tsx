@@ -411,6 +411,8 @@ export default function PDVModule() {
     if (!activePaymentMethod || !paymentAmount) return;
     const amount = parseFloat(paymentAmount);
     if (isNaN(amount) || amount <= 0) return;
+    // Gift card requires a validated lookup before adding
+    if (activePaymentMethod === 'gift_card' && !giftCardLookup) return;
     const payment: Payment = {
       method: activePaymentMethod,
       amount,
@@ -431,7 +433,20 @@ export default function PDVModule() {
   }, [activePaymentMethod, paymentAmount, installments, giftCardLookup]);
 
   const removePayment = useCallback((index: number) => {
-    setPayments((prev) => prev.filter((_, i) => i !== index));
+    setPayments((prev) => {
+      const removed = prev[index];
+      // If removing a gift card payment, clear its redemption tracking
+      if (removed?.method === 'gift_card') {
+        // Find and remove the matching entry from the map by amount (best effort)
+        for (const [gcId, amt] of giftCardRedemptions.current.entries()) {
+          if (Math.abs(amt - removed.amount) < 0.01) {
+            giftCardRedemptions.current.delete(gcId);
+            break;
+          }
+        }
+      }
+      return prev.filter((_, i) => i !== index);
+    });
   }, []);
 
   const handleGiftCardLookup = useCallback(async () => {
@@ -783,6 +798,7 @@ export default function PDVModule() {
   const cancelSale = useCallback(() => {
     setCart([]);
     setPayments([]);
+    giftCardRedemptions.current.clear();
     setSelectedClient(null);
     setDiscountValue('');
     setActivePaymentMethod(null);
@@ -790,6 +806,9 @@ export default function PDVModule() {
     setInstallments(1);
     setEmitirNfce(false);
     setCpfConsumidor('');
+    setGiftCardCode('');
+    setGiftCardLookup(null);
+    setGiftCardError(null);
   }, []);
 
   const handleNfceRetry = useCallback(async () => {
