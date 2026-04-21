@@ -96,6 +96,7 @@ const PAYMENT_SEFAZ_CODES: Record<PaymentMethod, string> = {
   debito: '04',
   boleto: '15',
   pontos: '99',
+  gift_card: '99',
   outros: '99',
 };
 
@@ -140,6 +141,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
     debito: t('fiscal.emit.paymentDebito', 'Cartão de Débito'),
     boleto: t('fiscal.emit.paymentBoleto', 'Boleto'),
     pontos: t('fiscal.emit.paymentPontos', 'Pontos'),
+    gift_card: t('fiscal.emit.paymentGiftCard', 'Gift Card'),
     outros: t('fiscal.emit.paymentOutros', 'Outros'),
   }), [t]);
 

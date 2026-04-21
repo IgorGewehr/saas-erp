@@ -479,6 +479,7 @@ export type PaymentMethod =
   | 'debito'
   | 'boleto'
   | 'pontos'
+  | 'gift_card'
   | 'outros';
 
 export interface Payment {
@@ -2013,4 +2014,32 @@ export interface LoyaltyTransaction {
   sourceType?: 'sale' | 'appointment';
   expiresAt?: string;
   createdAt: string;
+}
+
+// ============================================
+// Gift Cards
+// ============================================
+
+export type GiftCardStatus = 'active' | 'used' | 'expired' | 'cancelled';
+
+export interface GiftCard {
+  id: string;
+  businessId: string;
+  /** Código único de 8 caracteres (uppercase, sem caracteres ambíguos) */
+  code: string;
+  originalValue: number;
+  remainingValue: number;
+  status: GiftCardStatus;
+  /** Nome ou email do presenteado (opcional) */
+  recipientName?: string;
+  recipientPhone?: string;
+  /** ID da venda de compra do gift card */
+  purchasedBySaleId?: string;
+  /** ID da venda de resgate */
+  usedBySaleId?: string;
+  expiresAt?: string;
+  purchasedAt: string;
+  usedAt?: string;
+  createdAt: string;
+  updatedAt: string;
 }

@@ -45,6 +45,7 @@ import {
   Loader2,
   History,
   Gift,
+  TicketPercent,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -54,8 +55,10 @@ import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, doc } from 'firebase/firestore';
+import { toast } from 'react-toastify';
 import { deductStock } from '@/lib/services/stock';
 import { calculateEarnedPoints, addLoyaltyPoints, redeemLoyaltyPoints, pointsToReais, reaisToPoints } from '@/lib/services/loyalty';
+import { findGiftCard, redeemGiftCard } from '@/lib/services/giftCard';
 import { db } from '@/lib/config/firebase';
 import type { Product, Service, CRMContact, Sale, SaleItem, Payment, PaymentMethod } from '@/lib/types';
 
@@ -83,6 +86,7 @@ const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   debito: 'Debito',
   boleto: 'Boleto',
   pontos: 'Pontos',
+  gift_card: 'Gift Card',
   outros: 'Outros',
 };
 
@@ -138,6 +142,7 @@ export default function PDVModule() {
     { value: 'boleto', label: t('pdv.payment.boleto', 'Boleto'), icon: <FileText size={18} /> },
     { value: 'outros', label: t('pdv.payment.other', 'Outros'), icon: <MoreHorizontal size={18} /> },
     ...(loyaltyEnabled ? [{ value: 'pontos' as PaymentMethod, label: 'Pontos', icon: <Gift size={18} /> }] : []),
+    { value: 'gift_card' as PaymentMethod, label: 'Gift Card', icon: <TicketPercent size={18} /> },
   ], [t, loyaltyEnabled]);
 
   const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = useMemo(() => ({
@@ -147,6 +152,7 @@ export default function PDVModule() {
     debito: t('pdv.payment.debit', 'Débito'),
     boleto: t('pdv.payment.boleto', 'Boleto'),
     pontos: 'Pontos',
+    gift_card: 'Gift Card',
     outros: t('pdv.payment.other', 'Outros'),
   }), [t]);
 
@@ -184,6 +190,21 @@ export default function PDVModule() {
     clientName: string;
     cpf: string;
   } | null>(null);
+
+  // Gift card state
+  const [giftCardCode, setGiftCardCode] = useState('');
+  const [giftCardLookup, setGiftCardLookup] = useState<import('@/lib/types').GiftCard | null>(null);
+  const [giftCardError, setGiftCardError] = useState<string | null>(null);
+  const [isLookingUpGiftCard, setIsLookingUpGiftCard] = useState(false);
+  // Tracks gift card ids to redeem at sale confirmation: Map<giftCardId, amountToRedeem>
+  const giftCardRedemptions = useRef<Map<string, number>>(new Map());
+  // Sell gift card modal
+  const [showSellGiftCard, setShowSellGiftCard] = useState(false);
+  const [gcSellValue, setGcSellValue] = useState('');
+  const [gcSellRecipient, setGcSellRecipient] = useState('');
+  const [gcSellPhone, setGcSellPhone] = useState('');
+  const [gcSellExpiry, setGcSellExpiry] = useState('');
+  const [isSavingGiftCard, setIsSavingGiftCard] = useState(false);
 
   // History view state
   const [historySearch, setHistorySearch] = useState('');
@@ -398,14 +419,75 @@ export default function PDVModule() {
       payment.installments = installments;
     }
     setPayments((prev) => [...prev, payment]);
+    // Track gift card redemption for later
+    if (activePaymentMethod === 'gift_card' && giftCardLookup) {
+      giftCardRedemptions.current.set(giftCardLookup.id, amount);
+      setGiftCardLookup(null);
+      setGiftCardCode('');
+    }
     setPaymentAmount('');
     setActivePaymentMethod(null);
     setInstallments(1);
-  }, [activePaymentMethod, paymentAmount, installments]);
+  }, [activePaymentMethod, paymentAmount, installments, giftCardLookup]);
 
   const removePayment = useCallback((index: number) => {
     setPayments((prev) => prev.filter((_, i) => i !== index));
   }, []);
+
+  const handleGiftCardLookup = useCallback(async () => {
+    if (!business?.id || !giftCardCode.trim()) return;
+    setIsLookingUpGiftCard(true);
+    setGiftCardError(null);
+    setGiftCardLookup(null);
+    try {
+      const gc = await findGiftCard(db, business.id, giftCardCode.trim());
+      if (!gc) { setGiftCardError('Gift card não encontrado.'); return; }
+      if (gc.status !== 'active') { setGiftCardError(`Gift card ${gc.status === 'used' ? 'já utilizado' : gc.status === 'expired' ? 'expirado' : 'inativo'}.`); return; }
+      if (gc.expiresAt && gc.expiresAt < new Date().toISOString()) { setGiftCardError('Gift card expirado.'); return; }
+      setGiftCardLookup(gc);
+      setPaymentAmount(Math.min(gc.remainingValue, remaining).toFixed(2));
+    } catch {
+      setGiftCardError('Erro ao buscar gift card.');
+    } finally {
+      setIsLookingUpGiftCard(false);
+    }
+  }, [business?.id, giftCardCode, remaining]);
+
+  const handleSellGiftCard = useCallback(async () => {
+    if (!business?.id || !user) return;
+    const value = parseFloat(gcSellValue);
+    if (isNaN(value) || value <= 0) { toast.error('Informe um valor válido para o gift card.'); return; }
+    setIsSavingGiftCard(true);
+    try {
+      const { createGiftCard } = await import('@/lib/services/giftCard');
+      const gc = await createGiftCard(db, {
+        businessId: business.id,
+        originalValue: value,
+        recipientName: gcSellRecipient || undefined,
+        recipientPhone: gcSellPhone || undefined,
+        expiresAt: gcSellExpiry ? new Date(gcSellExpiry + 'T23:59:59').toISOString() : undefined,
+      });
+      // Add to cart as a gift card product line
+      const cartItem: CartItem = {
+        id: generateId(),
+        description: `Gift Card ${gc.code}${gcSellRecipient ? ` – ${gcSellRecipient}` : ''}`,
+        quantity: 1,
+        unitPrice: value,
+        discount: 0,
+        total: value,
+        itemType: 'product',
+      };
+      setCart(prev => [...prev, cartItem]);
+      toast.success(`Gift card criado! Código: ${gc.code}`);
+      setShowSellGiftCard(false);
+      setGcSellValue(''); setGcSellRecipient(''); setGcSellPhone(''); setGcSellExpiry('');
+    } catch (err) {
+      toast.error('Erro ao criar gift card.');
+      console.error(err);
+    } finally {
+      setIsSavingGiftCard(false);
+    }
+  }, [business?.id, user, gcSellValue, gcSellRecipient, gcSellPhone, gcSellExpiry]);
 
   const openConfirmation = useCallback(() => {
     if (cart.length === 0 || remaining > 0.01) return;
@@ -626,6 +708,16 @@ export default function PDVModule() {
           }
         }
       }
+
+      // Redeem gift cards
+      for (const [gcId, amountToRedeem] of giftCardRedemptions.current.entries()) {
+        try {
+          await redeemGiftCard(db, { giftCardId: gcId, amountToRedeem, saleId: docRef.id });
+        } catch (err) {
+          console.warn('Gift card redemption failed:', err);
+        }
+      }
+      giftCardRedemptions.current.clear();
 
       // Invalidate caches
       queryClient.invalidateQueries({ queryKey: ['sales'] });
@@ -1556,6 +1648,45 @@ export default function PDVModule() {
                     </div>
                   )}
 
+                  {/* Gift card lookup */}
+                  {activePaymentMethod === 'gift_card' && (
+                    <div className="rounded-xl bg-violet-50 dark:bg-violet-900/20 border border-violet-100 dark:border-violet-800/30 px-3 py-2.5 space-y-2">
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={giftCardCode}
+                          onChange={e => { setGiftCardCode(e.target.value.toUpperCase()); setGiftCardLookup(null); setGiftCardError(null); }}
+                          onKeyDown={e => e.key === 'Enter' && handleGiftCardLookup()}
+                          placeholder="Código do gift card"
+                          maxLength={8}
+                          className="flex-1 px-3 py-2 text-sm rounded-xl border border-violet-200 dark:border-violet-700 bg-white dark:bg-gray-800 text-slate-900 dark:text-gray-100 uppercase tracking-widest font-mono focus:outline-none focus:ring-2 focus:ring-violet-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleGiftCardLookup}
+                          disabled={isLookingUpGiftCard || !giftCardCode.trim()}
+                          className="px-3 py-2 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white text-xs font-semibold rounded-xl transition-colors"
+                        >
+                          {isLookingUpGiftCard ? <Loader2 size={14} className="animate-spin" /> : 'Buscar'}
+                        </button>
+                      </div>
+                      {giftCardError && <p className="text-xs text-red-600 dark:text-red-400">{giftCardError}</p>}
+                      {giftCardLookup && (
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5">
+                            <TicketPercent size={14} className="text-violet-600 dark:text-violet-400" />
+                            <span className="text-xs font-semibold text-violet-800 dark:text-violet-300">
+                              Saldo: {formatCurrency(giftCardLookup.remainingValue)}
+                            </span>
+                          </div>
+                          {giftCardLookup.recipientName && (
+                            <span className="text-[11px] text-violet-600 dark:text-violet-400">{giftCardLookup.recipientName}</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* Loyalty points info */}
                   {activePaymentMethod === 'pontos' && loyaltyConfig && (
                     <div className="rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800/30 px-3 py-2.5 space-y-1.5">
@@ -1646,6 +1777,18 @@ export default function PDVModule() {
                   )}
                 </div>
               )}
+            </div>
+
+            {/* Gift Card Sale Button */}
+            <div className="mb-2">
+              <button
+                type="button"
+                onClick={() => setShowSellGiftCard(true)}
+                className="flex items-center gap-2 w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-800/50 hover:border-violet-300 dark:hover:border-violet-500/40 hover:bg-violet-50 dark:hover:bg-violet-500/10 transition-all"
+              >
+                <TicketPercent size={16} className="text-violet-500" />
+                <span className="text-sm font-medium text-slate-600 dark:text-gray-400">Vender Gift Card</span>
+              </button>
             </div>
 
             {/* NFC-e Toggle + CPF */}
@@ -2190,6 +2333,92 @@ export default function PDVModule() {
             </motion.div>
           )}
         </AnimatePresence>
+      </Dialog>
+
+      {/* ===== SELL GIFT CARD MODAL ===== */}
+      <Dialog
+        open={showSellGiftCard}
+        onClose={() => setShowSellGiftCard(false)}
+        maxWidth="xs"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: '20px', backgroundColor: isDark ? '#111827' : undefined } }}
+      >
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', pb: 1, fontFamily: '"Plus Jakarta Sans", sans-serif', fontWeight: 700, color: isDark ? '#F1F5F9' : undefined }}>
+          <div className="flex items-center gap-2">
+            <TicketPercent size={20} className="text-violet-500" />
+            <span>Vender Gift Card</span>
+          </div>
+          <IconButton onClick={() => setShowSellGiftCard(false)} size="small"><X size={18} className={isDark ? 'text-gray-400' : ''} /></IconButton>
+        </DialogTitle>
+        <Divider />
+        <DialogContent sx={{ pt: 3, backgroundColor: isDark ? '#111827' : undefined }}>
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs font-medium text-slate-600 dark:text-gray-400 block mb-1">Valor do Gift Card *</label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">R$</span>
+                <input
+                  type="number"
+                  min="1"
+                  step="0.01"
+                  value={gcSellValue}
+                  onChange={e => setGcSellValue(e.target.value)}
+                  placeholder="0,00"
+                  className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-600 dark:text-gray-400 block mb-1">Presenteado (opcional)</label>
+              <input
+                type="text"
+                value={gcSellRecipient}
+                onChange={e => setGcSellRecipient(e.target.value)}
+                placeholder="Nome do presenteado"
+                className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-600 dark:text-gray-400 block mb-1">WhatsApp (para envio)</label>
+              <input
+                type="tel"
+                value={gcSellPhone}
+                onChange={e => setGcSellPhone(e.target.value)}
+                placeholder="(11) 99999-9999"
+                className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-600 dark:text-gray-400 block mb-1">Validade (opcional)</label>
+              <input
+                type="date"
+                value={gcSellExpiry}
+                onChange={e => setGcSellExpiry(e.target.value)}
+                min={new Date().toISOString().split('T')[0]}
+                className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+              />
+            </div>
+            <div className="rounded-xl bg-violet-50 dark:bg-violet-900/20 border border-violet-100 dark:border-violet-800/30 px-3 py-2.5">
+              <p className="text-xs text-violet-700 dark:text-violet-400">
+                Um código único será gerado automaticamente. O gift card é adicionado ao carrinho como produto para finalizar a venda.
+              </p>
+            </div>
+          </div>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, py: 2, gap: 1, backgroundColor: isDark ? '#111827' : undefined }}>
+          <Button onClick={() => setShowSellGiftCard(false)} disabled={isSavingGiftCard} sx={{ color: isDark ? '#9ca3af' : '#64748B', textTransform: 'none', fontWeight: 600, borderRadius: '12px' }}>
+            Cancelar
+          </Button>
+          <Button
+            onClick={handleSellGiftCard}
+            variant="contained"
+            disabled={isSavingGiftCard || !gcSellValue}
+            startIcon={isSavingGiftCard ? <Loader2 size={16} className="animate-spin" /> : <TicketPercent size={16} />}
+            sx={{ backgroundColor: '#7C3AED', '&:hover': { backgroundColor: '#6D28D9' }, borderRadius: '12px', textTransform: 'none', fontWeight: 600 }}
+          >
+            Gerar Gift Card
+          </Button>
+        </DialogActions>
       </Dialog>
     </div>
   );
