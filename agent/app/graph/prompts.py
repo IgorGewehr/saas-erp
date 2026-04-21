@@ -132,23 +132,30 @@ def planner_system_pedidos(business_context: dict[str, Any]) -> str:
     accept_off_hours = bool(p.get("acceptOrdersOffHours", False))
     notify_on_status = bool(p.get("notifyOnStatusChange", True))
     max_wait = int(p.get("maxWaitMinutes", 0))
+    delivery_fee = p.get("deliveryFee")
 
     off_hours_line = (
         "- Aceite pedidos em qualquer horário — a operação se organiza internamente."
         if accept_off_hours
-        else "- Fora do horário comercial: informe que estamos fechados e ofereça anotar o pedido para processamento no próximo horário; se o cliente insistir, registre mas explique que a entrega só sai quando abrir."
+        else "- Fora do horário comercial: informe que estamos fechados e ofereça anotar o pedido para processamento no próximo horário."
     )
 
     notify_line = (
-        "- O sistema notifica o cliente automaticamente a cada mudança de status do pedido — NÃO repita essas notificações."
+        "- O sistema notifica o cliente automaticamente a cada mudança de status — NÃO repita essas notificações."
         if notify_on_status
-        else "- Notificações de status desligadas. Se o cliente perguntar do pedido, use orders_get para buscar o status atual."
+        else "- Notificações de status desligadas. Se o cliente perguntar do pedido, use orders_get."
     )
 
     wait_line = (
-        f"- Se o tempo estimado de espera ultrapassar {max_wait} minutos, avise o cliente e ofereça alternativas (retirada, reagendamento)."
+        f"- Se o tempo estimado ultrapassar {max_wait} minutos, avise o cliente e ofereça retirada."
         if max_wait > 0
         else ""
+    )
+
+    fee_line = (
+        f"- Taxa de entrega padrão: R$ {delivery_fee:.2f}. Use esse valor em orders_create quando deliveryType='entrega'."
+        if delivery_fee and delivery_fee > 0
+        else "- Taxa de entrega: pergunte ao cliente ou informe que é combinada na finalização."
     )
 
     return (
@@ -158,26 +165,27 @@ def planner_system_pedidos(business_context: dict[str, Any]) -> str:
 MODO: PEDIDOS & ENTREGAS
 
 SEU FLUXO:
-1. Se não tiver cadastro do cliente: use clients_lookup_by_phone com o telefone do contato.
-2. Se ainda não existir, colete nome e use clients_create (passe channel + externalId para auto-vincular).
-3. Para pedidos:
-   - Nunca adivinhe itens. Use catalog_search ou catalog_list_menu.
-   - Confirme cada item, quantidade, e se é ENTREGA ou RETIRADA.
-   - Se for entrega, peça endereço completo (a menos que já esteja salvo no cliente via clients_get).
-   - Confirme forma de pagamento. Se dinheiro, pergunte se precisa de troco.
-4. Chame orders_create apenas DEPOIS de confirmar tudo com o cliente por mensagem.
-5. Para consultar/cancelar pedido existente: use orders_list_by_client ou orders_get.
-6. Para alterar itens antes da cozinha começar: use orders_update_items.
+1. Verifique o cadastro em silêncio: clients_lookup_by_phone (não mencione ao cliente).
+2. Apresente o cardápio ou busque o item pedido: catalog_list_menu ou catalog_search.
+3. Confirme: itens, quantidades, ENTREGA ou RETIRADA.
+   - Se entrega: solicite endereço (a menos que já esteja salvo).
+4. Confirme forma de pagamento. Se dinheiro, pergunte se precisa de troco.
+5. Só agora, se o cliente não estiver cadastrado, pergunte o nome (uma única vez).
+6. Finalize com orders_create apenas DEPOIS de confirmar tudo.
+7. Para consultar/cancelar pedido existente: orders_list_by_client ou orders_get.
+8. Para alterar itens (antes de preparar): orders_update_items.
 
 REGRAS ESPECÍFICAS:
-- Nunca invente preços ou disponibilidade. Se um produto não aparece em catalog_search, diga que não há.
-- Produtos marcados como "outOfStock: true" NÃO podem ser vendidos.
-- Ao confirmar o pedido final, mostre: itens, subtotal, taxa de entrega (se houver), total, forma de pagamento, previsão de entrega.
+- Nunca invente preços. Se um produto não aparece no catalog, diga que não há.
+- Produtos com "outOfStock: true" NÃO podem ser vendidos.
+- Ao confirmar, mostre: itens, subtotal, taxa de entrega, total, pagamento, previsão.
+- Se o cliente pedir agendamento de serviços ou consultas, explique educadamente que trabalhamos apenas com pedidos e entregas.
 {off_hours_line}
 {notify_line}
+{fee_line}
 {wait_line}
 
-NOTA: Atualizações de status (em preparo, saiu para entrega, etc.) são enviadas pelo sistema automaticamente — você NÃO precisa enviar essas mensagens. Foque em novos pedidos e dúvidas.
+NOTA: Atualizações de status são enviadas pelo sistema automaticamente — NÃO as repita.
 """
     )
 
@@ -220,7 +228,7 @@ def planner_system_agenda(business_context: dict[str, Any]) -> str:
 MODO: AGENDA DE SERVIÇOS (MULTI-PROFISSIONAL)
 
 SEU FLUXO:
-1. Identificar cliente por clients_lookup_by_phone; se não existir, clients_create (passe channel + externalId).
+1. Verifique o cadastro em silêncio: clients_lookup_by_phone (não mencione ao cliente).
 2. Entender o serviço desejado — use os SERVIÇOS DISPONÍVEIS acima. Chame agenda_list_services só se precisar de IDs dos serviços.
 3. Identificar o profissional:
    - Chame agenda_list_professionals com o serviceId do serviço escolhido.
@@ -230,10 +238,11 @@ SEU FLUXO:
 4. Para verificar horários: SEMPRE use agenda_check_availability com date + professionalId + durationMinutes.
    - Resolva datas relativas ("amanhã", "sábado") para YYYY-MM-DD antes de chamar.
 5. Ofereça 2-3 horários disponíveis e pergunte a preferência.
-6. Só chame agenda_book DEPOIS que o cliente confirmar horário + serviço + profissional.
+6. Só agora, se o cliente não estiver cadastrado, pergunte o nome (uma única vez).
+7. Só chame agenda_book DEPOIS que o cliente confirmar horário + serviço + profissional + nome.
    - Passe professionalId e professionalName no book para garantir o vínculo correto.
-7. Para consultar/remarcar: agenda_list_by_client, agenda_update.
-8. Para cancelar: agenda_cancel.
+8. Para consultar/remarcar: agenda_list_by_client, agenda_update.
+9. Para cancelar: agenda_cancel.
 
 REGRAS ESPECÍFICAS:
 - Nunca ofereça serviços que não estejam na lista acima. Se o cliente pedir algo que não está, diga que não oferecemos esse serviço.

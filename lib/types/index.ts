@@ -273,6 +273,8 @@ export interface AiAgentSettings {
     acceptOrdersOffHours?: boolean;
     /** Tempo máximo de espera antes do agente sugerir alternativas (min) */
     maxWaitMinutes?: number;
+    /** Taxa de entrega padrão (R$) — usada pelo agente ao criar pedido do tipo entrega */
+    deliveryFee?: number;
   };
 
   /** === Modo: serviços (agenda) === */
@@ -689,11 +691,15 @@ export interface Product {
   imageUrl?: string;
   // Delivery / Cardápio (used when business.settings.useCase === 'pedidos')
   isDeliverable?: boolean;
-  menuCategory?: string;        // Ex: "Pizzas", "Bebidas", "Sobremesas"
+  menuCategory?: string;        // Ex: "Pizzas" — legado (string livre) | continua suportado
+  menuCategoryId?: string;      // Referência formal para MenuCategory (prioridade sobre menuCategory)
   menuDescription?: string;     // Short description for the menu card
   preparationTime?: number;     // Minutes — for delivery ETA
   /** Dietary markers — usados no cardápio e pelo agente para filtrar */
   dietary?: Array<'vegan' | 'vegetarian' | 'glutenfree' | 'lactosefree' | 'organic' | 'picante' | 'alcool' | 'kids'>;
+  /** Personalização / modificadores — quando presente, catálogo abre wizard de montagem */
+  modifierGroups?: ProductModifierGroup[];
+  hasModifiers?: boolean;       // atalho p/ queries
   // Composite / BOM — when set, parent product deducts each component on sale,
   // and parent itself carries no stock of its own.
   components?: ProductComponent[];
@@ -705,6 +711,81 @@ export interface ProductComponent {
   productId: string;
   productName: string;  // denormalized for display
   quantity: number;
+}
+
+// ---- Menu Categories (cardápio online — pedidos mode) ----
+export interface MenuCategory {
+  id: string;
+  businessId: string;
+  name: string;                 // "Pizzas", "Bebidas", "Sobremesas"
+  description?: string;
+  imageUrl?: string;
+  color?: string;               // hex for category accent
+  icon?: string;                // lucide icon name (optional)
+  sortOrder: number;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ---- Product Modifiers (personalização no cardápio) ----
+/**
+ * Selection types:
+ *  - single:   radio (maxSelections = 1)
+ *  - multiple: checkbox (each option selected 0 or 1 time)
+ *  - quantity: each option has a +/- counter (extras com quantidade)
+ */
+export type ModifierSelectionType = 'single' | 'multiple' | 'quantity';
+
+/**
+ * How the final price is computed from the selected options:
+ *  - sum:  total = base + sum(selectedOptions.additionalPrice * qty)
+ *  - max:  total = base + max(selectedOptions.additionalPrice)  (p.ex. pizza c/ 2 sabores usa o mais caro)
+ *  - avg:  total = base + avg(selectedOptions.additionalPrice)
+ */
+export type ModifierPriceStrategy = 'sum' | 'max' | 'avg';
+
+export interface ProductModifierOption {
+  id: string;                   // uuid curto
+  name: string;                 // "Pequena", "Calabresa"
+  description?: string;
+  additionalPrice: number;      // 0 se incluso
+  imageUrl?: string;
+  isDefault?: boolean;          // pré-selecionado
+  maxQuantity?: number;         // for 'quantity' type; default 1
+  available: boolean;
+  sortOrder: number;
+}
+
+export interface ProductModifierGroup {
+  id: string;                   // uuid curto
+  name: string;                 // "Tamanho", "Sabores", "Borda", "Extras"
+  description?: string;
+  required: boolean;
+  minSelections: number;        // 0 = opcional
+  maxSelections: number;        // 1 para radio, N para checkbox, 99 para livre
+  selectionType: ModifierSelectionType;
+  priceStrategy: ModifierPriceStrategy;
+  options: ProductModifierOption[];
+  sortOrder: number;
+}
+
+/**
+ * Seleção escolhida pelo cliente — vai no CartItem e no DeliveryOrderItem.
+ * Fica denormalizado (nomes + preços) para sobreviver a edições futuras.
+ */
+export interface SelectedModifierOption {
+  optionId: string;
+  optionName: string;
+  additionalPrice: number;
+  quantity: number;             // sempre ≥ 1; relevante p/ 'quantity'
+}
+
+export interface SelectedModifier {
+  groupId: string;
+  groupName: string;
+  priceStrategy: ModifierPriceStrategy;
+  selectedOptions: SelectedModifierOption[];
 }
 
 export interface StockMovement {
@@ -833,10 +914,13 @@ export interface DeliveryOrderItem {
   productId: string;
   productName: string;
   quantity: number;
-  unitPrice: number;
-  total: number;
+  unitPrice: number;            // preço unitário final (base + modificadores calculados)
+  total: number;                // unitPrice * quantity
   notes?: string;
   imageUrl?: string;
+  /** Modificadores selecionados (pizza c/ sabores, borda, extras). */
+  selectedModifiers?: SelectedModifier[];
+  basePrice?: number;           // preço base do produto antes dos modificadores
 }
 
 export interface DeliveryOrderAddress {

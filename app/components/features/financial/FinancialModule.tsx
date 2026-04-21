@@ -2333,7 +2333,7 @@ function CommissionsContent({
                 >
                   {/* Avatar */}
                   <div className="w-9 h-9 rounded-full bg-gradient-to-br from-red-100 to-rose-100 dark:from-red-900/40 dark:to-rose-900/30 border border-red-200/60 dark:border-red-800/40 flex items-center justify-center text-xs font-bold text-red-700 dark:text-red-400 flex-shrink-0">
-                    {group.professionalName.split(' ').map(n => n[0]).slice(0, 2).join('').toUpperCase()}
+                    {(group.professionalName || '?').split(' ').map(n => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()}
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-semibold text-slate-900 dark:text-gray-100 truncate">{group.professionalName}</p>
