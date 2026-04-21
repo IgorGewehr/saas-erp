@@ -71,9 +71,11 @@ export default function DashboardModule() {
   const { data: clients = [], isLoading: loadingClients } = useQuery({
     queryKey: ['clients', business?.id],
     queryFn: async () => {
-      const q = query(collection(db, 'clients'), where('businessId', '==', business!.id), orderBy('name', 'asc'));
+      const q = query(collection(db, 'clients'), where('businessId', '==', business!.id));
       const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as CRMContact));
+      return snap.docs
+        .map(d => ({ ...d.data(), id: d.id } as CRMContact))
+        .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'pt-BR'));
     },
     enabled: !!business?.id,
   });
@@ -155,7 +157,7 @@ export default function DashboardModule() {
   );
 
   const activeClients = useMemo(
-    () => clients.filter(c => c.isActive).length,
+    () => clients.length,
     [clients]
   );
 
@@ -1004,8 +1006,11 @@ export default function DashboardModule() {
                       >
                         <td className="px-5 py-3">
                           <div className="flex items-center gap-3">
-                            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-700 dark:to-gray-600 flex items-center justify-center text-[11px] font-bold text-gray-500 dark:text-gray-300 flex-shrink-0">
-                              {getInitials(client.name)}
+                            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-700 dark:to-gray-600 flex items-center justify-center text-[11px] font-bold text-gray-500 dark:text-gray-300 flex-shrink-0 overflow-hidden">
+                              {client.avatarUrl
+                                ? <img src={client.avatarUrl} alt={client.name} className="w-full h-full object-cover" />
+                                : getInitials(client.name)
+                              }
                             </div>
                             <span className="text-sm font-medium text-gray-800 dark:text-gray-100 truncate max-w-[160px]">
                               {client.name}

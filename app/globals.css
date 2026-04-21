@@ -129,6 +129,8 @@
 }
 ::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.22); }
 * { scrollbar-width: thin; scrollbar-color: rgba(0,0,0,0.12) transparent; }
+.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+.scrollbar-hide::-webkit-scrollbar { display: none; }
 
 .dark ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); }
 .dark ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.20); }
@@ -137,6 +139,10 @@
 /* ─── Scrollbar hide utility ─────────────────────── */
 .scrollbar-hide { scrollbar-width: none; -ms-overflow-style: none; }
 .scrollbar-hide::-webkit-scrollbar { display: none; }
+
+/* ─── iOS Safe Area ──────────────────────────────── */
+.safe-top { padding-top: env(safe-area-inset-top, 0px); }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
 
 /* ─── Focus Styles ───────────────────────────────── */
 :focus-visible {

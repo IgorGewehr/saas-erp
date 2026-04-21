@@ -21,7 +21,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { formatCurrency, formatDateTime } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
 import { toast } from 'react-toastify';
-import { deductStock } from '@/lib/services/stock';
+import { deductStock, checkStockAvailability } from '@/lib/services/stock';
 import type {
   DeliveryOrder, DeliveryOrderStatus, DeliveryOrderItem, DeliveryOrderChannel,
   DeliveryOrderPaymentMethod, DeliveryOrderPaymentStatus, DeliveryType,
@@ -630,7 +630,18 @@ function OrderFormDialog({
                           </div>
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{p.name}</p>
-                            <p className="text-[11px] text-gray-500">{p.menuCategory || p.category}</p>
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                              <span className="text-[11px] text-gray-500">{p.menuCategory || p.category}</span>
+                              {p.dietary && p.dietary.length > 0 && (
+                                <span className="text-[11px]">
+                                  {p.dietary.slice(0, 4).map(d => ({
+                                    vegan: '🌱', vegetarian: '🥦', glutenfree: '🌾',
+                                    lactosefree: '🥛', organic: '♻️', picante: '🌶️',
+                                    alcool: '🍺', kids: '👶',
+                                  } as Record<string, string>)[d] || '').filter(Boolean).join('')}
+                                </span>
+                              )}
+                            </div>
                           </div>
                           <p className="text-sm font-bold text-red-600 dark:text-red-400">{formatCurrency(p.salePrice)}</p>
                         </button>
@@ -992,6 +1003,7 @@ export default function OrdersModule() {
     conversationId?: string;
     contactExternalId?: string;
   } | null>(null);
+  const [prefillCartItems, setPrefillCartItems] = useState<OrderItem[]>([]);
 
   // Detect incoming prefill from ConversasModule's "Criar Pedido" button
   useEffect(() => {
@@ -1007,6 +1019,22 @@ export default function OrdersModule() {
       /* ignore */
     }
     sessionStorage.removeItem('pendingOrderPrefill');
+  }, []);
+
+  // Detect cart items from Cardápio module
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const raw = sessionStorage.getItem('pendingCartItems');
+    if (!raw) return;
+    try {
+      const items = JSON.parse(raw);
+      if (Array.isArray(items) && items.length > 0) {
+        setPrefillCartItems(items as OrderItem[]);
+        setEditingOrder(null);
+        setFormOpen(true);
+      }
+    } catch { /* ignore */ }
+    sessionStorage.removeItem('pendingCartItems');
   }, []);
 
   // Real-time orders subscription
@@ -1173,11 +1201,22 @@ export default function OrdersModule() {
           updatedAt: now,
         };
         const cleaned = Object.fromEntries(Object.entries(payload).filter(([, v]) => v !== undefined)) as Omit<Order, 'id'>;
+
+        // Non-blocking stock pre-check — warns operator but doesn't block creation
+        const productIndex = new Map(products.map(p => [p.id, p]));
+        const stockLines = data.items.map(i => ({ productId: i.productId, quantity: i.quantity }));
+        const shortages = checkStockAvailability(stockLines, productIndex);
+        if (shortages.length > 0) {
+          const names = shortages.map(s => `${s.productName} (pediu ${s.requested}, tem ${s.available})`).join(' · ');
+          toast.warn(`Estoque insuficiente: ${names}`, { autoClose: 7000 });
+        }
+
         await addDoc(collection(db, 'deliveryOrders'), cleaned);
         toast.success(`Pedido #${number} criado!`);
       }
       setEditingOrder(null);
       setPrefillFromConversation(null);
+      setPrefillCartItems([]);
       setFormOpen(false);
     } catch (err) {
       console.error('[Orders] Save failed:', err);
@@ -1294,8 +1333,11 @@ export default function OrdersModule() {
         } : base.address,
       };
     }
+    if (prefillCartItems.length > 0) {
+      return { ...emptyOrderForm(), items: prefillCartItems };
+    }
     return emptyOrderForm();
-  }, [editingOrder, prefillFromConversation, clients]);
+  }, [editingOrder, prefillFromConversation, prefillCartItems, clients]);
 
   return (
     <div className="flex flex-col h-full">
@@ -1461,7 +1503,7 @@ export default function OrdersModule() {
       {/* Form dialog */}
       <OrderFormDialog
         open={formOpen}
-        onClose={() => { setFormOpen(false); setEditingOrder(null); setPrefillFromConversation(null); }}
+        onClose={() => { setFormOpen(false); setEditingOrder(null); setPrefillFromConversation(null); setPrefillCartItems([]); }}
         onSave={persistOrder}
         initial={formInitial}
         clients={clients}

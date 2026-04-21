@@ -643,7 +643,8 @@ function ProfileTab() {
         </div>
       </SectionCard>
 
-      {/* ─── Minha Agenda ─────────────────────────────────────────────────── */}
+      {/* ─── Minha Agenda — oculto no modo pedidos ───────────────────────── */}
+      {(business?.settings?.useCase ?? 'servicos') !== 'pedidos' && <>
 
       {/* isProfessional toggle */}
       <SectionCard title={t('settings.profile.professionalTitle', 'Prestador de Serviço')} icon={Briefcase}>
@@ -839,6 +840,8 @@ function ProfileTab() {
         <SaveButton onClick={handleSaveSchedule} loading={isSavingSchedule} label={t('settings.profile.saveSchedule', 'Salvar Agenda')} />
       </div>
 
+      </> /* end Minha Agenda block */}
+
       {/* Save Profile */}
       <div className="flex justify-end">
         <SaveButton onClick={handleSave} loading={isSaving} label={t('settings.profile.saveProfile', 'Salvar Perfil')} />
@@ -862,6 +865,9 @@ function EmpresaTab() {
   // Form state
   const [nomeFantasia, setNomeFantasia] = useState('');
   const [razaoSocial, setRazaoSocial] = useState('');
+  const [slug, setSlug] = useState('');
+  const [slugStatus, setSlugStatus] = useState<'idle' | 'checking' | 'available' | 'taken' | 'invalid'>('idle');
+  const slugTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [cnpj, setCnpj] = useState('');
   const [cpf, setCpf] = useState('');
   const [inscricaoEstadual, setInscricaoEstadual] = useState('');
@@ -884,6 +890,7 @@ function EmpresaTab() {
     if (business) {
       setNomeFantasia(business.nomeFantasia || '');
       setRazaoSocial(business.razaoSocial || '');
+      setSlug(business.slug || '');
       setCnpj(business.cnpj ? formatCNPJInput(business.cnpj) : '');
       setCpf(business.cpf ? formatCPFInput(business.cpf) : '');
       setInscricaoEstadual(business.inscricaoEstadual || '');
@@ -973,6 +980,10 @@ function EmpresaTab() {
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validate() || !business || !canEditSettings) return;
+    if (slugStatus === 'taken' || slugStatus === 'invalid') {
+      toast.error('Corrija o slug antes de salvar.');
+      return;
+    }
 
     setIsSaving(true);
     try {
@@ -981,6 +992,7 @@ function EmpresaTab() {
         {
           nomeFantasia,
           razaoSocial,
+          slug: slug.trim() || undefined,
           cnpj: cnpj.replace(/\D/g, ''),
           cpf: cpf.replace(/\D/g, ''),
           inscricaoEstadual,
@@ -1294,46 +1306,130 @@ function EmpresaTab() {
           </div>
         </SectionCard>
 
-        {/* Booking Link */}
-        {business?.slug && (
-          <SectionCard title="Link de Agendamento" icon={ExternalLink}>
-            <div className="space-y-3">
-              <p className="text-sm text-gray-500 dark:text-gray-400">
-                Compartilhe este link com seus clientes para que eles possam agendar diretamente — sem precisar entrar no sistema.
-              </p>
+        {/* Cardápio / Link público */}
+        <SectionCard title="Cardápio Online" icon={ExternalLink}>
+          <div className="space-y-4">
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              Defina um slug curto para o link do cardápio público. Compartilhe com clientes via WhatsApp ou QR Code.
+            </p>
+
+            {/* Slug input */}
+            <div className="flex items-center gap-2">
+              <div className={`flex items-center flex-1 border rounded-lg overflow-hidden transition-colors ${
+                slugStatus === 'available' ? 'border-emerald-400 bg-emerald-50/50 dark:bg-emerald-500/5' :
+                slugStatus === 'taken' || slugStatus === 'invalid' ? 'border-red-400 bg-red-50/50 dark:bg-red-500/5' :
+                'border-gray-200 dark:border-gray-700/50 bg-gray-50 dark:bg-gray-800/50'
+              }`}>
+                <span className="px-3 py-2 text-sm text-gray-400 border-r border-gray-200 dark:border-gray-700/50 flex-shrink-0 bg-gray-100 dark:bg-gray-800">
+                  /p/
+                </span>
+                <input
+                  value={slug}
+                  onChange={e => {
+                    const val = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/--+/g, '-');
+                    setSlug(val);
+                    setSlugStatus('checking');
+                    if (slugTimerRef.current) clearTimeout(slugTimerRef.current);
+                    if (!val || val.length < 3) { setSlugStatus(val.length > 0 ? 'invalid' : 'idle'); return; }
+                    slugTimerRef.current = setTimeout(async () => {
+                      try {
+                        const res = await fetch(`/api/businesses/check-slug?slug=${encodeURIComponent(val)}&businessId=${business?.id || ''}`);
+                        const data = await res.json();
+                        setSlugStatus(data.available ? 'available' : data.reason === 'invalid_format' ? 'invalid' : 'taken');
+                      } catch { setSlugStatus('idle'); }
+                    }, 500);
+                  }}
+                  placeholder="meu-negocio"
+                  disabled={!canEditSettings}
+                  className="flex-1 px-3 py-2 bg-transparent text-sm text-gray-900 dark:text-white outline-none placeholder-gray-400 font-mono"
+                />
+                {/* Status indicator */}
+                <div className="pr-2.5">
+                  {slugStatus === 'checking' && <div className="w-3.5 h-3.5 border-2 border-gray-300 border-t-gray-500 rounded-full animate-spin" />}
+                  {slugStatus === 'available' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />}
+                  {(slugStatus === 'taken' || slugStatus === 'invalid') && <X className="w-3.5 h-3.5 text-red-500" />}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const generated = (nomeFantasia || razaoSocial)
+                    .toLowerCase()
+                    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                    .replace(/[^a-z0-9\s-]/g, '')
+                    .trim()
+                    .replace(/\s+/g, '-')
+                    .slice(0, 40);
+                  setSlug(generated);
+                  setSlugStatus('checking');
+                  if (slugTimerRef.current) clearTimeout(slugTimerRef.current);
+                  slugTimerRef.current = setTimeout(async () => {
+                    try {
+                      const res = await fetch(`/api/businesses/check-slug?slug=${encodeURIComponent(generated)}&businessId=${business?.id || ''}`);
+                      const data = await res.json();
+                      setSlugStatus(data.available ? 'available' : 'taken');
+                    } catch { setSlugStatus('idle'); }
+                  }, 400);
+                }}
+                disabled={!canEditSettings}
+                className="px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-600 dark:text-gray-400 text-sm font-medium transition-colors disabled:opacity-40"
+              >
+                Gerar
+              </button>
+            </div>
+
+            {/* Status message */}
+            {slugStatus === 'taken' && (
+              <p className="text-xs text-red-500 font-medium">Este slug já está em uso. Escolha outro.</p>
+            )}
+            {slugStatus === 'invalid' && (
+              <p className="text-xs text-red-500 font-medium">Mínimo 3 caracteres. Apenas letras, números e hífens.</p>
+            )}
+            {slugStatus === 'available' && (
+              <p className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">Disponível!</p>
+            )}
+
+            {/* Preview + actions */}
+            {slug && slugStatus !== 'taken' && slugStatus !== 'invalid' && (
               <div className="flex items-center gap-2">
-                <div className="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700/50 font-mono text-sm text-gray-700 dark:text-gray-300 overflow-hidden">
-                  <ExternalLink className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
-                  <span className="truncate">{typeof window !== 'undefined' ? window.location.origin : ''}/booking/{business.slug}</span>
+                <div className="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700/50 font-mono text-xs text-gray-600 dark:text-gray-400 overflow-hidden">
+                  <ExternalLink className="w-3 h-3 text-gray-400 flex-shrink-0" />
+                  <span className="truncate">{typeof window !== 'undefined' ? window.location.origin : 'https://seudominio.com'}/p/{slug}</span>
                 </div>
                 <button
                   type="button"
                   onClick={() => {
-                    const url = `${window.location.origin}/booking/${business.slug}`;
-                    navigator.clipboard.writeText(url);
+                    navigator.clipboard.writeText(`${window.location.origin}/p/${slug}`);
                     toast.success('Link copiado!');
                   }}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition-colors duration-150"
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition-colors"
                 >
                   <Copy className="w-3.5 h-3.5" />
                   Copiar
                 </button>
-                <a
-                  href={`/booking/${business.slug}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-800/50 text-gray-600 dark:text-gray-400 text-sm font-medium transition-colors duration-150"
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  Abrir
-                </a>
+                {slug === (business?.slug || '') ? (
+                  <a
+                    href={`/p/${slug}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-800/50 text-gray-600 dark:text-gray-400 text-sm font-medium transition-colors"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    Abrir
+                  </a>
+                ) : (
+                  <span className="px-3 py-2 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 text-xs text-gray-400 font-medium">
+                    Salve primeiro
+                  </span>
+                )}
               </div>
-              <p className="text-xs text-gray-400 dark:text-gray-500">
-                O slug pode ser alterado diretamente no Firestore (campo <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">slug</code> em <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">businesses/{business.id}</code>).
-              </p>
-            </div>
-          </SectionCard>
-        )}
+            )}
+
+            <p className="text-xs text-gray-400 dark:text-gray-500">
+              Apenas letras minúsculas, números e hífens. Salve a empresa para aplicar.
+            </p>
+          </div>
+        </SectionCard>
 
         {/* Save */}
         {canEditSettings && (
@@ -2463,7 +2559,7 @@ function UsersTab() {
                     <div className="w-9 h-9 rounded-full bg-gradient-to-br from-red-100 to-rose-100 dark:from-red-900/40 dark:to-rose-900/30 border border-red-200/60 dark:border-red-800/40 flex items-center justify-center text-xs font-bold text-red-700 dark:text-red-400 shadow-sm">
                       {member.photoURL
                         ? <CachedImage src={member.photoURL} alt={member.name} className="w-full h-full rounded-full object-cover" />
-                        : member.name.split(' ').map(n => n[0]).slice(0, 2).join('').toUpperCase()
+                        : (member.name || '?').split(' ').map(n => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()
                       }
                     </div>
                     {/* Presence dot — 3 states: online (green) | busy (amber) | offline (gray) */}
@@ -4441,7 +4537,7 @@ function SectorsTab() {
                         {member.photoURL ? (
                           <CachedImage src={member.photoURL} alt={member.name} className="w-full h-full rounded-full object-cover" />
                         ) : (
-                          member.name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
+                          (member.name || '?').split(' ').map(n => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()
                         )}
                       </div>
                     );
@@ -4568,7 +4664,7 @@ function SectorsTab() {
                             {m.photoURL ? (
                               <CachedImage src={m.photoURL} alt={m.name} className="w-full h-full rounded-full object-cover" />
                             ) : (
-                              m.name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
+                              (m.name || '?').split(' ').map(n => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()
                             )}
                           </div>
                           <div className="min-w-0">
