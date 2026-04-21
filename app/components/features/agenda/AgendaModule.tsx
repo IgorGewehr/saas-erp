@@ -433,6 +433,7 @@ interface ServiceFormData {
   category: string;
   color: string;
   isActive: boolean;
+  commissionRate?: number;
 }
 
 interface ServiceManagementDialogProps {
@@ -473,6 +474,7 @@ function ServiceManagementDialog({
     category: '',
     color: '#3B82F6',
     isActive: true,
+    commissionRate: undefined,
   });
 
   const canEditService = useCallback((service: Service) => {
@@ -496,6 +498,7 @@ function ServiceManagementDialog({
       category: '',
       color: '#3B82F6',
       isActive: true,
+      commissionRate: undefined,
     });
     setEditingService(null);
   }, []);
@@ -510,6 +513,7 @@ function ServiceManagementDialog({
       category: service.category || '',
       color: service.color,
       isActive: service.isActive,
+      commissionRate: service.commissionRate,
     });
     setView('form');
   }, []);
@@ -663,6 +667,14 @@ function ServiceManagementDialog({
                             <span className="text-xs text-gray-500 dark:text-gray-400">{service.duration} min</span>
                             <span className="text-xs text-gray-300 dark:text-gray-600">|</span>
                             <span className="text-xs font-medium text-gray-600 dark:text-gray-300">{formatCurrency(service.price)}</span>
+                            {service.commissionRate != null && service.commissionRate > 0 && (
+                              <>
+                                <span className="text-xs text-gray-300 dark:text-gray-600">|</span>
+                                <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-medium">
+                                  {service.commissionRate}%
+                                </span>
+                              </>
+                            )}
                             {service.category && (
                               <>
                                 <span className="text-xs text-gray-300 dark:text-gray-600">|</span>
@@ -811,24 +823,53 @@ function ServiceManagementDialog({
                 </div>
               </div>
 
-              {/* Category */}
-              <div>
-                <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                  {t('agenda.category', 'Categoria')}
-                </label>
-                <input
-                  type="text"
-                  value={formData.category}
-                  onChange={(e) => setFormData((p) => ({ ...p, category: e.target.value }))}
-                  placeholder={t('agenda.categoryPlaceholder', 'Ex: Cabelo, Unhas, Barba...')}
-                  className={cn(
-                    'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
-                    'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
-                    'bg-white dark:bg-gray-800',
-                    'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
-                    'transition-all duration-200',
-                  )}
-                />
+              {/* Category & Commission Rate */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                    {t('agenda.category', 'Categoria')}
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.category}
+                    onChange={(e) => setFormData((p) => ({ ...p, category: e.target.value }))}
+                    placeholder={t('agenda.categoryPlaceholder', 'Ex: Cabelo, Unhas...')}
+                    className={cn(
+                      'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
+                      'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
+                      'bg-white dark:bg-gray-800',
+                      'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
+                      'transition-all duration-200',
+                    )}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                    {t('agenda.commissionRate', 'Comissão (%)')}
+                  </label>
+                  <input
+                    type="number"
+                    step="0.5"
+                    min="0"
+                    max="100"
+                    value={formData.commissionRate ?? ''}
+                    onChange={(e) => setFormData((p) => ({
+                      ...p,
+                      commissionRate: e.target.value === '' ? undefined : Math.min(100, Math.max(0, Number(e.target.value))),
+                    }))}
+                    placeholder="0"
+                    className={cn(
+                      'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
+                      'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
+                      'bg-white dark:bg-gray-800',
+                      'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
+                      'transition-all duration-200',
+                    )}
+                  />
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">
+                    {t('agenda.commissionRateHint', 'Substitui a taxa padrão do profissional')}
+                  </p>
+                </div>
               </div>
 
               {/* Color */}
@@ -2117,6 +2158,7 @@ export default function AgendaModule() {
       category: data.category || null,
       color: data.color,
       isActive: data.isActive,
+      commissionRate: data.commissionRate ?? null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
@@ -2134,6 +2176,7 @@ export default function AgendaModule() {
       category: data.category || null,
       color: data.color,
       isActive: data.isActive,
+      commissionRate: data.commissionRate ?? null,
       updatedAt: new Date().toISOString(),
     });
     queryClient.invalidateQueries({ queryKey: ['services', business.id] });
