@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'react-toastify';
@@ -1499,6 +1500,7 @@ function LinkContactDrawer({
   const [search, setSearch] = useState('');
   const [creating, setCreating] = useState(false);
   const [linkingId, setLinkingId] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
   const linkedClient = useMemo(
     () => conversation.crmContactId ? clients.find(c => c.id === conversation.crmContactId) : undefined,
@@ -1574,8 +1576,9 @@ function LinkContactDrawer({
       const payload: Record<string, unknown> = {
         businessId,
         name: conversation.contactName || 'Novo contato',
+        tipo: 'pf',
         source: conversation.channel,
-        status: 'novo',
+        status: 'ganho',
         score: 0,
         isActive: true,
         totalSpent: 0,
@@ -1590,6 +1593,7 @@ function LinkContactDrawer({
       }
       const { addDoc, collection } = await import('firebase/firestore');
       const ref = await addDoc(collection(db, 'clients'), payload);
+      queryClient.invalidateQueries({ queryKey: ['clients', businessId] });
       await link(ref.id);
     } catch (err) {
       console.error('[Conversations] Quick-create failed:', err);
@@ -1610,7 +1614,7 @@ function LinkContactDrawer({
         <div>
           <h3 className="text-sm font-bold text-gray-900 dark:text-gray-100">Vincular cliente</h3>
           <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
-            Associe este contato a um cliente do CRM
+            Associe este contato a um cliente cadastrado
           </p>
         </div>
         <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400">
