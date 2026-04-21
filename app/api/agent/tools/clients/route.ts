@@ -86,6 +86,7 @@ async function createClient(businessId: string, params: Record<string, unknown>)
   const doc: Partial<Client> = {
     businessId,
     name,
+    tipo: 'pf',
     phone: phone || undefined,
     whatsapp: whatsapp || undefined,
     email: (params.email as string | undefined) || undefined,
