@@ -82,6 +82,7 @@ import {
   ShoppingBag,
   Sparkles,
   Search,
+  Bell,
 } from 'lucide-react';
 import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector, Service, WorkingHours, DaySchedule, UseCase } from '@/lib/types';
 import { CachedImage } from '@/app/components/ui/CachedImage';
@@ -3783,6 +3784,75 @@ function AgenteTab() {
         </div>
       </div>
 
+      {/* ── Lembretes automáticos — independente do Agente IA ── */}
+      {useCase === 'servicos' && (
+        <SectionCard title="Lembretes automáticos" icon={Bell}>
+          {/* Info banner */}
+          <div className="mb-4 bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30 rounded-xl p-3 flex items-start gap-2.5">
+            <Info className="w-4 h-4 text-blue-500 flex-shrink-0 mt-0.5" />
+            <p className="text-xs text-blue-700 dark:text-blue-300 leading-relaxed">
+              Funciona <strong>independente do Agente IA</strong>. As mensagens são enviadas automaticamente a cada hora via WhatsApp para clientes que já possuem conversa ativa no canal.
+            </p>
+          </div>
+
+          <div className="space-y-4">
+            {/* Lembrete antes */}
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  Lembrete antes do agendamento
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  Envia mensagem lembrando o cliente do horário marcado.
+                </p>
+                {sendReminder && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <label className="text-xs text-gray-500">Quantas horas antes?</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={168}
+                      value={reminderHoursBefore}
+                      onChange={(e) => setReminderHoursBefore(Math.max(1, Math.min(168, Number(e.target.value) || 24)))}
+                      className="w-16 px-2 py-1 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-center"
+                    />
+                    <span className="text-xs text-gray-500">horas</span>
+                  </div>
+                )}
+              </div>
+              <AgenteToggleSwitch checked={sendReminder} onChange={setSendReminder} />
+            </div>
+
+            {/* Confirmação de presença */}
+            <div className="flex items-start justify-between gap-4 pt-3 border-t border-gray-100 dark:border-gray-800">
+              <div>
+                <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  Pedir confirmação de presença
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  Um dia antes, pergunta se o cliente confirma — resposta "confirmo" atualiza o status do agendamento.
+                </p>
+              </div>
+              <AgenteToggleSwitch checked={confirmationBeforeAppointment} onChange={setConfirmationBeforeAppointment} />
+            </div>
+
+            {/* Follow-up pós-atendimento */}
+            <div className="flex items-start justify-between gap-4 pt-3 border-t border-gray-100 dark:border-gray-800">
+              <div>
+                <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  Follow-up após o atendimento
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  Agradecimento enviado 12–36h após a conclusão. Útil para medir satisfação e fidelizar.
+                </p>
+              </div>
+              <AgenteToggleSwitch checked={followUpAfter} onChange={setFollowUpAfter} />
+            </div>
+          </div>
+        </SectionCard>
+      )}
+
+      {/* ── Agente IA — configurações avançadas ── */}
       {enabled && (
         <motion.div
           initial={{ opacity: 0, height: 0 }}
@@ -3833,7 +3903,7 @@ function AgenteTab() {
             <p className="text-[10px] text-gray-400 mt-1 text-right">{businessDescription.length}/2000</p>
           </SectionCard>
 
-          {/* === Configurações específicas por modo === */}
+          {/* Automações de pedidos (modo pedidos) */}
           {useCase === 'pedidos' && (
             <SectionCard title="Automações de pedidos" icon={MessageCircle}>
               <div className="space-y-4">
@@ -3864,62 +3934,6 @@ function AgenteTab() {
             </SectionCard>
           )}
 
-          {useCase === 'servicos' && (
-            <SectionCard title="Automações de agenda" icon={MessageCircle}>
-              <div className="space-y-4">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex-1">
-                    <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                      Enviar lembrete antes da consulta
-                    </p>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                      A IA manda mensagem educada lembrando do horário marcado.
-                    </p>
-                    {sendReminder && (
-                      <div className="mt-2 flex items-center gap-2">
-                        <label className="text-xs text-gray-500">Quantas horas antes?</label>
-                        <input
-                          type="number"
-                          min={1}
-                          max={168}
-                          value={reminderHoursBefore}
-                          onChange={(e) => setReminderHoursBefore(Math.max(1, Math.min(168, Number(e.target.value) || 24)))}
-                          className="w-16 px-2 py-1 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-center"
-                        />
-                        <span className="text-xs text-gray-500">horas</span>
-                      </div>
-                    )}
-                  </div>
-                  <AgenteToggleSwitch checked={sendReminder} onChange={setSendReminder} />
-                </div>
-
-                <div className="flex items-start justify-between gap-4 pt-3 border-t border-gray-100 dark:border-gray-800">
-                  <div>
-                    <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                      Pedir confirmação de presença
-                    </p>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                      Um dia antes da consulta, a IA pergunta se está confirmado — resposta marca o appointment como "confirmado".
-                    </p>
-                  </div>
-                  <AgenteToggleSwitch checked={confirmationBeforeAppointment} onChange={setConfirmationBeforeAppointment} />
-                </div>
-
-                <div className="flex items-start justify-between gap-4 pt-3 border-t border-gray-100 dark:border-gray-800">
-                  <div>
-                    <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                      Follow-up após a consulta
-                    </p>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                      Agradecimento breve e pergunta se correu tudo bem. Útil para medir satisfação sem sobrecarregar.
-                    </p>
-                  </div>
-                  <AgenteToggleSwitch checked={followUpAfter} onChange={setFollowUpAfter} />
-                </div>
-              </div>
-            </SectionCard>
-          )}
-
           {useCase !== 'pedidos' && useCase !== 'servicos' && (
             <div className="bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-xl p-4 flex items-start gap-3">
               <Info className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
@@ -3933,19 +3947,21 @@ function AgenteTab() {
               </div>
             </div>
           )}
-
-          {/* Save */}
-          <div className="flex justify-end">
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-bold shadow-md shadow-violet-500/20 transition-colors"
-            >
-              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-              {saving ? 'Salvando...' : 'Salvar configurações'}
-            </button>
-          </div>
         </motion.div>
+      )}
+
+      {/* Save — visível para modo servicos (lembretes) ou quando agente IA está ativo */}
+      {(useCase === 'servicos' || enabled) && (
+        <div className="flex justify-end">
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-bold shadow-md shadow-violet-500/20 transition-colors"
+          >
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+            {saving ? 'Salvando...' : 'Salvar configurações'}
+          </button>
+        </div>
       )}
     </motion.div>
   );
