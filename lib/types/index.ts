@@ -259,6 +259,8 @@ export interface AiAgentSettings {
     acceptOrdersOffHours?: boolean;
     /** Tempo máximo de espera antes do agente sugerir alternativas (min) */
     maxWaitMinutes?: number;
+    /** Taxa de entrega padrão (R$) — usada pelo agente ao criar pedido do tipo entrega */
+    deliveryFee?: number;
   };
 
   /** === Modo: serviços (agenda) === */

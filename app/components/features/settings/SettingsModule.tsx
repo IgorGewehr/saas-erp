@@ -3729,6 +3729,7 @@ function AgenteTab() {
   // Pedidos-specific
   const [notifyOnStatusChange, setNotifyOnStatusChange] = useState<boolean>(current?.pedidos?.notifyOnStatusChange ?? true);
   const [acceptOrdersOffHours, setAcceptOrdersOffHours] = useState<boolean>(current?.pedidos?.acceptOrdersOffHours ?? false);
+  const [deliveryFee, setDeliveryFee] = useState<number>(current?.pedidos?.deliveryFee ?? 0);
 
   // Agenda-specific
   const [sendReminder, setSendReminder] = useState<boolean>(current?.agenda?.sendReminder ?? true);
@@ -3744,6 +3745,7 @@ function AgenteTab() {
     setBusinessDescription(current?.businessDescription || '');
     setNotifyOnStatusChange(current?.pedidos?.notifyOnStatusChange ?? true);
     setAcceptOrdersOffHours(current?.pedidos?.acceptOrdersOffHours ?? false);
+    setDeliveryFee(current?.pedidos?.deliveryFee ?? 0);
     setSendReminder(current?.agenda?.sendReminder ?? true);
     setReminderHoursBefore(current?.agenda?.reminderHoursBefore ?? 24);
     setConfirmationBeforeAppointment(current?.agenda?.confirmationBeforeAppointment ?? true);
@@ -3757,7 +3759,7 @@ function AgenteTab() {
       // Build nested settings — keeps Firestore doc clean and lets server-side
       // prompt builder know exactly what user opted into.
       const pedidos = useCase === 'pedidos'
-        ? { notifyOnStatusChange, acceptOrdersOffHours }
+        ? { notifyOnStatusChange, acceptOrdersOffHours, deliveryFee: deliveryFee > 0 ? deliveryFee : null }
         : undefined;
       const agenda = useCase === 'servicos'
         ? { sendReminder, reminderHoursBefore, confirmationBeforeAppointment, followUpAfter }
@@ -3896,6 +3898,23 @@ function AgenteTab() {
                     </p>
                   </div>
                   <AgenteToggleSwitch checked={acceptOrdersOffHours} onChange={setAcceptOrdersOffHours} />
+                </div>
+                <div className="pt-3 border-t border-gray-100 dark:border-gray-800">
+                  <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Taxa de entrega padrão</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                    Valor cobrado pelo agente automaticamente em pedidos do tipo entrega. Use 0 para não cobrar ou variar por região.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-gray-500">R$</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.5}
+                      value={deliveryFee}
+                      onChange={(e) => setDeliveryFee(Math.max(0, Number(e.target.value) || 0))}
+                      className="w-24 px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                    />
+                  </div>
                 </div>
               </div>
             </SectionCard>
