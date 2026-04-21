@@ -498,6 +498,7 @@ export interface Sale {
   payments: Payment[];
   subtotal: number;
   discount: number;
+  tip?: number;
   total: number;
   status: 'aberta' | 'finalizada' | 'cancelada';
   fiscalDocId?: string;
