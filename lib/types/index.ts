@@ -230,6 +230,18 @@ export interface BusinessPromotion {
   isActive: boolean;
 }
 
+export interface LoyaltyConfig {
+  isEnabled: boolean;
+  /** Quantos pontos o cliente ganha por R$1,00 gasto (ex: 1) */
+  pointsPerReal: number;
+  /** Valor em centavos de cada ponto no resgate (ex: 1 = R$0,01/ponto) */
+  pointValueInCentavos: number;
+  /** Mínimo de pontos para resgatar */
+  minPointsToRedeem: number;
+  /** Dias até expirar (null = não expira) */
+  expirationDays?: number | null;
+}
+
 export interface BusinessSettings {
   timezone?: string;
   currency?: string;
@@ -240,6 +252,8 @@ export interface BusinessSettings {
   openingHours?: BusinessHoursDay[];
   /** Configuração de entrega (usada no modo pedidos e em prompts do agente) */
   delivery?: DeliveryConfig;
+  /** Programa de fidelidade */
+  loyalty?: LoyaltyConfig;
   /** Promoções ativas */
   promotions?: BusinessPromotion[];
 }
@@ -464,6 +478,7 @@ export type PaymentMethod =
   | 'credito'
   | 'debito'
   | 'boleto'
+  | 'pontos'
   | 'outros';
 
 export interface Payment {
@@ -1218,6 +1233,8 @@ export interface Client {
   totalSpent?: number;
   visitCount?: number;
   lastVisit?: string;
+  /** Saldo de pontos de fidelidade */
+  loyaltyPoints?: number;
 
   // ── Inteligência & AI Agent ────────────────────────
   profile?: ContactProfile;
@@ -1973,4 +1990,27 @@ export interface Supplier {
   lastPurchaseAt?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+// ============================================
+// Loyalty Program
+// ============================================
+
+export type LoyaltyTransactionType = 'acumulo' | 'resgate' | 'expiracao' | 'ajuste';
+
+export interface LoyaltyTransaction {
+  id: string;
+  businessId: string;
+  clientId: string;
+  clientName: string;
+  type: LoyaltyTransactionType;
+  /** Positivo = ganho, negativo = resgate/expiração */
+  points: number;
+  balanceAfter: number;
+  description: string;
+  /** ID da venda ou agendamento que originou o movimento */
+  sourceId?: string;
+  sourceType?: 'sale' | 'appointment';
+  expiresAt?: string;
+  createdAt: string;
 }

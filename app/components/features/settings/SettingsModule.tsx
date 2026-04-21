@@ -864,6 +864,13 @@ function EmpresaTab() {
   const [uf, setUf] = useState('');
   const [codigoMunicipio, setCodigoMunicipio] = useState('');
 
+  // Loyalty program state
+  const [loyaltyEnabled, setLoyaltyEnabled] = useState(false);
+  const [loyaltyPointsPerReal, setLoyaltyPointsPerReal] = useState('1');
+  const [loyaltyPointValueCents, setLoyaltyPointValueCents] = useState('1');
+  const [loyaltyMinRedeem, setLoyaltyMinRedeem] = useState('100');
+  const [loyaltyExpirationDays, setLoyaltyExpirationDays] = useState('');
+
   // Populate from business
   useEffect(() => {
     if (business) {
@@ -886,6 +893,13 @@ function EmpresaTab() {
       setUf(business.endereco?.uf || '');
       setCodigoMunicipio(business.endereco?.codigoMunicipio || '');
       if (business.logo) setLogoPreview(business.logo);
+      // Loyalty
+      const lc = business.settings?.loyalty;
+      setLoyaltyEnabled(lc?.isEnabled ?? false);
+      setLoyaltyPointsPerReal(String(lc?.pointsPerReal ?? 1));
+      setLoyaltyPointValueCents(String(lc?.pointValueInCentavos ?? 1));
+      setLoyaltyMinRedeem(String(lc?.minPointsToRedeem ?? 100));
+      setLoyaltyExpirationDays(lc?.expirationDays ? String(lc.expirationDays) : '');
     }
   }, [business]);
 
@@ -985,6 +999,13 @@ function EmpresaTab() {
             cep: cep.replace(/\D/g, ''),
           },
           updatedAt: new Date().toISOString(),
+          'settings.loyalty': {
+            isEnabled: loyaltyEnabled,
+            pointsPerReal: Number(loyaltyPointsPerReal) || 1,
+            pointValueInCentavos: Number(loyaltyPointValueCents) || 1,
+            minPointsToRedeem: Number(loyaltyMinRedeem) || 100,
+            expirationDays: loyaltyExpirationDays ? Number(loyaltyExpirationDays) : null,
+          },
         },
         { merge: true }
       );
@@ -1319,6 +1340,94 @@ function EmpresaTab() {
             </div>
           </SectionCard>
         )}
+
+        {/* Programa de Fidelidade */}
+        <SectionCard title="Programa de Fidelidade" icon={DollarSign}>
+          <div className="space-y-4">
+            {/* Toggle */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-gray-800 dark:text-gray-200">Ativar programa de fidelidade</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Clientes acumulam pontos a cada compra ou atendimento</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setLoyaltyEnabled(!loyaltyEnabled)}
+                disabled={!canEditSettings}
+                className={cn(
+                  'relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none',
+                  loyaltyEnabled ? 'bg-red-600' : 'bg-gray-200 dark:bg-gray-700'
+                )}
+              >
+                <span className={cn('inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform', loyaltyEnabled ? 'translate-x-6' : 'translate-x-1')} />
+              </button>
+            </div>
+
+            {loyaltyEnabled && (
+              <div className="grid grid-cols-2 gap-3 pt-1">
+                <div>
+                  <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block mb-1">Pontos por R$1,00 gasto</label>
+                  <input
+                    type="number"
+                    min="0.1"
+                    step="0.1"
+                    value={loyaltyPointsPerReal}
+                    onChange={e => setLoyaltyPointsPerReal(e.target.value)}
+                    disabled={!canEditSettings}
+                    className="w-full px-3 py-2 text-sm rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-red-500"
+                  />
+                  <p className="text-[11px] text-gray-400 mt-0.5">Ex: 1 = cliente ganha 1 ponto por real</p>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block mb-1">Valor do ponto (centavos)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={loyaltyPointValueCents}
+                    onChange={e => setLoyaltyPointValueCents(e.target.value)}
+                    disabled={!canEditSettings}
+                    className="w-full px-3 py-2 text-sm rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-red-500"
+                  />
+                  <p className="text-[11px] text-gray-400 mt-0.5">Ex: 1 = 1 ponto vale R$0,01</p>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block mb-1">Mínimo para resgatar (pontos)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={loyaltyMinRedeem}
+                    onChange={e => setLoyaltyMinRedeem(e.target.value)}
+                    disabled={!canEditSettings}
+                    className="w-full px-3 py-2 text-sm rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-red-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block mb-1">Expiração (dias, vazio = nunca)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={loyaltyExpirationDays}
+                    onChange={e => setLoyaltyExpirationDays(e.target.value)}
+                    disabled={!canEditSettings}
+                    placeholder="Não expira"
+                    className="w-full px-3 py-2 text-sm rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-red-500"
+                  />
+                </div>
+              </div>
+            )}
+
+            {loyaltyEnabled && (
+              <div className="rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800/30 px-4 py-3">
+                <p className="text-xs text-red-700 dark:text-red-400">
+                  Resumo: cliente ganha <strong>{loyaltyPointsPerReal} pt</strong>/R$1 e cada ponto vale{' '}
+                  <strong>R${(Number(loyaltyPointValueCents) / 100).toFixed(2)}</strong>.
+                  Resgate mínimo: <strong>{loyaltyMinRedeem} pts</strong> ={' '}
+                  <strong>R${((Number(loyaltyMinRedeem) * Number(loyaltyPointValueCents)) / 100).toFixed(2)}</strong>.
+                </p>
+              </div>
+            )}
+          </div>
+        </SectionCard>
 
         {/* Save */}
         {canEditSettings && (

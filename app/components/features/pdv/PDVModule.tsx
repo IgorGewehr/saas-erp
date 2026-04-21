@@ -44,6 +44,7 @@ import {
   AlertCircle,
   Loader2,
   History,
+  Gift,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -54,6 +55,7 @@ import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, doc } from 'firebase/firestore';
 import { deductStock } from '@/lib/services/stock';
+import { calculateEarnedPoints, addLoyaltyPoints, redeemLoyaltyPoints, pointsToReais, reaisToPoints } from '@/lib/services/loyalty';
 import { db } from '@/lib/config/firebase';
 import type { Product, Service, CRMContact, Sale, SaleItem, Payment, PaymentMethod } from '@/lib/types';
 
@@ -80,6 +82,7 @@ const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   credito: 'Credito',
   debito: 'Debito',
   boleto: 'Boleto',
+  pontos: 'Pontos',
   outros: 'Outros',
 };
 
@@ -120,6 +123,12 @@ interface CartItem extends SaleItem {
 
 export default function PDVModule() {
   const { t } = useTranslation();
+  const { isDark } = useTheme();
+  const { user, business } = useAuth();
+  const queryClient = useQueryClient();
+
+  const loyaltyConfig = business?.settings?.loyalty;
+  const loyaltyEnabled = loyaltyConfig?.isEnabled ?? false;
 
   const PAYMENT_METHODS: { value: PaymentMethod; label: string; icon: React.ReactNode }[] = useMemo(() => [
     { value: 'dinheiro', label: t('pdv.payment.cash', 'Dinheiro'), icon: <Banknote size={18} /> },
@@ -128,7 +137,8 @@ export default function PDVModule() {
     { value: 'debito', label: t('pdv.payment.debit', 'Débito'), icon: <Wallet size={18} /> },
     { value: 'boleto', label: t('pdv.payment.boleto', 'Boleto'), icon: <FileText size={18} /> },
     { value: 'outros', label: t('pdv.payment.other', 'Outros'), icon: <MoreHorizontal size={18} /> },
-  ], [t]);
+    ...(loyaltyEnabled ? [{ value: 'pontos' as PaymentMethod, label: 'Pontos', icon: <Gift size={18} /> }] : []),
+  ], [t, loyaltyEnabled]);
 
   const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = useMemo(() => ({
     dinheiro: t('pdv.payment.cash', 'Dinheiro'),
@@ -136,12 +146,9 @@ export default function PDVModule() {
     credito: t('pdv.payment.credit', 'Crédito'),
     debito: t('pdv.payment.debit', 'Débito'),
     boleto: t('pdv.payment.boleto', 'Boleto'),
+    pontos: 'Pontos',
     outros: t('pdv.payment.other', 'Outros'),
   }), [t]);
-
-  const { isDark } = useTheme();
-  const { user, business } = useAuth();
-  const queryClient = useQueryClient();
 
   // --- Main view ---
   const [mainView, setMainView] = useState<MainView>('pdv');
@@ -575,6 +582,49 @@ export default function PDVModule() {
           lastVisit: now,
           updatedAt: now,
         });
+
+        const loyaltyConfig = business?.settings?.loyalty;
+        const pointsPayment = payments.find(p => p.method === 'pontos');
+
+        // Redeem loyalty points (if client paid with pontos)
+        if (loyaltyConfig?.isEnabled && pointsPayment && pointsPayment.amount > 0) {
+          const pointsToRedeem = reaisToPoints(pointsPayment.amount, loyaltyConfig);
+          try {
+            await redeemLoyaltyPoints(db, {
+              businessId: business!.id,
+              clientId: selectedClient.id,
+              clientName: selectedClient.name,
+              pointsToRedeem,
+              config: loyaltyConfig,
+              sourceId: docRef.id,
+              description: `Resgate - Venda #${docRef.id.substring(0, 6)}`,
+            });
+          } catch (err) {
+            console.warn('Loyalty points redemption failed:', err);
+          }
+        }
+
+        // Accumulate loyalty points (on the cash portion of the sale)
+        const cashTotal = total - (pointsPayment?.amount || 0);
+        if (loyaltyConfig?.isEnabled && cashTotal > 0) {
+          const earned = calculateEarnedPoints(cashTotal, loyaltyConfig);
+          if (earned > 0) {
+            try {
+              await addLoyaltyPoints(db, {
+                businessId: business!.id,
+                clientId: selectedClient.id,
+                clientName: selectedClient.name,
+                pointsEarned: earned,
+                config: loyaltyConfig,
+                sourceId: docRef.id,
+                sourceType: 'sale',
+                description: `Venda #${docRef.id.substring(0, 6)}`,
+              });
+            } catch (err) {
+              console.warn('Loyalty points accumulation failed:', err);
+            }
+          }
+        }
       }
 
       // Invalidate caches
@@ -1280,6 +1330,16 @@ export default function PDVModule() {
             )}
             noOptionsText={t('pdv.catalog.emptyTitle', 'Nenhum cliente encontrado')}
           />
+
+          {/* Loyalty Points Badge */}
+          {loyaltyEnabled && selectedClient && (
+            <div className="mt-2 flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800/30 rounded-xl">
+              <Gift size={13} className="text-amber-600 dark:text-amber-400" />
+              <span className="text-xs text-amber-700 dark:text-amber-400 font-medium">
+                {selectedClient.loyaltyPoints ?? 0} pts · {formatCurrency(pointsToReais(selectedClient.loyaltyPoints ?? 0, loyaltyConfig!))}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Cart Items + Checkout (scrollable) */}
@@ -1493,6 +1553,45 @@ export default function PDVModule() {
                           </option>
                         ))}
                       </select>
+                    </div>
+                  )}
+
+                  {/* Loyalty points info */}
+                  {activePaymentMethod === 'pontos' && loyaltyConfig && (
+                    <div className="rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800/30 px-3 py-2.5 space-y-1.5">
+                      {selectedClient ? (
+                        <>
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1.5">
+                              <Gift size={14} className="text-amber-600 dark:text-amber-400" />
+                              <span className="text-xs font-semibold text-amber-800 dark:text-amber-300">
+                                Saldo: {selectedClient.loyaltyPoints ?? 0} pts
+                              </span>
+                            </div>
+                            <span className="text-xs text-amber-700 dark:text-amber-400">
+                              = {formatCurrency(pointsToReais(selectedClient.loyaltyPoints ?? 0, loyaltyConfig))}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-amber-600 dark:text-amber-500">
+                            Mín. {loyaltyConfig.minPointsToRedeem} pts para resgatar • 1 pt = R${(loyaltyConfig.pointValueInCentavos / 100).toFixed(2)}
+                          </p>
+                          {(selectedClient.loyaltyPoints ?? 0) >= loyaltyConfig.minPointsToRedeem && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const maxReais = pointsToReais(selectedClient.loyaltyPoints ?? 0, loyaltyConfig);
+                                const useReais = Math.min(maxReais, remaining);
+                                setPaymentAmount(useReais.toFixed(2));
+                              }}
+                              className="text-[11px] text-amber-700 dark:text-amber-300 font-medium underline"
+                            >
+                              Usar tudo ({formatCurrency(Math.min(pointsToReais(selectedClient.loyaltyPoints ?? 0, loyaltyConfig), remaining))})
+                            </button>
+                          )}
+                        </>
+                      ) : (
+                        <p className="text-xs text-amber-700 dark:text-amber-400">Selecione um cliente para usar pontos de fidelidade.</p>
+                      )}
                     </div>
                   )}
                 </motion.div>

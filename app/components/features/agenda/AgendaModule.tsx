@@ -72,6 +72,7 @@ import { formatCurrency, getStatusColor, getStatusLabel } from '@/lib/utils/form
 import type { Appointment, AppointmentStatus, Service, CRMContact, User } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import { maybeCreateCommission, maybeCancelCommission } from '@/lib/services/commission';
+import { calculateEarnedPoints, addLoyaltyPoints } from '@/lib/services/loyalty';
 import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot, increment, writeBatch } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -2296,6 +2297,26 @@ export default function AgendaModule() {
           }
         }
 
+        // ── Loyalty points on edit (first time concluido) ────────────────
+        if (!wasDone && isDone && newClientId) {
+          const lc = business.settings?.loyalty;
+          if (lc?.isEnabled && (data.price || 0) > 0) {
+            const earned = calculateEarnedPoints(data.price || 0, lc);
+            if (earned > 0) {
+              addLoyaltyPoints(db, {
+                businessId: business.id,
+                clientId: newClientId,
+                clientName: data.clientName || '',
+                pointsEarned: earned,
+                config: lc,
+                sourceId: editingAppointment.id,
+                sourceType: 'appointment',
+                description: `Atendimento - ${data.serviceName || 'Serviço'}`,
+              }).catch(err => console.warn('[Agenda] loyalty on edit failed:', err));
+            }
+          }
+        }
+
         // ── Commission handling on edit ──────────────────────────────────
         if (!wasDone && isDone && data.professionalId) {
           const professional = members.find(m => m.id === data.professionalId);
@@ -2344,7 +2365,7 @@ export default function AgendaModule() {
             severity: 'success',
           });
         } else {
-          await addDoc(collection(db, 'appointments'), payload);
+          const newDocRef = await addDoc(collection(db, 'appointments'), payload);
           if (data.status === 'concluido' && data.clientId) {
             await syncClientMetrics({
               clientId: data.clientId,
@@ -2352,6 +2373,23 @@ export default function AgendaModule() {
               priceDelta: data.price || 0,
               lastVisitDate: data.date,
             });
+            // Loyalty points accumulation on creation of completed appointment
+            const lc = business.settings?.loyalty;
+            if (lc?.isEnabled && (data.price || 0) > 0) {
+              const earned = calculateEarnedPoints(data.price || 0, lc);
+              if (earned > 0) {
+                addLoyaltyPoints(db, {
+                  businessId: business.id,
+                  clientId: data.clientId,
+                  clientName: data.clientName || '',
+                  pointsEarned: earned,
+                  config: lc,
+                  sourceId: newDocRef.id,
+                  sourceType: 'appointment',
+                  description: `Atendimento - ${data.serviceName || 'Serviço'}`,
+                }).catch(err => console.warn('[Agenda] loyalty on create failed:', err));
+              }
+            }
           }
           setSnackbar({ open: true, message: t('agenda.appointmentCreated', 'Agendamento criado com sucesso!'), severity: 'success' });
         }
