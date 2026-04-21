@@ -364,8 +364,14 @@ function ClientDetailPanel({ client, onClose, onEdit }: { client: Client; onClos
       {/* Header */}
       <div className="flex items-start justify-between p-5 border-b border-gray-100 dark:border-gray-800">
         <div className="flex items-center gap-3">
-          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center text-white font-bold text-lg shadow-sm">
-            {(client.name?.[0] || '?').toUpperCase()}
+          <div className="w-12 h-12 rounded-2xl overflow-hidden shadow-sm flex-shrink-0">
+            {client.avatarUrl ? (
+              <img src={client.avatarUrl} alt={client.name} className="w-full h-full object-cover" />
+            ) : (
+              <div className="w-full h-full bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center text-white font-bold text-lg">
+                {(client.name?.[0] || '?').toUpperCase()}
+              </div>
+            )}
           </div>
           <div>
             <h3 className="font-semibold text-gray-900 dark:text-white">{client.name}</h3>
