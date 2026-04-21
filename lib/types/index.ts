@@ -1213,6 +1213,7 @@ export interface Client {
   suframa?: string;
   nomeFantasia?: string;
   isActive?: boolean;
+  avatarUrl?: string;
   totalSpent?: number;
   visitCount?: number;
   lastVisit?: string;

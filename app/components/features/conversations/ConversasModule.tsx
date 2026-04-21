@@ -1557,6 +1557,9 @@ function LinkContactDrawer({
               : 'channelIdentities.instagram';
             patch[key] = convExternal;
           }
+          if (conversation.contactAvatarUrl && !client.avatarUrl) {
+            patch.avatarUrl = conversation.contactAvatarUrl;
+          }
           await updateDoc(doc(db, 'clients', clientId), patch);
         }
       }
@@ -1591,6 +1594,7 @@ function LinkContactDrawer({
         else payload.phone = phoneDigits;
         payload.channelIdentities = { [conversation.channel]: phoneDigits };
       }
+      if (conversation.contactAvatarUrl) payload.avatarUrl = conversation.contactAvatarUrl;
       const { addDoc, collection } = await import('firebase/firestore');
       const ref = await addDoc(collection(db, 'clients'), payload);
       queryClient.invalidateQueries({ queryKey: ['clients', businessId] });

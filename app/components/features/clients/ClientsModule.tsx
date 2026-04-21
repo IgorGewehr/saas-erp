@@ -932,8 +932,14 @@ export default function ClientsModule() {
                     )}
                   >
                     {/* Avatar */}
-                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center text-white font-bold text-sm flex-shrink-0">
-                      {(client.name?.[0] || '?').toUpperCase()}
+                    <div className="w-10 h-10 rounded-xl flex-shrink-0 overflow-hidden">
+                      {client.avatarUrl ? (
+                        <img src={client.avatarUrl} alt={client.name} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center text-white font-bold text-sm">
+                          {(client.name?.[0] || '?').toUpperCase()}
+                        </div>
+                      )}
                     </div>
 
                     {/* Info */}
@@ -943,7 +949,7 @@ export default function ClientsModule() {
                         {client.tipo === 'pj' && <Building2 className="w-3 h-3 text-gray-400 flex-shrink-0" />}
                       </div>
                       <p className="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
-                        {client.cpfCnpj || client.phone || client.email || client.company || '—'}
+                        {client.cpfCnpj || client.phone || client.whatsapp || client.email || client.company || '—'}
                       </p>
                       {client.tags && client.tags.length > 0 && (
                         <div className="flex flex-wrap gap-1 mt-1.5">
