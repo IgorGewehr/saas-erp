@@ -56,6 +56,7 @@ import {
   ToggleLeft,
   ToggleRight,
   AlertTriangle,
+  Bell,
 } from 'lucide-react';
 import Dialog from '@mui/material/Dialog';
 import DialogTitle from '@mui/material/DialogTitle';
@@ -71,6 +72,7 @@ import { formatCurrency, getStatusColor, getStatusLabel } from '@/lib/utils/form
 import type { Appointment, AppointmentStatus, Service, CRMContact, User } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import { maybeCreateCommission, maybeCancelCommission } from '@/lib/services/commission';
+import { calculateEarnedPoints, addLoyaltyPoints } from '@/lib/services/loyalty';
 import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot, increment, writeBatch } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -392,14 +394,19 @@ function AppointmentBlock({ appointment, onClick, compact = false }: Appointment
         }}
       >
         <div className={cn('px-2 h-full flex flex-col justify-center', isShort ? 'py-0.5' : 'py-1.5')}>
-          <div
-            className={cn(
-              'font-semibold truncate leading-tight',
-              compact ? 'text-[10px]' : 'text-[11px]',
+          <div className="flex items-center gap-1">
+            <div
+              className={cn(
+                'font-semibold truncate leading-tight flex-1',
+                compact ? 'text-[10px]' : 'text-[11px]',
+              )}
+              style={{ color }}
+            >
+              {compact ? appointment.clientName.split(' ')[0] : appointment.clientName}
+            </div>
+            {appointment.reminderSentAt && !isShort && (
+              <Bell className="w-2.5 h-2.5 flex-shrink-0 opacity-70" style={{ color }} />
             )}
-            style={{ color }}
-          >
-            {compact ? appointment.clientName.split(' ')[0] : appointment.clientName}
           </div>
           {!isShort && (
             <>
@@ -1801,6 +1808,33 @@ function ViewAppointmentDialog({
                 </div>
               </div>
             )}
+
+            {/* Reminder status row — only shown when at least one was sent */}
+            {(appointment.reminderSentAt || appointment.confirmationRequestedAt || appointment.followUpSentAt) && (
+              <div className="flex items-start gap-3 py-2.5 px-3 bg-emerald-50 dark:bg-emerald-500/10 rounded-xl border border-emerald-100 dark:border-emerald-500/20">
+                <Bell className="w-4 h-4 text-emerald-500 flex-shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <div className="text-xs text-emerald-700 dark:text-emerald-400 font-medium mb-1">Lembretes enviados via WhatsApp</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {appointment.reminderSentAt && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                        <Check className="w-2.5 h-2.5" /> Lembrete
+                      </span>
+                    )}
+                    {appointment.confirmationRequestedAt && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                        <Check className="w-2.5 h-2.5" /> Confirmação
+                      </span>
+                    )}
+                    {appointment.followUpSentAt && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                        <Check className="w-2.5 h-2.5" /> Follow-up
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Action Buttons */}
@@ -2263,6 +2297,26 @@ export default function AgendaModule() {
           }
         }
 
+        // ── Loyalty points on edit (first time concluido) ────────────────
+        if (!wasDone && isDone && newClientId) {
+          const lc = business.settings?.loyalty;
+          if (lc?.isEnabled && (data.price || 0) > 0) {
+            const earned = calculateEarnedPoints(data.price || 0, lc);
+            if (earned > 0) {
+              addLoyaltyPoints(db, {
+                businessId: business.id,
+                clientId: newClientId,
+                clientName: data.clientName || '',
+                pointsEarned: earned,
+                config: lc,
+                sourceId: editingAppointment.id,
+                sourceType: 'appointment',
+                description: `Atendimento - ${data.serviceName || 'Serviço'}`,
+              }).catch(err => console.warn('[Agenda] loyalty on edit failed:', err));
+            }
+          }
+        }
+
         // ── Commission handling on edit ──────────────────────────────────
         if (!wasDone && isDone && data.professionalId) {
           const professional = members.find(m => m.id === data.professionalId);
@@ -2311,7 +2365,7 @@ export default function AgendaModule() {
             severity: 'success',
           });
         } else {
-          await addDoc(collection(db, 'appointments'), payload);
+          const newDocRef = await addDoc(collection(db, 'appointments'), payload);
           if (data.status === 'concluido' && data.clientId) {
             await syncClientMetrics({
               clientId: data.clientId,
@@ -2319,6 +2373,23 @@ export default function AgendaModule() {
               priceDelta: data.price || 0,
               lastVisitDate: data.date,
             });
+            // Loyalty points accumulation on creation of completed appointment
+            const lc = business.settings?.loyalty;
+            if (lc?.isEnabled && (data.price || 0) > 0) {
+              const earned = calculateEarnedPoints(data.price || 0, lc);
+              if (earned > 0) {
+                addLoyaltyPoints(db, {
+                  businessId: business.id,
+                  clientId: data.clientId,
+                  clientName: data.clientName || '',
+                  pointsEarned: earned,
+                  config: lc,
+                  sourceId: newDocRef.id,
+                  sourceType: 'appointment',
+                  description: `Atendimento - ${data.serviceName || 'Serviço'}`,
+                }).catch(err => console.warn('[Agenda] loyalty on create failed:', err));
+              }
+            }
           }
           setSnackbar({ open: true, message: t('agenda.appointmentCreated', 'Agendamento criado com sucesso!'), severity: 'success' });
         }

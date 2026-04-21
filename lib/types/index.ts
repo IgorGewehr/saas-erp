@@ -230,6 +230,18 @@ export interface BusinessPromotion {
   isActive: boolean;
 }
 
+export interface LoyaltyConfig {
+  isEnabled: boolean;
+  /** Quantos pontos o cliente ganha por R$1,00 gasto (ex: 1) */
+  pointsPerReal: number;
+  /** Valor em centavos de cada ponto no resgate (ex: 1 = R$0,01/ponto) */
+  pointValueInCentavos: number;
+  /** Mínimo de pontos para resgatar */
+  minPointsToRedeem: number;
+  /** Dias até expirar (null = não expira) */
+  expirationDays?: number | null;
+}
+
 export interface BusinessSettings {
   timezone?: string;
   currency?: string;
@@ -240,6 +252,8 @@ export interface BusinessSettings {
   openingHours?: BusinessHoursDay[];
   /** Configuração de entrega (usada no modo pedidos e em prompts do agente) */
   delivery?: DeliveryConfig;
+  /** Programa de fidelidade */
+  loyalty?: LoyaltyConfig;
   /** Promoções ativas */
   promotions?: BusinessPromotion[];
 }
@@ -466,6 +480,8 @@ export type PaymentMethod =
   | 'credito'
   | 'debito'
   | 'boleto'
+  | 'pontos'
+  | 'gift_card'
   | 'outros';
 
 export interface Payment {
@@ -484,6 +500,7 @@ export interface Sale {
   payments: Payment[];
   subtotal: number;
   discount: number;
+  tip?: number;
   total: number;
   status: 'aberta' | 'finalizada' | 'cancelada';
   fiscalDocId?: string;
@@ -1302,6 +1319,8 @@ export interface Client {
   totalSpent?: number;
   visitCount?: number;
   lastVisit?: string;
+  /** Saldo de pontos de fidelidade */
+  loyaltyPoints?: number;
 
   // ── Inteligência & AI Agent ────────────────────────
   profile?: ContactProfile;
@@ -2055,6 +2074,57 @@ export interface Supplier {
   isActive: boolean;
   totalPurchases?: number;
   lastPurchaseAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ============================================
+// Loyalty Program
+// ============================================
+
+export type LoyaltyTransactionType = 'acumulo' | 'resgate' | 'expiracao' | 'ajuste';
+
+export interface LoyaltyTransaction {
+  id: string;
+  businessId: string;
+  clientId: string;
+  clientName: string;
+  type: LoyaltyTransactionType;
+  /** Positivo = ganho, negativo = resgate/expiração */
+  points: number;
+  balanceAfter: number;
+  description: string;
+  /** ID da venda ou agendamento que originou o movimento */
+  sourceId?: string;
+  sourceType?: 'sale' | 'appointment';
+  expiresAt?: string;
+  createdAt: string;
+}
+
+// ============================================
+// Gift Cards
+// ============================================
+
+export type GiftCardStatus = 'active' | 'used' | 'expired' | 'cancelled';
+
+export interface GiftCard {
+  id: string;
+  businessId: string;
+  /** Código único de 8 caracteres (uppercase, sem caracteres ambíguos) */
+  code: string;
+  originalValue: number;
+  remainingValue: number;
+  status: GiftCardStatus;
+  /** Nome ou email do presenteado (opcional) */
+  recipientName?: string;
+  recipientPhone?: string;
+  /** ID da venda de compra do gift card */
+  purchasedBySaleId?: string;
+  /** ID da venda de resgate */
+  usedBySaleId?: string;
+  expiresAt?: string;
+  purchasedAt: string;
+  usedAt?: string;
   createdAt: string;
   updatedAt: string;
 }

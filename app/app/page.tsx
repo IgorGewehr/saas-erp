@@ -20,6 +20,7 @@ const VendasModule     = lazy(() => import('@/app/components/features/sales/Vend
 const ComprasModule    = lazy(() => import('@/app/components/features/purchases/ComprasModule'));
 const OrdersModule     = lazy(() => import('@/app/components/features/orders/OrdersModule'));
 const CardapioModule   = lazy(() => import('@/app/components/features/cardapio/CardapioModule'));
+const ReportsModule    = lazy(() => import('@/app/components/features/reports/ReportsModule'));
 
 
 // ─── Full-height page loading fallback (Agenda, PDV, Kanban, Conversas) ───────
@@ -143,6 +144,7 @@ export default function AppPage() {
       case 'NFSe':         return <Suspense fallback={fallback}><FiscalModule type="nfse" /></Suspense>;
       case 'NFCe':         return <Suspense fallback={fallback}><FiscalModule type="nfce" /></Suspense>;
       case 'NFe':          return <Suspense fallback={fallback}><FiscalModule type="nfe" /></Suspense>;
+      case 'Relatórios':    return <Suspense fallback={fallback}><ReportsModule /></Suspense>;
       case 'Configurações': return <Suspense fallback={fallback}><SettingsModule /></Suspense>;
       default:             return <Suspense fallback={fallback}><DashboardModule /></Suspense>;
     }

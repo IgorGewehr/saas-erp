@@ -6,7 +6,7 @@ import {
   Users, Plus, Search, Filter, X, Edit2, Trash2, Phone, Mail,
   Building2, User, ChevronDown, CheckCircle2, Tag, MapPin,
   TrendingUp, ShoppingCart, Star, MoreVertical, Eye, FileText,
-  Download, Upload, UserCheck,
+  Download, Upload, UserCheck, Gift,
 } from 'lucide-react';
 import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, limit as firestoreLimit } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
@@ -423,6 +423,15 @@ function ClientDetailPanel({ client, onClose, onEdit }: { client: Client; onClos
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Compras</p>
             <p className="text-lg font-bold text-gray-900 dark:text-white">{client.visitCount || 0}</p>
           </div>
+          {(client.loyaltyPoints || 0) > 0 && (
+            <div className="col-span-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800/30 rounded-xl p-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Gift className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                <p className="text-xs text-amber-700 dark:text-amber-300 font-medium">Pontos de fidelidade</p>
+              </div>
+              <p className="text-lg font-bold text-amber-700 dark:text-amber-300">{client.loyaltyPoints || 0} pts</p>
+            </div>
+          )}
         </div>
 
         {/* Contacts */}
@@ -980,6 +989,12 @@ export default function ClientsModule() {
                       {(client.totalSpent || 0) > 0 && (
                         <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">
                           {formatCurrency(client.totalSpent || 0)}
+                        </span>
+                      )}
+                      {(client.loyaltyPoints || 0) > 0 && (
+                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400">
+                          <Gift className="w-2.5 h-2.5" />
+                          {client.loyaltyPoints} pts
                         </span>
                       )}
                     </div>

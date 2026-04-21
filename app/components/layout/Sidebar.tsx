@@ -27,6 +27,7 @@ import {
   ShoppingBag,
   ClipboardCheck,
   UtensilsCrossed,
+  BarChart3,
 } from 'lucide-react';
 import type { UseCase, UserRole } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
@@ -48,6 +49,7 @@ export type MenuPage =
   | 'NFSe'
   | 'NFCe'
   | 'NFe'
+  | 'Relatórios'
   | 'Configurações';
 
 // Which use cases each module appears under. `undefined` means "always visible".
@@ -92,6 +94,7 @@ function useMenuSections(): MenuSection[] {
         // internas independente do tipo de operação.
         { id: 'Kanban', label: t('sidebar.kanban'), icon: Kanban, enterpriseOnly: true },
         { id: 'Financeiro', label: t('sidebar.financeiro'), icon: DollarSign, useCases: ['pedidos', 'servicos', 'simples'] },
+        { id: 'Relatórios', label: t('sidebar.relatorios', 'Relatórios'), icon: BarChart3, useCases: ['pedidos', 'servicos', 'simples'] },
         { id: 'Estoque', label: t('sidebar.estoque'), icon: Package, useCases: ['pedidos', 'servicos', 'simples'] },
         { id: 'Compras', label: t('sidebar.compras'), icon: ShoppingBag, useCases: ['pedidos', 'servicos', 'simples'] },
       ],
