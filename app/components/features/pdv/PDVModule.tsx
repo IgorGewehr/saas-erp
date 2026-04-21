@@ -44,6 +44,10 @@ import {
   AlertCircle,
   Loader2,
   History,
+  Gift,
+  TicketPercent,
+  CalendarPlus,
+  Coffee,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -53,7 +57,10 @@ import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, doc } from 'firebase/firestore';
+import { toast } from 'react-toastify';
 import { deductStock } from '@/lib/services/stock';
+import { calculateEarnedPoints, addLoyaltyPoints, redeemLoyaltyPoints, pointsToReais, reaisToPoints } from '@/lib/services/loyalty';
+import { findGiftCard, redeemGiftCard } from '@/lib/services/giftCard';
 import { db } from '@/lib/config/firebase';
 import type { Product, Service, CRMContact, Sale, SaleItem, Payment, PaymentMethod } from '@/lib/types';
 
@@ -80,6 +87,8 @@ const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   credito: 'Credito',
   debito: 'Debito',
   boleto: 'Boleto',
+  pontos: 'Pontos',
+  gift_card: 'Gift Card',
   outros: 'Outros',
 };
 
@@ -120,6 +129,12 @@ interface CartItem extends SaleItem {
 
 export default function PDVModule() {
   const { t } = useTranslation();
+  const { isDark } = useTheme();
+  const { user, business } = useAuth();
+  const queryClient = useQueryClient();
+
+  const loyaltyConfig = business?.settings?.loyalty;
+  const loyaltyEnabled = loyaltyConfig?.isEnabled ?? false;
 
   const PAYMENT_METHODS: { value: PaymentMethod; label: string; icon: React.ReactNode }[] = useMemo(() => [
     { value: 'dinheiro', label: t('pdv.payment.cash', 'Dinheiro'), icon: <Banknote size={18} /> },
@@ -128,7 +143,9 @@ export default function PDVModule() {
     { value: 'debito', label: t('pdv.payment.debit', 'Débito'), icon: <Wallet size={18} /> },
     { value: 'boleto', label: t('pdv.payment.boleto', 'Boleto'), icon: <FileText size={18} /> },
     { value: 'outros', label: t('pdv.payment.other', 'Outros'), icon: <MoreHorizontal size={18} /> },
-  ], [t]);
+    ...(loyaltyEnabled ? [{ value: 'pontos' as PaymentMethod, label: 'Pontos', icon: <Gift size={18} /> }] : []),
+    { value: 'gift_card' as PaymentMethod, label: 'Gift Card', icon: <TicketPercent size={18} /> },
+  ], [t, loyaltyEnabled]);
 
   const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = useMemo(() => ({
     dinheiro: t('pdv.payment.cash', 'Dinheiro'),
@@ -136,12 +153,10 @@ export default function PDVModule() {
     credito: t('pdv.payment.credit', 'Crédito'),
     debito: t('pdv.payment.debit', 'Débito'),
     boleto: t('pdv.payment.boleto', 'Boleto'),
+    pontos: 'Pontos',
+    gift_card: 'Gift Card',
     outros: t('pdv.payment.other', 'Outros'),
   }), [t]);
-
-  const { isDark } = useTheme();
-  const { user, business } = useAuth();
-  const queryClient = useQueryClient();
 
   // --- Main view ---
   const [mainView, setMainView] = useState<MainView>('pdv');
@@ -177,6 +192,32 @@ export default function PDVModule() {
     clientName: string;
     cpf: string;
   } | null>(null);
+
+  // Gift card state
+  const [giftCardCode, setGiftCardCode] = useState('');
+  const [giftCardLookup, setGiftCardLookup] = useState<import('@/lib/types').GiftCard | null>(null);
+  const [giftCardError, setGiftCardError] = useState<string | null>(null);
+  const [isLookingUpGiftCard, setIsLookingUpGiftCard] = useState(false);
+  // Tracks gift card ids to redeem at sale confirmation: Map<giftCardId, amountToRedeem>
+  const giftCardRedemptions = useRef<Map<string, number>>(new Map());
+  // Sell gift card modal
+  const [showSellGiftCard, setShowSellGiftCard] = useState(false);
+  const [gcSellValue, setGcSellValue] = useState('');
+  const [gcSellRecipient, setGcSellRecipient] = useState('');
+  const [gcSellPhone, setGcSellPhone] = useState('');
+  const [gcSellExpiry, setGcSellExpiry] = useState('');
+  const [isSavingGiftCard, setIsSavingGiftCard] = useState(false);
+
+  // Tip state
+  const [tipValue, setTipValue] = useState('');
+  const [tipType, setTipType] = useState<'reais' | 'percent'>('reais');
+
+  // Pre-booking state (post-sale)
+  const [pbStep, setPbStep] = useState<'success' | 'form'>('success');
+  const [pbDate, setPbDate] = useState('');
+  const [pbServiceId, setPbServiceId] = useState('');
+  const [pbTime, setPbTime] = useState('');
+  const [isSavingPreBooking, setIsSavingPreBooking] = useState(false);
 
   // History view state
   const [historySearch, setHistorySearch] = useState('');
@@ -288,9 +329,15 @@ export default function PDVModule() {
     return val;
   }, [discountValue, discountType, subtotal]);
 
+  const tipAmount = useMemo(() => {
+    const val = parseFloat(tipValue) || 0;
+    if (tipType === 'percent') return (subtotal * val) / 100;
+    return val;
+  }, [tipValue, tipType, subtotal]);
+
   const total = useMemo(() => {
-    return Math.max(0, subtotal - discountAmount);
-  }, [subtotal, discountAmount]);
+    return Math.max(0, subtotal - discountAmount + tipAmount);
+  }, [subtotal, discountAmount, tipAmount]);
 
   const totalPaid = useMemo(() => {
     return payments.reduce((sum, p) => sum + p.amount, 0);
@@ -383,6 +430,8 @@ export default function PDVModule() {
     if (!activePaymentMethod || !paymentAmount) return;
     const amount = parseFloat(paymentAmount);
     if (isNaN(amount) || amount <= 0) return;
+    // Gift card requires a validated lookup before adding
+    if (activePaymentMethod === 'gift_card' && !giftCardLookup) return;
     const payment: Payment = {
       method: activePaymentMethod,
       amount,
@@ -391,13 +440,112 @@ export default function PDVModule() {
       payment.installments = installments;
     }
     setPayments((prev) => [...prev, payment]);
+    // Track gift card redemption for later
+    if (activePaymentMethod === 'gift_card' && giftCardLookup) {
+      giftCardRedemptions.current.set(giftCardLookup.id, amount);
+      setGiftCardLookup(null);
+      setGiftCardCode('');
+    }
     setPaymentAmount('');
     setActivePaymentMethod(null);
     setInstallments(1);
-  }, [activePaymentMethod, paymentAmount, installments]);
+  }, [activePaymentMethod, paymentAmount, installments, giftCardLookup]);
 
   const removePayment = useCallback((index: number) => {
-    setPayments((prev) => prev.filter((_, i) => i !== index));
+    setPayments((prev) => {
+      const removed = prev[index];
+      // If removing a gift card payment, clear its redemption tracking
+      if (removed?.method === 'gift_card') {
+        // Find and remove the matching entry from the map by amount (best effort)
+        for (const [gcId, amt] of giftCardRedemptions.current.entries()) {
+          if (Math.abs(amt - removed.amount) < 0.01) {
+            giftCardRedemptions.current.delete(gcId);
+            break;
+          }
+        }
+      }
+      return prev.filter((_, i) => i !== index);
+    });
+  }, []);
+
+  const handleGiftCardLookup = useCallback(async () => {
+    if (!business?.id || !giftCardCode.trim()) return;
+    setIsLookingUpGiftCard(true);
+    setGiftCardError(null);
+    setGiftCardLookup(null);
+    try {
+      const gc = await findGiftCard(db, business.id, giftCardCode.trim());
+      if (!gc) { setGiftCardError('Gift card não encontrado.'); return; }
+      if (gc.status !== 'active') { setGiftCardError(`Gift card ${gc.status === 'used' ? 'já utilizado' : gc.status === 'expired' ? 'expirado' : 'inativo'}.`); return; }
+      if (gc.expiresAt && gc.expiresAt < new Date().toISOString()) { setGiftCardError('Gift card expirado.'); return; }
+      setGiftCardLookup(gc);
+      setPaymentAmount(Math.min(gc.remainingValue, remaining).toFixed(2));
+    } catch {
+      setGiftCardError('Erro ao buscar gift card.');
+    } finally {
+      setIsLookingUpGiftCard(false);
+    }
+  }, [business?.id, giftCardCode, remaining]);
+
+  const handleSellGiftCard = useCallback(async () => {
+    if (!business?.id || !user) return;
+    const value = parseFloat(gcSellValue);
+    if (isNaN(value) || value <= 0) { toast.error('Informe um valor válido para o gift card.'); return; }
+    setIsSavingGiftCard(true);
+    try {
+      const { createGiftCard } = await import('@/lib/services/giftCard');
+      const gc = await createGiftCard(db, {
+        businessId: business.id,
+        originalValue: value,
+        recipientName: gcSellRecipient || undefined,
+        recipientPhone: gcSellPhone || undefined,
+        expiresAt: gcSellExpiry ? new Date(gcSellExpiry + 'T23:59:59').toISOString() : undefined,
+      });
+      // Add to cart as a gift card product line
+      const cartItem: CartItem = {
+        id: generateId(),
+        description: `Gift Card ${gc.code}${gcSellRecipient ? ` – ${gcSellRecipient}` : ''}`,
+        quantity: 1,
+        unitPrice: value,
+        discount: 0,
+        total: value,
+        itemType: 'product',
+      };
+      setCart(prev => [...prev, cartItem]);
+      toast.success(`Gift card criado! Código: ${gc.code}`);
+      setShowSellGiftCard(false);
+      setGcSellValue(''); setGcSellRecipient(''); setGcSellPhone(''); setGcSellExpiry('');
+    } catch (err) {
+      toast.error('Erro ao criar gift card.');
+      console.error(err);
+    } finally {
+      setIsSavingGiftCard(false);
+    }
+  }, [business?.id, user, gcSellValue, gcSellRecipient, gcSellPhone, gcSellExpiry]);
+
+  const resetSale = useCallback(() => {
+    setSaleComplete(false);
+    setShowConfirmation(false);
+    setCart([]);
+    setPayments([]);
+    giftCardRedemptions.current.clear();
+    setSelectedClient(null);
+    setDiscountValue('');
+    setTipValue('');
+    setTipType('reais');
+    setActivePaymentMethod(null);
+    setPaymentAmount('');
+    setInstallments(1);
+    setEmitirNfce(false);
+    setCpfConsumidor('');
+    setGiftCardCode('');
+    setGiftCardLookup(null);
+    setGiftCardError(null);
+    setLastSaleId(null);
+    setPbStep('success');
+    setPbDate('');
+    setPbServiceId('');
+    setPbTime('');
   }, []);
 
   const openConfirmation = useCallback(() => {
@@ -523,6 +671,7 @@ export default function PDVModule() {
         payments: payments,
         subtotal,
         discount: discountAmount,
+        ...(tipAmount > 0 ? { tip: tipAmount } : {}),
         total,
         status: 'finalizada' as const,
         operatorId: user.uid,
@@ -575,7 +724,60 @@ export default function PDVModule() {
           lastVisit: now,
           updatedAt: now,
         });
+
+        const loyaltyConfig = business?.settings?.loyalty;
+        const pointsPayment = payments.find(p => p.method === 'pontos');
+
+        // Redeem loyalty points (if client paid with pontos)
+        if (loyaltyConfig?.isEnabled && pointsPayment && pointsPayment.amount > 0) {
+          const pointsToRedeem = reaisToPoints(pointsPayment.amount, loyaltyConfig);
+          try {
+            await redeemLoyaltyPoints(db, {
+              businessId: business!.id,
+              clientId: selectedClient.id,
+              clientName: selectedClient.name,
+              pointsToRedeem,
+              config: loyaltyConfig,
+              sourceId: docRef.id,
+              description: `Resgate - Venda #${docRef.id.substring(0, 6)}`,
+            });
+          } catch (err) {
+            console.warn('Loyalty points redemption failed:', err);
+          }
+        }
+
+        // Accumulate loyalty points (on the cash portion of the sale)
+        const cashTotal = total - (pointsPayment?.amount || 0);
+        if (loyaltyConfig?.isEnabled && cashTotal > 0) {
+          const earned = calculateEarnedPoints(cashTotal, loyaltyConfig);
+          if (earned > 0) {
+            try {
+              await addLoyaltyPoints(db, {
+                businessId: business!.id,
+                clientId: selectedClient.id,
+                clientName: selectedClient.name,
+                pointsEarned: earned,
+                config: loyaltyConfig,
+                sourceId: docRef.id,
+                sourceType: 'sale',
+                description: `Venda #${docRef.id.substring(0, 6)}`,
+              });
+            } catch (err) {
+              console.warn('Loyalty points accumulation failed:', err);
+            }
+          }
+        }
       }
+
+      // Redeem gift cards
+      for (const [gcId, amountToRedeem] of giftCardRedemptions.current.entries()) {
+        try {
+          await redeemGiftCard(db, { giftCardId: gcId, amountToRedeem, saleId: docRef.id });
+        } catch (err) {
+          console.warn('Gift card redemption failed:', err);
+        }
+      }
+      giftCardRedemptions.current.clear();
 
       // Invalidate caches
       queryClient.invalidateQueries({ queryKey: ['sales'] });
@@ -616,39 +818,74 @@ export default function PDVModule() {
 
       setSaleComplete(true);
 
-      setTimeout(() => {
-        setSaleComplete(false);
-        setShowConfirmation(false);
-        setCart([]);
-        setPayments([]);
-        setSelectedClient(null);
-        setDiscountValue('');
-        setActivePaymentMethod(null);
-        setPaymentAmount('');
-        setInstallments(1);
-        setEmitirNfce(false);
-        setCpfConsumidor('');
-        setLastSaleId(null);
-      }, 2500);
+      // If there's a client, keep dialog open for pre-booking offer; otherwise auto-close
+      if (!selectedClient) {
+        setTimeout(resetSale, 2500);
+      }
     } catch (error) {
       console.error('Error finalizing sale:', error);
       setSaleError('Erro ao finalizar venda. Tente novamente.');
     } finally {
       setIsSaving(false);
     }
-  }, [user, business, cart, selectedClient, payments, subtotal, discountAmount, total, products, queryClient, emitirNfce, cpfConsumidor, emitNfce]);
+  }, [user, business, cart, selectedClient, payments, subtotal, discountAmount, tipAmount, total, products, queryClient, emitirNfce, cpfConsumidor, emitNfce, resetSale]);
 
   const cancelSale = useCallback(() => {
     setCart([]);
     setPayments([]);
+    giftCardRedemptions.current.clear();
     setSelectedClient(null);
     setDiscountValue('');
+    setTipValue('');
+    setTipType('reais');
     setActivePaymentMethod(null);
     setPaymentAmount('');
     setInstallments(1);
     setEmitirNfce(false);
     setCpfConsumidor('');
+    setGiftCardCode('');
+    setGiftCardLookup(null);
+    setGiftCardError(null);
   }, []);
+
+  const handlePreBooking = useCallback(async () => {
+    if (!user || !business || !selectedClient || !pbDate || !pbServiceId || !pbTime) return;
+    setIsSavingPreBooking(true);
+    try {
+      const service = services.find(s => s.id === pbServiceId);
+      if (!service) return;
+      const now = new Date().toISOString();
+      const duration = service.duration || 60;
+      const [h, m] = pbTime.split(':').map(Number);
+      const endMin = h * 60 + m + duration;
+      const endTime = `${String(Math.floor(endMin / 60)).padStart(2, '0')}:${String(endMin % 60).padStart(2, '0')}`;
+      await addDoc(collection(db, 'appointments'), {
+        businessId: business.id,
+        clientId: selectedClient.id,
+        clientName: selectedClient.name,
+        clientPhone: selectedClient.phone || null,
+        serviceId: service.id,
+        serviceName: service.name,
+        date: pbDate,
+        startTime: pbTime,
+        endTime,
+        duration,
+        status: 'agendado',
+        price: service.price,
+        color: service.color || '#DC2626',
+        createdAt: now,
+        updatedAt: now,
+      });
+      queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
+      toast.success(`Retorno agendado para ${new Date(pbDate + 'T12:00:00').toLocaleDateString('pt-BR')} às ${pbTime}`);
+      resetSale();
+    } catch (err) {
+      toast.error('Erro ao criar agendamento.');
+      console.error(err);
+    } finally {
+      setIsSavingPreBooking(false);
+    }
+  }, [user, business, selectedClient, pbDate, pbServiceId, pbTime, services, queryClient, resetSale]);
 
   const handleNfceRetry = useCallback(async () => {
     const ctx = pendingNfceRef.current;
@@ -703,6 +940,7 @@ export default function PDVModule() {
   <div class="divider"></div>
   <div style="display:flex;justify-content:space-between"><span>Subtotal</span><span>R$ ${subtotal.toFixed(2)}</span></div>
   ${discountAmount > 0 ? `<div style="display:flex;justify-content:space-between"><span>Desconto</span><span>-R$ ${discountAmount.toFixed(2)}</span></div>` : ''}
+  ${tipAmount > 0 ? `<div style="display:flex;justify-content:space-between"><span>Gorjeta</span><span>+R$ ${tipAmount.toFixed(2)}</span></div>` : ''}
   <div class="divider"></div>
   <div class="total-row" style="display:flex;justify-content:space-between"><span>TOTAL</span><span>R$ ${total.toFixed(2)}</span></div>
   <div class="divider"></div>
@@ -715,7 +953,7 @@ export default function PDVModule() {
 <script>window.onload=function(){window.print()}</script>
 </body></html>`);
     receiptWindow.document.close();
-  }, [cart, payments, PAYMENT_METHOD_LABELS, business, selectedClient, subtotal, discountAmount, total, change, nfceResult]);
+  }, [cart, payments, PAYMENT_METHOD_LABELS, business, selectedClient, subtotal, discountAmount, tipAmount, total, change, nfceResult]);
 
   const formatCpfInput = useCallback((value: string) => {
     const digits = value.replace(/\D/g, '').slice(0, 11);
@@ -1280,6 +1518,16 @@ export default function PDVModule() {
             )}
             noOptionsText={t('pdv.catalog.emptyTitle', 'Nenhum cliente encontrado')}
           />
+
+          {/* Loyalty Points Badge */}
+          {loyaltyEnabled && selectedClient && (
+            <div className="mt-2 flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800/30 rounded-xl">
+              <Gift size={13} className="text-amber-600 dark:text-amber-400" />
+              <span className="text-xs text-amber-700 dark:text-amber-400 font-medium">
+                {selectedClient.loyaltyPoints ?? 0} pts · {formatCurrency(pointsToReais(selectedClient.loyaltyPoints ?? 0, loyaltyConfig!))}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Cart Items + Checkout (scrollable) */}
@@ -1401,6 +1649,60 @@ export default function PDVModule() {
                   </span>
                 )}
               </div>
+
+              {/* Tip / Gorjeta */}
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1 shrink-0">
+                  <Coffee size={14} className="text-emerald-500" />
+                  <span className="text-sm text-slate-600 dark:text-gray-400 whitespace-nowrap">Gorjeta</span>
+                </div>
+                <div className="flex gap-1">
+                  {['10', '15', '20'].map((pct) => (
+                    <button
+                      key={pct}
+                      onClick={() => {
+                        if (tipType === 'percent' && tipValue === pct) { setTipValue(''); }
+                        else { setTipType('percent'); setTipValue(pct); }
+                      }}
+                      className={cn(
+                        'px-1.5 py-1 rounded-md text-xs font-medium border transition-colors',
+                        tipType === 'percent' && tipValue === pct
+                          ? 'bg-emerald-600 text-white border-emerald-600'
+                          : 'bg-white dark:bg-gray-800 border-slate-200 dark:border-gray-700 text-slate-500 dark:text-gray-400 hover:border-emerald-300 dark:hover:border-emerald-600',
+                      )}
+                    >
+                      {pct}%
+                    </button>
+                  ))}
+                </div>
+                <div className="relative flex-1">
+                  <input
+                    type="number"
+                    value={tipValue}
+                    onChange={(e) => { setTipValue(e.target.value); }}
+                    onFocus={() => { if (tipType === 'percent' && !['10','15','20'].includes(tipValue)) setTipType('reais'); }}
+                    placeholder="0"
+                    min="0"
+                    className="w-full pl-3 pr-2 py-1.5 bg-white dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-lg text-sm text-slate-900 dark:text-gray-100 text-right focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                  />
+                </div>
+                <div className="flex p-0.5 bg-white dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-lg">
+                  <button
+                    onClick={() => setTipType('reais')}
+                    className={cn('px-2 py-1 rounded-md text-xs font-medium transition-colors', tipType === 'reais' ? 'bg-emerald-600 text-white' : 'text-slate-500 dark:text-gray-400')}
+                  >R$</button>
+                  <button
+                    onClick={() => setTipType('percent')}
+                    className={cn('px-2 py-1 rounded-md text-xs font-medium transition-colors', tipType === 'percent' ? 'bg-emerald-600 text-white' : 'text-slate-500 dark:text-gray-400')}
+                  >%</button>
+                </div>
+                {tipAmount > 0 && (
+                  <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
+                    +{formatCurrency(tipAmount)}
+                  </span>
+                )}
+              </div>
+
               <Divider sx={{ my: 1, borderColor: isDark ? '#374151' : undefined }} />
               <div className="flex justify-between items-center">
                 <span className="text-lg font-bold text-slate-900 dark:text-gray-100">Total</span>
@@ -1495,6 +1797,84 @@ export default function PDVModule() {
                       </select>
                     </div>
                   )}
+
+                  {/* Gift card lookup */}
+                  {activePaymentMethod === 'gift_card' && (
+                    <div className="rounded-xl bg-violet-50 dark:bg-violet-900/20 border border-violet-100 dark:border-violet-800/30 px-3 py-2.5 space-y-2">
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={giftCardCode}
+                          onChange={e => { setGiftCardCode(e.target.value.toUpperCase()); setGiftCardLookup(null); setGiftCardError(null); }}
+                          onKeyDown={e => e.key === 'Enter' && handleGiftCardLookup()}
+                          placeholder="Código do gift card"
+                          maxLength={8}
+                          className="flex-1 px-3 py-2 text-sm rounded-xl border border-violet-200 dark:border-violet-700 bg-white dark:bg-gray-800 text-slate-900 dark:text-gray-100 uppercase tracking-widest font-mono focus:outline-none focus:ring-2 focus:ring-violet-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleGiftCardLookup}
+                          disabled={isLookingUpGiftCard || !giftCardCode.trim()}
+                          className="px-3 py-2 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white text-xs font-semibold rounded-xl transition-colors"
+                        >
+                          {isLookingUpGiftCard ? <Loader2 size={14} className="animate-spin" /> : 'Buscar'}
+                        </button>
+                      </div>
+                      {giftCardError && <p className="text-xs text-red-600 dark:text-red-400">{giftCardError}</p>}
+                      {giftCardLookup && (
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5">
+                            <TicketPercent size={14} className="text-violet-600 dark:text-violet-400" />
+                            <span className="text-xs font-semibold text-violet-800 dark:text-violet-300">
+                              Saldo: {formatCurrency(giftCardLookup.remainingValue)}
+                            </span>
+                          </div>
+                          {giftCardLookup.recipientName && (
+                            <span className="text-[11px] text-violet-600 dark:text-violet-400">{giftCardLookup.recipientName}</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Loyalty points info */}
+                  {activePaymentMethod === 'pontos' && loyaltyConfig && (
+                    <div className="rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800/30 px-3 py-2.5 space-y-1.5">
+                      {selectedClient ? (
+                        <>
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1.5">
+                              <Gift size={14} className="text-amber-600 dark:text-amber-400" />
+                              <span className="text-xs font-semibold text-amber-800 dark:text-amber-300">
+                                Saldo: {selectedClient.loyaltyPoints ?? 0} pts
+                              </span>
+                            </div>
+                            <span className="text-xs text-amber-700 dark:text-amber-400">
+                              = {formatCurrency(pointsToReais(selectedClient.loyaltyPoints ?? 0, loyaltyConfig))}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-amber-600 dark:text-amber-500">
+                            Mín. {loyaltyConfig.minPointsToRedeem} pts para resgatar • 1 pt = R${(loyaltyConfig.pointValueInCentavos / 100).toFixed(2)}
+                          </p>
+                          {(selectedClient.loyaltyPoints ?? 0) >= loyaltyConfig.minPointsToRedeem && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const maxReais = pointsToReais(selectedClient.loyaltyPoints ?? 0, loyaltyConfig);
+                                const useReais = Math.min(maxReais, remaining);
+                                setPaymentAmount(useReais.toFixed(2));
+                              }}
+                              className="text-[11px] text-amber-700 dark:text-amber-300 font-medium underline"
+                            >
+                              Usar tudo ({formatCurrency(Math.min(pointsToReais(selectedClient.loyaltyPoints ?? 0, loyaltyConfig), remaining))})
+                            </button>
+                          )}
+                        </>
+                      ) : (
+                        <p className="text-xs text-amber-700 dark:text-amber-400">Selecione um cliente para usar pontos de fidelidade.</p>
+                      )}
+                    </div>
+                  )}
                 </motion.div>
               )}
 
@@ -1547,6 +1927,18 @@ export default function PDVModule() {
                   )}
                 </div>
               )}
+            </div>
+
+            {/* Gift Card Sale Button */}
+            <div className="mb-2">
+              <button
+                type="button"
+                onClick={() => setShowSellGiftCard(true)}
+                className="flex items-center gap-2 w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-800/50 hover:border-violet-300 dark:hover:border-violet-500/40 hover:bg-violet-50 dark:hover:bg-violet-500/10 transition-all"
+              >
+                <TicketPercent size={16} className="text-violet-500" />
+                <span className="text-sm font-medium text-slate-600 dark:text-gray-400">Vender Gift Card</span>
+              </button>
             </div>
 
             {/* NFC-e Toggle + CPF */}
@@ -1666,22 +2058,22 @@ export default function PDVModule() {
               key="success"
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
-              className="flex flex-col items-center justify-center py-16 px-8"
+              className="flex flex-col items-center py-8 px-8"
             >
               <motion.div
                 initial={{ scale: 0 }}
                 animate={{ scale: 1 }}
                 transition={{ type: 'spring', stiffness: 200, damping: 15, delay: 0.1 }}
               >
-                <div className="w-20 h-20 rounded-full bg-emerald-100 dark:bg-emerald-500/10 flex items-center justify-center mb-6">
-                  <CheckCircle2 size={40} className="text-emerald-500 dark:text-emerald-400" />
+                <div className="w-16 h-16 rounded-full bg-emerald-100 dark:bg-emerald-500/10 flex items-center justify-center mb-4">
+                  <CheckCircle2 size={32} className="text-emerald-500 dark:text-emerald-400" />
                 </div>
               </motion.div>
               <motion.h3
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.3 }}
-                className="text-xl font-display font-bold text-slate-900 dark:text-gray-100 mb-2"
+                className="text-xl font-display font-bold text-slate-900 dark:text-gray-100 mb-1"
               >
                 {t('pdv.modal.saleFinishedTitle', 'Venda Finalizada!')}
               </motion.h3>
@@ -1689,12 +2081,128 @@ export default function PDVModule() {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.4 }}
-                className="text-sm text-slate-500 dark:text-gray-400"
+                className="text-sm text-slate-500 dark:text-gray-400 mb-6"
               >
                 {lastSaleId
-                  ? `Venda #${lastSaleId.substring(0, 6).toUpperCase()} registrada com sucesso`
+                  ? `Venda #${lastSaleId.substring(0, 6).toUpperCase()} · ${formatCurrency(total)}`
                   : 'Venda registrada com sucesso'}
               </motion.p>
+
+              {/* Pre-booking offer — only when there's a selected client */}
+              {selectedClient && (
+                <motion.div
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.5 }}
+                  className="w-full"
+                >
+                  <AnimatePresence mode="wait">
+                    {pbStep === 'success' ? (
+                      <motion.div
+                        key="offer"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="flex flex-col items-center gap-3"
+                      >
+                        <p className="text-sm text-slate-500 dark:text-gray-400 text-center">
+                          Deseja agendar o retorno de <span className="font-semibold text-slate-700 dark:text-gray-200">{selectedClient.name}</span>?
+                        </p>
+                        <div className="flex gap-2 w-full">
+                          <button
+                            onClick={resetSale}
+                            className="flex-1 py-2 rounded-xl border border-slate-200 dark:border-gray-700 text-sm text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800 transition-colors"
+                          >
+                            Não, fechar
+                          </button>
+                          <button
+                            onClick={() => setPbStep('form')}
+                            className="flex-1 flex items-center justify-center gap-2 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors"
+                          >
+                            <CalendarPlus size={15} />
+                            Agendar retorno
+                          </button>
+                        </div>
+                      </motion.div>
+                    ) : (
+                      <motion.div
+                        key="form"
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0 }}
+                        className="w-full space-y-3"
+                      >
+                        <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase tracking-wider">
+                          Novo agendamento — {selectedClient.name}
+                        </p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-xs text-slate-500 dark:text-gray-400 mb-1 block">Data</label>
+                            <input
+                              type="date"
+                              value={pbDate}
+                              onChange={e => setPbDate(e.target.value)}
+                              min={new Date().toISOString().split('T')[0]}
+                              className="w-full px-3 py-2 bg-white dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-xl text-sm text-slate-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs text-slate-500 dark:text-gray-400 mb-1 block">Horário</label>
+                            <input
+                              type="time"
+                              value={pbTime}
+                              onChange={e => setPbTime(e.target.value)}
+                              className="w-full px-3 py-2 bg-white dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-xl text-sm text-slate-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="text-xs text-slate-500 dark:text-gray-400 mb-1 block">Serviço</label>
+                          <select
+                            value={pbServiceId}
+                            onChange={e => setPbServiceId(e.target.value)}
+                            className="w-full px-3 py-2 bg-white dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-xl text-sm text-slate-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
+                          >
+                            <option value="">Selecionar serviço...</option>
+                            {services.map(s => (
+                              <option key={s.id} value={s.id}>{s.name} — {formatCurrency(s.price)}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => setPbStep('success')}
+                            className="flex-1 py-2 rounded-xl border border-slate-200 dark:border-gray-700 text-sm text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800 transition-colors"
+                          >
+                            Voltar
+                          </button>
+                          <button
+                            onClick={handlePreBooking}
+                            disabled={!pbDate || !pbServiceId || !pbTime || isSavingPreBooking}
+                            className="flex-1 flex items-center justify-center gap-2 py-2 rounded-xl bg-red-600 hover:bg-red-700 disabled:bg-red-300 dark:disabled:bg-red-900 text-white text-sm font-semibold transition-colors"
+                          >
+                            {isSavingPreBooking ? <Loader2 size={14} className="animate-spin" /> : <CalendarPlus size={14} />}
+                            Confirmar agendamento
+                          </button>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </motion.div>
+              )}
+
+              {/* No client — auto-closes, just show close button */}
+              {!selectedClient && (
+                <motion.button
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ delay: 0.6 }}
+                  onClick={resetSale}
+                  className="mt-2 text-sm text-slate-400 dark:text-gray-500 hover:text-slate-600 dark:hover:text-gray-300 transition-colors"
+                >
+                  Fechar
+                </motion.button>
+              )}
             </motion.div>
           ) : (
             <motion.div
@@ -1769,6 +2277,12 @@ export default function PDVModule() {
                         <div className="flex justify-between text-sm text-red-600 dark:text-red-400">
                           <span>{t('pdv.modal.discount', 'Desconto')}</span>
                           <span>-{formatCurrency(discountAmount)}</span>
+                        </div>
+                      )}
+                      {tipAmount > 0 && (
+                        <div className="flex justify-between text-sm text-emerald-600 dark:text-emerald-400">
+                          <span>Gorjeta</span>
+                          <span>+{formatCurrency(tipAmount)}</span>
                         </div>
                       )}
                       <div className="flex justify-between text-base font-bold text-slate-900 dark:text-gray-100 pt-1">
@@ -1852,21 +2366,11 @@ export default function PDVModule() {
       <Dialog
         open={nfceModalState !== 'idle'}
         onClose={() => {
-          if (nfceModalState === 'emitting') return; // can't close while emitting
+          if (nfceModalState === 'emitting') return;
           setNfceModalState('idle');
           setNfceResult(null);
           pendingNfceRef.current = null;
-          // Reset sale state
-          setCart([]);
-          setPayments([]);
-          setSelectedClient(null);
-          setDiscountValue('');
-          setActivePaymentMethod(null);
-          setPaymentAmount('');
-          setInstallments(1);
-          setEmitirNfce(false);
-          setCpfConsumidor('');
-          setLastSaleId(null);
+          resetSale();
         }}
         maxWidth="sm"
         fullWidth
@@ -2091,6 +2595,92 @@ export default function PDVModule() {
             </motion.div>
           )}
         </AnimatePresence>
+      </Dialog>
+
+      {/* ===== SELL GIFT CARD MODAL ===== */}
+      <Dialog
+        open={showSellGiftCard}
+        onClose={() => setShowSellGiftCard(false)}
+        maxWidth="xs"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: '20px', backgroundColor: isDark ? '#111827' : undefined } }}
+      >
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', pb: 1, fontFamily: '"Plus Jakarta Sans", sans-serif', fontWeight: 700, color: isDark ? '#F1F5F9' : undefined }}>
+          <div className="flex items-center gap-2">
+            <TicketPercent size={20} className="text-violet-500" />
+            <span>Vender Gift Card</span>
+          </div>
+          <IconButton onClick={() => setShowSellGiftCard(false)} size="small"><X size={18} className={isDark ? 'text-gray-400' : ''} /></IconButton>
+        </DialogTitle>
+        <Divider />
+        <DialogContent sx={{ pt: 3, backgroundColor: isDark ? '#111827' : undefined }}>
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs font-medium text-slate-600 dark:text-gray-400 block mb-1">Valor do Gift Card *</label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">R$</span>
+                <input
+                  type="number"
+                  min="1"
+                  step="0.01"
+                  value={gcSellValue}
+                  onChange={e => setGcSellValue(e.target.value)}
+                  placeholder="0,00"
+                  className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-600 dark:text-gray-400 block mb-1">Presenteado (opcional)</label>
+              <input
+                type="text"
+                value={gcSellRecipient}
+                onChange={e => setGcSellRecipient(e.target.value)}
+                placeholder="Nome do presenteado"
+                className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-600 dark:text-gray-400 block mb-1">WhatsApp (para envio)</label>
+              <input
+                type="tel"
+                value={gcSellPhone}
+                onChange={e => setGcSellPhone(e.target.value)}
+                placeholder="(11) 99999-9999"
+                className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-600 dark:text-gray-400 block mb-1">Validade (opcional)</label>
+              <input
+                type="date"
+                value={gcSellExpiry}
+                onChange={e => setGcSellExpiry(e.target.value)}
+                min={new Date().toISOString().split('T')[0]}
+                className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+              />
+            </div>
+            <div className="rounded-xl bg-violet-50 dark:bg-violet-900/20 border border-violet-100 dark:border-violet-800/30 px-3 py-2.5">
+              <p className="text-xs text-violet-700 dark:text-violet-400">
+                Um código único será gerado automaticamente. O gift card é adicionado ao carrinho como produto para finalizar a venda.
+              </p>
+            </div>
+          </div>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, py: 2, gap: 1, backgroundColor: isDark ? '#111827' : undefined }}>
+          <Button onClick={() => setShowSellGiftCard(false)} disabled={isSavingGiftCard} sx={{ color: isDark ? '#9ca3af' : '#64748B', textTransform: 'none', fontWeight: 600, borderRadius: '12px' }}>
+            Cancelar
+          </Button>
+          <Button
+            onClick={handleSellGiftCard}
+            variant="contained"
+            disabled={isSavingGiftCard || !gcSellValue}
+            startIcon={isSavingGiftCard ? <Loader2 size={16} className="animate-spin" /> : <TicketPercent size={16} />}
+            sx={{ backgroundColor: '#7C3AED', '&:hover': { backgroundColor: '#6D28D9' }, borderRadius: '12px', textTransform: 'none', fontWeight: 600 }}
+          >
+            Gerar Gift Card
+          </Button>
+        </DialogActions>
       </Dialog>
     </div>
   );

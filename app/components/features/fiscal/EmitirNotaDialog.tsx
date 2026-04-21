@@ -22,16 +22,16 @@ import {
   Calculator,
   Loader2,
   AlertTriangle,
-  Info,
   User,
   Building2,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
-import { collection, getDocs, query, where, doc, setDoc, updateDoc, increment } from 'firebase/firestore';
+import { collection, getDocs, query, where, doc, setDoc } from 'firebase/firestore';
 import { db, storage } from '@/lib/config/firebase';
 import { ref as storageRef, getDownloadURL } from 'firebase/storage';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import type { FiscalDocType, PaymentMethod, CRMContact } from '@/lib/types';
+import { NfseServicoCombobox } from './NfseServicoCombobox';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatCPFCNPJ } from '@/lib/utils/format';
 import { useTranslation } from 'react-i18next';
@@ -95,6 +95,8 @@ const PAYMENT_SEFAZ_CODES: Record<PaymentMethod, string> = {
   credito: '03',
   debito: '04',
   boleto: '15',
+  pontos: '99',
+  gift_card: '99',
   outros: '99',
 };
 
@@ -138,6 +140,8 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
     credito: t('fiscal.emit.paymentCredito', 'Cartão de Crédito'),
     debito: t('fiscal.emit.paymentDebito', 'Cartão de Débito'),
     boleto: t('fiscal.emit.paymentBoleto', 'Boleto'),
+    pontos: t('fiscal.emit.paymentPontos', 'Pontos'),
+    gift_card: t('fiscal.emit.paymentGiftCard', 'Gift Card'),
     outros: t('fiscal.emit.paymentOutros', 'Outros'),
   }), [t]);
 
@@ -288,91 +292,89 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
   const handleEmitNFSe = async () => {
     if (!business || !user) return;
 
-    // Validate
-    if (!nfseForm.tomadorNome.trim()) { toast.error(t('fiscal.emit.errors.tomadorNomeRequired', 'Nome do tomador é obrigatório')); return; }
-    if (!nfseForm.tomadorDocumento.trim()) { toast.error(t('fiscal.emit.errors.tomadorDocRequired', 'CPF/CNPJ do tomador é obrigatório')); return; }
-    if (!nfseForm.discriminacao.trim()) { toast.error(t('fiscal.emit.errors.discriminacaoRequired', 'Descrição do serviço é obrigatória')); return; }
-    if (nfseForm.valorServicos <= 0) { toast.error(t('fiscal.emit.errors.valorPositivo', 'Valor do serviço deve ser maior que zero')); return; }
-    if (!business.endereco?.codigoMunicipio) { toast.error(t('fiscal.emit.errors.ibgeRequired', 'Configure o código IBGE do município nas configurações da empresa')); return; }
-
-    if (!business.fiscal?.certificate) { toast.error(t('fiscal.emit.errors.certRequired', 'Certificado digital não configurado. Acesse Configurações > Fiscal.')); return; }
+    // Validate required fields
+    if (!nfseForm.tomadorNome.trim()) {
+      toast.error(t('fiscal.emit.errors.tomadorNomeRequired', 'Nome do tomador é obrigatório'));
+      return;
+    }
+    if (!nfseForm.tomadorDocumento.trim()) {
+      toast.error(t('fiscal.emit.errors.tomadorDocRequired', 'CPF/CNPJ do tomador é obrigatório'));
+      return;
+    }
+    if (!nfseForm.discriminacao.trim()) {
+      toast.error(t('fiscal.emit.errors.discriminacaoRequired', 'Descrição do serviço é obrigatória'));
+      return;
+    }
+    if (nfseForm.valorServicos <= 0) {
+      toast.error(t('fiscal.emit.errors.valorPositivo', 'Valor do serviço deve ser maior que zero'));
+      return;
+    }
+    if (!business.fiscal?.inscricaoMunicipal) {
+      toast.error(t('fiscal.emit.errors.inscricaoMunicipalRequired', 'Inscrição Municipal não configurada. Acesse Configurações > Fiscal.'));
+      return;
+    }
+    if (!business.fiscal?.ibgeCodigoMunicipio) {
+      toast.error(t('fiscal.emit.errors.ibgeRequired', 'Código IBGE do município não configurado. Acesse Configurações > Fiscal.'));
+      return;
+    }
+    if (!business.fiscal?.certificate) {
+      toast.error(t('fiscal.emit.errors.certRequired', 'Certificado digital não configurado. Acesse Configurações > Fiscal.'));
+      return;
+    }
 
     setIsEmitting(true);
     try {
-      const fiscalConfig = business.fiscal;
-      const nextNumber = fiscalConfig?.nfseConfig?.nextNumber || 1;
       const cleanDoc = nfseForm.tomadorDocumento.replace(/\D/g, '');
 
-      const payload = {
-        serie: fiscalConfig?.nfseConfig?.series || 'NFSE',
-        numeroDPS: nextNumber,
-        codigoMunicipioEmissao: business.endereco.codigoMunicipio,
-        prestador: {
-          cnpj: (business.cnpj || business.cpf || '').replace(/\D/g, ''),
-          inscricaoMunicipal: business.inscricaoMunicipal || '',
-          nome: business.razaoSocial || business.nomeFantasia,
-          nomeFantasia: business.nomeFantasia || undefined,
-          simplesNacional: business.crt === '1' || business.crt === '4' ? '1' : '2',
-        },
+      // Build flat body matching the backend contract in /api/fiscal/emit
+      // The backend reads: businessId, type, tomador, codigoServico, codigoServicoMunicipal,
+      // discriminacao, valorServicos, valorDeducoes, valorDesconto, aliquotaIss, issRetido,
+      // informacoesAdicionais — and rebuilds prestador/servico/issqn internally from Firestore data.
+      const body = {
+        type: 'nfse',
+        businessId: business.id,
         tomador: {
           [nfseForm.tomadorTipo === 'cnpj' ? 'cnpj' : 'cpf']: cleanDoc,
           nome: nfseForm.tomadorNome,
+          email: nfseForm.tomadorEmail || undefined,
         },
-        servico: {
-          codigoTributacaoNacional: nfseForm.codigoTributacaoNacional || '0107',
-          codigoTributacaoMunicipal: nfseForm.codigoTributacaoMunicipal || undefined,
-          discriminacao: nfseForm.discriminacao,
-          localPrestacao: {
-            codigoMunicipio: business.endereco.codigoMunicipio,
-          },
-        },
-        valores: {
-          valorServicos: nfseForm.valorServicos,
-          valorDeducoes: nfseForm.valorDeducoes || undefined,
-          valorDescontoIncondicionado: nfseForm.valorDescontoIncondicionado || undefined,
-        },
-        issqn: {
-          tipoRetencaoISSQN: nfseForm.tipoRetencaoISSQN,
-          baseCalculo: nfseBaseCalculo,
-          aliquota: nfseForm.aliquotaISS,
-          valorISS: nfseValorISS,
-          valorISSRetido: nfseForm.tipoRetencaoISSQN !== '1' ? nfseValorISS : undefined,
-        },
-        certificado: {
-          pfxBase64: 'FROM_STORAGE',
-          password: 'FROM_STORAGE',
-        },
+        codigoServico: nfseForm.codigoTributacaoNacional || undefined,
+        codigoServicoMunicipal: nfseForm.codigoTributacaoMunicipal || undefined,
+        discriminacao: nfseForm.discriminacao,
+        valorServicos: nfseForm.valorServicos,
+        valorDeducoes: nfseForm.valorDeducoes > 0 ? nfseForm.valorDeducoes : undefined,
+        valorDesconto: nfseForm.valorDescontoIncondicionado > 0 ? nfseForm.valorDescontoIncondicionado : undefined,
+        aliquotaIss: nfseForm.aliquotaISS,
+        issRetido: nfseForm.tipoRetencaoISSQN !== '1',
+        informacoesAdicionais: nfseForm.informacoesAdicionais || undefined,
       };
 
       const res = await fetch('/api/fiscal/emit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'nfse', data: payload }),
+        body: JSON.stringify(body),
       });
 
       const result = await res.json();
 
       if (!res.ok || !result.success) {
-        const errorMsg = result.details?.motivoStatus || result.details?.erros?.[0] || result.error || 'Erro ao emitir NFSe';
+        const errorMsg =
+          result.details?.motivoStatus ||
+          result.details?.erros?.[0] ||
+          result.error ||
+          t('fiscal.emit.errors.genericNfse', 'Erro ao emitir NFSe');
         toast.error(errorMsg);
-        // Save as rejected
-        await saveFiscalDoc('nfse', nextNumber, 'rejeitada', result, payload);
         return;
       }
 
-      // Success - save to Firestore
+      // Backend already saves the fiscal document to Firestore on success.
+      // No need to call saveFiscalDoc or increment nextNumber here.
       const sefazData = result.data;
-      await saveFiscalDoc('nfse', nextNumber, sefazData.status === 'autorizado' ? 'autorizada' : 'processando', sefazData, payload);
-
-      // Increment next number
-      if (business.fiscal?.nfseConfig) {
-        await setDoc(doc(db, 'businesses', business.id), {
-          fiscal: { nfseConfig: { ...business.fiscal.nfseConfig, nextNumber: nextNumber + 1 } },
-          updatedAt: new Date().toISOString(),
-        }, { merge: true });
-      }
-
-      toast.success(sefazData.status === 'autorizado' ? t('fiscal.emit.success.nfseAutorizada', 'NFSe emitida com sucesso!') : t('fiscal.emit.success.nfseAguardando', 'NFSe enviada, aguardando autorização'));
+      toast.success(
+        sefazData?.status === 'autorizado'
+          ? t('fiscal.emit.success.nfseAutorizada', 'NFSe emitida com sucesso!')
+          : t('fiscal.emit.success.nfseAguardando', 'NFSe enviada, aguardando autorização'),
+      );
       onSuccess?.();
       onClose();
     } catch (error) {
@@ -839,34 +841,17 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
                   />
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 flex items-center gap-1">
-                      {t('fiscal.emit.codTribNacional', 'Cod. Tributação Nacional (cTribNac)')}
-                      <span className="group relative">
-                        <Info className="w-3 h-3 text-gray-300 dark:text-gray-600 cursor-help" />
-                        <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 text-xs text-white bg-gray-900 dark:bg-gray-700 rounded-lg whitespace-nowrap opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity z-50">
-                          {t('fiscal.emit.codTribTooltip', 'Código NBS/LC 116 do serviço')}
-                        </span>
-                      </span>
-                    </label>
-                    <input
-                      value={nfseForm.codigoTributacaoNacional}
-                      onChange={(e) => setNfseForm(prev => ({ ...prev, codigoTributacaoNacional: e.target.value }))}
-                      placeholder="0107"
-                      className={inputClasses}
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.emit.codTribMunicipal', 'Cod. Tributação Municipal')}</label>
-                    <input
-                      value={nfseForm.codigoTributacaoMunicipal}
-                      onChange={(e) => setNfseForm(prev => ({ ...prev, codigoTributacaoMunicipal: e.target.value }))}
-                      placeholder={t('fiscal.emit.codTribMunicipalPlaceholder', 'Opcional')}
-                      className={inputClasses}
-                    />
-                  </div>
-                </div>
+                <NfseServicoCombobox
+                  lc116Value={nfseForm.codigoTributacaoNacional}
+                  spCodeValue={nfseForm.codigoTributacaoMunicipal}
+                  onChange={(lc116, sp) =>
+                    setNfseForm((prev) => ({
+                      ...prev,
+                      codigoTributacaoNacional: lc116,
+                      codigoTributacaoMunicipal: sp,
+                    }))
+                  }
+                />
               </div>
 
               {/* Valores + ISSQN */}

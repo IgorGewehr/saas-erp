@@ -46,7 +46,13 @@ export async function GET(req: NextRequest) {
     const bizSnap = await adminDb.collection('businesses').get();
     const activeBusinesses = bizSnap.docs.filter(d => {
       const b = d.data() as Business;
-      return b.settings?.aiAgent?.enabled && b.settings?.useCase === 'servicos';
+      if (b.settings?.useCase !== 'servicos') return false;
+      // Include businesses that have any reminder configured (even without AI agent enabled)
+      const agenda = b.settings?.aiAgent?.agenda;
+      const hasReminders = agenda?.sendReminder || agenda?.confirmationBeforeAppointment || agenda?.followUpAfter;
+      // Also include businesses with AI agent fully enabled (they handle their own agenda settings)
+      const hasAgent = b.settings?.aiAgent?.enabled;
+      return hasReminders || hasAgent;
     });
 
     // Process each business in sequence (parallel would hammer Firestore)
