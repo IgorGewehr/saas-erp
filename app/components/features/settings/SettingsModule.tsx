@@ -412,7 +412,7 @@ function ProfileTab() {
   };
 
   const handleSaveSchedule = async () => {
-    if (!user) return;
+    if (!user || !business) return;
     setIsSavingSchedule(true);
     try {
       await updateUserProfile({
@@ -420,6 +420,22 @@ function ProfileTab() {
         serviceIds: isProfessional ? selectedServiceIds : [],
         workingHours,
       });
+
+      // Sync to business.settings.openingHours (format expected by AI agent prompt)
+      // Converts {[day]: {enabled, start, end}} → [{isOpen, openTime, closeTime}] (7 elements)
+      const openingHours = Array.from({ length: 7 }, (_, i) => {
+        const day = (workingHours as Record<number, { enabled: boolean; start: string; end: string }>)[i];
+        return {
+          isOpen: day?.enabled ?? false,
+          openTime: day?.start ?? '09:00',
+          closeTime: day?.end ?? '18:00',
+        };
+      });
+      await updateDoc(doc(db, 'businesses', business.id), {
+        'settings.openingHours': openingHours,
+        updatedAt: new Date().toISOString(),
+      });
+
       toast.success(t('settings.profile.scheduleSaved', 'Agenda atualizada com sucesso!'));
     } catch {
       toast.error(t('settings.profile.scheduleError', 'Erro ao salvar a agenda'));
