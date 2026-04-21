@@ -1677,8 +1677,8 @@ function LinkContactDrawer({
           </button>
         )}
 
-        {/* Suggestions — exibido quando sem busca */}
-        {!search && suggestions.length > 0 && (
+        {/* Suggestions — exibido quando sem busca e sem cliente vinculado */}
+        {!linkedClient && !search && suggestions.length > 0 && (
           <div>
             <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2">
               Possíveis correspondências

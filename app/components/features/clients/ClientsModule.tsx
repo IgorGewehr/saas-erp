@@ -532,7 +532,6 @@ export default function ClientsModule() {
       const q = query(
         collection(db, 'clients'),
         where('businessId', '==', business.id),
-        orderBy('name', 'asc'),
       );
       const snap = await getDocs(q);
       return snap.docs.map(d => ({ ...d.data(), id: d.id } as Client));
