@@ -232,6 +232,7 @@ interface ExtractedContent {
 interface InboundMessageParams {
   channel: 'whatsapp' | 'facebook' | 'instagram';
   channelIdentifier: string; // phoneNumberId (whatsapp) or pageId (facebook/instagram)
+  fallbackPageId?: string; // For Instagram DMs via page subscription: pageId used as fallback for business resolution
   externalId: string;
   senderName?: string;
   senderAvatarUrl?: string;
@@ -548,11 +549,16 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
       if (!senderName) senderName = isInstagramDm ? 'Usuário do Instagram' : 'Usuário do Facebook';
     }
 
+    // For Instagram DMs arriving via page subscription, pass pageId as fallback so
+    // business resolution succeeds even when channelIdentifier (igAccountId) isn't stored.
+    const igFallback = isInstagramDm ? pageId : undefined;
+
     // Handle postback events
     if (event.postback) {
       await saveInboundMessage({
         channel,
         channelIdentifier,
+        fallbackPageId: igFallback,
         externalId: String(event.sender.id),
         senderName,
         senderAvatarUrl,
@@ -567,6 +573,7 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
       await saveInboundMessage({
         channel,
         channelIdentifier,
+        fallbackPageId: igFallback,
         externalId: String(event.sender.id),
         senderName,
         senderAvatarUrl,
@@ -586,6 +593,7 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
       await saveInboundMessage({
         channel,
         channelIdentifier,
+        fallbackPageId: igFallback,
         externalId: String(event.sender.id),
         senderName,
         senderAvatarUrl,
@@ -937,10 +945,21 @@ async function saveInboundMessage(params: InboundMessageParams) {
   });
 
   // 1. Resolve businessId from channel identifier
-  const businessId = await resolveBusinessId(params.channel, params.channelIdentifier);
+  // For Instagram DMs arriving via page subscription (object:'page'), the channelIdentifier
+  // is event.recipient.id which may be the Instagram account ID or the page ID depending
+  // on how Meta structures the payload. If primary lookup fails, try the fallbackPageId
+  // (the entry.id = Facebook page ID) which is always reliable.
+  let businessId = await resolveBusinessId(params.channel, params.channelIdentifier);
+
+  if (!businessId && params.channel === 'instagram' && params.fallbackPageId) {
+    businessId = await resolveBusinessId('facebook', params.fallbackPageId);
+    if (businessId) {
+      console.log('[Meta Webhook] Instagram resolved via fallbackPageId:', params.fallbackPageId);
+    }
+  }
 
   if (!businessId) {
-    console.error('[Meta Webhook] Could not resolve businessId for', params.channel, 'identifier:', params.channelIdentifier);
+    console.error('[Meta Webhook] Could not resolve businessId for', params.channel, 'identifier:', params.channelIdentifier, 'fallback:', params.fallbackPageId);
     try {
       await adminDb.collection('webhookFailures').add({
         reason: 'business_not_found',

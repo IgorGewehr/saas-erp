@@ -176,6 +176,29 @@ export async function POST(req: NextRequest) {
                 displayName = match.verified_name || match.display_phone_number || '';
               }
             }
+
+            // ── 3c. Subscribe app to WABA webhook events ─────────────────────
+            // Configuring the webhook URL in the Meta dashboard is not enough —
+            // the app must be programmatically subscribed to each WABA so that
+            // the WhatsApp Business API actually delivers events to our endpoint.
+            // Without this, messages from real (non-test) WABAs are silently dropped.
+            try {
+              const wabaSubRes = await fetch(
+                `${META_GRAPH}/${wabaId}/subscribeApp`,
+                {
+                  method: 'POST',
+                  headers: { Authorization: `Bearer ${longLivedToken}` },
+                }
+              );
+              if (wabaSubRes.ok) {
+                console.log('[Meta Signup] App subscribed to WABA webhook:', wabaId);
+              } else {
+                const errText = await wabaSubRes.text();
+                console.warn('[Meta Signup] WABA subscription failed (non-fatal):', errText);
+              }
+            } catch (wabaSubErr) {
+              console.warn('[Meta Signup] WABA subscription error (non-fatal):', wabaSubErr);
+            }
           }
         }
       } catch {
