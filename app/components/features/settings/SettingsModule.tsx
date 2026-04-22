@@ -556,7 +556,10 @@ function ProfileTab() {
               return (
                 <button
                   key={opt.value}
-                  onClick={() => i18n.changeLanguage(opt.value)}
+                  onClick={async () => {
+                    await i18n.changeLanguage(opt.value);
+                    await updateUserProfile({ language: opt.value });
+                  }}
                   className={cn(
                     'flex items-center gap-3 px-4 py-3 rounded-xl border transition-all duration-200 text-left',
                     isActive
@@ -965,13 +968,14 @@ function EmpresaTab() {
 
     try {
       const storageRef = ref(storage, `businesses/${business.id}/logo`);
-      await uploadBytes(storageRef, file);
+      await uploadBytes(storageRef, file, { contentType: file.type });
       const url = await getDownloadURL(storageRef);
       setLogoPreview(url);
       await setDoc(doc(db, 'businesses', business.id), { logo: url, updatedAt: new Date().toISOString() }, { merge: true });
       await refreshUser();
       toast.success(t('settings.company.logoSuccess', 'Logo atualizada!'));
-    } catch {
+    } catch (err) {
+      console.error('[Logo Upload]', err);
       toast.error(t('settings.company.logoError', 'Erro ao fazer upload da logo'));
     }
   };

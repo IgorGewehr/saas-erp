@@ -15,6 +15,7 @@ import {
 import { doc, getDoc, setDoc, updateDoc, onSnapshot, arrayUnion, collection, query, where, getDocs } from 'firebase/firestore';
 import { auth, db } from '@/lib/config/firebase';
 import type { User, Business, Sector } from '@/lib/types';
+import i18n from '@/lib/i18n/i18n';
 
 function generateSlug(name: string): string {
   return name
@@ -119,6 +120,9 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
           const userData = { ...snap.data(), id: snap.id } as User;
           setUser(userData);
           setIsLoading(false);
+          if (userData.language && i18n.language !== userData.language) {
+            i18n.changeLanguage(userData.language);
+          }
 
           if (userData.businessId) {
             // Listen to business doc — reacts to plan/enterprise/settings changes
