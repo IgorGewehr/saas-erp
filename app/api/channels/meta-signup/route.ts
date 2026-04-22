@@ -124,9 +124,11 @@ export async function POST(req: NextRequest) {
     // Extract granted scopes and WABA from the shared data
     const granularScopes = debugData?.data?.granular_scopes || [];
 
-    // Validate required scopes
+    // Validate required scopes — whatsapp_business_management was not approved;
+    // use whatsapp_business_messaging (approved) which provides phone number IDs directly
     const hasRequiredScopes = granularScopes.some(
-      (s: { scope: string }) => ['whatsapp_business_management', 'pages_messaging'].includes(s.scope)
+      (s: { scope: string }) =>
+        ['whatsapp_business_messaging', 'pages_messaging', 'instagram_business_manage_messages'].includes(s.scope)
     );
     if (!hasRequiredScopes) {
       return NextResponse.json({
@@ -134,46 +136,32 @@ export async function POST(req: NextRequest) {
       }, { status: 400 });
     }
 
-    // Find the WABA ID from the whatsapp_business_management scope
-    let wabaId: string | null = null;
-    for (const scope of granularScopes) {
-      if (
-        scope.scope === 'whatsapp_business_management' &&
-        scope.target_ids?.length > 0
-      ) {
-        wabaId = scope.target_ids[0];
-        break;
-      }
-    }
-
-    // ── Step 3: Get WABA phone numbers ──────────────────────────────────────
+    // whatsapp_business_messaging target_ids → phone number IDs (not WABA IDs)
     let phoneNumberId = '';
     let displayPhoneNumber = '';
     let displayName = '';
 
-    if (wabaId) {
-      const phonesRes = await fetch(
-        `${META_GRAPH}/${wabaId}/phone_numbers`,
-        { headers: { Authorization: `Bearer ${longLivedToken}` } }
-      );
-      const phonesData = await phonesRes.json();
-
-      if (phonesData?.data?.length > 0) {
-        const phone = phonesData.data[0];
-        phoneNumberId = phone.id;
-        displayPhoneNumber = phone.display_phone_number;
-        displayName = phone.verified_name || phone.display_phone_number;
+    for (const scope of granularScopes) {
+      if (scope.scope === 'whatsapp_business_messaging' && scope.target_ids?.length > 0) {
+        phoneNumberId = scope.target_ids[0];
+        break;
       }
+    }
 
-      // ── Step 4: Subscribe WABA to webhooks ──────────────────────────────
+    // ── Step 3: Get phone number display details ─────────────────────────────
+    if (phoneNumberId) {
       try {
-        await fetch(`${META_GRAPH}/${wabaId}/subscribed_apps`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${longLivedToken}` },
-        });
-      } catch (webhookErr) {
-        console.warn('Webhook subscription warning:', webhookErr);
-        // Non-fatal — the user can manually subscribe later
+        const phoneRes = await fetch(
+          `${META_GRAPH}/${phoneNumberId}?fields=id,display_phone_number,verified_name`,
+          { headers: { Authorization: `Bearer ${longLivedToken}` } }
+        );
+        if (phoneRes.ok) {
+          const phoneData = await phoneRes.json();
+          displayPhoneNumber = phoneData.display_phone_number || '';
+          displayName = phoneData.verified_name || phoneData.display_phone_number || '';
+        }
+      } catch {
+        // Display info is optional — phoneNumberId alone is enough to send messages
       }
     }
 
@@ -289,14 +277,12 @@ export async function POST(req: NextRequest) {
     // ── Step 7: Save channels directly to Firestore with encrypted tokens ───
     const channelUpdates: Record<string, unknown> = { updatedAt: new Date().toISOString() };
 
-    if (wabaId && phoneNumberId) {
+    if (phoneNumberId) {
       channelUpdates['channels.whatsapp'] = {
         phoneNumberId,
-        businessAccountId: wabaId,
         accessToken: await encryptToken(longLivedToken),
         isConnected: true,
         connectedAt: new Date().toISOString(),
-        wabaId,
         displayName: displayName || null,
         displayPhoneNumber: displayPhoneNumber || null,
         tokenExpiresAt,
@@ -368,7 +354,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Guard: if no channel was discovered, the token is invalid or session expired
-    const hasAnyChannel = !!(wabaId || pageId || igAccountId);
+    const hasAnyChannel = !!(phoneNumberId || pageId || igAccountId);
     if (!hasAnyChannel) {
       return NextResponse.json({
         error: 'Nenhum canal encontrado. O token pode ter expirado ou a sessao do Facebook foi invalidada. Tente novamente.',
@@ -382,10 +368,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       channels: {
-        whatsapp: wabaId
+        whatsapp: phoneNumberId
           ? {
               phoneNumberId,
-              businessAccountId: wabaId,
               isConnected: true,
               displayPhoneNumber: displayPhoneNumber || phoneNumberId,
               displayName: displayName || null,
