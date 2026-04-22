@@ -261,14 +261,18 @@ export async function GET(req: NextRequest) {
   const token     = searchParams.get('hub.verify_token');
   const challenge = searchParams.get('hub.challenge');
 
-  const verifyToken = process.env.META_FACEBOOK_VERIFY_TOKEN || process.env.META_WHATSAPP_WEBHOOK_VERIFY_TOKEN;
+  // Accept either token — Meta uses different tokens for WhatsApp vs Page webhooks
+  const validTokens = [
+    process.env.META_FACEBOOK_VERIFY_TOKEN,
+    process.env.META_WHATSAPP_WEBHOOK_VERIFY_TOKEN,
+  ].filter(Boolean) as string[];
 
-  if (mode === 'subscribe' && token === verifyToken) {
-    console.log('[Meta Webhook] Verification successful');
+  if (mode === 'subscribe' && token && validTokens.includes(token)) {
+    console.log('[Meta Webhook] Verification successful for token:', token);
     return new NextResponse(challenge, { status: 200 });
   }
 
-  console.warn('[Meta Webhook] Verification failed — invalid token or mode');
+  console.warn('[Meta Webhook] Verification failed — token received:', token);
   return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 }
 
