@@ -71,57 +71,65 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to decrypt access token' }, { status: 500 });
     }
 
-    // Step 1: resolve WABA from phoneNumberId
+    // The stored "phoneNumberId" might actually be a WABA ID (WhatsApp Business Account ID)
+    // if the account was connected before we fixed the signup flow. The granular_scopes
+    // target_ids for whatsapp_business_messaging are WABA IDs, not phone number IDs.
+    //
+    // Strategy:
+    //   1. Try treating it as a WABA ID directly → GET /{id}/phone_numbers
+    //   2. If that fails (it's a real phone number ID), fall back to the two-step approach:
+    //      GET /{phoneNumberId}?fields=whatsapp_business_account → GET /{wabaId}/phone_numbers
     let displayPhoneNumber = '';
     let displayName = '';
+    let resolvedPhoneNumberId = phoneNumberId;
 
-    const wabaRes = await fetch(
-      `${META_GRAPH}/${phoneNumberId}?fields=id,whatsapp_business_account`,
+    // Attempt 1: treat stored ID as WABA ID — fetch phone numbers directly
+    const directNumRes = await fetch(
+      `${META_GRAPH}/${phoneNumberId}/phone_numbers?fields=id,display_phone_number,verified_name&limit=10`,
       { headers: { Authorization: `Bearer ${accessToken}` } }
     );
 
-    if (!wabaRes.ok) {
-      const errText = await wabaRes.text();
-      console.error('[resolve-phone] WABA fetch failed:', errText);
-      return NextResponse.json(
-        { error: 'Failed to fetch WABA from Meta', details: errText },
-        { status: 502 }
-      );
+    if (directNumRes.ok) {
+      const directNumData = await directNumRes.json();
+      const phone = directNumData?.data?.[0];
+      if (phone) {
+        resolvedPhoneNumberId = phone.id; // actual phone number ID
+        displayPhoneNumber = phone.display_phone_number || '';
+        displayName = phone.verified_name || phone.display_phone_number || '';
+        console.log('[resolve-phone] Resolved via WABA ID path:', resolvedPhoneNumberId, displayPhoneNumber);
+      }
     }
 
-    const wabaData = await wabaRes.json();
-    const wabaId: string | undefined = wabaData?.whatsapp_business_account?.id;
-
-    if (!wabaId) {
-      return NextResponse.json(
-        { error: 'Could not resolve WABA ID from Meta' },
-        { status: 502 }
+    // Attempt 2 (fallback): treat stored ID as a real phone number ID
+    if (!displayPhoneNumber) {
+      const wabaRes = await fetch(
+        `${META_GRAPH}/${phoneNumberId}?fields=id,whatsapp_business_account`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
       );
-    }
 
-    // Step 2: list phone numbers from WABA
-    const numRes = await fetch(
-      `${META_GRAPH}/${wabaId}/phone_numbers?fields=id,display_phone_number,verified_name&limit=10`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
+      if (wabaRes.ok) {
+        const wabaData = await wabaRes.json();
+        const wabaId: string | undefined = wabaData?.whatsapp_business_account?.id;
 
-    if (!numRes.ok) {
-      const errText = await numRes.text();
-      console.error('[resolve-phone] phone_numbers fetch failed:', errText);
-      return NextResponse.json(
-        { error: 'Failed to list phone numbers from WABA', details: errText },
-        { status: 502 }
-      );
-    }
-
-    const numData = await numRes.json();
-    const match =
-      (numData?.data || []).find((p: { id: string }) => p.id === phoneNumberId) ||
-      numData?.data?.[0];
-
-    if (match) {
-      displayPhoneNumber = match.display_phone_number || '';
-      displayName = match.verified_name || match.display_phone_number || '';
+        if (wabaId) {
+          const numRes = await fetch(
+            `${META_GRAPH}/${wabaId}/phone_numbers?fields=id,display_phone_number,verified_name&limit=10`,
+            { headers: { Authorization: `Bearer ${accessToken}` } }
+          );
+          if (numRes.ok) {
+            const numData = await numRes.json();
+            const match =
+              (numData?.data || []).find((p: { id: string }) => p.id === phoneNumberId) ||
+              numData?.data?.[0];
+            if (match) {
+              resolvedPhoneNumberId = match.id;
+              displayPhoneNumber = match.display_phone_number || '';
+              displayName = match.verified_name || match.display_phone_number || '';
+              console.log('[resolve-phone] Resolved via phone number ID path:', resolvedPhoneNumberId, displayPhoneNumber);
+            }
+          }
+        }
+      }
     }
 
     if (!displayPhoneNumber) {
@@ -132,15 +140,21 @@ export async function GET(req: NextRequest) {
     }
 
     // Save resolved data back to Firestore
-    await adminDb.doc(`businesses/${businessId}`).update({
+    // Also update phoneNumberId if it was actually a WABA ID (fix old data)
+    const firestoreUpdate: Record<string, string | null> = {
       'channels.whatsapp.displayPhoneNumber': displayPhoneNumber,
       'channels.whatsapp.displayName': displayName || null,
       updatedAt: new Date().toISOString(),
-    });
+    };
+    if (resolvedPhoneNumberId !== phoneNumberId) {
+      firestoreUpdate['channels.whatsapp.phoneNumberId'] = resolvedPhoneNumberId;
+      console.log('[resolve-phone] Correcting stored phoneNumberId:', phoneNumberId, '→', resolvedPhoneNumberId);
+    }
+    await adminDb.doc(`businesses/${businessId}`).update(firestoreUpdate);
 
     return NextResponse.json({
       resolved: true,
-      phoneNumberId,
+      phoneNumberId: resolvedPhoneNumberId,
       displayPhoneNumber,
       displayName: displayName || null,
     });

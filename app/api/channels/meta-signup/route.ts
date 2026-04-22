@@ -141,68 +141,61 @@ export async function POST(req: NextRequest) {
     let displayPhoneNumber = '';
     let displayName = '';
 
+    // granular_scopes.whatsapp_business_messaging.target_ids contains WABA IDs (WhatsApp Business
+    // Account IDs), NOT phone number IDs. We must fetch the actual phone number ID from the WABA.
+    let wabaIdFromScopes = '';
     for (const scope of granularScopes) {
       if (scope.scope === 'whatsapp_business_messaging' && scope.target_ids?.length > 0) {
-        phoneNumberId = scope.target_ids[0];
+        wabaIdFromScopes = scope.target_ids[0]; // This is the WABA ID
       }
     }
 
-    // ── Step 3: Get phone number display details via WABA ───────────────────
-    // Direct /{phoneNumberId}?fields=display_phone_number requires whatsapp_business_management
-    // (not approved). The approved path: get WABA from the phone number, then list phone_numbers.
-    if (phoneNumberId) {
+    // ── Step 3: Get phone number ID + display details from WABA ────────────
+    if (wabaIdFromScopes) {
       try {
-        // 3a. Resolve WABA ID
-        const wabaRes = await fetch(
-          `${META_GRAPH}/${phoneNumberId}?fields=id,whatsapp_business_account`,
+        // Fetch phone numbers directly from the WABA ID (no intermediate step needed)
+        const numRes = await fetch(
+          `${META_GRAPH}/${wabaIdFromScopes}/phone_numbers?fields=id,display_phone_number,verified_name&limit=10`,
           { headers: { Authorization: `Bearer ${longLivedToken}` } }
         );
-        if (wabaRes.ok) {
-          const wabaData = await wabaRes.json();
-          const wabaId: string | undefined = wabaData?.whatsapp_business_account?.id;
-
-          if (wabaId) {
-            // 3b. List phone numbers from WABA — returns display_phone_number and verified_name
-            const numRes = await fetch(
-              `${META_GRAPH}/${wabaId}/phone_numbers?fields=id,display_phone_number,verified_name&limit=10`,
-              { headers: { Authorization: `Bearer ${longLivedToken}` } }
-            );
-            if (numRes.ok) {
-              const numData = await numRes.json();
-              const match = (numData?.data || []).find((p: { id: string }) => p.id === phoneNumberId)
-                || numData?.data?.[0];
-              if (match) {
-                displayPhoneNumber = match.display_phone_number || '';
-                displayName = match.verified_name || match.display_phone_number || '';
-              }
-            }
-
-            // ── 3c. Subscribe app to WABA webhook events ─────────────────────
-            // Configuring the webhook URL in the Meta dashboard is not enough —
-            // the app must be programmatically subscribed to each WABA so that
-            // the WhatsApp Business API actually delivers events to our endpoint.
-            // Without this, messages from real (non-test) WABAs are silently dropped.
-            try {
-              const wabaSubRes = await fetch(
-                `${META_GRAPH}/${wabaId}/subscribeApp`,
-                {
-                  method: 'POST',
-                  headers: { Authorization: `Bearer ${longLivedToken}` },
-                }
-              );
-              if (wabaSubRes.ok) {
-                console.log('[Meta Signup] App subscribed to WABA webhook:', wabaId);
-              } else {
-                const errText = await wabaSubRes.text();
-                console.warn('[Meta Signup] WABA subscription failed (non-fatal):', errText);
-              }
-            } catch (wabaSubErr) {
-              console.warn('[Meta Signup] WABA subscription error (non-fatal):', wabaSubErr);
-            }
+        if (numRes.ok) {
+          const numData = await numRes.json();
+          const phone = numData?.data?.[0]; // Pick first phone number on the WABA
+          if (phone) {
+            phoneNumberId = phone.id; // Actual phone number ID for sending messages
+            displayPhoneNumber = phone.display_phone_number || '';
+            displayName = phone.verified_name || phone.display_phone_number || '';
+            console.log('[Meta Signup] Resolved phoneNumberId from WABA:', phoneNumberId, displayPhoneNumber);
           }
+        } else {
+          console.warn('[Meta Signup] phone_numbers fetch failed:', await numRes.text());
+        }
+
+        // ── 3c. Subscribe app to WABA webhook events ─────────────────────
+        // Configuring the webhook URL in the Meta dashboard is not enough —
+        // the app must be programmatically subscribed to each WABA so that
+        // the WhatsApp Business API actually delivers events to our endpoint.
+        // Without this, messages from real (non-test) WABAs are silently dropped.
+        const wabaId = wabaIdFromScopes;
+        try {
+          const wabaSubRes = await fetch(
+            `${META_GRAPH}/${wabaId}/subscribeApp`,
+            {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${longLivedToken}` },
+            }
+          );
+          if (wabaSubRes.ok) {
+            console.log('[Meta Signup] App subscribed to WABA webhook:', wabaId);
+          } else {
+            const errText = await wabaSubRes.text();
+            console.warn('[Meta Signup] WABA subscription failed (non-fatal):', errText);
+          }
+        } catch (wabaSubErr) {
+          console.warn('[Meta Signup] WABA subscription error (non-fatal):', wabaSubErr);
         }
       } catch {
-        // Display info is optional — phoneNumberId alone is enough to send messages
+        // Phone number fetch is best-effort; wabaId alone is enough to subscribe
       }
     }
 
