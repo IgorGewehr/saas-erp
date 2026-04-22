@@ -5077,6 +5077,19 @@ function CanaisTab() {
   const [fbPageName, setFbPageName] = useState('');
   const [igAccountName, setIgAccountName] = useState('');
 
+  // ── Channel selection state (multi-page / multi-phone picker) ──
+  const [channelSelectionPending, setChannelSelectionPending] = useState<{
+    accessToken: string;
+    channel: 'facebook' | 'instagram' | 'whatsapp';
+    options: {
+      pages?: Array<{ id: string; name: string }>;
+      phoneNumbers?: Array<{ id: string; displayPhoneNumber: string; verifiedName: string }>;
+    };
+  } | null>(null);
+  const [selPickPageId, setSelPickPageId] = useState('');
+  const [selPickPhoneId, setSelPickPhoneId] = useState('');
+  const [confirmingSelection, setConfirmingSelection] = useState(false);
+
   // ── UI state ──
   const [loading, setLoading] = useState(true);
   const [resolvingPhone, setResolvingPhone] = useState(false);
@@ -5167,6 +5180,16 @@ function CanaisTab() {
                 });
                 const data = await res.json();
 
+                if (data.selectionRequired) {
+                  // Multiple pages or phone numbers — show picker modal
+                  setChannelSelectionPending({ accessToken, channel, options: data.options });
+                  // Pre-select the first option in each category
+                  if (data.options?.pages?.length) setSelPickPageId(data.options.pages[0].id);
+                  if (data.options?.phoneNumbers?.length) setSelPickPhoneId(data.options.phoneNumbers[0].id);
+                  setConnectingChannel(null);
+                  return;
+                }
+
                 if (data.success && data.channels) {
                   if (data.channels.facebook) {
                     setFbConnected(true);
@@ -5226,6 +5249,57 @@ function CanaisTab() {
       toast.error('Erro ao desconectar canal');
     } finally {
       setDisconnecting(null);
+    }
+  };
+
+  // ── Confirm channel selection (phase-2 call after multi-picker modal) ──
+  const handleConfirmChannelSelection = async () => {
+    if (!channelSelectionPending || !business) return;
+    setConfirmingSelection(true);
+    try {
+      const idToken = await firebaseUser?.getIdToken();
+      const body: Record<string, string | undefined> = {
+        accessToken: channelSelectionPending.accessToken,
+        businessId: business.id,
+      };
+      if (channelSelectionPending.options.pages) body.selectedPageId = selPickPageId;
+      if (channelSelectionPending.options.phoneNumbers) body.selectedPhoneNumberId = selPickPhoneId;
+
+      const res = await fetch('/api/channels/meta-signup', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+
+      if (data.success && data.channels) {
+        if (data.channels.facebook) {
+          setFbConnected(true);
+          setFbPageName(data.channels.facebook.pageName || data.channels.facebook.pageId || '');
+        }
+        if (data.channels.instagram) {
+          setIgConnected(true);
+          setIgAccountName(data.channels.instagram.accountName || data.channels.instagram.accountId || '');
+        }
+        if (data.channels.whatsapp) {
+          setWaConnected(true);
+          setWaPhoneNumber(data.channels.whatsapp.displayPhoneNumber || data.channels.whatsapp.phoneNumberId || '');
+        }
+        await refreshUser();
+        const labels: Record<string, string> = { facebook: 'Facebook Messenger', instagram: 'Instagram', whatsapp: 'WhatsApp' };
+        toast.success(`${labels[channelSelectionPending.channel]} conectado!`);
+        setChannelSelectionPending(null);
+      } else {
+        toast.error(data.error || 'Erro ao conectar canal');
+      }
+    } catch (err) {
+      toast.error('Erro ao confirmar seleção');
+      console.error('[Meta Signup] confirm selection error:', err);
+    } finally {
+      setConfirmingSelection(false);
     }
   };
 
@@ -5644,6 +5718,157 @@ function CanaisTab() {
           </>
         );
       })()}
+
+      {/* ── Channel Selection Modal (multi-page / multi-phone picker) ── */}
+      {channelSelectionPending && createPortal(
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+          {/* Backdrop */}
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => !confirmingSelection && setChannelSelectionPending(null)}
+          />
+
+          {/* Dialog */}
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 16 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 16 }}
+            transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+            className="relative z-10 w-full max-w-md bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/60 overflow-hidden"
+          >
+            {/* Header */}
+            <div className="px-6 py-5 border-b border-gray-100 dark:border-gray-700/50 flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-bold text-gray-900 dark:text-white font-display">Selecionar canal</h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  {channelSelectionPending.options.pages && channelSelectionPending.options.phoneNumbers
+                    ? 'Escolha a Página e o número de WhatsApp'
+                    : channelSelectionPending.options.pages
+                    ? 'Escolha qual Página do Facebook conectar'
+                    : 'Escolha qual número de WhatsApp conectar'}
+                </p>
+              </div>
+              <button
+                onClick={() => !confirmingSelection && setChannelSelectionPending(null)}
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="px-6 py-5 space-y-5 max-h-[60vh] overflow-y-auto">
+              {/* Pages selector */}
+              {channelSelectionPending.options.pages && (
+                <div>
+                  <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2.5">
+                    Páginas do Facebook
+                  </p>
+                  <div className="space-y-2">
+                    {channelSelectionPending.options.pages.map(page => (
+                      <label
+                        key={page.id}
+                        className={cn(
+                          'flex items-center gap-3 p-3.5 rounded-xl border cursor-pointer transition-all',
+                          selPickPageId === page.id
+                            ? 'border-[#0866FF] bg-[#0866FF]/5 dark:bg-[#0866FF]/10'
+                            : 'border-gray-200 dark:border-gray-700/50 hover:border-gray-300 dark:hover:border-gray-600',
+                        )}
+                      >
+                        <input
+                          type="radio"
+                          name="sel-page"
+                          value={page.id}
+                          checked={selPickPageId === page.id}
+                          onChange={() => setSelPickPageId(page.id)}
+                          className="accent-[#0866FF]"
+                        />
+                        <div className="w-8 h-8 rounded-lg bg-[#0866FF]/10 flex items-center justify-center shrink-0">
+                          <Facebook className="w-4 h-4 text-[#0866FF]" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{page.name}</p>
+                          <p className="text-[11px] text-gray-400 dark:text-gray-500">ID: {page.id}</p>
+                        </div>
+                        {selPickPageId === page.id && <Check className="w-4 h-4 text-[#0866FF] shrink-0" />}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Phone numbers selector */}
+              {channelSelectionPending.options.phoneNumbers && (
+                <div>
+                  <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2.5">
+                    Números de WhatsApp
+                  </p>
+                  <div className="space-y-2">
+                    {channelSelectionPending.options.phoneNumbers.map(phone => (
+                      <label
+                        key={phone.id}
+                        className={cn(
+                          'flex items-center gap-3 p-3.5 rounded-xl border cursor-pointer transition-all',
+                          selPickPhoneId === phone.id
+                            ? 'border-[#25D366] bg-[#25D366]/5 dark:bg-[#25D366]/10'
+                            : 'border-gray-200 dark:border-gray-700/50 hover:border-gray-300 dark:hover:border-gray-600',
+                        )}
+                      >
+                        <input
+                          type="radio"
+                          name="sel-phone"
+                          value={phone.id}
+                          checked={selPickPhoneId === phone.id}
+                          onChange={() => setSelPickPhoneId(phone.id)}
+                          className="accent-[#25D366]"
+                        />
+                        <div className="w-8 h-8 rounded-lg bg-[#25D366]/10 flex items-center justify-center shrink-0">
+                          <Smartphone className="w-4 h-4 text-[#25D366]" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                            {phone.displayPhoneNumber || phone.id}
+                          </p>
+                          {phone.verifiedName && (
+                            <p className="text-[11px] text-gray-400 dark:text-gray-500">{phone.verifiedName}</p>
+                          )}
+                        </div>
+                        {selPickPhoneId === phone.id && <Check className="w-4 h-4 text-[#25D366] shrink-0" />}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 border-t border-gray-100 dark:border-gray-700/50 flex items-center justify-end gap-3">
+              <button
+                onClick={() => setChannelSelectionPending(null)}
+                disabled={confirmingSelection}
+                className="px-4 py-2 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleConfirmChannelSelection}
+                disabled={confirmingSelection || (!!channelSelectionPending.options.pages && !selPickPageId) || (!!channelSelectionPending.options.phoneNumbers && !selPickPhoneId)}
+                className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-red-600 to-red-500 hover:from-red-700 hover:to-red-600 shadow-sm shadow-red-500/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {confirmingSelection ? (
+                  <><Loader2 className="w-4 h-4 animate-spin" /> Conectando...</>
+                ) : (
+                  <><Check className="w-4 h-4" /> Conectar</>
+                )}
+              </button>
+            </div>
+          </motion.div>
+        </div>,
+        document.body
+      )}
 
       {/* ── WhatsApp QR Code Modal ── */}
       {showQrModal && (
