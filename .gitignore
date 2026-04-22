@@ -4,4 +4,4 @@ node_modules/
 .env.local
 *.log
 whatsapp-sessions/
-.claude/
+AUDIT_REPORT.md

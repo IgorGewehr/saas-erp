@@ -1587,6 +1587,10 @@ function FiscalTab() {
   const [isSavingNfce, setIsSavingNfce] = useState(false);
   const [isSavingCsc, setIsSavingCsc] = useState(false);
 
+  const [nfseSeries, setNfseSeries] = useState('NFS');
+  const [nfseNextNumber, setNfseNextNumber] = useState('1');
+  const [isSavingNfse, setIsSavingNfse] = useState(false);
+
   const [icmsCst, setIcmsCst] = useState('102');
   const [icmsRate, setIcmsRate] = useState('0');
   const [pisCst, setPisCst] = useState('49');
@@ -1643,6 +1647,11 @@ function FiscalTab() {
       });
     }
     const fAny = f as Record<string, unknown>;
+    const nfseConfig = fAny.nfseConfig as Record<string, unknown> | undefined;
+    if (nfseConfig) {
+      setNfseSeries(String(nfseConfig.series || 'NFS'));
+      setNfseNextNumber(String(nfseConfig.nextNumber || 1));
+    }
     const taxation = fAny.taxation as Record<string, Record<string, unknown>> | undefined;
     if (taxation) {
       if (taxation.icms) { setIcmsCst(String(taxation.icms.cstCsosn || '102')); setIcmsRate(String(taxation.icms.rate || 0)); }
@@ -1711,6 +1720,20 @@ function FiscalTab() {
       toast.success(t('settings.fiscal.nfceSaved', 'Configurações NFC-e salvas!'));
     } catch { toast.error(t('settings.fiscal.nfceError', 'Erro ao salvar NFC-e')); }
     finally { setIsSavingNfce(false); }
+  };
+
+  const handleSaveNfse = async () => {
+    setIsSavingNfse(true);
+    try {
+      await saveFiscalField({
+        nfseConfig: {
+          series: nfseSeries.toUpperCase().slice(0, 5) || 'NFS',
+          nextNumber: Number(nfseNextNumber) || 1,
+        },
+      });
+      toast.success(t('settings.fiscal.nfseSaved', 'Configurações NFS-e salvas!'));
+    } catch { toast.error(t('settings.fiscal.nfseError', 'Erro ao salvar NFS-e')); }
+    finally { setIsSavingNfse(false); }
   };
 
   const handleSaveCsc = async () => {
@@ -2157,6 +2180,40 @@ function FiscalTab() {
             {canEditFiscal && (
               <div className="flex justify-end">
                 <SaveButton onClick={handleSaveNfce} loading={isSavingNfce} label={t('settings.fiscal.saveNfce', 'Salvar NFC-e')} variant="secondary" />
+              </div>
+            )}
+          </div>
+
+          <hr className="border-gray-100 dark:border-gray-800" />
+
+          {/* NFS-e */}
+          <div>
+            <p className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">NFS-e</p>
+            <div className="grid grid-cols-2 gap-4 max-w-sm mb-3">
+              <FormField label={t('settings.fiscal.series', 'Série')} tooltip={t('settings.fiscal.nfseSeriesTooltip', 'Série da NFS-e (ex: NFS, A, 1 — máx 5 chars)')}>
+                <input
+                  value={nfseSeries}
+                  onChange={(e) => setNfseSeries(e.target.value.toUpperCase().slice(0, 5))}
+                  placeholder="NFS"
+                  maxLength={5}
+                  className={inputClasses}
+                  disabled={!canEditFiscal}
+                />
+              </FormField>
+              <FormField label={t('settings.fiscal.nfseNextRps', 'Próximo Nº (RPS)')} tooltip={t('settings.fiscal.nfseNextTooltip', 'Número do próximo Recibo Provisório de Serviços')}>
+                <input
+                  type="number"
+                  min={1}
+                  value={nfseNextNumber}
+                  onChange={(e) => setNfseNextNumber(e.target.value)}
+                  className={inputClasses}
+                  disabled={!canEditFiscal}
+                />
+              </FormField>
+            </div>
+            {canEditFiscal && (
+              <div className="flex justify-end">
+                <SaveButton onClick={handleSaveNfse} loading={isSavingNfse} label={t('settings.fiscal.saveNfse', 'Salvar NFS-e')} variant="secondary" />
               </div>
             )}
           </div>
