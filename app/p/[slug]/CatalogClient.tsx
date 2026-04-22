@@ -383,62 +383,69 @@ export default function CatalogClient({ business, products, categories }: Props)
       {/* ── Hero Header ────────────────────────────────────────────────────── */}
       <div className="relative overflow-hidden bg-gradient-to-br from-gray-900 via-gray-900 to-gray-800">
         <div className="absolute inset-0 pointer-events-none">
-          <div className="absolute -top-20 -left-20 w-72 h-72 bg-red-500/20 rounded-full blur-3xl" />
-          <div className="absolute top-10 right-0 w-56 h-56 bg-red-600/10 rounded-full blur-3xl" />
+          <div className="absolute -top-24 -left-20 w-80 h-80 bg-red-500/20 rounded-full blur-3xl" />
+          <div className="absolute top-0 right-0 w-56 h-56 bg-red-600/10 rounded-full blur-3xl" />
         </div>
 
         <motion.div
           style={{ opacity: headerOpacity, scale: headerScale }}
-          className="relative z-10 max-w-2xl mx-auto px-4 pt-8 pb-6 safe-top"
+          className="relative z-10 max-w-2xl mx-auto px-5 pt-7 pb-5 safe-top"
         >
-          <div className="flex items-center gap-3 sm:gap-4">
-            {/* Logo */}
-            <div className="relative flex-shrink-0">
-              <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl overflow-hidden border-2 border-white/10 shadow-2xl bg-white">
-                {business.logo ? (
-                  <img src={business.logo} alt={businessName} className="w-full h-full object-contain p-1" />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-red-500 to-red-700">
-                    <span className="text-2xl font-black text-white">
-                      {businessName.charAt(0)}
-                    </span>
-                  </div>
-                )}
-              </div>
-              <div className={`absolute -bottom-1 -right-1 flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                isOpen ? 'bg-emerald-500 text-white' : 'bg-red-500 text-white'
-              }`}>
-                <div className={`w-1.5 h-1.5 rounded-full ${isOpen ? 'bg-white animate-pulse' : 'bg-white/70'}`} />
-                {isOpen ? 'Aberto' : 'Fechado'}
-              </div>
+          {/* Top row: status pill */}
+          <div className="flex items-center justify-end mb-3">
+            <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold ${
+              isOpen
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/30'
+                : 'bg-red-500/20 text-red-300 border border-red-400/30'
+            }`}>
+              <div className={`w-1.5 h-1.5 rounded-full ${isOpen ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`} />
+              {isOpen ? 'Aberto agora' : 'Fechado'}
+            </div>
+          </div>
+
+          {/* Main row: logo + name */}
+          <div className="flex items-center gap-3">
+            <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl overflow-hidden border border-white/10 shadow-xl bg-white flex-shrink-0">
+              {business.logo ? (
+                <img src={business.logo} alt={businessName} className="w-full h-full object-contain p-1" />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-red-500 to-red-700">
+                  <span className="text-xl sm:text-2xl font-black text-white">
+                    {businessName.charAt(0)}
+                  </span>
+                </div>
+              )}
             </div>
 
             <div className="flex-1 min-w-0">
-              <h1 className="text-lg sm:text-2xl font-black text-white tracking-tight leading-tight">{businessName}</h1>
+              <h1 className="text-lg sm:text-xl font-black text-white tracking-tight leading-tight line-clamp-2 break-words">
+                {businessName}
+              </h1>
               {business.settings?.aiAgent?.businessDescription && (
-                <p className="text-xs sm:text-sm text-gray-300 mt-0.5 line-clamp-2">
+                <p className="text-[11px] sm:text-xs text-gray-400 mt-1 line-clamp-1">
                   {business.settings.aiAgent.businessDescription}
                 </p>
               )}
-              <div className="flex items-center gap-3 mt-1.5 flex-wrap">
-                {deliveryFee > 0 && (
-                  <span className="flex items-center gap-1 text-[11px] sm:text-xs text-gray-300">
-                    <Truck className="w-3 h-3" /> Entrega {formatBRL(deliveryFee)}
-                  </span>
-                )}
-                {deliveryFee === 0 && (
-                  <span className="flex items-center gap-1 text-[11px] sm:text-xs text-emerald-400 font-medium">
-                    <Truck className="w-3 h-3" /> Frete grátis
-                  </span>
-                )}
-                {business.settings?.openingHours && (
-                  <span className="flex items-center gap-1 text-[11px] sm:text-xs text-gray-400">
-                    <Clock className="w-3 h-3" />
-                    {isOpen ? 'Aceitando pedidos' : 'Fora do horário'}
-                  </span>
-                )}
-              </div>
             </div>
+          </div>
+
+          {/* Info chips row */}
+          <div className="flex items-center gap-2 mt-3 flex-wrap">
+            {deliveryFee > 0 ? (
+              <span className="flex items-center gap-1.5 text-[11px] text-gray-300 bg-white/5 border border-white/10 px-2.5 py-1 rounded-full">
+                <Truck className="w-3 h-3" /> Entrega {formatBRL(deliveryFee)}
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5 text-[11px] text-emerald-300 bg-emerald-500/10 border border-emerald-400/20 px-2.5 py-1 rounded-full font-semibold">
+                <Truck className="w-3 h-3" /> Frete grátis
+              </span>
+            )}
+            {business.settings?.openingHours && (
+              <span className="flex items-center gap-1.5 text-[11px] text-gray-400 bg-white/5 border border-white/10 px-2.5 py-1 rounded-full">
+                <Clock className="w-3 h-3" />
+                {isOpen ? 'Aceitando pedidos' : 'Fora do horário'}
+              </span>
+            )}
           </div>
         </motion.div>
       </div>
