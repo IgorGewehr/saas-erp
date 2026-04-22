@@ -1076,22 +1076,30 @@ function EmpresaTab() {
                     <div className="w-20 h-20 rounded-xl border border-gray-200 dark:border-gray-700/50 bg-gray-50 dark:bg-gray-800/30 overflow-hidden flex items-center justify-center">
                       <img src={logoPreview} alt="Logo" className="max-w-full max-h-full object-contain" />
                     </div>
-                    <button
-                      type="button"
-                      onClick={async () => { setLogoPreview(null); if (business) { await setDoc(doc(db, 'businesses', business.id), { logo: '', updatedAt: new Date().toISOString() }, { merge: true }); await refreshUser(); } }}
-                      className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-red-500 dark:bg-red-600 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-150"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
+                    {canEditSettings && (
+                      <button
+                        type="button"
+                        onClick={async () => { setLogoPreview(null); if (business) { await setDoc(doc(db, 'businesses', business.id), { logo: '', updatedAt: new Date().toISOString() }, { merge: true }); await refreshUser(); } }}
+                        className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-red-500 dark:bg-red-600 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-150"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
-                ) : (
+                ) : canEditSettings ? (
                   <label className="w-20 h-20 rounded-xl border-2 border-dashed border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800/30 flex flex-col items-center justify-center cursor-pointer hover:border-red-400 dark:hover:border-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors duration-200">
                     <ImagePlus className="w-5 h-5 text-gray-400 dark:text-gray-500" />
                     <span className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">{t('settings.company.upload', 'Upload')}</span>
                     <input type="file" accept="image/*" onChange={handleLogoUpload} className="hidden" />
                   </label>
+                ) : (
+                  <div className="w-20 h-20 rounded-xl border border-gray-200 dark:border-gray-700/50 bg-gray-50 dark:bg-gray-800/30 flex items-center justify-center">
+                    <Building2 className="w-6 h-6 text-gray-300 dark:text-gray-600" />
+                  </div>
                 )}
-                <p className="text-xs text-gray-400 dark:text-gray-500">{t('settings.company.logoHelp', 'PNG ou JPG, max 2MB.')}</p>
+                {canEditSettings && (
+                  <p className="text-xs text-gray-400 dark:text-gray-500">{t('settings.company.logoHelp', 'PNG ou JPG, max 2MB.')}</p>
+                )}
               </div>
             </div>
 
@@ -3340,34 +3348,44 @@ function VaultTab() {
   const [revealedValue, setRevealedValue] = useState<string | null>(null);
   const [revealTimer, setRevealTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
   const [revealing, setRevealing] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const REVEAL_TIMEOUT_MS = 15_000;
+  const canEdit = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
 
-  // Real-time list via Firestore onSnapshot (faster than polling /list)
+  // Fetch entries via API route — Admin SDK bypasses client-side Firestore rules,
+  // avoiding "Missing or insufficient permissions" from the per-doc accessScope check.
   useEffect(() => {
-    if (!business?.id) return;
+    if (!business?.id) { setLoading(false); return; }
+    let cancelled = false;
     setLoading(true);
-    const q = query(
-      collection(db, 'passwordVaultEntries'),
-      where('businessId', '==', business.id),
-    );
-    const unsub = onSnapshot(q, (snap) => {
-      const list = snap.docs.map(d => {
-        const data = d.data();
-        // Strip encryptedPassword from client-side view
-        const { encryptedPassword: _ignore, ...safe } = data;
-        void _ignore;
-        return { ...safe, id: d.id } as VaultListItem;
-      });
-      list.sort((a, b) => a.title.localeCompare(b.title));
-      setEntries(list);
-      setLoading(false);
-    }, (err) => {
-      console.error('[Vault] snapshot error:', err);
-      setLoading(false);
-    });
-    return () => unsub();
-  }, [business?.id]);
+    (async () => {
+      try {
+        const { getAuth } = await import('firebase/auth');
+        const token = await getAuth().currentUser?.getIdToken();
+        if (!token || cancelled) return;
+        const resp = await fetch('/api/vault', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ action: 'list', businessId: business.id, params: {} }),
+        });
+        const json = await resp.json();
+        if (cancelled) return;
+        if (resp.ok && json.ok) {
+          const list: VaultListItem[] = json.data;
+          list.sort((a, b) => a.title.localeCompare(b.title));
+          setEntries(list);
+        } else {
+          console.error('[Vault] list error:', json?.error);
+        }
+      } catch (err) {
+        if (!cancelled) console.error('[Vault] fetch error:', err);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [business?.id, refreshKey]);
 
   // Auto-hide revealed password
   useEffect(() => {
@@ -3410,12 +3428,14 @@ function VaultTab() {
   };
 
   const openCreate = () => {
+    if (!canEdit) return;
     setForm(EMPTY_VAULT_FORM);
     setEditing(false);
     setFormOpen(true);
   };
 
   const openEdit = (e: VaultListItem) => {
+    if (!canEdit) return;
     setForm({
       id: e.id,
       title: e.title,
@@ -3452,6 +3472,7 @@ function VaultTab() {
       });
       toast.success(editing ? 'Entrada atualizada' : 'Senha salva no cofre');
       setFormOpen(false);
+      setRefreshKey(k => k + 1);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Erro ao salvar');
     } finally {
@@ -3460,11 +3481,13 @@ function VaultTab() {
   };
 
   const handleDelete = async (id: string) => {
+    if (!canEdit) return;
     if (!confirm('Excluir esta senha do cofre? Esta ação não pode ser desfeita.')) return;
     setDeleting(id);
     try {
       await callApi('delete', { id });
       toast.info('Entrada removida');
+      setRefreshKey(k => k + 1);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Erro ao excluir');
     } finally {
@@ -4251,12 +4274,13 @@ function AgenteTab() {
 // ─── Modo do Sistema Tab ──────────────────────────────────────────────────────
 
 function ModoSistemaTab() {
-  const { business, refreshUser } = useAuth();
+  const { user, business, refreshUser } = useAuth();
   const [saving, setSaving] = useState<UseCase | null>(null);
   const currentUseCase: UseCase = (business?.settings?.useCase as UseCase) || 'servicos';
+  const canEdit = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
 
   const handleSelect = async (useCase: UseCase) => {
-    if (!business?.id || useCase === currentUseCase) return;
+    if (!business?.id || useCase === currentUseCase || !canEdit) return;
     setSaving(useCase);
     try {
       await updateDoc(doc(db, 'businesses', business.id), {
@@ -4423,6 +4447,7 @@ function SectorsTab() {
   const [formLeaderId, setFormLeaderId] = useState('');
   const [formMemberIds, setFormMemberIds] = useState<string[]>([]);
   const [deleteConfirm, setDeleteConfirm] = useState<Sector | null>(null);
+  const canEdit = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
 
   // Load sectors and members
   useEffect(() => {
@@ -4465,7 +4490,7 @@ function SectorsTab() {
   };
 
   const handleSave = async () => {
-    if (!business?.id || !user || !formName.trim()) return;
+    if (!business?.id || !user || !formName.trim() || !canEdit) return;
     setSaving(true);
     try {
       const now = new Date().toISOString();
@@ -4516,7 +4541,7 @@ function SectorsTab() {
   };
 
   const handleDelete = async (sector: Sector) => {
-    if (!business?.id) return;
+    if (!business?.id || !canEdit) return;
     setSaving(true);
     try {
       await deleteDoc(doc(db, 'sectors', sector.id));
@@ -6338,7 +6363,6 @@ function WhatsAppQrModal({
 export default function SettingsModule() {
   const { t } = useTranslation();
   const { user } = useAuth();
-  const isAdmin = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['admin'];
   const [activeTab, setActiveTab] = useState<Tab>('perfil');
 
   // ── Scrollable tab bar ────────────────────────────────────────────────────
@@ -6391,7 +6415,7 @@ export default function SettingsModule() {
     { id: 'enterprise' as Tab, label: t('settings.tabs.enterprise', 'Enterprise'), icon: Blocks     },
   ];
 
-  const tabs = isAdmin ? allTabs : allTabs.filter(t => t.id === 'perfil');
+  const tabs = allTabs;
 
   return (
     <motion.div
@@ -6409,7 +6433,7 @@ export default function SettingsModule() {
           <div>
             <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100 font-display">{t('settings.title', 'Configurações')}</h2>
             <p className="text-sm text-gray-500 dark:text-gray-400">
-              {isAdmin ? t('settings.descAdmin', 'Gerencie os dados da empresa, configurações fiscais e equipe') : t('settings.descUser', 'Gerencie seu perfil pessoal')}
+              {t('settings.desc', 'Gerencie as configurações da empresa e do seu perfil')}
             </p>
           </div>
         </div>

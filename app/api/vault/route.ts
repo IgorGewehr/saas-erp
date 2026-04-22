@@ -80,7 +80,6 @@ async function listEntries(businessId: string, uid: string) {
   // test mixes role (already checked) + explicit uid membership.
   const snap = await adminDb.collection('passwordVaultEntries')
     .where('businessId', '==', businessId)
-    .orderBy('title', 'asc')
     .get();
 
   return snap.docs

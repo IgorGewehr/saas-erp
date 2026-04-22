@@ -9,7 +9,7 @@ import {
   Plus, Search, X, Phone, Mail, MessageSquare, Calendar, Clock, Edit3, Trash2,
   Users, DollarSign, TrendingUp, MoreVertical, Globe, Instagram, Facebook, Linkedin, Send,
   CheckCircle2, PhoneCall, Video, FileText, MessageCircle, BarChart3, Activity, Layers, Gauge,
-  UserPlus, Briefcase, Tag, Hash, AlertTriangle, Inbox, Heart, Shield, Zap, Brain,
+  UserPlus, Briefcase, Tag, Hash, AlertTriangle, Heart, Shield, Zap, Brain,
   Sparkles, Filter,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -43,7 +43,6 @@ import {
 } from './shared';
 import { KanbanBoard } from './KanbanBoard';
 import { LeadDetailPanel } from './LeadDetailPanel';
-import { OmnichannelInbox } from './OmnichannelInbox';
 import { ScheduleActionDialog } from './ScheduleActionDialog';
 import { SourceIcon } from './SourceIcon';
 
@@ -427,8 +426,8 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
   [contacts]);
 
   const topValueContacts = useMemo(() =>
-    contacts.filter((c) => c.relationshipHistory?.totalSpent)
-      .sort((a, b) => (b.relationshipHistory?.totalSpent ?? 0) - (a.relationshipHistory?.totalSpent ?? 0))
+    contacts.filter((c) => c.totalSpent && c.totalSpent > 0)
+      .sort((a, b) => (b.totalSpent ?? 0) - (a.totalSpent ?? 0))
       .slice(0, 5),
   [contacts]);
 
@@ -567,7 +566,7 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
                   )}
                 </div>
                 <span className="text-sm font-bold text-emerald-600 dark:text-emerald-400 shrink-0">
-                  {formatCurrency(c.relationshipHistory?.totalSpent ?? 0)}
+                  {formatCurrency(c.totalSpent ?? 0)}
                 </span>
               </div>
             ))}
@@ -668,13 +667,13 @@ export default function CRMModule() {
 
   const TABS: { key: CRMTab; label: string; icon: React.ReactNode; desc: string }[] = useMemo(() => [
     { key: 'kanban', label: t('crm.tab.kanban', 'Pipeline'), icon: <Layers size={15} />, desc: t('crm.tab.kanban_desc', 'Kanban de leads') },
-    { key: 'inbox', label: t('crm.tab.inbox', 'Inbox'), icon: <Inbox size={15} />, desc: t('crm.tab.inbox_desc', 'Conversas') },
     { key: 'atividades', label: t('crm.tab.activities', 'Atividades'), icon: <Activity size={15} />, desc: t('crm.tab.activities_desc', 'Tarefas e follow-ups') },
     { key: 'campanhas', label: t('crm.tab.campaigns', 'Campanhas'), icon: <Send size={15} />, desc: t('crm.tab.campaigns_desc', 'Broadcasts') },
     { key: 'metricas', label: t('crm.tab.metrics', 'Inteligência'), icon: <Brain size={15} />, desc: t('crm.tab.metrics_desc', 'Scores e insights') },
   ], [t]);
   const { isDark } = useTheme();
   const { user, business } = useAuth();
+  const { setActivePage } = useAppContext();
   const queryClient = useQueryClient();
 
   const [activeTab, setActiveTab] = useState<CRMTab>('kanban');
@@ -697,7 +696,7 @@ export default function CRMModule() {
   }, [business?.id]);
 
   // Data fetching
-  const { data: contacts = [], isLoading: lc } = useQuery({ queryKey: ['clients', business?.id], queryFn: async () => { const q = query(collection(db, 'clients'), where('businessId', '==', business!.id), orderBy('createdAt', 'desc')); const snap = await getDocs(q); return snap.docs.map((d) => ({ ...d.data(), id: d.id } as CRMContact)); }, enabled: !!business?.id });
+  const { data: contacts = [], isLoading: lc } = useQuery({ queryKey: ['clients', business?.id], queryFn: async () => { const q = query(collection(db, 'clients'), where('businessId', '==', business!.id), orderBy('createdAt', 'desc')); const snap = await getDocs(q); return snap.docs.map((d) => { const data = d.data(); return { ...data, id: d.id, status: (data.status ?? 'novo') as CRMContact['status'], source: (data.source ?? 'outro') as CRMContact['source'], score: data.score ?? 0 } as CRMContact; }).filter((c) => c.tipo !== 'pj'); }, enabled: !!business?.id });
   const { data: deals = [], isLoading: ld } = useQuery({ queryKey: ['crmDeals', business?.id], queryFn: async () => { const q = query(collection(db, 'crmDeals'), where('businessId', '==', business!.id), orderBy('createdAt', 'desc')); const snap = await getDocs(q); return snap.docs.map((d) => ({ ...d.data(), id: d.id } as CRMDeal)); }, enabled: !!business?.id });
   const { data: activities = [], isLoading: la } = useQuery({ queryKey: ['crmActivities', business?.id], queryFn: async () => { const q = query(collection(db, 'crmActivities'), where('businessId', '==', business!.id), orderBy('createdAt', 'desc')); const snap = await getDocs(q); return snap.docs.map((d) => ({ ...d.data(), id: d.id } as CRMActivity)); }, enabled: !!business?.id });
 
@@ -727,7 +726,7 @@ export default function CRMModule() {
         await updateDoc(doc(db, 'clients', editingContact.id), { ...clean, updatedAt: now });
         toast.success(t('crm.toast.contactUpdated', 'Contato atualizado!'));
       } else {
-        await addDoc(collection(db, 'clients'), { ...clean, businessId: business.id, score: data.score ?? 0, status: data.status ?? 'novo', source: data.source ?? 'outro', createdAt: now, updatedAt: now });
+        await addDoc(collection(db, 'clients'), { ...clean, businessId: business.id, tipo: 'pf', score: data.score ?? 0, status: data.status ?? 'novo', source: data.source ?? 'outro', createdAt: now, updatedAt: now });
         toast.success(t('crm.toast.contactCreated', 'Contato criado!'));
       }
       queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
@@ -747,7 +746,22 @@ export default function CRMModule() {
 
   const handleDeleteActivity = useCallback(async () => { if (!deleteActivityConfirm || !business?.id) return; try { await deleteDoc(doc(db, 'crmActivities', deleteActivityConfirm.id)); toast.success(t('crm.toast.activityDeleted', 'Atividade excluída')); queryClient.invalidateQueries({ queryKey: ['crmActivities', business.id] }); setDeleteActivityConfirm(null); } catch (err) { console.error('[CRM] Error deleting activity:', err); toast.error(t('crm.toast.errorDelete', 'Erro ao excluir')); } }, [deleteActivityConfirm, business?.id, queryClient]);
 
-  const handleStatusChange = useCallback(async (contactId: string, newStatus: LeadStatus) => { if (!business?.id) return; try { await updateDoc(doc(db, 'clients', contactId), { status: newStatus, updatedAt: new Date().toISOString() }); queryClient.invalidateQueries({ queryKey: ['clients', business.id] }); } catch (err) { console.error('[CRM] Error changing lead status:', err); toast.error(t('crm.toast.errorMoveLead', 'Erro ao mover lead')); } }, [business?.id, queryClient]);
+  const handleStatusChange = useCallback(async (contactId: string, newStatus: LeadStatus) => {
+    if (!business?.id) return;
+    const qk = ['clients', business.id] as const;
+    // Optimistic update — card moves instantly, no snap-back
+    queryClient.setQueryData(qk, (old: CRMContact[] = []) =>
+      old.map((c) => c.id === contactId ? { ...c, status: newStatus } : c)
+    );
+    try {
+      await updateDoc(doc(db, 'clients', contactId), { status: newStatus, updatedAt: new Date().toISOString() });
+      queryClient.invalidateQueries({ queryKey: qk });
+    } catch (err) {
+      console.error('[CRM] Error changing lead status:', err);
+      toast.error(t('crm.toast.errorMoveLead', 'Erro ao mover lead'));
+      queryClient.invalidateQueries({ queryKey: qk }); // revert on failure
+    }
+  }, [business?.id, queryClient, t]);
 
   const handleTagsChange = useCallback(async (contactId: string, tags: string[]) => { if (!business?.id) return; try { await updateDoc(doc(db, 'clients', contactId), { tags, updatedAt: new Date().toISOString() }); queryClient.invalidateQueries({ queryKey: ['clients', business.id] }); } catch (err) { console.error('[CRM] Error updating tags:', err); toast.error(t('crm.toast.errorUpdateTags', 'Erro ao atualizar tags')); } }, [business?.id, queryClient]);
 
@@ -909,10 +923,6 @@ export default function CRMModule() {
                 searchQuery={searchQuery} filterTags={filterTags} filterSource={filterSource} />
             )}
 
-            {activeTab === 'inbox' && (
-              <OmnichannelInbox businessId={business?.id || ''} contacts={contacts} />
-            )}
-
             {activeTab === 'atividades' && (
               <div className="flex-1 overflow-y-auto min-h-0">
                 <ActivitiesTab activities={activities}
@@ -955,7 +965,7 @@ export default function CRMModule() {
               onDelete={() => { setDeleteContactConfirm(selectedContact); setDetailOpen(false); }}
               onTagsChange={(tags) => handleTagsChange(selectedContact.id, tags)}
               onSchedule={() => { setScheduleContact(selectedContact); setScheduleDialogOpen(true); }}
-              onOpenInbox={() => { setActiveTab('inbox'); setDetailOpen(false); }} />
+              onOpenConversations={() => { setDetailOpen(false); setActivePage('Conversas'); }} />
           </>
         )}
       </AnimatePresence>

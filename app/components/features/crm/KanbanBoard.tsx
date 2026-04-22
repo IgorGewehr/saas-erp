@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Layers, Plus } from 'lucide-react';
+import { Layers } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { KANBAN_COLUMNS } from './shared';
@@ -20,7 +20,8 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
   filterSource: LeadSource | 'all';
 }) {
   const { t } = useTranslation();
-  const [draggingContact, setDraggingContact] = useState<CRMContact | null>(null);
+  const draggingRef = useRef<CRMContact | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverStatus, setDragOverStatus] = useState<LeadStatus | null>(null);
 
   const filtered = useMemo(() => {
@@ -35,59 +36,61 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
     }
     if (filterSource !== 'all') result = result.filter((c) => c.source === filterSource);
     if (filterTags.length > 0) {
-      result = result.filter((c) =>
-        filterTags.every((tag) => c.tags?.includes(tag))
-      );
+      result = result.filter((c) => filterTags.every((tag) => c.tags?.includes(tag)));
     }
     return result;
   }, [contacts, searchQuery, filterSource, filterTags]);
 
   const handleDragStart = (e: React.DragEvent, contact: CRMContact) => {
-    setDraggingContact(contact);
+    draggingRef.current = contact;
+    setDraggingId(contact.id);
     e.dataTransfer.effectAllowed = 'move';
+    // Required for Safari to recognise the drag gesture
     e.dataTransfer.setData('text/plain', contact.id);
-    if (e.currentTarget instanceof HTMLElement) {
-      e.currentTarget.style.opacity = '0.5';
-    }
   };
 
-  const handleDragEnd = (e: React.DragEvent) => {
-    setDraggingContact(null);
+  const handleDragEnd = () => {
+    draggingRef.current = null;
+    setDraggingId(null);
     setDragOverStatus(null);
-    if (e.currentTarget instanceof HTMLElement) {
-      e.currentTarget.style.opacity = '1';
-    }
   };
 
-  const handleDragOver = (e: React.DragEvent, status: LeadStatus) => {
+  const handleDragEnter = (e: React.DragEvent, status: LeadStatus) => {
     e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
     setDragOverStatus(status);
   };
 
-  const handleDragLeave = () => {
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    // Only reset when the cursor truly leaves the column (not just moving to a child)
+    const related = e.relatedTarget as Node | null;
+    if (related && (e.currentTarget as HTMLElement).contains(related)) return;
     setDragOverStatus(null);
   };
 
   const handleDrop = async (e: React.DragEvent, targetStatus: LeadStatus) => {
     e.preventDefault();
     setDragOverStatus(null);
-    if (!draggingContact) return;
-    if (draggingContact.status === targetStatus) {
-      setDraggingContact(null);
-      return;
-    }
+    const contact = draggingRef.current;
+    draggingRef.current = null;
+    setDraggingId(null);
+    if (!contact || contact.status === targetStatus) return;
     try {
-      await onStatusChange(draggingContact.id, targetStatus);
+      await onStatusChange(contact.id, targetStatus);
     } catch (err) {
-      console.error('[CRM] Failed to update lead status via drag-and-drop:', err);
+      console.error('[CRM] Drag-drop status update failed:', err);
     }
-    setDraggingContact(null);
   };
 
   const totalLeads = filtered.length;
   const hotLeads = filtered.filter((c) => c.tags?.includes('quente')).length;
-  const avgScore = totalLeads > 0 ? Math.round(filtered.reduce((s, c) => s + (c.scores?.overall ?? c.score), 0) / totalLeads) : 0;
+  const avgScore = totalLeads > 0
+    ? Math.round(filtered.reduce((s, c) => s + (c.scores?.overall ?? c.score ?? 0), 0) / totalLeads)
+    : 0;
   const wonLeads = filtered.filter((c) => c.status === 'ganho').length;
 
   return (
@@ -95,10 +98,10 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
       {/* KPI strip */}
       <div className="flex gap-3 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
         {[
-          { label: t('crm.kanban.totalLeads', 'Total de Leads'), value: String(totalLeads), color: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-500/10' },
-          { label: t('crm.kanban.hotLeads', 'Leads Quentes'), value: String(hotLeads), color: 'text-orange-600 dark:text-orange-400', bg: 'bg-orange-500/10' },
-          { label: t('crm.kanban.avgScore', 'Score Médio'), value: String(avgScore), color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-500/10' },
-          { label: t('crm.kanban.converted', 'Convertidos'), value: String(wonLeads), color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-500/10' },
+          { label: t('crm.kanban.totalLeads', 'Total de Leads'), value: String(totalLeads), color: 'text-blue-600 dark:text-blue-400' },
+          { label: t('crm.kanban.hotLeads', 'Leads Quentes'), value: String(hotLeads), color: 'text-orange-600 dark:text-orange-400' },
+          { label: t('crm.kanban.avgScore', 'Score Médio'), value: String(avgScore), color: 'text-amber-600 dark:text-amber-400' },
+          { label: t('crm.kanban.converted', 'Convertidos'), value: String(wonLeads), color: 'text-emerald-600 dark:text-emerald-400' },
         ].map((kpi, i) => (
           <motion.div
             key={kpi.label}
@@ -114,8 +117,8 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
       </div>
 
       {/* Kanban Board */}
-      <div className="flex-1 overflow-x-auto overflow-y-auto pb-4 min-h-0" style={{ scrollbarWidth: 'thin' }}>
-        <div className="flex gap-3 min-w-max h-full" onDragEnd={handleDragEnd}>
+      <div className="flex-1 overflow-x-auto overflow-y-hidden pb-4 min-h-0" style={{ scrollbarWidth: 'thin' }}>
+        <div className="flex gap-3 min-w-max h-full">
           {KANBAN_COLUMNS.map((col, ci) => {
             const columnContacts = filtered
               .filter((c) => c.status === col.status)
@@ -129,9 +132,6 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: ci * 0.05 }}
                 className="w-[280px] shrink-0 flex flex-col h-full"
-                onDragOver={(e) => handleDragOver(e, col.status)}
-                onDragLeave={handleDragLeave}
-                onDrop={(e) => handleDrop(e, col.status)}
               >
                 {/* Column header */}
                 <div className="flex items-center justify-between mb-2.5 px-1">
@@ -144,31 +144,40 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
                   </div>
                 </div>
 
-                {/* Cards area */}
+                {/* Drop zone — plain div so Framer Motion doesn't intercept drag events */}
                 <div
                   className={cn(
-                    'flex-1 space-y-2.5 rounded-xl p-2.5 transition-all duration-200 overflow-y-auto',
+                    'flex-1 space-y-2.5 rounded-xl p-2.5 transition-colors duration-150 overflow-y-auto min-h-[120px]',
                     isDragOver
                       ? 'bg-red-50/50 dark:bg-red-500/[0.06] border-2 border-dashed border-red-400/50 dark:border-red-500/30'
                       : 'bg-gray-50/50 dark:bg-white/[0.015] border-2 border-transparent',
                   )}
+                  onDragEnter={(e) => handleDragEnter(e, col.status)}
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={(e) => handleDrop(e, col.status)}
                 >
                   {columnContacts.map((contact) => (
                     <LeadCard
                       key={contact.id}
                       contact={contact}
                       isSelected={selectedContactId === contact.id}
+                      isDragging={draggingId === contact.id}
                       onClick={() => onSelectContact(contact)}
                       onDragStart={(e) => handleDragStart(e, contact)}
+                      onDragEnd={handleDragEnd}
                     />
                   ))}
 
                   {columnContacts.length === 0 && (
-                    <div className="flex flex-col items-center justify-center h-32 text-gray-300 dark:text-gray-600">
+                    <div className="flex flex-col items-center justify-center h-28 text-gray-300 dark:text-gray-600">
                       <Layers size={22} strokeWidth={1.5} />
                       <p className="text-xs mt-2">{t('crm.kanban.noLeads', 'Nenhum lead')}</p>
                       {col.status === 'novo' && (
-                        <button onClick={onNewContact} className="mt-2 text-xs font-semibold text-red-500 dark:text-red-400 hover:text-red-600 transition-colors">
+                        <button
+                          onClick={onNewContact}
+                          className="mt-2 text-xs font-semibold text-red-500 dark:text-red-400 hover:text-red-600 transition-colors"
+                        >
                           + {t('crm.kanban.add', 'Adicionar')}
                         </button>
                       )}

@@ -287,6 +287,28 @@ service cloud.firestore {
     }
 
     // ============================================
+    // MENU CATEGORIES COLLECTION
+    // ============================================
+    match /menuCategories/{categoryId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isOperator();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isManager();
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isManager()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isManager();
+    }
+
+    // ============================================
     // PRODUCTS COLLECTION
     // ============================================
     match /products/{productId} {
@@ -402,6 +424,27 @@ service cloud.firestore {
     // KANBAN BOARDS COLLECTION
     // ============================================
     match /kanbanBoards/{boardId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator();
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isManager();
+    }
+
+    // ============================================
+    // KANBAN TEMPLATES COLLECTION
+    // ============================================
+    match /kanbanTemplates/{templateId} {
       allow read: if isAuthenticated()
                   && isOwnBusiness();
 

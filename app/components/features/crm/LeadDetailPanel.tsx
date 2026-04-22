@@ -105,7 +105,7 @@ function InsightChip({ text, variant = 'neutral' }: { text: string; variant?: 'p
 
 // ── Main Panel ─────────────────────────────────────────────────────────────
 
-export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete, onTagsChange, onSchedule, onOpenInbox }: {
+export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete, onTagsChange, onSchedule, onOpenConversations }: {
   contact: CRMContact;
   activities: CRMActivity[];
   onClose: () => void;
@@ -113,7 +113,7 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
   onDelete: () => void;
   onTagsChange: (tags: string[]) => void;
   onSchedule: () => void;
-  onOpenInbox: () => void;
+  onOpenConversations: () => void;
 }) {
   const { t } = useTranslation();
   const contactActivities = useMemo(
@@ -450,7 +450,7 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
               className="flex items-center gap-2 px-3 py-2.5 bg-white dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-xl text-xs font-semibold text-gray-700 dark:text-gray-300 hover:border-red-300 dark:hover:border-red-500/40 hover:text-red-600 dark:hover:text-red-400 transition-all">
               <CalendarPlus size={14} /> {t('crm.detail.schedule', 'Agendar')}
             </motion.button>
-            <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={onOpenInbox}
+            <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={onOpenConversations}
               className="flex items-center gap-2 px-3 py-2.5 bg-white dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-xl text-xs font-semibold text-gray-700 dark:text-gray-300 hover:border-emerald-300 dark:hover:border-emerald-500/40 hover:text-emerald-600 dark:hover:text-emerald-400 transition-all">
               <MessageSquare size={14} /> {t('crm.detail.message', 'Mensagem')}
             </motion.button>
