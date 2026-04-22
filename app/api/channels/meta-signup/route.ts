@@ -348,6 +348,11 @@ export async function POST(req: NextRequest) {
         accountName: igAccountName || null,
         isConnected: true,
         connectedAt: new Date().toISOString(),
+        // Store token when connected via direct scope (no Facebook page)
+        // so sendInstagram can work even without channels.facebook.pageAccessToken
+        ...(igIdFromScope && !pageId
+          ? { accessToken: await encryptToken(longLivedToken) }
+          : {}),
       };
     }
 

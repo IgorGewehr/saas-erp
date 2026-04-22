@@ -5138,6 +5138,16 @@ function CanaisTab() {
         whatsapp: 'WhatsApp Cloud API',
       };
 
+      // WhatsApp Embedded Signup needs the feature flag so Meta shows the WABA selector.
+      // return_scopes lets us verify what was actually granted (useful for debugging).
+      const loginOptions: Record<string, unknown> = {
+        scope: scopes[channel].join(','),
+        return_scopes: true,
+      };
+      if (channel === 'whatsapp') {
+        loginOptions.extras = { feature: 'whatsapp_embedded_signup' };
+      }
+
       FB.login(
         (response) => {
           (async () => {
@@ -5185,9 +5195,7 @@ function CanaisTab() {
             setConnectingChannel(null);
           })();
         },
-        {
-          scope: scopes[channel].join(','),
-        },
+        loginOptions,
       );
     } catch (err) {
       console.error('Channel connect error:', err);

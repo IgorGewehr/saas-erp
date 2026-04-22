@@ -698,12 +698,14 @@ async function sendInstagram(
     throw new Error('Canal Instagram não está conectado');
   }
 
-  // Instagram uses the Facebook page access token
-  if (!facebook?.pageAccessToken) {
-    throw new Error('Credenciais do Instagram incompletas (pageAccessToken do Facebook necessário)');
+  // Prefer Facebook page access token; fall back to direct Instagram token
+  // (stored when connected via instagram_business_manage_messages scope without a linked Facebook page)
+  const rawToken = facebook?.pageAccessToken || instagram.accessToken;
+  if (!rawToken) {
+    throw new Error('Credenciais do Instagram incompletas (pageAccessToken do Facebook ou accessToken do Instagram necessário)');
   }
 
-  const pageAccessToken = await decryptToken(facebook.pageAccessToken);
+  const pageAccessToken = await decryptToken(rawToken);
 
   // Build message payload - media or text
   const messagePayload = media
