@@ -717,8 +717,17 @@ async function sendInstagram(
       }
     : { text: content };
 
+  // Instagram DMs must be sent via /{ig-account-id}/messages (not /me/messages).
+  // Using /me/messages resolves "me" as the Facebook Page, which causes error code 10
+  // (permission denied) because the Instagram DM context requires the IG account as the sender.
+  const igAccountId = instagram.accountId;
+  if (!igAccountId) {
+    throw new Error('Credenciais do Instagram incompletas (accountId ausente — reconecte o canal em Configurações)');
+  }
+  const igEndpoint = `${META_BASE_URL}/${igAccountId}/messages`;
+
   const response = await fetch(
-    `${META_BASE_URL}/me/messages`,
+    igEndpoint,
     {
       method: 'POST',
       headers: {
@@ -736,6 +745,16 @@ async function sendInstagram(
   const data: MetaApiResponse = await response.json();
 
   if (!response.ok || data.error) {
+    // Error code 10 on Instagram often means the 24h messaging window is closed.
+    // Give a more actionable message instead of the generic "permission denied".
+    if (data.error?.code === 10) {
+      throw new Error(JSON.stringify({
+        message: 'Janela de 24h encerrada ou permissão negada pelo Instagram. Aguarde uma mensagem do contato para abrir a janela novamente.',
+        code: 10,
+        shouldRetry: false,
+        originalError: data.error?.message,
+      }));
+    }
     handleMetaApiError(response, data, 'Instagram');
   }
 

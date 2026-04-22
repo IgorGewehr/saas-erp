@@ -5079,6 +5079,7 @@ function CanaisTab() {
 
   // ── UI state ──
   const [loading, setLoading] = useState(true);
+  const [resolvingPhone, setResolvingPhone] = useState(false);
   const [connectingChannel, setConnectingChannel] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
   const [needsAttention, setNeedsAttention] = useState(false);
@@ -5233,10 +5234,13 @@ function CanaisTab() {
     if (!business) return;
     const channels = (business as Business & { channels?: ChannelConfig }).channels;
     let attention = false;
+    let phoneDisplay = '';
     if (channels) {
       if (channels.whatsapp) {
-        setWaConnected(channels.whatsapp.isConnected || false);
-        setWaPhoneNumber(channels.whatsapp.displayPhoneNumber || channels.whatsapp.phoneNumberId || '');
+        const wa = channels.whatsapp;
+        setWaConnected(wa.isConnected || false);
+        phoneDisplay = wa.displayPhoneNumber || wa.phoneNumberId || '';
+        setWaPhoneNumber(phoneDisplay);
       }
       if (channels.facebook) {
         const fb = channels.facebook;
@@ -5254,7 +5258,32 @@ function CanaisTab() {
     }
     setNeedsAttention(attention);
     setLoading(false);
-  }, [business]);
+
+    // Auto-resolve: if WhatsApp is connected but the stored value is a raw numeric ID
+    // (i.e. displayPhoneNumber was never saved), fetch the real number from Meta silently.
+    const wa = channels?.whatsapp;
+    if (wa?.isConnected && wa.phoneNumberId && /^\d+$/.test(phoneDisplay)) {
+      setResolvingPhone(true);
+      firebaseUser?.getIdToken().then(async (idToken) => {
+        try {
+          const res = await fetch(
+            `/api/channels/meta-resolve-phone?businessId=${business.id}`,
+            { headers: { Authorization: `Bearer ${idToken}` } }
+          );
+          if (res.ok) {
+            const data = await res.json();
+            if (data.displayPhoneNumber) {
+              setWaPhoneNumber(data.displayPhoneNumber);
+            }
+          }
+        } catch {
+          // Silently ignore — the ID is still shown as fallback
+        } finally {
+          setResolvingPhone(false);
+        }
+      }).catch(() => setResolvingPhone(false));
+    }
+  }, [business, firebaseUser]);
 
   if (loading) {
     return (
@@ -5493,7 +5522,11 @@ function CanaisTab() {
                         )}
                       </div>
                       {isCloudApi && waPhoneNumber ? (
-                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{waPhoneNumber}</p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 flex items-center gap-1">
+                          {resolvingPhone ? (
+                            <><Loader2 className="w-3 h-3 animate-spin" /> Buscando número…</>
+                          ) : waPhoneNumber}
+                        </p>
                       ) : (
                         <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{t('settings.channelsTab.waCloudApiDesc', 'API oficial da Meta com suporte a templates e volume ilimitado')}</p>
                       )}
