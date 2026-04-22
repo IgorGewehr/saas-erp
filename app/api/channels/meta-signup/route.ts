@@ -1,6 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { doc, updateDoc } from 'firebase/firestore';
-import { db } from '@/lib/config/firebase';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { encryptToken } from '@/lib/utils/encryption';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
@@ -361,8 +359,8 @@ export async function POST(req: NextRequest) {
       }, { status: 401 });
     }
 
-    // Save to Firestore server-side
-    await updateDoc(doc(db, 'businesses', businessId), channelUpdates);
+    // Save to Firestore via Admin SDK (bypasses security rules — server-side only)
+    await adminDb.doc(`businesses/${businessId}`).update(channelUpdates);
 
     // Return channel info WITHOUT tokens
     return NextResponse.json({
