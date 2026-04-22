@@ -14,36 +14,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { decryptToken } from '@/lib/utils/encryption';
-import { initializeApp, getApps, getApp } from 'firebase/app';
-import {
-  getFirestore,
-  collection,
-  query,
-  where,
-  getDocs,
-  getDoc,
-  addDoc,
-  updateDoc,
-  doc,
-  increment,
-  limit as firestoreLimit,
-} from 'firebase/firestore';
+import { adminDb } from '@/lib/config/firebaseAdmin';
 
 const META_GRAPH = 'https://graph.facebook.com/v21.0';
-
-const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
-};
-
-function getDb() {
-  const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
-  return getFirestore(app);
-}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -116,17 +89,14 @@ export async function POST(req: NextRequest) {
   const authResult = await verifyAuth(req, businessId);
   if (isAuthError(authResult)) return authResult;
 
-  const db = getDb();
-
   // Get business document with channel credentials
-  const bizRef = doc(db, 'businesses', businessId);
-  const bizSnap = await getDoc(bizRef);
+  const bizSnap = await adminDb.doc(`businesses/${businessId}`).get();
 
-  if (!bizSnap.exists()) {
+  if (!bizSnap.exists) {
     return NextResponse.json({ error: 'Empresa não encontrada' }, { status: 404 });
   }
 
-  const bizData = bizSnap.data();
+  const bizData = bizSnap.data()!;
   const channels = bizData?.channels || {};
 
   // Determine which channels to sync
@@ -172,7 +142,7 @@ export async function POST(req: NextRequest) {
 
   for (const ch of channelsToSync) {
     try {
-      await syncChannel(db, businessId, ch, pageId, pageAccessToken, stats);
+      await syncChannel(businessId, ch, pageId, pageAccessToken, stats);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[Sync] Error syncing ${ch}:`, msg);
@@ -182,7 +152,9 @@ export async function POST(req: NextRequest) {
 
   // Update last sync timestamp
   try {
-    await updateDoc(bizRef, { 'channels.lastSyncAt': new Date().toISOString() });
+    await adminDb.doc(`businesses/${businessId}`).update({
+      'channels.lastSyncAt': new Date().toISOString(),
+    });
   } catch { /* non-fatal */ }
 
   return NextResponse.json({
@@ -195,16 +167,12 @@ export async function POST(req: NextRequest) {
 // ─── Channel sync logic ───────────────────────────────────────────────────────
 
 async function syncChannel(
-  db: ReturnType<typeof getFirestore>,
   businessId: string,
   channel: 'facebook' | 'instagram',
   pageId: string,
   token: string,
   stats: SyncStats,
 ) {
-  // Step 1: Fetch recent conversations from Meta
-  // For Facebook: /me/conversations
-  // For Instagram: /{ig-account-id}/conversations (or /me/conversations with platform filter)
   const endpoint = `${META_GRAPH}/${pageId}/conversations?fields=participants,updated_time,messages.limit(25){message,from,to,created_time}&limit=20&platform=${channel === 'instagram' ? 'instagram' : 'messenger'}`;
 
   const res = await fetch(endpoint, {
@@ -222,7 +190,7 @@ async function syncChannel(
 
   for (const metaConv of metaConversations) {
     try {
-      await syncSingleConversation(db, businessId, channel, pageId, token, metaConv, stats);
+      await syncSingleConversation(businessId, channel, pageId, token, metaConv, stats);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[Sync] Error syncing conversation ${metaConv.id}:`, msg);
@@ -232,7 +200,6 @@ async function syncChannel(
 }
 
 async function syncSingleConversation(
-  db: ReturnType<typeof getFirestore>,
   businessId: string,
   channel: 'facebook' | 'instagram',
   pageId: string,
@@ -257,15 +224,13 @@ async function syncSingleConversation(
   const contactName = profile.name !== externalId ? profile.name : (externalParticipant.name || fallbackName);
 
   // Find or create our Firestore conversation
-  const convQuery = query(
-    collection(db, 'conversations'),
-    where('businessId', '==', businessId),
-    where('channel', '==', channel),
-    where('contactExternalId', '==', externalId),
-    firestoreLimit(1),
-  );
+  const convSnap = await adminDb.collection('conversations')
+    .where('businessId', '==', businessId)
+    .where('channel', '==', channel)
+    .where('contactExternalId', '==', externalId)
+    .limit(1)
+    .get();
 
-  const convSnap = await getDocs(convQuery);
   let conversationId: string;
   const now = new Date().toISOString();
 
@@ -279,7 +244,7 @@ async function syncSingleConversation(
 
   if (convSnap.empty) {
     // Create new conversation
-    const newRef = await addDoc(collection(db, 'conversations'), {
+    const newRef = await adminDb.collection('conversations').add({
       businessId,
       channel,
       contactName,
@@ -303,17 +268,14 @@ async function syncSingleConversation(
       const deletedAt = existingData.deletedAt ? new Date(existingData.deletedAt).getTime() : 0;
       const latestMsgAt = new Date(latestMsg.created_time).getTime();
       if (latestMsgAt <= deletedAt) {
-        // All synced messages are older than delete — skip
         return;
       }
-      // Newer message exists — resurrect
       console.log('[Sync] Resurrecting soft-deleted conversation:', conversationId);
     }
 
     // Enrich name/avatar if still numeric ID
     const enrichUpdate: Record<string, unknown> = {
       updatedAt: now,
-      // Always clear soft-delete flags during sync (if new msgs exist)
       isDeleted: false,
       deletedAt: null,
     };
@@ -334,7 +296,7 @@ async function syncSingleConversation(
     }
 
     if (Object.keys(enrichUpdate).length > 1) {
-      await updateDoc(doc(db, 'conversations', conversationId), enrichUpdate);
+      await adminDb.doc(`conversations/${conversationId}`).update(enrichUpdate);
     }
   }
 
@@ -345,13 +307,11 @@ async function syncSingleConversation(
     const mid = msg.id;
 
     // Check if message already exists
-    const dupQuery = query(
-      collection(db, 'conversationMessages'),
-      where('externalMessageId', '==', mid),
-      where('businessId', '==', businessId),
-      firestoreLimit(1),
-    );
-    const dupSnap = await getDocs(dupQuery);
+    const dupSnap = await adminDb.collection('conversationMessages')
+      .where('externalMessageId', '==', mid)
+      .where('businessId', '==', businessId)
+      .limit(1)
+      .get();
 
     if (!dupSnap.empty) {
       stats.messagesDuplicate++;
@@ -360,13 +320,13 @@ async function syncSingleConversation(
 
     const isOutbound = msg.from.id === pageId;
 
-    await addDoc(collection(db, 'conversationMessages'), {
+    await adminDb.collection('conversationMessages').add({
       conversationId,
       businessId,
       channel,
       direction: isOutbound ? 'outbound' : 'inbound',
       content: msg.message || '',
-      status: 'read', // Historical messages are already read
+      status: 'read',
       externalMessageId: mid,
       senderName: isOutbound ? 'Atendente' : contactName,
       sentAt: new Date(msg.created_time).toISOString(),
