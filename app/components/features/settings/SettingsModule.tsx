@@ -5633,8 +5633,8 @@ function CanaisTab() {
 
       const scopes: Record<string, string[]> = {
         facebook: ['pages_show_list', 'pages_messaging', 'pages_manage_metadata'],
-        instagram: ['instagram_basic', 'instagram_manage_messages', 'pages_show_list', 'pages_manage_metadata', 'pages_read_engagement'],
-        whatsapp: ['whatsapp_business_management', 'whatsapp_business_messaging', 'business_management'],
+        instagram: ['instagram_business_basic', 'instagram_business_manage_messages', 'pages_show_list', 'pages_manage_metadata'],
+        whatsapp: ['whatsapp_business_messaging'],
       };
 
       const channelLabels: Record<string, string> = {
