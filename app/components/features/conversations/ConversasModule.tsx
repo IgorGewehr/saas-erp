@@ -368,24 +368,34 @@ function ConversationItem({ conversation, isSelected, onClick }: ConversationIte
 
 function IntegrationSettingsDialog({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
+  const { business } = useAuth();
+  const { setActivePage } = useAppContext();
+
+  const channels = business?.channels;
   const integrations = [
     {
       channel: 'whatsapp' as ConversationChannel,
       name: 'WhatsApp Business',
-      description: 'Receba e envie mensagens via API oficial do WhatsApp Business',
-      isConnected: false,
+      description: channels?.whatsapp?.isConnected
+        ? `Conectado: ${channels.whatsapp.displayPhoneNumber || channels.whatsapp.phoneNumberId || ''}`
+        : 'Receba e envie mensagens via API oficial do WhatsApp Business',
+      isConnected: channels?.whatsapp?.isConnected || false,
     },
     {
       channel: 'facebook' as ConversationChannel,
       name: 'Facebook Page',
-      description: 'Integre com sua Página do Facebook para gerenciar mensagens',
-      isConnected: false,
+      description: channels?.facebook?.isConnected
+        ? `Conectado: ${channels.facebook.pageName || channels.facebook.pageId || ''}`
+        : 'Integre com sua Página do Facebook para gerenciar mensagens',
+      isConnected: channels?.facebook?.isConnected || false,
     },
     {
       channel: 'instagram' as ConversationChannel,
       name: 'Instagram Business',
-      description: 'Responda DMs do Instagram direto pelo Aevo',
-      isConnected: false,
+      description: channels?.instagram?.isConnected
+        ? `Conectado: ${channels.instagram.accountName || channels.instagram.accountId || ''}`
+        : 'Responda DMs do Instagram direto pelo Aevo',
+      isConnected: channels?.instagram?.isConnected || false,
     },
   ];
 
@@ -463,6 +473,7 @@ function IntegrationSettingsDialog({ onClose }: { onClose: () => void }) {
                     {item.description}
                   </p>
                   <button
+                    onClick={() => { onClose(); setActivePage('Configurações'); }}
                     className={cn(
                       'mt-2 text-xs font-semibold px-3 py-1 rounded-lg transition-colors',
                       cfg.bgColor,
@@ -478,14 +489,16 @@ function IntegrationSettingsDialog({ onClose }: { onClose: () => void }) {
           })}
         </div>
 
-        <div className="px-6 pb-5">
-          <div className="flex items-start gap-2 p-3 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-100 dark:border-amber-500/20">
-            <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
-            <p className="text-xs text-amber-700 dark:text-amber-400 leading-relaxed">
-              {t('conversations.metaWarning', 'Para conectar os canais você precisará de uma conta Meta Business Suite e configurar as credenciais da API no painel de Configurações.')}
-            </p>
+        {integrations.some((i) => !i.isConnected) && (
+          <div className="px-6 pb-5">
+            <div className="flex items-start gap-2 p-3 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-100 dark:border-amber-500/20">
+              <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-amber-700 dark:text-amber-400 leading-relaxed">
+                {t('conversations.metaWarning', 'Para conectar os canais você precisará de uma conta Meta Business Suite e configurar as credenciais da API no painel de Configurações.')}
+              </p>
+            </div>
           </div>
-        </div>
+        )}
       </motion.div>
     </motion.div>
   );
@@ -2090,6 +2103,9 @@ export default function ConversasModule() {
   const [showSettings, setShowSettings] = useState(false);
   const [showMobileThread, setShowMobileThread] = useState(false);
   const [showTemplateSelector, setShowTemplateSelector] = useState(false);
+  const [templateList, setTemplateList] = useState<Array<{ name: string; language: string; category: string; preview: string; hasVariables: boolean }>>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [templatesError, setTemplatesError] = useState<string | null>(null);
   const [attachment, setAttachment] = useState<File | null>(null);
 
   // Internal notes mode
@@ -2323,22 +2339,31 @@ export default function ConversasModule() {
     [messages],
   );
 
-  // ── WhatsApp template definitions ────────────────────────────────────────────
+  // ── WhatsApp templates — fetched from Meta API on demand ─────────────────────
 
-  const whatsappTemplates = [
-    {
-      name: 'hello_world',
-      displayName: 'Saudacao Padrao',
-      description: 'Mensagem de ola padrao do WhatsApp Business',
-      language: 'en_US',
-    },
-    {
-      name: 'reengagement',
-      displayName: 'Retomada de contato',
-      description: 'Mensagem para retomar conversa com o cliente',
-      language: 'pt_BR',
-    },
-  ];
+  const fetchWhatsappTemplates = useCallback(async () => {
+    if (!business?.id || templatesLoading) return;
+    setTemplatesLoading(true);
+    setTemplatesError(null);
+    try {
+      const auth = getAuth();
+      const token = await auth.currentUser?.getIdToken();
+      const res = await fetch(`/api/channels/whatsapp-templates?businessId=${business.id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setTemplatesError(data.error || 'Erro ao carregar templates.');
+        return;
+      }
+      const data = await res.json();
+      setTemplateList(data.templates || []);
+    } catch {
+      setTemplatesError('Erro ao carregar templates.');
+    } finally {
+      setTemplatesLoading(false);
+    }
+  }, [business?.id, templatesLoading]);
 
   // ── Send template message ─────────────────────────────────────────────────
 
@@ -3212,18 +3237,39 @@ export default function ConversasModule() {
                         </button>
                       </div>
                       <div className="space-y-1.5">
-                        {whatsappTemplates.map((tpl) => (
+                        {templatesLoading && (
+                          <div className="flex items-center justify-center py-4 gap-2 text-gray-400 dark:text-gray-500">
+                            <div className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                            <span className="text-xs">Carregando templates...</span>
+                          </div>
+                        )}
+                        {templatesError && !templatesLoading && (
+                          <div className="text-xs text-red-500 dark:text-red-400 text-center py-3 px-2">
+                            {templatesError}
+                          </div>
+                        )}
+                        {!templatesLoading && !templatesError && templateList.length === 0 && (
+                          <div className="text-xs text-gray-400 dark:text-gray-500 text-center py-3">
+                            Nenhum template aprovado encontrado.
+                          </div>
+                        )}
+                        {!templatesLoading && templateList.map((tpl) => (
                           <button
-                            key={tpl.name}
+                            key={`${tpl.name}_${tpl.language}`}
                             onClick={() => handleSendTemplate(tpl.name, tpl.language)}
                             disabled={isSending}
                             className="w-full text-left p-2.5 rounded-lg hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors group disabled:opacity-50"
                           >
-                            <div className="flex items-center justify-between">
-                              <span className="text-sm font-medium text-gray-800 dark:text-gray-200">{tpl.displayName}</span>
-                              <Send className="w-3 h-3 text-gray-300 dark:text-gray-600 group-hover:text-[#25D366] transition-colors" />
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="min-w-0 flex-1">
+                                <span className="text-sm font-medium text-gray-800 dark:text-gray-200 block truncate">{tpl.name}</span>
+                                <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5 line-clamp-2">{tpl.preview}</p>
+                              </div>
+                              <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                                <Send className="w-3 h-3 text-gray-300 dark:text-gray-600 group-hover:text-[#25D366] transition-colors" />
+                                <span className="text-[9px] uppercase text-gray-400 dark:text-gray-500">{tpl.language}</span>
+                              </div>
                             </div>
-                            <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">{tpl.description}</p>
                           </button>
                         ))}
                       </div>
@@ -3244,7 +3290,10 @@ export default function ConversasModule() {
                   onAttachmentSelect={handleFileSelect}
                   onAttachmentRemove={handleRemoveAttachment}
                   disabled={isWindowExpired(selectedConversation)}
-                  onTemplateClick={() => setShowTemplateSelector(true)}
+                  onTemplateClick={() => {
+                    setShowTemplateSelector(true);
+                    if (templateList.length === 0 && !templatesLoading) fetchWhatsappTemplates();
+                  }}
                   isInternalNote={isInternalNote}
                   onToggleInternalNote={() => setIsInternalNote(prev => !prev)}
                   onSnippetClick={() => setShowSnippets(true)}
