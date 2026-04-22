@@ -536,8 +536,14 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
           if (profile) {
             senderName = profile.name;
             senderAvatarUrl = profile.profilePic;
+          } else {
+            console.warn('[Meta Webhook] fetchSenderProfile returned null for sender:', event.sender.id, 'channel:', channel);
           }
+        } else {
+          console.warn('[Meta Webhook] No page token for business:', businessId, '— skipping profile fetch');
         }
+      } else {
+        console.warn('[Meta Webhook] Could not resolve businessId for profile fetch. channel:', channel, 'identifier:', channelIdentifier);
       }
       if (!senderName) senderName = isInstagramDm ? 'Usuário do Instagram' : 'Usuário do Facebook';
     }
@@ -741,33 +747,45 @@ async function resolveBusinessId(
   channelIdentifier: string,
 ): Promise<string | null> {
   try {
-    let fieldPath: string;
-
-    switch (channel) {
-      case 'whatsapp':
-        fieldPath = 'channels.whatsapp.phoneNumberId';
-        break;
-      case 'facebook':
-        fieldPath = 'channels.facebook.pageId';
-        break;
-      case 'instagram':
-        // Instagram uses the accountId stored in channels.instagram.accountId
-        fieldPath = 'channels.instagram.accountId';
-        break;
-      default:
-        return null;
+    if (channel === 'whatsapp') {
+      const snap = await adminDb.collection('businesses')
+        .where('channels.whatsapp.phoneNumberId', '==', channelIdentifier)
+        .limit(1)
+        .get();
+      return snap.empty ? null : snap.docs[0].id;
     }
 
-    const snap = await adminDb.collection('businesses')
-      .where(fieldPath, '==', channelIdentifier)
-      .limit(1)
-      .get();
+    if (channel === 'facebook') {
+      const snap = await adminDb.collection('businesses')
+        .where('channels.facebook.pageId', '==', channelIdentifier)
+        .limit(1)
+        .get();
+      return snap.empty ? null : snap.docs[0].id;
+    }
 
-    if (snap.empty) {
+    if (channel === 'instagram') {
+      // Primary lookup: channels.instagram.accountId (Instagram Business Account ID)
+      const snapIg = await adminDb.collection('businesses')
+        .where('channels.instagram.accountId', '==', channelIdentifier)
+        .limit(1)
+        .get();
+      if (!snapIg.empty) return snapIg.docs[0].id;
+
+      // Fallback: Instagram DMs via Page subscription sometimes arrive with the pageId
+      // as channelIdentifier instead of the Instagram account ID. Try matching by pageId.
+      const snapFb = await adminDb.collection('businesses')
+        .where('channels.facebook.pageId', '==', channelIdentifier)
+        .limit(1)
+        .get();
+      if (!snapFb.empty) {
+        console.log('[Meta Webhook] Instagram resolved via Facebook pageId fallback:', channelIdentifier);
+        return snapFb.docs[0].id;
+      }
+
       return null;
     }
 
-    return snap.docs[0].id;
+    return null;
   } catch (err) {
     console.error('[Meta Webhook] Error resolving businessId:', err);
     return null;
@@ -1080,12 +1098,26 @@ async function saveInboundMessage(params: InboundMessageParams) {
         isDeleted: false,
         deletedAt: null,
       };
-      // Enrich name if current is just the numeric ID
-      if (params.senderName && (!existingData.contactName || /^\d+$/.test(existingData.contactName))) {
+      // Default placeholder names used as fallback when profile fetch fails on first message.
+      // On subsequent messages (when profile fetch succeeds), overwrite them with the real name.
+      const PLACEHOLDER_NAMES = [
+        'Usuário do Facebook', 'Usuário do Instagram',
+        'Facebook User', 'Instagram User',
+      ];
+      const currentName = existingData.contactName as string | undefined;
+      const nameIsPlaceholder = !currentName
+        || /^\d+$/.test(currentName)
+        || PLACEHOLDER_NAMES.includes(currentName);
+      if (params.senderName && nameIsPlaceholder) {
         enrichUpdate.contactName = params.senderName;
       }
-      // Enrich avatar if missing
-      if (params.senderAvatarUrl && !existingData.contactAvatarUrl) {
+      // Enrich avatar if missing or if we now have a permanent Firebase Storage URL
+      const currentAvatar = existingData.contactAvatarUrl as string | undefined;
+      const newAvatarIsBetter = params.senderAvatarUrl && (
+        !currentAvatar
+        || (currentAvatar.includes('fbcdn.net') && params.senderAvatarUrl.includes('firebasestorage'))
+      );
+      if (newAvatarIsBetter) {
         enrichUpdate.contactAvatarUrl = params.senderAvatarUrl;
       }
       await adminDb.doc(`conversations/${conversationId}`).update(enrichUpdate);
