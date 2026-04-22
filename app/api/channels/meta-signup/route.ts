@@ -149,17 +149,36 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── Step 3: Get phone number display details ─────────────────────────────
+    // ── Step 3: Get phone number display details via WABA ───────────────────
+    // Direct /{phoneNumberId}?fields=display_phone_number requires whatsapp_business_management
+    // (not approved). The approved path: get WABA from the phone number, then list phone_numbers.
     if (phoneNumberId) {
       try {
-        const phoneRes = await fetch(
-          `${META_GRAPH}/${phoneNumberId}?fields=id,display_phone_number,verified_name`,
+        // 3a. Resolve WABA ID
+        const wabaRes = await fetch(
+          `${META_GRAPH}/${phoneNumberId}?fields=id,whatsapp_business_account`,
           { headers: { Authorization: `Bearer ${longLivedToken}` } }
         );
-        if (phoneRes.ok) {
-          const phoneData = await phoneRes.json();
-          displayPhoneNumber = phoneData.display_phone_number || '';
-          displayName = phoneData.verified_name || phoneData.display_phone_number || '';
+        if (wabaRes.ok) {
+          const wabaData = await wabaRes.json();
+          const wabaId: string | undefined = wabaData?.whatsapp_business_account?.id;
+
+          if (wabaId) {
+            // 3b. List phone numbers from WABA — returns display_phone_number and verified_name
+            const numRes = await fetch(
+              `${META_GRAPH}/${wabaId}/phone_numbers?fields=id,display_phone_number,verified_name&limit=10`,
+              { headers: { Authorization: `Bearer ${longLivedToken}` } }
+            );
+            if (numRes.ok) {
+              const numData = await numRes.json();
+              const match = (numData?.data || []).find((p: { id: string }) => p.id === phoneNumberId)
+                || numData?.data?.[0];
+              if (match) {
+                displayPhoneNumber = match.display_phone_number || '';
+                displayName = match.verified_name || match.display_phone_number || '';
+              }
+            }
+          }
         }
       } catch {
         // Display info is optional — phoneNumberId alone is enough to send messages
