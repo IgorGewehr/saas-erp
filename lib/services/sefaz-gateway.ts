@@ -143,9 +143,10 @@ export interface CertificadoPayload {
 
 export type SefazAmbiente = 'producao' | 'homologacao';
 
-/** Resolve o campo environment do Firestore ('production' | qualquer) para o valor aceito pelo SEFAZ-API */
+/** Resolve o campo environment do Firestore para o valor aceito pelo SEFAZ-API.
+ *  Aceita 'production' ou 'producao' como produção; qualquer outro valor → homologação. */
 export function resolveAmbiente(environment?: string): SefazAmbiente {
-  return environment === 'production' ? 'producao' : 'homologacao';
+  return (environment === 'production' || environment === 'producao') ? 'producao' : 'homologacao';
 }
 
 // ---------------------------------------------------------------------------

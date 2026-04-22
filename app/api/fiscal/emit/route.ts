@@ -12,6 +12,17 @@ import {
 import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Lista oficial das 27 UFs válidas para emissão de NF-e/NFC-e */
+const VALID_UFS = [
+  'AC','AL','AM','AP','BA','CE','DF','ES','GO','MA',
+  'MG','MS','MT','PA','PB','PE','PI','PR','RJ','RN',
+  'RO','RR','RS','SC','SE','SP','TO',
+];
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -229,7 +240,37 @@ export async function POST(request: NextRequest) {
 
     // 7. CFOP auto-adjustment for interstate operations -------------------------
     //    5xxx = intrastate, 6xxx = interstate — SEFAZ rejects mismatches
-    const ufEmitente = business.endereco?.uf?.toUpperCase() || 'SP';
+    const ufEmitente = business.endereco?.uf?.toUpperCase() || '';
+
+    // Validate UF do emitente (required for NF-e and NFC-e)
+    if (type !== 'nfse' && (!ufEmitente || !VALID_UFS.includes(ufEmitente))) {
+      return NextResponse.json(
+        {
+          error: `UF do emitente inválida ("${ufEmitente || 'não informada'}"). Configure o estado (UF) em Configurações → Empresa.`,
+        },
+        { status: 400 },
+      );
+    }
+
+    // Validate inscricaoEstadual (required for NF-e)
+    if (type === 'nfe' && !fiscal.inscricaoEstadual) {
+      return NextResponse.json(
+        { error: 'Inscrição Estadual não configurada. Configure em Configurações → Fiscal.' },
+        { status: 400 },
+      );
+    }
+
+    // Validate codigoMunicipioEmitente (required for NF-e and NFC-e)
+    if (type !== 'nfse') {
+      const codigoMun = String(fiscal.ibgeCodigoMunicipio || '');
+      if (!codigoMun || codigoMun === '0000000' || codigoMun.replace(/\D/g, '').length !== 7) {
+        return NextResponse.json(
+          { error: 'Código IBGE do município não configurado ou inválido. Configure em Configurações → Fiscal.' },
+          { status: 400 },
+        );
+      }
+    }
+
     const ufDestinatario = data.recipient?.address?.uf?.toUpperCase();
     if (ufDestinatario && type === 'nfe') {
       const interestadual = ufEmitente !== ufDestinatario;
@@ -260,9 +301,9 @@ export async function POST(request: NextRequest) {
         numero: business.endereco.numero || 'SN',
         complemento: business.endereco.complemento || undefined,
         bairro: business.endereco.bairro,
-        codigoMunicipio: fiscal.ibgeCodigoMunicipio,
+        codigoMunicipio: String(fiscal.ibgeCodigoMunicipio || ''),
         municipio: business.endereco.municipio,
-        uf: business.endereco.uf,
+        uf: business.endereco.uf?.toUpperCase(),
         cep: business.endereco.cep?.replace(/\D/g, ''),
         codigoPais: '1058',
         pais: 'BRASIL',
@@ -472,6 +513,25 @@ export async function POST(request: NextRequest) {
 
     // -- NFe -------------------------------------------------------------------
 
+    // Validate codigoMunicipio do destinatário (required when recipient has address)
+    if (data.recipient?.address) {
+      const codigoMunDest = data.recipient.address.codigoMunicipio
+        || data.recipient.codigoMunicipio;
+      if (!codigoMunDest) {
+        return NextResponse.json(
+          { error: 'Código IBGE do município do destinatário é obrigatório para NF-e. Informe recipient.address.codigoMunicipio.' },
+          { status: 400 },
+        );
+      }
+    }
+
+    // Auto-resolve indicadorIE: se tem IE → contribuinte (1), senão → não contribuinte (9)
+    const resolvedIndicadorIE: '1' | '2' | '9' = data.recipient?.indicadorIE
+      ? String(data.recipient.indicadorIE) as '1' | '2' | '9'
+      : data.recipient?.inscricaoEstadual
+        ? '1'
+        : '9';
+
     const destinatario = data.recipient
       ? stripEmpty({
           cnpj:
@@ -485,14 +545,15 @@ export async function POST(request: NextRequest) {
           nome: data.recipient.name,
           email: data.recipient.email,
           inscricaoEstadual: data.recipient.inscricaoEstadual,
-          indicadorIE: data.recipient.indicadorIE ?? 9,
+          indicadorIE: resolvedIndicadorIE,
           endereco: data.recipient.address
             ? {
                 logradouro: data.recipient.address.logradouro,
                 numero: data.recipient.address.numero || 'SN',
                 complemento: data.recipient.address.complemento || undefined,
                 bairro: data.recipient.address.bairro,
-                codigoMunicipio: data.recipient.address.codigoMunicipio,
+                codigoMunicipio: data.recipient.address.codigoMunicipio
+                  || data.recipient.codigoMunicipio,
                 municipio: data.recipient.address.municipio,
                 uf: data.recipient.address.uf,
                 cep: data.recipient.address.cep?.replace(/\D/g, ''),
