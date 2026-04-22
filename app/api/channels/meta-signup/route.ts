@@ -190,6 +190,9 @@ export async function POST(req: NextRequest) {
     }
 
     // ── Step 5b: Subscribe page to webhooks (Messenger + Instagram DM) ─────
+    // 'instagram' field on page subscription enables Instagram DM webhooks
+    // via the object:"page" delivery (fallback path when instagram_business_manage_messages
+    // is not separately approved — the page-level subscription covers it).
     if (pageId && pageAccessToken) {
       try {
         const subRes = await fetch(
@@ -207,6 +210,7 @@ export async function POST(req: NextRequest) {
                 'message_deliveries',
                 'message_reads',
                 'feed',
+                'instagram',
               ].join(','),
             }),
           },
@@ -215,6 +219,8 @@ export async function POST(req: NextRequest) {
         if (!subRes.ok) {
           const errText = await subRes.text();
           console.error('[Meta Signup] Page subscription failed:', errText);
+        } else {
+          console.log('[Meta Signup] Page subscribed to webhooks (incl. instagram field)');
         }
       } catch (subErr) {
         console.warn('[Meta Signup] Page subscription error (non-fatal):', subErr);
