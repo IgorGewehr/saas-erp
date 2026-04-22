@@ -183,30 +183,45 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── Step 5: Get Facebook Page info (for Messenger) ──────────────────────
+    // ── Step 5: Get Facebook Page info (for Messenger + Instagram) ──────────
     let pageId = '';
     let pageName = '';
     let pageAccessToken = '';
 
     try {
-      const pagesRes = await fetch(`${META_GRAPH}/me/accounts`, {
+      // Fetch all pages (paginated) to find the right one
+      const pagesRes = await fetch(`${META_GRAPH}/me/accounts?limit=25`, {
         headers: { Authorization: `Bearer ${longLivedToken}` },
       });
 
       if (!pagesRes.ok) {
-        console.error('[Meta Signup] /me/accounts failed:', await pagesRes.text());
+        const errText = await pagesRes.text();
+        console.error('[Meta Signup] /me/accounts failed:', errText);
+        // If this was a Facebook/Instagram-only connection (no WhatsApp), surface the error
+        if (!phoneNumberId) {
+          return NextResponse.json({
+            error: 'Não foi possível listar suas Páginas do Facebook. Certifique-se de autorizar a permissão "pages_show_list".',
+          }, { status: 400 });
+        }
       } else {
         const pagesData = await pagesRes.json();
+        const pages: Array<{ id: string; name: string; access_token?: string }> = pagesData?.data || [];
 
-        if (pagesData?.data?.length > 0) {
-          const page = pagesData.data[0];
+        if (pages.length > 0) {
+          // Pick the first page that has messaging permissions
+          const page = pages.find(p => p.access_token) || pages[0];
           pageId = page.id;
           pageName = page.name;
           pageAccessToken = page.access_token || '';
+        } else if (!phoneNumberId) {
+          // No WhatsApp and no pages found — likely pages_show_list was denied
+          return NextResponse.json({
+            error: 'Nenhuma Página do Facebook encontrada. Certifique-se de autorizar "pages_show_list" e de ter ao menos uma Página.',
+          }, { status: 400 });
         }
       }
     } catch {
-      // Pages are optional if the user only connected WhatsApp
+      // Pages are optional when connecting WhatsApp only
     }
 
     // ── Step 5b: Subscribe page to webhooks (Messenger + Instagram DM) ─────

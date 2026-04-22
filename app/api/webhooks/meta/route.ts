@@ -318,9 +318,13 @@ export async function POST(req: NextRequest) {
 
     // Verify HMAC-SHA256 signature
     const signature = req.headers.get('x-hub-signature-256') || '';
+    if (!signature) {
+      console.error('[Meta Webhook] Missing x-hub-signature-256 header');
+      return NextResponse.json({ error: 'Missing signature' }, { status: 400 });
+    }
     const isValid = verifySignatureFromBuffer(rawBuffer, signature);
     if (!isValid) {
-      console.error('[Meta Webhook] Invalid signature');
+      console.error('[Meta Webhook] Invalid signature — check META_APP_SECRET in production env');
       return NextResponse.json({ error: 'Invalid signature' }, { status: 403 });
     }
 

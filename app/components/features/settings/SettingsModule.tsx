@@ -5138,6 +5138,9 @@ function CanaisTab() {
       const loginOptions: Record<string, unknown> = {
         scope: scopes[channel].join(','),
         return_scopes: true,
+        // Force fresh permission dialog — critical in Live Mode so real users
+        // always see the consent screen instead of a cached/partial grant
+        auth_type: 'rerequest',
       };
       if (channel === 'whatsapp') {
         loginOptions.extras = { feature: 'whatsapp_embedded_signup' };
