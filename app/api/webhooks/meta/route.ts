@@ -437,25 +437,38 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
   }
 }
 
-// ─── Facebook Messenger Handler ───────────────────────────────────────────────
+// ─── Facebook Messenger + Instagram (via Page subscription) Handler ───────────
+//
+// When a Page is subscribed with the 'instagram' field, Instagram DMs arrive
+// as object:'page' — structurally identical to Facebook Messenger events.
+// The only reliable way to distinguish them is event.recipient.id:
+//   - Facebook DM:  recipient.id === pageId  (Page-Scoped ID)
+//   - Instagram DM: recipient.id === igAccountId (Instagram account ID, ≠ pageId)
 
 async function handleFacebookEvent(entry: MetaWebhookEntry) {
   if (!entry.messaging) return;
 
-  const pageId = entry.id;
+  const pageId = String(entry.id);
 
   for (const event of entry.messaging) {
     // Skip echoes (messages sent by the page itself)
     if (event.message?.is_echo) continue;
 
+    // Detect channel: if recipient.id !== pageId it's an Instagram DM via Page subscription
+    const recipientId = String(event.recipient?.id || pageId);
+    const isInstagramDm = recipientId !== pageId;
+    const channel: 'facebook' | 'instagram' = isInstagramDm ? 'instagram' : 'facebook';
+    // Instagram: resolve by instagram.accountId (= recipientId); Facebook: by pageId
+    const channelIdentifier = isInstagramDm ? recipientId : pageId;
+
     // Handle delivery receipts
     if (event.delivery) {
-      const businessId = await resolveBusinessId('facebook', String(entry.id));
+      const businessId = await resolveBusinessId(channel, channelIdentifier);
       if (businessId) {
         for (const mid of event.delivery.mids ?? []) {
           await updateMessageStatus({
             businessId,
-            channel: 'facebook',
+            channel,
             messageId: mid,
             status: 'delivered',
             timestamp: new Date(event.delivery.watermark).toISOString(),
@@ -467,18 +480,16 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
 
     // Handle read receipts
     if (event.read) {
-      const businessId = await resolveBusinessId('facebook', String(entry.id));
+      const businessId = await resolveBusinessId(channel, channelIdentifier);
       if (businessId) {
         const readTimestamp = new Date(event.read.watermark).toISOString();
-        // Find conversation for this contact
         const convSnap = await adminDb.collection('conversations')
           .where('businessId', '==', businessId)
-          .where('channel', '==', 'facebook')
+          .where('channel', '==', channel)
           .where('contactExternalId', '==', String(event.sender.id))
           .limit(1)
           .get();
         if (!convSnap.empty) {
-          // Mark all outbound messages before watermark as read
           const msgsSnap = await adminDb.collection('conversationMessages')
             .where('businessId', '==', businessId)
             .where('conversationId', '==', convSnap.docs[0].id)
@@ -504,30 +515,30 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
       continue;
     }
 
-    // Fetch sender profile (name + avatar) for any message/postback event
+    // Fetch sender profile for messages and postbacks
     let senderName: string | undefined;
     let senderAvatarUrl: string | undefined;
 
     if (event.message || event.postback) {
-      const businessId = await resolveBusinessId('facebook', String(pageId));
+      const businessId = await resolveBusinessId(channel, channelIdentifier);
       if (businessId) {
         const pageToken = await getDecryptedPageToken(businessId);
         if (pageToken) {
-          const profile = await fetchSenderProfile(String(event.sender.id), pageToken, 'facebook');
+          const profile = await fetchSenderProfile(String(event.sender.id), pageToken, channel);
           if (profile) {
             senderName = profile.name;
             senderAvatarUrl = profile.profilePic;
           }
         }
       }
-      if (!senderName) senderName = 'Usuário do Facebook';
+      if (!senderName) senderName = isInstagramDm ? 'Usuário do Instagram' : 'Usuário do Facebook';
     }
 
     // Handle postback events
     if (event.postback) {
       await saveInboundMessage({
-        channel: 'facebook',
-        channelIdentifier: String(entry.id),
+        channel,
+        channelIdentifier,
         externalId: String(event.sender.id),
         senderName,
         senderAvatarUrl,
@@ -540,9 +551,9 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
 
     if (event.message?.text) {
       await saveInboundMessage({
-        channel: 'facebook',
-        channelIdentifier: pageId,
-        externalId: event.sender.id,
+        channel,
+        channelIdentifier,
+        externalId: String(event.sender.id),
         senderName,
         senderAvatarUrl,
         messageId: event.message.mid,
@@ -559,8 +570,8 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
       };
 
       await saveInboundMessage({
-        channel: 'facebook',
-        channelIdentifier: String(entry.id),
+        channel,
+        channelIdentifier,
         externalId: String(event.sender.id),
         senderName,
         senderAvatarUrl,
