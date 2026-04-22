@@ -866,6 +866,10 @@ function EmpresaTab() {
   const [isSaving, setIsSaving] = useState(false);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // Track which business.id has already been loaded into the form so that
+  // Firestore real-time updates (heartbeat, etc.) don't overwrite what the
+  // user is currently typing.
+  const initializedForRef = useRef<string | null>(null);
 
   // Form state
   const [nomeFantasia, setNomeFantasia] = useState('');
@@ -897,37 +901,40 @@ function EmpresaTab() {
   const [loyaltyMinRedeem, setLoyaltyMinRedeem] = useState('100');
   const [loyaltyExpirationDays, setLoyaltyExpirationDays] = useState('');
 
-  // Populate from business
+  // Populate from business — only when business.id changes, not on every
+  // Firestore update (heartbeat writes lastSeenAt every 60s and would reset
+  // whatever the user is currently typing).
   useEffect(() => {
-    if (business) {
-      setNomeFantasia(business.nomeFantasia || '');
-      setRazaoSocial(business.razaoSocial || '');
-      setSlug(business.slug || '');
-      setCnpj(business.cnpj ? formatCNPJInput(business.cnpj) : '');
-      setCpf(business.cpf ? formatCPFInput(business.cpf) : '');
-      setInscricaoEstadual(business.inscricaoEstadual || '');
-      setInscricaoMunicipal(business.inscricaoMunicipal || '');
-      setCompanyType(business.companyType || 'mei');
-      setCrt(business.crt || '1');
-      setPhone(business.phone ? formatPhoneInput(business.phone) : '');
-      setEmail(business.email || '');
-      setCep(business.endereco?.cep ? formatCEPInput(business.endereco.cep) : '');
-      setLogradouro(business.endereco?.logradouro || '');
-      setNumero(business.endereco?.numero || '');
-      setComplemento(business.endereco?.complemento || '');
-      setBairro(business.endereco?.bairro || '');
-      setMunicipio(business.endereco?.municipio || '');
-      setUf(business.endereco?.uf || '');
-      setCodigoMunicipio(business.endereco?.codigoMunicipio || '');
-      if (business.logo) setLogoPreview(business.logo);
-      // Loyalty
-      const lc = business.settings?.loyalty;
-      setLoyaltyEnabled(lc?.isEnabled ?? false);
-      setLoyaltyPointsPerReal(String(lc?.pointsPerReal ?? 1));
-      setLoyaltyPointValueCents(String(lc?.pointValueInCentavos ?? 1));
-      setLoyaltyMinRedeem(String(lc?.minPointsToRedeem ?? 100));
-      setLoyaltyExpirationDays(lc?.expirationDays ? String(lc.expirationDays) : '');
-    }
+    if (!business || initializedForRef.current === business.id) return;
+    initializedForRef.current = business.id;
+
+    setNomeFantasia(business.nomeFantasia || '');
+    setRazaoSocial(business.razaoSocial || '');
+    setSlug(business.slug || '');
+    setCnpj(business.cnpj ? formatCNPJInput(business.cnpj) : '');
+    setCpf(business.cpf ? formatCPFInput(business.cpf) : '');
+    setInscricaoEstadual(business.inscricaoEstadual || '');
+    setInscricaoMunicipal(business.inscricaoMunicipal || '');
+    setCompanyType(business.companyType || 'mei');
+    setCrt(business.crt || '1');
+    setPhone(business.phone ? formatPhoneInput(business.phone) : '');
+    setEmail(business.email || '');
+    setCep(business.endereco?.cep ? formatCEPInput(business.endereco.cep) : '');
+    setLogradouro(business.endereco?.logradouro || '');
+    setNumero(business.endereco?.numero || '');
+    setComplemento(business.endereco?.complemento || '');
+    setBairro(business.endereco?.bairro || '');
+    setMunicipio(business.endereco?.municipio || '');
+    setUf(business.endereco?.uf || '');
+    setCodigoMunicipio(business.endereco?.codigoMunicipio || '');
+    if (business.logo) setLogoPreview(business.logo);
+    // Loyalty
+    const lc = business.settings?.loyalty;
+    setLoyaltyEnabled(lc?.isEnabled ?? false);
+    setLoyaltyPointsPerReal(String(lc?.pointsPerReal ?? 1));
+    setLoyaltyPointValueCents(String(lc?.pointValueInCentavos ?? 1));
+    setLoyaltyMinRedeem(String(lc?.minPointsToRedeem ?? 100));
+    setLoyaltyExpirationDays(lc?.expirationDays ? String(lc.expirationDays) : '');
   }, [business]);
 
   // CEP auto-lookup
@@ -1573,6 +1580,8 @@ function FiscalTab() {
   const { t } = useTranslation();
   const { user, business, refreshUser } = useAuth();
   const canEditFiscal = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
+  // Same guard as EmpresaTab: only re-initialize when business.id changes.
+  const fiscalInitializedForRef = useRef<string | null>(null);
 
   // ── Fiscal state ──
   const [environment, setEnvironment] = useState<'homologation' | 'production'>('homologation');
@@ -1600,6 +1609,10 @@ function FiscalTab() {
   const [nfseNextNumber, setNfseNextNumber] = useState('1');
   const [isSavingNfse, setIsSavingNfse] = useState(false);
 
+  const [mdfeSeries, setMdfeSeries] = useState('1');
+  const [mdfeNextNumber, setMdfeNextNumber] = useState('1');
+  const [isSavingMdfe, setIsSavingMdfe] = useState(false);
+
   const [icmsCst, setIcmsCst] = useState('102');
   const [icmsRate, setIcmsRate] = useState('0');
   const [pisCst, setPisCst] = useState('49');
@@ -1625,9 +1638,12 @@ function FiscalTab() {
   const [showCertPassword, setShowCertPassword] = useState(false);
   const [isUploadingCert, setIsUploadingCert] = useState(false);
 
-  // Populate from business fiscal config
+  // Populate from business fiscal config — only when business.id changes,
+  // not on every Firestore real-time update (heartbeat, etc.).
   useEffect(() => {
-    if (!business?.fiscal) return;
+    if (!business || fiscalInitializedForRef.current === business.id) return;
+    if (!business.fiscal) return;
+    fiscalInitializedForRef.current = business.id;
     const f = business.fiscal;
 
     setEnvironment(((f.nfeConfig?.environment || (f as Record<string, unknown>).environment) || 'homologacao') as typeof environment);
@@ -1660,6 +1676,11 @@ function FiscalTab() {
     if (nfseConfig) {
       setNfseSeries(String(nfseConfig.series || 'NFS'));
       setNfseNextNumber(String(nfseConfig.nextNumber || 1));
+    }
+    const mdfeConfig = fAny.mdfeConfig as Record<string, unknown> | undefined;
+    if (mdfeConfig) {
+      setMdfeSeries(String(mdfeConfig.series || '1'));
+      setMdfeNextNumber(String(mdfeConfig.nextNumber || 1));
     }
     const taxation = fAny.taxation as Record<string, Record<string, unknown>> | undefined;
     if (taxation) {
@@ -1743,6 +1764,20 @@ function FiscalTab() {
       toast.success(t('settings.fiscal.nfseSaved', 'Configurações NFS-e salvas!'));
     } catch { toast.error(t('settings.fiscal.nfseError', 'Erro ao salvar NFS-e')); }
     finally { setIsSavingNfse(false); }
+  };
+
+  const handleSaveMdfe = async () => {
+    setIsSavingMdfe(true);
+    try {
+      await saveFiscalField({
+        mdfeConfig: {
+          series: mdfeSeries || '1',
+          nextNumber: Number(mdfeNextNumber) || 1,
+        },
+      });
+      toast.success(t('settings.fiscal.mdfeSaved', 'Configurações MDF-e salvas!'));
+    } catch { toast.error(t('settings.fiscal.mdfeError', 'Erro ao salvar MDF-e')); }
+    finally { setIsSavingMdfe(false); }
   };
 
   const handleSaveCsc = async () => {
@@ -2223,6 +2258,40 @@ function FiscalTab() {
             {canEditFiscal && (
               <div className="flex justify-end">
                 <SaveButton onClick={handleSaveNfse} loading={isSavingNfse} label={t('settings.fiscal.saveNfse', 'Salvar NFS-e')} variant="secondary" />
+              </div>
+            )}
+          </div>
+
+          <hr className="border-gray-100 dark:border-gray-800" />
+
+          {/* MDF-e */}
+          <div>
+            <p className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">MDF-e</p>
+            <p className="text-xs text-gray-400 dark:text-gray-500 mb-3">Manifesto Eletrônico de Documentos Fiscais — para empresas de transporte.</p>
+            <div className="grid grid-cols-2 gap-4 max-w-sm mb-3">
+              <FormField label={t('settings.fiscal.series', 'Série')} tooltip={t('settings.fiscal.mdfeSeriesTooltip', 'Série do MDF-e (geralmente 1)')}>
+                <input
+                  value={mdfeSeries}
+                  onChange={(e) => setMdfeSeries(e.target.value)}
+                  placeholder="1"
+                  className={inputClasses}
+                  disabled={!canEditFiscal}
+                />
+              </FormField>
+              <FormField label={t('settings.fiscal.nextNumber', 'Próximo Nº')} tooltip={t('settings.fiscal.mdfeNextTooltip', 'Número do próximo MDF-e')}>
+                <input
+                  type="number"
+                  min={1}
+                  value={mdfeNextNumber}
+                  onChange={(e) => setMdfeNextNumber(e.target.value)}
+                  className={inputClasses}
+                  disabled={!canEditFiscal}
+                />
+              </FormField>
+            </div>
+            {canEditFiscal && (
+              <div className="flex justify-end">
+                <SaveButton onClick={handleSaveMdfe} loading={isSavingMdfe} label={t('settings.fiscal.saveMdfe', 'Salvar MDF-e')} variant="secondary" />
               </div>
             )}
           </div>
