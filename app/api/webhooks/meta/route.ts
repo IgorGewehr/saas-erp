@@ -18,20 +18,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { decryptToken } from '@/lib/utils/encryption';
 import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
-import {
-  getFirestore,
-  collection,
-  query,
-  where,
-  getDocs,
-  addDoc,
-  updateDoc,
-  doc,
-  increment,
-  limit as firestoreLimit,
-} from 'firebase/firestore';
+import { adminDb } from '@/lib/config/firebaseAdmin';
+import { FieldValue } from 'firebase-admin/firestore';
 
-// ─── Firebase init (server-side, client SDK) ─────────────────────────────────
+// ─── Firebase Storage for media uploads ──────────────────────────────────────
+
+import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -41,15 +33,6 @@ const firebaseConfig = {
   messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
-
-function getDb() {
-  const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
-  return getFirestore(app);
-}
-
-// ─── Firebase Storage for media uploads ──────────────────────────────────────
-
-import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 function getStorageBucket() {
   const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
@@ -160,20 +143,12 @@ function mimeToExtension(mime: string): string {
  * Gets the access token for a WhatsApp channel (Cloud API).
  * Different from Facebook/Instagram which use pageAccessToken.
  */
-async function getWhatsAppAccessToken(
-  db: ReturnType<typeof getFirestore>,
-  businessId: string,
-): Promise<string | null> {
+async function getWhatsAppAccessToken(businessId: string): Promise<string | null> {
   try {
-    const bizQuery = query(
-      collection(db, 'businesses'),
-      where('__name__', '==', businessId),
-      firestoreLimit(1),
-    );
-    const bizSnap = await getDocs(bizQuery);
-    if (bizSnap.empty) return null;
+    const bizSnap = await adminDb.doc(`businesses/${businessId}`).get();
+    if (!bizSnap.exists) return null;
 
-    const bizData = bizSnap.docs[0].data();
+    const bizData = bizSnap.data();
     const encryptedToken = bizData?.channels?.whatsapp?.accessToken;
     if (!encryptedToken) return null;
 
@@ -381,8 +356,6 @@ export async function POST(req: NextRequest) {
 async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
   if (!entry.changes) return;
 
-  const db = getDb();
-
   for (const change of entry.changes) {
     if (change.field !== 'messages') continue;
 
@@ -403,9 +376,9 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
         // Download media from Meta and upload to Firebase Storage
         let firebaseMediaUrl: string | undefined;
         if (hasMedia && extracted.mediaId) {
-          const businessId = await resolveBusinessId(db, 'whatsapp', phoneNumberId);
+          const businessId = await resolveBusinessId('whatsapp', phoneNumberId);
           if (businessId) {
-            const accessToken = await getWhatsAppAccessToken(db, businessId);
+            const accessToken = await getWhatsAppAccessToken(businessId);
             if (accessToken) {
               const url = await downloadAndUploadMedia({
                 mediaId: extracted.mediaId,
@@ -447,7 +420,7 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
 
     // Handle status updates (sent -> delivered -> read)
     if (value.statuses) {
-      const businessId = await resolveBusinessId(db, 'whatsapp', phoneNumberId);
+      const businessId = await resolveBusinessId('whatsapp', phoneNumberId);
       if (businessId) {
         for (const status of value.statuses) {
           await updateMessageStatus({
@@ -469,7 +442,6 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
 async function handleFacebookEvent(entry: MetaWebhookEntry) {
   if (!entry.messaging) return;
 
-  const db = getDb();
   const pageId = entry.id;
 
   for (const event of entry.messaging) {
@@ -478,7 +450,7 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
 
     // Handle delivery receipts
     if (event.delivery) {
-      const businessId = await resolveBusinessId(db, 'facebook', String(entry.id));
+      const businessId = await resolveBusinessId('facebook', String(entry.id));
       if (businessId) {
         for (const mid of event.delivery.mids ?? []) {
           await updateMessageStatus({
@@ -495,34 +467,30 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
 
     // Handle read receipts
     if (event.read) {
-      const businessId = await resolveBusinessId(db, 'facebook', String(entry.id));
+      const businessId = await resolveBusinessId('facebook', String(entry.id));
       if (businessId) {
         const readTimestamp = new Date(event.read.watermark).toISOString();
         // Find conversation for this contact
-        const convQuery = query(
-          collection(db, 'conversations'),
-          where('businessId', '==', businessId),
-          where('channel', '==', 'facebook'),
-          where('contactExternalId', '==', String(event.sender.id)),
-          firestoreLimit(1)
-        );
-        const convSnap = await getDocs(convQuery);
+        const convSnap = await adminDb.collection('conversations')
+          .where('businessId', '==', businessId)
+          .where('channel', '==', 'facebook')
+          .where('contactExternalId', '==', String(event.sender.id))
+          .limit(1)
+          .get();
         if (!convSnap.empty) {
           // Mark all outbound messages before watermark as read
-          const msgsQuery = query(
-            collection(db, 'conversationMessages'),
-            where('businessId', '==', businessId),
-            where('conversationId', '==', convSnap.docs[0].id),
-            where('direction', '==', 'outbound'),
-            where('status', 'in', ['sent', 'delivered'])
-          );
-          const msgsSnap = await getDocs(msgsQuery);
-          const batch: Promise<void>[] = [];
+          const msgsSnap = await adminDb.collection('conversationMessages')
+            .where('businessId', '==', businessId)
+            .where('conversationId', '==', convSnap.docs[0].id)
+            .where('direction', '==', 'outbound')
+            .where('status', 'in', ['sent', 'delivered'])
+            .get();
+          const batch: Promise<FirebaseFirestore.WriteResult>[] = [];
           for (const msgDoc of msgsSnap.docs) {
             const msgData = msgDoc.data();
             if (msgData.sentAt && msgData.sentAt <= readTimestamp) {
               batch.push(
-                updateDoc(doc(db, 'conversationMessages', msgDoc.id), {
+                adminDb.doc(`conversationMessages/${msgDoc.id}`).update({
                   status: 'read',
                   readAt: readTimestamp,
                   ...(!msgData.deliveredAt ? { deliveredAt: readTimestamp } : {}),
@@ -541,9 +509,9 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
     let senderAvatarUrl: string | undefined;
 
     if (event.message || event.postback) {
-      const businessId = await resolveBusinessId(db, 'facebook', String(pageId));
+      const businessId = await resolveBusinessId('facebook', String(pageId));
       if (businessId) {
-        const pageToken = await getDecryptedPageToken(db, businessId);
+        const pageToken = await getDecryptedPageToken(businessId);
         if (pageToken) {
           const profile = await fetchSenderProfile(String(event.sender.id), pageToken, 'facebook');
           if (profile) {
@@ -611,7 +579,6 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
 async function handleInstagramEvent(entry: MetaWebhookEntry) {
   if (!entry.messaging) return;
 
-  const db = getDb();
   const accountId = entry.id;
 
   for (const event of entry.messaging) {
@@ -619,7 +586,7 @@ async function handleInstagramEvent(entry: MetaWebhookEntry) {
 
     // Handle delivery receipts
     if (event.delivery) {
-      const businessId = await resolveBusinessId(db, 'instagram', String(entry.id));
+      const businessId = await resolveBusinessId('instagram', String(entry.id));
       if (businessId && event.delivery.mids) {
         for (const mid of event.delivery.mids) {
           await updateMessageStatus({
@@ -636,34 +603,30 @@ async function handleInstagramEvent(entry: MetaWebhookEntry) {
 
     // Handle read receipts
     if (event.read) {
-      const businessId = await resolveBusinessId(db, 'instagram', String(entry.id));
+      const businessId = await resolveBusinessId('instagram', String(entry.id));
       if (businessId) {
         const readTimestamp = new Date(event.read.watermark).toISOString();
         // Find conversation for this contact
-        const convQuery = query(
-          collection(db, 'conversations'),
-          where('businessId', '==', businessId),
-          where('channel', '==', 'instagram'),
-          where('contactExternalId', '==', String(event.sender.id)),
-          firestoreLimit(1)
-        );
-        const convSnap = await getDocs(convQuery);
+        const convSnap = await adminDb.collection('conversations')
+          .where('businessId', '==', businessId)
+          .where('channel', '==', 'instagram')
+          .where('contactExternalId', '==', String(event.sender.id))
+          .limit(1)
+          .get();
         if (!convSnap.empty) {
           // Mark all outbound messages before watermark as read
-          const msgsQuery = query(
-            collection(db, 'conversationMessages'),
-            where('businessId', '==', businessId),
-            where('conversationId', '==', convSnap.docs[0].id),
-            where('direction', '==', 'outbound'),
-            where('status', 'in', ['sent', 'delivered'])
-          );
-          const msgsSnap = await getDocs(msgsQuery);
-          const batch: Promise<void>[] = [];
+          const msgsSnap = await adminDb.collection('conversationMessages')
+            .where('businessId', '==', businessId)
+            .where('conversationId', '==', convSnap.docs[0].id)
+            .where('direction', '==', 'outbound')
+            .where('status', 'in', ['sent', 'delivered'])
+            .get();
+          const batch: Promise<FirebaseFirestore.WriteResult>[] = [];
           for (const msgDoc of msgsSnap.docs) {
             const msgData = msgDoc.data();
             if (msgData.sentAt && msgData.sentAt <= readTimestamp) {
               batch.push(
-                updateDoc(doc(db, 'conversationMessages', msgDoc.id), {
+                adminDb.doc(`conversationMessages/${msgDoc.id}`).update({
                   status: 'read',
                   readAt: readTimestamp,
                   ...(!msgData.deliveredAt ? { deliveredAt: readTimestamp } : {}),
@@ -682,9 +645,9 @@ async function handleInstagramEvent(entry: MetaWebhookEntry) {
     let senderAvatarUrl: string | undefined;
 
     if (event.message || event.postback) {
-      const businessId = await resolveBusinessId(db, 'instagram', String(accountId));
+      const businessId = await resolveBusinessId('instagram', String(accountId));
       if (businessId) {
-        const pageToken = await getDecryptedPageToken(db, businessId);
+        const pageToken = await getDecryptedPageToken(businessId);
         if (pageToken) {
           const profile = await fetchSenderProfile(String(event.sender.id), pageToken, 'instagram');
           if (profile) {
@@ -755,7 +718,6 @@ async function handleInstagramEvent(entry: MetaWebhookEntry) {
  * Queries the businesses collection for a matching channel configuration.
  */
 async function resolveBusinessId(
-  db: ReturnType<typeof getFirestore>,
   channel: 'whatsapp' | 'facebook' | 'instagram',
   channelIdentifier: string,
 ): Promise<string | null> {
@@ -777,13 +739,10 @@ async function resolveBusinessId(
         return null;
     }
 
-    const q = query(
-      collection(db, 'businesses'),
-      where(fieldPath, '==', channelIdentifier),
-      firestoreLimit(1),
-    );
-
-    const snap = await getDocs(q);
+    const snap = await adminDb.collection('businesses')
+      .where(fieldPath, '==', channelIdentifier)
+      .limit(1)
+      .get();
 
     if (snap.empty) {
       return null;
@@ -906,20 +865,12 @@ async function fetchSenderProfile(
  * Gets the decrypted Facebook page access token for a business.
  * Instagram uses the same token as Facebook Messenger.
  */
-async function getDecryptedPageToken(
-  db: ReturnType<typeof getFirestore>,
-  businessId: string,
-): Promise<string | null> {
+async function getDecryptedPageToken(businessId: string): Promise<string | null> {
   try {
-    const bizQuery = query(
-      collection(db, 'businesses'),
-      where('__name__', '==', businessId),
-      firestoreLimit(1),
-    );
-    const bizSnap = await getDocs(bizQuery);
-    if (bizSnap.empty) return null;
+    const bizSnap = await adminDb.doc(`businesses/${businessId}`).get();
+    if (!bizSnap.exists) return null;
 
-    const bizData = bizSnap.docs[0].data();
+    const bizData = bizSnap.data();
     const encryptedToken = bizData?.channels?.facebook?.pageAccessToken;
     if (!encryptedToken) return null;
 
@@ -948,15 +899,13 @@ async function saveInboundMessage(params: InboundMessageParams) {
     timestamp: params.timestamp,
   });
 
-  const db = getDb();
-
   // 1. Resolve businessId from channel identifier
-  const businessId = await resolveBusinessId(db, params.channel, params.channelIdentifier);
+  const businessId = await resolveBusinessId(params.channel, params.channelIdentifier);
 
   if (!businessId) {
     console.error('[Meta Webhook] Could not resolve businessId for', params.channel, 'identifier:', params.channelIdentifier);
     try {
-      await addDoc(collection(db, 'webhookFailures'), {
+      await adminDb.collection('webhookFailures').add({
         reason: 'business_not_found',
         channel: params.channel,
         channelIdentifier: params.channelIdentifier,
@@ -974,13 +923,11 @@ async function saveInboundMessage(params: InboundMessageParams) {
 
   // 2. Check for duplicate message (before touching conversation)
   try {
-    const dupQuery = query(
-      collection(db, 'conversationMessages'),
-      where('externalMessageId', '==', params.messageId),
-      where('businessId', '==', businessId),
-      firestoreLimit(1)
-    );
-    const dupSnap = await getDocs(dupQuery);
+    const dupSnap = await adminDb.collection('conversationMessages')
+      .where('externalMessageId', '==', params.messageId)
+      .where('businessId', '==', businessId)
+      .limit(1)
+      .get();
     if (!dupSnap.empty) {
       console.log('[Meta Webhook] Duplicate message skipped:', params.messageId);
       return;
@@ -994,20 +941,18 @@ async function saveInboundMessage(params: InboundMessageParams) {
 
   try {
     // 3. Find or create conversation
-    const convQuery = query(
-      collection(db, 'conversations'),
-      where('businessId', '==', businessId),
-      where('channel', '==', params.channel),
-      where('contactExternalId', '==', params.externalId),
-      firestoreLimit(1),
-    );
+    const convSnap = await adminDb.collection('conversations')
+      .where('businessId', '==', businessId)
+      .where('channel', '==', params.channel)
+      .where('contactExternalId', '==', params.externalId)
+      .limit(1)
+      .get();
 
-    const convSnap = await getDocs(convQuery);
     let conversationId: string;
 
     if (convSnap.empty) {
       // Create new conversation
-      const newConvRef = await addDoc(collection(db, 'conversations'), {
+      const newConvRef = await adminDb.collection('conversations').add({
         businessId,
         channel: params.channel,
         // All Meta webhooks come from the official APIs (Embedded Signup). Tag it so
@@ -1034,25 +979,23 @@ async function saveInboundMessage(params: InboundMessageParams) {
           ? 'channelIdentities.facebook'
           : 'channelIdentities.instagram';
 
-        const contactQuery = query(
-          collection(db, 'clients'),
-          where('businessId', '==', businessId),
-          where(channelField, '==', params.externalId),
-          firestoreLimit(1),
-        );
-        const contactSnap = await getDocs(contactQuery);
+        const contactSnap = await adminDb.collection('clients')
+          .where('businessId', '==', businessId)
+          .where(channelField, '==', params.externalId)
+          .limit(1)
+          .get();
 
         if (!contactSnap.empty) {
           const contact = contactSnap.docs[0];
           const contactData = contact.data();
           // Update conversation with CRM contact reference
-          await updateDoc(doc(db, 'conversations', conversationId), {
+          await adminDb.doc(`conversations/${conversationId}`).update({
             crmContactId: contact.id,
             contactName: contactData.name || params.senderName || params.externalId,
             contactPhone: contactData.phone || (params.channel === 'whatsapp' ? params.externalId : null),
           });
           // Update CRM contact with last conversation reference
-          await updateDoc(doc(db, 'clients', contact.id), {
+          await adminDb.doc(`clients/${contact.id}`).update({
             lastConversationId: conversationId,
             lastConversationAt: now,
             updatedAt: now,
@@ -1061,22 +1004,20 @@ async function saveInboundMessage(params: InboundMessageParams) {
         } else {
           // Also try matching by phone for WhatsApp
           if (params.channel === 'whatsapp') {
-            const phoneQuery = query(
-              collection(db, 'clients'),
-              where('businessId', '==', businessId),
-              where('phone', '==', params.externalId),
-              firestoreLimit(1),
-            );
-            const phoneSnap = await getDocs(phoneQuery);
+            const phoneSnap = await adminDb.collection('clients')
+              .where('businessId', '==', businessId)
+              .where('phone', '==', params.externalId)
+              .limit(1)
+              .get();
             if (!phoneSnap.empty) {
               const contact = phoneSnap.docs[0];
               const contactData = contact.data();
-              await updateDoc(doc(db, 'conversations', conversationId), {
+              await adminDb.doc(`conversations/${conversationId}`).update({
                 crmContactId: contact.id,
                 contactName: contactData.name || params.senderName || params.externalId,
                 contactPhone: params.externalId,
               });
-              await updateDoc(doc(db, 'clients', contact.id), {
+              await adminDb.doc(`clients/${contact.id}`).update({
                 lastConversationId: conversationId,
                 lastConversationAt: now,
                 'channelIdentities.whatsapp': params.externalId,
@@ -1095,7 +1036,6 @@ async function saveInboundMessage(params: InboundMessageParams) {
     } else {
       // Update existing conversation
       conversationId = convSnap.docs[0].id;
-      const convRef = doc(db, 'conversations', conversationId);
 
       const existingData = convSnap.docs[0].data();
 
@@ -1115,7 +1055,7 @@ async function saveInboundMessage(params: InboundMessageParams) {
         lastMessage: params.conversationPreview || params.content || '[Midia]',
         lastMessageAt: params.timestamp,
         lastMessageDirection: 'inbound',
-        unreadCount: increment(1),
+        unreadCount: FieldValue.increment(1),
         updatedAt: now,
         // Clear soft-delete flags on resurrect
         isDeleted: false,
@@ -1129,13 +1069,12 @@ async function saveInboundMessage(params: InboundMessageParams) {
       if (params.senderAvatarUrl && !existingData.contactAvatarUrl) {
         enrichUpdate.contactAvatarUrl = params.senderAvatarUrl;
       }
-      await updateDoc(convRef, enrichUpdate);
+      await adminDb.doc(`conversations/${conversationId}`).update(enrichUpdate);
 
       console.log('[Meta Webhook] Updated conversation:', conversationId);
 
       // Auto-link to CRM if not already linked
-      const existingConvData = convSnap.docs[0].data();
-      if (!existingConvData.crmContactId) {
+      if (!existingData.crmContactId) {
         try {
           const channelField = params.channel === 'whatsapp'
             ? 'channelIdentities.whatsapp'
@@ -1143,20 +1082,18 @@ async function saveInboundMessage(params: InboundMessageParams) {
             ? 'channelIdentities.facebook'
             : 'channelIdentities.instagram';
 
-          const contactQuery = query(
-            collection(db, 'clients'),
-            where('businessId', '==', businessId),
-            where(channelField, '==', params.externalId),
-            firestoreLimit(1),
-          );
-          const contactSnap = await getDocs(contactQuery);
+          const contactSnap = await adminDb.collection('clients')
+            .where('businessId', '==', businessId)
+            .where(channelField, '==', params.externalId)
+            .limit(1)
+            .get();
 
           if (!contactSnap.empty) {
             const contact = contactSnap.docs[0];
-            await updateDoc(doc(db, 'conversations', conversationId), {
+            await adminDb.doc(`conversations/${conversationId}`).update({
               crmContactId: contact.id,
             });
-            await updateDoc(doc(db, 'clients', contact.id), {
+            await adminDb.doc(`clients/${contact.id}`).update({
               lastConversationId: conversationId,
               lastConversationAt: now,
               updatedAt: now,
@@ -1187,13 +1124,12 @@ async function saveInboundMessage(params: InboundMessageParams) {
     if (params.mediaMimeType) msgDoc.mediaMimeType = params.mediaMimeType;
     if (params.replyToMessageId) msgDoc.replyToMessageId = params.replyToMessageId;
     if (params.senderAvatarUrl) msgDoc.senderAvatarUrl = params.senderAvatarUrl;
-    const msgRef = await addDoc(collection(db, 'conversationMessages'), msgDoc);
+    const msgRef = await adminDb.collection('conversationMessages').add(msgDoc);
 
     console.log('[Meta Webhook] Saved inbound message for conversation:', conversationId);
 
     // Dispatch to AI agent (true fire-and-forget — do NOT await, debounce runs inside).
     try {
-      const { adminDb } = await import('@/lib/config/firebaseAdmin');
       const { dispatchInboundToAgent } = await import('@/lib/agent/dispatch');
       dispatchInboundToAgent(adminDb, {
         businessId,
@@ -1229,17 +1165,12 @@ async function updateMessageStatus(params: {
 }) {
   console.log('[Meta Webhook] Status update:', params);
 
-  const db = getDb();
-
   try {
-    const msgQuery = query(
-      collection(db, 'conversationMessages'),
-      where('externalMessageId', '==', params.messageId),
-      where('businessId', '==', params.businessId),
-      firestoreLimit(1),
-    );
-
-    const msgSnap = await getDocs(msgQuery);
+    const msgSnap = await adminDb.collection('conversationMessages')
+      .where('externalMessageId', '==', params.messageId)
+      .where('businessId', '==', params.businessId)
+      .limit(1)
+      .get();
 
     if (msgSnap.empty) {
       // Not an error — could be a status update for a message we didn't send through our system
@@ -1249,7 +1180,6 @@ async function updateMessageStatus(params: {
 
     const msgDoc = msgSnap.docs[0];
     const currentData = msgDoc.data();
-    const msgRef = doc(db, 'conversationMessages', msgDoc.id);
 
     // Status regression guard — don't go backwards (except 'failed' which always applies)
     const currentStatus = currentData.status;
@@ -1282,7 +1212,7 @@ async function updateMessageStatus(params: {
       updateData.failedCode = params.errors[0].code;
     }
 
-    await updateDoc(msgRef, updateData);
+    await adminDb.doc(`conversationMessages/${msgDoc.id}`).update(updateData);
 
     console.log('[Meta Webhook] Updated message status:', msgDoc.id, '->', params.status);
 
@@ -1290,8 +1220,7 @@ async function updateMessageStatus(params: {
     if (params.status === 'read') {
       if (currentData.conversationId) {
         try {
-          const convRef = doc(db, 'conversations', currentData.conversationId);
-          await updateDoc(convRef, {
+          await adminDb.doc(`conversations/${currentData.conversationId}`).update({
             updatedAt: new Date().toISOString(),
           });
         } catch {
