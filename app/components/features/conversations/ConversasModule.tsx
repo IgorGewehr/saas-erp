@@ -1996,21 +1996,29 @@ export default function ConversasModule() {
     setActivePage('Configurações');
   }, [setActivePage]);
 
-  const handleDeleteConversation = useCallback(async (conv: Conversation) => {
-    if (!business?.id) return;
-    if (!confirm(`Excluir a conversa com ${conv.contactName}? As mensagens ficam preservadas; a conversa pode ser restaurada se uma nova mensagem chegar.`)) return;
+  const [deleteConfirmConv, setDeleteConfirmConv] = useState<Conversation | null>(null);
+
+  const handleDeleteConversation = useCallback((conv: Conversation) => {
+    setDeleteConfirmConv(conv);
+  }, []);
+
+  const executeDeleteConversation = useCallback(async () => {
+    if (!deleteConfirmConv || !business?.id) return;
     try {
-      await updateDoc(doc(db, 'conversations', conv.id), {
+      await updateDoc(doc(db, 'conversations', deleteConfirmConv.id), {
         isDeleted: true,
         deletedAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });
       setSelectedConversation(null);
       setShowMobileThread(false);
+      setDeleteConfirmConv(null);
     } catch (err) {
       console.error('[Conversations] Delete failed:', err);
+      toast.error('Erro ao excluir conversa. Tente novamente.');
+      setDeleteConfirmConv(null);
     }
-  }, [business?.id]);
+  }, [deleteConfirmConv, business?.id]);
 
   const handleMarkUnread = useCallback(async (conv: Conversation) => {
     if (!business?.id) return;
@@ -3395,6 +3403,47 @@ export default function ConversasModule() {
               onClose={() => setAgentDebugOpen(false)}
             />
           </>
+        )}
+      </AnimatePresence>
+
+      {/* Delete conversation confirm */}
+      <AnimatePresence>
+        {deleteConfirmConv && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl shadow-2xl p-6"
+            >
+              <div className="w-12 h-12 rounded-2xl bg-red-50 dark:bg-red-500/10 flex items-center justify-center mx-auto mb-4">
+                <Trash2 className="w-6 h-6 text-red-500" />
+              </div>
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white text-center mb-2">Excluir conversa?</h3>
+              <p className="text-sm text-gray-500 dark:text-gray-400 text-center mb-6">
+                A conversa com <strong className="text-gray-700 dark:text-gray-300">{deleteConfirmConv.contactName}</strong> será ocultada. As mensagens ficam preservadas e a conversa pode ser restaurada se uma nova mensagem chegar.
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setDeleteConfirmConv(null)}
+                  className="flex-1 px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={executeDeleteConversation}
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors"
+                >
+                  Excluir
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
         )}
       </AnimatePresence>
     </div>

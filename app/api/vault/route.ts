@@ -80,7 +80,6 @@ async function listEntries(businessId: string, uid: string) {
   // test mixes role (already checked) + explicit uid membership.
   const snap = await adminDb.collection('passwordVaultEntries')
     .where('businessId', '==', businessId)
-    .orderBy('title', 'asc')
     .get();
 
   return snap.docs
@@ -208,8 +207,8 @@ async function deleteEntry(businessId: string, uid: string, id: string) {
   if (data.createdBy !== uid) {
     const me = await adminDb.collection('users').doc(uid).get();
     const myRole = me.data()?.role as UserRole | undefined;
-    if (!myRole || ROLE_HIERARCHY[myRole] < ROLE_HIERARCHY['founder']) {
-      throw new Error('Apenas o criador ou um founder pode excluir esta entrada');
+    if (!myRole || ROLE_HIERARCHY[myRole] < ROLE_HIERARCHY['admin']) {
+      throw new Error('Apenas administradores podem excluir entradas de outros usuários');
     }
   }
   await ref.delete();

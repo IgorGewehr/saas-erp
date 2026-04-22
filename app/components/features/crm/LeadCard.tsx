@@ -10,17 +10,19 @@ import { SourceIcon } from './SourceIcon';
 import { TagBadge } from './TagSystem';
 import type { CRMContact } from '@/lib/types';
 
-export function LeadCard({ contact, isSelected, onClick, onDragStart }: {
+export function LeadCard({ contact, isSelected, isDragging, onClick, onDragStart, onDragEnd }: {
   contact: CRMContact;
   isSelected: boolean;
+  isDragging?: boolean;
   onClick: () => void;
   onDragStart: (e: React.DragEvent) => void;
+  onDragEnd?: () => void;
 }) {
   const tags = contact.tags || [];
   const profileCfg = contact.profile ? PROFILE_CONFIG[contact.profile] : null;
   const scores = contact.scores;
   const churnRisk = scores?.churnRisk ?? 0;
-  const overallScore = scores?.overall ?? contact.score;
+  const overallScore = scores?.overall ?? contact.score ?? 0;
   const scoreCfg = getScoreColor(overallScore);
   const hasHighChurn = churnRisk >= 60;
 
@@ -28,9 +30,11 @@ export function LeadCard({ contact, isSelected, onClick, onDragStart }: {
     <div
       draggable
       onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
       onClick={onClick}
       className={cn(
         'bg-white dark:bg-[#111827] border rounded-xl p-3.5 cursor-grab active:cursor-grabbing hover:shadow-lg hover:-translate-y-0.5 transition-all group',
+        isDragging && 'opacity-40 scale-[0.97]',
         isSelected
           ? 'border-red-500/50 dark:border-red-500/40 shadow-red-500/10 shadow-md'
           : hasHighChurn

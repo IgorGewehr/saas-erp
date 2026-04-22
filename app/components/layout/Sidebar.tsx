@@ -28,6 +28,7 @@ import {
   ClipboardCheck,
   UtensilsCrossed,
   BarChart3,
+  KeyRound,
 } from 'lucide-react';
 import type { UseCase, UserRole } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
@@ -50,6 +51,7 @@ export type MenuPage =
   | 'NFCe'
   | 'NFe'
   | 'Relatórios'
+  | 'Senhas'
   | 'Configurações';
 
 // Which use cases each module appears under. `undefined` means "always visible".
@@ -97,6 +99,7 @@ function useMenuSections(): MenuSection[] {
         { id: 'Relatórios', label: t('sidebar.relatorios', 'Relatórios'), icon: BarChart3, useCases: ['pedidos', 'servicos', 'simples'] },
         { id: 'Estoque', label: t('sidebar.estoque'), icon: Package, useCases: ['pedidos', 'servicos', 'simples'] },
         { id: 'Compras', label: t('sidebar.compras'), icon: ShoppingBag, useCases: ['pedidos', 'servicos', 'simples'] },
+        { id: 'Senhas', label: 'Senhas', icon: KeyRound, minRole: 'admin' as UserRole },
       ],
     },
     {

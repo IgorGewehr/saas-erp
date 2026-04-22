@@ -4,6 +4,7 @@
     "indexes": "firestore.indexes.json"
   },
   "storage": {
+    "bucket": "service-provider-1cd0d.firebasestorage.app",
     "rules": "storage.rules"
   }
 }
