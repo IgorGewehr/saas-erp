@@ -5182,10 +5182,14 @@ function CanaisTab() {
                   await refreshUser();
                   toast.success(`${channelLabels[channel]} conectado!`);
                 } else {
-                  toast.error(data.error || 'Erro ao conectar canal');
+                  const errMsg = data.error || 'Erro ao conectar canal';
+                  toast.error(`[${res.status}] ${errMsg}`);
+                  console.error('[Meta Signup] error:', { status: res.status, ...data });
                 }
-              } catch {
-                toast.error('Erro ao processar a conexao');
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                toast.error(`Erro ao processar conexão: ${msg}`);
+                console.error('[Meta Signup] exception:', err);
               }
             } else {
               toast.info('Conexao cancelada pelo usuario');
