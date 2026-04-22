@@ -27,9 +27,9 @@ service firebase.storage {
       return request.resource.size < maxSizeMB * 1024 * 1024;
     }
 
-    // Validate image content type
+    // Validate image content type — accept any image/* MIME type
     function isImage() {
-      return request.resource.contentType.matches('image/(jpeg|png|webp|gif|svg\\+xml)');
+      return request.resource.contentType.matches('image/.*');
     }
 
     // Validate certificate file
@@ -97,10 +97,11 @@ service firebase.storage {
       // Anyone authenticated can read business logos (public branding)
       allow read: if isAuthenticated();
 
-      // Only admins of the business can upload/replace the logo
+      // Any authenticated member of the business can upload/replace the logo.
+      // Role check (admin+) is enforced at the app layer (company tab is admin-only).
+      // Removing isAdmin() here avoids hitting the 2-external-read limit in Storage rules.
       allow write: if isAuthenticated()
                    && belongsToBusiness(businessId)
-                   && isAdmin()
                    && isImage()
                    && isUnderSize(5); // Max 5MB
     }

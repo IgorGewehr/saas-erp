@@ -968,7 +968,7 @@ function EmpresaTab() {
 
     try {
       const storageRef = ref(storage, `businesses/${business.id}/logo`);
-      await uploadBytes(storageRef, file, { contentType: file.type });
+      await uploadBytes(storageRef, file, { contentType: file.type || 'image/jpeg' });
       const url = await getDownloadURL(storageRef);
       setLogoPreview(url);
       await setDoc(doc(db, 'businesses', business.id), { logo: url, updatedAt: new Date().toISOString() }, { merge: true });
