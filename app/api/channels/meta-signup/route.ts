@@ -134,15 +134,18 @@ export async function POST(req: NextRequest) {
       }, { status: 400 });
     }
 
-    // whatsapp_business_messaging target_ids → phone number IDs (not WABA IDs)
+    // Extract IDs from granular_scopes target_ids
     let phoneNumberId = '';
     let displayPhoneNumber = '';
     let displayName = '';
+    let igIdFromScope = ''; // instagram_business_manage_messages → IG account ID directly
 
     for (const scope of granularScopes) {
       if (scope.scope === 'whatsapp_business_messaging' && scope.target_ids?.length > 0) {
         phoneNumberId = scope.target_ids[0];
-        break;
+      }
+      if (scope.scope === 'instagram_business_manage_messages' && scope.target_ids?.length > 0) {
+        igIdFromScope = scope.target_ids[0];
       }
     }
 
@@ -228,18 +231,35 @@ export async function POST(req: NextRequest) {
     }
 
     // ── Step 6: Get Instagram Business Account ──────────────────────────────
-    let igAccountId = '';
+    let igAccountId = igIdFromScope; // prefer direct ID from instagram_business_manage_messages scope
     let igAccountName = '';
 
-    if (pageId) {
+    // Fetch display name/username for the IG account (direct approach when scope ID is available)
+    if (igAccountId) {
       try {
         const igRes = await fetch(
-          `${META_GRAPH}/${pageId}?fields=instagram_business_account{id,name,username,profile_picture_url}`,
+          `${META_GRAPH}/${igAccountId}?fields=id,name,username`,
+          { headers: { Authorization: `Bearer ${longLivedToken}` } }
+        );
+        if (igRes.ok) {
+          const igData = await igRes.json();
+          igAccountName = igData?.username || igData?.name || '';
+        }
+      } catch {
+        // Display info is optional
+      }
+    }
+
+    // Fallback: get IG account via linked Facebook Page
+    if (!igAccountId && pageId) {
+      try {
+        const igRes = await fetch(
+          `${META_GRAPH}/${pageId}?fields=instagram_business_account{id,name,username}`,
           { headers: { Authorization: `Bearer ${pageAccessToken || longLivedToken}` } }
         );
 
         if (!igRes.ok) {
-          console.error('[Meta Signup] Instagram fetch failed:', await igRes.text());
+          console.error('[Meta Signup] Instagram fetch via page failed:', await igRes.text());
         } else {
           const igData = await igRes.json();
           const igAccount = igData?.instagram_business_account;

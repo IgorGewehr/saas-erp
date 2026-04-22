@@ -5117,12 +5117,18 @@ function CanaisTab() {
     try {
       const FB = await ensureFbSdk();
 
-      // Instagram DM access goes through the Facebook Page linked to the Instagram account.
-      // instagram_business_basic / instagram_business_manage_messages require separate App Review
-      // and are NOT needed when using the Page-based messaging approach (pages_messaging).
+      // instagram_business_basic + instagram_business_manage_messages are approved —
+      // request them directly for native Instagram DM access.
+      // pages_* scopes are still needed for Page subscription (webhook delivery) and Messenger.
       const scopes: Record<string, string[]> = {
         facebook: ['pages_show_list', 'pages_messaging', 'pages_manage_metadata'],
-        instagram: ['pages_show_list', 'pages_messaging', 'pages_manage_metadata'],
+        instagram: [
+          'instagram_business_basic',
+          'instagram_business_manage_messages',
+          'pages_show_list',
+          'pages_messaging',
+          'pages_manage_metadata',
+        ],
         whatsapp: ['whatsapp_business_messaging'],
       };
 
