@@ -135,17 +135,15 @@ export async function POST(req: NextRequest) {
     }
 
     // Extract IDs from granular_scopes target_ids
+    // Note: instagram_business_manage_messages is NOT requestable via FB.login() —
+    // it belongs to "Instagram API with Instagram Login". Instagram DM uses pages_messaging.
     let phoneNumberId = '';
     let displayPhoneNumber = '';
     let displayName = '';
-    let igIdFromScope = ''; // instagram_business_manage_messages → IG account ID directly
 
     for (const scope of granularScopes) {
       if (scope.scope === 'whatsapp_business_messaging' && scope.target_ids?.length > 0) {
         phoneNumberId = scope.target_ids[0];
-      }
-      if (scope.scope === 'instagram_business_manage_messages' && scope.target_ids?.length > 0) {
-        igIdFromScope = scope.target_ids[0];
       }
     }
 
@@ -249,28 +247,11 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── Step 6: Get Instagram Business Account ──────────────────────────────
-    let igAccountId = igIdFromScope; // prefer direct ID from instagram_business_manage_messages scope
+    // ── Step 6: Get Instagram Business Account via linked Facebook Page ────────
+    let igAccountId = '';
     let igAccountName = '';
 
-    // Fetch display name/username for the IG account (direct approach when scope ID is available)
-    if (igAccountId) {
-      try {
-        const igRes = await fetch(
-          `${META_GRAPH}/${igAccountId}?fields=id,name,username`,
-          { headers: { Authorization: `Bearer ${longLivedToken}` } }
-        );
-        if (igRes.ok) {
-          const igData = await igRes.json();
-          igAccountName = igData?.username || igData?.name || '';
-        }
-      } catch {
-        // Display info is optional
-      }
-    }
-
-    // Fallback: get IG account via linked Facebook Page
-    if (!igAccountId && pageId) {
+    if (pageId) {
       try {
         const igRes = await fetch(
           `${META_GRAPH}/${pageId}?fields=instagram_business_account{id,name,username}`,
@@ -348,11 +329,6 @@ export async function POST(req: NextRequest) {
         accountName: igAccountName || null,
         isConnected: true,
         connectedAt: new Date().toISOString(),
-        // Store token when connected via direct scope (no Facebook page)
-        // so sendInstagram can work even without channels.facebook.pageAccessToken
-        ...(igIdFromScope && !pageId
-          ? { accessToken: await encryptToken(longLivedToken) }
-          : {}),
       };
     }
 

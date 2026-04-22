@@ -5117,18 +5117,13 @@ function CanaisTab() {
     try {
       const FB = await ensureFbSdk();
 
-      // instagram_business_basic + instagram_business_manage_messages are approved —
-      // request them directly for native Instagram DM access.
-      // pages_* scopes are still needed for Page subscription (webhook delivery) and Messenger.
+      // instagram_business_basic / instagram_business_manage_messages are approved in App Review
+      // but are NOT valid scopes for FB.login() (they belong to "Instagram API with Instagram Login",
+      // a different product). FB.login() only accepts Facebook Login scopes.
+      // Instagram DM access goes through the Facebook Page (pages_messaging approved).
       const scopes: Record<string, string[]> = {
         facebook: ['pages_show_list', 'pages_messaging', 'pages_manage_metadata'],
-        instagram: [
-          'instagram_business_basic',
-          'instagram_business_manage_messages',
-          'pages_show_list',
-          'pages_messaging',
-          'pages_manage_metadata',
-        ],
+        instagram: ['pages_show_list', 'pages_messaging', 'pages_manage_metadata'],
         whatsapp: ['whatsapp_business_messaging'],
       };
 
