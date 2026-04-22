@@ -93,6 +93,9 @@ function handleMetaApiError(
     case 368:
       userMessage = 'Conta temporariamente bloqueada por violacao de politicas.';
       break;
+    case 3:
+      userMessage = 'O aplicativo nao tem permissao para esta chamada de API. Verifique as permissoes do canal no painel Meta.';
+      break;
     case 10:
       userMessage = 'Permissao negada. Verifique as permissoes do canal.';
       break;
@@ -698,14 +701,20 @@ async function sendInstagram(
     throw new Error('Canal Instagram não está conectado');
   }
 
-  // Prefer Facebook page access token; fall back to direct Instagram token
-  // (stored when connected via instagram_business_manage_messages scope without a linked Facebook page)
-  const rawToken = facebook?.pageAccessToken || instagram.accessToken;
-  if (!rawToken) {
-    throw new Error('Credenciais do Instagram incompletas (pageAccessToken do Facebook ou accessToken do Instagram necessário)');
+  // We need the Facebook Page access token to send Instagram DMs.
+  // Instagram DMs that arrive via page subscription (object:"page") must be
+  // replied to using POST /{page-id}/messages with pages_messaging permission.
+  // Using POST /{ig-account-id}/messages requires instagram_business_manage_messages
+  // which needs separate Meta App Review — error 3 "does not have capability".
+  if (!facebook?.pageAccessToken || !facebook?.pageId) {
+    throw new Error(
+      'Credenciais do Instagram incompletas: a Página do Facebook vinculada é necessária para enviar mensagens. ' +
+      'Reconecte o canal em Configurações.',
+    );
   }
 
-  const pageAccessToken = await decryptToken(rawToken);
+  const pageAccessToken = await decryptToken(facebook.pageAccessToken);
+  const pageId = facebook.pageId;
 
   // Build message payload - media or text
   const messagePayload = media
@@ -717,17 +726,11 @@ async function sendInstagram(
       }
     : { text: content };
 
-  // Instagram DMs must be sent via /{ig-account-id}/messages (not /me/messages).
-  // Using /me/messages resolves "me" as the Facebook Page, which causes error code 10
-  // (permission denied) because the Instagram DM context requires the IG account as the sender.
-  const igAccountId = instagram.accountId;
-  if (!igAccountId) {
-    throw new Error('Credenciais do Instagram incompletas (accountId ausente — reconecte o canal em Configurações)');
-  }
-  const igEndpoint = `${META_BASE_URL}/${igAccountId}/messages`;
-
+  // POST /{page-id}/messages with the IGSID (Instagram Scoped User ID) as recipient.
+  // This uses pages_messaging permission (approved) and works for all Instagram DMs
+  // that arrived via page-level webhook subscription — no separate App Review needed.
   const response = await fetch(
-    igEndpoint,
+    `${META_BASE_URL}/${pageId}/messages`,
     {
       method: 'POST',
       headers: {
@@ -745,11 +748,10 @@ async function sendInstagram(
   const data: MetaApiResponse = await response.json();
 
   if (!response.ok || data.error) {
-    // Error code 10 on Instagram often means the 24h messaging window is closed.
-    // Give a more actionable message instead of the generic "permission denied".
+    // Error code 10 = 24h messaging window is closed (contact must message first).
     if (data.error?.code === 10) {
       throw new Error(JSON.stringify({
-        message: 'Janela de 24h encerrada ou permissão negada pelo Instagram. Aguarde uma mensagem do contato para abrir a janela novamente.',
+        message: 'Janela de 24h encerrada. Aguarde uma nova mensagem do contato para abrir a janela novamente.',
         code: 10,
         shouldRetry: false,
         originalError: data.error?.message,
