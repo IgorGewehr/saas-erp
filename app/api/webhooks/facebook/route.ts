@@ -16,37 +16,9 @@
 
 import crypto from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
-import { initializeApp, getApps, getApp } from 'firebase/app';
-import {
-  getFirestore,
-  collection,
-  query,
-  where,
-  getDocs,
-  getDoc,
-  addDoc,
-  updateDoc,
-  doc,
-  increment,
-  limit as firestoreLimit,
-} from 'firebase/firestore';
+import { adminDb } from '@/lib/config/firebaseAdmin';
+import { FieldValue } from 'firebase-admin/firestore';
 import { decryptToken } from '@/lib/utils/encryption';
-
-// ─── Firebase init (server-side, client SDK) ─────────────────────────────────
-
-const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
-};
-
-function getDb() {
-  const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
-  return getFirestore(app);
-}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -82,12 +54,6 @@ interface WebhookBody {
 
 // ─── GET — Verificação do Webhook ────────────────────────────────────────────
 
-/**
- * Facebook verifica o webhook enviando GET com:
- *  hub.mode      = "subscribe"
- *  hub.verify_token = <seu token>
- *  hub.challenge  = <string aleatória para ecoar>
- */
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
 
@@ -103,7 +69,6 @@ export async function GET(req: NextRequest) {
   }
 
   if (mode === 'subscribe' && token === verifyToken) {
-    // Retorna o challenge como texto puro (não JSON) — requisito da Meta
     return new NextResponse(challenge, {
       status: 200,
       headers: { 'Content-Type': 'text/plain' },
@@ -148,7 +113,6 @@ export async function POST(req: NextRequest) {
   try {
     const rawBody = await req.text();
 
-    // Verificar assinatura HMAC
     const isValid = verifySignature(rawBody, req.headers.get('x-hub-signature-256'));
     if (!isValid) {
       console.error('[FB Webhook] Assinatura HMAC inválida — rejeitando evento');
@@ -157,7 +121,6 @@ export async function POST(req: NextRequest) {
 
     const body: WebhookBody = JSON.parse(rawBody);
 
-    // Verificação de objeto — apenas 'page' é aceito nesta rota
     if (body.object !== 'page') {
       console.warn('[FB Webhook] Objeto inesperado recebido:', body.object);
       return new NextResponse('Not Found', { status: 404 });
@@ -167,14 +130,11 @@ export async function POST(req: NextRequest) {
       return new NextResponse('EVENT_RECEIVED', { status: 200 });
     }
 
-    // Processar cada entry em paralelo
     await Promise.all(body.entry.map((entry) => processEntry(entry)));
 
-    // Retornar 200 rapidamente para evitar timeout da Meta
     return new NextResponse('EVENT_RECEIVED', { status: 200 });
   } catch (err) {
     console.error('[FB Webhook] Erro ao processar evento:', err);
-    // Sempre 200 para a Meta não ficar reenviando
     return new NextResponse('EVENT_RECEIVED', { status: 200 });
   }
 }
@@ -188,26 +148,22 @@ async function processEntry(entry: WebhookEntry): Promise<void> {
 
   for (const event of entry.messaging) {
     try {
-      // Ignorar echoes (mensagens enviadas pela própria page)
       if (event.message?.is_echo) continue;
       if (event.message?.is_deleted) continue;
 
       const senderId = String(event.sender.id);
       const timestamp = new Date(event.timestamp).toISOString();
 
-      // ── Delivery receipts ────────────────────────────────────────────
       if (event.delivery) {
         await handleDeliveryReceipt(pageId, event.delivery);
         continue;
       }
 
-      // ── Read receipts ────────────────────────────────────────────────
       if (event.read) {
         await handleReadReceipt(pageId, senderId, event.read);
         continue;
       }
 
-      // ── Postback ─────────────────────────────────────────────────────
       if (event.postback) {
         await saveInboundMessage({
           pageId,
@@ -219,23 +175,17 @@ async function processEntry(entry: WebhookEntry): Promise<void> {
         continue;
       }
 
-      // ── Mensagem de texto ────────────────────────────────────────────
       if (event.message?.text) {
-        const text = event.message.text;
-
-
         await saveInboundMessage({
           pageId,
           senderId,
           messageId: event.message.mid,
-          text,
+          text: event.message.text,
           timestamp,
         });
-
         continue;
       }
 
-      // ── Mensagem com attachment ──────────────────────────────────────
       if (event.message?.attachments && event.message.attachments.length > 0) {
         const att = event.message.attachments[0];
         const typeMap: Record<string, 'image' | 'video' | 'audio' | 'document'> = {
@@ -255,7 +205,6 @@ async function processEntry(entry: WebhookEntry): Promise<void> {
         const mediaType = typeMap[att.type] || 'document';
         const label = labelMap[att.type] || 'Anexo';
 
-
         await saveInboundMessage({
           pageId,
           senderId,
@@ -269,7 +218,6 @@ async function processEntry(entry: WebhookEntry): Promise<void> {
       }
     } catch (err) {
       console.error('[FB Webhook] Erro ao processar evento de messaging:', err);
-      // Continua com o próximo evento — não quebra o loop
     }
   }
 }
@@ -281,10 +229,6 @@ interface SenderProfile {
   profilePic?: string;
 }
 
-/**
- * Busca nome e foto do remetente via Graph API do Facebook.
- * GET /{PSID}?fields=first_name,last_name,profile_pic&access_token={token}
- */
 async function fetchSenderProfile(
   senderId: string,
   pageAccessToken: string,
@@ -304,32 +248,25 @@ async function fetchSenderProfile(
     const lastName = data.last_name || '';
     const name = `${firstName} ${lastName}`.trim() || senderId;
 
-    return {
-      name,
-      profilePic: data.profile_pic || undefined,
-    };
+    return { name, profilePic: data.profile_pic || undefined };
   } catch (err) {
     console.error('[FB Webhook] Erro ao buscar perfil do remetente:', err);
     return null;
   }
 }
 
-/**
- * Obtém o page access token descriptografado do Firestore para um business.
- */
+// ─── Admin SDK: Page Access Token ────────────────────────────────────────────
+
 async function getDecryptedPageToken(businessId: string): Promise<string | null> {
   try {
-    const db = getDb();
-    const businessDoc = await getDoc(doc(db, 'businesses', businessId));
-    if (!businessDoc.exists()) return null;
-
+    const businessDoc = await adminDb.doc(`businesses/${businessId}`).get();
+    if (!businessDoc.exists) return null;
     const data = businessDoc.data();
     const encryptedToken = data?.channels?.facebook?.pageAccessToken;
     if (!encryptedToken) {
       console.warn('[FB Webhook] Nenhum pageAccessToken encontrado para business:', businessId);
       return null;
     }
-
     return await decryptToken(encryptedToken);
   } catch (err) {
     console.error('[FB Webhook] Erro ao descriptografar pageAccessToken:', err);
@@ -337,17 +274,15 @@ async function getDecryptedPageToken(businessId: string): Promise<string | null>
   }
 }
 
-// ─── Firestore: Resolver businessId ──────────────────────────────────────────
+// ─── Admin SDK: Resolver businessId ──────────────────────────────────────────
 
 async function resolveBusinessId(pageId: string): Promise<string | null> {
   try {
-    const db = getDb();
-    const q = query(
-      collection(db, 'businesses'),
-      where('channels.facebook.pageId', '==', pageId),
-      firestoreLimit(1),
-    );
-    const snap = await getDocs(q);
+    const snap = await adminDb
+      .collection('businesses')
+      .where('channels.facebook.pageId', '==', pageId)
+      .limit(1)
+      .get();
     if (snap.empty) {
       console.warn('[FB Webhook] Nenhum business encontrado para pageId:', pageId);
       return null;
@@ -359,7 +294,7 @@ async function resolveBusinessId(pageId: string): Promise<string | null> {
   }
 }
 
-// ─── Firestore: Salvar Mensagem Inbound ──────────────────────────────────────
+// ─── Admin SDK: Salvar Mensagem Inbound ──────────────────────────────────────
 
 interface InboundParams {
   pageId: string;
@@ -372,14 +307,11 @@ interface InboundParams {
 }
 
 async function saveInboundMessage(params: InboundParams): Promise<void> {
-  const db = getDb();
-
-  // 1. Resolver businessId
+  // 1. Resolver businessId — multi-tenant: cada pageId pertence a um único business
   const businessId = await resolveBusinessId(params.pageId);
   if (!businessId) {
-    // Dead-letter queue — salva para investigação
     try {
-      await addDoc(collection(db, 'webhookFailures'), {
+      await adminDb.collection('webhookFailures').add({
         reason: 'business_not_found',
         channel: 'facebook',
         channelIdentifier: params.pageId,
@@ -395,29 +327,24 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
     return;
   }
 
-  // 2. Checar duplicata
+  // 2. Checar duplicata (businessId garante isolamento multi-tenant)
   try {
-    const dupQuery = query(
-      collection(db, 'conversationMessages'),
-      where('externalMessageId', '==', params.messageId),
-      where('businessId', '==', businessId),
-      firestoreLimit(1),
-    );
-    const dupSnap = await getDocs(dupQuery);
-    if (!dupSnap.empty) {
-      return;
-    }
+    const dupSnap = await adminDb
+      .collection('conversationMessages')
+      .where('externalMessageId', '==', params.messageId)
+      .where('businessId', '==', businessId)
+      .limit(1)
+      .get();
+    if (!dupSnap.empty) return;
   } catch (dupErr) {
     console.error('[FB Webhook] Erro ao verificar duplicata:', dupErr);
-    // Continua — melhor duplicar do que perder
   }
 
   const now = new Date().toISOString();
 
-  // 2.5. Buscar perfil do remetente via Graph API (nome + foto)
+  // 2.5. Buscar perfil do remetente
   let senderName: string | null = null;
   let senderAvatarUrl: string | null = null;
-
   const pageToken = await getDecryptedPageToken(businessId);
   if (pageToken) {
     const profile = await fetchSenderProfile(params.senderId, pageToken);
@@ -428,20 +355,19 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
   }
 
   try {
-    // 3. Encontrar ou criar conversa
-    const convQuery = query(
-      collection(db, 'conversations'),
-      where('businessId', '==', businessId),
-      where('channel', '==', 'facebook'),
-      where('contactExternalId', '==', params.senderId),
-      firestoreLimit(1),
-    );
-    const convSnap = await getDocs(convQuery);
+    // 3. Encontrar ou criar conversa (filtro por businessId garante isolamento)
+    const convSnap = await adminDb
+      .collection('conversations')
+      .where('businessId', '==', businessId)
+      .where('channel', '==', 'facebook')
+      .where('contactExternalId', '==', params.senderId)
+      .limit(1)
+      .get();
+
     let conversationId: string;
 
     if (convSnap.empty) {
-      // Nova conversa — já com nome e foto do perfil
-      const newConvRef = await addDoc(collection(db, 'conversations'), {
+      const newConvRef = await adminDb.collection('conversations').add({
         businessId,
         channel: 'facebook',
         contactName: senderName || params.senderId,
@@ -456,37 +382,31 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
         updatedAt: now,
       });
       conversationId = newConvRef.id;
-
-      // Auto-link com CRM contact
-      await tryLinkCrmContact(db, businessId, params.senderId, conversationId, now);
+      await tryLinkCrmContact(businessId, params.senderId, conversationId, now);
     } else {
       conversationId = convSnap.docs[0].id;
       const existingConv = convSnap.docs[0].data();
 
-      // Atualizar conversa existente — e enriquecer com nome/foto se ainda não tem
       const convUpdate: Record<string, unknown> = {
         lastMessage: params.text,
         lastMessageAt: params.timestamp,
         lastMessageDirection: 'inbound',
-        unreadCount: increment(1),
+        unreadCount: FieldValue.increment(1),
         updatedAt: now,
       };
 
-      // Atualiza nome se o atual é o PSID numérico e agora temos o nome real
       if (senderName && (!existingConv.contactName || /^\d+$/.test(existingConv.contactName))) {
         convUpdate.contactName = senderName;
       }
-
-      // Atualiza foto se não existe
       if (senderAvatarUrl && !existingConv.contactAvatarUrl) {
         convUpdate.contactAvatarUrl = senderAvatarUrl;
       }
 
-      await updateDoc(doc(db, 'conversations', conversationId), convUpdate);
+      await adminDb.doc(`conversations/${conversationId}`).update(convUpdate);
     }
 
     // 4. Salvar mensagem
-    await addDoc(collection(db, 'conversationMessages'), {
+    await adminDb.collection('conversationMessages').add({
       conversationId,
       businessId,
       channel: 'facebook',
@@ -500,13 +420,12 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
       sentAt: params.timestamp,
       createdAt: now,
     });
-
   } catch (err) {
     console.error('[FB Webhook] Erro ao salvar mensagem inbound:', err);
   }
 }
 
-// ─── Firestore: Delivery Receipt ─────────────────────────────────────────────
+// ─── Admin SDK: Delivery Receipt ─────────────────────────────────────────────
 
 async function handleDeliveryReceipt(
   pageId: string,
@@ -515,23 +434,20 @@ async function handleDeliveryReceipt(
   const businessId = await resolveBusinessId(pageId);
   if (!businessId) return;
 
-  const db = getDb();
   const deliveredAt = new Date(delivery.watermark).toISOString();
 
   for (const mid of delivery.mids ?? []) {
     try {
-      const msgQuery = query(
-        collection(db, 'conversationMessages'),
-        where('externalMessageId', '==', mid),
-        where('businessId', '==', businessId),
-        firestoreLimit(1),
-      );
-      const msgSnap = await getDocs(msgQuery);
+      const msgSnap = await adminDb
+        .collection('conversationMessages')
+        .where('externalMessageId', '==', mid)
+        .where('businessId', '==', businessId)
+        .limit(1)
+        .get();
       if (!msgSnap.empty) {
         const msgData = msgSnap.docs[0].data();
-        // Não regredir status
         if (msgData.status === 'read') continue;
-        await updateDoc(doc(db, 'conversationMessages', msgSnap.docs[0].id), {
+        await adminDb.doc(`conversationMessages/${msgSnap.docs[0].id}`).update({
           status: 'delivered',
           deliveredAt,
         });
@@ -542,7 +458,7 @@ async function handleDeliveryReceipt(
   }
 }
 
-// ─── Firestore: Read Receipt ─────────────────────────────────────────────────
+// ─── Admin SDK: Read Receipt ─────────────────────────────────────────────────
 
 async function handleReadReceipt(
   pageId: string,
@@ -552,30 +468,25 @@ async function handleReadReceipt(
   const businessId = await resolveBusinessId(pageId);
   if (!businessId) return;
 
-  const db = getDb();
   const readAt = new Date(read.watermark).toISOString();
 
   try {
-    // Encontrar conversa do sender
-    const convQuery = query(
-      collection(db, 'conversations'),
-      where('businessId', '==', businessId),
-      where('channel', '==', 'facebook'),
-      where('contactExternalId', '==', senderId),
-      firestoreLimit(1),
-    );
-    const convSnap = await getDocs(convQuery);
+    const convSnap = await adminDb
+      .collection('conversations')
+      .where('businessId', '==', businessId)
+      .where('channel', '==', 'facebook')
+      .where('contactExternalId', '==', senderId)
+      .limit(1)
+      .get();
     if (convSnap.empty) return;
 
-    // Marcar outbound messages como read
-    const msgsQuery = query(
-      collection(db, 'conversationMessages'),
-      where('businessId', '==', businessId),
-      where('conversationId', '==', convSnap.docs[0].id),
-      where('direction', '==', 'outbound'),
-      where('status', 'in', ['sent', 'delivered']),
-    );
-    const msgsSnap = await getDocs(msgsQuery);
+    const msgsSnap = await adminDb
+      .collection('conversationMessages')
+      .where('businessId', '==', businessId)
+      .where('conversationId', '==', convSnap.docs[0].id)
+      .where('direction', '==', 'outbound')
+      .where('status', 'in', ['sent', 'delivered'])
+      .get();
 
     const updates = msgsSnap.docs
       .filter((d) => {
@@ -584,7 +495,7 @@ async function handleReadReceipt(
       })
       .map((d) => {
         const data = d.data();
-        return updateDoc(doc(db, 'conversationMessages', d.id), {
+        return adminDb.doc(`conversationMessages/${d.id}`).update({
           status: 'read',
           readAt,
           ...(!data.deliveredAt ? { deliveredAt: readAt } : {}),
@@ -592,44 +503,39 @@ async function handleReadReceipt(
       });
 
     await Promise.all(updates);
-
   } catch (err) {
     console.error('[FB Webhook] Erro ao processar read receipt:', err);
   }
 }
 
-// ─── Firestore: Auto-link CRM Contact ───────────────────────────────────────
+// ─── Admin SDK: Auto-link CRM Contact ───────────────────────────────────────
 
 async function tryLinkCrmContact(
-  db: ReturnType<typeof getFirestore>,
   businessId: string,
   senderId: string,
   conversationId: string,
   now: string,
 ): Promise<void> {
   try {
-    const contactQuery = query(
-      collection(db, 'clients'),
-      where('businessId', '==', businessId),
-      where('channelIdentities.facebook', '==', senderId),
-      firestoreLimit(1),
-    );
-    const contactSnap = await getDocs(contactQuery);
+    const contactSnap = await adminDb
+      .collection('clients')
+      .where('businessId', '==', businessId)
+      .where('channelIdentities.facebook', '==', senderId)
+      .limit(1)
+      .get();
 
     if (!contactSnap.empty) {
       const contact = contactSnap.docs[0];
       const contactData = contact.data();
-
-      await updateDoc(doc(db, 'conversations', conversationId), {
+      await adminDb.doc(`conversations/${conversationId}`).update({
         crmContactId: contact.id,
         contactName: contactData.name || senderId,
       });
-      await updateDoc(doc(db, 'clients', contact.id), {
+      await adminDb.doc(`clients/${contact.id}`).update({
         lastConversationId: conversationId,
         lastConversationAt: now,
         updatedAt: now,
       });
-
     }
   } catch (err) {
     console.warn('[FB Webhook] Falha ao linkar CRM contact:', err);
