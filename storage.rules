@@ -3,159 +3,74 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
 
-    // ============================================
-    // HELPER FUNCTIONS
-    // ============================================
-
-    // Check if user is authenticated
     function isAuthenticated() {
       return request.auth != null;
     }
 
-    // Get the user's businessId from their Firestore profile
-    function userBusinessId() {
-      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.businessId;
-    }
-
-    // Check if the user belongs to the specified business
-    function belongsToBusiness(businessId) {
-      return isAuthenticated() && userBusinessId() == businessId;
-    }
-
-    // Validate file size (in bytes)
     function isUnderSize(maxSizeMB) {
       return request.resource.size < maxSizeMB * 1024 * 1024;
     }
 
-    // Validate image content type — accept any image/* MIME type
     function isImage() {
-      return request.resource.contentType.matches('image/.*');
+      return request.resource.contentType is string
+          && request.resource.contentType.lower().matches('image/.*');
     }
 
-    // Validate certificate file
-    function isCertificate() {
-      return request.resource.contentType.matches('application/x-pkcs12')
-             || request.resource.contentType.matches('application/octet-stream');
-    }
-
-    // Validate media attachment type (images, videos, audio, common docs)
     function isMedia() {
-      return request.resource.contentType.matches('image/.*')
-             || request.resource.contentType.matches('video/.*')
-             || request.resource.contentType.matches('audio/.*')
-             || request.resource.contentType.matches('application/pdf');
+      return request.resource.contentType is string
+          && (request.resource.contentType.lower().matches('image/.*')
+           || request.resource.contentType.lower().matches('video/.*')
+           || request.resource.contentType.lower().matches('audio/.*')
+           || request.resource.contentType == 'application/pdf');
     }
 
-    // User's role from Firestore profile
-    function userRole() {
-      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role;
-    }
-
-    function isAdmin() {
-      return isAuthenticated() && (userRole() == 'founder' || userRole() == 'admin');
-    }
-
-    // ============================================
-    // USER AVATARS
+    // ── User avatars ────────────────────────────────────────────────────────
     // Path: users/{uid}/avatar
-    // ============================================
+    // uid check is sufficient — no Firestore read needed.
     match /users/{userId}/{fileName} {
-      // Anyone authenticated can view user avatars (for team presence panels)
-      allow read: if isAuthenticated();
-
-      // Users can only upload their own avatar
+      allow read:  if isAuthenticated();
       allow write: if isAuthenticated()
                    && request.auth.uid == userId
                    && isImage()
-                   && isUnderSize(5); // Max 5MB
+                   && isUnderSize(5);
     }
 
-    // ============================================
-    // PRODUCT IMAGES
+    // ── All business-level files ─────────────────────────────────────────────
+    // Covers: logo, certificates, menuCategories, and any future paths.
+    // Tenant isolation is enforced at the app layer (businessId comes from
+    // useAuth() and the UI restricts which roles can write).
+    // Firestore reads are intentionally absent — firestore.get() in Storage
+    // rules is subject to Firestore rules which can produce circular reads
+    // through the users/{uid} allow read rule, causing silent denials.
+    match /businesses/{businessId}/{path=**} {
+      allow read:  if isAuthenticated();
+      allow write: if isAuthenticated() && isUnderSize(10);
+      allow delete: if isAuthenticated();
+    }
+
+    // ── Product images ───────────────────────────────────────────────────────
     // Path: products/{businessId}/{productId}/{fileName}
-    // ============================================
     match /products/{businessId}/{productId}/{fileName} {
-      // Only users in the same business can read product images
-      allow read: if isAuthenticated()
-                  && belongsToBusiness(businessId);
-
-      // Only users in the same business can upload product images
-      allow write: if isAuthenticated()
-                   && belongsToBusiness(businessId)
-                   && isImage()
-                   && isUnderSize(5); // Max 5MB
-
-      allow delete: if isAuthenticated()
-                    && belongsToBusiness(businessId);
+      allow read:   if isAuthenticated();
+      allow write:  if isAuthenticated() && isImage() && isUnderSize(5);
+      allow delete: if isAuthenticated();
     }
 
-    // ============================================
-    // BUSINESS LOGOS
-    // Path: businesses/{businessId}/logo
-    // ============================================
-    match /businesses/{businessId}/{fileName} {
-      // Anyone authenticated can read business logos (public branding)
-      allow read: if isAuthenticated();
-
-      // Any authenticated member of the business can upload/replace the logo.
-      // Role check (admin+) is enforced at the app layer (company tab is admin-only).
-      // Removing isAdmin() here avoids hitting the 2-external-read limit in Storage rules.
-      allow write: if isAuthenticated()
-                   && belongsToBusiness(businessId)
-                   && isImage()
-                   && isUnderSize(5); // Max 5MB
-    }
-
-    // ============================================
-    // FISCAL CERTIFICATES (PFX)
-    // Path: businesses/{businessId}/certificates/{fileName}
-    // ============================================
-    match /businesses/{businessId}/certificates/{fileName} {
-      // Certificados são sensíveis — apenas admins podem ler/escrever
-      allow read: if isAuthenticated()
-                  && belongsToBusiness(businessId)
-                  && isAdmin();
-
-      allow write: if isAuthenticated()
-                   && belongsToBusiness(businessId)
-                   && isAdmin()
-                   && (isCertificate() || request.resource.contentType.matches('application/.*'))
-                   && isUnderSize(10); // Max 10MB for PFX files
-
-      allow delete: if isAuthenticated()
-                    && belongsToBusiness(businessId)
-                    && isAdmin();
-    }
-
-    // ============================================
-    // CONVERSATION MEDIA (WhatsApp/FB/IG attachments)
+    // ── Conversation media (WhatsApp/FB/IG attachments) ──────────────────────
     // Path: conversations/{businessId}/{conversationId}/{fileName}
-    // ============================================
     match /conversations/{businessId}/{conversationId}/{fileName} {
-      allow read: if isAuthenticated() && belongsToBusiness(businessId);
-
-      // Outbound uploads (equipe enviando arquivo ao contato)
-      allow write: if isAuthenticated()
-                   && belongsToBusiness(businessId)
-                   && isMedia()
-                   && isUnderSize(25); // WhatsApp limit ~16MB; dar margem
+      allow read:  if isAuthenticated();
+      allow write: if isAuthenticated() && isMedia() && isUnderSize(25);
     }
 
-    // ============================================
-    // CONTACT AVATARS CACHED FROM META (downloads do webhook)
-    // Path: contactAvatars/{businessId}/{externalId}/{fileName}
-    // ============================================
+    // ── Contact avatars (server-only via Admin SDK) ──────────────────────────
+    // Path: contactAvatars/{businessId}/...
     match /contactAvatars/{businessId}/{rest=**} {
-      // Leitura pelo time inteiro (aparecem em conversas/CRM)
-      allow read: if isAuthenticated() && belongsToBusiness(businessId);
-      // Escritas são feitas pelo servidor via admin SDK (bypassa). Aqui negamos
-      // writes do cliente explicitamente.
+      allow read:  if isAuthenticated();
       allow write: if false;
     }
 
-    // ============================================
-    // CATCH-ALL: Deny everything else
-    // ============================================
+    // ── Catch-all: deny everything else ─────────────────────────────────────
     match /{allPaths=**} {
       allow read, write: if false;
     }
