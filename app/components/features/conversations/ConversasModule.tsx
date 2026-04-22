@@ -2400,7 +2400,7 @@ export default function ConversasModule() {
         try {
           const auth = getAuth();
           const token = await auth.currentUser?.getIdToken();
-          await fetch('/api/conversations/send', {
+          const res = await fetch('/api/conversations/send', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -2417,8 +2417,14 @@ export default function ConversasModule() {
               templateLanguage,
             }),
           });
-        } catch {
-          console.warn('Failed to send template via API, saved locally');
+          if (!res.ok) {
+            const errBody = await res.json().catch(() => ({ error: 'Erro desconhecido' }));
+            toast.error(`Falha ao enviar template "${templateName}": ${errBody.error || 'erro desconhecido'}${errBody.metaCode ? ` (Meta #${errBody.metaCode})` : ''}`);
+            console.error('[SendTemplate] API error:', errBody);
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          toast.error(`Erro de conexão ao enviar template: ${msg}`);
         }
       } catch (err) {
         console.error('Error sending template message:', err);
@@ -2728,15 +2734,22 @@ export default function ConversasModule() {
             }),
           });
           if (!res.ok) {
-            const errBody = await res.json().catch(() => ({ code: 'unknown' }));
+            const errBody = await res.json().catch(() => ({ code: 'unknown', error: 'Erro desconhecido' }));
+            const chNames: Record<string, string> = { whatsapp: 'WhatsApp', facebook: 'Facebook Messenger', instagram: 'Instagram' };
+            const chName = chNames[selectedConversation.channel] || 'Canal';
             if (errBody.code === 'disconnected' || errBody.code === 'token_expired') {
-              const names: Record<string, string> = { whatsapp: 'WhatsApp', facebook: 'Facebook Messenger', instagram: 'Instagram' };
-              toast.warn(t('conversations.disconnectedWarn', '{{channel}} está desconectado. Reconecte nas Configurações para enviar mensagens.', { channel: names[selectedConversation.channel] || 'Canal' }));
+              toast.warn(`${chName} desconectado — reconecte em Configurações → Canais.\n${errBody.error || ''}`);
+            } else if (errBody.code === 'send_failed') {
+              toast.error(`Falha ao enviar pelo ${chName}: ${errBody.error || 'erro desconhecido'}${errBody.metaCode ? ` (Meta #${errBody.metaCode})` : ''}`);
+            } else {
+              toast.error(`Erro ao enviar mensagem [${res.status}]: ${errBody.error || 'erro desconhecido'}`);
             }
+            console.error('[Send] API error:', errBody);
             await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(e => console.warn('[Conversations] Failed to mark message as failed:', e));
           }
-        } catch {
-          toast.error(t('conversations.connectionError', 'Erro de conexão. Verifique sua internet e tente novamente.'));
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          toast.error(`Erro de conexão ao enviar mensagem: ${msg}`);
           await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(e => console.warn('[Conversations] Failed to mark message as failed:', e));
         }
       }

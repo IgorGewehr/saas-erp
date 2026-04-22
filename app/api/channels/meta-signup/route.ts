@@ -135,17 +135,15 @@ export async function POST(req: NextRequest) {
     }
 
     // Extract IDs from granular_scopes target_ids
+    // Note: instagram_business_manage_messages is NOT requestable via FB.login() —
+    // it belongs to "Instagram API with Instagram Login". Instagram DM uses pages_messaging.
     let phoneNumberId = '';
     let displayPhoneNumber = '';
     let displayName = '';
-    let igIdFromScope = ''; // instagram_business_manage_messages → IG account ID directly
 
     for (const scope of granularScopes) {
       if (scope.scope === 'whatsapp_business_messaging' && scope.target_ids?.length > 0) {
         phoneNumberId = scope.target_ids[0];
-      }
-      if (scope.scope === 'instagram_business_manage_messages' && scope.target_ids?.length > 0) {
-        igIdFromScope = scope.target_ids[0];
       }
     }
 
@@ -185,30 +183,45 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── Step 5: Get Facebook Page info (for Messenger) ──────────────────────
+    // ── Step 5: Get Facebook Page info (for Messenger + Instagram) ──────────
     let pageId = '';
     let pageName = '';
     let pageAccessToken = '';
 
     try {
-      const pagesRes = await fetch(`${META_GRAPH}/me/accounts`, {
+      // Fetch all pages (paginated) to find the right one
+      const pagesRes = await fetch(`${META_GRAPH}/me/accounts?limit=25`, {
         headers: { Authorization: `Bearer ${longLivedToken}` },
       });
 
       if (!pagesRes.ok) {
-        console.error('[Meta Signup] /me/accounts failed:', await pagesRes.text());
+        const errText = await pagesRes.text();
+        console.error('[Meta Signup] /me/accounts failed:', errText);
+        // If this was a Facebook/Instagram-only connection (no WhatsApp), surface the error
+        if (!phoneNumberId) {
+          return NextResponse.json({
+            error: 'Não foi possível listar suas Páginas do Facebook. Certifique-se de autorizar a permissão "pages_show_list".',
+          }, { status: 400 });
+        }
       } else {
         const pagesData = await pagesRes.json();
+        const pages: Array<{ id: string; name: string; access_token?: string }> = pagesData?.data || [];
 
-        if (pagesData?.data?.length > 0) {
-          const page = pagesData.data[0];
+        if (pages.length > 0) {
+          // Pick the first page that has messaging permissions
+          const page = pages.find(p => p.access_token) || pages[0];
           pageId = page.id;
           pageName = page.name;
           pageAccessToken = page.access_token || '';
+        } else if (!phoneNumberId) {
+          // No WhatsApp and no pages found — likely pages_show_list was denied
+          return NextResponse.json({
+            error: 'Nenhuma Página do Facebook encontrada. Certifique-se de autorizar "pages_show_list" e de ter ao menos uma Página.',
+          }, { status: 400 });
         }
       }
     } catch {
-      // Pages are optional if the user only connected WhatsApp
+      // Pages are optional when connecting WhatsApp only
     }
 
     // ── Step 5b: Subscribe page to webhooks (Messenger + Instagram DM) ─────
@@ -249,28 +262,11 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── Step 6: Get Instagram Business Account ──────────────────────────────
-    let igAccountId = igIdFromScope; // prefer direct ID from instagram_business_manage_messages scope
+    // ── Step 6: Get Instagram Business Account via linked Facebook Page ────────
+    let igAccountId = '';
     let igAccountName = '';
 
-    // Fetch display name/username for the IG account (direct approach when scope ID is available)
-    if (igAccountId) {
-      try {
-        const igRes = await fetch(
-          `${META_GRAPH}/${igAccountId}?fields=id,name,username`,
-          { headers: { Authorization: `Bearer ${longLivedToken}` } }
-        );
-        if (igRes.ok) {
-          const igData = await igRes.json();
-          igAccountName = igData?.username || igData?.name || '';
-        }
-      } catch {
-        // Display info is optional
-      }
-    }
-
-    // Fallback: get IG account via linked Facebook Page
-    if (!igAccountId && pageId) {
+    if (pageId) {
       try {
         const igRes = await fetch(
           `${META_GRAPH}/${pageId}?fields=instagram_business_account{id,name,username}`,
@@ -348,11 +344,6 @@ export async function POST(req: NextRequest) {
         accountName: igAccountName || null,
         isConnected: true,
         connectedAt: new Date().toISOString(),
-        // Store token when connected via direct scope (no Facebook page)
-        // so sendInstagram can work even without channels.facebook.pageAccessToken
-        ...(igIdFromScope && !pageId
-          ? { accessToken: await encryptToken(longLivedToken) }
-          : {}),
       };
     }
 

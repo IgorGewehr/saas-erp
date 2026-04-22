@@ -5117,18 +5117,13 @@ function CanaisTab() {
     try {
       const FB = await ensureFbSdk();
 
-      // instagram_business_basic + instagram_business_manage_messages are approved —
-      // request them directly for native Instagram DM access.
-      // pages_* scopes are still needed for Page subscription (webhook delivery) and Messenger.
+      // instagram_business_basic / instagram_business_manage_messages are approved in App Review
+      // but are NOT valid scopes for FB.login() (they belong to "Instagram API with Instagram Login",
+      // a different product). FB.login() only accepts Facebook Login scopes.
+      // Instagram DM access goes through the Facebook Page (pages_messaging approved).
       const scopes: Record<string, string[]> = {
         facebook: ['pages_show_list', 'pages_messaging', 'pages_manage_metadata'],
-        instagram: [
-          'instagram_business_basic',
-          'instagram_business_manage_messages',
-          'pages_show_list',
-          'pages_messaging',
-          'pages_manage_metadata',
-        ],
+        instagram: ['pages_show_list', 'pages_messaging', 'pages_manage_metadata'],
         whatsapp: ['whatsapp_business_messaging'],
       };
 
@@ -5143,6 +5138,9 @@ function CanaisTab() {
       const loginOptions: Record<string, unknown> = {
         scope: scopes[channel].join(','),
         return_scopes: true,
+        // Force fresh permission dialog — critical in Live Mode so real users
+        // always see the consent screen instead of a cached/partial grant
+        auth_type: 'rerequest',
       };
       if (channel === 'whatsapp') {
         loginOptions.extras = { feature: 'whatsapp_embedded_signup' };
@@ -5184,10 +5182,14 @@ function CanaisTab() {
                   await refreshUser();
                   toast.success(`${channelLabels[channel]} conectado!`);
                 } else {
-                  toast.error(data.error || 'Erro ao conectar canal');
+                  const errMsg = data.error || 'Erro ao conectar canal';
+                  toast.error(`[${res.status}] ${errMsg}`);
+                  console.error('[Meta Signup] error:', { status: res.status, ...data });
                 }
-              } catch {
-                toast.error('Erro ao processar a conexao');
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                toast.error(`Erro ao processar conexão: ${msg}`);
+                console.error('[Meta Signup] exception:', err);
               }
             } else {
               toast.info('Conexao cancelada pelo usuario');
