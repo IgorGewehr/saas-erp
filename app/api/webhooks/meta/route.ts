@@ -1278,8 +1278,15 @@ async function updateMessageStatus(params: {
 
     // Save error details when status is 'failed'
     if (params.status === 'failed' && params.errors?.length) {
-      updateData.failedReason = params.errors[0].title;
-      updateData.failedCode = params.errors[0].code;
+      const firstError = params.errors[0];
+      updateData.failedReason = firstError.title;
+      updateData.failedCode = firstError.code;
+      console.error('[Meta Webhook] Message delivery failed:', {
+        messageId: params.messageId,
+        channel: params.channel,
+        businessId: params.businessId,
+        errors: params.errors,
+      });
     }
 
     await adminDb.doc(`conversationMessages/${msgDoc.id}`).update(updateData);

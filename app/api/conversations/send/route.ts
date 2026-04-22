@@ -52,6 +52,8 @@ interface MetaApiResponse {
     message: string;
     type: string;
     code: number;
+    error_subcode?: number;   // e.g. 2018109 = 24h window, 2018141 = insufficient permission
+    error_data?: unknown;
     fbtrace_id?: string;
   };
 }
@@ -67,47 +69,72 @@ function handleMetaApiError(
   channelLabel: string,
 ): never {
   const errorCode = data.error?.code;
+  const errorSubcode = data.error?.error_subcode;
   const errorMsg = data.error?.message ?? `API retornou status ${response.status}`;
+  const fbtrace = data.error?.fbtrace_id ?? '';
 
-  // Map known Meta error codes to actionable messages
+  // Always log the full error detail so Netlify logs show subcode
+  console.error(`[Send] Meta API error [${channelLabel}] code=${errorCode} subcode=${errorSubcode} trace=${fbtrace} msg="${errorMsg}"`);
+
+  // Map known Meta error codes + subcodes to actionable messages
+  // Subcodes take priority — same code can mean very different things
   let userMessage: string;
   let shouldRetry = false;
 
-  switch (errorCode) {
-    case 130429:
-      userMessage = 'Limite de envio atingido. Tente novamente em alguns segundos.';
-      shouldRetry = true;
-      break;
-    case 131047:
-      userMessage = 'Fora da janela de 24h. Use uma mensagem de template.';
-      break;
-    case 131051:
-      userMessage = 'Tipo de mensagem nao suportado para este canal.';
-      break;
-    case 131026:
-      userMessage = 'Numero invalido ou destinatario nao esta no WhatsApp.';
-      break;
-    case 190:
-      userMessage = 'Token de acesso expirado. Reconecte o canal em Configuracoes.';
-      break;
-    case 368:
-      userMessage = 'Conta temporariamente bloqueada por violacao de politicas.';
-      break;
-    case 3:
-      userMessage = 'O aplicativo nao tem permissao para esta chamada de API. Verifique as permissoes do canal no painel Meta.';
-      break;
-    case 10:
-      userMessage = 'Permissao negada. Verifique as permissoes do canal.';
-      break;
-    default:
-      userMessage = `Falha ao enviar via ${channelLabel}: ${errorMsg}`;
+  // ── Messenger Platform subcodes (Facebook / Instagram DM) ──────────────────
+  // 2018109 = Cannot message users who are not connected to your page (outside 24h window)
+  // 2018141 = Insufficient permission for this action (wrong scope)
+  // 2018108 = Cannot send to a user who has blocked messages from your page
+  // 2018065 = This message is outside of the allowed window
+  if (errorSubcode === 2018109 || errorSubcode === 2018065) {
+    userMessage = 'Janela de 24h encerrada. Aguarde uma mensagem do contato para reabrir a janela.';
+  } else if (errorSubcode === 2018141) {
+    userMessage = 'Permissao insuficiente. Reconecte o canal em Configuracoes para gerar um token com as permissoes aprovadas.';
+  } else if (errorSubcode === 2018108) {
+    userMessage = 'O contato bloqueou mensagens da sua pagina.';
+  } else {
+    switch (errorCode) {
+      case 130429:
+        userMessage = 'Limite de envio atingido. Tente novamente em alguns segundos.';
+        shouldRetry = true;
+        break;
+      case 131047:
+        userMessage = 'Fora da janela de 24h. Use uma mensagem de template.';
+        break;
+      case 131051:
+        userMessage = 'Tipo de mensagem nao suportado para este canal.';
+        break;
+      case 131026:
+        userMessage = 'Numero invalido ou destinatario nao esta no WhatsApp.';
+        break;
+      case 190:
+        userMessage = 'Token de acesso expirado. Reconecte o canal em Configuracoes.';
+        break;
+      case 368:
+        userMessage = 'Conta temporariamente bloqueada por violacao de politicas.';
+        break;
+      case 3:
+        userMessage = 'O aplicativo nao tem permissao para esta chamada de API. Reconecte o canal para gerar um token com as permissoes aprovadas.';
+        break;
+      case 10:
+        userMessage = 'Permissao negada. Reconecte o canal em Configuracoes para renovar o token.';
+        break;
+      case 200:
+      case 230:
+        userMessage = 'Permissao de escrita ausente no token. Reconecte o canal em Configuracoes.';
+        break;
+      default:
+        userMessage = `Falha ao enviar via ${channelLabel}: ${errorMsg}`;
+    }
   }
 
   throw new Error(JSON.stringify({
     message: userMessage,
     code: errorCode,
+    subcode: errorSubcode,
     shouldRetry,
     originalError: errorMsg,
+    fbtrace,
   }));
 }
 
