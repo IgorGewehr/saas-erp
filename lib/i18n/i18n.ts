@@ -19,7 +19,7 @@ i18n
       escapeValue: false, // React already escapes
     },
     detection: {
-      order: ['localStorage', 'navigator'],
+      order: ['localStorage'],
       lookupLocalStorage: 'i18nextLng',
       caches: ['localStorage'],
     },
