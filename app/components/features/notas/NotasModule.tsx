@@ -122,11 +122,11 @@ function ColorPicker({
       <AnimatePresence>
         {open && (
           <motion.div
-            initial={{ opacity: 0, scale: 0.92, y: -4 }}
+            initial={{ opacity: 0, scale: 0.92, y: 4 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.92, y: -4 }}
+            exit={{ opacity: 0, scale: 0.92, y: 4 }}
             transition={{ duration: 0.15 }}
-            className="absolute top-full left-0 mt-1.5 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl p-2 grid grid-cols-4 gap-1.5 w-[120px]"
+            className="absolute bottom-full left-0 mb-1.5 z-[200] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl p-2 grid grid-cols-4 gap-1.5 w-[120px]"
           >
             {COLOR_OPTIONS.map(c => (
               <button
@@ -274,6 +274,21 @@ interface NoteFormData {
   scope: 'personal' | 'team';
 }
 
+const NOTE_MODAL_SIZE_KEY = 'notas_modal_size';
+const DEFAULT_MODAL_W = 560;
+const DEFAULT_MODAL_H = 440;
+
+function getSavedModalSize(): { w: number; h: number } {
+  try {
+    const raw = localStorage.getItem(NOTE_MODAL_SIZE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed.w > 300 && parsed.h > 200) return parsed;
+    }
+  } catch { /* ignore */ }
+  return { w: DEFAULT_MODAL_W, h: DEFAULT_MODAL_H };
+}
+
 function NoteModal({
   initial,
   tab,
@@ -293,9 +308,29 @@ function NoteModal({
   });
   const [saving, setSaving] = useState(false);
   const contentRef = useRef<HTMLTextAreaElement>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
+  const backdropMouseDown = useRef<{ x: number; y: number } | null>(null);
+  const savedSize = getSavedModalSize();
 
+  // Focus textarea on open
   useEffect(() => {
     contentRef.current?.focus();
+  }, []);
+
+  // Save modal size on unmount via ResizeObserver
+  useEffect(() => {
+    const el = modalRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        if (width > 300 && height > 200) {
+          localStorage.setItem(NOTE_MODAL_SIZE_KEY, JSON.stringify({ w: Math.round(width), h: Math.round(height) }));
+        }
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
   }, []);
 
   const handleSubmit = async () => {
@@ -316,70 +351,111 @@ function NoteModal({
     }
   };
 
+  const color = getColorConfig(form.color);
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm"
-      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+      onMouseDown={e => {
+        if (e.target === e.currentTarget)
+          backdropMouseDown.current = { x: e.clientX, y: e.clientY };
+        else
+          backdropMouseDown.current = null;
+      }}
+      onClick={e => {
+        if (e.target !== e.currentTarget) return;
+        const origin = backdropMouseDown.current;
+        backdropMouseDown.current = null;
+        if (!origin) return;
+        // Only close if mouse didn't move (true click, not a resize drag release)
+        const dist = Math.abs(e.clientX - origin.x) + Math.abs(e.clientY - origin.y);
+        if (dist < 6) onClose();
+      }}
     >
       <motion.div
+        ref={modalRef}
         initial={{ opacity: 0, scale: 0.94, y: 12 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.94, y: 12 }}
         transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-        className={cn(
-          'w-full max-w-md rounded-2xl border shadow-2xl p-5 space-y-4',
-          getColorConfig(form.color).bg,
-          getColorConfig(form.color).border,
-        )}
+        className={cn('rounded-2xl border shadow-2xl flex flex-col', color.bg, color.border)}
+        style={{
+          width: savedSize.w,
+          height: savedSize.h,
+          minWidth: 340,
+          minHeight: 280,
+          maxWidth: 'calc(100vw - 32px)',
+          maxHeight: 'calc(100vh - 32px)',
+          resize: 'both',
+          overflow: 'hidden',
+        }}
         onKeyDown={handleKeyDown}
       >
         {/* Header */}
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold text-sm text-gray-700 dark:text-gray-200">
+        <div className="flex items-center justify-between px-5 pt-4 pb-3 flex-shrink-0 border-b border-black/[0.06] dark:border-white/[0.06]">
+          <h2 className={cn('font-semibold text-sm', color.text)}>
             {initial ? 'Editar nota' : 'Nova nota'}
           </h2>
-          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-black/10 dark:hover:bg-white/10 transition-colors">
-            <X className="w-4 h-4 text-gray-500 dark:text-gray-400" />
-          </button>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-black/30 dark:text-white/30">
+              Ctrl+Enter para salvar
+            </span>
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
+            >
+              <X className="w-4 h-4 text-black/40 dark:text-white/40" />
+            </button>
+          </div>
         </div>
 
-        {/* Title */}
-        <input
-          type="text"
-          placeholder="Título (opcional)"
-          value={form.title}
-          onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
-          className="w-full bg-transparent border-none outline-none font-semibold text-gray-800 dark:text-gray-100 placeholder-gray-400 text-sm"
-        />
+        {/* Body — takes all available vertical space, scrolls internally */}
+        <div className="flex flex-col min-h-0 flex-1 px-5 py-3 gap-2">
+          {/* Title — no browser outline */}
+          <input
+            type="text"
+            placeholder="Título (opcional)"
+            value={form.title}
+            onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
+            style={{ outline: 'none', boxShadow: 'none' }}
+            className={cn(
+              'w-full bg-transparent border-0 font-semibold placeholder-black/30 dark:placeholder-white/30 text-base leading-snug flex-shrink-0',
+              color.text,
+            )}
+          />
 
-        {/* Content */}
-        <textarea
-          ref={contentRef}
-          placeholder="Escreva sua nota..."
-          value={form.content}
-          onChange={e => setForm(f => ({ ...f, content: e.target.value }))}
-          rows={6}
-          className="w-full bg-transparent border-none outline-none resize-none text-sm text-gray-700 dark:text-gray-300 placeholder-gray-400 leading-relaxed"
-        />
+          {form.title && (
+            <div className="h-px bg-black/[0.06] dark:bg-white/[0.06] flex-shrink-0" />
+          )}
 
-        {/* Footer controls */}
-        <div className="flex items-center justify-between pt-2 border-t border-black/10 dark:border-white/10">
+          {/* Content — fills remaining space, scrolls when needed */}
+          <textarea
+            ref={contentRef}
+            placeholder="Escreva sua nota..."
+            value={form.content}
+            onChange={e => setForm(f => ({ ...f, content: e.target.value }))}
+            style={{ outline: 'none', boxShadow: 'none' }}
+            className="flex-1 w-full bg-transparent border-0 resize-none text-sm text-black/80 dark:text-white/80 placeholder-black/30 dark:placeholder-white/30 leading-relaxed min-h-0 overflow-y-auto"
+          />
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between px-5 py-3 flex-shrink-0 border-t border-black/[0.06] dark:border-white/[0.06]">
           <div className="flex items-center gap-2">
             <ColorPicker value={form.color} onChange={c => setForm(f => ({ ...f, color: c }))} />
 
-            {/* Scope toggle */}
-            <div className="flex items-center gap-0.5 bg-white/60 dark:bg-gray-700/60 border border-gray-200 dark:border-gray-600 rounded-lg p-0.5">
+            <div className="flex items-center gap-0.5 bg-black/10 dark:bg-white/10 rounded-lg p-0.5">
               <button
                 type="button"
                 onClick={() => setForm(f => ({ ...f, scope: 'personal' }))}
                 className={cn(
-                  'flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-all',
+                  'flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-all',
                   form.scope === 'personal'
-                    ? 'bg-white dark:bg-gray-600 shadow-sm text-gray-800 dark:text-gray-100'
-                    : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
+                    ? 'bg-white/80 dark:bg-white/20 shadow-sm text-black dark:text-white'
+                    : 'text-black/50 dark:text-white/50 hover:text-black dark:hover:text-white',
                 )}
               >
                 <Lock className="w-3 h-3" />
@@ -389,10 +465,10 @@ function NoteModal({
                 type="button"
                 onClick={() => setForm(f => ({ ...f, scope: 'team' }))}
                 className={cn(
-                  'flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-all',
+                  'flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-all',
                   form.scope === 'team'
-                    ? 'bg-white dark:bg-gray-600 shadow-sm text-gray-800 dark:text-gray-100'
-                    : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
+                    ? 'bg-white/80 dark:bg-white/20 shadow-sm text-black dark:text-white'
+                    : 'text-black/50 dark:text-white/50 hover:text-black dark:hover:text-white',
                 )}
               >
                 <Users className="w-3 h-3" />
@@ -404,7 +480,7 @@ function NoteModal({
           <button
             onClick={handleSubmit}
             disabled={!form.content.trim() || saving}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-gray-800 dark:bg-gray-100 text-white dark:text-gray-900 rounded-xl text-xs font-semibold hover:opacity-90 disabled:opacity-40 transition-opacity"
+            className="flex items-center gap-1.5 px-4 py-2 bg-black/70 dark:bg-white/90 text-white dark:text-gray-900 rounded-xl text-xs font-semibold hover:opacity-90 disabled:opacity-30 transition-opacity"
           >
             {saving ? (
               <motion.div
@@ -418,10 +494,6 @@ function NoteModal({
             {initial ? 'Salvar' : 'Criar'}
           </button>
         </div>
-
-        <p className="text-[10px] text-gray-400 dark:text-gray-500 text-right -mt-1">
-          Ctrl+Enter para salvar
-        </p>
       </motion.div>
     </motion.div>
   );

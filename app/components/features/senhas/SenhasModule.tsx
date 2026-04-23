@@ -25,7 +25,9 @@ import {
   ChevronRight,
 } from 'lucide-react';
 
-interface VaultListItem extends Omit<VaultEntry, 'encryptedPassword'> {}
+interface VaultListItem extends Omit<VaultEntry, 'encryptedPassword'> {
+  hasPassword: boolean;
+}
 
 interface VaultFormState {
   id?: string;
@@ -430,7 +432,12 @@ export function VaultTab() {
                 )}
 
                 <div className="flex items-center gap-2 mt-2">
-                  {isRevealed && revealedValue ? (
+                  {!e.hasPassword ? (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-gray-100 dark:bg-white/[0.04] text-xs text-gray-400 dark:text-gray-500 select-none">
+                      <EyeOff className="w-3 h-3" />
+                      Sem credencial
+                    </span>
+                  ) : isRevealed && revealedValue ? (
                     <>
                       <div className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-gray-50 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 font-mono text-xs text-gray-900 dark:text-gray-100 truncate">
                         {revealedValue}
@@ -555,7 +562,7 @@ function VaultForm({
 
         {/* Password with generator */}
         <div>
-          <label className={labelCls}>{editing ? 'Senha (vazio = manter atual)' : 'Senha'}</label>
+          <label className={labelCls}>{editing ? 'Senha — vazio mantém a atual' : 'Senha — opcional'}</label>
           <div className="flex gap-2">
             <div className="relative flex-1">
               <input

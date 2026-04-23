@@ -58,6 +58,8 @@ import {
   ChevronRight,
   Trash2,
   Archive,
+  ArchiveX,
+  FolderOpen,
   AlignLeft,
   CheckCircle2,
   Circle,
@@ -2130,7 +2132,7 @@ function BoardHeader({
               )}
               title={t('kanban.archiveBoardTooltip', 'Arquivar board')}
             >
-              <Archive className="w-3.5 h-3.5" />
+              <ArchiveX className="w-3.5 h-3.5" />
             </button>
           )}
 
@@ -2148,7 +2150,7 @@ function BoardHeader({
                 )}
                 title={t('kanban.viewArchived', 'Ver boards arquivados')}
               >
-                <Archive className="w-3.5 h-3.5" />
+                <FolderOpen className="w-3.5 h-3.5" />
               </button>
 
               <AnimatePresence>

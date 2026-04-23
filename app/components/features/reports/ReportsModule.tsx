@@ -546,11 +546,11 @@ function ClientesTab({ clients, appointments, periodRange, periodLabel }: {
                 <div key={c.id} className="flex items-center gap-3">
                   <div className="w-5 text-xs text-gray-400 text-right flex-shrink-0 font-medium">{i + 1}</div>
                   <div className="w-8 h-8 rounded-lg bg-red-100 dark:bg-red-500/20 flex items-center justify-center flex-shrink-0 text-xs font-bold text-red-600 dark:text-red-400">
-                    {c.name.charAt(0).toUpperCase()}
+                    {(c.name ?? '?').charAt(0).toUpperCase()}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex justify-between items-center mb-0.5">
-                      <span className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">{c.name}</span>
+                      <span className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">{c.name ?? '—'}</span>
                       <div className="flex items-center gap-2 ml-2 flex-shrink-0">
                         {apptMap.get(c.id) ? (
                           <span className="text-[10px] text-gray-400">{apptMap.get(c.id)} vis. período</span>

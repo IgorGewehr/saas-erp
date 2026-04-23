@@ -2266,15 +2266,40 @@ export default function ConversasModule() {
     messagesEndRef.current?.scrollIntoView({ behavior });
   }, []);
 
-  useEffect(() => {
-    if (selectedConversation) {
-      setTimeout(() => scrollToBottom('instant'), 50);
-    }
-  }, [selectedConversation?.id, scrollToBottom]);
+  // Track the conversation ID for which we've already done the initial instant scroll
+  const initialScrollDoneRef = useRef<string | null>(null);
 
+  // Reset initial scroll flag when conversation changes
   useEffect(() => {
-    if (selectedConversation && messages.length > 0 && !isLoadingOlderRef.current) {
-      scrollToBottom();
+    if (selectedConversation?.id) {
+      initialScrollDoneRef.current = null;
+    }
+  }, [selectedConversation?.id]);
+
+  // Scroll instantly to bottom when messages finish loading for the first time in a conversation.
+  // This fires as soon as isLoadingMessages goes false AND messages are in the DOM.
+  useEffect(() => {
+    if (
+      !isLoadingMessages &&
+      selectedConversation?.id &&
+      messages.length > 0 &&
+      initialScrollDoneRef.current !== selectedConversation.id
+    ) {
+      initialScrollDoneRef.current = selectedConversation.id;
+      // rAF ensures the DOM has painted the messages before scrolling
+      requestAnimationFrame(() => scrollToBottom('instant'));
+    }
+  }, [isLoadingMessages, selectedConversation?.id, messages.length, scrollToBottom]);
+
+  // Smooth scroll when a new message arrives after the initial load
+  useEffect(() => {
+    if (
+      selectedConversation &&
+      messages.length > 0 &&
+      !isLoadingOlderRef.current &&
+      initialScrollDoneRef.current === selectedConversation.id
+    ) {
+      scrollToBottom('smooth');
     }
   }, [messages.length, selectedConversation, scrollToBottom]);
 
