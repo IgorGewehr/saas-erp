@@ -402,9 +402,23 @@ export async function DELETE(req: NextRequest) {
       return apiError('Contact not found', 404);
     }
 
-    await docRef.delete();
+    // Cascade delete: remove deals and activities linked to this contact
+    const dealsSnap = await adminDb.collection('crmDeals')
+      .where('businessId', '==', auth.businessId)
+      .where('contactId', '==', id)
+      .get();
+    const activitiesSnap = await adminDb.collection('crmActivities')
+      .where('businessId', '==', auth.businessId)
+      .where('contactId', '==', id)
+      .get();
 
-    return apiSuccess({ id, deleted: true });
+    const batch = adminDb.batch();
+    batch.delete(docRef);
+    for (const d of dealsSnap.docs) batch.delete(d.ref);
+    for (const a of activitiesSnap.docs) batch.delete(a.ref);
+    await batch.commit();
+
+    return apiSuccess({ id, deleted: true, dealsDeleted: dealsSnap.size, activitiesDeleted: activitiesSnap.size });
   } catch (err) {
     console.error('[API] DELETE /api/v1/crm/contacts error:', err);
     return apiError('Failed to delete contact', 500);

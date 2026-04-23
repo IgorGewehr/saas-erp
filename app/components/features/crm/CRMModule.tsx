@@ -734,7 +734,24 @@ export default function CRMModule() {
     } catch (err) { console.error('[CRM] Error saving contact:', err); toast.error(t('crm.toast.errorSaveContact', 'Erro ao salvar contato')); }
   }, [business?.id, user, editingContact, queryClient]);
 
-  const handleDeleteContact = useCallback(async () => { if (!deleteContactConfirm || !business?.id) return; try { await deleteDoc(doc(db, 'clients', deleteContactConfirm.id)); toast.success(t('crm.toast.contactDeleted', 'Contato excluído')); queryClient.invalidateQueries({ queryKey: ['clients', business.id] }); setDeleteContactConfirm(null); } catch (err) { console.error('[CRM] Error deleting contact:', err); toast.error(t('crm.toast.errorDelete', 'Erro ao excluir')); } }, [deleteContactConfirm, business?.id, queryClient]);
+  const handleDeleteContact = useCallback(async () => {
+    if (!deleteContactConfirm || !business?.id) return;
+    try {
+      // Cascade: delete deals linked to this contact
+      const dealsSnap = await getDocs(query(collection(db, 'crmDeals'), where('businessId', '==', business.id), where('contactId', '==', deleteContactConfirm.id)));
+      for (const d of dealsSnap.docs) await deleteDoc(doc(db, 'crmDeals', d.id));
+      // Cascade: delete activities linked to this contact
+      const activitiesSnap = await getDocs(query(collection(db, 'crmActivities'), where('businessId', '==', business.id), where('contactId', '==', deleteContactConfirm.id)));
+      for (const a of activitiesSnap.docs) await deleteDoc(doc(db, 'crmActivities', a.id));
+      // Delete the contact itself
+      await deleteDoc(doc(db, 'clients', deleteContactConfirm.id));
+      toast.success(t('crm.toast.contactDeleted', 'Contato excluído'));
+      queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
+      queryClient.invalidateQueries({ queryKey: ['crmDeals', business.id] });
+      queryClient.invalidateQueries({ queryKey: ['crmActivities', business.id] });
+      setDeleteContactConfirm(null);
+    } catch (err) { console.error('[CRM] Error deleting contact:', err); toast.error(t('crm.toast.errorDelete', 'Erro ao excluir')); }
+  }, [deleteContactConfirm, business?.id, queryClient]);
 
   const handleSaveDeal = useCallback(async (data: Partial<CRMDeal>) => { if (!business?.id || !user) return; const now = new Date().toISOString(); try { if (editingDeal) { await updateDoc(doc(db, 'crmDeals', editingDeal.id), { ...data, updatedAt: now }); toast.success(t('crm.toast.dealUpdated', 'Deal atualizado!')); } else { await addDoc(collection(db, 'crmDeals'), { ...data, businessId: business.id, stage: data.stage ?? 'prospeccao', probability: data.probability ?? 10, value: data.value ?? 0, createdAt: now, updatedAt: now }); toast.success(t('crm.toast.dealCreated', 'Deal criado!')); } queryClient.invalidateQueries({ queryKey: ['crmDeals', business.id] }); setDealDialogOpen(false); setEditingDeal(null); } catch (err) { console.error('[CRM] Error saving deal:', err); toast.error(t('crm.toast.errorSaveDeal', 'Erro ao salvar deal')); } }, [business?.id, user, editingDeal, queryClient]);
 
