@@ -90,21 +90,36 @@ async function downloadAndUploadMedia(params: {
       return null;
     }
 
-    const buffer = Buffer.from(await mediaRes.arrayBuffer());
+    let buffer = Buffer.from(await mediaRes.arrayBuffer() as ArrayBuffer);
 
     // 3. Determine real content type — prefer the actual HTTP header over what Meta declared
     const realContentType = mediaRes.headers.get('content-type')?.split(';')[0]?.trim()
       || params.mimeType
       || 'application/octet-stream';
-    const ext = mimeToExtension(realContentType);
+
+    // 4. Convert OGG/Opus/AMR audio to M4A (AAC) for cross-browser compatibility.
+    //    WhatsApp voice notes are audio/ogg;codecs=opus — Safari cannot play OGG.
+    let uploadBuffer: Uint8Array = buffer;
+    let uploadContentType = realContentType;
+    if (AUDIO_CONVERT_MIMES.has(realContentType)) {
+      try {
+        console.log('[Media] Converting', realContentType, 'to M4A for cross-browser support');
+        uploadBuffer = await convertAudioToM4a(buffer, mimeToExtension(realContentType));
+        uploadContentType = 'audio/mp4';
+      } catch (convErr) {
+        console.warn('[Media] Audio conversion failed, keeping original format:', convErr);
+      }
+    }
+
+    const ext = mimeToExtension(uploadContentType);
     const fileName = `${Date.now()}_${params.mediaId.slice(-8)}${ext}`;
     const storagePath = `conversations/${params.businessId}/${params.conversationId}/${fileName}`;
 
-    // 4. Upload to Firebase Storage with correct contentType
+    // 5. Upload to Firebase Storage with correct contentType
     const storage = getStorageBucket();
     const storageRef = ref(storage, storagePath);
-    await uploadBytes(storageRef, buffer, {
-      contentType: realContentType,
+    await uploadBytes(storageRef, uploadBuffer, {
+      contentType: uploadContentType,
     });
 
     const downloadUrl = await getDownloadURL(storageRef);
@@ -125,10 +140,12 @@ function mimeToExtension(mime: string): string {
     'video/3gpp': '.3gp',
     'audio/aac': '.aac',
     'audio/amr': '.amr',
+    'audio/amr-wb': '.amr',
     'audio/mpeg': '.mp3',
     'audio/mp4': '.m4a',
     'audio/ogg': '.ogg',
     'audio/opus': '.opus',
+    'audio/webm': '.webm',
     'application/pdf': '.pdf',
     'application/vnd.ms-powerpoint': '.ppt',
     'application/msword': '.doc',
@@ -137,6 +154,104 @@ function mimeToExtension(mime: string): string {
     'image/webp; codecs=vp8': '.webp',
   };
   return map[mime] || '.bin';
+}
+
+// MIME types that are not universally supported and should be converted to M4A (AAC)
+// OGG/Opus = WhatsApp voice notes; AMR = legacy telephony; WebM = some browser recordings
+const AUDIO_CONVERT_MIMES = new Set([
+  'audio/ogg', 'audio/opus', 'audio/webm', 'audio/amr', 'audio/amr-wb',
+]);
+
+/**
+ * Converts an audio buffer to M4A (AAC) for cross-browser/platform compatibility.
+ * Safari does not support OGG/Opus. Instagram rejects OGG.
+ * AMR is a telephony codec not supported in browsers.
+ */
+async function convertAudioToM4a(inputBuffer: Buffer, inputExt: string): Promise<Buffer> {
+  const ffmpegInstaller = await import('@ffmpeg-installer/ffmpeg');
+  const ffmpeg = (await import('fluent-ffmpeg')).default;
+  const { tmpdir } = await import('os');
+  const { join } = await import('path');
+  const { writeFile, readFile, unlink } = await import('fs/promises');
+
+  ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+
+  const inputPath = join(tmpdir(), `in_${Date.now()}${inputExt}`);
+  const outputPath = join(tmpdir(), `out_${Date.now()}.m4a`);
+
+  await writeFile(inputPath, inputBuffer);
+
+  await new Promise<void>((resolve, reject) => {
+    ffmpeg(inputPath)
+      .audioCodec('aac')
+      .audioBitrate('128k')
+      .audioChannels(1)
+      .format('ipod') // M4A/AAC container
+      .on('error', reject)
+      .on('end', () => resolve())
+      .save(outputPath);
+  });
+
+  const m4aBuffer = await readFile(outputPath);
+  await unlink(inputPath).catch(() => {});
+  await unlink(outputPath).catch(() => {});
+  return m4aBuffer;
+}
+
+/**
+ * Downloads a media attachment from a direct URL (Facebook/Instagram CDN),
+ * converts OGG audio to M4A if needed, and uploads to Firebase Storage.
+ *
+ * Meta's attachment URLs are ephemeral (expire in hours) so we always
+ * persist them in Firebase Storage.
+ */
+async function downloadAndUploadAttachment(params: {
+  url: string;
+  mediaType: string;
+  businessId: string;
+  tempConvId: string;
+  pageToken?: string;
+}): Promise<string | null> {
+  try {
+    const headers: Record<string, string> = {};
+    if (params.pageToken) headers['Authorization'] = `Bearer ${params.pageToken}`;
+
+    const res = await fetch(params.url, {
+      headers,
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!res.ok) {
+      console.error('[Attachment] Download failed:', res.status, params.url.slice(0, 80));
+      return null;
+    }
+
+    let buffer: Uint8Array = Buffer.from(await res.arrayBuffer() as ArrayBuffer);
+    const rawContentType = res.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream';
+
+    let uploadContentType = rawContentType;
+    if (params.mediaType === 'audio' && AUDIO_CONVERT_MIMES.has(rawContentType)) {
+      try {
+        console.log('[Attachment] Converting', rawContentType, 'to M4A');
+        buffer = await convertAudioToM4a(Buffer.from(buffer), mimeToExtension(rawContentType));
+        uploadContentType = 'audio/mp4';
+      } catch (convErr) {
+        console.warn('[Attachment] Audio conversion failed, keeping original:', convErr);
+      }
+    }
+
+    const ext = mimeToExtension(uploadContentType);
+    const fileName = `${Date.now()}_attach${ext}`;
+    const storagePath = `conversations/${params.businessId}/${params.tempConvId}/${fileName}`;
+
+    const storage = getStorageBucket();
+    const storageRef = ref(storage, storagePath);
+    await uploadBytes(storageRef, buffer, { contentType: uploadContentType });
+    return getDownloadURL(storageRef);
+  } catch (err) {
+    console.error('[Attachment] Error:', err);
+    return null;
+  }
 }
 
 /**
@@ -589,6 +704,25 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
       const mediaTypeMap: Record<string, string> = {
         image: 'image', video: 'video', audio: 'audio', file: 'document', fallback: 'document'
       };
+      const mappedMediaType = (mediaTypeMap[attachmentType] || 'document') as 'image' | 'audio' | 'video' | 'document';
+
+      // For audio: always download and convert OGG→M4A, then store in Firebase.
+      // Meta CDN audio URLs expire and OGG/Opus is not supported in Safari or Instagram.
+      let resolvedMediaUrl = attachmentUrl;
+      if (mappedMediaType === 'audio' && attachmentUrl) {
+        const bizId = await resolveBusinessId(channel, channelIdentifier);
+        if (bizId) {
+          const pageToken = await getDecryptedPageToken(bizId);
+          const stored = await downloadAndUploadAttachment({
+            url: attachmentUrl,
+            mediaType: 'audio',
+            businessId: bizId,
+            tempConvId: `${channel}_${event.sender.id}`,
+            pageToken: pageToken || undefined,
+          }).catch((err) => { console.warn('[Attachment FB] audio store failed:', err); return null; });
+          if (stored) resolvedMediaUrl = stored;
+        }
+      }
 
       await saveInboundMessage({
         channel,
@@ -599,8 +733,8 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
         senderAvatarUrl,
         messageId: event.message.mid,
         content: event.message.text || `[${attachmentType === 'file' ? 'Documento' : attachmentType === 'image' ? 'Imagem' : attachmentType === 'video' ? 'Video' : attachmentType === 'audio' ? 'Audio' : 'Anexo'}]`,
-        mediaType: (mediaTypeMap[attachmentType] || 'document') as 'image' | 'audio' | 'video' | 'document',
-        mediaUrl: attachmentUrl,
+        mediaType: mappedMediaType,
+        mediaUrl: resolvedMediaUrl,
         timestamp: new Date(event.timestamp).toISOString(),
       });
     }
@@ -726,6 +860,24 @@ async function handleInstagramEvent(entry: MetaWebhookEntry) {
       const mediaTypeMap: Record<string, string> = {
         image: 'image', video: 'video', audio: 'audio', file: 'document', fallback: 'document'
       };
+      const mappedMediaType = (mediaTypeMap[attachmentType] || 'document') as 'image' | 'audio' | 'video' | 'document';
+
+      // For audio: download and convert OGG→M4A if needed (Instagram rejects OGG, Safari can't play it)
+      let resolvedMediaUrl = attachmentUrl;
+      if (mappedMediaType === 'audio' && attachmentUrl) {
+        const bizId = await resolveBusinessId('instagram', String(accountId));
+        if (bizId) {
+          const pageToken = await getDecryptedPageToken(bizId);
+          const stored = await downloadAndUploadAttachment({
+            url: attachmentUrl,
+            mediaType: 'audio',
+            businessId: bizId,
+            tempConvId: `instagram_${event.sender.id}`,
+            pageToken: pageToken || undefined,
+          }).catch((err) => { console.warn('[Attachment IG] audio store failed:', err); return null; });
+          if (stored) resolvedMediaUrl = stored;
+        }
+      }
 
       await saveInboundMessage({
         channel: 'instagram',
@@ -736,8 +888,8 @@ async function handleInstagramEvent(entry: MetaWebhookEntry) {
         messageId: event.message.mid,
         content: event.message.text || '',
         conversationPreview: event.message.text || `[${attachmentType === 'file' ? 'Documento' : attachmentType === 'image' ? 'Imagem' : attachmentType === 'video' ? 'Video' : attachmentType === 'audio' ? 'Audio' : 'Anexo'}]`,
-        mediaType: (mediaTypeMap[attachmentType] || 'document') as 'image' | 'audio' | 'video' | 'document',
-        mediaUrl: attachmentUrl,
+        mediaType: mappedMediaType,
+        mediaUrl: resolvedMediaUrl,
         timestamp: new Date(event.timestamp).toISOString(),
       });
     }
