@@ -858,10 +858,10 @@ service cloud.firestore {
                     && request.resource.data.authorId == request.auth.uid
                     && isNonEmptyString(request.resource.data.content);
 
-      // Authors can update their own notes
+      // Authors can update their own notes; any business member can update team notes
       allow update: if isAuthenticated()
                     && isOwnBusiness()
-                    && resource.data.authorId == request.auth.uid;
+                    && (resource.data.authorId == request.auth.uid || resource.data.scope == 'team');
 
       // Authors can delete their own notes; managers can delete any note
       allow delete: if isAuthenticated()
