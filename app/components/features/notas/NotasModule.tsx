@@ -66,14 +66,14 @@ type ActiveTab = 'personal' | 'team';
 // ─── Color palette ─────────────────────────────────────────────────────────────
 
 const COLOR_OPTIONS: { key: NoteColor; label: string; bg: string; border: string; text: string; dot: string }[] = [
-  { key: 'yellow',  label: 'Amarelo', bg: 'bg-yellow-50 dark:bg-yellow-900/20',  border: 'border-yellow-200 dark:border-yellow-700/40', text: 'text-yellow-900 dark:text-yellow-100', dot: 'bg-yellow-400' },
-  { key: 'green',   label: 'Verde',   bg: 'bg-green-50 dark:bg-green-900/20',    border: 'border-green-200 dark:border-green-700/40',   text: 'text-green-900 dark:text-green-100',   dot: 'bg-green-400' },
-  { key: 'blue',    label: 'Azul',    bg: 'bg-blue-50 dark:bg-blue-900/20',      border: 'border-blue-200 dark:border-blue-700/40',     text: 'text-blue-900 dark:text-blue-100',     dot: 'bg-blue-400' },
-  { key: 'pink',    label: 'Rosa',    bg: 'bg-pink-50 dark:bg-pink-900/20',      border: 'border-pink-200 dark:border-pink-700/40',     text: 'text-pink-900 dark:text-pink-100',     dot: 'bg-pink-400' },
-  { key: 'purple',  label: 'Roxo',    bg: 'bg-purple-50 dark:bg-purple-900/20',  border: 'border-purple-200 dark:border-purple-700/40', text: 'text-purple-900 dark:text-purple-100', dot: 'bg-purple-400' },
-  { key: 'orange',  label: 'Laranja', bg: 'bg-orange-50 dark:bg-orange-900/20',  border: 'border-orange-200 dark:border-orange-700/40', text: 'text-orange-900 dark:text-orange-100', dot: 'bg-orange-400' },
-  { key: 'red',     label: 'Vermelho',bg: 'bg-red-50 dark:bg-red-900/20',        border: 'border-red-200 dark:border-red-700/40',       text: 'text-red-900 dark:text-red-100',       dot: 'bg-red-400' },
-  { key: 'neutral', label: 'Neutro',  bg: 'bg-gray-50 dark:bg-gray-800/60',      border: 'border-gray-200 dark:border-gray-700/40',     text: 'text-gray-900 dark:text-gray-100',     dot: 'bg-gray-400' },
+  { key: 'yellow',  label: 'Amarelo', bg: 'bg-yellow-50 dark:bg-yellow-900',   border: 'border-yellow-200 dark:border-yellow-700', text: 'text-yellow-900 dark:text-yellow-100', dot: 'bg-yellow-400' },
+  { key: 'green',   label: 'Verde',   bg: 'bg-green-50 dark:bg-green-900',     border: 'border-green-200 dark:border-green-700',   text: 'text-green-900 dark:text-green-100',   dot: 'bg-green-400' },
+  { key: 'blue',    label: 'Azul',    bg: 'bg-blue-50 dark:bg-blue-900',       border: 'border-blue-200 dark:border-blue-700',     text: 'text-blue-900 dark:text-blue-100',     dot: 'bg-blue-400' },
+  { key: 'pink',    label: 'Rosa',    bg: 'bg-pink-50 dark:bg-pink-900',       border: 'border-pink-200 dark:border-pink-700',     text: 'text-pink-900 dark:text-pink-100',     dot: 'bg-pink-400' },
+  { key: 'purple',  label: 'Roxo',    bg: 'bg-purple-50 dark:bg-purple-900',   border: 'border-purple-200 dark:border-purple-700', text: 'text-purple-900 dark:text-purple-100', dot: 'bg-purple-400' },
+  { key: 'orange',  label: 'Laranja', bg: 'bg-orange-50 dark:bg-orange-900',   border: 'border-orange-200 dark:border-orange-700', text: 'text-orange-900 dark:text-orange-100', dot: 'bg-orange-400' },
+  { key: 'red',     label: 'Vermelho',bg: 'bg-red-50 dark:bg-red-900',         border: 'border-red-200 dark:border-red-700',       text: 'text-red-900 dark:text-red-100',       dot: 'bg-red-400' },
+  { key: 'neutral', label: 'Neutro',  bg: 'bg-gray-50 dark:bg-gray-800',       border: 'border-gray-200 dark:border-gray-700',     text: 'text-gray-900 dark:text-gray-100',     dot: 'bg-gray-400' },
 ];
 
 function getColorConfig(color: NoteColor) {
@@ -507,53 +507,54 @@ export default function NotasModule() {
   const [editingNote, setEditingNote] = useState<Note | null>(null);
 
   // ── Firestore subscription ─────────────────────────────────────────────────
+  // Single query by businessId only — avoids composite index requirement.
+  // Tab filtering (personal/team) and author filtering happen client-side.
 
   useEffect(() => {
     if (!business?.id || !user?.uid) return;
     setLoading(true);
 
-    let q;
-    if (activeTab === 'personal') {
-      q = query(
-        collection(db, 'notes'),
-        where('businessId', '==', business.id),
-        where('scope', '==', 'personal'),
-        where('authorId', '==', user.uid),
-        orderBy('updatedAt', 'desc'),
-      );
-    } else {
-      q = query(
-        collection(db, 'notes'),
-        where('businessId', '==', business.id),
-        where('scope', '==', 'team'),
-        orderBy('updatedAt', 'desc'),
-      );
-    }
+    const q = query(
+      collection(db, 'notes'),
+      where('businessId', '==', business.id),
+    );
 
     const unsub = onSnapshot(q, snap => {
-      const data = snap.docs.map(d => ({ ...d.data(), id: d.id } as Note));
-      setNotes(data);
+      const all = snap.docs.map(d => ({ ...d.data(), id: d.id } as Note));
+      setNotes(all);
       setLoading(false);
-    }, () => setLoading(false));
+    }, (err) => {
+      console.error('[Notas] onSnapshot error:', err);
+      setLoading(false);
+    });
 
     return () => unsub();
-  }, [business?.id, user?.uid, activeTab]);
+  }, [business?.id, user?.uid]);
 
-  // ── Sorted notes (pinned first) ────────────────────────────────────────────
+  // ── Sorted notes (tab filter + pinned first) ──────────────────────────────
 
   const sortedNotes = useCallback(() => {
-    let filtered = notes;
+    // Filter by active tab (personal = only mine, team = all team notes)
+    let filtered = notes.filter(n =>
+      activeTab === 'personal'
+        ? n.scope === 'personal' && n.authorId === user?.uid
+        : n.scope === 'team',
+    );
+
+    // Text search
     if (search.trim()) {
       const q = search.toLowerCase();
-      filtered = notes.filter(n =>
+      filtered = filtered.filter(n =>
         n.title.toLowerCase().includes(q) || n.content.toLowerCase().includes(q),
       );
     }
+
+    // Sort: pinned first, then by updatedAt desc
     return [
-      ...filtered.filter(n => n.isPinned),
-      ...filtered.filter(n => !n.isPinned),
+      ...filtered.filter(n => n.isPinned).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+      ...filtered.filter(n => !n.isPinned).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     ];
-  }, [notes, search]);
+  }, [notes, search, activeTab, user?.uid]);
 
   // ── CRUD handlers ──────────────────────────────────────────────────────────
 
