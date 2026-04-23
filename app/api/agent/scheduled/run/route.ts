@@ -61,7 +61,15 @@ export async function GET(req: NextRequest) {
       await processBusiness(business, stats);
     }
 
-    return NextResponse.json({ ok: true, data: stats });
+    // ── Kanban due-date notifications (all businesses) ──
+    let kanbanNotifs = 0;
+    try {
+      kanbanNotifs = await checkKanbanDueDates();
+    } catch (err) {
+      console.warn('[scheduled] kanban check failed:', err);
+    }
+
+    return NextResponse.json({ ok: true, data: { ...stats, kanbanNotifs } });
   } catch (err) {
     console.error('[scheduled] fatal:', err);
     return NextResponse.json(
@@ -69,6 +77,87 @@ export async function GET(req: NextRequest) {
       { status: 500 },
     );
   }
+}
+
+// ─── Kanban due-date notification sweep ─────────────────────────────────────
+
+async function checkKanbanDueDates(): Promise<number> {
+  const now = new Date();
+  const todayStr = now.toISOString().slice(0, 10);
+  const in24h = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  // Fetch cards due today or tomorrow that haven't been notified yet
+  const cardsSnap = await adminDb.collection('kanbanCards')
+    .where('dueDate', '>=', todayStr)
+    .where('dueDate', '<=', in24h)
+    .get();
+
+  // Fetch overdue cards (due before today)
+  const overdueSnap = await adminDb.collection('kanbanCards')
+    .where('dueDate', '<', todayStr)
+    .where('dueDate', '>', '2020-01-01')
+    .get();
+
+  let count = 0;
+  const batch = adminDb.batch();
+  const notifBatch = adminDb.batch();
+
+  // Due soon notifications
+  for (const cardDoc of cardsSnap.docs) {
+    const card = cardDoc.data();
+    if (card.dueSoonNotifiedAt) continue; // already notified
+    const assignees: string[] = card.assigneeIds || [];
+    if (assignees.length === 0) continue;
+
+    for (const uid of assignees) {
+      const notifRef = adminDb.collection('notifications').doc();
+      notifBatch.set(notifRef, {
+        businessId: card.businessId,
+        userId: uid,
+        type: 'task_due_soon',
+        title: 'Tarefa vencendo',
+        body: `"${card.title}" vence ${card.dueDate === todayStr ? 'hoje' : 'amanhã'}`,
+        isRead: false,
+        link: 'Kanban',
+        relatedId: cardDoc.id,
+        createdAt: now.toISOString(),
+      });
+      count++;
+    }
+    batch.update(cardDoc.ref, { dueSoonNotifiedAt: now.toISOString() });
+  }
+
+  // Overdue notifications
+  for (const cardDoc of overdueSnap.docs) {
+    const card = cardDoc.data();
+    if (card.overdueNotifiedAt) continue; // already notified
+    const assignees: string[] = card.assigneeIds || [];
+    if (assignees.length === 0) continue;
+
+    for (const uid of assignees) {
+      const notifRef = adminDb.collection('notifications').doc();
+      notifBatch.set(notifRef, {
+        businessId: card.businessId,
+        userId: uid,
+        type: 'task_overdue',
+        title: 'Tarefa atrasada',
+        body: `"${card.title}" venceu em ${card.dueDate}`,
+        isRead: false,
+        link: 'Kanban',
+        relatedId: cardDoc.id,
+        createdAt: now.toISOString(),
+      });
+      count++;
+    }
+    batch.update(cardDoc.ref, { overdueNotifiedAt: now.toISOString() });
+  }
+
+  if (count > 0) {
+    await notifBatch.commit();
+    await batch.commit();
+  }
+
+  return count;
 }
 
 // ─── Per-business sweep ──────────────────────────────────────────────────────

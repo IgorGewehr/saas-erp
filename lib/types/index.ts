@@ -2128,3 +2128,28 @@ export interface GiftCard {
   createdAt: string;
   updatedAt: string;
 }
+
+// ---- Notifications ----
+
+export type NotificationType =
+  | 'task_assigned'
+  | 'task_due_soon'
+  | 'task_overdue'
+  | 'task_mentioned'
+  | 'appointment_reminder'
+  | 'review_received';
+
+export interface AppNotification {
+  id: string;
+  businessId: string;
+  userId: string;           // recipient
+  type: NotificationType;
+  title: string;
+  body: string;
+  isRead: boolean;
+  link?: string;            // e.g. 'Kanban' to navigate to module
+  relatedId?: string;       // card id, appointment id, etc.
+  actorId?: string;         // who triggered (for assigned/mentioned)
+  actorName?: string;
+  createdAt: string;
+}

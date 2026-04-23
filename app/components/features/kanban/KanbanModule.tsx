@@ -36,6 +36,7 @@ import type {
   User,
 } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
+import { notifyUsers } from '@/lib/services/notifications';
 import {
   Plus,
   Calendar,
@@ -3167,7 +3168,7 @@ export default function KanbanModule() {
     if (!canEdit) { showToast(t('kanban.errors.noPermission', 'Sem permissão para criar cards')); return; }
     const columnCards = cards.filter(c => c.columnId === partial.columnId);
     try {
-      await addDoc(collection(db, 'kanbanCards'), {
+      const cardRef = await addDoc(collection(db, 'kanbanCards'), {
         businessId: business.id,
         boardId: activeBoardId,
         columnId: partial.columnId,
@@ -3187,6 +3188,21 @@ export default function KanbanModule() {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });
+
+      // Notify assigned users on card creation
+      const assignees = partial.assigneeIds || [];
+      if (assignees.length > 0) {
+        notifyUsers(db, assignees, {
+          businessId: business.id,
+          type: 'task_assigned',
+          title: t('kanban.notif.assigned', 'Tarefa atribuída'),
+          body: `${user.name} ${t('kanban.notif.assignedYou', 'atribuiu você à tarefa')} "${partial.title}"`,
+          link: 'Kanban',
+          relatedId: cardRef.id,
+          actorId: user.uid,
+          actorName: user.name,
+        }).catch(err => console.warn('Notification dispatch failed:', err));
+      }
     } catch (err) {
       console.error('Error creating card:', err);
       showToast(t('kanban.errors.createCard', 'Erro ao criar card'));
@@ -3194,10 +3210,16 @@ export default function KanbanModule() {
   }, [business?.id, user, activeBoardId, cards, canEdit, showToast, t]);
 
   const handleUpdateCard = useCallback(async (updated: KanbanCard) => {
-    if (!business?.id) return;
+    if (!business?.id || !user) return;
     if (!canEdit) { showToast(t('kanban.errors.noPermission', 'Sem permissão para editar cards')); return; }
     const { id, ...data } = updated;
     const now = new Date().toISOString();
+
+    // Detect new assignees for notification
+    const previous = cards.find(c => c.id === id);
+    const prevAssignees = new Set(previous?.assigneeIds || []);
+    const newAssignees = (updated.assigneeIds || []).filter(uid => !prevAssignees.has(uid));
+
     setSelectedCard({ ...updated, updatedAt: now });
     try {
       // Only send mutable fields to Firestore
@@ -3206,11 +3228,25 @@ export default function KanbanModule() {
         ...mutableData,
         updatedAt: now,
       });
+
+      // Notify newly assigned users
+      if (newAssignees.length > 0) {
+        notifyUsers(db, newAssignees, {
+          businessId: business.id,
+          type: 'task_assigned',
+          title: t('kanban.notif.assigned', 'Tarefa atribuída'),
+          body: `${user.name} ${t('kanban.notif.assignedYou', 'atribuiu você à tarefa')} "${updated.title}"`,
+          link: 'Kanban',
+          relatedId: id,
+          actorId: user.uid,
+          actorName: user.name,
+        }).catch(err => console.warn('Notification dispatch failed:', err));
+      }
     } catch (err) {
       console.error('Error updating card:', err);
       showToast(t('kanban.errors.updateCard', 'Erro ao atualizar card'));
     }
-  }, [business?.id, canEdit, showToast, t]);
+  }, [business?.id, user, canEdit, cards, showToast, t]);
 
   const handleDeleteCard = useCallback(async (cardId: string) => {
     if (!business?.id) return;
