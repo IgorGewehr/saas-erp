@@ -235,13 +235,13 @@ function NoteCard({
 
       {/* Title */}
       {note.title && (
-        <h3 className={cn('font-semibold text-sm mb-2 pr-16 leading-snug', color.text)}>
+        <h3 className={cn('font-semibold text-sm mb-2 pr-16 leading-snug break-words line-clamp-3', color.text)}>
           {note.title}
         </h3>
       )}
 
       {/* Content */}
-      <p className={cn('text-sm leading-relaxed whitespace-pre-wrap', note.title ? 'text-gray-700 dark:text-gray-300' : cn('font-medium', color.text), !note.title && 'pr-16')}>
+      <p className={cn('text-sm leading-relaxed whitespace-pre-wrap break-words line-clamp-[12]', note.title ? 'text-gray-700 dark:text-gray-300' : cn('font-medium', color.text), !note.title && 'pr-16')}>
         {note.content}
       </p>
 
@@ -321,12 +321,11 @@ function NoteModal({
   useEffect(() => {
     const el = modalRef.current;
     if (!el) return;
-    const observer = new ResizeObserver(entries => {
-      for (const entry of entries) {
-        const { width, height } = entry.contentRect;
-        if (width > 300 && height > 200) {
-          localStorage.setItem(NOTE_MODAL_SIZE_KEY, JSON.stringify({ w: Math.round(width), h: Math.round(height) }));
-        }
+    const observer = new ResizeObserver(() => {
+      const width = el.offsetWidth;
+      const height = el.offsetHeight;
+      if (width > 300 && height > 200) {
+        localStorage.setItem(NOTE_MODAL_SIZE_KEY, JSON.stringify({ w: width, h: height }));
       }
     });
     observer.observe(el);
