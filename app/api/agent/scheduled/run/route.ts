@@ -69,7 +69,15 @@ export async function GET(req: NextRequest) {
       console.warn('[scheduled] kanban check failed:', err);
     }
 
-    return NextResponse.json({ ok: true, data: { ...stats, kanbanNotifs } });
+    // ── Recurring transactions ──
+    let recurringGenerated = 0;
+    try {
+      recurringGenerated = await generateRecurringTransactions();
+    } catch (err) {
+      console.warn('[scheduled] recurring transactions failed:', err);
+    }
+
+    return NextResponse.json({ ok: true, data: { ...stats, kanbanNotifs, recurringGenerated } });
   } catch (err) {
     console.error('[scheduled] fatal:', err);
     return NextResponse.json(
@@ -298,4 +306,68 @@ async function sendToContact(business: Business, appt: Appointment, content: str
     const text = await resp.text();
     throw new Error(`send failed ${resp.status}: ${text}`);
   }
+}
+
+// ─── Recurring transaction generation ───────────────────────────────────────
+
+function advanceDate(dateStr: string, frequency: string): string {
+  const d = new Date(dateStr + 'T00:00:00');
+  switch (frequency) {
+    case 'weekly':    d.setDate(d.getDate() + 7); break;
+    case 'biweekly':  d.setDate(d.getDate() + 14); break;
+    case 'monthly':   d.setMonth(d.getMonth() + 1); break;
+    case 'quarterly': d.setMonth(d.getMonth() + 3); break;
+    case 'yearly':    d.setFullYear(d.getFullYear() + 1); break;
+  }
+  return d.toISOString().slice(0, 10);
+}
+
+async function generateRecurringTransactions(): Promise<number> {
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Find all transactions with active recurrence whose nextDueDate <= today
+  const snap = await adminDb.collection('transactions')
+    .where('recurrence.isActive', '==', true)
+    .where('recurrence.nextDueDate', '<=', today)
+    .get();
+
+  let count = 0;
+  for (const txDoc of snap.docs) {
+    const tx = txDoc.data();
+    const rec = tx.recurrence;
+    if (!rec || !rec.isActive) continue;
+
+    // Check end date
+    if (rec.endDate && rec.nextDueDate > rec.endDate) {
+      await txDoc.ref.update({ 'recurrence.isActive': false });
+      continue;
+    }
+
+    const now = new Date().toISOString();
+    const newNextDue = advanceDate(rec.nextDueDate, rec.frequency);
+
+    // Create new transaction copy
+    const { recurrence: _r, ...baseTx } = tx;
+    await adminDb.collection('transactions').add({
+      ...baseTx,
+      dueDate: rec.nextDueDate,
+      paymentDate: null,
+      status: 'pendente',
+      recurrenceId: txDoc.id, // link back to parent
+      recurrence: null,       // child is not recurring itself
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // Update parent's nextDueDate (or deactivate if past endDate)
+    const shouldDeactivate = rec.endDate && newNextDue > rec.endDate;
+    await txDoc.ref.update({
+      'recurrence.nextDueDate': shouldDeactivate ? rec.nextDueDate : newNextDue,
+      'recurrence.isActive': !shouldDeactivate,
+    });
+
+    count++;
+  }
+
+  return count;
 }

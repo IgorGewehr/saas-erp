@@ -518,6 +518,16 @@ export interface Sale {
 export type TransactionType = 'receita' | 'despesa';
 export type TransactionStatus = 'pendente' | 'pago' | 'atrasado' | 'cancelado';
 
+export type RecurrenceFrequency = 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'yearly';
+
+export interface TransactionRecurrence {
+  frequency: RecurrenceFrequency;
+  nextDueDate: string;       // ISO date — when the next copy should be generated
+  endDate?: string;          // optional end date — stops generating after this
+  isActive: boolean;
+  parentTransactionId?: string; // original transaction that spawned this
+}
+
 export interface Transaction {
   id: string;
   businessId: string;
@@ -547,6 +557,8 @@ export interface Transaction {
   installmentGroupId?: string;
   installmentNumber?: number;   // ex: 1 de 3
   installmentTotal?: number;
+  /** Recorrência automática */
+  recurrence?: TransactionRecurrence;
   /** Auditoria: identidade de quem criou/modificou. Preenchido nas mutações. */
   createdBy?: string;
   createdByName?: string;
