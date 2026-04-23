@@ -158,8 +158,8 @@ export interface FacebookChannelConfig {
 export interface InstagramChannelConfig {
   accountId: string;
   isConnected: boolean;
-  // Uses Facebook pageAccessToken
   accountName?: string;
+  accessToken?: string; // encrypted — set when connected via instagram_business_manage_messages scope directly
   connectedAt?: string;
   disconnectedAt?: string;
 }

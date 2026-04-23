@@ -24,7 +24,14 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     // Support both flows: accessToken (JS SDK) or code (server-side)
-    const { accessToken: shortLivedToken, code, businessId } = body;
+    // selectedPageId / selectedPhoneNumberId are sent in phase-2 (after selection modal)
+    const {
+      accessToken: shortLivedToken,
+      code,
+      businessId,
+      selectedPageId,
+      selectedPhoneNumberId,
+    } = body;
 
     if ((!shortLivedToken && !code) || !businessId) {
       return NextResponse.json({ error: 'Missing accessToken/code or businessId' }, { status: 400 });
@@ -134,62 +141,179 @@ export async function POST(req: NextRequest) {
       }, { status: 400 });
     }
 
-    // whatsapp_business_messaging target_ids → phone number IDs (not WABA IDs)
+    // Extract IDs from granular_scopes target_ids
+    // Note: instagram_business_manage_messages is NOT requestable via FB.login() —
+    // it belongs to "Instagram API with Instagram Login". Instagram DM uses pages_messaging.
     let phoneNumberId = '';
     let displayPhoneNumber = '';
     let displayName = '';
 
+    // granular_scopes.whatsapp_business_messaging.target_ids contains WABA IDs (WhatsApp Business
+    // Account IDs), NOT phone number IDs. We must fetch the actual phone number ID from the WABA.
+    let wabaIdFromScopes = '';
     for (const scope of granularScopes) {
       if (scope.scope === 'whatsapp_business_messaging' && scope.target_ids?.length > 0) {
-        phoneNumberId = scope.target_ids[0];
-        break;
+        wabaIdFromScopes = scope.target_ids[0]; // This is the WABA ID
       }
     }
 
-    // ── Step 3: Get phone number display details ─────────────────────────────
-    if (phoneNumberId) {
+    // ── Step 3: Get phone number ID + display details from WABA ────────────
+    // Track available phone numbers for multi-phone selection
+    let availablePhoneNumbers: Array<{ id: string; displayPhoneNumber: string; verifiedName: string }> = [];
+    let phonesNeedSelection = false;
+
+    if (wabaIdFromScopes) {
       try {
-        const phoneRes = await fetch(
-          `${META_GRAPH}/${phoneNumberId}?fields=id,display_phone_number,verified_name`,
+        // Fetch phone numbers directly from the WABA ID (no intermediate step needed)
+        const numRes = await fetch(
+          `${META_GRAPH}/${wabaIdFromScopes}/phone_numbers?fields=id,display_phone_number,verified_name&limit=25`,
           { headers: { Authorization: `Bearer ${longLivedToken}` } }
         );
-        if (phoneRes.ok) {
-          const phoneData = await phoneRes.json();
-          displayPhoneNumber = phoneData.display_phone_number || '';
-          displayName = phoneData.verified_name || phoneData.display_phone_number || '';
+        if (numRes.ok) {
+          const numData = await numRes.json();
+          const phones: Array<{ id: string; display_phone_number?: string; verified_name?: string }> = numData?.data || [];
+
+          if (phones.length > 1 && !selectedPhoneNumberId) {
+            // Multiple phone numbers — need user to pick one
+            phonesNeedSelection = true;
+            availablePhoneNumbers = phones.map(p => ({
+              id: p.id,
+              displayPhoneNumber: p.display_phone_number || '',
+              verifiedName: p.verified_name || p.display_phone_number || '',
+            }));
+            console.log('[Meta Signup] Multiple phone numbers found, selection required:', availablePhoneNumbers.length);
+          } else {
+            // Single phone or selection already made
+            const phone = phones.find(p => p.id === selectedPhoneNumberId) || phones[0];
+            if (phone) {
+              phoneNumberId = phone.id; // Actual phone number ID for sending messages
+              displayPhoneNumber = phone.display_phone_number || '';
+              displayName = phone.verified_name || phone.display_phone_number || '';
+              console.log('[Meta Signup] Resolved phoneNumberId from WABA:', phoneNumberId, displayPhoneNumber);
+            }
+          }
+        } else {
+          console.warn('[Meta Signup] phone_numbers fetch failed:', await numRes.text());
+        }
+
+        // ── 3c. Subscribe app to WABA webhook events ─────────────────────
+        // Configuring the webhook URL in the Meta dashboard is not enough —
+        // the app must be programmatically subscribed to each WABA so that
+        // the WhatsApp Business API actually delivers events to our endpoint.
+        // Without this, messages from real (non-test) WABAs are silently dropped.
+        const wabaId = wabaIdFromScopes;
+        try {
+          const wabaSubRes = await fetch(
+            `${META_GRAPH}/${wabaId}/subscribeApp`,
+            {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${longLivedToken}` },
+            }
+          );
+          if (wabaSubRes.ok) {
+            console.log('[Meta Signup] App subscribed to WABA webhook:', wabaId);
+          } else {
+            const errText = await wabaSubRes.text();
+            console.warn('[Meta Signup] WABA subscription failed (non-fatal):', errText);
+          }
+        } catch (wabaSubErr) {
+          console.warn('[Meta Signup] WABA subscription error (non-fatal):', wabaSubErr);
         }
       } catch {
-        // Display info is optional — phoneNumberId alone is enough to send messages
+        // Phone number fetch is best-effort; wabaId alone is enough to subscribe
       }
     }
 
-    // ── Step 5: Get Facebook Page info (for Messenger) ──────────────────────
+    // ── Step 5: Get Facebook Page info (for Messenger + Instagram) ──────────
     let pageId = '';
     let pageName = '';
     let pageAccessToken = '';
+    let availablePages: Array<{ id: string; name: string }> = [];
+    let pagesNeedSelection = false;
 
     try {
-      const pagesRes = await fetch(`${META_GRAPH}/me/accounts`, {
+      // Fetch all pages (paginated) to find the right one
+      const pagesRes = await fetch(`${META_GRAPH}/me/accounts?limit=25`, {
         headers: { Authorization: `Bearer ${longLivedToken}` },
       });
 
       if (!pagesRes.ok) {
-        console.error('[Meta Signup] /me/accounts failed:', await pagesRes.text());
+        const errText = await pagesRes.text();
+        console.error('[Meta Signup] /me/accounts failed:', errText);
+        // If this was a Facebook/Instagram-only connection (no WhatsApp), surface the error
+        if (!phoneNumberId && !phonesNeedSelection) {
+          return NextResponse.json({
+            error: 'Não foi possível listar suas Páginas do Facebook. Certifique-se de autorizar a permissão "pages_show_list".',
+          }, { status: 400 });
+        }
       } else {
         const pagesData = await pagesRes.json();
+        const pages: Array<{ id: string; name: string; access_token?: string }> = pagesData?.data || [];
 
-        if (pagesData?.data?.length > 0) {
-          const page = pagesData.data[0];
+        if (pages.length > 1 && !selectedPageId) {
+          // Multiple pages — need user to pick one
+          pagesNeedSelection = true;
+          availablePages = pages.map(p => ({ id: p.id, name: p.name }));
+          console.log('[Meta Signup] Multiple pages found, selection required:', availablePages.length);
+        } else if (pages.length > 0) {
+          // Single page or selection already made
+          const page = pages.find(p => p.id === selectedPageId) || pages.find(p => p.access_token) || pages[0];
           pageId = page.id;
           pageName = page.name;
           pageAccessToken = page.access_token || '';
+
+          // Exchange for a long-lived page access token — page tokens derived from a
+          // long-lived user token NEVER expire, unlike those from /me/accounts (short-lived).
+          // Without this, fetchSenderProfile calls fail once the token expires (hours).
+          try {
+            const llPageRes = await fetch(
+              `${META_GRAPH}/${pageId}?fields=access_token`,
+              { headers: { Authorization: `Bearer ${longLivedToken}` } }
+            );
+            if (llPageRes.ok) {
+              const llPageData = await llPageRes.json();
+              if (llPageData.access_token) {
+                pageAccessToken = llPageData.access_token;
+                console.log('[Meta Signup] Long-lived page token obtained for page:', pageId);
+              } else {
+                console.warn('[Meta Signup] Long-lived page token response had no access_token:', JSON.stringify(llPageData));
+              }
+            } else {
+              const errText = await llPageRes.text();
+              console.warn('[Meta Signup] Could not get long-lived page token (using short-lived):', errText);
+            }
+          } catch (llPageErr) {
+            console.warn('[Meta Signup] Error fetching long-lived page token (non-fatal):', llPageErr);
+          }
+        } else if (!phoneNumberId && !phonesNeedSelection) {
+          // No WhatsApp and no pages found — likely pages_show_list was denied
+          return NextResponse.json({
+            error: 'Nenhuma Página do Facebook encontrada. Certifique-se de autorizar "pages_show_list" e de ter ao menos uma Página.',
+          }, { status: 400 });
         }
       }
     } catch {
-      // Pages are optional if the user only connected WhatsApp
+      // Pages are optional when connecting WhatsApp only
+    }
+
+    // ── Early return: selection required ────────────────────────────────────
+    // If the user has multiple pages or phone numbers we cannot auto-pick —
+    // return the available options so the frontend can show a selector modal.
+    // The frontend will re-POST with selectedPageId / selectedPhoneNumberId.
+    if (phonesNeedSelection || pagesNeedSelection) {
+      return NextResponse.json({
+        selectionRequired: true,
+        options: {
+          ...(pagesNeedSelection && { pages: availablePages }),
+          ...(phonesNeedSelection && { phoneNumbers: availablePhoneNumbers }),
+        },
+      });
     }
 
     // ── Step 5b: Subscribe page to webhooks (Messenger + Instagram DM) ─────
+    // 'instagram' field on page subscription enables Instagram DM webhooks
+    // via the object:"page" delivery (fallback path when instagram_business_manage_messages
+    // is not separately approved — the page-level subscription covers it).
     if (pageId && pageAccessToken) {
       try {
         const subRes = await fetch(
@@ -207,6 +331,7 @@ export async function POST(req: NextRequest) {
                 'message_deliveries',
                 'message_reads',
                 'feed',
+                'instagram',
               ].join(','),
             }),
           },
@@ -215,25 +340,27 @@ export async function POST(req: NextRequest) {
         if (!subRes.ok) {
           const errText = await subRes.text();
           console.error('[Meta Signup] Page subscription failed:', errText);
+        } else {
+          console.log('[Meta Signup] Page subscribed to webhooks (incl. instagram field)');
         }
       } catch (subErr) {
         console.warn('[Meta Signup] Page subscription error (non-fatal):', subErr);
       }
     }
 
-    // ── Step 6: Get Instagram Business Account ──────────────────────────────
+    // ── Step 6: Get Instagram Business Account via linked Facebook Page ────────
     let igAccountId = '';
     let igAccountName = '';
 
     if (pageId) {
       try {
         const igRes = await fetch(
-          `${META_GRAPH}/${pageId}?fields=instagram_business_account{id,name,username,profile_picture_url}`,
+          `${META_GRAPH}/${pageId}?fields=instagram_business_account{id,name,username}`,
           { headers: { Authorization: `Bearer ${pageAccessToken || longLivedToken}` } }
         );
 
         if (!igRes.ok) {
-          console.error('[Meta Signup] Instagram fetch failed:', await igRes.text());
+          console.error('[Meta Signup] Instagram fetch via page failed:', await igRes.text());
         } else {
           const igData = await igRes.json();
           const igAccount = igData?.instagram_business_account;

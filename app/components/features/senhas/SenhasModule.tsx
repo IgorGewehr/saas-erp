@@ -198,10 +198,6 @@ export function VaultTab() {
 
   const handleSave = async () => {
     if (!form.title.trim()) return;
-    if (!editing && !form.password) {
-      toast.error('Defina uma senha');
-      return;
-    }
     setSaving(true);
     try {
       await callApi('save', {
@@ -559,7 +555,7 @@ function VaultForm({
 
         {/* Password with generator */}
         <div>
-          <label className={labelCls}>{editing ? 'Senha (vazio = manter atual)' : 'Senha *'}</label>
+          <label className={labelCls}>{editing ? 'Senha (vazio = manter atual)' : 'Senha'}</label>
           <div className="flex gap-2">
             <div className="relative flex-1">
               <input

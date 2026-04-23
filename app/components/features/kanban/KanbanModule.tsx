@@ -76,6 +76,7 @@ import {
   Trash2 as TrashIcon,
   ToggleLeft,
   ToggleRight,
+  RotateCcw,
 } from 'lucide-react';
 
 // ─── Priority Config ──────────────────────────────────────
@@ -427,6 +428,7 @@ function KanbanColumnComponent({
   members,
   onCardOpen,
   onAddCard,
+  onDeleteColumn,
   onDragStart,
   onDragOver,
   onDrop,
@@ -438,6 +440,7 @@ function KanbanColumnComponent({
   members: MemberDisplay[];
   onCardOpen: (card: KanbanCard) => void;
   onAddCard?: (columnId: string) => void;
+  onDeleteColumn?: (columnId: string) => void;
   onDragStart: (e: React.DragEvent, card: KanbanCard) => void;
   onDragOver: (e: React.DragEvent, columnId: string) => void;
   onDrop: (e: React.DragEvent, columnId: string) => void;
@@ -451,7 +454,7 @@ function KanbanColumnComponent({
   return (
     <motion.div
       variants={itemVariants}
-      className="flex flex-col w-[300px] min-w-[300px] flex-shrink-0 h-full"
+      className="group/col flex flex-col w-[300px] min-w-[300px] flex-shrink-0 h-full"
     >
       {/* Column header */}
       <div className="flex items-center justify-between mb-3 px-1">
@@ -477,16 +480,33 @@ function KanbanColumnComponent({
           </span>
         </div>
 
-        {onAddCard && <button
-          onClick={() => onAddCard(column.id)}
-          className={cn(
-            'flex items-center justify-center w-7 h-7 rounded-lg',
-            'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06]',
-            'transition-all duration-150 active:scale-90'
+        <div className="flex items-center gap-0.5">
+          {onDeleteColumn && (
+            <button
+              onClick={() => onDeleteColumn(column.id)}
+              className={cn(
+                'flex items-center justify-center w-7 h-7 rounded-lg opacity-0 group-hover/col:opacity-100',
+                'text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10',
+                'transition-all duration-150 active:scale-90'
+              )}
+              title={t('kanban.deleteColumn', 'Excluir coluna')}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
           )}
-        >
-          <Plus className="w-4 h-4" />
-        </button>}
+          {onAddCard && (
+            <button
+              onClick={() => onAddCard(column.id)}
+              className={cn(
+                'flex items-center justify-center w-7 h-7 rounded-lg',
+                'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06]',
+                'transition-all duration-150 active:scale-90'
+              )}
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Cards area */}
@@ -2022,6 +2042,8 @@ function BoardHeader({
   onSelectBoard,
   onNewBoard,
   onArchiveBoard,
+  archivedBoards,
+  onRestoreBoard,
   canManageBoard: canManage,
   searchQuery,
   onSearchChange,
@@ -2042,6 +2064,8 @@ function BoardHeader({
   onSelectBoard: (id: string) => void;
   onNewBoard: () => void;
   onArchiveBoard?: (id: string) => void;
+  archivedBoards?: KanbanBoard[];
+  onRestoreBoard?: (id: string) => void;
   canManageBoard?: boolean;
   searchQuery: string;
   onSearchChange: (q: string) => void;
@@ -2058,6 +2082,7 @@ function BoardHeader({
 }) {
   const { t } = useTranslation();
   const [showFilters, setShowFilters] = useState(false);
+  const [showArchivedDropdown, setShowArchivedDropdown] = useState(false);
   const hasFilters = filterPriority !== 'all' || filterAssignee !== 'all' || searchQuery.trim() !== '';
 
   return (
@@ -2107,6 +2132,61 @@ function BoardHeader({
             >
               <Archive className="w-3.5 h-3.5" />
             </button>
+          )}
+
+          {/* Archived boards button */}
+          {canManage && archivedBoards && archivedBoards.length > 0 && (
+            <div className="relative ml-0.5">
+              <button
+                onClick={() => setShowArchivedDropdown(v => !v)}
+                className={cn(
+                  'flex items-center justify-center w-8 h-8 rounded-lg',
+                  'transition-all duration-150 active:scale-90',
+                  showArchivedDropdown
+                    ? 'text-amber-500 bg-amber-50 dark:bg-amber-500/10'
+                    : 'text-gray-400 dark:text-gray-500 hover:text-amber-500 dark:hover:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-500/10'
+                )}
+                title={t('kanban.viewArchived', 'Ver boards arquivados')}
+              >
+                <Archive className="w-3.5 h-3.5" />
+              </button>
+
+              <AnimatePresence>
+                {showArchivedDropdown && (
+                  <>
+                    {/* Backdrop */}
+                    <div className="fixed inset-0 z-30" onClick={() => setShowArchivedDropdown(false)} />
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.95, y: -4 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      exit={{ opacity: 0, scale: 0.95, y: -4 }}
+                      transition={{ duration: 0.12 }}
+                      className="absolute left-0 top-full mt-2 z-40 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700/50 rounded-xl shadow-xl min-w-[220px] py-1.5 overflow-hidden"
+                    >
+                      <p className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-3 py-1.5">
+                        {t('kanban.archivedBoards', 'Boards arquivados')}
+                      </p>
+                      {archivedBoards.map(board => (
+                        <div key={board.id} className="flex items-center gap-2 px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-800/60 group">
+                          <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: board.color }} />
+                          <span className="flex-1 text-sm text-gray-700 dark:text-gray-300 truncate">{board.name}</span>
+                          {onRestoreBoard && (
+                            <button
+                              onClick={() => { onRestoreBoard(board.id); setShowArchivedDropdown(false); }}
+                              className="opacity-0 group-hover:opacity-100 flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 font-medium transition-all shrink-0"
+                              title={t('kanban.restore', 'Restaurar')}
+                            >
+                              <RotateCcw className="w-3 h-3" />
+                              {t('kanban.restore', 'Restaurar')}
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </motion.div>
+                  </>
+                )}
+              </AnimatePresence>
+            </div>
           )}
 
           {/* New board button */}
@@ -2766,6 +2846,8 @@ export default function KanbanModule() {
 
   // ─── Real-time state ──────────────────────────────────────
   const [boards, setBoards] = useState<KanbanBoard[]>([]);
+  const [archivedBoards, setArchivedBoards] = useState<KanbanBoard[]>([]);
+  const [showArchivedPanel, setShowArchivedPanel] = useState(false);
   const [cards, setCards] = useState<KanbanCard[]>([]);
   const [members, setMembers] = useState<MemberDisplay[]>([]);
   const [loadingBoards, setLoadingBoards] = useState(true);
@@ -2785,6 +2867,8 @@ export default function KanbanModule() {
   const [showNewColumn, setShowNewColumn] = useState(false);
   const [showNewBoard, setShowNewBoard] = useState(false);
   const [showAutomations, setShowAutomations] = useState(false);
+  const [archiveBoardConfirmId, setArchiveBoardConfirmId] = useState<string | null>(null);
+  const [deleteColumnConfirm, setDeleteColumnConfirm] = useState<{ columnId: string; columnTitle: string } | null>(null);
 
   // Templates
   const [templates, setTemplates] = useState<KanbanCardTemplate[]>([]);
@@ -2811,11 +2895,15 @@ export default function KanbanModule() {
     const unsub = onSnapshot(q, (snap) => {
       const allBoards = snap.docs
         .map(d => ({ ...d.data(), id: d.id } as KanbanBoard))
-        .filter(b => !b.isArchived)
         .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
+      // Separate active and archived boards
+      setArchivedBoards(allBoards.filter(b => b.isArchived));
+
+      const activeBoards = allBoards.filter(b => !b.isArchived);
+
       // Apply sector-based visibility filtering
-      const data = allBoards.filter(board => {
+      const data = activeBoards.filter(board => {
         if (isAdmin) return true;
         const visibility = board.visibility || 'all';
         switch (visibility) {
@@ -3156,7 +3244,7 @@ export default function KanbanModule() {
     setShowNewColumn(false);
   }, [business?.id, activeBoardId, activeBoard, canManageBoard, showToast, t]);
 
-  const handleDeleteColumn = useCallback(async (columnId: string) => {
+  const handleDeleteColumn = useCallback((columnId: string) => {
     if (!business?.id || !activeBoard) return;
     if (!canManageBoard) { showToast(t('kanban.errors.noPermission', 'Sem permissão')); return; }
     const columnCards = cards.filter(c => c.columnId === columnId);
@@ -3168,9 +3256,15 @@ export default function KanbanModule() {
       showToast(t('kanban.errors.lastColumn', 'O board precisa ter pelo menos uma coluna'));
       return;
     }
+    const column = activeBoard.columns.find(c => c.id === columnId);
+    setDeleteColumnConfirm({ columnId, columnTitle: column?.title ?? 'esta coluna' });
+  }, [business?.id, activeBoard, cards, canManageBoard, showToast, t]);
+
+  const handleDeleteColumnConfirmed = useCallback(async () => {
+    if (!business?.id || !activeBoard || !deleteColumnConfirm) return;
     try {
       const updatedColumns = activeBoard.columns
-        .filter(c => c.id !== columnId)
+        .filter(c => c.id !== deleteColumnConfirm.columnId)
         .map((c, i) => ({ ...c, order: i }));
       await updateDoc(doc(db, 'kanbanBoards', activeBoardId), {
         columns: updatedColumns,
@@ -3179,27 +3273,50 @@ export default function KanbanModule() {
     } catch (err) {
       console.error('Error deleting column:', err);
       showToast(t('kanban.errors.deleteColumn', 'Erro ao excluir coluna'));
+    } finally {
+      setDeleteColumnConfirm(null);
     }
-  }, [business?.id, activeBoardId, activeBoard, cards, canManageBoard, showToast, t]);
+  }, [business?.id, activeBoardId, activeBoard, deleteColumnConfirm, showToast, t]);
 
-  const handleArchiveBoard = useCallback(async (boardId: string) => {
-    if (!business?.id) return;
+  // Opens the confirmation dialog — actual archive happens in handleArchiveConfirmed
+  const handleArchiveBoard = useCallback((boardId: string) => {
     if (!canManageBoard) { showToast(t('kanban.errors.noPermission', 'Sem permissão')); return; }
+    setArchiveBoardConfirmId(boardId);
+  }, [canManageBoard, showToast, t]);
+
+  const handleArchiveConfirmed = useCallback(async () => {
+    if (!business?.id || !archiveBoardConfirmId) return;
     try {
-      await updateDoc(doc(db, 'kanbanBoards', boardId), {
+      await updateDoc(doc(db, 'kanbanBoards', archiveBoardConfirmId), {
         isArchived: true,
         updatedAt: new Date().toISOString(),
       });
-      if (activeBoardId === boardId) {
-        const remaining = boards.filter(b => b.id !== boardId);
+      if (activeBoardId === archiveBoardConfirmId) {
+        const remaining = boards.filter(b => b.id !== archiveBoardConfirmId);
         setActiveBoardId(remaining.length > 0 ? remaining[0].id : '');
       }
       showToast(t('kanban.boardArchived', 'Board arquivado'), 'success');
     } catch (err) {
       console.error('Error archiving board:', err);
       showToast(t('kanban.errors.archiveBoard', 'Erro ao arquivar board'));
+    } finally {
+      setArchiveBoardConfirmId(null);
     }
-  }, [business?.id, activeBoardId, boards, canManageBoard, showToast, t]);
+  }, [business?.id, archiveBoardConfirmId, activeBoardId, boards, showToast, t]);
+
+  const handleRestoreBoard = useCallback(async (boardId: string) => {
+    if (!business?.id || !canManageBoard) return;
+    try {
+      await updateDoc(doc(db, 'kanbanBoards', boardId), {
+        isArchived: false,
+        updatedAt: new Date().toISOString(),
+      });
+      showToast(t('kanban.boardRestored', 'Board restaurado'), 'success');
+    } catch (err) {
+      console.error('Error restoring board:', err);
+      showToast(t('kanban.errors.restoreBoard', 'Erro ao restaurar board'));
+    }
+  }, [business?.id, canManageBoard, showToast, t]);
 
   const handleRenameBoard = useCallback(async (boardId: string, newName: string) => {
     if (!business?.id || !newName.trim()) return;
@@ -3400,6 +3517,8 @@ export default function KanbanModule() {
           onSelectBoard={setActiveBoardId}
           onNewBoard={() => setShowNewBoard(true)}
           onArchiveBoard={handleArchiveBoard}
+          archivedBoards={archivedBoards}
+          onRestoreBoard={handleRestoreBoard}
           canManageBoard={canManageBoard}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
@@ -3442,6 +3561,7 @@ export default function KanbanModule() {
                 members={members}
                 onCardOpen={setSelectedCard}
                 onAddCard={canEdit ? (colId) => setNewCardColumnId(colId) : undefined}
+                onDeleteColumn={canManageBoard ? handleDeleteColumn : undefined}
                 onDragStart={handleDragStart}
                 onDragOver={handleDragOver}
                 onDrop={handleDrop}
@@ -3592,6 +3712,129 @@ export default function KanbanModule() {
             onClose={() => setShowNewBoard(false)}
             onCreate={handleCreateBoard}
           />
+        )}
+      </AnimatePresence>
+
+      {/* Archive board confirmation dialog */}
+      <AnimatePresence>
+        {archiveBoardConfirmId && (() => {
+          const boardToArchive = boards.find(b => b.id === archiveBoardConfirmId);
+          return (
+            <motion.div
+              key="archive-confirm"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 flex items-center justify-center p-4"
+              style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}
+              onClick={() => setArchiveBoardConfirmId(null)}
+            >
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 8 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 8 }}
+                transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+                className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 w-full max-w-sm p-6"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="flex-shrink-0 w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center">
+                    <Archive className="w-5 h-5 text-amber-500" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-gray-900 dark:text-white text-sm">
+                      {t('kanban.archiveConfirmTitle', 'Arquivar board')}
+                    </h3>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      {boardToArchive?.name}
+                    </p>
+                  </div>
+                </div>
+
+                <p className="text-sm text-gray-600 dark:text-gray-300 mb-5">
+                  {t(
+                    'kanban.archiveConfirmBody',
+                    'Este board será arquivado e removido da lista. Os cards não serão excluídos e o board pode ser restaurado a qualquer momento.',
+                  )}
+                </p>
+
+                <div className="flex gap-2 justify-end">
+                  <button
+                    onClick={() => setArchiveBoardConfirmId(null)}
+                    className="px-4 py-2 text-sm rounded-xl border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                  >
+                    {t('kanban.cancel', 'Cancelar')}
+                  </button>
+                  <button
+                    onClick={handleArchiveConfirmed}
+                    className="px-4 py-2 text-sm rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-medium transition-colors"
+                  >
+                    {t('kanban.archiveConfirm', 'Arquivar')}
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          );
+        })()}
+      </AnimatePresence>
+
+      {/* Delete column confirmation dialog */}
+      <AnimatePresence>
+        {deleteColumnConfirm && (
+          <motion.div
+            key="delete-col-confirm"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}
+            onClick={() => setDeleteColumnConfirm(null)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 8 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 8 }}
+              transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+              className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 w-full max-w-sm p-6"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-3 mb-4">
+                <div className="flex-shrink-0 w-10 h-10 rounded-xl bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
+                  <Trash2 className="w-5 h-5 text-red-500" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-gray-900 dark:text-white text-sm">
+                    {t('kanban.deleteColumnTitle', 'Excluir coluna')}
+                  </h3>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                    {deleteColumnConfirm.columnTitle}
+                  </p>
+                </div>
+              </div>
+
+              <p className="text-sm text-gray-600 dark:text-gray-300 mb-5">
+                {t(
+                  'kanban.deleteColumnBody',
+                  'Tem certeza que deseja excluir esta coluna? Essa ação não pode ser desfeita.',
+                )}
+              </p>
+
+              <div className="flex gap-2 justify-end">
+                <button
+                  onClick={() => setDeleteColumnConfirm(null)}
+                  className="px-4 py-2 text-sm rounded-xl border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                >
+                  {t('kanban.cancel', 'Cancelar')}
+                </button>
+                <button
+                  onClick={handleDeleteColumnConfirmed}
+                  className="px-4 py-2 text-sm rounded-xl bg-red-500 hover:bg-red-600 text-white font-medium transition-colors"
+                >
+                  {t('kanban.deleteColumnConfirm', 'Excluir coluna')}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
         )}
       </AnimatePresence>
 

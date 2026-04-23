@@ -1184,7 +1184,7 @@ function AppointmentFormDialog({
   const filteredClients = useMemo(() => {
     if (!clientSearch) return clients.slice(0, 20);
     return clients.filter((c) =>
-      c.name.toLowerCase().includes(clientSearch.toLowerCase()) ||
+      (c.name?.toLowerCase() ?? '').includes(clientSearch.toLowerCase()) ||
       (c.phone && c.phone.includes(clientSearch))
     ).slice(0, 20);
   }, [clientSearch, clients]);

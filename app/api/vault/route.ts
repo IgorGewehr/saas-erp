@@ -147,11 +147,10 @@ async function saveEntry(businessId: string, uid: string, p: SaveParams) {
     return { id: p.id, updated: true };
   }
 
-  // Create path — password is required
-  if (!p.password) throw new Error('Senha é obrigatória');
+  // Create path
   const doc: Partial<VaultEntry> = {
     ...base,
-    encryptedPassword: await encryptToken(p.password),
+    ...(p.password ? { encryptedPassword: await encryptToken(p.password) } : {}),
     createdBy: uid,
     createdByName: userName,
     createdAt: now,

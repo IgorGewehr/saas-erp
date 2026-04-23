@@ -90,21 +90,36 @@ async function downloadAndUploadMedia(params: {
       return null;
     }
 
-    const buffer = Buffer.from(await mediaRes.arrayBuffer());
+    let buffer = Buffer.from(await mediaRes.arrayBuffer() as ArrayBuffer);
 
     // 3. Determine real content type — prefer the actual HTTP header over what Meta declared
     const realContentType = mediaRes.headers.get('content-type')?.split(';')[0]?.trim()
       || params.mimeType
       || 'application/octet-stream';
-    const ext = mimeToExtension(realContentType);
+
+    // 4. Convert OGG/Opus/AMR audio to M4A (AAC) for cross-browser compatibility.
+    //    WhatsApp voice notes are audio/ogg;codecs=opus — Safari cannot play OGG.
+    let uploadBuffer: Uint8Array = buffer;
+    let uploadContentType = realContentType;
+    if (AUDIO_CONVERT_MIMES.has(realContentType)) {
+      try {
+        console.log('[Media] Converting', realContentType, 'to M4A for cross-browser support');
+        uploadBuffer = await convertAudioToM4a(buffer, mimeToExtension(realContentType));
+        uploadContentType = 'audio/mp4';
+      } catch (convErr) {
+        console.warn('[Media] Audio conversion failed, keeping original format:', convErr);
+      }
+    }
+
+    const ext = mimeToExtension(uploadContentType);
     const fileName = `${Date.now()}_${params.mediaId.slice(-8)}${ext}`;
     const storagePath = `conversations/${params.businessId}/${params.conversationId}/${fileName}`;
 
-    // 4. Upload to Firebase Storage with correct contentType
+    // 5. Upload to Firebase Storage with correct contentType
     const storage = getStorageBucket();
     const storageRef = ref(storage, storagePath);
-    await uploadBytes(storageRef, buffer, {
-      contentType: realContentType,
+    await uploadBytes(storageRef, uploadBuffer, {
+      contentType: uploadContentType,
     });
 
     const downloadUrl = await getDownloadURL(storageRef);
@@ -125,10 +140,12 @@ function mimeToExtension(mime: string): string {
     'video/3gpp': '.3gp',
     'audio/aac': '.aac',
     'audio/amr': '.amr',
+    'audio/amr-wb': '.amr',
     'audio/mpeg': '.mp3',
     'audio/mp4': '.m4a',
     'audio/ogg': '.ogg',
     'audio/opus': '.opus',
+    'audio/webm': '.webm',
     'application/pdf': '.pdf',
     'application/vnd.ms-powerpoint': '.ppt',
     'application/msword': '.doc',
@@ -137,6 +154,104 @@ function mimeToExtension(mime: string): string {
     'image/webp; codecs=vp8': '.webp',
   };
   return map[mime] || '.bin';
+}
+
+// MIME types that are not universally supported and should be converted to M4A (AAC)
+// OGG/Opus = WhatsApp voice notes; AMR = legacy telephony; WebM = some browser recordings
+const AUDIO_CONVERT_MIMES = new Set([
+  'audio/ogg', 'audio/opus', 'audio/webm', 'audio/amr', 'audio/amr-wb',
+]);
+
+/**
+ * Converts an audio buffer to M4A (AAC) for cross-browser/platform compatibility.
+ * Safari does not support OGG/Opus. Instagram rejects OGG.
+ * AMR is a telephony codec not supported in browsers.
+ */
+async function convertAudioToM4a(inputBuffer: Buffer, inputExt: string): Promise<Buffer> {
+  const ffmpegInstaller = await import('@ffmpeg-installer/ffmpeg');
+  const ffmpeg = (await import('fluent-ffmpeg')).default;
+  const { tmpdir } = await import('os');
+  const { join } = await import('path');
+  const { writeFile, readFile, unlink } = await import('fs/promises');
+
+  ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+
+  const inputPath = join(tmpdir(), `in_${Date.now()}${inputExt}`);
+  const outputPath = join(tmpdir(), `out_${Date.now()}.m4a`);
+
+  await writeFile(inputPath, inputBuffer);
+
+  await new Promise<void>((resolve, reject) => {
+    ffmpeg(inputPath)
+      .audioCodec('aac')
+      .audioBitrate('128k')
+      .audioChannels(1)
+      .format('ipod') // M4A/AAC container
+      .on('error', reject)
+      .on('end', () => resolve())
+      .save(outputPath);
+  });
+
+  const m4aBuffer = await readFile(outputPath);
+  await unlink(inputPath).catch(() => {});
+  await unlink(outputPath).catch(() => {});
+  return m4aBuffer;
+}
+
+/**
+ * Downloads a media attachment from a direct URL (Facebook/Instagram CDN),
+ * converts OGG audio to M4A if needed, and uploads to Firebase Storage.
+ *
+ * Meta's attachment URLs are ephemeral (expire in hours) so we always
+ * persist them in Firebase Storage.
+ */
+async function downloadAndUploadAttachment(params: {
+  url: string;
+  mediaType: string;
+  businessId: string;
+  tempConvId: string;
+  pageToken?: string;
+}): Promise<string | null> {
+  try {
+    const headers: Record<string, string> = {};
+    if (params.pageToken) headers['Authorization'] = `Bearer ${params.pageToken}`;
+
+    const res = await fetch(params.url, {
+      headers,
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!res.ok) {
+      console.error('[Attachment] Download failed:', res.status, params.url.slice(0, 80));
+      return null;
+    }
+
+    let buffer: Uint8Array = Buffer.from(await res.arrayBuffer() as ArrayBuffer);
+    const rawContentType = res.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream';
+
+    let uploadContentType = rawContentType;
+    if (params.mediaType === 'audio' && AUDIO_CONVERT_MIMES.has(rawContentType)) {
+      try {
+        console.log('[Attachment] Converting', rawContentType, 'to M4A');
+        buffer = await convertAudioToM4a(Buffer.from(buffer), mimeToExtension(rawContentType));
+        uploadContentType = 'audio/mp4';
+      } catch (convErr) {
+        console.warn('[Attachment] Audio conversion failed, keeping original:', convErr);
+      }
+    }
+
+    const ext = mimeToExtension(uploadContentType);
+    const fileName = `${Date.now()}_attach${ext}`;
+    const storagePath = `conversations/${params.businessId}/${params.tempConvId}/${fileName}`;
+
+    const storage = getStorageBucket();
+    const storageRef = ref(storage, storagePath);
+    await uploadBytes(storageRef, buffer, { contentType: uploadContentType });
+    return getDownloadURL(storageRef);
+  } catch (err) {
+    console.error('[Attachment] Error:', err);
+    return null;
+  }
 }
 
 /**
@@ -232,6 +347,7 @@ interface ExtractedContent {
 interface InboundMessageParams {
   channel: 'whatsapp' | 'facebook' | 'instagram';
   channelIdentifier: string; // phoneNumberId (whatsapp) or pageId (facebook/instagram)
+  fallbackPageId?: string; // For Instagram DMs via page subscription: pageId used as fallback for business resolution
   externalId: string;
   senderName?: string;
   senderAvatarUrl?: string;
@@ -261,14 +377,18 @@ export async function GET(req: NextRequest) {
   const token     = searchParams.get('hub.verify_token');
   const challenge = searchParams.get('hub.challenge');
 
-  const verifyToken = process.env.META_FACEBOOK_VERIFY_TOKEN || process.env.META_WHATSAPP_WEBHOOK_VERIFY_TOKEN;
+  // Accept either token — Meta uses different tokens for WhatsApp vs Page webhooks
+  const validTokens = [
+    process.env.META_FACEBOOK_VERIFY_TOKEN,
+    process.env.META_WHATSAPP_WEBHOOK_VERIFY_TOKEN,
+  ].filter(Boolean) as string[];
 
-  if (mode === 'subscribe' && token === verifyToken) {
-    console.log('[Meta Webhook] Verification successful');
+  if (mode === 'subscribe' && token && validTokens.includes(token)) {
+    console.log('[Meta Webhook] Verification successful for token:', token);
     return new NextResponse(challenge, { status: 200 });
   }
 
-  console.warn('[Meta Webhook] Verification failed — invalid token or mode');
+  console.warn('[Meta Webhook] Verification failed — token received:', token);
   return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 }
 
@@ -314,9 +434,13 @@ export async function POST(req: NextRequest) {
 
     // Verify HMAC-SHA256 signature
     const signature = req.headers.get('x-hub-signature-256') || '';
+    if (!signature) {
+      console.error('[Meta Webhook] Missing x-hub-signature-256 header');
+      return NextResponse.json({ error: 'Missing signature' }, { status: 400 });
+    }
     const isValid = verifySignatureFromBuffer(rawBuffer, signature);
     if (!isValid) {
-      console.error('[Meta Webhook] Invalid signature');
+      console.error('[Meta Webhook] Invalid signature — check META_APP_SECRET in production env');
       return NextResponse.json({ error: 'Invalid signature' }, { status: 403 });
     }
 
@@ -437,25 +561,38 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
   }
 }
 
-// ─── Facebook Messenger Handler ───────────────────────────────────────────────
+// ─── Facebook Messenger + Instagram (via Page subscription) Handler ───────────
+//
+// When a Page is subscribed with the 'instagram' field, Instagram DMs arrive
+// as object:'page' — structurally identical to Facebook Messenger events.
+// The only reliable way to distinguish them is event.recipient.id:
+//   - Facebook DM:  recipient.id === pageId  (Page-Scoped ID)
+//   - Instagram DM: recipient.id === igAccountId (Instagram account ID, ≠ pageId)
 
 async function handleFacebookEvent(entry: MetaWebhookEntry) {
   if (!entry.messaging) return;
 
-  const pageId = entry.id;
+  const pageId = String(entry.id);
 
   for (const event of entry.messaging) {
     // Skip echoes (messages sent by the page itself)
     if (event.message?.is_echo) continue;
 
+    // Detect channel: if recipient.id !== pageId it's an Instagram DM via Page subscription
+    const recipientId = String(event.recipient?.id || pageId);
+    const isInstagramDm = recipientId !== pageId;
+    const channel: 'facebook' | 'instagram' = isInstagramDm ? 'instagram' : 'facebook';
+    // Instagram: resolve by instagram.accountId (= recipientId); Facebook: by pageId
+    const channelIdentifier = isInstagramDm ? recipientId : pageId;
+
     // Handle delivery receipts
     if (event.delivery) {
-      const businessId = await resolveBusinessId('facebook', String(entry.id));
+      const businessId = await resolveBusinessId(channel, channelIdentifier);
       if (businessId) {
         for (const mid of event.delivery.mids ?? []) {
           await updateMessageStatus({
             businessId,
-            channel: 'facebook',
+            channel,
             messageId: mid,
             status: 'delivered',
             timestamp: new Date(event.delivery.watermark).toISOString(),
@@ -467,18 +604,16 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
 
     // Handle read receipts
     if (event.read) {
-      const businessId = await resolveBusinessId('facebook', String(entry.id));
+      const businessId = await resolveBusinessId(channel, channelIdentifier);
       if (businessId) {
         const readTimestamp = new Date(event.read.watermark).toISOString();
-        // Find conversation for this contact
         const convSnap = await adminDb.collection('conversations')
           .where('businessId', '==', businessId)
-          .where('channel', '==', 'facebook')
+          .where('channel', '==', channel)
           .where('contactExternalId', '==', String(event.sender.id))
           .limit(1)
           .get();
         if (!convSnap.empty) {
-          // Mark all outbound messages before watermark as read
           const msgsSnap = await adminDb.collection('conversationMessages')
             .where('businessId', '==', businessId)
             .where('conversationId', '==', convSnap.docs[0].id)
@@ -504,30 +639,41 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
       continue;
     }
 
-    // Fetch sender profile (name + avatar) for any message/postback event
+    // Fetch sender profile for messages and postbacks
     let senderName: string | undefined;
     let senderAvatarUrl: string | undefined;
 
     if (event.message || event.postback) {
-      const businessId = await resolveBusinessId('facebook', String(pageId));
+      const businessId = await resolveBusinessId(channel, channelIdentifier);
       if (businessId) {
         const pageToken = await getDecryptedPageToken(businessId);
         if (pageToken) {
-          const profile = await fetchSenderProfile(String(event.sender.id), pageToken, 'facebook');
+          const profile = await fetchSenderProfile(String(event.sender.id), pageToken, channel);
           if (profile) {
             senderName = profile.name;
             senderAvatarUrl = profile.profilePic;
+          } else {
+            console.warn('[Meta Webhook] fetchSenderProfile returned null for sender:', event.sender.id, 'channel:', channel);
           }
+        } else {
+          console.warn('[Meta Webhook] No page token for business:', businessId, '— skipping profile fetch');
         }
+      } else {
+        console.warn('[Meta Webhook] Could not resolve businessId for profile fetch. channel:', channel, 'identifier:', channelIdentifier);
       }
-      if (!senderName) senderName = 'Usuário do Facebook';
+      if (!senderName) senderName = isInstagramDm ? 'Usuário do Instagram' : 'Usuário do Facebook';
     }
+
+    // For Instagram DMs arriving via page subscription, pass pageId as fallback so
+    // business resolution succeeds even when channelIdentifier (igAccountId) isn't stored.
+    const igFallback = isInstagramDm ? pageId : undefined;
 
     // Handle postback events
     if (event.postback) {
       await saveInboundMessage({
-        channel: 'facebook',
-        channelIdentifier: String(entry.id),
+        channel,
+        channelIdentifier,
+        fallbackPageId: igFallback,
         externalId: String(event.sender.id),
         senderName,
         senderAvatarUrl,
@@ -540,9 +686,10 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
 
     if (event.message?.text) {
       await saveInboundMessage({
-        channel: 'facebook',
-        channelIdentifier: pageId,
-        externalId: event.sender.id,
+        channel,
+        channelIdentifier,
+        fallbackPageId: igFallback,
+        externalId: String(event.sender.id),
         senderName,
         senderAvatarUrl,
         messageId: event.message.mid,
@@ -557,17 +704,37 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
       const mediaTypeMap: Record<string, string> = {
         image: 'image', video: 'video', audio: 'audio', file: 'document', fallback: 'document'
       };
+      const mappedMediaType = (mediaTypeMap[attachmentType] || 'document') as 'image' | 'audio' | 'video' | 'document';
+
+      // For audio: always download and convert OGG→M4A, then store in Firebase.
+      // Meta CDN audio URLs expire and OGG/Opus is not supported in Safari or Instagram.
+      let resolvedMediaUrl = attachmentUrl;
+      if (mappedMediaType === 'audio' && attachmentUrl) {
+        const bizId = await resolveBusinessId(channel, channelIdentifier);
+        if (bizId) {
+          const pageToken = await getDecryptedPageToken(bizId);
+          const stored = await downloadAndUploadAttachment({
+            url: attachmentUrl,
+            mediaType: 'audio',
+            businessId: bizId,
+            tempConvId: `${channel}_${event.sender.id}`,
+            pageToken: pageToken || undefined,
+          }).catch((err) => { console.warn('[Attachment FB] audio store failed:', err); return null; });
+          if (stored) resolvedMediaUrl = stored;
+        }
+      }
 
       await saveInboundMessage({
-        channel: 'facebook',
-        channelIdentifier: String(entry.id),
+        channel,
+        channelIdentifier,
+        fallbackPageId: igFallback,
         externalId: String(event.sender.id),
         senderName,
         senderAvatarUrl,
         messageId: event.message.mid,
         content: event.message.text || `[${attachmentType === 'file' ? 'Documento' : attachmentType === 'image' ? 'Imagem' : attachmentType === 'video' ? 'Video' : attachmentType === 'audio' ? 'Audio' : 'Anexo'}]`,
-        mediaType: (mediaTypeMap[attachmentType] || 'document') as 'image' | 'audio' | 'video' | 'document',
-        mediaUrl: attachmentUrl,
+        mediaType: mappedMediaType,
+        mediaUrl: resolvedMediaUrl,
         timestamp: new Date(event.timestamp).toISOString(),
       });
     }
@@ -693,6 +860,24 @@ async function handleInstagramEvent(entry: MetaWebhookEntry) {
       const mediaTypeMap: Record<string, string> = {
         image: 'image', video: 'video', audio: 'audio', file: 'document', fallback: 'document'
       };
+      const mappedMediaType = (mediaTypeMap[attachmentType] || 'document') as 'image' | 'audio' | 'video' | 'document';
+
+      // For audio: download and convert OGG→M4A if needed (Instagram rejects OGG, Safari can't play it)
+      let resolvedMediaUrl = attachmentUrl;
+      if (mappedMediaType === 'audio' && attachmentUrl) {
+        const bizId = await resolveBusinessId('instagram', String(accountId));
+        if (bizId) {
+          const pageToken = await getDecryptedPageToken(bizId);
+          const stored = await downloadAndUploadAttachment({
+            url: attachmentUrl,
+            mediaType: 'audio',
+            businessId: bizId,
+            tempConvId: `instagram_${event.sender.id}`,
+            pageToken: pageToken || undefined,
+          }).catch((err) => { console.warn('[Attachment IG] audio store failed:', err); return null; });
+          if (stored) resolvedMediaUrl = stored;
+        }
+      }
 
       await saveInboundMessage({
         channel: 'instagram',
@@ -703,8 +888,8 @@ async function handleInstagramEvent(entry: MetaWebhookEntry) {
         messageId: event.message.mid,
         content: event.message.text || '',
         conversationPreview: event.message.text || `[${attachmentType === 'file' ? 'Documento' : attachmentType === 'image' ? 'Imagem' : attachmentType === 'video' ? 'Video' : attachmentType === 'audio' ? 'Audio' : 'Anexo'}]`,
-        mediaType: (mediaTypeMap[attachmentType] || 'document') as 'image' | 'audio' | 'video' | 'document',
-        mediaUrl: attachmentUrl,
+        mediaType: mappedMediaType,
+        mediaUrl: resolvedMediaUrl,
         timestamp: new Date(event.timestamp).toISOString(),
       });
     }
@@ -722,33 +907,45 @@ async function resolveBusinessId(
   channelIdentifier: string,
 ): Promise<string | null> {
   try {
-    let fieldPath: string;
-
-    switch (channel) {
-      case 'whatsapp':
-        fieldPath = 'channels.whatsapp.phoneNumberId';
-        break;
-      case 'facebook':
-        fieldPath = 'channels.facebook.pageId';
-        break;
-      case 'instagram':
-        // Instagram uses the accountId stored in channels.instagram.accountId
-        fieldPath = 'channels.instagram.accountId';
-        break;
-      default:
-        return null;
+    if (channel === 'whatsapp') {
+      const snap = await adminDb.collection('businesses')
+        .where('channels.whatsapp.phoneNumberId', '==', channelIdentifier)
+        .limit(1)
+        .get();
+      return snap.empty ? null : snap.docs[0].id;
     }
 
-    const snap = await adminDb.collection('businesses')
-      .where(fieldPath, '==', channelIdentifier)
-      .limit(1)
-      .get();
+    if (channel === 'facebook') {
+      const snap = await adminDb.collection('businesses')
+        .where('channels.facebook.pageId', '==', channelIdentifier)
+        .limit(1)
+        .get();
+      return snap.empty ? null : snap.docs[0].id;
+    }
 
-    if (snap.empty) {
+    if (channel === 'instagram') {
+      // Primary lookup: channels.instagram.accountId (Instagram Business Account ID)
+      const snapIg = await adminDb.collection('businesses')
+        .where('channels.instagram.accountId', '==', channelIdentifier)
+        .limit(1)
+        .get();
+      if (!snapIg.empty) return snapIg.docs[0].id;
+
+      // Fallback: Instagram DMs via Page subscription sometimes arrive with the pageId
+      // as channelIdentifier instead of the Instagram account ID. Try matching by pageId.
+      const snapFb = await adminDb.collection('businesses')
+        .where('channels.facebook.pageId', '==', channelIdentifier)
+        .limit(1)
+        .get();
+      if (!snapFb.empty) {
+        console.log('[Meta Webhook] Instagram resolved via Facebook pageId fallback:', channelIdentifier);
+        return snapFb.docs[0].id;
+      }
+
       return null;
     }
 
-    return snap.docs[0].id;
+    return null;
   } catch (err) {
     console.error('[Meta Webhook] Error resolving businessId:', err);
     return null;
@@ -817,42 +1014,50 @@ async function fetchSenderProfile(
   channel: 'facebook' | 'instagram' = 'facebook',
 ): Promise<{ name: string; profilePic?: string } | null> {
   try {
+    // Facebook Messenger PSIDs: first_name + last_name + profile_pic (standard Messenger Profile API)
+    // Instagram IGSIDs: name + username + profile_pic
+    // Note: profile_pic for Instagram requires instagram_basic permission — may be absent.
     const fields = channel === 'instagram'
       ? 'name,username,profile_pic'
-      : 'first_name,last_name,name,profile_pic';
+      : 'first_name,last_name,profile_pic';
 
     const url = `https://graph.facebook.com/v21.0/${senderId}?fields=${fields}&access_token=${pageAccessToken}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
 
     if (!res.ok) {
       const errorText = await res.text().catch(() => '');
-      console.warn(`[Meta Webhook] Profile fetch failed (${channel}):`, res.status, errorText);
+      console.warn(`[Profile] Fetch failed (${channel}) sender=${senderId} status=${res.status}:`, errorText);
       return null;
     }
 
     const data = await res.json();
+    console.log(`[Profile] Raw response (${channel}) sender=${senderId}:`, JSON.stringify(data));
 
     // Build name with best available data
     let name: string;
     if (channel === 'instagram') {
-      // Prefer name, then @username, then senderId as last resort
       name = data.name || (data.username ? `@${data.username}` : senderId);
     } else {
-      // Facebook: prefer full name, then combine first+last
-      if (data.name) {
-        name = data.name;
-      } else if (data.first_name) {
-        name = data.last_name ? `${data.first_name} ${data.last_name}` : data.first_name;
+      // Facebook: combine first + last; fall back to senderId if both empty
+      if (data.first_name || data.last_name) {
+        name = [data.first_name, data.last_name].filter(Boolean).join(' ');
       } else {
+        // API returned no name fields — token may be a user token instead of page token
+        console.warn(`[Profile] Facebook returned no name fields for sender=${senderId}. Token may not be a Page Access Token.`);
         name = senderId;
       }
     }
 
     // Persist the ephemeral Meta CDN URL to Firebase Storage so it never expires.
-    // Falls back to the original URL silently if storage is unavailable.
-    const profilePic = data.profile_pic
-      ? await persistProfilePic(data.profile_pic, senderId)
+    // profile_pic may be absent for Instagram (requires instagram_basic permission).
+    const rawPic = data.profile_pic || data.picture?.data?.url || undefined;
+    const profilePic = rawPic
+      ? await persistProfilePic(rawPic, senderId)
       : undefined;
+
+    if (!rawPic) {
+      console.log(`[Profile] No profile_pic returned for ${channel} sender=${senderId} (permission or private account)`);
+    }
 
     return { name, profilePic };
   } catch (err) {
@@ -872,9 +1077,15 @@ async function getDecryptedPageToken(businessId: string): Promise<string | null>
 
     const bizData = bizSnap.data();
     const encryptedToken = bizData?.channels?.facebook?.pageAccessToken;
-    if (!encryptedToken) return null;
+    if (!encryptedToken) {
+      console.warn('[Profile] No pageAccessToken stored for business:', businessId);
+      return null;
+    }
 
-    return decryptToken(encryptedToken);
+    const token = await decryptToken(encryptedToken);
+    // Log first 12 chars so we can confirm it's a page token (starts with EAA...) vs user token
+    console.log('[Profile] Page token prefix for business', businessId, ':', token.slice(0, 12) + '...');
+    return token;
   } catch (err) {
     console.error('[Meta Webhook] Error getting page token:', err);
     return null;
@@ -900,10 +1111,21 @@ async function saveInboundMessage(params: InboundMessageParams) {
   });
 
   // 1. Resolve businessId from channel identifier
-  const businessId = await resolveBusinessId(params.channel, params.channelIdentifier);
+  // For Instagram DMs arriving via page subscription (object:'page'), the channelIdentifier
+  // is event.recipient.id which may be the Instagram account ID or the page ID depending
+  // on how Meta structures the payload. If primary lookup fails, try the fallbackPageId
+  // (the entry.id = Facebook page ID) which is always reliable.
+  let businessId = await resolveBusinessId(params.channel, params.channelIdentifier);
+
+  if (!businessId && params.channel === 'instagram' && params.fallbackPageId) {
+    businessId = await resolveBusinessId('facebook', params.fallbackPageId);
+    if (businessId) {
+      console.log('[Meta Webhook] Instagram resolved via fallbackPageId:', params.fallbackPageId);
+    }
+  }
 
   if (!businessId) {
-    console.error('[Meta Webhook] Could not resolve businessId for', params.channel, 'identifier:', params.channelIdentifier);
+    console.error('[Meta Webhook] Could not resolve businessId for', params.channel, 'identifier:', params.channelIdentifier, 'fallback:', params.fallbackPageId);
     try {
       await adminDb.collection('webhookFailures').add({
         reason: 'business_not_found',
@@ -1061,12 +1283,26 @@ async function saveInboundMessage(params: InboundMessageParams) {
         isDeleted: false,
         deletedAt: null,
       };
-      // Enrich name if current is just the numeric ID
-      if (params.senderName && (!existingData.contactName || /^\d+$/.test(existingData.contactName))) {
+      // Default placeholder names used as fallback when profile fetch fails on first message.
+      // On subsequent messages (when profile fetch succeeds), overwrite them with the real name.
+      const PLACEHOLDER_NAMES = [
+        'Usuário do Facebook', 'Usuário do Instagram',
+        'Facebook User', 'Instagram User',
+      ];
+      const currentName = existingData.contactName as string | undefined;
+      const nameIsPlaceholder = !currentName
+        || /^\d+$/.test(currentName)
+        || PLACEHOLDER_NAMES.includes(currentName);
+      if (params.senderName && nameIsPlaceholder) {
         enrichUpdate.contactName = params.senderName;
       }
-      // Enrich avatar if missing
-      if (params.senderAvatarUrl && !existingData.contactAvatarUrl) {
+      // Enrich avatar if missing or if we now have a permanent Firebase Storage URL
+      const currentAvatar = existingData.contactAvatarUrl as string | undefined;
+      const newAvatarIsBetter = params.senderAvatarUrl && (
+        !currentAvatar
+        || (currentAvatar.includes('fbcdn.net') && params.senderAvatarUrl.includes('firebasestorage'))
+      );
+      if (newAvatarIsBetter) {
         enrichUpdate.contactAvatarUrl = params.senderAvatarUrl;
       }
       await adminDb.doc(`conversations/${conversationId}`).update(enrichUpdate);
@@ -1208,8 +1444,15 @@ async function updateMessageStatus(params: {
 
     // Save error details when status is 'failed'
     if (params.status === 'failed' && params.errors?.length) {
-      updateData.failedReason = params.errors[0].title;
-      updateData.failedCode = params.errors[0].code;
+      const firstError = params.errors[0];
+      updateData.failedReason = firstError.title;
+      updateData.failedCode = firstError.code;
+      console.error('[Meta Webhook] Message delivery failed:', {
+        messageId: params.messageId,
+        channel: params.channel,
+        businessId: params.businessId,
+        errors: params.errors,
+      });
     }
 
     await adminDb.doc(`conversationMessages/${msgDoc.id}`).update(updateData);

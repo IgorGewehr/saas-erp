@@ -234,7 +234,7 @@ async function fetchSenderProfile(
   pageAccessToken: string,
 ): Promise<SenderProfile | null> {
   try {
-    const url = `https://graph.facebook.com/v19.0/${senderId}?fields=first_name,last_name,profile_pic&access_token=${pageAccessToken}`;
+    const url = `https://graph.facebook.com/v21.0/${senderId}?fields=name,first_name,last_name,profile_pic&access_token=${pageAccessToken}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
 
     if (!res.ok) {
@@ -244,9 +244,10 @@ async function fetchSenderProfile(
     }
 
     const data = await res.json();
-    const firstName = data.first_name || '';
-    const lastName = data.last_name || '';
-    const name = `${firstName} ${lastName}`.trim() || senderId;
+    // Prefer full `name` field; fall back to first+last; fall back to senderId
+    const name = data.name
+      || (`${data.first_name || ''} ${data.last_name || ''}`).trim()
+      || senderId;
 
     return { name, profilePic: data.profile_pic || undefined };
   } catch (err) {
@@ -395,7 +396,10 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
         updatedAt: now,
       };
 
-      if (senderName && (!existingConv.contactName || /^\d+$/.test(existingConv.contactName))) {
+      // Enrich name: replace numeric IDs AND default placeholder names with the real name
+      const PLACEHOLDER_NAMES = ['Usuário do Facebook', 'Usuário do Instagram', 'Facebook User'];
+      const currentName = existingConv.contactName as string | undefined;
+      if (senderName && (!currentName || /^\d+$/.test(currentName) || PLACEHOLDER_NAMES.includes(currentName))) {
         convUpdate.contactName = senderName;
       }
       if (senderAvatarUrl && !existingConv.contactAvatarUrl) {
