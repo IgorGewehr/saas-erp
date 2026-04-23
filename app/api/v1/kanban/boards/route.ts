@@ -219,9 +219,20 @@ export async function DELETE(req: NextRequest) {
       return apiError('Board not found', 404);
     }
 
-    await docRef.delete();
+    // Cascade delete: remove all cards belonging to this board
+    const cardsSnap = await adminDb.collection('kanbanCards')
+      .where('boardId', '==', id)
+      .where('businessId', '==', auth.businessId)
+      .get();
 
-    return apiSuccess({ id, deleted: true });
+    const batch = adminDb.batch();
+    batch.delete(docRef);
+    for (const cardDoc of cardsSnap.docs) {
+      batch.delete(cardDoc.ref);
+    }
+    await batch.commit();
+
+    return apiSuccess({ id, deleted: true, cardsDeleted: cardsSnap.size });
   } catch (error: any) {
     console.error('[API v1/kanban/boards DELETE]', error);
     return apiError(error.message || 'Failed to delete kanban board', 500);
