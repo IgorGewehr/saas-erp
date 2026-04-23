@@ -57,7 +57,7 @@ import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch } from 'firebase/firestore';
 import { toast } from 'react-toastify';
 import { deductStock, restoreStock } from '@/lib/services/stock';
 import { calculateEarnedPoints, addLoyaltyPoints, redeemLoyaltyPoints, pointsToReais, reaisToPoints } from '@/lib/services/loyalty';
@@ -683,9 +683,12 @@ export default function PDVModule() {
         updatedAt: now,
       };
 
-      const docRef = await addDoc(collection(db, 'sales'), saleData);
+      // ── Atomic batch: sale + stock + transaction + client stats ──
+      const batch = writeBatch(db);
+      const saleRef = doc(collection(db, 'sales'));
+      batch.set(saleRef, saleData);
 
-      // Deduct stock via centralized helper (supports composite products/BOM).
+      // Deduct stock into the same batch (supports composite products/BOM).
       const productIndex = new Map(products.map(p => [p.id, p]));
       const stockLines = cart
         .filter(item => item.productId)
@@ -695,14 +698,15 @@ export default function PDVModule() {
           businessId: business.id,
           operatorId: user.uid,
           operatorName: user.name,
-          sourceId: docRef.id,
-          reason: `Venda #${docRef.id.substring(0, 6)}`,
+          sourceId: saleRef.id,
+          reason: `Venda #${saleRef.id.substring(0, 6)}`,
           productIndex,
-        });
+        }, batch);
       }
 
-      // Create financial transaction for the sale
-      await addDoc(collection(db, 'transactions'), {
+      // Financial transaction in the same batch
+      const txRef = doc(collection(db, 'transactions'));
+      batch.set(txRef, {
         businessId: business.id,
         type: 'receita',
         category: 'Vendas',
@@ -713,20 +717,30 @@ export default function PDVModule() {
         status: 'pago',
         clientId: selectedClient?.id || null,
         clientName: selectedClient?.name || null,
-        saleId: docRef.id,
+        saleId: saleRef.id,
         paymentMethod: payments[0]?.method || 'dinheiro',
         createdAt: now,
         updatedAt: now,
       });
 
-      // Update client stats
+      // Client stats in the same batch
       if (selectedClient) {
-        await updateDoc(doc(db, 'clients', selectedClient.id), {
+        batch.update(doc(db, 'clients', selectedClient.id), {
           totalSpent: (selectedClient.totalSpent || 0) + total,
           visitCount: (selectedClient.visitCount || 0) + 1,
           lastVisit: now,
           updatedAt: now,
         });
+      }
+
+      // Commit all core operations atomically
+      await batch.commit();
+
+      // Use saleRef.id for downstream operations
+      const docRef = saleRef;
+
+      // ── Non-critical operations (loyalty/gift card — already use runTransaction internally) ──
+      if (selectedClient) {
 
         const loyaltyConfig = business?.settings?.loyalty;
         const pointsPayment = payments.find(p => p.method === 'pontos');
