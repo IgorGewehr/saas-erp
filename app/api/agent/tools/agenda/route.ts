@@ -103,13 +103,15 @@ async function listProfessionals(businessId: string, serviceId?: string) {
     .map(d => ({ ...(d.data() as User), id: d.id }))
     .filter(u => u.isActive !== false && u.isProfessional !== false);
 
-  const filtered = serviceId
+  const byService = serviceId
     ? users.filter(u => {
         const ids = u.serviceIds;
-        if (!ids || ids.length === 0) return false; // must explicitly offer the service
+        if (!ids || ids.length === 0) return false;
         return ids.includes(serviceId);
       })
     : users;
+  // If no professional has explicit serviceIds configured, all active professionals can do any service
+  const filtered = serviceId && byService.length === 0 ? users : byService;
 
   // Return only what the agent needs — strip auth/session sensitive fields
   return filtered.map(u => ({
@@ -187,13 +189,15 @@ async function checkAvailability(
     .map(d => ({ ...(d.data() as User), id: d.id }))
     .filter(u => u.businessId === businessId && u.isProfessional !== false);
 
-  // Filter by serviceId — professional must explicitly offer it
+  // Filter by serviceId — if professionals have explicit serviceIds, enforce; otherwise allow all
   if (serviceId) {
-    professionals = professionals.filter(u => {
+    const withService = professionals.filter(u => {
       const ids = u.serviceIds;
       if (!ids || ids.length === 0) return false;
       return ids.includes(serviceId);
     });
+    if (withService.length > 0) professionals = withService;
+    // else: no-one has serviceIds configured → all professionals can perform any service
   }
 
   const slots: AvailabilitySlot[] = [];
@@ -240,6 +244,7 @@ async function checkAvailability(
     if (slots.length >= 20) break;
   }
 
+  slots.sort((a, b) => a.startTime.localeCompare(b.startTime));
   return { date, slots: slots.slice(0, 20) };
 }
 
@@ -261,15 +266,21 @@ interface BookParams {
 async function bookAppointment(businessId: string, p: BookParams) {
   if (!p.clientName || !p.date || !p.startTime) throw new Error('clientName, date, startTime required');
 
-  // Validate professional offers this service (when both are provided)
-  if (p.professionalId && p.serviceId) {
+  // Validate professional (best-effort — log but don't hard-fail on missing professionalId)
+  if (p.professionalId) {
+    console.log('[agenda/book] params:', JSON.stringify({ professionalId: p.professionalId, serviceId: p.serviceId, clientName: p.clientName, date: p.date, startTime: p.startTime }));
     const profSnap = await adminDb.collection('users').doc(p.professionalId).get();
-    if (!profSnap.exists) throw new Error('Profissional não encontrado');
-    const prof = profSnap.data() as User;
-    if (prof.businessId !== businessId) throw new Error('Profissional não pertence a esta empresa');
-    const ids = prof.serviceIds;
-    if (ids && ids.length > 0 && !ids.includes(p.serviceId)) {
-      throw new Error('Este profissional não oferece o serviço solicitado');
+    if (!profSnap.exists) {
+      console.error('[agenda/book] professionalId not found in users collection:', p.professionalId, '— clearing it');
+      // Agent passed a bad ID (e.g. service ID instead of user UID) — strip it so booking proceeds
+      p.professionalId = undefined;
+      p.professionalName = undefined;
+    } else {
+      const prof = profSnap.data() as User;
+      if (prof.businessId !== businessId) {
+        p.professionalId = undefined;
+        p.professionalName = undefined;
+      }
     }
   }
 
@@ -283,10 +294,13 @@ async function bookAppointment(businessId: string, p: BookParams) {
   const conflicts = conflictSnap.docs
     .map(d => d.data() as Appointment)
     .filter(a => a.status !== 'cancelado')
-    .filter(a => p.professionalId ? a.professionalId === p.professionalId : true)
+    .filter(a => {
+      if (!p.professionalId) return false; // sem profissional definido, não bloqueia
+      return a.professionalId === p.professionalId;
+    })
     .filter(a => intervalsOverlap(p.startTime, endTime, a.startTime, a.endTime));
   if (conflicts.length > 0) {
-    throw new Error(`Horário ${p.startTime} em ${p.date} já está ocupado`);
+    throw new Error(`Horário ${p.startTime} em ${p.date} já está ocupado para este profissional`);
   }
 
   // If service provided, pull duration/price/color

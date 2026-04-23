@@ -73,7 +73,7 @@ def _cost_for(model: str, in_tokens: int, out_tokens: int) -> float:
 
 async def router_node(state: AgentState) -> dict[str, Any]:
     settings = get_settings()
-    model_name = "gpt-4o-mini"  # router is always cheap
+    model_name = settings.openai_model_router
     llm = ChatOpenAI(
         model=model_name,
         api_key=settings.openai_api_key,
@@ -95,7 +95,7 @@ async def router_node(state: AgentState) -> dict[str, Any]:
 
     raw = (result.content or "").strip().lower() if isinstance(result.content, str) else ""
     # Normalize — accept the first token that matches a known label
-    valid = {"pedido", "agenda", "info", "saudacao", "reclamacao", "outro"}
+    valid = {"pedido", "agenda", "confirmacao", "info", "saudacao", "reclamacao", "outro"}
     intent = next((w for w in raw.split() if w in valid), "outro")
 
     usage = getattr(result, "response_metadata", {}).get("token_usage", {}) or {}
@@ -163,13 +163,22 @@ async def planner_node(state: AgentState) -> dict[str, Any]:
     business_ctx = state.get("business_context") or {}
     model = business_ctx.get("model") or settings.openai_model_default
 
+    # Escalate to full model for complex multi-step flows (> 3 iterations)
+    if state.get("iterations", 0) > 3:
+        model = settings.openai_model_fallback
+
     tools = tools_for_use_case(use_case)  # filtered by mode
     llm = _planner_llm(model, tools)
 
     system = prompts.planner_system_for(use_case, business_ctx)
     # Inject contact & channel context so the LLM can plan address/phone flows
     contact = state.get("contact") or {}
-    system += f"\n\nDADOS DO CONTATO: nome='{contact.get('name','?')}', telefone='{contact.get('phone','?')}', canal='{contact.get('channel','?')}'."
+    system += (
+        f"\n\nDADOS DO CONTATO: nome='{contact.get('name','?')}', "
+        f"telefone='{contact.get('phone','?')}', canal='{contact.get('channel','?')}', "
+        f"conversation_id='{state.get('conversation_id','?')}'."
+        "\nAo criar pedidos use canal e conversation_id acima como channel e conversationId."
+    )
 
     conv_messages = state.get("messages") or []
     t0 = time.time()
@@ -260,9 +269,15 @@ async def executor_node(state: AgentState) -> dict[str, Any]:
     log_entries = [entry for _, entry in results]
     trace_latency = sum(e["latencyMs"] for e in log_entries)
 
+    # If any tool call was a successful interactive send, suppress the responder
+    interactive_sent = any(
+        e["name"] == "conversation_send_interactive" and "error" not in e
+        for e in log_entries
+    )
+
     log.info("node.executor", run_id=state.get("run_id"), count=len(results), latency_ms=trace_latency)
 
-    return {
+    update: dict[str, Any] = {
         "messages": new_messages,
         "tool_calls_log": (state.get("tool_calls_log") or []) + log_entries,
         "node_traces": _push_trace(state, {
@@ -272,6 +287,9 @@ async def executor_node(state: AgentState) -> dict[str, Any]:
             "startedAt": _now_iso(),
         }),
     }
+    if interactive_sent:
+        update["interactive_sent"] = True
+    return update
 
 
 # ─── 4. Responder — polish the final answer ─────────────────────────────────
@@ -279,6 +297,11 @@ async def executor_node(state: AgentState) -> dict[str, Any]:
 
 async def responder_node(state: AgentState) -> dict[str, Any]:
     """Take the last planner AIMessage and rewrite for the customer in the business tone."""
+    # If an interactive message was already sent to the client, skip the text response
+    if state.get("interactive_sent"):
+        log.info("node.responder.skip_interactive", run_id=state.get("run_id"))
+        return {"final_response": None}
+
     settings = get_settings()
     msgs = state.get("messages") or []
     # Find the last AIMessage without tool_calls — that's the draft

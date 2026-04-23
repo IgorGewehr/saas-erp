@@ -32,6 +32,7 @@ class AgentState(TypedDict, total=False):
     iterations: int
     final_response: str | None
     error: str | None
+    interactive_sent: bool  # set by executor when conversation_send_interactive succeeds
 
     # --- Observability (appended throughout) ---
     node_traces: list[dict[str, Any]]

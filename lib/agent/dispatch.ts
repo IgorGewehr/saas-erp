@@ -8,8 +8,15 @@
  */
 
 import crypto from 'crypto';
+import fs from 'fs';
 import type { Firestore } from 'firebase-admin/firestore';
 import type { Business, Conversation, ConversationChannel } from '@/lib/types';
+
+function dlog(msg: string) {
+  const line = `${new Date().toISOString()} ${msg}\n`;
+  process.stdout.write(line);
+  try { fs.appendFileSync('/tmp/dispatch.log', line); } catch { /* ignore */ }
+}
 
 const AGENT_URL = process.env.AGENT_SERVICE_URL || 'http://localhost:8080';
 const SECRET = process.env.AGENT_SHARED_SECRET;
@@ -36,12 +43,15 @@ export async function dispatchInboundToAgent(
   input: InboundDispatchInput,
 ): Promise<void> {
   if (!SECRET) {
-    console.warn('[agent/dispatch] AGENT_SHARED_SECRET not set, skipping');
+    dlog('[agent/dispatch] AGENT_SHARED_SECRET not set, skipping');
     return;
   }
 
   const DEBOUNCE_MS = parseInt(process.env.AGENT_DEBOUNCE_MS || '5000', 10);
 
+  const tag = `[agent/dispatch] conv=${input.conversationId.slice(-6)} msg=${input.messageId.slice(-6)}`;
+
+  dlog(`${tag} ▶ dispatch started — msg="${input.message.slice(0, 60)}"`);
   try {
     // Fast pre-check: read business + conversation to gate immediately
     const [bizSnap, convSnap] = await Promise.all([
@@ -49,32 +59,54 @@ export async function dispatchInboundToAgent(
       db.collection('conversations').doc(input.conversationId).get(),
     ]);
 
-    if (!bizSnap.exists || !convSnap.exists) return;
+    if (!bizSnap.exists || !convSnap.exists) {
+      dlog(`${tag} SKIP: business(${bizSnap.exists}) or conversation(${convSnap.exists}) not found`);
+      return;
+    }
     const business = bizSnap.data() as Business;
     const conv = convSnap.data() as Conversation;
 
     // Gates
     const agentEnabledOnBusiness = !!business.settings?.aiAgent?.enabled;
-    if (!agentEnabledOnBusiness) return;
-    if (conv.aiEnabled === false) return;
+    dlog(`${tag} gate check — aiAgent.enabled=${agentEnabledOnBusiness} conv.aiEnabled=${(conv as any).aiEnabled}`);
+    if (!agentEnabledOnBusiness) {
+      dlog(`${tag} SKIP: aiAgent.enabled=false on business`);
+      return;
+    }
+    if (conv.aiEnabled === false) {
+      dlog(`${tag} SKIP: aiEnabled=false on conversation`);
+      return;
+    }
+    dlog(`${tag} gates OK — useCase=${business.settings?.useCase || 'servicos'} debounce=${DEBOUNCE_MS}ms`);
 
     // Debounce: mark this message as the current pending dispatch token.
-    // If another message arrives within DEBOUNCE_MS it will overwrite this field
-    // and this invocation will silently bail, letting the newer message handle it.
     const convRef = db.collection('conversations').doc(input.conversationId);
     await convRef.update({ _agentPendingDispatch: input.messageId });
+    dlog(`${tag} debounce set — waiting ${DEBOUNCE_MS}ms`);
     await new Promise(r => setTimeout(r, DEBOUNCE_MS));
 
     // Re-read conversation — if the token changed, a newer message took over
     const freshConvSnap = await convRef.get();
     if (!freshConvSnap.exists) return;
     const freshData = freshConvSnap.data() as Conversation & { _agentPendingDispatch?: string | null };
-    if (freshData._agentPendingDispatch !== input.messageId) return;
-    // Also re-check per-conversation toggle (user may have disabled during the wait)
-    if (freshData.aiEnabled === false) return;
+    dlog(`${tag} debounce check — pendingToken=${freshData._agentPendingDispatch?.slice(-6)} myToken=${input.messageId.slice(-6)}`);
+    if (freshData._agentPendingDispatch !== input.messageId) {
+      dlog(`${tag} SKIP: debounce — newer message took over`);
+      return;
+    }
+    if (freshData.aiEnabled === false) {
+      dlog(`${tag} SKIP: aiEnabled turned off during debounce`);
+      return;
+    }
 
-    // Clear the token (best-effort — non-fatal if it fails)
-    convRef.update({ _agentPendingDispatch: null }).catch(() => {});
+    // Clear the token only if it still belongs to this message (prevents overwriting
+    // a newer message's token that arrived between our debounce check and the clear).
+    db.runTransaction(async (tx) => {
+      const snap = await tx.get(convRef);
+      if (snap.data()?._agentPendingDispatch === input.messageId) {
+        tx.update(convRef, { _agentPendingDispatch: null });
+      }
+    }).catch(() => {});
 
     // Build last-10-turns history — re-fetch AFTER the debounce window so
     // any burst messages (saved during the 5s wait) are included.
@@ -109,7 +141,7 @@ export async function dispatchInboundToAgent(
     const useCase = business.settings?.useCase || 'servicos';
 
     // Pre-load services for agenda mode — avoids an extra tool call for "what services do you have?"
-    type ServiceSnapshot = { name: string; price: number; duration: number; category?: string; description?: string };
+    type ServiceSnapshot = { id: string; name: string; price: number; duration: number; category?: string; description?: string };
     let servicesList: ServiceSnapshot[] = [];
     if (useCase === 'servicos') {
       try {
@@ -120,6 +152,7 @@ export async function dispatchInboundToAgent(
         servicesList = servicesSnap.docs.map(d => {
           const s = d.data();
           return {
+            id: d.id,
             name: s.name as string,
             price: (s.price as number) || 0,
             duration: (s.duration as number) || 60,
@@ -152,6 +185,8 @@ export async function dispatchInboundToAgent(
       opening_hours: business.settings?.openingHours || null,
       address: business.endereco || null,
       services_list: servicesList.length > 0 ? servicesList : null,
+      // Current date so the agent doesn't have to guess from training data
+      current_date: new Date().toISOString().slice(0, 10),
     };
 
     const raw = JSON.stringify(payload);
@@ -162,10 +197,12 @@ export async function dispatchInboundToAgent(
     // Fire and don't await — webhook response should stay fast.
     // We await the *dispatch* but abort if it takes >3s; the agent itself will
     // keep processing in the background. Next.js will get tool calls shortly.
+    dlog(`${tag} POST → ${AGENT_URL}/process (payload ${raw.length} bytes, timeout 3s)`);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3000);
+    const t0 = Date.now();
     try {
-      await fetch(`${AGENT_URL.replace(/\/$/, '')}/process`, {
+      const res = await fetch(`${AGENT_URL.replace(/\/$/, '')}/process`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -176,15 +213,25 @@ export async function dispatchInboundToAgent(
         body: raw,
         signal: controller.signal,
       }).catch((err) => {
-        // AbortError expected when we cut off waiting — agent continues server-side
+        const latency = Date.now() - t0;
         if ((err as Error).name !== 'AbortError') {
-          console.error('[agent/dispatch] fetch failed:', err);
+          dlog(`${tag} fetch failed (${latency}ms): ${String(err)}`);
+        } else {
+          dlog(`${tag} 3s timeout — agent continues async (${latency}ms)`);
         }
+        return null;
       });
+      if (res && !res.ok) {
+        const body = await res.text().catch(() => '');
+        dlog(`${tag} ✗ agent HTTP ${res.status} (${Date.now()-t0}ms): ${body}`);
+      } else if (res?.ok) {
+        const data = await res.json().catch(() => ({}));
+        dlog(`${tag} ✓ agent responded (${Date.now()-t0}ms) — intent=${data.intent} status=${data.status} response="${String(data.final_response || '').slice(0,80)}"`);
+      }
     } finally {
       clearTimeout(timer);
     }
   } catch (err) {
-    console.error('[agent/dispatch] fatal:', err);
+    dlog(`${tag} ✗ fatal: ${String(err)}`);
   }
 }

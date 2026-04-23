@@ -57,6 +57,7 @@ def _build_graph():
         iterations: int
         final_response: str | None
         error: str | None
+        interactive_sent: bool
         node_traces: list[dict]
         tool_calls_log: list[dict]
         total_tokens_in: int
@@ -152,6 +153,7 @@ async def run_agent(*, run_id: str, business_id: str, req: ProcessRequest) -> Ag
             "opening_hours": req.opening_hours or [],
             "address": req.address or {},
             "services_list": req.services_list or [],
+            "current_date": req.current_date or "",
         },
         "contact": {
             "name": req.contact_name,
@@ -207,7 +209,7 @@ async def run_agent(*, run_id: str, business_id: str, req: ProcessRequest) -> Ag
         final_response=final.get("final_response"),
         intent=final.get("intent"),
         iterations=final.get("iterations", 0),
-        status="success" if final.get("final_response") else "error",
+        status="success" if (final.get("final_response") or final.get("interactive_sent")) else "error",
         error=final.get("error"),
         node_traces=final.get("node_traces", []),
         tool_calls=final.get("tool_calls_log", []),

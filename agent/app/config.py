@@ -25,8 +25,10 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(..., alias="OPENAI_API_KEY")
     next_public_api_base_url: str = Field(..., alias="NEXT_PUBLIC_API_BASE_URL")
 
-    # --- Model defaults ---
-    openai_model_default: str = Field("gpt-4o-mini", alias="OPENAI_MODEL_DEFAULT")
+    # --- Model defaults (3-tier: nano=router, mini=planner/executor, full=fallback) ---
+    openai_model_router: str = Field("gpt-5.4-nano", alias="OPENAI_MODEL_ROUTER")
+    openai_model_default: str = Field("gpt-5.4-mini", alias="OPENAI_MODEL_DEFAULT")
+    openai_model_fallback: str = Field("gpt-5.4", alias="OPENAI_MODEL_FALLBACK")
 
     # --- Server ---
     host: str = Field("0.0.0.0", alias="HOST")

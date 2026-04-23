@@ -105,6 +105,8 @@ TOOL_ENDPOINTS: dict[str, str] = {
     "clients_get_full_history": "/api/agent/tools/clients",
     # business
     "business_get_context": "/api/agent/tools/business",
+    # conversation / interactive
+    "conversation_send_interactive": "/api/agent/tools/send-interactive",
 }
 
 

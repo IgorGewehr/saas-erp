@@ -33,6 +33,7 @@ class ProcessRequest(BaseModel):
     opening_hours: list[dict[str, Any]] | None = None  # 7 BusinessHoursDay entries (0=Dom..6=Sáb)
     address: dict[str, Any] | None = None              # business.endereco
     services_list: list[dict[str, Any]] | None = None  # active services (agenda mode pre-load)
+    current_date: str | None = None  # ISO date YYYY-MM-DD injected by dispatcher
 
 
 class ProcessResponse(BaseModel):

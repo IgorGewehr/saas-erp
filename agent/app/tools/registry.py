@@ -72,6 +72,15 @@ ORDERS_TOOLS: list[dict[str, Any]] = [
                     "changeFor": {"type": "number", "description": "Troco para (if paying cash)"},
                     "customerNotes": {"type": "string"},
                     "estimatedMinutes": {"type": "integer", "default": 45},
+                    "channel": {
+                        "type": "string",
+                        "enum": ["whatsapp", "facebook", "instagram"],
+                        "description": "Channel the order came from (use the contact's channel).",
+                    },
+                    "conversationId": {
+                        "type": "string",
+                        "description": "Current conversation id — links order to the chat for provenance.",
+                    },
                 },
                 "required": ["clientName", "items", "deliveryType"],
             },
@@ -231,9 +240,9 @@ AGENDA_TOOLS: list[dict[str, Any]] = [
                     "clientId": {"type": "string"},
                     "clientName": {"type": "string"},
                     "clientPhone": {"type": "string"},
-                    "serviceId": {"type": "string"},
+                    "serviceId": {"type": "string", "description": "Service ID from services_list or agenda_list_services"},
                     "serviceName": {"type": "string"},
-                    "professionalId": {"type": "string"},
+                    "professionalId": {"type": "string", "description": "User ID from agenda_list_professionals response (field 'id')"},
                     "professionalName": {"type": "string"},
                     "date": {"type": "string", "description": "YYYY-MM-DD"},
                     "startTime": {"type": "string", "description": "HH:MM"},
@@ -498,20 +507,85 @@ CLIENT_TOOLS: list[dict[str, Any]] = [
 ]
 
 
+CONVERSATION_TOOLS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "conversation_send_interactive",
+            "description": (
+                "Send a WhatsApp list-message with selectable rows (Baileys only). "
+                "Use this to present time-slot options so the client can tap to choose. "
+                "Each row id should be the time string (e.g. '09:00') so you can read "
+                "the client's selection directly from their reply."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "conversation_id": {
+                        "type": "string",
+                        "description": "Current conversation ID (from the request context)",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Bold header text, e.g. 'Horários disponíveis'",
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Main message text shown above the list button",
+                    },
+                    "footer": {
+                        "type": "string",
+                        "description": "Optional footer text (small grey text at bottom)",
+                    },
+                    "button_text": {
+                        "type": "string",
+                        "description": "Label on the button that opens the list, e.g. 'Ver horários'",
+                    },
+                    "sections": {
+                        "type": "array",
+                        "description": "One section per date. Max 10 rows total across all sections.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string", "description": "Section header, e.g. 'Amanhã — 24/04'"},
+                                "rows": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {"type": "string", "description": "Time string used as selection value, e.g. '09:00'"},
+                                            "title": {"type": "string", "description": "Display title, e.g. '09:00'"},
+                                            "description": {"type": "string", "description": "Subtitle, e.g. 'Corte de Cabelo — R$ 50,00'"},
+                                        },
+                                        "required": ["id", "title"],
+                                    },
+                                },
+                            },
+                            "required": ["title", "rows"],
+                        },
+                    },
+                },
+                "required": ["conversation_id", "title", "body", "button_text", "sections"],
+            },
+        },
+    },
+]
+
+
 def tools_for_use_case(use_case: UseCase) -> list[dict[str, Any]]:
     """Return the subset of tools the LLM should see, given the business mode."""
     base = CLIENT_TOOLS[:]
     if use_case == "pedidos":
         return base + CATALOG_TOOLS + ORDERS_TOOLS
     if use_case == "servicos":
-        return base + AGENDA_TOOLS
+        return base + AGENDA_TOOLS + CONVERSATION_TOOLS
     # simples / times — generic CRM only
     return base
 
 
 # Backwards-compatible exports
 ALL_TOOLS: list[dict[str, Any]] = (
-    ORDERS_TOOLS + AGENDA_TOOLS + CATALOG_TOOLS + CLIENT_TOOLS
+    ORDERS_TOOLS + AGENDA_TOOLS + CATALOG_TOOLS + CLIENT_TOOLS + CONVERSATION_TOOLS
 )
 TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     t["function"]["name"]: t for t in ALL_TOOLS

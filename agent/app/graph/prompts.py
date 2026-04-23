@@ -59,7 +59,8 @@ def _format_services(services: list[dict[str, Any]]) -> str:
         dur = s.get("duration", 60)
         cat = f" [{s.get('category')}]" if s.get("category") else ""
         desc = f" — {s['description']}" if s.get("description") else ""
-        lines.append(f"  • {s.get('name', '?')}{cat} — {price_str} — {dur}min{desc}")
+        sid = f" (id:{s['id']})" if s.get("id") else ""
+        lines.append(f"  • {s.get('name', '?')}{cat}{sid} — {price_str} — {dur}min{desc}")
     return "\n".join(lines)
 
 
@@ -84,6 +85,7 @@ def _base_rules(business_context: dict[str, Any]) -> str:
         "- Mensagens curtas (1–3 frases). Listas quando houver múltiplos itens.",
         f"- Fuso horário do negócio: {tz}.",
         "- Se já há mensagens anteriores no histórico (conversa em andamento), NÃO envie saudação — vá direto ao assunto.",
+        f"- Data de hoje: {business_context.get('current_date') or 'desconhecida'} (use para calcular datas relativas como 'amanhã', 'semana que vem', etc.).",
     ]
 
     if description:
@@ -172,6 +174,7 @@ SEU FLUXO:
 4. Confirme forma de pagamento. Se dinheiro, pergunte se precisa de troco.
 5. Só agora, se o cliente não estiver cadastrado, pergunte o nome (uma única vez).
 6. Finalize com orders_create apenas DEPOIS de confirmar tudo.
+   - Sempre inclua channel (canal do contato, ex: whatsapp) e conversationId nos parâmetros.
 7. Para consultar/cancelar pedido existente: orders_list_by_client ou orders_get.
 8. Para alterar itens (antes de preparar): orders_update_items.
 
@@ -221,35 +224,44 @@ def planner_system_agenda(business_context: dict[str, Any]) -> str:
         else "\nATENÇÃO: Lista de serviços não carregada. Use agenda_list_services para obtê-la antes de responder sobre serviços.\n"
     )
 
+    # conversation_id is injected into DADOS DO CONTATO in nodes.py — reference it here
     return (
         _base_rules(business_context)
         + f"""
 {services_section}
 MODO: AGENDA DE SERVIÇOS (MULTI-PROFISSIONAL)
 
-SEU FLUXO:
+SEU FLUXO (siga nesta ordem):
 1. Verifique o cadastro em silêncio: clients_lookup_by_phone (não mencione ao cliente).
-2. Entender o serviço desejado — use os SERVIÇOS DISPONÍVEIS acima. Chame agenda_list_services só se precisar de IDs dos serviços.
-3. Identificar o profissional:
-   - Chame agenda_list_professionals com o serviceId do serviço escolhido.
-   - Se houver apenas 1 profissional, use-o automaticamente (não pergunte).
-   - Se houver 2 ou mais, pergunte ao cliente qual prefere (liste os nomes).
-   - Se nenhum profissional oferecer o serviço, informe que o serviço não está disponível no momento.
-4. Para verificar horários: SEMPRE use agenda_check_availability com date + professionalId + durationMinutes.
-   - Resolva datas relativas ("amanhã", "sábado") para YYYY-MM-DD antes de chamar.
-5. Ofereça 2-3 horários disponíveis e pergunte a preferência.
-6. Só agora, se o cliente não estiver cadastrado, pergunte o nome (uma única vez).
-7. Só chame agenda_book DEPOIS que o cliente confirmar horário + serviço + profissional + nome.
-   - Passe professionalId e professionalName no book para garantir o vínculo correto.
+2. Entenda o serviço desejado — use os SERVIÇOS DISPONÍVEIS acima (id entre parênteses).
+3. Identifique o profissional:
+   - Chame agenda_list_professionals com o serviceId escolhido.
+   - 1 profissional → use-o automaticamente. 2+ → pergunte ao cliente qual prefere.
+4. PERGUNTAS PROGRESSIVAS para descobrir o horário (nunca despeje todos os slots de vez):
+   a. Se o cliente não disse o dia → pergunte: "Você prefere esta semana ou outra data?"
+   b. Se o cliente não disse o período → pergunte: "Prefere pela manhã ou à tarde?"
+   c. Só então chame agenda_check_availability (date + professionalId + durationMinutes).
+      - Resolva datas relativas ("amanhã", "sábado") para YYYY-MM-DD.
+      - Filtre mentalmente os slots pelo período escolhido (manhã = até 12:00, tarde = após 12:00).
+5. Apresente os horários como lista interativa do WhatsApp:
+   - Chame conversation_send_interactive com type=list.
+   - Passe conversation_id (disponível em DADOS DO CONTATO).
+   - Use no máximo 1 seção com até 6 slots. title da seção = "Dia DD/MM".
+   - id e title de cada row = o horário ("09:00"). description = "Serviço — R$ XX,00".
+   - Depois de chamar conversation_send_interactive, NÃO envie mais texto — o cliente toca na lista.
+6. Quando o cliente escolher o horário pela lista (a resposta dele será o texto do horário selecionado,
+   ex: "09:00"), confirme: "Perfeito! Vou agendar [serviço] às [horário] do dia [data] com [profissional]."
+   - Se o cliente não estiver cadastrado, pergunte o nome ANTES de confirmar.
+7. Só chame agenda_book DEPOIS que o cliente confirmar. Use o professionalId da lista de profissionais.
 8. Para consultar/remarcar: agenda_list_by_client, agenda_update.
 9. Para cancelar: agenda_cancel.
 
 REGRAS ESPECÍFICAS:
-- Nunca ofereça serviços que não estejam na lista acima. Se o cliente pedir algo que não está, diga que não oferecemos esse serviço.
-- Nunca marque sem confirmar horário exato com o cliente.
-- Se não houver vaga no dia pedido, ofereça os próximos dias via agenda_get_next_available (passe professionalId).
-- Ao confirmar, mostre: serviço, profissional, data, horário e preço.
-- Se o cliente confirmar ou cancelar um agendamento já existente, use agenda_update com o status correto.
+- Nunca ofereça serviços fora da lista acima.
+- Nunca marque sem confirmar horário exato.
+- Se não houver vaga no dia pedido, use agenda_get_next_available e envie nova lista interativa.
+- Ao confirmar, exiba: serviço, profissional, data, horário e preço.
+- Se o cliente confirmar ou cancelar um agendamento existente, use agenda_update com o status correto.
 
 AUTOMAÇÕES CONFIGURADAS NESTE NEGÓCIO:
 {automation_block}

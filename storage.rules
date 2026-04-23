@@ -16,6 +16,12 @@ service firebase.storage {
           && request.resource.contentType.lower().matches('image/.*');
     }
 
+    function isCertificate() {
+      return request.resource.contentType.matches('application/x-pkcs12')
+          || request.resource.contentType.matches('application/octet-stream')
+          || request.resource.contentType.matches('application/.*');
+    }
+
     function isMedia() {
       return request.resource.contentType is string
           && (request.resource.contentType.lower().matches('image/.*')
@@ -24,9 +30,8 @@ service firebase.storage {
            || request.resource.contentType == 'application/pdf');
     }
 
-    // ── User avatars ────────────────────────────────────────────────────────
+    // ── User avatars ─────────────────────────────────────────────────────────
     // Path: users/{uid}/avatar
-    // uid check is sufficient — no Firestore read needed.
     match /users/{userId}/{fileName} {
       allow read:  if isAuthenticated();
       allow write: if isAuthenticated()
@@ -35,20 +40,26 @@ service firebase.storage {
                    && isUnderSize(5);
     }
 
-    // ── All business-level files ─────────────────────────────────────────────
-    // Covers: logo, certificates, menuCategories, and any future paths.
-    // Tenant isolation is enforced at the app layer (businessId comes from
-    // useAuth() and the UI restricts which roles can write).
-    // Firestore reads are intentionally absent — firestore.get() in Storage
-    // rules is subject to Firestore rules which can produce circular reads
-    // through the users/{uid} allow read rule, causing silent denials.
-    match /businesses/{businessId}/{path=**} {
-      allow read:  if isAuthenticated();
-      allow write: if isAuthenticated() && isUnderSize(10);
+    // ── Fiscal certificates (PFX) ─────────────────────────────────────────────
+    // Path: businesses/{businessId}/certificates/{fileName}
+    // More specific than the general businesses path below — matched first.
+    match /businesses/{businessId}/certificates/{fileName} {
+      allow read:   if isAuthenticated();
+      allow write:  if isAuthenticated()
+                    && isCertificate()
+                    && isUnderSize(10);
       allow delete: if isAuthenticated();
     }
 
-    // ── Product images ───────────────────────────────────────────────────────
+    // ── General business files (logo, menu images, etc.) ─────────────────────
+    // Path: businesses/{businessId}/...
+    match /businesses/{businessId}/{path=**} {
+      allow read:   if isAuthenticated();
+      allow write:  if isAuthenticated() && isUnderSize(10);
+      allow delete: if isAuthenticated();
+    }
+
+    // ── Product images ────────────────────────────────────────────────────────
     // Path: products/{businessId}/{productId}/{fileName}
     match /products/{businessId}/{productId}/{fileName} {
       allow read:   if isAuthenticated();
@@ -56,21 +67,21 @@ service firebase.storage {
       allow delete: if isAuthenticated();
     }
 
-    // ── Conversation media (WhatsApp/FB/IG attachments) ──────────────────────
+    // ── Conversation media (WhatsApp/FB/IG attachments) ───────────────────────
     // Path: conversations/{businessId}/{conversationId}/{fileName}
     match /conversations/{businessId}/{conversationId}/{fileName} {
       allow read:  if isAuthenticated();
       allow write: if isAuthenticated() && isMedia() && isUnderSize(25);
     }
 
-    // ── Contact avatars (server-only via Admin SDK) ──────────────────────────
+    // ── Contact avatars (server-only via Admin SDK) ───────────────────────────
     // Path: contactAvatars/{businessId}/...
     match /contactAvatars/{businessId}/{rest=**} {
       allow read:  if isAuthenticated();
       allow write: if false;
     }
 
-    // ── Catch-all: deny everything else ─────────────────────────────────────
+    // ── Catch-all: deny everything else ──────────────────────────────────────
     match /{allPaths=**} {
       allow read, write: if false;
     }

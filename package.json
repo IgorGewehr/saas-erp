@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:agent": "cd agent && uv run uvicorn main:app --reload --port 8080",
+    "dev:all": "concurrently -n next,agent -c cyan,magenta --kill-others-on-fail \"npm run dev\" \"npm run dev:agent\"",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
@@ -63,6 +65,7 @@
     "@types/react-input-mask": "^3.0.5",
     "@vitejs/plugin-react": "^6.0.1",
     "autoprefixer": "^10.4.0",
+    "concurrently": "^9.2.1",
     "eslint": "^9.0.0",
     "eslint-config-next": "^15.1.0",
     "jsdom": "^29.0.0",
