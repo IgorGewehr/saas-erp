@@ -934,19 +934,30 @@ function MediaAttachment({
 
   if (mediaType === 'video') {
     return (
-      <div className="mb-1.5 rounded-xl overflow-hidden max-w-[240px] bg-black/10 dark:bg-white/5 flex items-center justify-center p-4 gap-2">
-        <Video className="w-5 h-5 text-gray-400" />
-        <span className="text-xs text-gray-500 dark:text-gray-400">{t('conversations.mediaVideo', 'Vídeo')}</span>
+      <div className="mb-1.5 rounded-xl overflow-hidden max-w-[280px]">
+        <video
+          controls
+          preload="metadata"
+          className="w-full rounded-xl bg-black"
+          style={{ maxHeight: '200px' }}
+        >
+          <source src={mediaUrl} />
+        </video>
       </div>
     );
   }
 
   if (mediaType === 'audio') {
     return (
-      <div className="mb-1.5 flex items-center gap-2 px-3 py-2 rounded-xl bg-black/5 dark:bg-white/5 min-w-[180px]">
-        <Headphones className="w-4 h-4 text-gray-400 flex-shrink-0" />
-        <div className="flex-1 h-1 rounded-full bg-gray-300 dark:bg-gray-600" />
-        <span className="text-[10px] text-gray-400">{t('conversations.mediaAudio', 'Áudio')}</span>
+      <div className="mb-1.5 min-w-[220px] max-w-[280px]">
+        <audio
+          controls
+          preload="metadata"
+          className="w-full"
+          style={{ height: '36px' }}
+        >
+          <source src={mediaUrl} />
+        </audio>
       </div>
     );
   }
