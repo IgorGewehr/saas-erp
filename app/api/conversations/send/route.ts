@@ -107,6 +107,9 @@ function handleMetaApiError(
       case 131026:
         userMessage = 'Numero invalido ou destinatario nao esta no WhatsApp.';
         break;
+      case 131030:
+        userMessage = 'Numero nao esta na lista permitida. O app Meta ainda esta em modo de desenvolvimento — adicione o numero no Meta Developer Dashboard ou publique o app em modo Live.';
+        break;
       case 190:
         userMessage = 'Token de acesso expirado. Reconecte o canal em Configuracoes.';
         break;
