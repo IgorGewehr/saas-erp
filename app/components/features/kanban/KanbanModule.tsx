@@ -2868,6 +2868,7 @@ export default function KanbanModule() {
   const [showNewBoard, setShowNewBoard] = useState(false);
   const [showAutomations, setShowAutomations] = useState(false);
   const [archiveBoardConfirmId, setArchiveBoardConfirmId] = useState<string | null>(null);
+  const [deleteColumnConfirm, setDeleteColumnConfirm] = useState<{ columnId: string; columnTitle: string } | null>(null);
 
   // Templates
   const [templates, setTemplates] = useState<KanbanCardTemplate[]>([]);
@@ -3243,7 +3244,7 @@ export default function KanbanModule() {
     setShowNewColumn(false);
   }, [business?.id, activeBoardId, activeBoard, canManageBoard, showToast, t]);
 
-  const handleDeleteColumn = useCallback(async (columnId: string) => {
+  const handleDeleteColumn = useCallback((columnId: string) => {
     if (!business?.id || !activeBoard) return;
     if (!canManageBoard) { showToast(t('kanban.errors.noPermission', 'Sem permissão')); return; }
     const columnCards = cards.filter(c => c.columnId === columnId);
@@ -3255,9 +3256,15 @@ export default function KanbanModule() {
       showToast(t('kanban.errors.lastColumn', 'O board precisa ter pelo menos uma coluna'));
       return;
     }
+    const column = activeBoard.columns.find(c => c.id === columnId);
+    setDeleteColumnConfirm({ columnId, columnTitle: column?.title ?? 'esta coluna' });
+  }, [business?.id, activeBoard, cards, canManageBoard, showToast, t]);
+
+  const handleDeleteColumnConfirmed = useCallback(async () => {
+    if (!business?.id || !activeBoard || !deleteColumnConfirm) return;
     try {
       const updatedColumns = activeBoard.columns
-        .filter(c => c.id !== columnId)
+        .filter(c => c.id !== deleteColumnConfirm.columnId)
         .map((c, i) => ({ ...c, order: i }));
       await updateDoc(doc(db, 'kanbanBoards', activeBoardId), {
         columns: updatedColumns,
@@ -3266,8 +3273,10 @@ export default function KanbanModule() {
     } catch (err) {
       console.error('Error deleting column:', err);
       showToast(t('kanban.errors.deleteColumn', 'Erro ao excluir coluna'));
+    } finally {
+      setDeleteColumnConfirm(null);
     }
-  }, [business?.id, activeBoardId, activeBoard, cards, canManageBoard, showToast, t]);
+  }, [business?.id, activeBoardId, activeBoard, deleteColumnConfirm, showToast, t]);
 
   // Opens the confirmation dialog — actual archive happens in handleArchiveConfirmed
   const handleArchiveBoard = useCallback((boardId: string) => {
@@ -3767,6 +3776,66 @@ export default function KanbanModule() {
             </motion.div>
           );
         })()}
+      </AnimatePresence>
+
+      {/* Delete column confirmation dialog */}
+      <AnimatePresence>
+        {deleteColumnConfirm && (
+          <motion.div
+            key="delete-col-confirm"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}
+            onClick={() => setDeleteColumnConfirm(null)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 8 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 8 }}
+              transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+              className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 w-full max-w-sm p-6"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-3 mb-4">
+                <div className="flex-shrink-0 w-10 h-10 rounded-xl bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
+                  <Trash2 className="w-5 h-5 text-red-500" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-gray-900 dark:text-white text-sm">
+                    {t('kanban.deleteColumnTitle', 'Excluir coluna')}
+                  </h3>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                    {deleteColumnConfirm.columnTitle}
+                  </p>
+                </div>
+              </div>
+
+              <p className="text-sm text-gray-600 dark:text-gray-300 mb-5">
+                {t(
+                  'kanban.deleteColumnBody',
+                  'Tem certeza que deseja excluir esta coluna? Essa ação não pode ser desfeita.',
+                )}
+              </p>
+
+              <div className="flex gap-2 justify-end">
+                <button
+                  onClick={() => setDeleteColumnConfirm(null)}
+                  className="px-4 py-2 text-sm rounded-xl border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                >
+                  {t('kanban.cancel', 'Cancelar')}
+                </button>
+                <button
+                  onClick={handleDeleteColumnConfirmed}
+                  className="px-4 py-2 text-sm rounded-xl bg-red-500 hover:bg-red-600 text-white font-medium transition-colors"
+                >
+                  {t('kanban.deleteColumnConfirm', 'Excluir coluna')}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
       </AnimatePresence>
 
       {/* Toast notifications */}
