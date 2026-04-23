@@ -409,11 +409,24 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
         const conversationPreview = extracted.content
           || (hasMedia ? MEDIA_PREVIEW[msg.type] || '[Midia]' : '');
 
+        // Resolve sender name from the contacts array in the webhook payload.
+        // WhatsApp Cloud API does NOT provide profile pictures — avatar will be initials only.
+        // wa_id matching: try exact first, then digits-only normalized (handles BR 9th-digit variance).
+        const contacts = value.contacts ?? [];
+        const normalizedFrom = msg.from.replace(/\D/g, '');
+        const contactEntry = contacts.find(c => c.wa_id === msg.from)
+          ?? contacts.find(c => c.wa_id.replace(/\D/g, '') === normalizedFrom)
+          ?? contacts[0]; // last resort: take first contact if only one in list
+        const waName = contactEntry?.profile?.name || undefined;
+
+        console.log('[WA Webhook] Contacts payload:', JSON.stringify(contacts));
+        console.log('[WA Webhook] msg.from:', msg.from, '| matched name:', waName);
+
         await saveInboundMessage({
           channel: 'whatsapp',
           channelIdentifier: phoneNumberId,
           externalId: msg.from,
-          senderName: value.contacts?.find(c => c.wa_id === msg.from)?.profile.name,
+          senderName: waName,
           messageId: msg.id,
           content: extracted.content,
           conversationPreview,
@@ -1124,8 +1137,11 @@ async function saveInboundMessage(params: InboundMessageParams) {
         'Facebook User', 'Instagram User',
       ];
       const currentName = existingData.contactName as string | undefined;
+      // A name is a placeholder if: missing, all digits (raw phone), looks like a
+      // formatted phone number (+55 47 9785-6405), or is one of the known fallback strings.
       const nameIsPlaceholder = !currentName
         || /^\d+$/.test(currentName)
+        || /^[\d\s+\-().]+$/.test(currentName)   // formatted phone: +55 47 9785-6405
         || PLACEHOLDER_NAMES.includes(currentName);
       if (params.senderName && nameIsPlaceholder) {
         enrichUpdate.contactName = params.senderName;
