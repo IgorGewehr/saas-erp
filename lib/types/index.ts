@@ -432,6 +432,7 @@ export interface Appointment {
   followUpSentAt?: string;
   // Commission tracking — set when appointment is marked concluido
   commissionTransactionId?: string; // Firestore ID of the linked Transaction (category: 'Comissoes')
+  googleCalendarEventId?: string;   // Google Calendar event ID for sync
   createdAt: string;
   updatedAt: string;
 }
@@ -2164,4 +2165,20 @@ export interface AppNotification {
   actorId?: string;         // who triggered (for assigned/mentioned)
   actorName?: string;
   createdAt: string;
+}
+
+// ---- Google Calendar Sync ----
+
+export interface CalendarSyncToken {
+  id: string;
+  uid: string;              // Firebase Auth uid
+  businessId: string;
+  provider: 'google';
+  accessToken: string;      // encrypted
+  refreshToken: string;     // encrypted
+  expiresAt: string;        // ISO — when accessToken expires
+  calendarId: string;       // usually 'primary'
+  isActive: boolean;
+  connectedAt: string;
+  lastSyncAt?: string;
 }
