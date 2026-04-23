@@ -139,6 +139,70 @@ export async function deductStock(
 }
 
 /**
+ * Restore stock atomically — inverse of deductStock.
+ * Used when cancelling a sale to return items to inventory.
+ *
+ * @returns the list of per-product adjustments that were applied
+ */
+export async function restoreStock(
+  db: Firestore,
+  lines: StockDeductionLine[],
+  ctx: StockDeductionContext,
+): Promise<StockAdjustment[]> {
+  if (!ctx.productIndex) {
+    throw new Error('[stock.restoreStock] productIndex is required.');
+  }
+
+  const expanded = expandComponents(lines, ctx.productIndex);
+  if (expanded.length === 0) return [];
+
+  const batch = writeBatch(db);
+  const now = new Date().toISOString();
+  const adjustments: StockAdjustment[] = [];
+
+  for (const line of expanded) {
+    const product = ctx.productIndex.get(line.productId);
+    if (!product) continue;
+
+    const previousStock = product.currentStock || 0;
+    const newStock = previousStock + line.quantity;
+
+    batch.update(doc(db, 'products', product.id), {
+      currentStock: newStock,
+      updatedAt: now,
+    });
+
+    const movementRef = doc(collection(db, 'stockMovements'));
+    const movement: Omit<StockMovement, 'id'> = {
+      businessId: ctx.businessId,
+      productId: product.id,
+      productName: product.name,
+      type: 'entrada',
+      quantity: line.quantity,
+      previousStock,
+      newStock,
+      reason: ctx.reason,
+      ...(ctx.sourceId ? { saleId: ctx.sourceId } : {}),
+      operatorId: ctx.operatorId,
+      operatorName: ctx.operatorName,
+      createdAt: now,
+    };
+    batch.set(movementRef, movement);
+
+    adjustments.push({
+      productId: product.id,
+      productName: product.name,
+      delta: line.quantity,
+      previousStock,
+      newStock,
+    });
+  }
+
+  await batch.commit();
+  return adjustments;
+}
+
+/**
  * Non-destructive check: does stock on-hand cover the requested sale?
  * Returns the list of insufficient lines (empty = OK).
  */
