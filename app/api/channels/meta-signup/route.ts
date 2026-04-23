@@ -261,6 +261,30 @@ export async function POST(req: NextRequest) {
           pageId = page.id;
           pageName = page.name;
           pageAccessToken = page.access_token || '';
+
+          // Exchange for a long-lived page access token — page tokens derived from a
+          // long-lived user token NEVER expire, unlike those from /me/accounts (short-lived).
+          // Without this, fetchSenderProfile calls fail once the token expires (hours).
+          try {
+            const llPageRes = await fetch(
+              `${META_GRAPH}/${pageId}?fields=access_token`,
+              { headers: { Authorization: `Bearer ${longLivedToken}` } }
+            );
+            if (llPageRes.ok) {
+              const llPageData = await llPageRes.json();
+              if (llPageData.access_token) {
+                pageAccessToken = llPageData.access_token;
+                console.log('[Meta Signup] Long-lived page token obtained for page:', pageId);
+              } else {
+                console.warn('[Meta Signup] Long-lived page token response had no access_token:', JSON.stringify(llPageData));
+              }
+            } else {
+              const errText = await llPageRes.text();
+              console.warn('[Meta Signup] Could not get long-lived page token (using short-lived):', errText);
+            }
+          } catch (llPageErr) {
+            console.warn('[Meta Signup] Error fetching long-lived page token (non-fatal):', llPageErr);
+          }
         } else if (!phoneNumberId && !phonesNeedSelection) {
           // No WhatsApp and no pages found — likely pages_show_list was denied
           return NextResponse.json({
