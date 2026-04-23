@@ -2785,6 +2785,7 @@ export default function KanbanModule() {
   const [showNewColumn, setShowNewColumn] = useState(false);
   const [showNewBoard, setShowNewBoard] = useState(false);
   const [showAutomations, setShowAutomations] = useState(false);
+  const [archiveBoardConfirmId, setArchiveBoardConfirmId] = useState<string | null>(null);
 
   // Templates
   const [templates, setTemplates] = useState<KanbanCardTemplate[]>([]);
@@ -3182,24 +3183,31 @@ export default function KanbanModule() {
     }
   }, [business?.id, activeBoardId, activeBoard, cards, canManageBoard, showToast, t]);
 
-  const handleArchiveBoard = useCallback(async (boardId: string) => {
-    if (!business?.id) return;
+  // Opens the confirmation dialog — actual archive happens in handleArchiveConfirmed
+  const handleArchiveBoard = useCallback((boardId: string) => {
     if (!canManageBoard) { showToast(t('kanban.errors.noPermission', 'Sem permissão')); return; }
+    setArchiveBoardConfirmId(boardId);
+  }, [canManageBoard, showToast, t]);
+
+  const handleArchiveConfirmed = useCallback(async () => {
+    if (!business?.id || !archiveBoardConfirmId) return;
     try {
-      await updateDoc(doc(db, 'kanbanBoards', boardId), {
+      await updateDoc(doc(db, 'kanbanBoards', archiveBoardConfirmId), {
         isArchived: true,
         updatedAt: new Date().toISOString(),
       });
-      if (activeBoardId === boardId) {
-        const remaining = boards.filter(b => b.id !== boardId);
+      if (activeBoardId === archiveBoardConfirmId) {
+        const remaining = boards.filter(b => b.id !== archiveBoardConfirmId);
         setActiveBoardId(remaining.length > 0 ? remaining[0].id : '');
       }
       showToast(t('kanban.boardArchived', 'Board arquivado'), 'success');
     } catch (err) {
       console.error('Error archiving board:', err);
       showToast(t('kanban.errors.archiveBoard', 'Erro ao arquivar board'));
+    } finally {
+      setArchiveBoardConfirmId(null);
     }
-  }, [business?.id, activeBoardId, boards, canManageBoard, showToast, t]);
+  }, [business?.id, archiveBoardConfirmId, activeBoardId, boards, showToast, t]);
 
   const handleRenameBoard = useCallback(async (boardId: string, newName: string) => {
     if (!business?.id || !newName.trim()) return;
@@ -3593,6 +3601,69 @@ export default function KanbanModule() {
             onCreate={handleCreateBoard}
           />
         )}
+      </AnimatePresence>
+
+      {/* Archive board confirmation dialog */}
+      <AnimatePresence>
+        {archiveBoardConfirmId && (() => {
+          const boardToArchive = boards.find(b => b.id === archiveBoardConfirmId);
+          return (
+            <motion.div
+              key="archive-confirm"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 flex items-center justify-center p-4"
+              style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}
+              onClick={() => setArchiveBoardConfirmId(null)}
+            >
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 8 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 8 }}
+                transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+                className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 w-full max-w-sm p-6"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="flex-shrink-0 w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center">
+                    <Archive className="w-5 h-5 text-amber-500" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-gray-900 dark:text-white text-sm">
+                      {t('kanban.archiveConfirmTitle', 'Arquivar board')}
+                    </h3>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      {boardToArchive?.name}
+                    </p>
+                  </div>
+                </div>
+
+                <p className="text-sm text-gray-600 dark:text-gray-300 mb-5">
+                  {t(
+                    'kanban.archiveConfirmBody',
+                    'Este board será arquivado e removido da lista. Os cards não serão excluídos e o board pode ser restaurado a qualquer momento.',
+                  )}
+                </p>
+
+                <div className="flex gap-2 justify-end">
+                  <button
+                    onClick={() => setArchiveBoardConfirmId(null)}
+                    className="px-4 py-2 text-sm rounded-xl border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                  >
+                    {t('kanban.cancel', 'Cancelar')}
+                  </button>
+                  <button
+                    onClick={handleArchiveConfirmed}
+                    className="px-4 py-2 text-sm rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-medium transition-colors"
+                  >
+                    {t('kanban.archiveConfirm', 'Arquivar')}
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          );
+        })()}
       </AnimatePresence>
 
       {/* Toast notifications */}
