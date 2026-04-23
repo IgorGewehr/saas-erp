@@ -2253,6 +2253,18 @@ export default function AgendaModule() {
         }
       }
 
+      // Soft warning for past appointments (does not block — allows retroactive registration)
+      if (!editingAppointment) {
+        const apptDateTime = new Date(`${data.date}T${data.startTime}`);
+        if (!isNaN(apptDateTime.getTime()) && apptDateTime < new Date()) {
+          setSnackbar({
+            open: true,
+            message: t('agenda.pastDateWarning', 'Atenção: este agendamento está no passado.'),
+            severity: 'warning',
+          });
+        }
+      }
+
       const payload: Record<string, any> = {
         clientId: data.clientId || '',
         clientName: data.clientName,

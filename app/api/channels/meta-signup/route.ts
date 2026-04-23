@@ -79,6 +79,31 @@ export async function POST(req: NextRequest) {
       accessToken = tokenData.access_token;
     }
 
+    // ── Step 1.5: Validate token belongs to our Meta App (CSRF protection) ──
+    try {
+      const debugRes = await fetch(
+        `${META_GRAPH}/debug_token?input_token=${accessToken}&access_token=${appId}|${appSecret}`,
+      );
+      if (debugRes.ok) {
+        const debugData = await debugRes.json();
+        const tokenAppId = debugData.data?.app_id;
+        if (tokenAppId && tokenAppId !== appId) {
+          return NextResponse.json(
+            { error: 'Token does not belong to this application' },
+            { status: 403 },
+          );
+        }
+        if (debugData.data?.is_valid === false) {
+          return NextResponse.json(
+            { error: 'Invalid or expired Meta access token' },
+            { status: 401 },
+          );
+        }
+      }
+    } catch {
+      // Non-blocking — if debug fails, proceed (Graph API calls will catch invalid tokens)
+    }
+
     // ── Step 2: Exchange short-lived → long-lived token (60 days) ───────────
     // Uses fb_exchange_token grant — NO redirect_uri needed
     let longLivedToken = accessToken;
