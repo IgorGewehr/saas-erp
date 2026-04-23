@@ -29,6 +29,7 @@ import {
   UtensilsCrossed,
   BarChart3,
   KeyRound,
+  StickyNote,
 } from 'lucide-react';
 import type { UseCase, UserRole } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
@@ -40,6 +41,7 @@ export type MenuPage =
   | 'Agenda'
   | 'Conversas'
   | 'Kanban'
+  | 'Notas'
   | 'PDV'
   | 'Vendas'
   | 'Compras'
@@ -83,6 +85,7 @@ function useMenuSections(): MenuSection[] {
         { id: 'CRM', label: t('sidebar.crm'), icon: Target, enterpriseOnly: true, useCases: ['pedidos', 'servicos', 'simples'] },
         { id: 'Agenda', label: t('sidebar.agenda'), icon: Calendar, useCases: ['servicos'] },
         { id: 'Conversas', label: t('sidebar.conversas'), icon: MessageSquare },
+        { id: 'Notas', label: 'Notas', icon: StickyNote },
         { id: 'PDV', label: t('sidebar.pdv'), icon: ShoppingCart, useCases: ['pedidos', 'servicos', 'simples'] },
       ],
     },
