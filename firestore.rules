@@ -826,12 +826,11 @@ service cloud.firestore {
                     (resource.data.sharedWith is list && resource.data.sharedWith.hasAny([request.auth.uid]))
                   );
 
-      // Create: admin+ of the business, ciphertext + required fields
+      // Create: admin+ of the business, title required (password optional)
       allow create: if isAuthenticated()
                     && incomingBelongsToBusiness()
                     && isAdmin()
-                    && isNonEmptyString(request.resource.data.title)
-                    && isNonEmptyString(request.resource.data.encryptedPassword);
+                    && isNonEmptyString(request.resource.data.title);
 
       // Update: admin+ of the business, same tenant
       allow update: if isAuthenticated()
@@ -843,6 +842,36 @@ service cloud.firestore {
       allow delete: if isAuthenticated()
                     && isOwnBusiness()
                     && (resource.data.createdBy == request.auth.uid || hasMinRole('founder'));
+    }
+
+    // ============================================
+    // NOTES COLLECTION (Mural de Notas)
+    // ============================================
+    match /notes/{noteId} {
+      // Personal notes: only the author can read them.
+      // Team notes: any member of the business can read.
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && (
+                    resource.data.scope == 'team'
+                    || resource.data.authorId == request.auth.uid
+                  );
+
+      // Any authenticated business member can create notes
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && request.resource.data.authorId == request.auth.uid
+                    && isNonEmptyString(request.resource.data.content);
+
+      // Authors can update their own notes
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && resource.data.authorId == request.auth.uid;
+
+      // Authors can delete their own notes; managers can delete any note
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && (resource.data.authorId == request.auth.uid || isManager());
     }
 
     // ============================================
