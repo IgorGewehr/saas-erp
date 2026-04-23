@@ -7,7 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { getInitials, formatCurrency } from '@/lib/utils/format';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
-import { collection, query, where, orderBy, getDocs, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, getDocs, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useQuery } from '@tanstack/react-query';
 import type { User as UserType, Product, Appointment, CRMContact } from '@/lib/types';
@@ -396,7 +396,7 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
   const { data: searchProducts = [] } = useQuery({
     queryKey: ['search-products', businessId],
     queryFn: async () => {
-      const q = query(collection(db, 'products'), where('businessId', '==', businessId), orderBy('name', 'asc'));
+      const q = query(collection(db, 'products'), where('businessId', '==', businessId), orderBy('name', 'asc'), limit(200));
       const snap = await getDocs(q);
       return snap.docs.map(d => ({ ...d.data(), id: d.id } as Product));
     },
@@ -407,7 +407,7 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
   const { data: searchAppointments = [] } = useQuery({
     queryKey: ['search-appointments', businessId],
     queryFn: async () => {
-      const q = query(collection(db, 'appointments'), where('businessId', '==', businessId), orderBy('date', 'desc'));
+      const q = query(collection(db, 'appointments'), where('businessId', '==', businessId), orderBy('date', 'desc'), limit(200));
       const snap = await getDocs(q);
       return snap.docs.map(d => ({ ...d.data(), id: d.id } as Appointment));
     },
@@ -418,7 +418,7 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
   const { data: searchContacts = [] } = useQuery({
     queryKey: ['search-clients', businessId],
     queryFn: async () => {
-      const q = query(collection(db, 'clients'), where('businessId', '==', businessId), orderBy('createdAt', 'desc'));
+      const q = query(collection(db, 'clients'), where('businessId', '==', businessId), orderBy('createdAt', 'desc'), limit(200));
       const snap = await getDocs(q);
       return snap.docs.map(d => ({ ...d.data(), id: d.id } as CRMContact));
     },

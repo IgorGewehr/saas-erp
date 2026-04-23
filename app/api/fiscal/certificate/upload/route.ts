@@ -8,7 +8,7 @@ import {
 } from '@/lib/fiscal/certificate-manager';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import type { UserRole } from '@/lib/types';
-import { FieldValue } from 'firebase-admin/firestore';
+
 
 const MAX_FILE_SIZE = 256 * 1024; // 256 KB
 const ALLOWED_EXTENSIONS = ['.pfx', '.p12'];
@@ -141,7 +141,7 @@ export async function POST(req: NextRequest) {
           uploadedAt: now,
         },
         'fiscal.certPasswordEncrypted': encryptedPassword,
-        updatedAt: FieldValue.serverTimestamp(),
+        updatedAt: new Date().toISOString(),
       });
 
     // 7. Invalidate cache so next getCertificadoPayload fetches fresh data

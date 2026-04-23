@@ -125,7 +125,7 @@ const TYPE_ICONS_EMIT: Record<FiscalDocType, { icon: React.ReactNode; color: str
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: EmitirNotaDialogProps) {
-  const { business, user } = useAuth();
+  const { business, user, firebaseUser } = useAuth();
   const { t } = useTranslation();
   const config = useMemo(() => ({
     title: t(`fiscal.emit.title.${type}`, type === 'nfse' ? 'Emitir NFSe' : type === 'nfce' ? 'Emitir NFCe' : 'Emitir NFe'),
@@ -351,7 +351,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
 
       const res = await fetch('/api/fiscal/emit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
         body: JSON.stringify(body),
       });
 
@@ -476,7 +476,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
 
       const res = await fetch('/api/fiscal/emit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
         body: JSON.stringify({ type: 'nfce', data: payload }),
       });
 
@@ -621,7 +621,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
 
       const res = await fetch('/api/fiscal/emit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
         body: JSON.stringify({ type: 'nfe', data: payload }),
       });
 

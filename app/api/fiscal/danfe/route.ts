@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 
 const SEFAZ_API_URL = process.env.SEFAZ_API_URL;
 const SEFAZ_API_KEY = process.env.SEFAZ_API_KEY;
@@ -343,6 +344,10 @@ ${data.infAdic ? `
 
 export async function POST(request: NextRequest) {
   try {
+    // Auth: any authenticated user
+    const auth = await verifyAuth(request);
+    if (isAuthError(auth)) return auth;
+
     const body = await request.json();
     const { xml, type } = body as { xml?: string; type?: string };
 

@@ -384,11 +384,11 @@ export async function GET(req: NextRequest) {
   ].filter(Boolean) as string[];
 
   if (mode === 'subscribe' && token && validTokens.includes(token)) {
-    console.log('[Meta Webhook] Verification successful for token:', token);
+    console.log('[Meta Webhook] Verification successful');
     return new NextResponse(challenge, { status: 200 });
   }
 
-  console.warn('[Meta Webhook] Verification failed — token received:', token);
+  console.warn('[Meta Webhook] Verification failed');
   return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 }
 

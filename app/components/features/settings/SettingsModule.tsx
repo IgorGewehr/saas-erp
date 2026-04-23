@@ -6147,7 +6147,9 @@ export default function SettingsModule() {
     { id: 'enterprise' as Tab, label: t('settings.tabs.enterprise', 'Enterprise'), icon: Blocks     },
   ];
 
-  const tabs = allTabs;
+  const isAdmin = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
+  const ADMIN_ONLY_TABS = new Set<Tab>(['empresa', 'fiscal', 'usuarios', 'setores', 'canais', 'enterprise']);
+  const tabs = isAdmin ? allTabs : allTabs.filter(tab => !ADMIN_ONLY_TABS.has(tab.id));
 
   return (
     <motion.div

@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
+import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
+import { ROLE_HIERARCHY } from '@/lib/types';
+import type { UserRole } from '@/lib/types';
 import { cancelarNFe, resolveAmbiente, SefazAmbiente } from '@/lib/services/sefaz-gateway';
 import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
 
@@ -23,6 +26,16 @@ export async function POST(request: NextRequest) {
   try {
     const body: CancelRequestBody = await request.json();
     const type = body.type || 'nfe';
+
+    // Auth: admin+ only
+    if (!body.businessId) {
+      return NextResponse.json({ error: 'businessId e obrigatorio.' }, { status: 400 });
+    }
+    const auth = await verifyAuth(request, body.businessId);
+    if (isAuthError(auth)) return auth;
+    if (ROLE_HIERARCHY[auth.role as UserRole] < ROLE_HIERARCHY['admin']) {
+      return NextResponse.json({ error: 'Admin role required' }, { status: 403 });
+    }
 
     if (!body.justificativa || body.justificativa.trim().length < 15) {
       return NextResponse.json(

@@ -185,6 +185,7 @@ interface DocumentDetailDialogProps {
 
 function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated, businessId, business, onPrintDanfe, onCartaCorrecao }: DocumentDetailDialogProps) {
   const { t } = useTranslation();
+  const { firebaseUser } = useAuth();
   const [showXml, setShowXml] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
@@ -243,7 +244,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
     try {
       const response = await fetch('/api/fiscal/cancel', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
         body: JSON.stringify({
           type: doc.type,
           businessId,
@@ -287,7 +288,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
     try {
       const response = await fetch('/api/fiscal/query', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
         body: JSON.stringify({
           type: doc.type,
           businessId,
@@ -866,7 +867,7 @@ function TableSkeleton() {
 // ==============================================
 
 export default function FiscalModule({ type }: FiscalModuleProps) {
-  const { business, user } = useAuth();
+  const { business, user, firebaseUser } = useAuth();
   const isManager = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['manager'];
   const { isDark } = useTheme();
   const { t } = useTranslation();
@@ -1019,7 +1020,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
     try {
       const res = await fetch('/api/fiscal/danfe', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
         body: JSON.stringify({ xml: document.xml, type: document.type }),
       });
       if (!res.ok) { toast.error(t('fiscal.danfe.error', 'Erro ao gerar DANFE.')); return; }
@@ -1041,7 +1042,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
       const sequencia = (cartaCorrecaoDoc.cartaCorrecao?.length || 0) + 1;
       const res = await fetch('/api/fiscal/carta-correcao', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
         body: JSON.stringify({
           businessId: business?.id,
           chaveAcesso: cartaCorrecaoDoc.accessKey,
@@ -1093,7 +1094,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
     try {
       const res = await fetch('/api/fiscal/inutilizar', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
         body: JSON.stringify({
           businessId: business?.id,
           ano: new Date().getFullYear(),
@@ -1145,7 +1146,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
 
       const res = await fetch('/api/fiscal/accounting/send', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
         body: JSON.stringify({
           businessId: business.id,
           businessName: business.razaoSocial || business.nomeFantasia,
