@@ -862,42 +862,50 @@ async function fetchSenderProfile(
   channel: 'facebook' | 'instagram' = 'facebook',
 ): Promise<{ name: string; profilePic?: string } | null> {
   try {
+    // Facebook Messenger PSIDs: first_name + last_name + profile_pic (standard Messenger Profile API)
+    // Instagram IGSIDs: name + username + profile_pic
+    // Note: profile_pic for Instagram requires instagram_basic permission — may be absent.
     const fields = channel === 'instagram'
       ? 'name,username,profile_pic'
-      : 'first_name,last_name,name,profile_pic';
+      : 'first_name,last_name,profile_pic';
 
     const url = `https://graph.facebook.com/v21.0/${senderId}?fields=${fields}&access_token=${pageAccessToken}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
 
     if (!res.ok) {
       const errorText = await res.text().catch(() => '');
-      console.warn(`[Meta Webhook] Profile fetch failed (${channel}):`, res.status, errorText);
+      console.warn(`[Profile] Fetch failed (${channel}) sender=${senderId} status=${res.status}:`, errorText);
       return null;
     }
 
     const data = await res.json();
+    console.log(`[Profile] Raw response (${channel}) sender=${senderId}:`, JSON.stringify(data));
 
     // Build name with best available data
     let name: string;
     if (channel === 'instagram') {
-      // Prefer name, then @username, then senderId as last resort
       name = data.name || (data.username ? `@${data.username}` : senderId);
     } else {
-      // Facebook: prefer full name, then combine first+last
-      if (data.name) {
-        name = data.name;
-      } else if (data.first_name) {
-        name = data.last_name ? `${data.first_name} ${data.last_name}` : data.first_name;
+      // Facebook: combine first + last; fall back to senderId if both empty
+      if (data.first_name || data.last_name) {
+        name = [data.first_name, data.last_name].filter(Boolean).join(' ');
       } else {
+        // API returned no name fields — token may be a user token instead of page token
+        console.warn(`[Profile] Facebook returned no name fields for sender=${senderId}. Token may not be a Page Access Token.`);
         name = senderId;
       }
     }
 
     // Persist the ephemeral Meta CDN URL to Firebase Storage so it never expires.
-    // Falls back to the original URL silently if storage is unavailable.
-    const profilePic = data.profile_pic
-      ? await persistProfilePic(data.profile_pic, senderId)
+    // profile_pic may be absent for Instagram (requires instagram_basic permission).
+    const rawPic = data.profile_pic || data.picture?.data?.url || undefined;
+    const profilePic = rawPic
+      ? await persistProfilePic(rawPic, senderId)
       : undefined;
+
+    if (!rawPic) {
+      console.log(`[Profile] No profile_pic returned for ${channel} sender=${senderId} (permission or private account)`);
+    }
 
     return { name, profilePic };
   } catch (err) {
@@ -917,9 +925,15 @@ async function getDecryptedPageToken(businessId: string): Promise<string | null>
 
     const bizData = bizSnap.data();
     const encryptedToken = bizData?.channels?.facebook?.pageAccessToken;
-    if (!encryptedToken) return null;
+    if (!encryptedToken) {
+      console.warn('[Profile] No pageAccessToken stored for business:', businessId);
+      return null;
+    }
 
-    return decryptToken(encryptedToken);
+    const token = await decryptToken(encryptedToken);
+    // Log first 12 chars so we can confirm it's a page token (starts with EAA...) vs user token
+    console.log('[Profile] Page token prefix for business', businessId, ':', token.slice(0, 12) + '...');
+    return token;
   } catch (err) {
     console.error('[Meta Webhook] Error getting page token:', err);
     return null;
