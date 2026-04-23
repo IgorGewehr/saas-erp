@@ -76,6 +76,7 @@ import {
   Trash2 as TrashIcon,
   ToggleLeft,
   ToggleRight,
+  RotateCcw,
 } from 'lucide-react';
 
 // ─── Priority Config ──────────────────────────────────────
@@ -427,6 +428,7 @@ function KanbanColumnComponent({
   members,
   onCardOpen,
   onAddCard,
+  onDeleteColumn,
   onDragStart,
   onDragOver,
   onDrop,
@@ -438,6 +440,7 @@ function KanbanColumnComponent({
   members: MemberDisplay[];
   onCardOpen: (card: KanbanCard) => void;
   onAddCard?: (columnId: string) => void;
+  onDeleteColumn?: (columnId: string) => void;
   onDragStart: (e: React.DragEvent, card: KanbanCard) => void;
   onDragOver: (e: React.DragEvent, columnId: string) => void;
   onDrop: (e: React.DragEvent, columnId: string) => void;
@@ -451,7 +454,7 @@ function KanbanColumnComponent({
   return (
     <motion.div
       variants={itemVariants}
-      className="flex flex-col w-[300px] min-w-[300px] flex-shrink-0 h-full"
+      className="group/col flex flex-col w-[300px] min-w-[300px] flex-shrink-0 h-full"
     >
       {/* Column header */}
       <div className="flex items-center justify-between mb-3 px-1">
@@ -477,16 +480,33 @@ function KanbanColumnComponent({
           </span>
         </div>
 
-        {onAddCard && <button
-          onClick={() => onAddCard(column.id)}
-          className={cn(
-            'flex items-center justify-center w-7 h-7 rounded-lg',
-            'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06]',
-            'transition-all duration-150 active:scale-90'
+        <div className="flex items-center gap-0.5">
+          {onDeleteColumn && (
+            <button
+              onClick={() => onDeleteColumn(column.id)}
+              className={cn(
+                'flex items-center justify-center w-7 h-7 rounded-lg opacity-0 group-hover/col:opacity-100',
+                'text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10',
+                'transition-all duration-150 active:scale-90'
+              )}
+              title={t('kanban.deleteColumn', 'Excluir coluna')}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
           )}
-        >
-          <Plus className="w-4 h-4" />
-        </button>}
+          {onAddCard && (
+            <button
+              onClick={() => onAddCard(column.id)}
+              className={cn(
+                'flex items-center justify-center w-7 h-7 rounded-lg',
+                'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06]',
+                'transition-all duration-150 active:scale-90'
+              )}
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Cards area */}
@@ -2022,6 +2042,8 @@ function BoardHeader({
   onSelectBoard,
   onNewBoard,
   onArchiveBoard,
+  archivedBoards,
+  onRestoreBoard,
   canManageBoard: canManage,
   searchQuery,
   onSearchChange,
@@ -2042,6 +2064,8 @@ function BoardHeader({
   onSelectBoard: (id: string) => void;
   onNewBoard: () => void;
   onArchiveBoard?: (id: string) => void;
+  archivedBoards?: KanbanBoard[];
+  onRestoreBoard?: (id: string) => void;
   canManageBoard?: boolean;
   searchQuery: string;
   onSearchChange: (q: string) => void;
@@ -2058,6 +2082,7 @@ function BoardHeader({
 }) {
   const { t } = useTranslation();
   const [showFilters, setShowFilters] = useState(false);
+  const [showArchivedDropdown, setShowArchivedDropdown] = useState(false);
   const hasFilters = filterPriority !== 'all' || filterAssignee !== 'all' || searchQuery.trim() !== '';
 
   return (
@@ -2107,6 +2132,61 @@ function BoardHeader({
             >
               <Archive className="w-3.5 h-3.5" />
             </button>
+          )}
+
+          {/* Archived boards button */}
+          {canManage && archivedBoards && archivedBoards.length > 0 && (
+            <div className="relative ml-0.5">
+              <button
+                onClick={() => setShowArchivedDropdown(v => !v)}
+                className={cn(
+                  'flex items-center justify-center w-8 h-8 rounded-lg',
+                  'transition-all duration-150 active:scale-90',
+                  showArchivedDropdown
+                    ? 'text-amber-500 bg-amber-50 dark:bg-amber-500/10'
+                    : 'text-gray-400 dark:text-gray-500 hover:text-amber-500 dark:hover:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-500/10'
+                )}
+                title={t('kanban.viewArchived', 'Ver boards arquivados')}
+              >
+                <Archive className="w-3.5 h-3.5" />
+              </button>
+
+              <AnimatePresence>
+                {showArchivedDropdown && (
+                  <>
+                    {/* Backdrop */}
+                    <div className="fixed inset-0 z-30" onClick={() => setShowArchivedDropdown(false)} />
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.95, y: -4 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      exit={{ opacity: 0, scale: 0.95, y: -4 }}
+                      transition={{ duration: 0.12 }}
+                      className="absolute left-0 top-full mt-2 z-40 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700/50 rounded-xl shadow-xl min-w-[220px] py-1.5 overflow-hidden"
+                    >
+                      <p className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-3 py-1.5">
+                        {t('kanban.archivedBoards', 'Boards arquivados')}
+                      </p>
+                      {archivedBoards.map(board => (
+                        <div key={board.id} className="flex items-center gap-2 px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-800/60 group">
+                          <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: board.color }} />
+                          <span className="flex-1 text-sm text-gray-700 dark:text-gray-300 truncate">{board.name}</span>
+                          {onRestoreBoard && (
+                            <button
+                              onClick={() => { onRestoreBoard(board.id); setShowArchivedDropdown(false); }}
+                              className="opacity-0 group-hover:opacity-100 flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 font-medium transition-all shrink-0"
+                              title={t('kanban.restore', 'Restaurar')}
+                            >
+                              <RotateCcw className="w-3 h-3" />
+                              {t('kanban.restore', 'Restaurar')}
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </motion.div>
+                  </>
+                )}
+              </AnimatePresence>
+            </div>
           )}
 
           {/* New board button */}
@@ -2766,6 +2846,8 @@ export default function KanbanModule() {
 
   // ─── Real-time state ──────────────────────────────────────
   const [boards, setBoards] = useState<KanbanBoard[]>([]);
+  const [archivedBoards, setArchivedBoards] = useState<KanbanBoard[]>([]);
+  const [showArchivedPanel, setShowArchivedPanel] = useState(false);
   const [cards, setCards] = useState<KanbanCard[]>([]);
   const [members, setMembers] = useState<MemberDisplay[]>([]);
   const [loadingBoards, setLoadingBoards] = useState(true);
@@ -2812,11 +2894,15 @@ export default function KanbanModule() {
     const unsub = onSnapshot(q, (snap) => {
       const allBoards = snap.docs
         .map(d => ({ ...d.data(), id: d.id } as KanbanBoard))
-        .filter(b => !b.isArchived)
         .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
+      // Separate active and archived boards
+      setArchivedBoards(allBoards.filter(b => b.isArchived));
+
+      const activeBoards = allBoards.filter(b => !b.isArchived);
+
       // Apply sector-based visibility filtering
-      const data = allBoards.filter(board => {
+      const data = activeBoards.filter(board => {
         if (isAdmin) return true;
         const visibility = board.visibility || 'all';
         switch (visibility) {
@@ -3209,6 +3295,20 @@ export default function KanbanModule() {
     }
   }, [business?.id, archiveBoardConfirmId, activeBoardId, boards, showToast, t]);
 
+  const handleRestoreBoard = useCallback(async (boardId: string) => {
+    if (!business?.id || !canManageBoard) return;
+    try {
+      await updateDoc(doc(db, 'kanbanBoards', boardId), {
+        isArchived: false,
+        updatedAt: new Date().toISOString(),
+      });
+      showToast(t('kanban.boardRestored', 'Board restaurado'), 'success');
+    } catch (err) {
+      console.error('Error restoring board:', err);
+      showToast(t('kanban.errors.restoreBoard', 'Erro ao restaurar board'));
+    }
+  }, [business?.id, canManageBoard, showToast, t]);
+
   const handleRenameBoard = useCallback(async (boardId: string, newName: string) => {
     if (!business?.id || !newName.trim()) return;
     if (!canManageBoard) { showToast(t('kanban.errors.noPermission', 'Sem permissão')); return; }
@@ -3408,6 +3508,8 @@ export default function KanbanModule() {
           onSelectBoard={setActiveBoardId}
           onNewBoard={() => setShowNewBoard(true)}
           onArchiveBoard={handleArchiveBoard}
+          archivedBoards={archivedBoards}
+          onRestoreBoard={handleRestoreBoard}
           canManageBoard={canManageBoard}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
@@ -3450,6 +3552,7 @@ export default function KanbanModule() {
                 members={members}
                 onCardOpen={setSelectedCard}
                 onAddCard={canEdit ? (colId) => setNewCardColumnId(colId) : undefined}
+                onDeleteColumn={canManageBoard ? handleDeleteColumn : undefined}
                 onDragStart={handleDragStart}
                 onDragOver={handleDragOver}
                 onDrop={handleDrop}
