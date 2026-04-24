@@ -256,6 +256,8 @@ export interface BusinessSettings {
   loyalty?: LoyaltyConfig;
   /** Promoções ativas */
   promotions?: BusinessPromotion[];
+  /** URL do Google Reviews para redirect pós-avaliação */
+  googleReviewUrl?: string;
 }
 
 export interface AiAgentSettings {
@@ -2269,6 +2271,26 @@ export interface FormResponse {
   responses: Record<string, unknown>;  // fieldId → value
   submittedAt: string;
   submittedVia: 'link' | 'operator' | 'booking';
+}
+
+// ---- Reviews & NPS ----
+
+export type ReviewSource = 'internal' | 'google' | 'whatsapp';
+
+export interface Review {
+  id: string;
+  businessId: string;
+  clientId?: string;
+  clientName?: string;
+  professionalId?: string;
+  professionalName?: string;
+  serviceId?: string;
+  serviceName?: string;
+  appointmentId?: string;
+  rating: number;             // 1-5 stars
+  comment?: string;
+  source: ReviewSource;
+  createdAt: string;
 }
 
 // ---- Google Calendar Sync ----

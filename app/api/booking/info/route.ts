@@ -52,6 +52,7 @@ export async function GET(req: NextRequest) {
       useCase: business.settings?.useCase || 'servicos',
       aiAgentEnabled: !!business.settings?.aiAgent?.enabled,
       tone: business.settings?.aiAgent?.tone || 'friendly',
+      googleReviewUrl: business.settings?.googleReviewUrl || null,
     };
 
     // Load active services — uses 'services' collection (NOT 'products' which is inventory)

@@ -20,12 +20,13 @@ import {
   ChevronDown,
   Loader2,
   ShoppingBag,
+  Star,
 } from 'lucide-react';
-import type { Transaction, Appointment, Client } from '@/lib/types';
+import type { Transaction, Appointment, Client, Review } from '@/lib/types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type ReportTab = 'vendas' | 'agenda' | 'financeiro' | 'clientes' | 'comissoes';
+type ReportTab = 'vendas' | 'agenda' | 'financeiro' | 'clientes' | 'comissoes' | 'avaliacoes';
 type Period = '7d' | '30d' | '90d' | 'mes' | 'mes_anterior' | 'ano';
 
 interface PeriodOption { value: Period; label: string }
@@ -692,6 +693,17 @@ export default function ReportsModule() {
     staleTime: 5 * 60 * 1000,
   });
 
+  const { data: reviews = [] } = useQuery({
+    queryKey: ['reviews', businessId],
+    queryFn: async () => {
+      if (!businessId) return [];
+      const q = query(collection(db, 'reviews'), where('businessId', '==', businessId), orderBy('createdAt', 'desc'));
+      return (await getDocs(q)).docs.map(d => ({ ...d.data(), id: d.id } as Review));
+    },
+    enabled: !!businessId,
+    staleTime: 5 * 60 * 1000,
+  });
+
   const isLoading = loadingTx || loadingAppt || loadingClients;
 
   const tabs: { id: ReportTab; label: string; icon: React.ElementType }[] = [
@@ -700,6 +712,7 @@ export default function ReportsModule() {
     { id: 'financeiro', label: 'Financeiro', icon: BarChart3 },
     { id: 'clientes',   label: 'Clientes',   icon: Users },
     { id: 'comissoes',  label: 'Comissões',  icon: Award },
+    { id: 'avaliacoes', label: 'Avaliações', icon: Star },
   ];
 
   return (
@@ -802,10 +815,178 @@ export default function ReportsModule() {
               {activeTab === 'financeiro' && <FinanceiroTab  transactions={transactions} periodRange={periodRange} periodLabel={periodLabel} />}
               {activeTab === 'clientes'   && <ClientesTab    clients={clients} appointments={appointments} periodRange={periodRange} periodLabel={periodLabel} />}
               {activeTab === 'comissoes'  && <ComissoesTab   transactions={transactions} periodRange={periodRange} periodLabel={periodLabel} />}
+              {activeTab === 'avaliacoes' && <AvaliacoesTab reviews={reviews} periodRange={periodRange} businessSlug={business?.slug} />}
             </motion.div>
           </AnimatePresence>
         )
       }
     </motion.div>
+  );
+}
+
+// ── Avaliações Tab ──────────────────────────────────────────────────────────
+function AvaliacoesTab({ reviews, periodRange, businessSlug }: {
+  reviews: Review[];
+  periodRange: { start: Date; end: Date };
+  businessSlug?: string;
+}) {
+  const filtered = reviews.filter(r => {
+    const d = new Date(r.createdAt);
+    return d >= periodRange.start && d <= periodRange.end;
+  });
+
+  const avgRating = filtered.length > 0
+    ? filtered.reduce((sum, r) => sum + r.rating, 0) / filtered.length
+    : 0;
+
+  const nps = (() => {
+    if (filtered.length === 0) return 0;
+    const promoters = filtered.filter(r => r.rating >= 5).length;
+    const detractors = filtered.filter(r => r.rating <= 2).length;
+    return Math.round(((promoters - detractors) / filtered.length) * 100);
+  })();
+
+  const byProfessional = filtered.reduce((acc, r) => {
+    const name = r.professionalName || 'Sem profissional';
+    if (!acc[name]) acc[name] = { total: 0, sum: 0, count5: 0, count1: 0 };
+    acc[name].total++;
+    acc[name].sum += r.rating;
+    if (r.rating === 5) acc[name].count5++;
+    if (r.rating <= 2) acc[name].count1++;
+    return acc;
+  }, {} as Record<string, { total: number; sum: number; count5: number; count1: number }>);
+
+  const ratingDist = [5, 4, 3, 2, 1].map(n => ({
+    stars: n,
+    count: filtered.filter(r => r.rating === n).length,
+    pct: filtered.length > 0 ? (filtered.filter(r => r.rating === n).length / filtered.length) * 100 : 0,
+  }));
+
+  const reviewUrl = businessSlug ? `${typeof window !== 'undefined' ? window.location.origin : ''}/review/${businessSlug}` : null;
+
+  return (
+    <div className="space-y-6 p-1">
+      {/* KPIs */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div className="p-4 rounded-xl bg-white dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700/60">
+          <p className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Total</p>
+          <p className="text-2xl font-bold text-gray-900 dark:text-gray-100 mt-1">{filtered.length}</p>
+        </div>
+        <div className="p-4 rounded-xl bg-white dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700/60">
+          <p className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">Média</p>
+          <div className="flex items-center gap-1.5 mt-1">
+            <Star size={18} className="text-amber-400 fill-amber-400" />
+            <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">{avgRating.toFixed(1)}</p>
+          </div>
+        </div>
+        <div className="p-4 rounded-xl bg-white dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700/60">
+          <p className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">NPS</p>
+          <p className={cn('text-2xl font-bold mt-1', nps >= 50 ? 'text-emerald-500' : nps >= 0 ? 'text-amber-500' : 'text-red-500')}>
+            {nps > 0 ? '+' : ''}{nps}
+          </p>
+        </div>
+        <div className="p-4 rounded-xl bg-white dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700/60">
+          <p className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">5 estrelas</p>
+          <p className="text-2xl font-bold text-gray-900 dark:text-gray-100 mt-1">
+            {filtered.length > 0 ? Math.round((ratingDist[0].count / filtered.length) * 100) : 0}%
+          </p>
+        </div>
+      </div>
+
+      {/* Link */}
+      {reviewUrl && (
+        <div className="p-3 rounded-xl bg-blue-50 dark:bg-blue-500/5 border border-blue-200 dark:border-blue-500/20 flex items-center gap-3">
+          <Star size={16} className="text-blue-500 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-medium text-blue-700 dark:text-blue-400">Link público de avaliação</p>
+            <p className="text-xs text-blue-500 dark:text-blue-300 truncate font-mono mt-0.5">{reviewUrl}</p>
+          </div>
+          <button
+            onClick={() => navigator.clipboard.writeText(reviewUrl)}
+            className="text-xs font-medium text-blue-600 dark:text-blue-400 px-2.5 py-1 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-500/10 transition-colors shrink-0"
+          >
+            Copiar
+          </button>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Distribution */}
+        <div className="p-5 rounded-xl bg-white dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700/60">
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-4">Distribuição</h3>
+          <div className="space-y-2">
+            {ratingDist.map(d => (
+              <div key={d.stars} className="flex items-center gap-3">
+                <div className="flex items-center gap-0.5 w-16 shrink-0">
+                  <span className="text-sm font-medium text-gray-600 dark:text-gray-400">{d.stars}</span>
+                  <Star size={12} className="text-amber-400 fill-amber-400" />
+                </div>
+                <div className="flex-1 h-2.5 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
+                  <div className="h-full bg-amber-400 rounded-full transition-all" style={{ width: `${d.pct}%` }} />
+                </div>
+                <span className="text-xs text-gray-500 dark:text-gray-400 w-8 text-right">{d.count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* By professional */}
+        <div className="p-5 rounded-xl bg-white dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700/60">
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-4">Por profissional</h3>
+          {Object.keys(byProfessional).length === 0 ? (
+            <p className="text-sm text-gray-400">Sem dados no período</p>
+          ) : (
+            <div className="space-y-3">
+              {Object.entries(byProfessional)
+                .sort((a, b) => (b[1].sum / b[1].total) - (a[1].sum / a[1].total))
+                .map(([name, stats]) => (
+                  <div key={name} className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{name}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">{stats.total} avaliações</p>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <Star size={14} className="text-amber-400 fill-amber-400" />
+                      <span className="text-sm font-bold text-gray-900 dark:text-gray-100">
+                        {(stats.sum / stats.total).toFixed(1)}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Recent reviews */}
+      <div className="p-5 rounded-xl bg-white dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700/60">
+        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-4">Avaliações recentes</h3>
+        {filtered.length === 0 ? (
+          <p className="text-sm text-gray-400 text-center py-6">Nenhuma avaliação no período</p>
+        ) : (
+          <div className="space-y-3">
+            {filtered.slice(0, 10).map(r => (
+              <div key={r.id} className="flex items-start gap-3 py-2 border-b border-gray-100 dark:border-gray-700/30 last:border-0">
+                <div className="flex gap-0.5 shrink-0 mt-0.5">
+                  {[1, 2, 3, 4, 5].map(n => (
+                    <Star key={n} size={12} className={n <= r.rating ? 'text-amber-400 fill-amber-400' : 'text-gray-200 dark:text-gray-600'} />
+                  ))}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{r.clientName || 'Anônimo'}</p>
+                    {r.professionalName && <span className="text-xs text-gray-400">· {r.professionalName}</span>}
+                  </div>
+                  {r.comment && <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{r.comment}</p>}
+                  <p className="text-[10px] text-gray-400 mt-0.5">
+                    {new Date(r.createdAt).toLocaleDateString('pt-BR')}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
