@@ -115,28 +115,27 @@ async function runSweep(req: NextRequest): Promise<NextResponse> {
       stats.businessesProcessed++;
     }
 
-    // ── Kanban due-date notifications (all businesses) ──
+    // Cross-tenant sweeps run only on cron invocations — gating by auth.kind
+    // prevents a single tenant's HMAC trigger from scanning every business.
     let kanbanNotifs = 0;
-    try {
-      kanbanNotifs = await checkKanbanDueDates();
-    } catch (err) {
-      console.warn('[scheduled] kanban check failed:', err);
-    }
-
-    // ── Recurring transactions ──
     let recurringGenerated = 0;
-    try {
-      recurringGenerated = await generateRecurringTransactions();
-    } catch (err) {
-      console.warn('[scheduled] recurring transactions failed:', err);
-    }
-
-    // ── CRM Automation rules ──
     let automationsRun = 0;
-    try {
-      automationsRun = await processCRMAutomations();
-    } catch (err) {
-      console.warn('[scheduled] CRM automations failed:', err);
+    if (auth.kind === 'cron') {
+      try {
+        kanbanNotifs = await checkKanbanDueDates();
+      } catch (err) {
+        console.warn('[scheduled] kanban check failed:', err);
+      }
+      try {
+        recurringGenerated = await generateRecurringTransactions();
+      } catch (err) {
+        console.warn('[scheduled] recurring transactions failed:', err);
+      }
+      try {
+        automationsRun = await processCRMAutomations();
+      } catch (err) {
+        console.warn('[scheduled] CRM automations failed:', err);
+      }
     }
 
     return NextResponse.json({ ok: true, data: { ...stats, kanbanNotifs, recurringGenerated, automationsRun } });
