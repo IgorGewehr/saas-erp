@@ -912,8 +912,40 @@ SALES_TOOLS: list[dict[str, Any]] = [
         required=["items", "payments"],
         clientId={"type": "string"},
         clientName={"type": "string"},
-        items={"type": "array"},
-        payments={"type": "array"},
+        items={
+            "type": "array",
+            "description": "Itens da venda. Cada item = produto ou serviço com quantidade e preço.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "productId": {"type": "string", "description": "id do produto (se aplicável)"},
+                    "serviceId": {"type": "string", "description": "id do serviço (se aplicável)"},
+                    "description": {"type": "string"},
+                    "quantity": {"type": "number", "minimum": 0.001},
+                    "unitPrice": {"type": "number", "minimum": 0},
+                    "discount": {"type": "number", "minimum": 0},
+                    "total": {"type": "number", "minimum": 0},
+                },
+                "required": ["description", "quantity", "unitPrice"],
+            },
+        },
+        payments={
+            "type": "array",
+            "description": "Formas de pagamento. A soma deve bater com o total da venda.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "method": {
+                        "type": "string",
+                        "enum": ["dinheiro", "pix", "credito", "debito", "boleto", "pontos", "gift_card", "outros"],
+                    },
+                    "amount": {"type": "number", "minimum": 0},
+                    "installments": {"type": "integer", "minimum": 1, "maximum": 24},
+                    "cardBrand": {"type": "string"},
+                },
+                "required": ["method", "amount"],
+            },
+        },
         discount={"type": "number"},
         tip={"type": "number"},
         notes={"type": "string"},
