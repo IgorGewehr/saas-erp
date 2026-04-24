@@ -189,45 +189,63 @@ async function sefazRequest<T = SefazResponse>(
 
       console.log(`[SEFAZ] ${operation} → HTTP ${response.status}`);
 
-      // 401/403 — auth error, no point retrying
-      if (response.status === 401 || response.status === 403) {
-        throw new Error(
-          `[SEFAZ] Erro de autenticacao (${response.status}). Verifique SEFAZ_API_KEY.`,
-        );
+      // Parse body ONCE — any structured error comes in `error` (sefaz-api)
+      // or `message` (legacy). Fall back to statusText if body is not JSON.
+      const rawBody = await response.text();
+      let parsedBody: unknown = null;
+      try { parsedBody = rawBody ? JSON.parse(rawBody) : null; } catch { /* not JSON */ }
+      const bodyError: string | null =
+        parsedBody && typeof parsedBody === 'object'
+          ? (parsedBody as Record<string, unknown>).error as string
+            || (parsedBody as Record<string, unknown>).message as string
+            || null
+          : null;
+
+      // 401 — missing/empty Bearer token
+      if (response.status === 401) {
+        throw new Error(`[SEFAZ] 401 Não autenticado: ${bodyError ?? 'Authorization header ausente ou vazio'}`);
+      }
+
+      // 403 — auth present but rejected. Pode ser:
+      //   - API key inválida
+      //   - CNPJ do certificado não bate com emitente do payload
+      //   - Endpoint administrativo desabilitado (sem ADMIN_KEY)
+      // A mensagem exata vem no body.error — logamos ela pra diagnóstico correto.
+      if (response.status === 403) {
+        throw new Error(`[SEFAZ] 403 Acesso negado: ${bodyError ?? 'verifique SEFAZ_API_KEY e CNPJ do certificado vs emitente'}`);
       }
 
       // 422 — SEFAZ rejection (nota rejeitada, dados invalidos, etc.)
       // Return as-is so the caller can inspect status/erros
-      if (response.status === 422) {
-        const body = (await response.json()) as T;
-        return body;
+      if (response.status === 422 && parsedBody) {
+        return parsedBody as T;
       }
 
-      // 400 — bad request (malformed payload)
+      // 400 — bad request (DV inválido, payload malformado, cert inválido/expirado)
       if (response.status === 400) {
-        const body = await response.json().catch(() => null);
-        const detail =
-          body && typeof body === 'object' && 'message' in body
-            ? (body as { message: string }).message
-            : response.statusText;
-        throw new Error(`[SEFAZ] Requisicao invalida (400): ${detail}`);
+        throw new Error(`[SEFAZ] 400 Requisição inválida: ${bodyError ?? response.statusText}`);
       }
 
-      // 5xx — server error, retry
-      if (response.status >= 500) {
-        lastError = new Error(
-          `[SEFAZ] Erro do servidor (${response.status}): ${response.statusText}`,
-        );
-        // fall through to retry logic below
-      } else if (!response.ok) {
-        // Any other non-2xx
+      // 429 — rate limit excedido. Não adianta retry imediato; propaga.
+      if (response.status === 429) {
+        const retryAfter = response.headers.get('retry-after');
         throw new Error(
-          `[SEFAZ] Resposta inesperada (${response.status}): ${response.statusText}`,
+          `[SEFAZ] 429 Rate limit excedido${retryAfter ? ` (retry-after: ${retryAfter}s)` : ''}: ${bodyError ?? 'aguarde antes de reenviar'}`,
         );
+      }
+
+      // 503 — circuit breaker aberto (ou serviço indisponível). Retry com backoff.
+      if (response.status === 503) {
+        lastError = new Error(`[SEFAZ] 503 Serviço indisponível: ${bodyError ?? response.statusText}`);
+        // fall through to retry
+      } else if (response.status >= 500) {
+        lastError = new Error(`[SEFAZ] Erro do servidor (${response.status}): ${bodyError ?? response.statusText}`);
+        // fall through to retry
+      } else if (!response.ok) {
+        throw new Error(`[SEFAZ] Resposta inesperada (${response.status}): ${bodyError ?? response.statusText}`);
       } else {
         // 2xx — success
-        const body = (await response.json()) as T;
-        return body;
+        return (parsedBody ?? JSON.parse(rawBody)) as T;
       }
     } catch (err) {
       clearTimeout(timer);
@@ -237,8 +255,11 @@ async function sefazRequest<T = SefazResponse>(
       } else if (
         err instanceof Error &&
         err.message.startsWith('[SEFAZ]') &&
-        // Only retry on server errors; auth/bad-request/unexpected should throw immediately
-        !err.message.includes('Erro do servidor')
+        // Retry só em erros transitórios (servidor 5xx, timeout, 503, serviço indisponível).
+        // Auth/validação/rate-limit/resposta inesperada sobem imediatamente.
+        !err.message.includes('Erro do servidor') &&
+        !err.message.includes('Serviço indisponível') &&
+        !err.message.includes('Timeout')
       ) {
         throw err;
       } else if (err instanceof Error) {
