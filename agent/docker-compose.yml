@@ -1,0 +1,79 @@
+# ServicePro Agent — Docker Compose stack.
+#
+# Uso:
+#   docker compose up -d                       — só o agent, expõe porta local
+#   docker compose --profile tunnel up -d      — agent + Cloudflare Tunnel
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up   — dev com hot reload
+#
+# Setup do Cloudflare Tunnel (named tunnel, persistent URL):
+#   1. dash.cloudflare.com → Zero Trust → Networks → Tunnels → Create tunnel
+#   2. Copie o token gerado
+#   3. Coloque em .env:  CLOUDFLARE_TUNNEL_TOKEN=eyJhbGciOi...
+#   4. No dashboard do tunnel, crie uma Public Hostname apontando pra
+#      http://agent:8080  (Docker DNS resolve o serviço pelo nome)
+#   5. docker compose --profile tunnel up -d
+#
+# Quick tunnel (ephemeral, sem auth — só pra teste):
+#   docker run --rm --network servicepro-agent_agent-net cloudflare/cloudflared:latest \
+#       tunnel --url http://agent:8080
+#   (copia o URL trycloudflare.com que aparece e coloca no AGENT_SERVICE_URL do Next.js)
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: servicepro-agent:latest
+    container_name: servicepro-agent
+    restart: unless-stopped
+    # Só expõe localmente quando NÃO há tunnel — quando o tunnel sobe, o host network
+    # não precisa estar exposto pra fora (o tunnel alcança via network interna).
+    ports:
+      - "${AGENT_PORT:-8080}:8080"
+    env_file:
+      - .env
+    environment:
+      - WORKERS=${WORKERS:-2}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - APP_ENV=${APP_ENV:-production}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    # Limites sensatos pra single-tenant SMB (2 workers, I/O bound)
+    # Ajuste conforme tráfego crescer.
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: "1024M"
+        reservations:
+          cpus: "0.25"
+          memory: "256M"
+    networks:
+      - agent-net
+
+  # Cloudflare Tunnel (named) — só sobe com --profile tunnel
+  # Pra usar:
+  #   CLOUDFLARE_TUNNEL_TOKEN=... docker compose --profile tunnel up -d
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: servicepro-agent-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --protocol http2
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      agent:
+        condition: service_healthy
+    networks:
+      - agent-net
+    profiles:
+      - tunnel
+
+networks:
+  agent-net:
+    driver: bridge
+    name: servicepro-agent-net
