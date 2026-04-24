@@ -287,6 +287,19 @@ export interface AiAgentSettings {
     /** Follow-up depois da consulta (pesquisa de satisfação leve) */
     followUpAfter?: boolean;
   };
+
+  /** === Modo: operador (dashboard chat) === */
+  operator?: {
+    /**
+     * When true, the agent executes destructive actions (create/update/delete)
+     * without asking for confirmation in the chat. Always shows a preview
+     * before, and the result after. Reserved for admin/founder who want
+     * hands-free control. Default false (confirm required).
+     */
+    autonomousMode?: boolean;
+    /** Daily spend cap for the operator chat specifically (USD). */
+    dailyBudgetUsd?: number;
+  };
 }
 
 // ---- Fiscal Configuration ----

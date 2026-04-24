@@ -3601,6 +3601,9 @@ function AgenteTab() {
   const [confirmationBeforeAppointment, setConfirmationBeforeAppointment] = useState<boolean>(current?.agenda?.confirmationBeforeAppointment ?? true);
   const [followUpAfter, setFollowUpAfter] = useState<boolean>(current?.agenda?.followUpAfter ?? false);
 
+  // Operator-specific (dashboard chat)
+  const [autonomousMode, setAutonomousMode] = useState<boolean>(current?.operator?.autonomousMode ?? false);
+
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -3614,6 +3617,7 @@ function AgenteTab() {
     setReminderHoursBefore(current?.agenda?.reminderHoursBefore ?? 24);
     setConfirmationBeforeAppointment(current?.agenda?.confirmationBeforeAppointment ?? true);
     setFollowUpAfter(current?.agenda?.followUpAfter ?? false);
+    setAutonomousMode(current?.operator?.autonomousMode ?? false);
   }, [current]);
 
   const handleSave = async () => {
@@ -3636,6 +3640,7 @@ function AgenteTab() {
           businessDescription: businessDescription.trim() || null,
           pedidos: pedidos || null,
           agenda: agenda || null,
+          operator: { autonomousMode },
           enabledAt: enabled && !current?.enabledAt ? new Date().toISOString() : (current?.enabledAt || null),
         },
         updatedAt: new Date().toISOString(),
@@ -3866,6 +3871,30 @@ function AgenteTab() {
               </div>
             </div>
           )}
+
+          {/* Operator chat — autonomy toggle */}
+          <SectionCard title="Operador no Dashboard (chat)" icon={Sparkles}>
+            <div className="space-y-2">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                    Modo autônomo
+                  </p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                    Quando ligado, o agente executa alterações (criar/atualizar/deletar) sem pedir
+                    confirmação no chat. Sempre mostra preview antes e resultado depois. Use apenas
+                    para admins que querem controle hands-free.
+                  </p>
+                  <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1.5">
+                    {autonomousMode
+                      ? '⚡ Ativado — escritas passam direto sem confirmação'
+                      : '🔒 Desligado — toda escrita pede "sim/confirma" antes de executar'}
+                  </p>
+                </div>
+                <AgenteToggleSwitch checked={autonomousMode} onChange={setAutonomousMode} />
+              </div>
+            </div>
+          </SectionCard>
         </motion.div>
       )}
 

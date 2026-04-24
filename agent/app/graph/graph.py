@@ -155,6 +155,13 @@ async def run_agent(*, run_id: str, business_id: str, req: ProcessRequest) -> Ag
             "address": req.address or {},
             "services_list": req.services_list or [],
             "current_date": req.current_date or "",
+            # Operator mode — populated only when use_case='operator'
+            "operator": {
+                "user_id": req.operator_user_id,
+                "user_name": req.operator_user_name,
+                "user_role": req.operator_user_role,
+                "autonomous": bool(req.operator_autonomous),
+            } if req.use_case == "operator" else {},
         },
         "contact": {
             "name": req.contact_name,
