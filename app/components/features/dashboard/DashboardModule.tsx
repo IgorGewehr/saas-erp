@@ -630,8 +630,10 @@ export default function DashboardModule() {
         )}
       </div>
 
-      {/* ━━━ KPI Cards — agora só mode-specific (métricas gerais vão na CompactMetricsStrip acima) ━━━ */}
-      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+      {/* ━━━ KPI Cards — mode-specific (métricas gerais vão na CompactMetricsStrip acima) ━━━
+           Sempre renderizamos 2 cards (Agendamentos+Próximos em servicos, Pedidos+Em andamento
+           em pedidos), então o grid fica 2 colunas para preencher horizontalmente sem gap feio. ━━━ */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         {/* Agendamentos Hoje — apenas no modo serviços */}
         {showAgenda && (
         <motion.div
