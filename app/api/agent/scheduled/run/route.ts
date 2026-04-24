@@ -58,6 +58,13 @@ async function authorize(req: NextRequest): Promise<AuthResult> {
   return { kind: 'deny', reason: 'unauthorized', status: 401 };
 }
 
+function isRelevantForScheduling(b: Business): boolean {
+  const agenda = b.settings?.aiAgent?.agenda;
+  const hasReminders = agenda?.sendReminder || agenda?.confirmationBeforeAppointment || agenda?.followUpAfter;
+  const hasAgent = b.settings?.aiAgent?.enabled;
+  return !!(hasReminders || hasAgent);
+}
+
 interface RunStats {
   remindersSent: number;
   confirmationsAsked: number;
