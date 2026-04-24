@@ -2052,6 +2052,11 @@ export interface PurchaseNote {
   // Notes
   notes?: string;
   importedAt?: string;
+  // Stock import tracking — set when items are pushed to inventory as stockMovements.
+  // Once present, re-importing is blocked (idempotency).
+  stockImportedAt?: string;
+  stockMovementIds?: string[];          // ids of stockMovements created for this note
+  unmatchedItems?: Array<{ productName: string; quantity: number; cProd?: string }>;
   createdAt: string;
   updatedAt: string;
 }

@@ -212,6 +212,71 @@ export async function restoreStock(
 }
 
 /**
+ * Add stock atomically (entrada). Does NOT expand components — callers pass
+ * the exact product lines to increment (typically from a purchase note).
+ * Writes one product update + one stockMovement per line in a single batch.
+ */
+export async function addStock(
+  db: Firestore,
+  lines: Array<{ productId: string; quantity: number }>,
+  ctx: {
+    businessId: string;
+    operatorId: string;
+    operatorName: string;
+    purchaseId?: string;
+    reason: string;
+    productIndex: Map<string, Product>;
+  },
+): Promise<StockAdjustment[]> {
+  if (lines.length === 0) return [];
+
+  const batch = writeBatch(db);
+  const now = new Date().toISOString();
+  const adjustments: StockAdjustment[] = [];
+
+  for (const line of lines) {
+    const product = ctx.productIndex.get(line.productId);
+    if (!product) continue;
+
+    const previousStock = product.currentStock || 0;
+    const newStock = previousStock + line.quantity;
+
+    batch.update(doc(db, 'products', product.id), {
+      currentStock: newStock,
+      updatedAt: now,
+    });
+
+    const movementRef = doc(collection(db, 'stockMovements'));
+    const movement: Omit<StockMovement, 'id'> = {
+      businessId: ctx.businessId,
+      productId: product.id,
+      productName: product.name,
+      type: 'entrada',
+      quantity: line.quantity,
+      previousStock,
+      newStock,
+      reason: ctx.reason,
+      ...(ctx.purchaseId ? { purchaseId: ctx.purchaseId } : {}),
+      operatorId: ctx.operatorId,
+      operatorName: ctx.operatorName,
+      createdAt: now,
+    };
+    batch.set(movementRef, movement);
+
+    adjustments.push({
+      productId: product.id,
+      productName: product.name,
+      delta: line.quantity,
+      previousStock,
+      newStock,
+    });
+  }
+
+  await batch.commit();
+  return adjustments;
+}
+
+/**
  * Non-destructive check: does stock on-hand cover the requested sale?
  * Returns the list of insufficient lines (empty = OK).
  */
