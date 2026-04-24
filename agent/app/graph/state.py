@@ -20,7 +20,7 @@ class AgentState(TypedDict, total=False):
     business_id: str
     conversation_id: str
     message_id: str
-    use_case: Literal["pedidos", "servicos", "simples", "operator"]
+    use_case: Literal["pedidos", "servicos", "simples", "operator", "analyst"]
     business_context: dict[str, Any]
     contact: dict[str, Any]  # {name, phone, channel, recipient_id}
 

@@ -95,16 +95,24 @@ def build_run_config(
 # is 14 digits so it must be tried before CPF (11 digits) to avoid partial
 # matches.
 _PII_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # Credit card — 13-19 digits with optional spaces/dashes
+    (re.compile(r"\b(?:\d[ -]*?){13,19}\b"), "[CARD]"),
     # CNPJ — 14 digits with/without formatting: 11.222.333/0001-44
     (re.compile(r"\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b"), "[CNPJ]"),
     # CPF — 11 digits: 123.456.789-00
     (re.compile(r"\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b"), "[CPF]"),
+    # RG — 7-10 digits with optional dot/dash (SP format): 12.345.678-9
+    (re.compile(r"\b\d{1,2}\.\d{3}\.\d{3}-[\dXx]\b"), "[RG]"),
     # CEP — 8 digits: 01310-100
     (re.compile(r"\b\d{5}-?\d{3}\b"), "[CEP]"),
     # Email
     (re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"), "[EMAIL]"),
     # Brazilian phone — +55 (47) 99999-8888 or 5547999998888 (10-13 digits)
     (re.compile(r"(\+?55\s?)?\(?\d{2}\)?\s?9?\d{4}-?\d{4}"), "[PHONE]"),
+    # Bearer / API tokens (at least 20 chars of allowed set)
+    (re.compile(r"\b(?:Bearer\s+)?[A-Za-z0-9_\-]{24,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b"), "[TOKEN]"),
+    # PIX key (UUID format — often copy/pasted)
+    (re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"), "[PIX_KEY]"),
 ]
 
 # Keys whose values should always be scrubbed regardless of content (privacy
@@ -112,8 +120,12 @@ _PII_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 _SENSITIVE_KEYS = {
     "cpf", "cnpj", "cpfCnpj", "rg", "inscricaoEstadual", "inscricaoMunicipal",
     "cep", "email", "phone", "whatsapp", "phone2", "telefone",
-    "cardNumber", "cardCvv", "cardExpiry", "accessKey", "certificatePassword",
+    "cardNumber", "cardCvv", "cardExpiry", "cardHolderName",
+    "accessKey", "certificate", "certificatePassword", "certificateContent",
     "apiKey", "keyHash", "keyPrefix", "password", "passwordHash",
+    "pixKey", "bankAccount", "bankAccountNumber", "agency",
+    "oauth_token", "refresh_token", "id_token", "idToken",
+    "clientSecret", "secretKey", "webhookSecret",
 }
 
 

@@ -33,6 +33,7 @@ from ..config import get_settings
 from ..logging_config import get_logger
 from ..observability import redact_if_enabled
 from ..tools.client import ToolError, call_tool
+from ..tools.guardrails import check_tool_call
 from ..tools.registry import get_tool, tools_for_use_case
 from ..tools.validator import validate as validate_tool_args
 from . import prompts
@@ -318,6 +319,30 @@ async def executor_node(state: AgentState) -> dict[str, Any]:
                     "arguments": args,
                     "error": err,
                     "validation": schema_errors,
+                    "latencyMs": 0,
+                    "startedAt": started,
+                },
+            )
+
+        # Semantic guardrails (Wave 6) — role gating + plausibility checks.
+        # Runs ONLY when use_case='operator' (customer flows don't have role).
+        op_ctx = state.get("business_context", {}).get("operator") or {}
+        operator_role = op_ctx.get("user_role") if state.get("use_case") == "operator" else None
+        guardrail_errors = check_tool_call(name, args, operator_role=operator_role)
+        if guardrail_errors:
+            err = "Guardrail: " + "; ".join(guardrail_errors[:3])
+            log.warning("node.executor.guardrail", tool=name, errors=guardrail_errors)
+            return (
+                ToolMessage(
+                    content=json.dumps({"error": err, "guardrails": guardrail_errors}),
+                    tool_call_id=call_id,
+                    name=name,
+                ),
+                {
+                    "name": name,
+                    "arguments": args,
+                    "error": err,
+                    "guardrails": guardrail_errors,
                     "latencyMs": 0,
                     "startedAt": started,
                 },
@@ -636,16 +661,18 @@ def planner_routes_to(state: AgentState) -> str:
     or responder (draft ready).
     """
     max_iter = get_settings().agent_max_iterations
+    dashboard_mode = state.get("use_case") in ("operator", "analyst")
     if state.get("iterations", 0) >= max_iter:
         log.warning("loop.max_iter", run_id=state.get("run_id"))
-        # For operator mode, skip responder polish (planner draft is direct).
-        return "skip_responder" if state.get("use_case") == "operator" else "responder"
+        # For dashboard modes, skip responder polish (planner draft is direct).
+        return "skip_responder" if dashboard_mode else "responder"
     msgs = state.get("messages") or []
     last = msgs[-1] if msgs else None
     if last and getattr(last, "tool_calls", None):
         return "executor"
-    # Operator mode: planner output IS the final response. Saves a polish LLM call.
-    if state.get("use_case") == "operator":
+    # Dashboard modes (operator/analyst): planner output IS the final response.
+    # Saves a polish LLM call + preserves markdown / tables.
+    if dashboard_mode:
         return "skip_responder"
     return "responder"
 

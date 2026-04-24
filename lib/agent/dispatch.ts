@@ -12,6 +12,8 @@ import fs from 'fs';
 import type { Firestore } from 'firebase-admin/firestore';
 import type { Business, Conversation, ConversationChannel } from '@/lib/types';
 import { sendTypingIndicator } from '@/lib/channels/typing';
+import { checkRateLimit } from '@/lib/agent/rate-limit';
+import { isCircuitAllowed, recordSuccess, recordFailure } from '@/lib/agent/circuit-breaker';
 
 function dlog(msg: string) {
   const line = `${new Date().toISOString()} ${msg}\n`;
@@ -84,6 +86,21 @@ export async function dispatchInboundToAgent(
       dlog(`${tag} SKIP: aiEnabled=false on conversation`);
       return;
     }
+
+    // Circuit breaker — skip if open (tenant is in cool-down after consecutive failures)
+    const circuitAllowed = await isCircuitAllowed(input.businessId);
+    if (!circuitAllowed) {
+      dlog(`${tag} SKIP: circuit breaker open for tenant`);
+      return;
+    }
+
+    // Rate limit per tenant (cross-conversation guard). Fail-open on infra errors.
+    const rl = await checkRateLimit(input.businessId, 'inbound');
+    if (!rl.allowed) {
+      dlog(`${tag} SKIP: rate limit ${rl.current}/${rl.max}, retry in ${rl.retryAfterSec}s`);
+      return;
+    }
+
     dlog(`${tag} gates OK — useCase=${business.settings?.useCase || 'servicos'} debounce=${DEBOUNCE_MS}ms`);
 
     // ─── Humanization: fire typing indicator immediately ──────────────────
@@ -253,14 +270,21 @@ export async function dispatchInboundToAgent(
       if (res && !res.ok) {
         const body = await res.text().catch(() => '');
         dlog(`${tag} ✗ agent HTTP ${res.status} (${Date.now()-t0}ms): ${body}`);
+        void recordFailure(input.businessId, `agent HTTP ${res.status}`).catch(() => {});
       } else if (res?.ok) {
         const data = await res.json().catch(() => ({}));
         dlog(`${tag} ✓ agent responded (${Date.now()-t0}ms) — intent=${data.intent} status=${data.status} response="${String(data.final_response || '').slice(0,80)}"`);
+        if (data.status === 'success') {
+          void recordSuccess(input.businessId).catch(() => {});
+        } else if (data.status === 'error') {
+          void recordFailure(input.businessId, data.error || 'agent reported error').catch(() => {});
+        }
       }
     } finally {
       clearTimeout(timer);
     }
   } catch (err) {
     dlog(`${tag} ✗ fatal: ${String(err)}`);
+    void recordFailure(input.businessId, String(err).slice(0, 200)).catch(() => {});
   }
 }

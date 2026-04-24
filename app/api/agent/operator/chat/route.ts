@@ -20,6 +20,8 @@ import crypto from 'crypto';
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
+import { checkRateLimit } from '@/lib/agent/rate-limit';
+import { isCircuitAllowed, recordSuccess, recordFailure } from '@/lib/agent/circuit-breaker';
 import type { Business, User } from '@/lib/types';
 
 const AGENT_URL = process.env.AGENT_SERVICE_URL || 'http://localhost:8080';
@@ -72,6 +74,24 @@ export async function POST(req: NextRequest) {
   const rolePriority: Record<string, number> = { founder: 100, admin: 80, manager: 60, operator: 40, viewer: 20 };
   if ((rolePriority[role] || 0) < rolePriority.operator) {
     return NextResponse.json({ ok: false, error: 'Role forbidden — operator or higher required' }, { status: 403 });
+  }
+
+  // Circuit breaker — surface a helpful 503 to the UI when tenant is in cool-down
+  const circuitOk = await isCircuitAllowed(businessId);
+  if (!circuitOk) {
+    return NextResponse.json(
+      { ok: false, error: 'Agente temporariamente indisponível — tentativas recentes falharam. Retorne em alguns minutos.' },
+      { status: 503 },
+    );
+  }
+
+  // Rate limit operator surface (separate bucket from inbound messaging)
+  const rl = await checkRateLimit(businessId, 'operator');
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { ok: false, error: `Muitas requisições, aguarde ${rl.retryAfterSec ?? 60}s.` },
+      { status: 429, headers: { 'Retry-After': String(rl.retryAfterSec ?? 60) } },
+    );
   }
 
   // 4. Fetch business + user
@@ -153,6 +173,7 @@ export async function POST(req: NextRequest) {
   if (!agentRes.ok) {
     const errBody = await agentRes.text().catch(() => '');
     console.error('[operator.chat] agent HTTP', agentRes.status, errBody);
+    void recordFailure(businessId, `agent HTTP ${agentRes.status}`).catch(() => {});
     return NextResponse.json({ ok: false, error: `O agente retornou erro (${agentRes.status}). Tente novamente.` }, { status: 502 });
   }
 
@@ -169,11 +190,20 @@ export async function POST(req: NextRequest) {
     data = await agentRes.json();
   } catch {
     console.error('[operator.chat] agent returned invalid JSON');
+    void recordFailure(businessId, 'invalid JSON from agent').catch(() => {});
     return NextResponse.json({ ok: false, error: 'O agente retornou uma resposta inválida. Tente novamente.' }, { status: 502 });
   }
 
   if (!data.run_id) {
+    void recordFailure(businessId, data.error || 'no run_id returned').catch(() => {});
     return NextResponse.json({ ok: false, error: data.error || 'O agente não retornou um resultado. Tente novamente.' }, { status: 502 });
+  }
+
+  // Record outcome for circuit breaker
+  if (data.status === 'success') {
+    void recordSuccess(businessId).catch(() => {});
+  } else if (data.status === 'error') {
+    void recordFailure(businessId, data.error || 'operator agent error').catch(() => {});
   }
 
   // 7. Fetch run details for tool calls (persisted by agent)

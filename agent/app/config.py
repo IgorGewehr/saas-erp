@@ -50,8 +50,15 @@ class Settings(BaseSettings):
     langchain_project: str | None = Field(None, alias="LANGCHAIN_PROJECT")
 
     # --- Observability & privacy ---
-    # When true, PII (CPF, CNPJ, phone, email, CEP) is redacted from LangSmith payloads.
+    # When true, PII (CPF, CNPJ, phone, email, CEP, card, token) is redacted from LangSmith payloads.
     redact_pii_in_traces: bool = Field(True, alias="REDACT_PII_IN_TRACES")
+
+    # --- Evaluators (Wave 6) ---
+    # Disabled by default — each enabled run costs ~200 tokens. Turn on after
+    # upgrading to LangSmith paid tier and you want continuous quality
+    # monitoring.
+    langsmith_evals_enabled: bool = Field(False, alias="LANGSMITH_EVALS_ENABLED")
+    langsmith_groundedness_sample: float = Field(0.05, alias="LANGSMITH_GROUNDEDNESS_SAMPLE")
 
 
 @lru_cache

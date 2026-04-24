@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-UseCase = Literal["pedidos", "servicos", "simples", "operator"]
+UseCase = Literal["pedidos", "servicos", "simples", "operator", "analyst"]
 
 
 # ─── Orders (pedidos) ────────────────────────────────────────────────────────
@@ -1028,6 +1028,32 @@ def tools_for_use_case(use_case: UseCase) -> list[dict[str, Any]]:
             + TEAM_TOOLS + SERVICES_MGMT_TOOLS + SALES_TOOLS
             + SUPPLIERS_TOOLS + PURCHASE_NOTES_TOOLS
         )
+    if use_case == "analyst":
+        # Analyst chat — READ-ONLY tools only (list/get/search/summary).
+        # Guardrails layer also role-gates destructive tools, but the analyst
+        # prompt shouldn't even see the write tools.
+        all_operator = (
+            CATALOG_TOOLS + ORDERS_TOOLS
+            + AGENDA_TOOLS + CONVERSATION_TOOLS
+            + FINANCIAL_TOOLS + INVENTORY_TOOLS + KANBAN_TOOLS
+            + NOTES_TOOLS + CRM_TOOLS + CONVERSATIONS_ADMIN_TOOLS
+            + TEAM_TOOLS + SERVICES_MGMT_TOOLS + SALES_TOOLS
+            + SUPPLIERS_TOOLS + PURCHASE_NOTES_TOOLS
+        )
+        read_only_prefixes = (
+            "_list", "_get", "_search", "_summary", "_recall", "_capacity",
+            "_next_available", "_availability", "_check_", "_full_history",
+            "_by_client", "_find_by", "_categories", "_menu", "_recent",
+            "_segments", "_messages", "_activities", "_boards", "_cards",
+            "_today", "_month", "_low_stock", "_unmatched", "_match_products",
+            "_context", "_services", "_professionals",
+        )
+        read_only = [
+            t for t in all_operator
+            if any(t["function"]["name"].endswith(suf) or suf in t["function"]["name"]
+                   for suf in read_only_prefixes)
+        ]
+        return base + read_only
     # simples / times — generic CRM only
     return base
 
