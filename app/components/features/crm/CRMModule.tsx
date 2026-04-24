@@ -44,6 +44,7 @@ import {
 import { KanbanBoard } from './KanbanBoard';
 import { LeadDetailPanel } from './LeadDetailPanel';
 import { ScheduleActionDialog } from './ScheduleActionDialog';
+import AutomacoesTab from './AutomacoesTab';
 import { SourceIcon } from './SourceIcon';
 
 // ── Tab Config ──────────────────────────────────────────────────────────────
@@ -670,6 +671,7 @@ export default function CRMModule() {
     { key: 'atividades', label: t('crm.tab.activities', 'Atividades'), icon: <Activity size={15} />, desc: t('crm.tab.activities_desc', 'Tarefas e follow-ups') },
     { key: 'campanhas', label: t('crm.tab.campaigns', 'Campanhas'), icon: <Send size={15} />, desc: t('crm.tab.campaigns_desc', 'Broadcasts') },
     { key: 'metricas', label: t('crm.tab.metrics', 'Inteligência'), icon: <Brain size={15} />, desc: t('crm.tab.metrics_desc', 'Scores e insights') },
+    { key: 'automacoes', label: t('crm.tab.automations', 'Automações'), icon: <Zap size={15} />, desc: t('crm.tab.automations_desc', 'Regras automáticas') },
   ], [t]);
   const { isDark } = useTheme();
   const { user, business } = useAuth();
@@ -960,6 +962,11 @@ export default function CRMModule() {
               <div className="flex-1 overflow-y-auto min-h-0">
                 <MetricsTab deals={deals} contacts={contacts} activities={activities}
                   stages={PIPELINE_STAGES} isDark={isDark} metrics={pipelineMetrics} />
+              </div>
+            )}
+            {activeTab === 'automacoes' && (
+              <div className="flex-1 overflow-y-auto min-h-0">
+                <AutomacoesTab businessId={business?.id || ''} userId={user?.uid || ''} userName={user?.name || ''} isDark={isDark} />
               </div>
             )}
           </motion.div>

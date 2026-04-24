@@ -149,7 +149,7 @@ export function formatDaysSince(isoStr?: string): string {
 }
 
 // CRM Tab type
-export type CRMTab = 'kanban' | 'atividades' | 'campanhas' | 'metricas';
+export type CRMTab = 'kanban' | 'atividades' | 'campanhas' | 'metricas' | 'automacoes';
 
 // Helpers
 export function relativeTime(isoStr?: string): string {

@@ -2167,6 +2167,51 @@ export interface AppNotification {
   createdAt: string;
 }
 
+// ---- CRM Automations ----
+
+export type CRMAutomationTrigger =
+  | 'client_inactive'       // no visit/contact in X days
+  | 'client_birthday'       // birthday today
+  | 'post_appointment'      // X hours after a completed appointment
+  | 'lifecycle_change'      // lifecycle stage changed to X
+  | 'high_churn_risk'       // churn risk score > threshold
+  | 'new_lead';             // new contact created
+
+export type CRMAutomationActionType =
+  | 'send_whatsapp'         // send WhatsApp message
+  | 'create_task'           // create Kanban card
+  | 'add_tag'               // add tag to contact
+  | 'change_lifecycle'      // change lifecycle stage
+  | 'notify_team';          // send in-app notification to team
+
+export interface CRMAutomationCondition {
+  field: string;            // e.g. 'totalSpent', 'visitCount', 'tags', 'lifecycleStage'
+  operator: 'gt' | 'lt' | 'eq' | 'contains' | 'not_contains';
+  value: string | number;
+}
+
+export interface CRMAutomationAction {
+  type: CRMAutomationActionType;
+  value: string;            // message template, tag name, stage, task title, etc.
+  metadata?: Record<string, unknown>;  // e.g. { boardId, columnId } for create_task
+}
+
+export interface CRMAutomationRule {
+  id: string;
+  businessId: string;
+  name: string;
+  trigger: CRMAutomationTrigger;
+  triggerConfig: Record<string, unknown>;  // e.g. { inactiveDays: 30 }, { hoursAfter: 24 }, { stage: 'customer' }
+  conditions: CRMAutomationCondition[];    // AND conditions — all must match
+  actions: CRMAutomationAction[];
+  isActive: boolean;
+  lastRunAt?: string;
+  totalExecutions: number;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // ---- Google Calendar Sync ----
 
 export interface CalendarSyncToken {
