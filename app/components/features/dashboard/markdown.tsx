@@ -42,7 +42,7 @@ function renderInline(text: string, keyBase: string): React.ReactNode[] {
       nodes.push(<em key={key} className="italic">{token.slice(1, -1)}</em>);
     } else if (token.startsWith('http')) {
       nodes.push(
-        <a key={key} href={token} target="_blank" rel="noopener noreferrer" className="underline decoration-dotted underline-offset-2 hover:text-violet-600 dark:hover:text-violet-400">
+        <a key={key} href={token} target="_blank" rel="noopener noreferrer" className="underline decoration-dotted underline-offset-2 hover:text-red-600 dark:hover:text-red-400">
           {token}
         </a>,
       );

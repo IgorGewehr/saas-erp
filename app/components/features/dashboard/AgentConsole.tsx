@@ -56,13 +56,13 @@ const SUGGESTIONS: Record<Mode, Array<{ icon: typeof Command; text: string }>> =
 const MODE_META: Record<Mode, { label: string; color: string; accent: string }> = {
   operator: {
     label: 'Operador',
-    color: 'from-violet-500 to-purple-600',
-    accent: 'violet',
+    color: 'from-red-600 to-red-500',   // matches sidebar active pill
+    accent: 'red',
   },
   analyst: {
     label: 'Analista',
-    color: 'from-violet-500 to-indigo-600',
-    accent: 'indigo',
+    color: 'from-red-500 to-rose-600',   // subtle rose shift pra diferenciar modo
+    accent: 'rose',
   },
 };
 
@@ -177,8 +177,8 @@ export default function AgentConsole() {
     <div className={cn(
       'rounded-2xl border overflow-hidden transition-all',
       isOpen
-        ? 'border-violet-300/50 dark:border-violet-800/40 shadow-md'
-        : 'border-gray-200 dark:border-gray-700/60 hover:border-violet-300/50 hover:shadow-sm',
+        ? 'border-red-300/50 dark:border-red-800/40 shadow-md'
+        : 'border-gray-200 dark:border-gray-700/60 hover:border-red-300/50 hover:shadow-sm',
       'bg-white dark:bg-gray-800/40',
     )}>
       {/* Header strip — always visible */}
@@ -213,7 +213,7 @@ export default function AgentConsole() {
             <span className={cn(
               'text-[10px] font-semibold px-2 py-0.5 rounded-full',
               mode === 'analyst'
-                ? 'text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-500/10'
+                ? 'text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-500/10'
                 : autonomous
                   ? 'text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-500/10'
                   : 'text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-500/10',
@@ -254,8 +254,8 @@ export default function AgentConsole() {
                     'px-3 py-1.5 rounded-t-lg text-xs font-medium inline-flex items-center gap-1.5 border-b-2 transition-colors',
                     mode === m
                       ? (m === 'analyst'
-                          ? 'text-indigo-700 dark:text-indigo-300 border-indigo-500'
-                          : 'text-violet-700 dark:text-violet-300 border-violet-500')
+                          ? 'text-rose-700 dark:text-rose-300 border-rose-500'
+                          : 'text-red-700 dark:text-red-400 border-red-500')
                       : 'text-gray-500 dark:text-gray-400 border-transparent hover:text-gray-700 dark:hover:text-gray-300',
                   )}
                 >
@@ -290,9 +290,9 @@ export default function AgentConsole() {
                         key={i}
                         onClick={() => void send(s.text)}
                         disabled={isLoading}
-                        className="flex items-center gap-2 text-left text-xs px-2.5 py-1.5 rounded-lg bg-gray-50 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 hover:border-violet-300 dark:hover:border-violet-700 hover:bg-violet-50/40 dark:hover:bg-violet-950/20 transition-colors text-gray-700 dark:text-gray-300"
+                        className="flex items-center gap-2 text-left text-xs px-2.5 py-1.5 rounded-lg bg-gray-50 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 hover:border-red-300 dark:hover:border-red-700 hover:bg-red-50/40 dark:hover:bg-red-950/20 transition-colors text-gray-700 dark:text-gray-300"
                       >
-                        <s.icon className="w-3 h-3 shrink-0 text-violet-500" />
+                        <s.icon className="w-3 h-3 shrink-0 text-red-500" />
                         <span className="line-clamp-1">{s.text}</span>
                       </button>
                     ))}
@@ -328,8 +328,8 @@ export default function AgentConsole() {
                   'group flex items-end gap-2 rounded-xl bg-gray-50 dark:bg-gray-900/60 px-3 py-2 transition-all',
                   'ring-1 ring-gray-200 dark:ring-gray-700/60',
                   mode === 'analyst'
-                    ? 'focus-within:ring-2 focus-within:ring-indigo-400/60 dark:focus-within:ring-indigo-500/50'
-                    : 'focus-within:ring-2 focus-within:ring-violet-400/60 dark:focus-within:ring-violet-500/50',
+                    ? 'focus-within:ring-2 focus-within:ring-rose-400/60 dark:focus-within:ring-rose-500/50'
+                    : 'focus-within:ring-2 focus-within:ring-red-400/60 dark:focus-within:ring-red-500/50',
                 )}
               >
                 <textarea
@@ -377,7 +377,7 @@ export default function AgentConsole() {
                   <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400"><Zap className="w-2.5 h-2.5" /> autônomo</span>
                 )}
                 {mode === 'analyst' && (
-                  <span className="flex items-center gap-1 text-indigo-600 dark:text-indigo-400"><BarChart3 className="w-2.5 h-2.5" /> read-only</span>
+                  <span className="flex items-center gap-1 text-rose-600 dark:text-rose-400"><BarChart3 className="w-2.5 h-2.5" /> read-only</span>
                 )}
               </div>
             </div>
@@ -403,7 +403,7 @@ function MessageBubble({
 }) {
   const isUser = msg.role === 'user';
   const hasTools = (msg.toolCalls?.length || 0) > 0;
-  const accent = mode === 'analyst' ? 'indigo' : 'violet';
+  const accent = mode === 'analyst' ? 'rose' : 'red';
 
   return (
     <motion.div
@@ -416,7 +416,7 @@ function MessageBubble({
         className={cn(
           'max-w-[85%] rounded-2xl px-3.5 py-2.5 text-sm break-words',
           isUser
-            ? cn('text-white rounded-br-md whitespace-pre-wrap', accent === 'indigo' ? 'bg-indigo-600' : 'bg-violet-600')
+            ? cn('text-white rounded-br-md whitespace-pre-wrap', accent === 'rose' ? 'bg-rose-600' : 'bg-red-600')
             : msg.isFallback
               ? 'bg-amber-50 dark:bg-amber-950/30 text-amber-900 dark:text-amber-200 border border-amber-200/60 dark:border-amber-900/40 rounded-bl-md whitespace-pre-wrap'
               : 'bg-gray-100 dark:bg-gray-800/80 text-gray-800 dark:text-gray-200 rounded-bl-md',
@@ -433,7 +433,7 @@ function MessageBubble({
               onClick={onToggleExpand}
               className={cn(
                 'text-[10px] opacity-70 hover:opacity-100 flex items-center gap-1',
-                accent === 'indigo' ? 'text-indigo-700 dark:text-indigo-300' : 'text-violet-700 dark:text-violet-300',
+                accent === 'rose' ? 'text-rose-700 dark:text-rose-400' : 'text-red-700 dark:text-red-400',
               )}
             >
               {msg.toolCalls!.length} {msg.toolCalls!.length > 1 ? 'ações' : 'ação'}
