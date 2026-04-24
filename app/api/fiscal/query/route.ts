@@ -85,26 +85,7 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      const url = `${SEFAZ_API_URL}/nfse/consultar`;
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${SEFAZ_API_KEY}`,
-        },
-        body: JSON.stringify({ chaveAcesso: body.chaveAcesso, ambiente, certificado }),
-      });
-
-      const responseData = await response.json();
-
-      if (!response.ok) {
-        return NextResponse.json(
-          { error: 'Erro ao consultar documento.', details: responseData, statusCode: response.status },
-          { status: response.status },
-        );
-      }
-
-      return NextResponse.json({ success: true, data: responseData });
+      return await safeNFSeFetch(`${SEFAZ_API_URL}/nfse/consultar`, SEFAZ_API_KEY, { chaveAcesso: body.chaveAcesso, ambiente, certificado });
     }
 
     if (type === 'nfse-dps') {
@@ -122,26 +103,7 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      const url = `${SEFAZ_API_URL}/nfse/consultar-dps`;
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${SEFAZ_API_KEY}`,
-        },
-        body: JSON.stringify({ idDPS: body.idDPS, ambiente, certificado }),
-      });
-
-      const responseData = await response.json();
-
-      if (!response.ok) {
-        return NextResponse.json(
-          { error: 'Erro ao consultar documento.', details: responseData, statusCode: response.status },
-          { status: response.status },
-        );
-      }
-
-      return NextResponse.json({ success: true, data: responseData });
+      return await safeNFSeFetch(`${SEFAZ_API_URL}/nfse/consultar-dps`, SEFAZ_API_KEY, { idDPS: body.idDPS, ambiente, certificado });
     }
 
     // NFe/NFCe query (44-digit key)
@@ -167,4 +129,46 @@ export async function POST(request: NextRequest) {
       { status: 500 },
     );
   }
+}
+
+// ── Helper: NFSe fetch com timeout, JSON-safe e mensagem de erro estruturada ──
+async function safeNFSeFetch(url: string, apiKey: string, payload: Record<string, unknown>): Promise<NextResponse> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 60_000);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    const isAbort = (err as Error).name === 'AbortError';
+    return NextResponse.json(
+      { error: isAbort ? 'Timeout (60s) ao consultar NFSe.' : 'Falha de rede ao consultar NFSe.', details: String(err) },
+      { status: 504 },
+    );
+  }
+  clearTimeout(timer);
+
+  const rawText = await response.text();
+  let responseData: unknown = null;
+  try { responseData = rawText ? JSON.parse(rawText) : null; } catch { /* not JSON */ }
+
+  if (!response.ok) {
+    const bodyError = (responseData && typeof responseData === 'object'
+      ? (responseData as Record<string, unknown>).error || (responseData as Record<string, unknown>).message
+      : null) || rawText.slice(0, 200);
+    return NextResponse.json(
+      { error: `Erro ao consultar documento (${response.status}): ${bodyError ?? response.statusText}`, details: responseData, statusCode: response.status },
+      { status: response.status },
+    );
+  }
+
+  return NextResponse.json({ success: true, data: responseData });
 }

@@ -217,8 +217,9 @@ async function sefazRequest<T = SefazResponse>(
 
       // 422 — SEFAZ rejection (nota rejeitada, dados invalidos, etc.)
       // Return as-is so the caller can inspect status/erros
-      if (response.status === 422 && parsedBody) {
-        return parsedBody as T;
+      if (response.status === 422) {
+        if (parsedBody) return parsedBody as T;
+        throw new Error(`[SEFAZ] 422 Rejeição sem corpo válido: ${response.statusText}`);
       }
 
       // 400 — bad request (DV inválido, payload malformado, cert inválido/expirado)
@@ -245,7 +246,10 @@ async function sefazRequest<T = SefazResponse>(
         throw new Error(`[SEFAZ] Resposta inesperada (${response.status}): ${bodyError ?? response.statusText}`);
       } else {
         // 2xx — success
-        return (parsedBody ?? JSON.parse(rawBody)) as T;
+        if (!parsedBody) {
+          throw new Error(`[SEFAZ] Resposta 2xx com body inválido ou vazio: ${rawBody.slice(0, 200) || '(empty)'}`);
+        }
+        return parsedBody as T;
       }
     } catch (err) {
       clearTimeout(timer);

@@ -100,25 +100,44 @@ export async function POST(request: NextRequest) {
       }
 
       const url = `${SEFAZ_API_URL}/nfse/cancelar`;
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${SEFAZ_API_KEY}`,
-        },
-        body: JSON.stringify({
-          chaveAcesso: body.chaveAcesso,
-          justificativa: body.justificativa.trim(),
-          ambiente,
-          certificado,
-        }),
-      });
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 60_000);
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${SEFAZ_API_KEY}`,
+          },
+          body: JSON.stringify({
+            chaveAcesso: body.chaveAcesso,
+            justificativa: body.justificativa.trim(),
+            ambiente,
+            certificado,
+          }),
+          signal: controller.signal,
+        });
+      } catch (err) {
+        clearTimeout(timer);
+        const isAbort = (err as Error).name === 'AbortError';
+        return NextResponse.json(
+          { error: isAbort ? 'Timeout (60s) ao cancelar NFSe.' : 'Falha de rede ao cancelar NFSe.', details: String(err) },
+          { status: 504 },
+        );
+      }
+      clearTimeout(timer);
 
-      const responseData = await response.json();
+      const rawText = await response.text();
+      let responseData: unknown = null;
+      try { responseData = rawText ? JSON.parse(rawText) : null; } catch { /* not JSON */ }
 
       if (!response.ok) {
+        const bodyError = (responseData && typeof responseData === 'object'
+          ? (responseData as Record<string, unknown>).error || (responseData as Record<string, unknown>).message
+          : null) || rawText.slice(0, 200);
         return NextResponse.json(
-          { error: 'Erro ao cancelar documento.', details: responseData, statusCode: response.status },
+          { error: `Erro ao cancelar documento (${response.status}): ${bodyError ?? response.statusText}`, details: responseData, statusCode: response.status },
           { status: response.status },
         );
       }
