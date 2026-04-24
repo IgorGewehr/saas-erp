@@ -365,7 +365,20 @@ async def executor_node(state: AgentState) -> dict[str, Any]:
         for e in log_entries
     )
 
-    log.info("node.executor", run_id=state.get("run_id"), count=len(results), latency_ms=trace_latency)
+    # Detect mutations for operator-mode reflection: any tool name that creates,
+    # updates or deletes something is considered destructive. Read-only tools
+    # (list/get/search/recall/summary) are excluded so customer-facing flows and
+    # cheap operator queries stay fast.
+    destructive_entries = [e for e in log_entries if _is_destructive_tool(e.get("name", ""))]
+    needs_reflection = len(destructive_entries) > 0 and state.get("use_case") == "operator"
+
+    log.info(
+        "node.executor",
+        run_id=state.get("run_id"),
+        count=len(results),
+        destructive=len(destructive_entries),
+        latency_ms=trace_latency,
+    )
 
     update: dict[str, Any] = {
         "messages": new_messages,
@@ -373,13 +386,43 @@ async def executor_node(state: AgentState) -> dict[str, Any]:
         "node_traces": _push_trace(state, {
             "node": "executor",
             "output": [e["name"] for e in log_entries],
+            "destructive": [e["name"] for e in destructive_entries],
             "latencyMs": trace_latency,
             "startedAt": _now_iso(),
         }),
     }
     if interactive_sent:
         update["interactive_sent"] = True
+    if needs_reflection:
+        update["needs_reflection"] = True
     return update
+
+
+# Destructive tool prefixes/suffixes — used by reflection gating in executor.
+# Keep this list tight; false-positives add latency without safety benefit.
+_DESTRUCTIVE_PREFIXES = (
+    "orders_create", "orders_cancel", "orders_update_items", "orders_update_status",
+    "agenda_book", "agenda_update", "agenda_cancel",
+    "clients_create", "clients_update", "clients_update_address",
+    "inventory_create", "inventory_update", "inventory_adjust_stock",
+    "inventory_set_active", "inventory_set_out_of_stock",
+    "kanban_create_card", "kanban_move_card", "kanban_update_card",
+    "kanban_assign", "kanban_add_comment", "kanban_archive_card",
+    "notes_create", "notes_update", "notes_delete",
+    "crm_create_deal", "crm_update_deal_stage", "crm_close_deal", "crm_log_activity",
+    "conversations_set_label", "conversations_set_priority", "conversations_set_status",
+    "services_create", "services_update", "services_set_active",
+    "sales_create", "sales_cancel",
+    "suppliers_create", "suppliers_update",
+    "purchase-notes_apply_to_stock",
+    "financial_create_receivable", "financial_create_payable",
+    "financial_mark_paid", "financial_cancel",
+    "memory_remember", "memory_forget",
+)
+
+
+def _is_destructive_tool(name: str) -> bool:
+    return any(name.startswith(p) for p in _DESTRUCTIVE_PREFIXES)
 
 
 # ─── 4. Responder — polish the final answer ─────────────────────────────────
@@ -449,17 +492,192 @@ async def responder_node(state: AgentState) -> dict[str, Any]:
     }
 
 
+# ─── 5. Reflection — self-check after destructive operator actions ──────────
+
+
+@traceable(run_type="chain", name="agent.reflection")
+async def reflection_node(state: AgentState) -> dict[str, Any]:
+    """Verifies that destructive tools succeeded and cross-checks the result.
+
+    Only invoked when:
+      - use_case == 'operator' (dashboard chat)
+      - executor flagged `needs_reflection` (at least one write tool fired)
+
+    The reflector receives the tool outputs + the user's original request and
+    produces a structured verdict: {"ok": bool, "summary": str, "warnings": [...]}.
+    On errors it appends a note to the planner's message chain so the next
+    planner turn can surface the issue to the operator honestly.
+
+    Zero-shot is fine here — the task is constrained.
+    """
+    settings = get_settings()
+    business_ctx = state.get("business_context") or {}
+    model = business_ctx.get("model") or settings.openai_model_default
+
+    # Harvest the last-executor tool results (most recent)
+    tool_log = state.get("tool_calls_log") or []
+    # Only look at the last batch — find the destructive subset
+    dest = [t for t in tool_log[-8:] if _is_destructive_tool(t.get("name", ""))]
+    if not dest:
+        return {"needs_reflection": False}
+
+    log.info("node.reflection.start", run_id=state.get("run_id"), count=len(dest))
+
+    llm = ChatOpenAI(
+        model=model,
+        api_key=settings.openai_api_key,
+        temperature=0.0,
+        max_tokens=250,
+    )
+
+    # Harvest the last user turn for context
+    msgs = state.get("messages") or []
+    last_user = ""
+    for m in reversed(msgs):
+        if isinstance(m, HumanMessage):
+            last_user = m.content if isinstance(m.content, str) else str(m.content)
+            break
+
+    import json as _json
+    tool_summary = _json.dumps(
+        [
+            {"name": t.get("name"), "args": t.get("arguments"), "result": t.get("result"), "error": t.get("error")}
+            for t in dest
+        ],
+        ensure_ascii=False,
+        default=str,
+    )[:3500]
+
+    system = (
+        "Você é um verificador de ações. Recebe o pedido do operador + ações destrutivas "
+        "executadas. Responda SOMENTE em JSON válido:\n"
+        '{"ok": bool, "summary": "frase em pt-BR do que aconteceu", "warnings": ["...","..."]}\n\n'
+        "Considere 'ok=false' quando: qualquer tool retornou error, "
+        "criação/alteração foi parcial, ou o resultado contradiz o pedido original."
+    )
+
+    human = f"PEDIDO DO OPERADOR:\n{last_user[:400]}\n\nAÇÕES EXECUTADAS:\n{tool_summary}"
+
+    t0 = time.time()
+    try:
+        result = await _invoke_with_retry(
+            llm,
+            [SystemMessage(content=system), HumanMessage(content=human)],
+        )
+    except Exception as err:
+        log.warning("node.reflection.error", error=str(err))
+        return {"needs_reflection": False}
+
+    latency = int((time.time() - t0) * 1000)
+
+    raw = result.content if isinstance(result.content, str) else str(result.content)
+    verdict: dict[str, Any] = {"ok": True, "summary": "", "warnings": []}
+    try:
+        # Strip markdown if present
+        clean = raw.strip()
+        if clean.startswith("```"):
+            clean = clean.split("\n", 1)[1] if "\n" in clean else clean
+            if clean.endswith("```"):
+                clean = clean.rsplit("```", 1)[0]
+            if clean.startswith("json"):
+                clean = clean[4:].strip()
+        verdict = _json.loads(clean)
+    except Exception:
+        log.warning("node.reflection.parse_failed", raw=raw[:100])
+
+    usage = getattr(result, "response_metadata", {}).get("token_usage", {}) or {}
+    tokens_in = int(usage.get("prompt_tokens") or 0)
+    tokens_out = int(usage.get("completion_tokens") or 0)
+
+    new_messages: list[Any] = []
+    reasoning_entry = {
+        "node": "reflection",
+        "thought": verdict.get("summary", ""),
+        "ok": bool(verdict.get("ok", True)),
+        "warnings": list(verdict.get("warnings", []))[:5],
+        "at": _now_iso(),
+    }
+
+    # If verdict flags a problem, inject a SystemMessage into the planner chain
+    # so the next planner turn picks up the issue and escalates honestly.
+    if not verdict.get("ok", True):
+        issue = verdict.get("summary") or "Verificação detectou problema na última ação."
+        warns = "; ".join(verdict.get("warnings", []) or [])
+        note = f"[reflection] {issue}"
+        if warns:
+            note += f" | Avisos: {warns}"
+        new_messages.append(SystemMessage(content=note))
+        log.warning("node.reflection.flagged", run_id=state.get("run_id"), issue=issue)
+
+    log.info("node.reflection.done", run_id=state.get("run_id"), ok=verdict.get("ok"), latency_ms=latency)
+
+    return {
+        "messages": new_messages,
+        "needs_reflection": False,  # clear the flag
+        "total_tokens_in": state.get("total_tokens_in", 0) + tokens_in,
+        "total_tokens_out": state.get("total_tokens_out", 0) + tokens_out,
+        "reasoning": (state.get("reasoning") or []) + [reasoning_entry],
+        "node_traces": _push_trace(state, {
+            "node": "reflection",
+            "output": redact_if_enabled(verdict),
+            "tokensIn": tokens_in,
+            "tokensOut": tokens_out,
+            "latencyMs": latency,
+            "startedAt": _now_iso(),
+        }),
+    }
+
+
 # ─── Routing predicates ──────────────────────────────────────────────────────
 
 
 def planner_routes_to(state: AgentState) -> str:
-    """Decide: executor (tool calls present) or responder (draft ready)."""
+    """Decide: executor (tool calls present), reflection (operator mutations)
+    or responder (draft ready).
+    """
     max_iter = get_settings().agent_max_iterations
     if state.get("iterations", 0) >= max_iter:
         log.warning("loop.max_iter", run_id=state.get("run_id"))
-        return "responder"
+        # For operator mode, skip responder polish (planner draft is direct).
+        return "skip_responder" if state.get("use_case") == "operator" else "responder"
     msgs = state.get("messages") or []
     last = msgs[-1] if msgs else None
     if last and getattr(last, "tool_calls", None):
         return "executor"
+    # Operator mode: planner output IS the final response. Saves a polish LLM call.
+    if state.get("use_case") == "operator":
+        return "skip_responder"
     return "responder"
+
+
+def executor_routes_to(state: AgentState) -> str:
+    """After executor: either reflect (operator + destructive ops) or back to planner."""
+    if state.get("needs_reflection") and state.get("use_case") == "operator":
+        return "reflection"
+    return "planner"
+
+
+def skip_responder_to_end(state: AgentState) -> dict[str, Any]:
+    """For operator mode — promote the planner draft to final_response without
+    a separate polish LLM call. Saves ~1s + 200 tokens per operator turn.
+    """
+    msgs = state.get("messages") or []
+    draft: str | None = None
+    for m in reversed(msgs):
+        if isinstance(m, AIMessage) and not getattr(m, "tool_calls", None):
+            draft = m.content if isinstance(m.content, str) else str(m.content)
+            break
+    if not draft:
+        draft = "Não consegui processar o comando. Tenta reformular?"
+
+    log.info("node.skip_responder", run_id=state.get("run_id"), length=len(draft))
+
+    return {
+        "final_response": draft.strip(),
+        "node_traces": _push_trace(state, {
+            "node": "skip_responder",
+            "output": redact_if_enabled(draft[:300]),
+            "latencyMs": 0,
+            "startedAt": _now_iso(),
+        }),
+    }

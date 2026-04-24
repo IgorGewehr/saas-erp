@@ -1,6 +1,6 @@
 """LangGraph assembly + public `run_agent` entrypoint.
 
-Graph shape:
+Graph shape (Wave 2 evolution):
 
       START
         │
@@ -8,11 +8,22 @@ Graph shape:
      router
         │
         ▼
-     planner ◄──────────┐
-        │               │
-        ├──(tool calls)─▶ executor ─┘
+     planner ◄───────────────────────────┐
+        │                                │
+        ├──(tool calls)──▶ executor ─────┤
+        │                    │           │
+        │             (operator+writes)  │
+        │                    ▼           │
+        │                reflection ─────┘
         │
-        └──(no tools)──▶ responder ─▶ END
+        ├──(customer-mode drafted)─▶ responder ─▶ END
+        │
+        └──(operator-mode drafted)─▶ skip_responder ─▶ END
+
+Why:
+  - reflection fires only for operator-mode destructive ops (verify + escalate)
+  - responder is skipped in operator mode (saves one LLM call per turn — the
+    operator prompt already enforces the desired format).
 
 Iteration cap is enforced inside `planner_routes_to`.
 """
@@ -31,7 +42,16 @@ from ..config import get_settings
 from ..logging_config import get_logger
 from ..observability import build_run_config
 from ..schemas import ProcessRequest
-from .nodes import executor_node, planner_node, planner_routes_to, responder_node, router_node
+from .nodes import (
+    executor_node,
+    executor_routes_to,
+    planner_node,
+    planner_routes_to,
+    reflection_node,
+    responder_node,
+    router_node,
+    skip_responder_to_end,
+)
 from .state import AgentRunResult, AgentState
 
 log = get_logger("graph")
@@ -59,6 +79,8 @@ def _build_graph():
         final_response: str | None
         error: str | None
         interactive_sent: bool
+        needs_reflection: bool
+        reasoning: list[dict]
         node_traces: list[dict]
         tool_calls_log: list[dict]
         total_tokens_in: int
@@ -68,13 +90,29 @@ def _build_graph():
     g.add_node("router", router_node)
     g.add_node("planner", planner_node)
     g.add_node("executor", executor_node)
+    g.add_node("reflection", reflection_node)
     g.add_node("responder", responder_node)
+    g.add_node("skip_responder", skip_responder_to_end)
 
     g.add_edge(START, "router")
     g.add_edge("router", "planner")
-    g.add_conditional_edges("planner", planner_routes_to, {"executor": "executor", "responder": "responder"})
-    g.add_edge("executor", "planner")
+    g.add_conditional_edges(
+        "planner",
+        planner_routes_to,
+        {
+            "executor": "executor",
+            "responder": "responder",
+            "skip_responder": "skip_responder",
+        },
+    )
+    g.add_conditional_edges(
+        "executor",
+        executor_routes_to,
+        {"reflection": "reflection", "planner": "planner"},
+    )
+    g.add_edge("reflection", "planner")
     g.add_edge("responder", END)
+    g.add_edge("skip_responder", END)
 
     return g.compile()
 
@@ -171,6 +209,8 @@ async def run_agent(*, run_id: str, business_id: str, req: ProcessRequest) -> Ag
         },
         "messages": initial_messages,
         "iterations": 0,
+        "needs_reflection": False,
+        "reasoning": [],
         "node_traces": [],
         "tool_calls_log": [],
         "total_tokens_in": 0,
