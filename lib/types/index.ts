@@ -462,6 +462,7 @@ export interface Service {
   category?: string;
   color: string;
   commissionRate?: number; // Commission % override for this service (0–100). Takes precedence over professional's commissionRate
+  formTemplateId?: string; // Intake form auto-requested when this service is booked
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
@@ -2228,6 +2229,46 @@ export interface CRMAutomationRule {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+}
+
+// ---- Intake / Anamnese Forms ----
+
+export type FormFieldType = 'text' | 'textarea' | 'number' | 'date' | 'select' | 'radio' | 'checkbox' | 'file';
+
+export interface FormField {
+  id: string;
+  type: FormFieldType;
+  label: string;
+  placeholder?: string;
+  required: boolean;
+  options?: string[];         // for select, radio, checkbox
+  helperText?: string;
+}
+
+export interface FormTemplate {
+  id: string;
+  businessId: string;
+  name: string;               // "Anamnese Facial", "Ficha Capilar"
+  description?: string;
+  serviceId?: string;         // optional — auto-trigger when this service is booked
+  fields: FormField[];
+  isActive: boolean;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FormResponse {
+  id: string;
+  businessId: string;
+  templateId: string;
+  templateName: string;       // denormalized for display
+  clientId: string;
+  clientName: string;         // denormalized
+  appointmentId?: string;     // optional link to appointment
+  responses: Record<string, unknown>;  // fieldId → value
+  submittedAt: string;
+  submittedVia: 'link' | 'operator' | 'booking';
 }
 
 // ---- Google Calendar Sync ----

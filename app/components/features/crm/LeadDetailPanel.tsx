@@ -1,11 +1,11 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Chip } from '@mui/material';
 import {
   X, Edit3, Mail, Phone, Clock, MessageCircle, MessageSquare,
-  Calendar, CalendarPlus, Trash2, Activity, CheckCircle2,
+  Calendar, CalendarPlus, Trash2, Activity, CheckCircle2, FileText,
   Brain, TrendingUp, TrendingDown, AlertTriangle, Heart,
   DollarSign, Target, Shield, Zap, Star, BarChart3,
   ThumbsUp, ThumbsDown, Timer, UserCheck, Ban, ArrowRight,
@@ -21,7 +21,9 @@ import {
 } from './shared';
 import { SourceIcon } from './SourceIcon';
 import { TagPicker } from './TagSystem';
-import type { CRMContact, CRMActivity, CRMActivityType, ContactScores } from '@/lib/types';
+import { collection, query, where, orderBy, getDocs } from 'firebase/firestore';
+import { db } from '@/lib/config/firebase';
+import type { CRMContact, CRMActivity, CRMActivityType, ContactScores, FormResponse } from '@/lib/types';
 
 const ACTIVITY_ICONS_MAP: Record<CRMActivityType, React.ReactNode> = {
   ligacao: <Phone size={12} />, email: <Mail size={12} />, reuniao: <Calendar size={12} />,
@@ -123,6 +125,19 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
       .slice(0, 8),
     [activities, contact.id],
   );
+
+  // Fetch form responses for this contact
+  const [formResponses, setFormResponses] = useState<FormResponse[]>([]);
+  useEffect(() => {
+    if (!contact.businessId || !contact.id) return;
+    getDocs(query(
+      collection(db, 'formResponses'),
+      where('businessId', '==', contact.businessId),
+      where('clientId', '==', contact.id),
+    )).then(snap => {
+      setFormResponses(snap.docs.map(d => ({ ...d.data(), id: d.id } as FormResponse)));
+    }).catch(() => {});
+  }, [contact.businessId, contact.id]);
 
   const currentTags = contact.tags || [];
   const sc = STATUS_COLORS[contact.status];
@@ -475,6 +490,39 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
             <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed bg-gray-50 dark:bg-white/[0.02] rounded-xl p-3 border border-gray-100 dark:border-white/[0.06]">
               {contact.notes}
             </p>
+          </div>
+        )}
+
+        {/* ── Fichas / Form Responses ───────────────────────────── */}
+        {formResponses.length > 0 && (
+          <div className="space-y-2">
+            <SectionHeader icon={<FileText size={11} />} label={t('crm.detail.forms', 'Fichas')} />
+            <div className="space-y-2">
+              {formResponses.map((fr, i) => (
+                <motion.div
+                  key={fr.id}
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: 0.05 * i }}
+                  className="p-2.5 rounded-lg bg-violet-50/50 dark:bg-violet-500/5 border border-violet-200/50 dark:border-violet-500/10"
+                >
+                  <p className="text-xs font-semibold text-gray-800 dark:text-gray-200">{fr.templateName}</p>
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">
+                    {relativeTime(fr.submittedAt)} · via {fr.submittedVia === 'link' ? 'link' : fr.submittedVia === 'booking' ? 'booking' : 'operador'}
+                  </p>
+                  <div className="mt-1.5 space-y-1">
+                    {Object.entries(fr.responses).slice(0, 4).map(([key, val]) => (
+                      <p key={key} className="text-[10px] text-gray-500 dark:text-gray-400 truncate">
+                        <span className="font-medium text-gray-600 dark:text-gray-300">{key}:</span> {String(val)}
+                      </p>
+                    ))}
+                    {Object.keys(fr.responses).length > 4 && (
+                      <p className="text-[10px] text-violet-500">+{Object.keys(fr.responses).length - 4} campos</p>
+                    )}
+                  </div>
+                </motion.div>
+              ))}
+            </div>
           </div>
         )}
 
