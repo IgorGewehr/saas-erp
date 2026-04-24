@@ -2,32 +2,25 @@
 
 from __future__ import annotations
 
-import os
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
-from app.config import get_settings
+from app.config import get_settings, langsmith_project_name
 from app.logging_config import configure_logging, get_logger
+from app.observability import enable_langsmith_if_configured
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(settings.log_level)
 
-    # LangSmith tracing (optional)
-    if settings.langchain_tracing_v2:
-        os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
-        if settings.langchain_api_key:
-            os.environ.setdefault("LANGCHAIN_API_KEY", settings.langchain_api_key)
-        if settings.langchain_project:
-            os.environ.setdefault("LANGCHAIN_PROJECT", settings.langchain_project)
+    langsmith_active = enable_langsmith_if_configured(settings)
 
     app = FastAPI(
         title="ServicePro Agent",
-        version="0.1.0",
-        description="Autonomous LangGraph agent for orders & appointments.",
+        version="0.2.0",
+        description="Autonomous LangGraph agent for orders, appointments & operator commands.",
     )
     app.add_middleware(
         CORSMiddleware,
@@ -39,7 +32,15 @@ def create_app() -> FastAPI:
     app.include_router(router)
 
     log = get_logger("startup")
-    log.info("agent.boot", port=settings.port, model=settings.openai_model_default)
+    log.info(
+        "agent.boot",
+        port=settings.port,
+        model=settings.openai_model_default,
+        env=settings.app_env,
+        langsmith=langsmith_active,
+        langsmith_project=langsmith_project_name(settings) if langsmith_active else None,
+        pii_redaction=settings.redact_pii_in_traces,
+    )
     return app
 
 

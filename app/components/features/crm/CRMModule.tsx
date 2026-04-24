@@ -10,7 +10,7 @@ import {
   Users, DollarSign, TrendingUp, MoreVertical, Globe, Instagram, Facebook, Linkedin, Send,
   CheckCircle2, PhoneCall, Video, FileText, MessageCircle, BarChart3, Activity, Layers, Gauge,
   UserPlus, Briefcase, Tag, Hash, AlertTriangle, Heart, Shield, Zap, Brain,
-  Sparkles, Filter,
+  Sparkles, Filter, Crown,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -44,6 +44,9 @@ import {
 import { KanbanBoard } from './KanbanBoard';
 import { LeadDetailPanel } from './LeadDetailPanel';
 import { ScheduleActionDialog } from './ScheduleActionDialog';
+import AutomacoesTab from './AutomacoesTab';
+import FormulariosTab from './FormulariosTab';
+import MembershipsTab from './MembershipsTab';
 import { SourceIcon } from './SourceIcon';
 
 // ── Tab Config ──────────────────────────────────────────────────────────────
@@ -670,6 +673,9 @@ export default function CRMModule() {
     { key: 'atividades', label: t('crm.tab.activities', 'Atividades'), icon: <Activity size={15} />, desc: t('crm.tab.activities_desc', 'Tarefas e follow-ups') },
     { key: 'campanhas', label: t('crm.tab.campaigns', 'Campanhas'), icon: <Send size={15} />, desc: t('crm.tab.campaigns_desc', 'Broadcasts') },
     { key: 'metricas', label: t('crm.tab.metrics', 'Inteligência'), icon: <Brain size={15} />, desc: t('crm.tab.metrics_desc', 'Scores e insights') },
+    { key: 'automacoes', label: t('crm.tab.automations', 'Automações'), icon: <Zap size={15} />, desc: t('crm.tab.automations_desc', 'Regras automáticas') },
+    { key: 'formularios', label: t('crm.tab.forms', 'Formulários'), icon: <FileText size={15} />, desc: t('crm.tab.forms_desc', 'Fichas de anamnese') },
+    { key: 'planos', label: t('crm.tab.plans', 'Planos'), icon: <Crown size={15} />, desc: t('crm.tab.plans_desc', 'Assinaturas recorrentes') },
   ], [t]);
   const { isDark } = useTheme();
   const { user, business } = useAuth();
@@ -734,7 +740,24 @@ export default function CRMModule() {
     } catch (err) { console.error('[CRM] Error saving contact:', err); toast.error(t('crm.toast.errorSaveContact', 'Erro ao salvar contato')); }
   }, [business?.id, user, editingContact, queryClient]);
 
-  const handleDeleteContact = useCallback(async () => { if (!deleteContactConfirm || !business?.id) return; try { await deleteDoc(doc(db, 'clients', deleteContactConfirm.id)); toast.success(t('crm.toast.contactDeleted', 'Contato excluído')); queryClient.invalidateQueries({ queryKey: ['clients', business.id] }); setDeleteContactConfirm(null); } catch (err) { console.error('[CRM] Error deleting contact:', err); toast.error(t('crm.toast.errorDelete', 'Erro ao excluir')); } }, [deleteContactConfirm, business?.id, queryClient]);
+  const handleDeleteContact = useCallback(async () => {
+    if (!deleteContactConfirm || !business?.id) return;
+    try {
+      // Cascade: delete deals linked to this contact
+      const dealsSnap = await getDocs(query(collection(db, 'crmDeals'), where('businessId', '==', business.id), where('contactId', '==', deleteContactConfirm.id)));
+      for (const d of dealsSnap.docs) await deleteDoc(doc(db, 'crmDeals', d.id));
+      // Cascade: delete activities linked to this contact
+      const activitiesSnap = await getDocs(query(collection(db, 'crmActivities'), where('businessId', '==', business.id), where('contactId', '==', deleteContactConfirm.id)));
+      for (const a of activitiesSnap.docs) await deleteDoc(doc(db, 'crmActivities', a.id));
+      // Delete the contact itself
+      await deleteDoc(doc(db, 'clients', deleteContactConfirm.id));
+      toast.success(t('crm.toast.contactDeleted', 'Contato excluído'));
+      queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
+      queryClient.invalidateQueries({ queryKey: ['crmDeals', business.id] });
+      queryClient.invalidateQueries({ queryKey: ['crmActivities', business.id] });
+      setDeleteContactConfirm(null);
+    } catch (err) { console.error('[CRM] Error deleting contact:', err); toast.error(t('crm.toast.errorDelete', 'Erro ao excluir')); }
+  }, [deleteContactConfirm, business?.id, queryClient]);
 
   const handleSaveDeal = useCallback(async (data: Partial<CRMDeal>) => { if (!business?.id || !user) return; const now = new Date().toISOString(); try { if (editingDeal) { await updateDoc(doc(db, 'crmDeals', editingDeal.id), { ...data, updatedAt: now }); toast.success(t('crm.toast.dealUpdated', 'Deal atualizado!')); } else { await addDoc(collection(db, 'crmDeals'), { ...data, businessId: business.id, stage: data.stage ?? 'prospeccao', probability: data.probability ?? 10, value: data.value ?? 0, createdAt: now, updatedAt: now }); toast.success(t('crm.toast.dealCreated', 'Deal criado!')); } queryClient.invalidateQueries({ queryKey: ['crmDeals', business.id] }); setDealDialogOpen(false); setEditingDeal(null); } catch (err) { console.error('[CRM] Error saving deal:', err); toast.error(t('crm.toast.errorSaveDeal', 'Erro ao salvar deal')); } }, [business?.id, user, editingDeal, queryClient]);
 
@@ -943,6 +966,21 @@ export default function CRMModule() {
               <div className="flex-1 overflow-y-auto min-h-0">
                 <MetricsTab deals={deals} contacts={contacts} activities={activities}
                   stages={PIPELINE_STAGES} isDark={isDark} metrics={pipelineMetrics} />
+              </div>
+            )}
+            {activeTab === 'automacoes' && (
+              <div className="flex-1 overflow-y-auto min-h-0">
+                <AutomacoesTab businessId={business?.id || ''} userId={user?.uid || ''} userName={user?.name || ''} isDark={isDark} />
+              </div>
+            )}
+            {activeTab === 'formularios' && (
+              <div className="flex-1 overflow-y-auto min-h-0">
+                <FormulariosTab businessId={business?.id || ''} userId={user?.uid || ''} userName={user?.name || ''} isDark={isDark} />
+              </div>
+            )}
+            {activeTab === 'planos' && (
+              <div className="flex-1 overflow-y-auto min-h-0">
+                <MembershipsTab businessId={business?.id || ''} userId={user?.uid || ''} isDark={isDark} gatewayConfigured={!!business?.settings?.paymentGateway?.isActive} />
               </div>
             )}
           </motion.div>

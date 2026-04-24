@@ -16,6 +16,7 @@ import { formatCurrency, formatDate } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
 import type { Client, LeadSource, LeadStatus } from '@/lib/types';
 import { toast } from 'react-toastify';
+import ClientAgentMemoryPanel from './ClientAgentMemoryPanel';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -517,6 +518,9 @@ function ClientDetailPanel({ client, onClose, onEdit }: { client: Client; onClos
             <span className="text-xs text-gray-600 dark:text-gray-400">{formatDate(client.createdAt)}</span>
           </div>
         </div>
+
+        {/* Agent memory panel — what the AI remembers about this client (LGPD) */}
+        <ClientAgentMemoryPanel contactId={client.id} contactName={client.name} />
       </div>
     </motion.div>
   );

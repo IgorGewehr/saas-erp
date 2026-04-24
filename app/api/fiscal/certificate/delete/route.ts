@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
     await adminDb.collection('businesses').doc(businessId).update({
       'fiscal.certificate': FieldValue.delete(),
       'fiscal.certPasswordEncrypted': FieldValue.delete(),
-      updatedAt: FieldValue.serverTimestamp(),
+      updatedAt: new Date().toISOString(),
     });
 
     invalidateCertCache(businessId);

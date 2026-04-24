@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
+import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
+import { ROLE_HIERARCHY } from '@/lib/types';
+import type { UserRole } from '@/lib/types';
 import { emitirNFe, emitirNFCe, emitirNFSe, NfsePayload, CertificadoPayload, SefazAmbiente, resolveAmbiente } from '@/lib/services/sefaz-gateway';
 import {
   peekNextInvoiceNumber,
@@ -67,6 +70,13 @@ export async function POST(request: NextRequest) {
         { error: 'businessId e obrigatorio.' },
         { status: 400 },
       );
+    }
+
+    // Auth: admin+ only
+    const auth = await verifyAuth(request, businessId);
+    if (isAuthError(auth)) return auth;
+    if (ROLE_HIERARCHY[auth.role as UserRole] < ROLE_HIERARCHY['admin']) {
+      return NextResponse.json({ error: 'Admin role required' }, { status: 403 });
     }
 
     // 2. Fetch business + fiscal config -----------------------------------------

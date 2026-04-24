@@ -73,6 +73,7 @@ import type { Appointment, AppointmentStatus, Service, CRMContact, User } from '
 import { ROLE_HIERARCHY } from '@/lib/types';
 import { maybeCreateCommission, maybeCancelCommission } from '@/lib/services/commission';
 import { calculateEarnedPoints, addLoyaltyPoints } from '@/lib/services/loyalty';
+import { syncToGoogleCalendar } from '@/lib/services/calendarSync';
 import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot, increment, writeBatch } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -1184,7 +1185,7 @@ function AppointmentFormDialog({
   const filteredClients = useMemo(() => {
     if (!clientSearch) return clients.slice(0, 20);
     return clients.filter((c) =>
-      c.name.toLowerCase().includes(clientSearch.toLowerCase()) ||
+      (c.name?.toLowerCase() ?? '').includes(clientSearch.toLowerCase()) ||
       (c.phone && c.phone.includes(clientSearch))
     ).slice(0, 20);
   }, [clientSearch, clients]);
@@ -2253,6 +2254,18 @@ export default function AgendaModule() {
         }
       }
 
+      // Soft warning for past appointments (does not block — allows retroactive registration)
+      if (!editingAppointment) {
+        const apptDateTime = new Date(`${data.date}T${data.startTime}`);
+        if (!isNaN(apptDateTime.getTime()) && apptDateTime < new Date()) {
+          setSnackbar({
+            open: true,
+            message: t('agenda.pastDateWarning', 'Atenção: este agendamento está no passado.'),
+            severity: 'warning',
+          });
+        }
+      }
+
       const payload: Record<string, any> = {
         clientId: data.clientId || '',
         clientName: data.clientName,
@@ -2391,8 +2404,35 @@ export default function AgendaModule() {
               }
             }
           }
+          // Google Calendar sync (fire-and-forget)
+          syncToGoogleCalendar('create', {
+            id: newDocRef.id,
+            title: `${data.serviceName || 'Agendamento'} — ${data.clientName}`,
+            description: data.notes,
+            date: data.date,
+            startTime: data.startTime,
+            endTime,
+          }).then(eventId => {
+            if (eventId) {
+              updateDoc(doc(db, 'appointments', newDocRef.id), { googleCalendarEventId: eventId }).catch(() => {});
+            }
+          });
+
           setSnackbar({ open: true, message: t('agenda.appointmentCreated', 'Agendamento criado com sucesso!'), severity: 'success' });
         }
+      }
+
+      // Google Calendar sync for updates
+      if (editingAppointment) {
+        syncToGoogleCalendar('update', {
+          id: editingAppointment.id,
+          title: `${data.serviceName || 'Agendamento'} — ${data.clientName}`,
+          description: data.notes,
+          date: data.date,
+          startTime: data.startTime,
+          endTime,
+          googleCalendarEventId: editingAppointment.googleCalendarEventId,
+        }).catch(() => {});
       }
 
       queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
@@ -2412,6 +2452,17 @@ export default function AgendaModule() {
     setDeleteLoading(true);
     try {
       await deleteDoc(doc(db, 'appointments', editingAppointment.id));
+      // Google Calendar sync — remove event
+      if (editingAppointment.googleCalendarEventId) {
+        syncToGoogleCalendar('delete', {
+          id: editingAppointment.id,
+          title: '',
+          date: editingAppointment.date,
+          startTime: editingAppointment.startTime,
+          endTime: editingAppointment.endTime,
+          googleCalendarEventId: editingAppointment.googleCalendarEventId,
+        }).catch(() => {});
+      }
       if (editingAppointment.status === 'concluido' && editingAppointment.clientId) {
         await syncClientMetrics({
           clientId: editingAppointment.clientId,

@@ -1,0 +1,22 @@
+.venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.env
+.env.*
+!.env.example
+tests/
+*.egg-info
+.mypy_cache
+.ruff_cache
+# Docker-relacionados não vão no build context
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+# IDE / OS cruft
+.vscode/
+.idea/
+.DS_Store
+# Scripts locais não precisam na imagem
+scripts/seed_langsmith_datasets.py

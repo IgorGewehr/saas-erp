@@ -87,8 +87,7 @@ async function listEntries(businessId: string, uid: string) {
       const data = d.data() as VaultEntry;
       // Strip the ciphertext from the list view; password is only retrieved via /reveal
       const { encryptedPassword, ...safe } = data;
-      void encryptedPassword;
-      return { ...safe, id: d.id };
+      return { ...safe, id: d.id, hasPassword: !!encryptedPassword };
     })
     // Apply accessScope filter: 'specific' means only listed uids (admin still gated, but
     // this lets founders create vault entries that even other admins can't see)
@@ -147,11 +146,10 @@ async function saveEntry(businessId: string, uid: string, p: SaveParams) {
     return { id: p.id, updated: true };
   }
 
-  // Create path — password is required
-  if (!p.password) throw new Error('Senha é obrigatória');
+  // Create path
   const doc: Partial<VaultEntry> = {
     ...base,
-    encryptedPassword: await encryptToken(p.password),
+    ...(p.password ? { encryptedPassword: await encryptToken(p.password) } : {}),
     createdBy: uid,
     createdByName: userName,
     createdAt: now,
@@ -178,6 +176,9 @@ async function revealEntry(businessId: string, uid: string, id: string) {
     throw new Error('Você não tem permissão para ver esta senha');
   }
 
+  if (!data.encryptedPassword) {
+    return { id, password: null, username: data.username, url: data.url };
+  }
   const password = await decryptToken(data.encryptedPassword);
 
   // Audit trail — never block reveal on audit write failure

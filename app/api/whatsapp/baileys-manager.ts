@@ -93,6 +93,18 @@ function formatPhone(phone: string): string {
 
 function extractMessageText(msg: proto.IMessage | null | undefined): string | null {
   if (!msg) return null;
+  // Interactive response: list selection
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const listReply = (msg as any).listResponseMessage?.singleSelectReply?.title as string | undefined;
+  if (listReply) return listReply;
+  // Interactive response: button tap
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const buttonReply = (msg as any).buttonsResponseMessage?.selectedDisplayText as string | undefined;
+  if (buttonReply) return buttonReply;
+  // Interactive response: template button reply
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const templateReply = (msg as any).templateButtonReplyMessage?.selectedDisplayText as string | undefined;
+  if (templateReply) return templateReply;
   return (
     msg.conversation ||
     msg.extendedTextMessage?.text ||
@@ -335,8 +347,11 @@ async function handleInboundMessage(
     });
 
     // Dispatch to AI agent — true fire-and-forget (debounce runs inside, do NOT await)
+    const _baileysDlog = (m: string) => { const l = `${new Date().toISOString()} ${m}\n`; process.stdout.write(l); try { fs.appendFileSync('/tmp/dispatch.log', l); } catch {} };
+    _baileysDlog(`[Baileys] handleInboundMessage reached dispatch — conv=${conversationId.slice(-6)} biz=${businessId.slice(-6)} msg="${displayText.slice(0,50)}"`);
     try {
       const { dispatchInboundToAgent } = await import('@/lib/agent/dispatch');
+      _baileysDlog(`[Baileys] dispatchInboundToAgent imported OK`);
       dispatchInboundToAgent(adminDb, {
         businessId,
         conversationId,
@@ -346,9 +361,9 @@ async function handleInboundMessage(
         contactName,
         contactPhone: senderPhone,
         recipientId: senderPhone,
-      }).catch(agentErr => console.warn('[Baileys] Agent dispatch failed:', agentErr));
+      }).catch(agentErr => console.warn('[Baileys] Agent dispatch promise rejected:', agentErr));
     } catch (agentErr) {
-      console.warn('[Baileys] Agent dispatch failed:', agentErr);
+      console.warn('[Baileys] Agent dispatch import/call failed:', agentErr);
     }
   } catch (err) {
     console.error('[Baileys] Erro ao salvar mensagem inbound:', err);
@@ -521,8 +536,6 @@ export async function createBaileysSession(
 
     // ── Message listener ──
     sock.ev.on('messages.upsert', async ({ messages: waMessages, type }: { messages: WAMessage[]; type: MessageUpsertType }) => {
-      if (type !== 'notify') return;
-
       for (const waMsg of waMessages) {
         try {
           if (waMsg.key.fromMe) continue;
@@ -530,6 +543,15 @@ export async function createBaileysSession(
           if (waMsg.key.remoteJid?.endsWith('@g.us')) continue;
           if (!waMsg.message) continue;
           if (waMsg.message.protocolMessage || waMsg.message.reactionMessage) continue;
+
+          // For 'append' (history sync after reconnect), only process recent messages.
+          // This ensures messages received during a brief disconnect are not lost while
+          // ignoring true historical messages loaded on session start.
+          if (type !== 'notify') {
+            const tsRaw = waMsg.messageTimestamp;
+            const tsMs = (typeof tsRaw === 'number' ? tsRaw : Number(tsRaw)) * 1000;
+            if (Date.now() - tsMs > 5 * 60 * 1000) continue; // older than 5 min → skip
+          }
 
           await handleInboundMessage(businessId, waMsg, sock);
         } catch (err) {

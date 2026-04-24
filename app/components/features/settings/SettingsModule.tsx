@@ -86,6 +86,13 @@ import {
 } from 'lucide-react';
 import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector, Service, WorkingHours, DaySchedule, UseCase } from '@/lib/types';
 import { CachedImage } from '@/app/components/ui/CachedImage';
+import {
+  DeliveryZonesEditor,
+  UpsellRulesEditor,
+  AgentSandbox,
+  type DeliveryZone,
+  type UpsellRule,
+} from './AgentPolicyEditors';
 import { ROLE_LABELS, ROLE_HIERARCHY, USER_STATUS_LABELS, INTEGRATION_PROVIDERS, API_KEY_SCOPES, API_KEY_SCOPE_GROUPS, SECTOR_COLORS, DEFAULT_WORKING_HOURS, USE_CASE_LABELS, USE_CASE_DESCRIPTIONS } from '@/lib/types';
 import { formatDate, formatCurrency } from '@/lib/utils/format';
 import { VaultTab } from '@/app/components/features/senhas/SenhasModule';
@@ -847,11 +854,169 @@ function ProfileTab() {
 
       </> /* end Minha Agenda block */}
 
+      {/* ── Google Calendar Integration ── */}
+      <GoogleCalendarSection />
+      <AppleCalendarSection />
+
       {/* Save Profile */}
       <div className="flex justify-end">
         <SaveButton onClick={handleSave} loading={isSaving} label={t('settings.profile.saveProfile', 'Salvar Perfil')} />
       </div>
     </motion.div>
+  );
+}
+
+// ── Google Calendar Connection (inside ProfileTab) ──
+function GoogleCalendarSection() {
+  const { t } = useTranslation();
+  const { user, business, firebaseUser } = useAuth();
+  const [gcalStatus, setGcalStatus] = useState<{ connected: boolean; connectedAt?: string; lastSyncAt?: string } | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isDisconnecting, setIsDisconnecting] = useState(false);
+
+  useEffect(() => {
+    if (!firebaseUser) return;
+    (async () => {
+      try {
+        const token = await firebaseUser.getIdToken();
+        const res = await fetch('/api/integrations/google-calendar', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) setGcalStatus(await res.json());
+      } catch { /* ignore */ }
+      setIsLoading(false);
+    })();
+  }, [firebaseUser]);
+
+  // Check URL params for connection result
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('gcal_connected') === 'true') {
+      setGcalStatus({ connected: true, connectedAt: new Date().toISOString() });
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+    if (params.get('gcal_error')) {
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
+
+  const handleConnect = () => {
+    if (!user || !business) return;
+    window.location.href = `/api/auth/google/connect?uid=${user.uid}&businessId=${business.id}`;
+  };
+
+  const handleDisconnect = async () => {
+    if (!firebaseUser) return;
+    setIsDisconnecting(true);
+    try {
+      const token = await firebaseUser.getIdToken();
+      await fetch('/api/integrations/google-calendar', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setGcalStatus({ connected: false });
+    } catch { /* ignore */ }
+    setIsDisconnecting(false);
+  };
+
+  if (isLoading) return null;
+
+  return (
+    <div className="p-5 rounded-2xl bg-white dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700/60 space-y-4">
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-500/10 flex items-center justify-center">
+          <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none">
+            <path d="M18 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2Z" stroke="currentColor" strokeWidth="1.5" className="text-blue-500" />
+            <path d="M16 2v4M8 2v4M4 10h16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="text-blue-500" />
+          </svg>
+        </div>
+        <div className="flex-1">
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+            Google Calendar
+          </h3>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            {t('settings.profile.gcalDesc', 'Sincronize agendamentos automaticamente com seu Google Calendar')}
+          </p>
+        </div>
+        {gcalStatus?.connected ? (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium bg-emerald-50 dark:bg-emerald-500/10 px-2.5 py-1 rounded-lg">
+              {t('settings.profile.gcalConnected', 'Conectado')}
+            </span>
+            <button
+              onClick={handleDisconnect}
+              disabled={isDisconnecting}
+              className="text-xs text-red-500 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300 px-2.5 py-1 rounded-lg hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+            >
+              {isDisconnecting ? '...' : t('settings.profile.gcalDisconnect', 'Desconectar')}
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={handleConnect}
+            className="text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-xl transition-colors"
+          >
+            {t('settings.profile.gcalConnect', 'Conectar')}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Apple Calendar / iCal Subscription ──
+function AppleCalendarSection() {
+  const { t } = useTranslation();
+  const { user, business } = useAuth();
+  const [copied, setCopied] = useState(false);
+
+  if (!business?.slug || !user?.uid) return null;
+
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const feedUrl = `${origin}/api/calendar/${business.slug}/${user.uid}`;
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(feedUrl).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <div className="p-5 rounded-2xl bg-white dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700/60 space-y-3">
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 rounded-xl bg-gray-100 dark:bg-gray-700/50 flex items-center justify-center">
+          <Calendar className="w-5 h-5 text-gray-500 dark:text-gray-400" />
+        </div>
+        <div className="flex-1">
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+            Apple Calendar / Outlook
+          </h3>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            {t('settings.profile.icalDesc', 'Assine este feed para ver seus agendamentos em qualquer app de calendário')}
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <input
+          readOnly
+          value={feedUrl}
+          className="flex-1 text-xs px-3 py-2 rounded-lg bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 font-mono truncate"
+          onClick={(e) => (e.target as HTMLInputElement).select()}
+        />
+        <button
+          onClick={handleCopy}
+          className={cn(
+            'px-3 py-2 text-xs font-medium rounded-lg transition-colors',
+            copied
+              ? 'bg-emerald-100 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+              : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+          )}
+        >
+          {copied ? t('settings.profile.copied', 'Copiado!') : t('settings.profile.copy', 'Copiar')}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -3403,6 +3568,80 @@ function IntegrationRow({
 
 // VaultTab is defined in SenhasModule and imported above.
 
+function KnowledgeReindexPanel() {
+  const [isRunning, setIsRunning] = useState(false);
+  const [result, setResult] = useState<{ upserted: number; skipped: number; pruned: number; errors: number; totalDurationMs: number } | null>(null);
+  const [lastRunAt, setLastRunAt] = useState<string | null>(null);
+
+  const run = async () => {
+    setIsRunning(true);
+    setResult(null);
+    try {
+      const token = await firebaseAuth.currentUser?.getIdToken();
+      if (!token) throw new Error('Autenticação expirada');
+      const res = await fetch('/api/rag/reindex', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ scope: 'all' }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setResult({
+        upserted: data.data.summary.upserted,
+        skipped: data.data.summary.skipped,
+        pruned: data.data.summary.pruned,
+        errors: data.data.summary.errors,
+        totalDurationMs: data.data.totalDurationMs,
+      });
+      setLastRunAt(new Date().toLocaleString('pt-BR'));
+      toast.success(`Reindex concluído — ${data.data.summary.upserted} novos, ${data.data.summary.skipped} inalterados`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Erro no reindex');
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <p className="text-sm text-gray-700 dark:text-gray-300">
+          A base de conhecimento indexa produtos, serviços, snippets e a descrição do negócio
+          para buscas semânticas. O agente usa para responder perguntas como
+          <em> &ldquo;vocês têm opções veganas?&rdquo;</em> ou <em>&ldquo;qual a política de cancelamento?&rdquo;</em>
+        </p>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+          Chunks que não mudaram são pulados automaticamente (content-hash). Custo típico ~$0,02/reindex completo.
+        </p>
+      </div>
+      <div className="flex items-center gap-3">
+        <button
+          onClick={run}
+          disabled={isRunning}
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-semibold"
+        >
+          {isRunning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+          {isRunning ? 'Indexando...' : 'Reindexar base agora'}
+        </button>
+        {lastRunAt && (
+          <span className="text-xs text-gray-500 dark:text-gray-400">
+            Último: {lastRunAt}
+          </span>
+        )}
+      </div>
+      {result && (
+        <div className="bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded-xl p-3 text-xs text-emerald-800 dark:text-emerald-300 flex flex-wrap gap-x-4 gap-y-1">
+          <span><strong>{result.upserted}</strong> novos/atualizados</span>
+          <span><strong>{result.skipped}</strong> inalterados</span>
+          {result.pruned > 0 && <span><strong>{result.pruned}</strong> removidos</span>}
+          {result.errors > 0 && <span className="text-red-700">{result.errors} erros</span>}
+          <span className="ml-auto">{(result.totalDurationMs / 1000).toFixed(1)}s</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AgenteToggleSwitch({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   return (
     <button
@@ -3443,6 +3682,21 @@ function AgenteTab() {
   const [confirmationBeforeAppointment, setConfirmationBeforeAppointment] = useState<boolean>(current?.agenda?.confirmationBeforeAppointment ?? true);
   const [followUpAfter, setFollowUpAfter] = useState<boolean>(current?.agenda?.followUpAfter ?? false);
 
+  // Operator-specific (dashboard chat)
+  const [autonomousMode, setAutonomousMode] = useState<boolean>(current?.operator?.autonomousMode ?? false);
+
+  // Wave 7 — policies + SLAs + calendar + upsell
+  const [policyCancellation, setPolicyCancellation] = useState<string>(current?.policies?.cancellation || '');
+  const [policyRefund, setPolicyRefund] = useState<string>(current?.policies?.refund || '');
+  const [slaPrepMin, setSlaPrepMin] = useState<number>(current?.sla?.prepMaxMinutes || 0);
+  const [slaDeliveryMin, setSlaDeliveryMin] = useState<number>(current?.sla?.deliveryMaxMinutes || 0);
+  const [holidaysStr, setHolidaysStr] = useState<string>((current?.calendar?.holidays || []).join(', '));
+  const [acceptedPaymentsStr, setAcceptedPaymentsStr] = useState<string>((current?.acceptedPaymentMethods || []).join(','));
+
+  // QW2/QW3 — delivery zones + upsell rules (structured objects)
+  const [deliveryZones, setDeliveryZones] = useState<DeliveryZone[]>(current?.deliveryZones || []);
+  const [upsellRules, setUpsellRules] = useState<UpsellRule[]>(current?.upsellRules || []);
+
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -3456,6 +3710,15 @@ function AgenteTab() {
     setReminderHoursBefore(current?.agenda?.reminderHoursBefore ?? 24);
     setConfirmationBeforeAppointment(current?.agenda?.confirmationBeforeAppointment ?? true);
     setFollowUpAfter(current?.agenda?.followUpAfter ?? false);
+    setAutonomousMode(current?.operator?.autonomousMode ?? false);
+    setPolicyCancellation(current?.policies?.cancellation || '');
+    setPolicyRefund(current?.policies?.refund || '');
+    setSlaPrepMin(current?.sla?.prepMaxMinutes || 0);
+    setSlaDeliveryMin(current?.sla?.deliveryMaxMinutes || 0);
+    setHolidaysStr((current?.calendar?.holidays || []).join(', '));
+    setAcceptedPaymentsStr((current?.acceptedPaymentMethods || []).join(','));
+    setDeliveryZones(current?.deliveryZones || []);
+    setUpsellRules(current?.upsellRules || []);
   }, [current]);
 
   const handleSave = async () => {
@@ -3471,6 +3734,29 @@ function AgenteTab() {
         ? { sendReminder, reminderHoursBefore, confirmationBeforeAppointment, followUpAfter }
         : undefined;
 
+      // Wave 7 — parse dynamic fields
+      const holidays = holidaysStr.split(',').map((s) => s.trim()).filter((s) => /^\d{4}-\d{2}-\d{2}$/.test(s));
+      const validPayments = ['dinheiro', 'pix', 'credito', 'debito', 'boleto', 'pontos', 'gift_card', 'voucher', 'outros'];
+      const acceptedPaymentMethods = acceptedPaymentsStr
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter((s) => validPayments.includes(s));
+
+      const policies = (policyCancellation.trim() || policyRefund.trim())
+        ? { cancellation: policyCancellation.trim() || null, refund: policyRefund.trim() || null }
+        : null;
+
+      const sla = (slaPrepMin > 0 || slaDeliveryMin > 0)
+        ? {
+            prepMaxMinutes: slaPrepMin > 0 ? slaPrepMin : null,
+            deliveryMaxMinutes: slaDeliveryMin > 0 ? slaDeliveryMin : null,
+          }
+        : null;
+
+      const calendar = holidays.length > 0
+        ? { holidays, seasonalHours: current?.calendar?.seasonalHours || [] }
+        : null;
+
       const payload: Record<string, unknown> = {
         'settings.aiAgent': {
           enabled,
@@ -3478,6 +3764,14 @@ function AgenteTab() {
           businessDescription: businessDescription.trim() || null,
           pedidos: pedidos || null,
           agenda: agenda || null,
+          operator: { autonomousMode },
+          policies,
+          sla,
+          calendar,
+          acceptedPaymentMethods: acceptedPaymentMethods.length > 0 ? acceptedPaymentMethods : null,
+          deliveryZones: deliveryZones.length > 0 ? deliveryZones : null,
+          teamCapacity: current?.teamCapacity || null,
+          upsellRules: upsellRules.length > 0 ? upsellRules : null,
           enabledAt: enabled && !current?.enabledAt ? new Date().toISOString() : (current?.enabledAt || null),
         },
         updatedAt: new Date().toISOString(),
@@ -3708,22 +4002,197 @@ function AgenteTab() {
               </div>
             </div>
           )}
+
+          {/* Operator chat — autonomy toggle */}
+          <SectionCard title="Operador no Dashboard (chat)" icon={Sparkles}>
+            <div className="space-y-2">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                    Modo autônomo
+                  </p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                    Quando ligado, o agente executa alterações (criar/atualizar/deletar) sem pedir
+                    confirmação no chat. Sempre mostra preview antes e resultado depois. Use apenas
+                    para admins que querem controle hands-free.
+                  </p>
+                  <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1.5">
+                    {autonomousMode
+                      ? '⚡ Ativado — escritas passam direto sem confirmação'
+                      : '🔒 Desligado — toda escrita pede "sim/confirma" antes de executar'}
+                  </p>
+                </div>
+                <AgenteToggleSwitch checked={autonomousMode} onChange={setAutonomousMode} />
+              </div>
+            </div>
+          </SectionCard>
+
+          {/* Wave 7: Policies (cancellation, refund) */}
+          <SectionCard title="Políticas" icon={Info}>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                  Política de cancelamento
+                </label>
+                <textarea
+                  value={policyCancellation}
+                  onChange={(e) => setPolicyCancellation(e.target.value)}
+                  maxLength={1000}
+                  rows={2}
+                  placeholder="Ex: Cancelamento sem multa até 2h antes. Após esse prazo, cobramos 30%."
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                />
+                <p className="text-[10px] text-gray-400 mt-0.5 text-right">{policyCancellation.length}/1000</p>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                  Política de estorno/reembolso
+                </label>
+                <textarea
+                  value={policyRefund}
+                  onChange={(e) => setPolicyRefund(e.target.value)}
+                  maxLength={1000}
+                  rows={2}
+                  placeholder="Ex: Estornos em 5 dias úteis via PIX. Cartão pode levar até 2 faturas."
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                />
+                <p className="text-[10px] text-gray-400 mt-0.5 text-right">{policyRefund.length}/1000</p>
+              </div>
+              <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                O agente cita estas políticas literalmente ao responder perguntas relacionadas.
+                Deixe em branco se não tiver política definida — o agente responde "vou confirmar com o time".
+              </p>
+            </div>
+          </SectionCard>
+
+          {/* Wave 7: SLAs */}
+          <SectionCard title="SLAs de atendimento" icon={Info}>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                  Tempo máximo de preparo (min)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={300}
+                  value={slaPrepMin}
+                  onChange={(e) => setSlaPrepMin(Math.max(0, Math.min(300, Number(e.target.value) || 0)))}
+                  placeholder="Ex: 30"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                  Tempo máximo de entrega (min)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={300}
+                  value={slaDeliveryMin}
+                  onChange={(e) => setSlaDeliveryMin(Math.max(0, Math.min(300, Number(e.target.value) || 0)))}
+                  placeholder="Ex: 60"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                />
+              </div>
+            </div>
+            <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-2">
+              O agente usa para definir expectativas honestas ("seu pedido chega em até 45 min").
+              0 desliga a informação.
+            </p>
+          </SectionCard>
+
+          {/* Wave 7: Feriados + Pagamentos aceitos */}
+          <SectionCard title="Feriados & pagamentos" icon={Info}>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                  Feriados (datas fechadas)
+                </label>
+                <input
+                  type="text"
+                  value={holidaysStr}
+                  onChange={(e) => setHolidaysStr(e.target.value)}
+                  placeholder="2026-12-25, 2026-01-01, 2026-04-21"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                />
+                <p className="text-[10px] text-gray-400 mt-0.5">
+                  ISO YYYY-MM-DD separados por vírgula. Nessas datas o agente informa que está fechado.
+                </p>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                  Formas de pagamento aceitas
+                </label>
+                <div className="flex flex-wrap gap-1.5">
+                  {(['dinheiro', 'pix', 'credito', 'debito', 'boleto', 'pontos', 'gift_card', 'voucher'] as const).map((m) => {
+                    const selected = acceptedPaymentsStr.split(',').map((s) => s.trim().toLowerCase()).includes(m);
+                    return (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => {
+                          const current = acceptedPaymentsStr.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+                          const next = selected
+                            ? current.filter((x) => x !== m)
+                            : [...current, m];
+                          setAcceptedPaymentsStr(next.join(','));
+                        }}
+                        className={cn(
+                          'px-3 py-1 rounded-lg text-xs font-medium transition-colors',
+                          selected
+                            ? 'bg-violet-600 text-white'
+                            : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700',
+                        )}
+                      >
+                        {m.replace('_', ' ')}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-gray-400 mt-1.5">
+                  O agente NUNCA oferece método fora desta lista. Selecione os que vocês realmente aceitam.
+                </p>
+              </div>
+            </div>
+          </SectionCard>
+
+          {/* QW2 — Delivery Zones editor */}
+          {useCase === 'pedidos' && (
+            <SectionCard title="Zonas de entrega" icon={Info}>
+              <DeliveryZonesEditor value={deliveryZones} onChange={setDeliveryZones} />
+            </SectionCard>
+          )}
+
+          {/* QW3 — Upsell Rules editor */}
+          <SectionCard title="Regras de upsell" icon={Info}>
+            <UpsellRulesEditor value={upsellRules} onChange={setUpsellRules} />
+          </SectionCard>
+
+          {/* QW4 — Sandbox */}
+          <SectionCard title="Sandbox — testar o agente" icon={Sparkles}>
+            <AgentSandbox />
+          </SectionCard>
+
+          {/* RAG knowledge base — reindex button */}
+          <SectionCard title="Base de conhecimento (RAG)" icon={Info}>
+            <KnowledgeReindexPanel />
+          </SectionCard>
         </motion.div>
       )}
 
-      {/* Save button is always visible so disabling the agent can be persisted */}
-      {!enabled && (
-        <div className="flex justify-end">
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-bold shadow-md shadow-violet-500/20 transition-colors"
-          >
-            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-            {saving ? 'Salvando...' : 'Salvar configurações'}
-          </button>
-        </div>
-      )}
+      {/* Save button — always visible */}
+      <div className="flex justify-end">
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-bold shadow-md shadow-violet-500/20 transition-colors"
+        >
+          {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+          {saving ? 'Salvando...' : 'Salvar configurações'}
+        </button>
+      </div>
     </motion.div>
   );
 }
@@ -5077,6 +5546,19 @@ function CanaisTab() {
   const [fbPageName, setFbPageName] = useState('');
   const [igAccountName, setIgAccountName] = useState('');
 
+  // ── Channel selection state (multi-page / multi-phone picker) ──
+  const [channelSelectionPending, setChannelSelectionPending] = useState<{
+    accessToken: string;
+    channel: 'facebook' | 'instagram' | 'whatsapp';
+    options: {
+      pages?: Array<{ id: string; name: string }>;
+      phoneNumbers?: Array<{ id: string; displayPhoneNumber: string; verifiedName: string }>;
+    };
+  } | null>(null);
+  const [selPickPageId, setSelPickPageId] = useState('');
+  const [selPickPhoneId, setSelPickPhoneId] = useState('');
+  const [confirmingSelection, setConfirmingSelection] = useState(false);
+
   // ── UI state ──
   const [loading, setLoading] = useState(true);
   const [resolvingPhone, setResolvingPhone] = useState(false);
@@ -5167,6 +5649,16 @@ function CanaisTab() {
                 });
                 const data = await res.json();
 
+                if (data.selectionRequired) {
+                  // Multiple pages or phone numbers — show picker modal
+                  setChannelSelectionPending({ accessToken, channel, options: data.options });
+                  // Pre-select the first option in each category
+                  if (data.options?.pages?.length) setSelPickPageId(data.options.pages[0].id);
+                  if (data.options?.phoneNumbers?.length) setSelPickPhoneId(data.options.phoneNumbers[0].id);
+                  setConnectingChannel(null);
+                  return;
+                }
+
                 if (data.success && data.channels) {
                   if (data.channels.facebook) {
                     setFbConnected(true);
@@ -5226,6 +5718,57 @@ function CanaisTab() {
       toast.error('Erro ao desconectar canal');
     } finally {
       setDisconnecting(null);
+    }
+  };
+
+  // ── Confirm channel selection (phase-2 call after multi-picker modal) ──
+  const handleConfirmChannelSelection = async () => {
+    if (!channelSelectionPending || !business) return;
+    setConfirmingSelection(true);
+    try {
+      const idToken = await firebaseUser?.getIdToken();
+      const body: Record<string, string | undefined> = {
+        accessToken: channelSelectionPending.accessToken,
+        businessId: business.id,
+      };
+      if (channelSelectionPending.options.pages) body.selectedPageId = selPickPageId;
+      if (channelSelectionPending.options.phoneNumbers) body.selectedPhoneNumberId = selPickPhoneId;
+
+      const res = await fetch('/api/channels/meta-signup', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+
+      if (data.success && data.channels) {
+        if (data.channels.facebook) {
+          setFbConnected(true);
+          setFbPageName(data.channels.facebook.pageName || data.channels.facebook.pageId || '');
+        }
+        if (data.channels.instagram) {
+          setIgConnected(true);
+          setIgAccountName(data.channels.instagram.accountName || data.channels.instagram.accountId || '');
+        }
+        if (data.channels.whatsapp) {
+          setWaConnected(true);
+          setWaPhoneNumber(data.channels.whatsapp.displayPhoneNumber || data.channels.whatsapp.phoneNumberId || '');
+        }
+        await refreshUser();
+        const labels: Record<string, string> = { facebook: 'Facebook Messenger', instagram: 'Instagram', whatsapp: 'WhatsApp' };
+        toast.success(`${labels[channelSelectionPending.channel]} conectado!`);
+        setChannelSelectionPending(null);
+      } else {
+        toast.error(data.error || 'Erro ao conectar canal');
+      }
+    } catch (err) {
+      toast.error('Erro ao confirmar seleção');
+      console.error('[Meta Signup] confirm selection error:', err);
+    } finally {
+      setConfirmingSelection(false);
     }
   };
 
@@ -5645,6 +6188,157 @@ function CanaisTab() {
         );
       })()}
 
+      {/* ── Channel Selection Modal (multi-page / multi-phone picker) ── */}
+      {channelSelectionPending && createPortal(
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+          {/* Backdrop */}
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => !confirmingSelection && setChannelSelectionPending(null)}
+          />
+
+          {/* Dialog */}
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 16 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 16 }}
+            transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+            className="relative z-10 w-full max-w-md bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/60 overflow-hidden"
+          >
+            {/* Header */}
+            <div className="px-6 py-5 border-b border-gray-100 dark:border-gray-700/50 flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-bold text-gray-900 dark:text-white font-display">Selecionar canal</h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  {channelSelectionPending.options.pages && channelSelectionPending.options.phoneNumbers
+                    ? 'Escolha a Página e o número de WhatsApp'
+                    : channelSelectionPending.options.pages
+                    ? 'Escolha qual Página do Facebook conectar'
+                    : 'Escolha qual número de WhatsApp conectar'}
+                </p>
+              </div>
+              <button
+                onClick={() => !confirmingSelection && setChannelSelectionPending(null)}
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="px-6 py-5 space-y-5 max-h-[60vh] overflow-y-auto">
+              {/* Pages selector */}
+              {channelSelectionPending.options.pages && (
+                <div>
+                  <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2.5">
+                    Páginas do Facebook
+                  </p>
+                  <div className="space-y-2">
+                    {channelSelectionPending.options.pages.map(page => (
+                      <label
+                        key={page.id}
+                        className={cn(
+                          'flex items-center gap-3 p-3.5 rounded-xl border cursor-pointer transition-all',
+                          selPickPageId === page.id
+                            ? 'border-[#0866FF] bg-[#0866FF]/5 dark:bg-[#0866FF]/10'
+                            : 'border-gray-200 dark:border-gray-700/50 hover:border-gray-300 dark:hover:border-gray-600',
+                        )}
+                      >
+                        <input
+                          type="radio"
+                          name="sel-page"
+                          value={page.id}
+                          checked={selPickPageId === page.id}
+                          onChange={() => setSelPickPageId(page.id)}
+                          className="accent-[#0866FF]"
+                        />
+                        <div className="w-8 h-8 rounded-lg bg-[#0866FF]/10 flex items-center justify-center shrink-0">
+                          <Facebook className="w-4 h-4 text-[#0866FF]" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{page.name}</p>
+                          <p className="text-[11px] text-gray-400 dark:text-gray-500">ID: {page.id}</p>
+                        </div>
+                        {selPickPageId === page.id && <Check className="w-4 h-4 text-[#0866FF] shrink-0" />}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Phone numbers selector */}
+              {channelSelectionPending.options.phoneNumbers && (
+                <div>
+                  <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2.5">
+                    Números de WhatsApp
+                  </p>
+                  <div className="space-y-2">
+                    {channelSelectionPending.options.phoneNumbers.map(phone => (
+                      <label
+                        key={phone.id}
+                        className={cn(
+                          'flex items-center gap-3 p-3.5 rounded-xl border cursor-pointer transition-all',
+                          selPickPhoneId === phone.id
+                            ? 'border-[#25D366] bg-[#25D366]/5 dark:bg-[#25D366]/10'
+                            : 'border-gray-200 dark:border-gray-700/50 hover:border-gray-300 dark:hover:border-gray-600',
+                        )}
+                      >
+                        <input
+                          type="radio"
+                          name="sel-phone"
+                          value={phone.id}
+                          checked={selPickPhoneId === phone.id}
+                          onChange={() => setSelPickPhoneId(phone.id)}
+                          className="accent-[#25D366]"
+                        />
+                        <div className="w-8 h-8 rounded-lg bg-[#25D366]/10 flex items-center justify-center shrink-0">
+                          <Smartphone className="w-4 h-4 text-[#25D366]" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                            {phone.displayPhoneNumber || phone.id}
+                          </p>
+                          {phone.verifiedName && (
+                            <p className="text-[11px] text-gray-400 dark:text-gray-500">{phone.verifiedName}</p>
+                          )}
+                        </div>
+                        {selPickPhoneId === phone.id && <Check className="w-4 h-4 text-[#25D366] shrink-0" />}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 border-t border-gray-100 dark:border-gray-700/50 flex items-center justify-end gap-3">
+              <button
+                onClick={() => setChannelSelectionPending(null)}
+                disabled={confirmingSelection}
+                className="px-4 py-2 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleConfirmChannelSelection}
+                disabled={confirmingSelection || (!!channelSelectionPending.options.pages && !selPickPageId) || (!!channelSelectionPending.options.phoneNumbers && !selPickPhoneId)}
+                className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-red-600 to-red-500 hover:from-red-700 hover:to-red-600 shadow-sm shadow-red-500/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {confirmingSelection ? (
+                  <><Loader2 className="w-4 h-4 animate-spin" /> Conectando...</>
+                ) : (
+                  <><Check className="w-4 h-4" /> Conectar</>
+                )}
+              </button>
+            </div>
+          </motion.div>
+        </div>,
+        document.body
+      )}
+
       {/* ── WhatsApp QR Code Modal ── */}
       {showQrModal && (
         <WhatsAppQrModal
@@ -5924,7 +6618,9 @@ export default function SettingsModule() {
     { id: 'enterprise' as Tab, label: t('settings.tabs.enterprise', 'Enterprise'), icon: Blocks     },
   ];
 
-  const tabs = allTabs;
+  const isAdmin = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
+  const ADMIN_ONLY_TABS = new Set<Tab>(['empresa', 'fiscal', 'usuarios', 'setores', 'canais', 'enterprise']);
+  const tabs = isAdmin ? allTabs : allTabs.filter(tab => !ADMIN_ONLY_TABS.has(tab.id));
 
   return (
     <motion.div

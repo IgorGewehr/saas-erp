@@ -20,7 +20,7 @@ class AgentState(TypedDict, total=False):
     business_id: str
     conversation_id: str
     message_id: str
-    use_case: Literal["pedidos", "servicos", "simples"]
+    use_case: Literal["pedidos", "servicos", "simples", "operator", "analyst"]
     business_context: dict[str, Any]
     contact: dict[str, Any]  # {name, phone, channel, recipient_id}
 
@@ -32,6 +32,19 @@ class AgentState(TypedDict, total=False):
     iterations: int
     final_response: str | None
     error: str | None
+    interactive_sent: bool  # set by executor when conversation_send_interactive succeeds
+
+    # --- Chain-of-thought scratchpad (operator mode only) ---
+    # Each entry = {"node": "planner|reflection", "thought": "...", "at": iso}
+    # Not sent back to the user; persisted in agentRuns.nodes for debugging +
+    # future LangSmith replay. Keeps reasoning explicit + auditable.
+    reasoning: list[dict[str, Any]]
+
+    # --- Reflection triggers ---
+    # Set by executor when any destructive (write/mutation) tool is called.
+    # reflection_node fires only when True AND use_case='operator'. Lets us
+    # keep customer-facing latency low (no reflection for pedidos/agenda).
+    needs_reflection: bool
 
     # --- Observability (appended throughout) ---
     node_traces: list[dict[str, Any]]

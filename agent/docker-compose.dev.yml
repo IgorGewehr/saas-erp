@@ -1,0 +1,21 @@
+# Dev override: hot reload + 1 worker + volume mount do código.
+#
+# Use:  docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# Mudança em main.py / app/** reloda automaticamente via uvicorn --reload.
+
+services:
+  agent:
+    build:
+      dockerfile: Dockerfile.dev
+    environment:
+      - WORKERS=1
+      - APP_ENV=development
+      - LOG_LEVEL=debug
+    volumes:
+      # Monta o código do host → container, mantendo .venv do container
+      - ./main.py:/app/main.py:ro
+      - ./app:/app/app:ro
+    # Desativa healthcheck agressivo em dev (--reload reinicia o processo)
+    healthcheck:
+      disable: true

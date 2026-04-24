@@ -50,6 +50,8 @@ import {
   FileSpreadsheet,
   Download,
   ChevronRight,
+  Repeat,
+  Scale,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -71,6 +73,7 @@ import {
 import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { logAudit } from '@/lib/services/audit';
+import ConciliacaoTab from './ConciliacaoTab';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery as useTanstackQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'react-toastify';
@@ -105,9 +108,33 @@ const PRESET_COLORS = [
   '#820AD1', '#FF7A00', '#1A1A2E', '#14532D', '#7C2D12',
 ];
 
-type FinancialTab = 'visao-geral' | 'lancamentos' | 'contas' | 'fluxo' | 'dre' | 'comissoes' | 'auditoria';
+type FinancialTab = 'visao-geral' | 'lancamentos' | 'contas' | 'fluxo' | 'dre' | 'comissoes' | 'conciliacao' | 'auditoria';
 
 const inputSx = { '& .MuiOutlinedInput-root': { borderRadius: '12px' } };
+
+// ==========================================
+// HELPERS
+// ==========================================
+
+function computeNextDueDate(currentDue: string, frequency: string): string {
+  const d = new Date(currentDue + 'T00:00:00');
+  switch (frequency) {
+    case 'weekly':    d.setDate(d.getDate() + 7); break;
+    case 'biweekly':  d.setDate(d.getDate() + 14); break;
+    case 'monthly':   d.setMonth(d.getMonth() + 1); break;
+    case 'quarterly': d.setMonth(d.getMonth() + 3); break;
+    case 'yearly':    d.setFullYear(d.getFullYear() + 1); break;
+  }
+  return d.toISOString().slice(0, 10);
+}
+
+const RECURRENCE_LABELS: Record<string, string> = {
+  weekly: 'Semanal',
+  biweekly: 'Quinzenal',
+  monthly: 'Mensal',
+  quarterly: 'Trimestral',
+  yearly: 'Anual',
+};
 
 // ==========================================
 // COMPONENT
@@ -126,6 +153,7 @@ export default function FinancialModule() {
     { key: 'dre',        label: 'DRE', icon: <FileSpreadsheet size={16} /> },
     { key: 'contas',     label: t('financial.tabs.accounts',  'Contas Bancárias'), icon: <Landmark size={16} /> },
     { key: 'comissoes',  label: 'Comissões', icon: <Users size={16} /> },
+    { key: 'conciliacao', label: t('financial.tabs.reconciliation', 'Conciliação'), icon: <Scale size={16} /> },
     { key: 'auditoria',  label: t('financial.tabs.audit',     'Auditoria'), icon: <History size={16} /> },
   ];
 
@@ -184,6 +212,9 @@ export default function FinancialModule() {
   const [formSectorId, setFormSectorId] = useState('');
   const [formInstallments, setFormInstallments] = useState(1);
   const [formInstallmentInterval, setFormInstallmentInterval] = useState<'monthly' | 'weekly'>('monthly');
+  const [formRecurrence, setFormRecurrence] = useState(false);
+  const [formRecurrenceFrequency, setFormRecurrenceFrequency] = useState<'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'yearly'>('monthly');
+  const [formRecurrenceEndDate, setFormRecurrenceEndDate] = useState('');
 
   // Transactions tab state
   const [txFilterTab, setTxFilterTab] = useState<'todas' | 'receitas' | 'despesas' | 'pendentes' | 'atrasadas'>('todas');
@@ -376,6 +407,9 @@ export default function FinancialModule() {
     setFormSectorId('');
     setFormInstallments(1);
     setFormInstallmentInterval('monthly');
+    setFormRecurrence(false);
+    setFormRecurrenceFrequency('monthly');
+    setFormRecurrenceEndDate('');
     setShowForm(true);
   }, []);
 
@@ -393,6 +427,9 @@ export default function FinancialModule() {
     setFormBankAccount(transaction.bankAccountId || '');
     setFormStatus(transaction.status);
     setFormSectorId(transaction.sectorId || '');
+    setFormRecurrence(!!transaction.recurrence?.isActive);
+    setFormRecurrenceFrequency(transaction.recurrence?.frequency || 'monthly');
+    setFormRecurrenceEndDate(transaction.recurrence?.endDate || '');
     setShowForm(true);
   }, []);
 
@@ -427,6 +464,14 @@ export default function FinancialModule() {
         updatedByName: user.name,
         updatedBy: user.uid,
         updatedAt: now,
+        ...(formRecurrence && formDueDate && formInstallments <= 1 ? {
+          recurrence: {
+            frequency: formRecurrenceFrequency,
+            nextDueDate: computeNextDueDate(formDueDate, formRecurrenceFrequency),
+            ...(formRecurrenceEndDate ? { endDate: formRecurrenceEndDate } : {}),
+            isActive: true,
+          },
+        } : {}),
       };
 
       if (editingTransaction) {
@@ -836,6 +881,14 @@ export default function FinancialModule() {
                 showBalances={showBalances}
               />
             )}
+
+            {activeTab === 'conciliacao' && (
+              <ConciliacaoTab
+                businessId={business?.id || ''}
+                transactions={transactions}
+                bankAccounts={bankAccounts}
+              />
+            )}
           </motion.div>
         </AnimatePresence>
       </div>
@@ -962,6 +1015,59 @@ export default function FinancialModule() {
                       <MenuItem value="weekly">Semanal</MenuItem>
                     </Select>
                   </FormControl>
+                )}
+              </div>
+            )}
+
+            {/* Recorrência — apenas transação simples (não parcelada) */}
+            {formInstallments <= 1 && (
+              <div className="p-3 rounded-xl bg-gray-50 dark:bg-gray-800/40 border border-gray-200 dark:border-gray-700 space-y-3">
+                <button
+                  type="button"
+                  onClick={() => setFormRecurrence(!formRecurrence)}
+                  className={cn(
+                    'flex items-center gap-2 text-sm font-medium transition-colors',
+                    formRecurrence ? 'text-red-600 dark:text-red-400' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                  )}
+                >
+                  <Repeat className="w-4 h-4" />
+                  {t('financial.form.recurrence', 'Lançamento recorrente')}
+                  <div className={cn(
+                    'ml-auto w-8 h-4.5 rounded-full transition-colors relative',
+                    formRecurrence ? 'bg-red-500' : 'bg-gray-300 dark:bg-gray-600'
+                  )}>
+                    <div className={cn(
+                      'absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow transition-transform',
+                      formRecurrence ? 'translate-x-4' : 'translate-x-0.5'
+                    )} />
+                  </div>
+                </button>
+                {formRecurrence && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <FormControl size="small">
+                      <InputLabel>{t('financial.form.frequency', 'Frequência')}</InputLabel>
+                      <Select
+                        value={formRecurrenceFrequency}
+                        onChange={(e) => setFormRecurrenceFrequency(e.target.value as typeof formRecurrenceFrequency)}
+                        label={t('financial.form.frequency', 'Frequência')}
+                        sx={{ borderRadius: '12px' }}
+                      >
+                        {Object.entries(RECURRENCE_LABELS).map(([k, v]) => (
+                          <MenuItem key={k} value={k}>{v}</MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                    <TextField
+                      label={t('financial.form.recurrenceEnd', 'Encerrar em')}
+                      type="date"
+                      value={formRecurrenceEndDate}
+                      onChange={(e) => setFormRecurrenceEndDate(e.target.value)}
+                      size="small"
+                      InputLabelProps={{ shrink: true }}
+                      helperText={!formRecurrenceEndDate ? 'Sem data de encerramento' : ''}
+                      sx={inputSx}
+                    />
+                  </div>
                 )}
               </div>
             )}

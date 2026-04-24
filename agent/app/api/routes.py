@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..auth import verify_inbound
 from ..config import get_settings
+from ..graph.evaluators import evaluate_groundedness, should_sample
 from ..graph.graph import run_agent
 from ..graph.state import AgentRunResult
 from ..logging_config import get_logger
@@ -132,6 +133,35 @@ async def process(request: Request, auth: tuple[str, str] = Depends(verify_inbou
             await _update_client_memory(business_id, result)
         except Exception as err:
             log.warning("process.memory_update_failed", run_id=run_id, error=str(err))
+
+        # Opt-in online groundedness evaluator (LANGSMITH_EVALS_ENABLED=true).
+        # Samples ~5% of runs; attaches score + hallucinations to the agentRun
+        # doc for dashboard / alert consumption. Skips when disabled.
+        if result.final_response and should_sample():
+            try:
+                eval_result = await evaluate_groundedness(
+                    final_response=result.final_response,
+                    tool_calls=result.tool_calls,
+                    user_message=req.message,
+                )
+                log.info(
+                    "process.grounded",
+                    run_id=run_id,
+                    score=eval_result.get("score"),
+                    hallucinations=len(eval_result.get("hallucinations") or []),
+                )
+                # Attach to persisted run via a follow-up write
+                try:
+                    await persist_run(business_id, {
+                        "id": run_id,
+                        "groundednessScore": eval_result.get("score"),
+                        "groundednessReason": eval_result.get("reason"),
+                        "hallucinations": eval_result.get("hallucinations", []),
+                    })
+                except Exception as err:
+                    log.warning("process.grounded.persist_failed", error=str(err))
+            except Exception as err:
+                log.warning("process.grounded.error", run_id=run_id, error=str(err))
 
         latency = int((time.time() - start) * 1000)
         log.info(

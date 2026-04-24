@@ -90,21 +90,36 @@ async function downloadAndUploadMedia(params: {
       return null;
     }
 
-    const buffer = Buffer.from(await mediaRes.arrayBuffer());
+    let buffer = Buffer.from(await mediaRes.arrayBuffer() as ArrayBuffer);
 
     // 3. Determine real content type — prefer the actual HTTP header over what Meta declared
     const realContentType = mediaRes.headers.get('content-type')?.split(';')[0]?.trim()
       || params.mimeType
       || 'application/octet-stream';
-    const ext = mimeToExtension(realContentType);
+
+    // 4. Convert OGG/Opus/AMR audio to M4A (AAC) for cross-browser compatibility.
+    //    WhatsApp voice notes are audio/ogg;codecs=opus — Safari cannot play OGG.
+    let uploadBuffer: Uint8Array = buffer;
+    let uploadContentType = realContentType;
+    if (AUDIO_CONVERT_MIMES.has(realContentType)) {
+      try {
+        console.log('[Media] Converting', realContentType, 'to M4A for cross-browser support');
+        uploadBuffer = await convertAudioToM4a(buffer, mimeToExtension(realContentType));
+        uploadContentType = 'audio/mp4';
+      } catch (convErr) {
+        console.warn('[Media] Audio conversion failed, keeping original format:', convErr);
+      }
+    }
+
+    const ext = mimeToExtension(uploadContentType);
     const fileName = `${Date.now()}_${params.mediaId.slice(-8)}${ext}`;
     const storagePath = `conversations/${params.businessId}/${params.conversationId}/${fileName}`;
 
-    // 4. Upload to Firebase Storage with correct contentType
+    // 5. Upload to Firebase Storage with correct contentType
     const storage = getStorageBucket();
     const storageRef = ref(storage, storagePath);
-    await uploadBytes(storageRef, buffer, {
-      contentType: realContentType,
+    await uploadBytes(storageRef, uploadBuffer, {
+      contentType: uploadContentType,
     });
 
     const downloadUrl = await getDownloadURL(storageRef);
@@ -125,10 +140,12 @@ function mimeToExtension(mime: string): string {
     'video/3gpp': '.3gp',
     'audio/aac': '.aac',
     'audio/amr': '.amr',
+    'audio/amr-wb': '.amr',
     'audio/mpeg': '.mp3',
     'audio/mp4': '.m4a',
     'audio/ogg': '.ogg',
     'audio/opus': '.opus',
+    'audio/webm': '.webm',
     'application/pdf': '.pdf',
     'application/vnd.ms-powerpoint': '.ppt',
     'application/msword': '.doc',
@@ -137,6 +154,104 @@ function mimeToExtension(mime: string): string {
     'image/webp; codecs=vp8': '.webp',
   };
   return map[mime] || '.bin';
+}
+
+// MIME types that are not universally supported and should be converted to M4A (AAC)
+// OGG/Opus = WhatsApp voice notes; AMR = legacy telephony; WebM = some browser recordings
+const AUDIO_CONVERT_MIMES = new Set([
+  'audio/ogg', 'audio/opus', 'audio/webm', 'audio/amr', 'audio/amr-wb',
+]);
+
+/**
+ * Converts an audio buffer to M4A (AAC) for cross-browser/platform compatibility.
+ * Safari does not support OGG/Opus. Instagram rejects OGG.
+ * AMR is a telephony codec not supported in browsers.
+ */
+async function convertAudioToM4a(inputBuffer: Buffer, inputExt: string): Promise<Buffer> {
+  const ffmpegInstaller = await import('@ffmpeg-installer/ffmpeg');
+  const ffmpeg = (await import('fluent-ffmpeg')).default;
+  const { tmpdir } = await import('os');
+  const { join } = await import('path');
+  const { writeFile, readFile, unlink } = await import('fs/promises');
+
+  ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+
+  const inputPath = join(tmpdir(), `in_${Date.now()}${inputExt}`);
+  const outputPath = join(tmpdir(), `out_${Date.now()}.m4a`);
+
+  await writeFile(inputPath, inputBuffer);
+
+  await new Promise<void>((resolve, reject) => {
+    ffmpeg(inputPath)
+      .audioCodec('aac')
+      .audioBitrate('128k')
+      .audioChannels(1)
+      .format('ipod') // M4A/AAC container
+      .on('error', reject)
+      .on('end', () => resolve())
+      .save(outputPath);
+  });
+
+  const m4aBuffer = await readFile(outputPath);
+  await unlink(inputPath).catch(() => {});
+  await unlink(outputPath).catch(() => {});
+  return m4aBuffer;
+}
+
+/**
+ * Downloads a media attachment from a direct URL (Facebook/Instagram CDN),
+ * converts OGG audio to M4A if needed, and uploads to Firebase Storage.
+ *
+ * Meta's attachment URLs are ephemeral (expire in hours) so we always
+ * persist them in Firebase Storage.
+ */
+async function downloadAndUploadAttachment(params: {
+  url: string;
+  mediaType: string;
+  businessId: string;
+  tempConvId: string;
+  pageToken?: string;
+}): Promise<string | null> {
+  try {
+    const headers: Record<string, string> = {};
+    if (params.pageToken) headers['Authorization'] = `Bearer ${params.pageToken}`;
+
+    const res = await fetch(params.url, {
+      headers,
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!res.ok) {
+      console.error('[Attachment] Download failed:', res.status, params.url.slice(0, 80));
+      return null;
+    }
+
+    let buffer: Uint8Array = Buffer.from(await res.arrayBuffer() as ArrayBuffer);
+    const rawContentType = res.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream';
+
+    let uploadContentType = rawContentType;
+    if (params.mediaType === 'audio' && AUDIO_CONVERT_MIMES.has(rawContentType)) {
+      try {
+        console.log('[Attachment] Converting', rawContentType, 'to M4A');
+        buffer = await convertAudioToM4a(Buffer.from(buffer), mimeToExtension(rawContentType));
+        uploadContentType = 'audio/mp4';
+      } catch (convErr) {
+        console.warn('[Attachment] Audio conversion failed, keeping original:', convErr);
+      }
+    }
+
+    const ext = mimeToExtension(uploadContentType);
+    const fileName = `${Date.now()}_attach${ext}`;
+    const storagePath = `conversations/${params.businessId}/${params.tempConvId}/${fileName}`;
+
+    const storage = getStorageBucket();
+    const storageRef = ref(storage, storagePath);
+    await uploadBytes(storageRef, buffer, { contentType: uploadContentType });
+    return getDownloadURL(storageRef);
+  } catch (err) {
+    console.error('[Attachment] Error:', err);
+    return null;
+  }
 }
 
 /**
@@ -269,11 +384,11 @@ export async function GET(req: NextRequest) {
   ].filter(Boolean) as string[];
 
   if (mode === 'subscribe' && token && validTokens.includes(token)) {
-    console.log('[Meta Webhook] Verification successful for token:', token);
+    console.log('[Meta Webhook] Verification successful');
     return new NextResponse(challenge, { status: 200 });
   }
 
-  console.warn('[Meta Webhook] Verification failed — token received:', token);
+  console.warn('[Meta Webhook] Verification failed');
   return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 }
 
@@ -406,8 +521,30 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
         const MEDIA_PREVIEW: Record<string, string> = {
           image: '[Imagem]', audio: '[Audio]', video: '[Video]', document: '[Documento]', sticker: '[Sticker]',
         };
-        const conversationPreview = extracted.content
+        let agentContent = extracted.content;
+        let conversationPreview = extracted.content
           || (hasMedia ? MEDIA_PREVIEW[msg.type] || '[Midia]' : '');
+
+        // ─── Humanization: enrich voice notes + images into text for the agent ──
+        // This runs inline (adds ~1-3s to webhook latency) but keeps the agent's
+        // message history as plain text — no tool-call detour to understand media.
+        if (hasMedia && firebaseMediaUrl && !extracted.content) {
+          if (mediaType === 'audio') {
+            const { enrichAudio } = await import('@/lib/channels/media-enrichment');
+            const enriched = await enrichAudio({ mediaUrl: firebaseMediaUrl, mimeType: extracted.mediaMimeType });
+            if (enriched) {
+              agentContent = enriched.content;
+              conversationPreview = enriched.preview;
+            }
+          } else if (mediaType === 'image') {
+            const { enrichImage } = await import('@/lib/channels/media-enrichment');
+            const enriched = await enrichImage({ mediaUrl: firebaseMediaUrl, mimeType: extracted.mediaMimeType });
+            if (enriched) {
+              agentContent = enriched.content;
+              conversationPreview = enriched.preview;
+            }
+          }
+        }
 
         await saveInboundMessage({
           channel: 'whatsapp',
@@ -415,7 +552,7 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
           externalId: msg.from,
           senderName: value.contacts?.find(c => c.wa_id === msg.from)?.profile.name,
           messageId: msg.id,
-          content: extracted.content,
+          content: agentContent,
           conversationPreview,
           mediaType,
           mediaId: extracted.mediaId,
@@ -589,6 +726,40 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
       const mediaTypeMap: Record<string, string> = {
         image: 'image', video: 'video', audio: 'audio', file: 'document', fallback: 'document'
       };
+      const mappedMediaType = (mediaTypeMap[attachmentType] || 'document') as 'image' | 'audio' | 'video' | 'document';
+
+      // For audio: always download and convert OGG→M4A, then store in Firebase.
+      // Meta CDN audio URLs expire and OGG/Opus is not supported in Safari or Instagram.
+      let resolvedMediaUrl = attachmentUrl;
+      if (mappedMediaType === 'audio' && attachmentUrl) {
+        const bizId = await resolveBusinessId(channel, channelIdentifier);
+        if (bizId) {
+          const pageToken = await getDecryptedPageToken(bizId);
+          const stored = await downloadAndUploadAttachment({
+            url: attachmentUrl,
+            mediaType: 'audio',
+            businessId: bizId,
+            tempConvId: `${channel}_${event.sender.id}`,
+            pageToken: pageToken || undefined,
+          }).catch((err) => { console.warn('[Attachment FB] audio store failed:', err); return null; });
+          if (stored) resolvedMediaUrl = stored;
+        }
+      }
+
+      // Humanization: enrich voice notes and images so the agent sees text.
+      const fallbackLabel = `[${attachmentType === 'file' ? 'Documento' : attachmentType === 'image' ? 'Imagem' : attachmentType === 'video' ? 'Video' : attachmentType === 'audio' ? 'Audio' : 'Anexo'}]`;
+      let agentContent = event.message.text || fallbackLabel;
+      if (!event.message.text && resolvedMediaUrl) {
+        if (mappedMediaType === 'audio') {
+          const { enrichAudio } = await import('@/lib/channels/media-enrichment');
+          const enriched = await enrichAudio({ mediaUrl: resolvedMediaUrl });
+          if (enriched) agentContent = enriched.content;
+        } else if (mappedMediaType === 'image') {
+          const { enrichImage } = await import('@/lib/channels/media-enrichment');
+          const enriched = await enrichImage({ mediaUrl: resolvedMediaUrl });
+          if (enriched) agentContent = enriched.content;
+        }
+      }
 
       await saveInboundMessage({
         channel,
@@ -598,9 +769,9 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
         senderName,
         senderAvatarUrl,
         messageId: event.message.mid,
-        content: event.message.text || `[${attachmentType === 'file' ? 'Documento' : attachmentType === 'image' ? 'Imagem' : attachmentType === 'video' ? 'Video' : attachmentType === 'audio' ? 'Audio' : 'Anexo'}]`,
-        mediaType: (mediaTypeMap[attachmentType] || 'document') as 'image' | 'audio' | 'video' | 'document',
-        mediaUrl: attachmentUrl,
+        content: agentContent,
+        mediaType: mappedMediaType,
+        mediaUrl: resolvedMediaUrl,
         timestamp: new Date(event.timestamp).toISOString(),
       });
     }
@@ -726,6 +897,24 @@ async function handleInstagramEvent(entry: MetaWebhookEntry) {
       const mediaTypeMap: Record<string, string> = {
         image: 'image', video: 'video', audio: 'audio', file: 'document', fallback: 'document'
       };
+      const mappedMediaType = (mediaTypeMap[attachmentType] || 'document') as 'image' | 'audio' | 'video' | 'document';
+
+      // For audio: download and convert OGG→M4A if needed (Instagram rejects OGG, Safari can't play it)
+      let resolvedMediaUrl = attachmentUrl;
+      if (mappedMediaType === 'audio' && attachmentUrl) {
+        const bizId = await resolveBusinessId('instagram', String(accountId));
+        if (bizId) {
+          const pageToken = await getDecryptedPageToken(bizId);
+          const stored = await downloadAndUploadAttachment({
+            url: attachmentUrl,
+            mediaType: 'audio',
+            businessId: bizId,
+            tempConvId: `instagram_${event.sender.id}`,
+            pageToken: pageToken || undefined,
+          }).catch((err) => { console.warn('[Attachment IG] audio store failed:', err); return null; });
+          if (stored) resolvedMediaUrl = stored;
+        }
+      }
 
       await saveInboundMessage({
         channel: 'instagram',
@@ -736,8 +925,8 @@ async function handleInstagramEvent(entry: MetaWebhookEntry) {
         messageId: event.message.mid,
         content: event.message.text || '',
         conversationPreview: event.message.text || `[${attachmentType === 'file' ? 'Documento' : attachmentType === 'image' ? 'Imagem' : attachmentType === 'video' ? 'Video' : attachmentType === 'audio' ? 'Audio' : 'Anexo'}]`,
-        mediaType: (mediaTypeMap[attachmentType] || 'document') as 'image' | 'audio' | 'video' | 'document',
-        mediaUrl: attachmentUrl,
+        mediaType: mappedMediaType,
+        mediaUrl: resolvedMediaUrl,
         timestamp: new Date(event.timestamp).toISOString(),
       });
     }
@@ -862,42 +1051,50 @@ async function fetchSenderProfile(
   channel: 'facebook' | 'instagram' = 'facebook',
 ): Promise<{ name: string; profilePic?: string } | null> {
   try {
+    // Facebook Messenger PSIDs: first_name + last_name + profile_pic (standard Messenger Profile API)
+    // Instagram IGSIDs: name + username + profile_pic
+    // Note: profile_pic for Instagram requires instagram_basic permission — may be absent.
     const fields = channel === 'instagram'
       ? 'name,username,profile_pic'
-      : 'first_name,last_name,name,profile_pic';
+      : 'first_name,last_name,profile_pic';
 
     const url = `https://graph.facebook.com/v21.0/${senderId}?fields=${fields}&access_token=${pageAccessToken}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
 
     if (!res.ok) {
       const errorText = await res.text().catch(() => '');
-      console.warn(`[Meta Webhook] Profile fetch failed (${channel}):`, res.status, errorText);
+      console.warn(`[Profile] Fetch failed (${channel}) sender=${senderId} status=${res.status}:`, errorText);
       return null;
     }
 
     const data = await res.json();
+    console.log(`[Profile] Raw response (${channel}) sender=${senderId}:`, JSON.stringify(data));
 
     // Build name with best available data
     let name: string;
     if (channel === 'instagram') {
-      // Prefer name, then @username, then senderId as last resort
       name = data.name || (data.username ? `@${data.username}` : senderId);
     } else {
-      // Facebook: prefer full name, then combine first+last
-      if (data.name) {
-        name = data.name;
-      } else if (data.first_name) {
-        name = data.last_name ? `${data.first_name} ${data.last_name}` : data.first_name;
+      // Facebook: combine first + last; fall back to senderId if both empty
+      if (data.first_name || data.last_name) {
+        name = [data.first_name, data.last_name].filter(Boolean).join(' ');
       } else {
+        // API returned no name fields — token may be a user token instead of page token
+        console.warn(`[Profile] Facebook returned no name fields for sender=${senderId}. Token may not be a Page Access Token.`);
         name = senderId;
       }
     }
 
     // Persist the ephemeral Meta CDN URL to Firebase Storage so it never expires.
-    // Falls back to the original URL silently if storage is unavailable.
-    const profilePic = data.profile_pic
-      ? await persistProfilePic(data.profile_pic, senderId)
+    // profile_pic may be absent for Instagram (requires instagram_basic permission).
+    const rawPic = data.profile_pic || data.picture?.data?.url || undefined;
+    const profilePic = rawPic
+      ? await persistProfilePic(rawPic, senderId)
       : undefined;
+
+    if (!rawPic) {
+      console.log(`[Profile] No profile_pic returned for ${channel} sender=${senderId} (permission or private account)`);
+    }
 
     return { name, profilePic };
   } catch (err) {
@@ -917,9 +1114,15 @@ async function getDecryptedPageToken(businessId: string): Promise<string | null>
 
     const bizData = bizSnap.data();
     const encryptedToken = bizData?.channels?.facebook?.pageAccessToken;
-    if (!encryptedToken) return null;
+    if (!encryptedToken) {
+      console.warn('[Profile] No pageAccessToken stored for business:', businessId);
+      return null;
+    }
 
-    return decryptToken(encryptedToken);
+    const token = await decryptToken(encryptedToken);
+    // Log first 12 chars so we can confirm it's a page token (starts with EAA...) vs user token
+    console.log('[Profile] Page token prefix for business', businessId, ':', token.slice(0, 12) + '...');
+    return token;
   } catch (err) {
     console.error('[Meta Webhook] Error getting page token:', err);
     return null;
@@ -1210,6 +1413,8 @@ async function saveInboundMessage(params: InboundMessageParams) {
         contactName: params.senderName || params.externalId,
         contactPhone: params.externalId,
         recipientId: params.externalId,
+        // Meta wamid/mid — needed for combined read-receipt + typing indicator
+        externalMessageId: params.messageId,
       }).catch(agentErr => console.warn('[Meta Webhook] Agent dispatch failed:', agentErr));
     } catch (agentErr) {
       console.warn('[Meta Webhook] Agent dispatch failed:', agentErr);
@@ -1278,8 +1483,15 @@ async function updateMessageStatus(params: {
 
     // Save error details when status is 'failed'
     if (params.status === 'failed' && params.errors?.length) {
-      updateData.failedReason = params.errors[0].title;
-      updateData.failedCode = params.errors[0].code;
+      const firstError = params.errors[0];
+      updateData.failedReason = firstError.title;
+      updateData.failedCode = firstError.code;
+      console.error('[Meta Webhook] Message delivery failed:', {
+        messageId: params.messageId,
+        channel: params.channel,
+        businessId: params.businessId,
+        errors: params.errors,
+      });
     }
 
     await adminDb.doc(`conversationMessages/${msgDoc.id}`).update(updateData);

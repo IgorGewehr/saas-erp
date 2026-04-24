@@ -48,6 +48,7 @@ import {
   TicketPercent,
   CalendarPlus,
   Coffee,
+  Ban,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -56,9 +57,9 @@ import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, doc } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch, increment } from 'firebase/firestore';
 import { toast } from 'react-toastify';
-import { deductStock } from '@/lib/services/stock';
+import { deductStock, restoreStock, checkStockAvailability } from '@/lib/services/stock';
 import { calculateEarnedPoints, addLoyaltyPoints, redeemLoyaltyPoints, pointsToReais, reaisToPoints } from '@/lib/services/loyalty';
 import { findGiftCard, redeemGiftCard } from '@/lib/services/giftCard';
 import { db } from '@/lib/config/firebase';
@@ -222,6 +223,8 @@ export default function PDVModule() {
   // History view state
   const [historySearch, setHistorySearch] = useState('');
   const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
+  const [isCancellingSale, setIsCancellingSale] = useState(false);
+  const [cancelConfirmSaleId, setCancelConfirmSaleId] = useState<string | null>(null);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -680,26 +683,42 @@ export default function PDVModule() {
         updatedAt: now,
       };
 
-      const docRef = await addDoc(collection(db, 'sales'), saleData);
+      // ── Atomic batch: sale + stock + transaction + client stats ──
+      const batch = writeBatch(db);
+      const saleRef = doc(collection(db, 'sales'));
+      batch.set(saleRef, saleData);
 
-      // Deduct stock via centralized helper (supports composite products/BOM).
+      // Deduct stock into the same batch (supports composite products/BOM).
       const productIndex = new Map(products.map(p => [p.id, p]));
       const stockLines = cart
         .filter(item => item.productId)
         .map(item => ({ productId: item.productId!, quantity: item.quantity }));
+
+      // Validate stock availability before committing
+      if (stockLines.length > 0) {
+        const shortages = checkStockAvailability(stockLines, productIndex);
+        if (shortages.length > 0) {
+          const names = shortages.map(s => `${s.productName} (disponível: ${s.available}, pedido: ${s.requested})`).join(', ');
+          setSaleError(`Estoque insuficiente: ${names}`);
+          setIsSaving(false);
+          return;
+        }
+      }
+
       if (stockLines.length > 0) {
         await deductStock(db, stockLines, {
           businessId: business.id,
           operatorId: user.uid,
           operatorName: user.name,
-          sourceId: docRef.id,
-          reason: `Venda #${docRef.id.substring(0, 6)}`,
+          sourceId: saleRef.id,
+          reason: `Venda #${saleRef.id.substring(0, 6)}`,
           productIndex,
-        });
+        }, batch);
       }
 
-      // Create financial transaction for the sale
-      await addDoc(collection(db, 'transactions'), {
+      // Financial transaction in the same batch
+      const txRef = doc(collection(db, 'transactions'));
+      batch.set(txRef, {
         businessId: business.id,
         type: 'receita',
         category: 'Vendas',
@@ -710,20 +729,30 @@ export default function PDVModule() {
         status: 'pago',
         clientId: selectedClient?.id || null,
         clientName: selectedClient?.name || null,
-        saleId: docRef.id,
+        saleId: saleRef.id,
         paymentMethod: payments[0]?.method || 'dinheiro',
         createdAt: now,
         updatedAt: now,
       });
 
-      // Update client stats
+      // Client stats in the same batch (uses increment to prevent race conditions)
       if (selectedClient) {
-        await updateDoc(doc(db, 'clients', selectedClient.id), {
-          totalSpent: (selectedClient.totalSpent || 0) + total,
-          visitCount: (selectedClient.visitCount || 0) + 1,
+        batch.update(doc(db, 'clients', selectedClient.id), {
+          totalSpent: increment(total),
+          visitCount: increment(1),
           lastVisit: now,
           updatedAt: now,
         });
+      }
+
+      // Commit all core operations atomically
+      await batch.commit();
+
+      // Use saleRef.id for downstream operations
+      const docRef = saleRef;
+
+      // ── Non-critical operations (loyalty/gift card — already use runTransaction internally) ──
+      if (selectedClient) {
 
         const loyaltyConfig = business?.settings?.loyalty;
         const pointsPayment = payments.find(p => p.method === 'pontos');
@@ -847,6 +876,89 @@ export default function PDVModule() {
     setGiftCardLookup(null);
     setGiftCardError(null);
   }, []);
+
+  const handleCancelSale = useCallback(async (sale: Sale) => {
+    if (!user || !business) return;
+    setIsCancellingSale(true);
+    try {
+      const now = new Date().toISOString();
+
+      // 1. Mark sale as cancelled
+      await updateDoc(doc(db, 'sales', sale.id), {
+        status: 'cancelada',
+        cancelledAt: now,
+        cancelledBy: user.uid,
+        cancelledByName: user.name,
+        updatedAt: now,
+      });
+
+      // 2. Restore stock for product items
+      const productLines = sale.items
+        .filter(item => item.productId)
+        .map(item => ({ productId: item.productId!, quantity: item.quantity }));
+      if (productLines.length > 0) {
+        const productIndex = new Map(products.map(p => [p.id, p]));
+        await restoreStock(db, productLines, {
+          businessId: business.id,
+          operatorId: user.uid,
+          operatorName: user.name,
+          sourceId: sale.id,
+          reason: `Cancelamento venda #${sale.id.substring(0, 6)}`,
+          productIndex,
+        });
+      }
+
+      // 3. Cancel the linked financial transaction
+      const txSnap = await getDocs(
+        query(
+          collection(db, 'transactions'),
+          where('businessId', '==', business.id),
+          where('saleId', '==', sale.id),
+        ),
+      );
+      for (const txDoc of txSnap.docs) {
+        await updateDoc(doc(db, 'transactions', txDoc.id), {
+          status: 'cancelado',
+          updatedAt: now,
+        });
+      }
+
+      // 4. Reverse client stats
+      if (sale.clientId) {
+        try {
+          const clientDoc = await getDocs(
+            query(collection(db, 'clients'), where('businessId', '==', business.id)),
+          );
+          const client = clientDoc.docs.find(d => d.id === sale.clientId);
+          if (client) {
+            const data = client.data();
+            await updateDoc(doc(db, 'clients', client.id), {
+              totalSpent: Math.max(0, (data.totalSpent || 0) - sale.total),
+              visitCount: Math.max(0, (data.visitCount || 0) - 1),
+              updatedAt: now,
+            });
+          }
+        } catch (err) {
+          console.warn('Failed to reverse client stats:', err);
+        }
+      }
+
+      // Invalidate caches
+      queryClient.invalidateQueries({ queryKey: ['sales'] });
+      queryClient.invalidateQueries({ queryKey: ['products'] });
+      queryClient.invalidateQueries({ queryKey: ['transactions'] });
+      queryClient.invalidateQueries({ queryKey: ['clients'] });
+
+      setSelectedSale(null);
+      setCancelConfirmSaleId(null);
+      toast.success(t('pdv.cancel.success', 'Venda cancelada e estoque restaurado com sucesso'));
+    } catch (error) {
+      console.error('Error cancelling sale:', error);
+      toast.error(t('pdv.cancel.error', 'Erro ao cancelar venda'));
+    } finally {
+      setIsCancellingSale(false);
+    }
+  }, [user, business, products, queryClient, t]);
 
   const handlePreBooking = useCallback(async () => {
     if (!user || !business || !selectedClient || !pbDate || !pbServiceId || !pbTime) return;
@@ -1223,6 +1335,41 @@ export default function PDVModule() {
                   </div>
                 </div>
               </DialogContent>
+              {selectedSale.status === 'finalizada' && (
+                <DialogActions sx={{ px: 3, pb: 2.5, pt: 0, backgroundColor: isDark ? '#1f2937' : undefined }}>
+                  {cancelConfirmSaleId === selectedSale.id ? (
+                    <div className="w-full flex items-center gap-2 p-3 rounded-xl bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20">
+                      <AlertCircle size={16} className="text-red-500 shrink-0" />
+                      <span className="text-sm text-red-700 dark:text-red-400 flex-1">
+                        {t('pdv.cancel.confirmText', 'Isso vai reverter o estoque e cancelar a transação financeira. Confirma?')}
+                      </span>
+                      <button
+                        onClick={() => setCancelConfirmSaleId(null)}
+                        disabled={isCancellingSale}
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg bg-white dark:bg-gray-700 border border-slate-200 dark:border-gray-600 text-slate-600 dark:text-gray-300 hover:bg-slate-50 dark:hover:bg-gray-600 transition-colors"
+                      >
+                        {t('pdv.cancel.no', 'Não')}
+                      </button>
+                      <button
+                        onClick={() => handleCancelSale(selectedSale)}
+                        disabled={isCancellingSale}
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors flex items-center gap-1.5"
+                      >
+                        {isCancellingSale ? <Loader2 size={14} className="animate-spin" /> : <Ban size={14} />}
+                        {isCancellingSale ? t('pdv.cancel.cancelling', 'Cancelando...') : t('pdv.cancel.yes', 'Sim, cancelar')}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setCancelConfirmSaleId(selectedSale.id)}
+                      className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 border border-red-200 dark:border-red-500/20 transition-colors"
+                    >
+                      <Ban size={16} />
+                      {t('pdv.cancel.button', 'Cancelar venda')}
+                    </button>
+                  )}
+                </DialogActions>
+              )}
             </>
           )}
         </Dialog>

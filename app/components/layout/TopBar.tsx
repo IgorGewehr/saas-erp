@@ -7,10 +7,10 @@ import { useTranslation } from 'react-i18next';
 import { getInitials, formatCurrency } from '@/lib/utils/format';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
-import { collection, query, where, orderBy, getDocs, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, getDocs, onSnapshot, updateDoc, doc, writeBatch } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useQuery } from '@tanstack/react-query';
-import type { User as UserType, Product, Appointment, CRMContact } from '@/lib/types';
+import type { User as UserType, Product, Appointment, CRMContact, AppNotification } from '@/lib/types';
 import {
   Search,
   Bell,
@@ -30,6 +30,11 @@ import {
   Calendar,
   Contact,
   DollarSign,
+  CheckSquare,
+  MessageSquare,
+  AlertTriangle,
+  CheckCheck,
+  Trash2,
 } from 'lucide-react';
 import type { UserStatus } from '@/lib/types';
 import type { MenuPage } from './Sidebar';
@@ -391,12 +396,92 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
     refetchInterval: 30000, // Refresh every 30s
   });
 
+  // ── In-app notifications (real-time) ──
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const notifRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!user?.uid || !businessId) return;
+    const q = query(
+      collection(db, 'notifications'),
+      where('userId', '==', user.uid),
+      where('businessId', '==', businessId),
+      orderBy('createdAt', 'desc'),
+      limit(30),
+    );
+    const unsub = onSnapshot(q, snap => {
+      setNotifications(snap.docs.map(d => ({ ...d.data(), id: d.id } as AppNotification)));
+    });
+    return () => unsub();
+  }, [user?.uid, businessId]);
+
+  const unreadNotifCount = notifications.filter(n => !n.isRead).length;
+  const totalBadge = unreadCount + unreadNotifCount;
+
+  const handleMarkRead = useCallback(async (id: string) => {
+    await updateDoc(doc(db, 'notifications', id), { isRead: true });
+  }, []);
+
+  const handleMarkAllRead = useCallback(async () => {
+    const unread = notifications.filter(n => !n.isRead);
+    if (unread.length === 0) return;
+    const batch = writeBatch(db);
+    for (const n of unread) batch.update(doc(db, 'notifications', n.id), { isRead: true });
+    await batch.commit();
+  }, [notifications]);
+
+  const handleClearAll = useCallback(async () => {
+    if (notifications.length === 0) return;
+    const batch = writeBatch(db);
+    for (const n of notifications) batch.delete(doc(db, 'notifications', n.id));
+    await batch.commit();
+  }, [notifications]);
+
+  // Close notif dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (notifRef.current && !notifRef.current.contains(e.target as Node)) setIsNotifOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const NOTIF_ICON: Record<string, React.ElementType> = {
+    task_assigned: CheckSquare,
+    task_due_soon: Clock,
+    task_overdue: AlertTriangle,
+    task_mentioned: MessageSquare,
+    appointment_reminder: Calendar,
+    review_received: Check,
+  };
+
+  const NOTIF_COLOR: Record<string, string> = {
+    task_assigned: 'text-blue-500 bg-blue-50 dark:bg-blue-500/10',
+    task_due_soon: 'text-amber-500 bg-amber-50 dark:bg-amber-500/10',
+    task_overdue: 'text-red-500 bg-red-50 dark:bg-red-500/10',
+    task_mentioned: 'text-purple-500 bg-purple-50 dark:bg-purple-500/10',
+    appointment_reminder: 'text-emerald-500 bg-emerald-50 dark:bg-emerald-500/10',
+    review_received: 'text-emerald-500 bg-emerald-50 dark:bg-emerald-500/10',
+  };
+
+  function timeAgo(iso: string): string {
+    const diff = Date.now() - new Date(iso).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return t('topbar.notif.justNow', 'agora');
+    if (mins < 60) return `${mins}min`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h`;
+    const days = Math.floor(hrs / 24);
+    return `${days}d`;
+  }
+
   // ── Global Search Data ──
 
   const { data: searchProducts = [] } = useQuery({
     queryKey: ['search-products', businessId],
     queryFn: async () => {
-      const q = query(collection(db, 'products'), where('businessId', '==', businessId), orderBy('name', 'asc'));
+      const q = query(collection(db, 'products'), where('businessId', '==', businessId), orderBy('name', 'asc'), limit(200));
       const snap = await getDocs(q);
       return snap.docs.map(d => ({ ...d.data(), id: d.id } as Product));
     },
@@ -407,7 +492,7 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
   const { data: searchAppointments = [] } = useQuery({
     queryKey: ['search-appointments', businessId],
     queryFn: async () => {
-      const q = query(collection(db, 'appointments'), where('businessId', '==', businessId), orderBy('date', 'desc'));
+      const q = query(collection(db, 'appointments'), where('businessId', '==', businessId), orderBy('date', 'desc'), limit(200));
       const snap = await getDocs(q);
       return snap.docs.map(d => ({ ...d.data(), id: d.id } as Appointment));
     },
@@ -418,7 +503,7 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
   const { data: searchContacts = [] } = useQuery({
     queryKey: ['search-clients', businessId],
     queryFn: async () => {
-      const q = query(collection(db, 'clients'), where('businessId', '==', businessId), orderBy('createdAt', 'desc'));
+      const q = query(collection(db, 'clients'), where('businessId', '==', businessId), orderBy('createdAt', 'desc'), limit(200));
       const snap = await getDocs(q);
       return snap.docs.map(d => ({ ...d.data(), id: d.id } as CRMContact));
     },
@@ -641,23 +726,138 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
           {/* Theme toggle */}
           <ThemeToggle />
 
-          {/* Notification bell */}
-          <button
-            onClick={() => onNavigate?.('Conversas')}
-            className={cn(
-              'relative flex items-center justify-center w-9 h-9 rounded-xl',
-              'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/[0.06]',
-              'transition-all duration-150 active:scale-95'
-            )}
-            title={unreadCount > 0 ? t('topbar.unreadMessages', { count: unreadCount }) : t('topbar.notifications')}
-          >
-            <Bell className="w-[17px] h-[17px]" />
-            {unreadCount > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold">
-                {unreadCount > 99 ? '99+' : unreadCount}
-              </span>
-            )}
-          </button>
+          {/* Notification bell + dropdown */}
+          <div className="relative" ref={notifRef}>
+            <button
+              onClick={() => setIsNotifOpen(!isNotifOpen)}
+              className={cn(
+                'relative flex items-center justify-center w-9 h-9 rounded-xl',
+                'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/[0.06]',
+                'transition-all duration-150 active:scale-95',
+                isNotifOpen && 'bg-gray-100 dark:bg-white/[0.06]'
+              )}
+              title={t('topbar.notifications', 'Notificações')}
+            >
+              <Bell className="w-[17px] h-[17px]" />
+              {totalBadge > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold">
+                  {totalBadge > 99 ? '99+' : totalBadge}
+                </span>
+              )}
+            </button>
+
+            <AnimatePresence>
+              {isNotifOpen && (
+                <motion.div
+                  initial={{ opacity: 0, y: 6, scale: 0.96 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 6, scale: 0.96 }}
+                  transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
+                  className={cn(
+                    'absolute right-0 top-full mt-2 w-80 sm:w-96 z-50',
+                    'bg-white dark:bg-[#1e293b] rounded-2xl',
+                    'border border-gray-200/80 dark:border-gray-700/50',
+                    'shadow-[0_8px_30px_rgba(0,0,0,0.12)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.4)]',
+                    'overflow-hidden'
+                  )}
+                >
+                  {/* Header */}
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-700/50">
+                    <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                      {t('topbar.notif.title', 'Notificações')}
+                    </h3>
+                    <div className="flex items-center gap-1">
+                      {unreadNotifCount > 0 && (
+                        <button
+                          onClick={handleMarkAllRead}
+                          className="text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 px-2 py-1 rounded-lg hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
+                          title={t('topbar.notif.markAllRead', 'Marcar todas como lidas')}
+                        >
+                          <CheckCheck className="w-4 h-4" />
+                        </button>
+                      )}
+                      {notifications.length > 0 && (
+                        <button
+                          onClick={handleClearAll}
+                          className="text-xs text-gray-500 hover:text-red-500 dark:text-gray-400 dark:hover:text-red-400 px-2 py-1 rounded-lg hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
+                          title={t('topbar.notif.clearAll', 'Limpar todas')}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Unread conversations shortcut */}
+                  {unreadCount > 0 && (
+                    <button
+                      onClick={() => { onNavigate?.('Conversas'); setIsNotifOpen(false); }}
+                      className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors border-b border-gray-100 dark:border-gray-700/50"
+                    >
+                      <div className="w-8 h-8 rounded-lg flex items-center justify-center text-blue-500 bg-blue-50 dark:bg-blue-500/10 shrink-0">
+                        <MessageSquare className="w-4 h-4" />
+                      </div>
+                      <div className="flex-1 text-left">
+                        <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                          {unreadCount} {unreadCount === 1 ? t('topbar.notif.unreadMsg', 'mensagem não lida') : t('topbar.notif.unreadMsgs', 'mensagens não lidas')}
+                        </p>
+                      </div>
+                      <ChevronDown className="w-3.5 h-3.5 text-gray-400 -rotate-90" />
+                    </button>
+                  )}
+
+                  {/* Notification list */}
+                  <div className="max-h-80 overflow-y-auto">
+                    {notifications.length === 0 && unreadCount === 0 ? (
+                      <div className="py-10 text-center">
+                        <Bell className="w-8 h-8 mx-auto text-gray-300 dark:text-gray-600 mb-2" />
+                        <p className="text-sm text-gray-500 dark:text-gray-400">
+                          {t('topbar.notif.empty', 'Nenhuma notificação')}
+                        </p>
+                      </div>
+                    ) : (
+                      notifications.map(n => {
+                        const Icon = NOTIF_ICON[n.type] || Bell;
+                        const colorCls = NOTIF_COLOR[n.type] || 'text-gray-500 bg-gray-50 dark:bg-gray-500/10';
+                        return (
+                          <button
+                            key={n.id}
+                            onClick={() => {
+                              if (!n.isRead) handleMarkRead(n.id);
+                              if (n.link) { onNavigate?.(n.link as MenuPage); setIsNotifOpen(false); }
+                            }}
+                            className={cn(
+                              'w-full flex items-start gap-3 px-4 py-3 text-left transition-colors',
+                              'hover:bg-gray-50 dark:hover:bg-white/[0.04]',
+                              !n.isRead && 'bg-blue-50/40 dark:bg-blue-500/[0.05]'
+                            )}
+                          >
+                            <div className={cn('w-8 h-8 rounded-lg flex items-center justify-center shrink-0 mt-0.5', colorCls)}>
+                              <Icon className="w-4 h-4" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className={cn('text-sm text-gray-900 dark:text-gray-100', !n.isRead && 'font-semibold')}>
+                                {n.title}
+                              </p>
+                              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 line-clamp-2">
+                                {n.body}
+                              </p>
+                              <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                                {timeAgo(n.createdAt)}
+                              </p>
+                            </div>
+                            {!n.isRead && (
+                              <div className="w-2 h-2 rounded-full bg-blue-500 shrink-0 mt-2" />
+                            )}
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
 
           {/* User dropdown */}
           <div className="relative" ref={userMenuRef}>

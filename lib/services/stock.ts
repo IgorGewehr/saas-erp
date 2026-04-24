@@ -14,6 +14,7 @@ import {
   doc,
   writeBatch,
   type Firestore,
+  type WriteBatch,
 } from 'firebase/firestore';
 import type { Product, StockMovement } from '@/lib/types';
 
@@ -75,8 +76,11 @@ export function expandComponents(
 }
 
 /**
- * Deduct stock atomically via Firestore batch write. Creates one `products`
+ * Deduct stock via Firestore batch write. Creates one `products`
  * update + one `stockMovements` row per expanded line.
+ *
+ * If `externalBatch` is provided, writes are added to it (caller must commit).
+ * Otherwise creates and commits its own batch.
  *
  * @returns the list of per-product adjustments that were applied
  */
@@ -84,6 +88,7 @@ export async function deductStock(
   db: Firestore,
   lines: StockDeductionLine[],
   ctx: StockDeductionContext,
+  externalBatch?: WriteBatch,
 ): Promise<StockAdjustment[]> {
   if (!ctx.productIndex) {
     throw new Error('[stock.deductStock] productIndex is required. Pass a Map<productId, Product>.');
@@ -92,7 +97,7 @@ export async function deductStock(
   const expanded = expandComponents(lines, ctx.productIndex);
   if (expanded.length === 0) return [];
 
-  const batch = writeBatch(db);
+  const batch = externalBatch ?? writeBatch(db);
   const now = new Date().toISOString();
   const adjustments: StockAdjustment[] = [];
 
@@ -129,6 +134,139 @@ export async function deductStock(
       productId: product.id,
       productName: product.name,
       delta: -line.quantity,
+      previousStock,
+      newStock,
+    });
+  }
+
+  if (!externalBatch) await batch.commit();
+  return adjustments;
+}
+
+/**
+ * Restore stock — inverse of deductStock.
+ * Used when cancelling a sale to return items to inventory.
+ *
+ * If `externalBatch` is provided, writes are added to it (caller must commit).
+ * Otherwise creates and commits its own batch.
+ *
+ * @returns the list of per-product adjustments that were applied
+ */
+export async function restoreStock(
+  db: Firestore,
+  lines: StockDeductionLine[],
+  ctx: StockDeductionContext,
+  externalBatch?: WriteBatch,
+): Promise<StockAdjustment[]> {
+  if (!ctx.productIndex) {
+    throw new Error('[stock.restoreStock] productIndex is required.');
+  }
+
+  const expanded = expandComponents(lines, ctx.productIndex);
+  if (expanded.length === 0) return [];
+
+  const batch = externalBatch ?? writeBatch(db);
+  const now = new Date().toISOString();
+  const adjustments: StockAdjustment[] = [];
+
+  for (const line of expanded) {
+    const product = ctx.productIndex.get(line.productId);
+    if (!product) continue;
+
+    const previousStock = product.currentStock || 0;
+    const newStock = previousStock + line.quantity;
+
+    batch.update(doc(db, 'products', product.id), {
+      currentStock: newStock,
+      updatedAt: now,
+    });
+
+    const movementRef = doc(collection(db, 'stockMovements'));
+    const movement: Omit<StockMovement, 'id'> = {
+      businessId: ctx.businessId,
+      productId: product.id,
+      productName: product.name,
+      type: 'entrada',
+      quantity: line.quantity,
+      previousStock,
+      newStock,
+      reason: ctx.reason,
+      ...(ctx.sourceId ? { saleId: ctx.sourceId } : {}),
+      operatorId: ctx.operatorId,
+      operatorName: ctx.operatorName,
+      createdAt: now,
+    };
+    batch.set(movementRef, movement);
+
+    adjustments.push({
+      productId: product.id,
+      productName: product.name,
+      delta: line.quantity,
+      previousStock,
+      newStock,
+    });
+  }
+
+  if (!externalBatch) await batch.commit();
+  return adjustments;
+}
+
+/**
+ * Add stock atomically (entrada). Does NOT expand components — callers pass
+ * the exact product lines to increment (typically from a purchase note).
+ * Writes one product update + one stockMovement per line in a single batch.
+ */
+export async function addStock(
+  db: Firestore,
+  lines: Array<{ productId: string; quantity: number }>,
+  ctx: {
+    businessId: string;
+    operatorId: string;
+    operatorName: string;
+    purchaseId?: string;
+    reason: string;
+    productIndex: Map<string, Product>;
+  },
+): Promise<StockAdjustment[]> {
+  if (lines.length === 0) return [];
+
+  const batch = writeBatch(db);
+  const now = new Date().toISOString();
+  const adjustments: StockAdjustment[] = [];
+
+  for (const line of lines) {
+    const product = ctx.productIndex.get(line.productId);
+    if (!product) continue;
+
+    const previousStock = product.currentStock || 0;
+    const newStock = previousStock + line.quantity;
+
+    batch.update(doc(db, 'products', product.id), {
+      currentStock: newStock,
+      updatedAt: now,
+    });
+
+    const movementRef = doc(collection(db, 'stockMovements'));
+    const movement: Omit<StockMovement, 'id'> = {
+      businessId: ctx.businessId,
+      productId: product.id,
+      productName: product.name,
+      type: 'entrada',
+      quantity: line.quantity,
+      previousStock,
+      newStock,
+      reason: ctx.reason,
+      ...(ctx.purchaseId ? { purchaseId: ctx.purchaseId } : {}),
+      operatorId: ctx.operatorId,
+      operatorName: ctx.operatorName,
+      createdAt: now,
+    };
+    batch.set(movementRef, movement);
+
+    adjustments.push({
+      productId: product.id,
+      productName: product.name,
+      delta: line.quantity,
       previousStock,
       newStock,
     });

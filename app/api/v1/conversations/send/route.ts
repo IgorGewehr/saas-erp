@@ -25,6 +25,7 @@ export async function POST(req: NextRequest) {
       mediaUrl,
       mediaType,
       isInternal = false,
+      clientMessageId,
     } = body;
 
     // Validate required fields
@@ -75,6 +76,29 @@ export async function POST(req: NextRequest) {
       return apiError('Conversation not found', 404);
     }
 
+    // Idempotency: if the caller reuses a clientMessageId within this business,
+    // return the previously-created message instead of creating a duplicate.
+    if (clientMessageId && typeof clientMessageId === 'string') {
+      const existingSnap = await adminDb
+        .collection('conversationMessages')
+        .where('businessId', '==', auth.businessId)
+        .where('clientMessageId', '==', clientMessageId)
+        .limit(1)
+        .get();
+      if (!existingSnap.empty) {
+        const existing = existingSnap.docs[0];
+        const data = existing.data();
+        return apiSuccess({
+          messageId: existing.id,
+          conversationId: data.conversationId,
+          status: data.status ?? 'sent',
+          externalMessageId: data.externalMessageId ?? null,
+          isInternal: !!data.isInternal,
+          idempotent: true,
+        }, 200);
+      }
+    }
+
     const channel = convData.channel;
     const contactExternalId = convData.contactExternalId;
     const now = new Date().toISOString();
@@ -92,6 +116,9 @@ export async function POST(req: NextRequest) {
       sentAt: now,
       createdAt: now,
     };
+    if (clientMessageId && typeof clientMessageId === 'string') {
+      messageDoc.clientMessageId = clientMessageId;
+    }
 
     // Add optional fields
     if (type === 'media' && mediaUrl) {

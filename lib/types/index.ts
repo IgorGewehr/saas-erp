@@ -256,6 +256,14 @@ export interface BusinessSettings {
   loyalty?: LoyaltyConfig;
   /** Promoções ativas */
   promotions?: BusinessPromotion[];
+  /** URL do Google Reviews para redirect pós-avaliação */
+  googleReviewUrl?: string;
+  /** TEF — Transferência Eletrônica de Fundos */
+  tef?: TEFConfig;
+  /** Gateway de pagamento (PIX, link, boleto) */
+  paymentGateway?: PaymentGatewayConfig;
+  /** Política de no-show */
+  noShowPolicy?: NoShowPolicy;
 }
 
 export interface AiAgentSettings {
@@ -287,6 +295,78 @@ export interface AiAgentSettings {
     /** Follow-up depois da consulta (pesquisa de satisfação leve) */
     followUpAfter?: boolean;
   };
+
+  /** === Modo: operador (dashboard chat) === */
+  operator?: {
+    /**
+     * When true, the agent executes destructive actions (create/update/delete)
+     * without asking for confirmation in the chat. Always shows a preview
+     * before, and the result after. Reserved for admin/founder who want
+     * hands-free control. Default false (confirm required).
+     */
+    autonomousMode?: boolean;
+    /** Daily spend cap for the operator chat specifically (USD). */
+    dailyBudgetUsd?: number;
+  };
+
+  /** === Policies — agent cites these verbatim on relevant questions. === */
+  policies?: {
+    /** Cancellation terms (e.g., "sem multa até 2h antes"). */
+    cancellation?: string;
+    /** Refund policy text. */
+    refund?: string;
+    /** Privacy / LGPD summary the agent can quote. */
+    privacy?: string;
+  };
+
+  /** === SLAs — target durations used by the agent to set expectations. === */
+  sla?: {
+    /** Max preparation time before order is ready (pedidos mode). Minutes. */
+    prepMaxMinutes?: number;
+    /** Max total delivery time (order → doorstep). Minutes. */
+    deliveryMaxMinutes?: number;
+    /** First-response SLA on customer messages. Minutes. */
+    firstResponseMinutes?: number;
+  };
+
+  /** === Calendar exceptions — holidays + seasonal hour overrides. === */
+  calendar?: {
+    /** Dates when the business is closed (ISO YYYY-MM-DD). Overrides openingHours. */
+    holidays?: string[];
+    /** Date-range overrides with specific opening hours. */
+    seasonalHours?: Array<{
+      fromDate: string;
+      toDate: string;
+      label?: string;
+      hours: BusinessHoursDay[];
+    }>;
+  };
+
+  /** === Delivery zones + payment method whitelist (pedidos mode). === */
+  deliveryZones?: Array<{
+    name: string;
+    type: 'radius' | 'neighborhood' | 'polygon';
+    value: string;
+    fee?: number;
+    estimatedMinutes?: number;
+  }>;
+
+  /** Payment methods the business accepts — agent never offers one outside this list. */
+  acceptedPaymentMethods?: Array<'dinheiro' | 'pix' | 'credito' | 'debito' | 'boleto' | 'pontos' | 'gift_card' | 'voucher' | 'outros'>;
+
+  /** === Team capacity — upper bound the agent won't exceed. === */
+  teamCapacity?: {
+    maxConcurrentOrders?: number;
+    maxDailyAppointments?: number;
+  };
+
+  /** === Upsell rules — agent suggests X when Y matches. === */
+  upsellRules?: Array<{
+    id: string;
+    trigger: string;
+    suggestion: string;
+    isActive: boolean;
+  }>;
 }
 
 // ---- Fiscal Configuration ----
@@ -432,6 +512,7 @@ export interface Appointment {
   followUpSentAt?: string;
   // Commission tracking — set when appointment is marked concluido
   commissionTransactionId?: string; // Firestore ID of the linked Transaction (category: 'Comissoes')
+  googleCalendarEventId?: string;   // Google Calendar event ID for sync
   createdAt: string;
   updatedAt: string;
 }
@@ -448,6 +529,7 @@ export interface Service {
   category?: string;
   color: string;
   commissionRate?: number; // Commission % override for this service (0–100). Takes precedence over professional's commissionRate
+  formTemplateId?: string; // Intake form auto-requested when this service is booked
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
@@ -518,6 +600,16 @@ export interface Sale {
 export type TransactionType = 'receita' | 'despesa';
 export type TransactionStatus = 'pendente' | 'pago' | 'atrasado' | 'cancelado';
 
+export type RecurrenceFrequency = 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'yearly';
+
+export interface TransactionRecurrence {
+  frequency: RecurrenceFrequency;
+  nextDueDate: string;       // ISO date — when the next copy should be generated
+  endDate?: string;          // optional end date — stops generating after this
+  isActive: boolean;
+  parentTransactionId?: string; // original transaction that spawned this
+}
+
 export interface Transaction {
   id: string;
   businessId: string;
@@ -547,6 +639,8 @@ export interface Transaction {
   installmentGroupId?: string;
   installmentNumber?: number;   // ex: 1 de 3
   installmentTotal?: number;
+  /** Recorrência automática */
+  recurrence?: TransactionRecurrence;
   /** Auditoria: identidade de quem criou/modificou. Preenchido nas mutações. */
   createdBy?: string;
   createdByName?: string;
@@ -627,6 +721,51 @@ export interface BankAccount {
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+// ---- Bank Reconciliation ----
+
+export type ReconciliationStatus = 'matched' | 'pending' | 'divergent' | 'ignored';
+
+export interface BankStatementEntry {
+  date: string;           // YYYY-MM-DD
+  description: string;
+  amount: number;         // positive = credit, negative = debit
+  balance?: number;
+  reference?: string;     // bank reference / doc number
+}
+
+export interface ReconciliationItem {
+  id: string;
+  businessId: string;
+  bankAccountId: string;
+  importId: string;           // groups items from same upload
+  // Statement side
+  statementDate: string;
+  statementDescription: string;
+  statementAmount: number;
+  statementReference?: string;
+  // Match side
+  transactionId?: string;     // linked transaction ID when matched
+  status: ReconciliationStatus;
+  matchConfidence?: number;   // 0-100 auto-match score
+  reconciledBy?: string;
+  reconciledAt?: string;
+  createdAt: string;
+}
+
+export interface BankStatementImport {
+  id: string;
+  businessId: string;
+  bankAccountId: string;
+  fileName: string;
+  format: 'csv' | 'ofx';
+  totalEntries: number;
+  matched: number;
+  pending: number;
+  divergent: number;
+  importedAt: string;
+  importedBy: string;
 }
 
 // ---- Financial: Employees ----
@@ -2052,6 +2191,11 @@ export interface PurchaseNote {
   // Notes
   notes?: string;
   importedAt?: string;
+  // Stock import tracking — set when items are pushed to inventory as stockMovements.
+  // Once present, re-importing is blocked (idempotency).
+  stockImportedAt?: string;
+  stockMovementIds?: string[];          // ids of stockMovements created for this note
+  unmatchedItems?: Array<{ productName: string; quantity: number; cProd?: string }>;
   createdAt: string;
   updatedAt: string;
 }
@@ -2127,4 +2271,251 @@ export interface GiftCard {
   usedAt?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+// ---- Notifications ----
+
+export type NotificationType =
+  | 'task_assigned'
+  | 'task_due_soon'
+  | 'task_overdue'
+  | 'task_mentioned'
+  | 'appointment_reminder'
+  | 'review_received';
+
+export interface AppNotification {
+  id: string;
+  businessId: string;
+  userId: string;           // recipient
+  type: NotificationType;
+  title: string;
+  body: string;
+  isRead: boolean;
+  link?: string;            // e.g. 'Kanban' to navigate to module
+  relatedId?: string;       // card id, appointment id, etc.
+  actorId?: string;         // who triggered (for assigned/mentioned)
+  actorName?: string;
+  createdAt: string;
+}
+
+// ---- CRM Automations ----
+
+export type CRMAutomationTrigger =
+  | 'client_inactive'       // no visit/contact in X days
+  | 'client_birthday'       // birthday today
+  | 'post_appointment'      // X hours after a completed appointment
+  | 'lifecycle_change'      // lifecycle stage changed to X
+  | 'high_churn_risk'       // churn risk score > threshold
+  | 'new_lead';             // new contact created
+
+export type CRMAutomationActionType =
+  | 'send_whatsapp'         // send WhatsApp message
+  | 'create_task'           // create Kanban card
+  | 'add_tag'               // add tag to contact
+  | 'change_lifecycle'      // change lifecycle stage
+  | 'notify_team';          // send in-app notification to team
+
+export interface CRMAutomationCondition {
+  field: string;            // e.g. 'totalSpent', 'visitCount', 'tags', 'lifecycleStage'
+  operator: 'gt' | 'lt' | 'eq' | 'contains' | 'not_contains';
+  value: string | number;
+}
+
+export interface CRMAutomationAction {
+  type: CRMAutomationActionType;
+  value: string;            // message template, tag name, stage, task title, etc.
+  metadata?: Record<string, unknown>;  // e.g. { boardId, columnId } for create_task
+}
+
+export interface CRMAutomationRule {
+  id: string;
+  businessId: string;
+  name: string;
+  trigger: CRMAutomationTrigger;
+  triggerConfig: Record<string, unknown>;  // e.g. { inactiveDays: 30 }, { hoursAfter: 24 }, { stage: 'customer' }
+  conditions: CRMAutomationCondition[];    // AND conditions — all must match
+  actions: CRMAutomationAction[];
+  isActive: boolean;
+  lastRunAt?: string;
+  totalExecutions: number;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ---- Intake / Anamnese Forms ----
+
+export type FormFieldType = 'text' | 'textarea' | 'number' | 'date' | 'select' | 'radio' | 'checkbox' | 'file';
+
+export interface FormField {
+  id: string;
+  type: FormFieldType;
+  label: string;
+  placeholder?: string;
+  required: boolean;
+  options?: string[];         // for select, radio, checkbox
+  helperText?: string;
+}
+
+export interface FormTemplate {
+  id: string;
+  businessId: string;
+  name: string;               // "Anamnese Facial", "Ficha Capilar"
+  description?: string;
+  serviceId?: string;         // optional — auto-trigger when this service is booked
+  fields: FormField[];
+  isActive: boolean;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FormResponse {
+  id: string;
+  businessId: string;
+  templateId: string;
+  templateName: string;       // denormalized for display
+  clientId: string;
+  clientName: string;         // denormalized
+  appointmentId?: string;     // optional link to appointment
+  responses: Record<string, unknown>;  // fieldId → value
+  submittedAt: string;
+  submittedVia: 'link' | 'operator' | 'booking';
+}
+
+// ---- Reviews & NPS ----
+
+export type ReviewSource = 'internal' | 'google' | 'whatsapp';
+
+export interface Review {
+  id: string;
+  businessId: string;
+  clientId?: string;
+  clientName?: string;
+  professionalId?: string;
+  professionalName?: string;
+  serviceId?: string;
+  serviceName?: string;
+  appointmentId?: string;
+  rating: number;             // 1-5 stars
+  comment?: string;
+  source: ReviewSource;
+  createdAt: string;
+}
+
+// ---- TEF (Transferência Eletrônica de Fundos) ----
+
+export type TEFProvider = 'stone' | 'cielo' | 'rede' | 'getnet' | 'safrapay' | 'pagseguro';
+export type TEFTransactionStatus = 'pending' | 'approved' | 'declined' | 'cancelled' | 'error';
+
+export interface TEFConfig {
+  provider: TEFProvider;
+  terminalId: string;
+  merchantId: string;
+  isActive: boolean;
+  connectedAt?: string;
+}
+
+export interface TEFTransaction {
+  id: string;
+  businessId: string;
+  saleId: string;
+  amount: number;
+  installments: number;
+  cardBrand?: string;
+  authCode?: string;
+  nsu?: string;
+  status: TEFTransactionStatus;
+  receipt?: string;       // comprovante text
+  createdAt: string;
+}
+
+// ---- Payment Gateway (PIX QR + Link) ----
+
+export type PaymentGatewayProvider = 'asaas' | 'pagarme' | 'mercadopago' | 'stripe';
+export type PaymentIntentStatus = 'pending' | 'processing' | 'paid' | 'failed' | 'cancelled' | 'expired';
+
+export interface PaymentGatewayConfig {
+  provider: PaymentGatewayProvider;
+  apiKey: string;          // encrypted
+  webhookSecret?: string;  // encrypted
+  isActive: boolean;
+  sandbox: boolean;
+  connectedAt?: string;
+}
+
+export interface PaymentIntent {
+  id: string;
+  businessId: string;
+  saleId?: string;
+  amount: number;
+  method: 'pix' | 'credit' | 'debit' | 'boleto';
+  status: PaymentIntentStatus;
+  qrCode?: string;         // PIX QR code (base64 or copia-e-cola)
+  paymentUrl?: string;      // link de pagamento
+  gatewayId?: string;       // ID no gateway
+  paidAt?: string;
+  expiresAt?: string;
+  createdAt: string;
+}
+
+// ---- Memberships / Assinaturas ----
+
+export type MembershipBillingCycle = 'monthly' | 'quarterly' | 'yearly';
+export type MembershipStatus = 'active' | 'paused' | 'cancelled' | 'expired';
+
+export interface Membership {
+  id: string;
+  businessId: string;
+  name: string;
+  description?: string;
+  serviceIds: string[];     // services included in the plan
+  price: number;
+  billingCycle: MembershipBillingCycle;
+  maxUsesPerCycle?: number; // null = unlimited
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ClientMembership {
+  id: string;
+  businessId: string;
+  clientId: string;
+  clientName: string;
+  membershipId: string;
+  membershipName: string;   // denormalized
+  status: MembershipStatus;
+  startDate: string;
+  nextBillingDate?: string;
+  usesThisCycle: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ---- No-show Protection ----
+
+export interface NoShowPolicy {
+  isEnabled: boolean;
+  requireDeposit: boolean;
+  depositPercentage?: number;      // % of service price
+  depositFixedAmount?: number;     // fixed amount in BRL
+  cancellationDeadlineHours: number; // hours before appointment
+  noShowFeePercentage?: number;    // % charged on no-show
+}
+
+// ---- Google Calendar Sync ----
+
+export interface CalendarSyncToken {
+  id: string;
+  uid: string;              // Firebase Auth uid
+  businessId: string;
+  provider: 'google';
+  accessToken: string;      // encrypted
+  refreshToken: string;     // encrypted
+  expiresAt: string;        // ISO — when accessToken expires
+  calendarId: string;       // usually 'primary'
+  isActive: boolean;
+  connectedAt: string;
+  lastSyncAt?: string;
 }

@@ -16,8 +16,9 @@ import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
-import type { PurchaseNote, PurchaseNoteItem, PurchaseNoteStatus } from '@/lib/types';
+import type { PurchaseNote, PurchaseNoteItem, PurchaseNoteStatus, Product } from '@/lib/types';
 import { toast } from 'react-toastify';
+import { addStock } from '@/lib/services/stock';
 
 // ─── XML Parser (regex-based, no DOM needed) ─────────────────────────────────
 
@@ -318,9 +319,20 @@ function ImportPreview({
 
 // ─── Note Detail Panel ────────────────────────────────────────────────────────
 
-function NoteDetailPanel({ note, onClose }: { note: PurchaseNote; onClose: () => void }) {
+function NoteDetailPanel({
+  note,
+  onClose,
+  onPushToStock,
+  isPushingStock,
+}: {
+  note: PurchaseNote;
+  onClose: () => void;
+  onPushToStock?: (note: PurchaseNote) => void;
+  isPushingStock?: boolean;
+}) {
   const statusCfg = STATUS_CONFIG[note.status];
   const StatusIcon = statusCfg.icon;
+  const canPushToStock = !note.stockImportedAt && note.status !== 'cancelada';
 
   return (
     <motion.div
@@ -423,6 +435,42 @@ function NoteDetailPanel({ note, onClose }: { note: PurchaseNote; onClose: () =>
             <p className="text-sm text-gray-600 dark:text-gray-400">{note.notes}</p>
           </div>
         )}
+
+        {/* Unmatched items (visible after a partial stock import) */}
+        {note.unmatchedItems && note.unmatchedItems.length > 0 && (
+          <div>
+            <p className="text-xs font-semibold text-amber-600 dark:text-amber-400 uppercase tracking-wider mb-1.5">
+              Itens sem match ({note.unmatchedItems.length})
+            </p>
+            <div className="space-y-1 text-sm text-gray-600 dark:text-gray-400">
+              {note.unmatchedItems.map((u, i) => (
+                <div key={i} className="flex items-center justify-between">
+                  <span className="truncate">{u.productName}</span>
+                  <span className="font-mono text-xs text-gray-400 ml-2">{u.cProd || '—'}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Push-to-stock action */}
+        {canPushToStock && onPushToStock && (
+          <button
+            type="button"
+            onClick={() => onPushToStock(note)}
+            disabled={isPushingStock}
+            className="w-full px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+          >
+            <Package className="w-4 h-4" />
+            {isPushingStock ? 'Lançando…' : 'Lançar no estoque'}
+          </button>
+        )}
+        {note.stockImportedAt && (
+          <div className="flex items-center gap-2 text-xs text-emerald-600 dark:text-emerald-400">
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            <span>Lançado em {formatDate(note.stockImportedAt)}</span>
+          </div>
+        )}
       </div>
     </motion.div>
   );
@@ -431,7 +479,7 @@ function NoteDetailPanel({ note, onClose }: { note: PurchaseNote; onClose: () =>
 // ─── Main Module ─────────────────────────────────────────────────────────────
 
 export default function ComprasModule() {
-  const { business } = useAuth();
+  const { business, user } = useAuth();
   const queryClient = useQueryClient();
 
   const [search, setSearch] = useState('');
@@ -455,6 +503,88 @@ export default function ComprasModule() {
     },
     enabled: !!business?.id,
     staleTime: 2 * 60 * 1000,
+  });
+
+  // ─── Push-to-stock mutation ──────────────────────────────────────────────────
+  // Matches each PurchaseNoteItem to a local product by SKU (cProd) first, then
+  // by exact name (case-insensitive). Matched items generate `entrada` stockMovements
+  // and increment product.currentStock atomically. Unmatched items are recorded on
+  // the note so the user can map them manually later.
+  const { mutate: pushToStock, isPending: isPushingStock } = useMutation({
+    mutationFn: async (note: PurchaseNote) => {
+      if (!business?.id || !user) throw new Error('context');
+      if (note.stockImportedAt) throw new Error('already_imported');
+
+      // Load all products for this business
+      const productsSnap = await getDocs(
+        query(collection(db, 'products'), where('businessId', '==', business.id)),
+      );
+      const products = productsSnap.docs.map(d => ({ ...(d.data() as Product), id: d.id }));
+
+      const bySku = new Map<string, Product>();
+      const byName = new Map<string, Product>();
+      for (const p of products) {
+        if (p.sku) bySku.set(p.sku.trim().toLowerCase(), p);
+        byName.set(p.name.trim().toLowerCase(), p);
+      }
+
+      const matched: Array<{ productId: string; quantity: number }> = [];
+      const productIndex = new Map<string, Product>();
+      const unmatched: Array<{ productName: string; quantity: number; cProd?: string }> = [];
+
+      for (const item of note.items) {
+        const skuKey = item.cProd?.trim().toLowerCase();
+        const nameKey = item.productName.trim().toLowerCase();
+        const found = (skuKey && bySku.get(skuKey)) || byName.get(nameKey);
+        if (found && item.quantity > 0) {
+          matched.push({ productId: found.id, quantity: item.quantity });
+          productIndex.set(found.id, found);
+        } else {
+          unmatched.push({ productName: item.productName, quantity: item.quantity, cProd: item.cProd });
+        }
+      }
+
+      if (matched.length === 0) {
+        throw new Error('no_matches');
+      }
+
+      await addStock(db, matched, {
+        businessId: business.id,
+        operatorId: user.uid,
+        operatorName: user.name,
+        purchaseId: note.id,
+        reason: `NF-e ${note.numero}/${note.serie} — ${note.supplierName}`,
+        productIndex,
+      });
+
+      await updateDoc(doc(db, 'purchaseNotes', note.id), {
+        status: 'importada' as PurchaseNoteStatus,
+        stockImportedAt: new Date().toISOString(),
+        unmatchedItems: unmatched.length ? unmatched : undefined,
+        updatedAt: new Date().toISOString(),
+      });
+
+      return { matchedCount: matched.length, unmatchedCount: unmatched.length };
+    },
+    onSuccess: ({ matchedCount, unmatchedCount }) => {
+      queryClient.invalidateQueries({ queryKey: ['purchaseNotes', business?.id] });
+      queryClient.invalidateQueries({ queryKey: ['products', business?.id] });
+      if (unmatchedCount > 0) {
+        toast.success(`${matchedCount} itens lançados. ${unmatchedCount} sem match — cadastre os produtos e reimporte.`);
+      } else {
+        toast.success(`${matchedCount} itens lançados no estoque.`);
+      }
+    },
+    onError: (err: Error) => {
+      if (err.message === 'already_imported') {
+        toast.error('Esta nota já foi lançada no estoque');
+      } else if (err.message === 'no_matches') {
+        toast.error('Nenhum item bateu com produtos cadastrados. Cadastre ou vincule os SKUs antes.');
+      } else {
+        toast.error('Erro ao lançar no estoque');
+        console.error('[Compras] Push to stock error:', err);
+      }
+    },
   });
 
   // ─── Import mutation ─────────────────────────────────────────────────────────
@@ -648,7 +778,12 @@ export default function ComprasModule() {
         <AnimatePresence>
           {selectedNote && (
             <div className="w-full lg:w-80 xl:w-96 flex-shrink-0 rounded-2xl overflow-hidden border border-gray-200 dark:border-gray-800">
-              <NoteDetailPanel note={selectedNote} onClose={() => setSelectedNote(null)} />
+              <NoteDetailPanel
+                note={selectedNote}
+                onClose={() => setSelectedNote(null)}
+                onPushToStock={pushToStock}
+                isPushingStock={isPushingStock}
+              />
             </div>
           )}
         </AnimatePresence>

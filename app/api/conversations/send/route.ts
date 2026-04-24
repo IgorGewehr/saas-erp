@@ -42,6 +42,7 @@ interface SendRequestBody {
   templateParams?: unknown[]; // template component parameters
   mediaUrl?: string; // URL of the media file (Firebase Storage)
   mediaType?: 'image' | 'video' | 'audio' | 'document'; // type of media
+  clientMessageId?: string; // idempotency key — retries with same key are deduped
 }
 
 interface MetaApiResponse {
@@ -52,6 +53,8 @@ interface MetaApiResponse {
     message: string;
     type: string;
     code: number;
+    error_subcode?: number;   // e.g. 2018109 = 24h window, 2018141 = insufficient permission
+    error_data?: unknown;
     fbtrace_id?: string;
   };
 }
@@ -67,44 +70,75 @@ function handleMetaApiError(
   channelLabel: string,
 ): never {
   const errorCode = data.error?.code;
+  const errorSubcode = data.error?.error_subcode;
   const errorMsg = data.error?.message ?? `API retornou status ${response.status}`;
+  const fbtrace = data.error?.fbtrace_id ?? '';
 
-  // Map known Meta error codes to actionable messages
+  // Always log the full error detail so Netlify logs show subcode
+  console.error(`[Send] Meta API error [${channelLabel}] code=${errorCode} subcode=${errorSubcode} trace=${fbtrace} msg="${errorMsg}"`);
+
+  // Map known Meta error codes + subcodes to actionable messages
+  // Subcodes take priority — same code can mean very different things
   let userMessage: string;
   let shouldRetry = false;
 
-  switch (errorCode) {
-    case 130429:
-      userMessage = 'Limite de envio atingido. Tente novamente em alguns segundos.';
-      shouldRetry = true;
-      break;
-    case 131047:
-      userMessage = 'Fora da janela de 24h. Use uma mensagem de template.';
-      break;
-    case 131051:
-      userMessage = 'Tipo de mensagem nao suportado para este canal.';
-      break;
-    case 131026:
-      userMessage = 'Numero invalido ou destinatario nao esta no WhatsApp.';
-      break;
-    case 190:
-      userMessage = 'Token de acesso expirado. Reconecte o canal em Configuracoes.';
-      break;
-    case 368:
-      userMessage = 'Conta temporariamente bloqueada por violacao de politicas.';
-      break;
-    case 10:
-      userMessage = 'Permissao negada. Verifique as permissoes do canal.';
-      break;
-    default:
-      userMessage = `Falha ao enviar via ${channelLabel}: ${errorMsg}`;
+  // ── Messenger Platform subcodes (Facebook / Instagram DM) ──────────────────
+  // 2018109 = Cannot message users who are not connected to your page (outside 24h window)
+  // 2018141 = Insufficient permission for this action (wrong scope)
+  // 2018108 = Cannot send to a user who has blocked messages from your page
+  // 2018065 = This message is outside of the allowed window
+  if (errorSubcode === 2018109 || errorSubcode === 2018065) {
+    userMessage = 'Janela de 24h encerrada. Aguarde uma mensagem do contato para reabrir a janela.';
+  } else if (errorSubcode === 2018141) {
+    userMessage = 'Permissao insuficiente. Reconecte o canal em Configuracoes para gerar um token com as permissoes aprovadas.';
+  } else if (errorSubcode === 2018108) {
+    userMessage = 'O contato bloqueou mensagens da sua pagina.';
+  } else {
+    switch (errorCode) {
+      case 130429:
+        userMessage = 'Limite de envio atingido. Tente novamente em alguns segundos.';
+        shouldRetry = true;
+        break;
+      case 131047:
+        userMessage = 'Fora da janela de 24h. Use uma mensagem de template.';
+        break;
+      case 131051:
+        userMessage = 'Tipo de mensagem nao suportado para este canal.';
+        break;
+      case 131026:
+        userMessage = 'Numero invalido ou destinatario nao esta no WhatsApp.';
+        break;
+      case 131030:
+        userMessage = 'Numero nao esta na lista permitida. O app Meta ainda esta em modo de desenvolvimento — adicione o numero no Meta Developer Dashboard ou publique o app em modo Live.';
+        break;
+      case 190:
+        userMessage = 'Token de acesso expirado. Reconecte o canal em Configuracoes.';
+        break;
+      case 368:
+        userMessage = 'Conta temporariamente bloqueada por violacao de politicas.';
+        break;
+      case 3:
+        userMessage = 'O aplicativo nao tem permissao para esta chamada de API. Reconecte o canal para gerar um token com as permissoes aprovadas.';
+        break;
+      case 10:
+        userMessage = 'Permissao negada. Reconecte o canal em Configuracoes para renovar o token.';
+        break;
+      case 200:
+      case 230:
+        userMessage = 'Permissao de escrita ausente no token. Reconecte o canal em Configuracoes.';
+        break;
+      default:
+        userMessage = `Falha ao enviar via ${channelLabel}: ${errorMsg}`;
+    }
   }
 
   throw new Error(JSON.stringify({
     message: userMessage,
     code: errorCode,
+    subcode: errorSubcode,
     shouldRetry,
     originalError: errorMsg,
+    fbtrace,
   }));
 }
 
@@ -121,7 +155,7 @@ export async function POST(req: NextRequest) {
     // Read the body as text first so we can (a) verify HMAC when agent-signed and (b) reuse it as JSON.
     const rawBody = await req.text();
     const body: SendRequestBody = JSON.parse(rawBody);
-    const { businessId, conversationId, messageId, messageDocId, channel, recipientId, content, type, templateName, templateLanguage, templateParams, mediaUrl, mediaType } = body;
+    const { businessId, conversationId, messageId, messageDocId, channel, recipientId, content, type, templateName, templateLanguage, templateParams, mediaUrl, mediaType, clientMessageId } = body;
 
     // Authentication: accept either a Firebase session (UI) or an HMAC-signed agent call.
     const agentSignature = req.headers.get('x-agent-signature');
@@ -261,6 +295,27 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Idempotency — if this clientMessageId was already delivered for this
+    // business, return the stored result instead of re-hitting the Meta API.
+    if (clientMessageId && typeof clientMessageId === 'string') {
+      const existingSnap = await adminDb
+        .collection('conversationMessages')
+        .where('businessId', '==', businessId)
+        .where('clientMessageId', '==', clientMessageId)
+        .limit(1)
+        .get();
+      if (!existingSnap.empty) {
+        const existing = existingSnap.docs[0].data();
+        return NextResponse.json({
+          ok: true,
+          success: true,
+          externalMessageId: existing.externalMessageId ?? null,
+          messageId: existingSnap.docs[0].id,
+          idempotent: true,
+        });
+      }
+    }
+
     // Send via the appropriate Meta API
     let result: { externalMessageId: string };
 
@@ -306,7 +361,7 @@ export async function POST(req: NextRequest) {
       await updateMessageAfterSend(docIdToUpdate, result.externalMessageId, businessId);
     } else if (conversationId) {
       // Agent-originated send: no pre-existing doc — create one so it appears in the UI
-      await saveAgentMessage(businessId, conversationId, channel, content, result.externalMessageId);
+      await saveAgentMessage(businessId, conversationId, channel, content, result.externalMessageId, clientMessageId);
     }
 
     return NextResponse.json({
@@ -698,14 +753,20 @@ async function sendInstagram(
     throw new Error('Canal Instagram não está conectado');
   }
 
-  // Prefer Facebook page access token; fall back to direct Instagram token
-  // (stored when connected via instagram_business_manage_messages scope without a linked Facebook page)
-  const rawToken = facebook?.pageAccessToken || instagram.accessToken;
-  if (!rawToken) {
-    throw new Error('Credenciais do Instagram incompletas (pageAccessToken do Facebook ou accessToken do Instagram necessário)');
+  // We need the Facebook Page access token to send Instagram DMs.
+  // Instagram DMs that arrive via page subscription (object:"page") must be
+  // replied to using POST /{page-id}/messages with pages_messaging permission.
+  // Using POST /{ig-account-id}/messages requires instagram_business_manage_messages
+  // which needs separate Meta App Review — error 3 "does not have capability".
+  if (!facebook?.pageAccessToken || !facebook?.pageId) {
+    throw new Error(
+      'Credenciais do Instagram incompletas: a Página do Facebook vinculada é necessária para enviar mensagens. ' +
+      'Reconecte o canal em Configurações.',
+    );
   }
 
-  const pageAccessToken = await decryptToken(rawToken);
+  const pageAccessToken = await decryptToken(facebook.pageAccessToken);
+  const pageId = facebook.pageId;
 
   // Build message payload - media or text
   const messagePayload = media
@@ -717,17 +778,11 @@ async function sendInstagram(
       }
     : { text: content };
 
-  // Instagram DMs must be sent via /{ig-account-id}/messages (not /me/messages).
-  // Using /me/messages resolves "me" as the Facebook Page, which causes error code 10
-  // (permission denied) because the Instagram DM context requires the IG account as the sender.
-  const igAccountId = instagram.accountId;
-  if (!igAccountId) {
-    throw new Error('Credenciais do Instagram incompletas (accountId ausente — reconecte o canal em Configurações)');
-  }
-  const igEndpoint = `${META_BASE_URL}/${igAccountId}/messages`;
-
+  // POST /{page-id}/messages with the IGSID (Instagram Scoped User ID) as recipient.
+  // This uses pages_messaging permission (approved) and works for all Instagram DMs
+  // that arrived via page-level webhook subscription — no separate App Review needed.
   const response = await fetch(
-    igEndpoint,
+    `${META_BASE_URL}/${pageId}/messages`,
     {
       method: 'POST',
       headers: {
@@ -745,11 +800,10 @@ async function sendInstagram(
   const data: MetaApiResponse = await response.json();
 
   if (!response.ok || data.error) {
-    // Error code 10 on Instagram often means the 24h messaging window is closed.
-    // Give a more actionable message instead of the generic "permission denied".
+    // Error code 10 = 24h messaging window is closed (contact must message first).
     if (data.error?.code === 10) {
       throw new Error(JSON.stringify({
-        message: 'Janela de 24h encerrada ou permissão negada pelo Instagram. Aguarde uma mensagem do contato para abrir a janela novamente.',
+        message: 'Janela de 24h encerrada. Aguarde uma nova mensagem do contato para abrir a janela novamente.',
         code: 10,
         shouldRetry: false,
         originalError: data.error?.message,
@@ -774,10 +828,11 @@ async function saveAgentMessage(
   channel: string,
   content: string,
   externalMessageId: string,
+  clientMessageId?: string,
 ) {
   try {
     const now = new Date().toISOString();
-    await adminDb.collection('conversationMessages').add({
+    const doc: Record<string, unknown> = {
       conversationId,
       businessId,
       channel,
@@ -788,7 +843,9 @@ async function saveAgentMessage(
       externalMessageId,
       sentAt: now,
       createdAt: now,
-    });
+    };
+    if (clientMessageId) doc.clientMessageId = clientMessageId;
+    await adminDb.collection('conversationMessages').add(doc);
     await adminDb.collection('conversations').doc(conversationId).update({
       lastMessage: content,
       lastMessageAt: now,

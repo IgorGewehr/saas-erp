@@ -38,6 +38,8 @@ import { db } from '@/lib/config/firebase';
 import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatPhone, getInitials } from '@/lib/utils/format';
+import AgentConsole from './AgentConsole';
+import CompactMetricsStrip, { type Metric } from './CompactMetricsStrip';
 
 // ─── Animation ─────────────────────────────────────────
 const stagger = {
@@ -412,167 +414,78 @@ export default function DashboardModule() {
         </div>
       </motion.div>
 
-      {/* ━━━ Hero Row: Revenue Today + Monthly Revenue + Mode-specific card ━━━ */}
+      {/* ━━━ Agente IA — console unificado operador/analista (colapsável) ━━━ */}
+      <motion.div variants={fadeUp}>
+        <AgentConsole />
+      </motion.div>
+
+      {/* ━━━ Compact metrics strip — substitui Revenue Today + Revenue Month cards verbose ━━━ */}
+      {showRevenue && (
+        <motion.div variants={fadeUp}>
+          <CompactMetricsStrip metrics={useMemo<Metric[]>(() => {
+            const base: Metric[] = [
+              {
+                key: 'revenue-today',
+                icon: DollarSign,
+                label: t('dashboard.revenueToday', 'Receita hoje'),
+                value: formatCurrency(todayRevenue),
+                subtext: `${todaySales.length} ${todaySales.length !== 1 ? 'vendas' : 'venda'}`,
+                delta: revenueChange !== 0 ? revenueChange : undefined,
+                tint: 'emerald',
+                loading: loadingSales,
+              },
+              {
+                key: 'revenue-month',
+                icon: Wallet,
+                label: t('dashboard.revenueMonth', 'Receita mês'),
+                value: formatCurrency(monthlyRevenue),
+                subtext: `vs mês anterior`,
+                delta: monthlyRevenueChange !== 0 ? monthlyRevenueChange : undefined,
+                tint: 'blue',
+                loading: loadingSales,
+              },
+              {
+                key: 'ticket',
+                icon: Receipt,
+                label: 'Ticket médio',
+                value: ticketMedio > 0 ? formatCurrency(ticketMedio) : '—',
+                subtext: 'hoje',
+                tint: 'violet',
+                loading: loadingSales,
+              },
+              {
+                key: 'clients',
+                icon: Users,
+                label: t('dashboard.totalClients', 'Clientes'),
+                value: String(activeClients),
+                tint: 'red',
+                loading: loadingClients,
+                onClick: () => setActivePage('Clientes'),
+              },
+              {
+                key: 'financial-pending',
+                icon: overdueTransactions.length > 0 ? AlertTriangle : Wallet,
+                label: overdueTransactions.length > 0 ? 'Contas atrasadas' : 'Contas pendentes',
+                value: String(overdueTransactions.length > 0 ? overdueTransactions.length : pendingTransactions.length),
+                subtext: overdueTransactions.length > 0 ? 'ação urgente' : 'próximas',
+                tint: overdueTransactions.length > 0 ? 'red' : 'amber',
+                loading: loadingTransactions,
+                onClick: () => setActivePage('Financeiro'),
+              },
+            ];
+            return base;
+          }, [todayRevenue, todaySales.length, revenueChange, monthlyRevenue, monthlyRevenueChange, ticketMedio, activeClients, overdueTransactions.length, pendingTransactions.length, loadingSales, loadingClients, loadingTransactions, t, setActivePage])} />
+        </motion.div>
+      )}
+
+      {/* ━━━ Mode-specific actionable card (full-width agora, já que revenue virou strip) ━━━ */}
       <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-        {/* Revenue Today Card — oculto em modo times */}
-        {showRevenue && (
-        <motion.div
-          variants={fadeUp}
-          className={cn(
-            'md:col-span-4 rounded-2xl p-5',
-            'bg-white dark:bg-gray-800/60',
-            'border border-gray-100 dark:border-gray-700/50',
-            'shadow-sm',
-          )}
-        >
-          {loadingSales ? (
-            <div className="space-y-3">
-              <div className="flex justify-between">
-                <div className="h-4 w-24 rounded-md shimmer" />
-                <div className="h-8 w-8 rounded-lg shimmer" />
-              </div>
-              <div className="h-10 w-28 rounded-md shimmer mt-2" />
-              <div className="h-2 w-full rounded-full shimmer mt-3" />
-              <div className="h-3 w-32 rounded-md shimmer" />
-            </div>
-          ) : (
-            <div className="flex flex-col justify-between h-full">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-medium text-gray-500 dark:text-gray-400">{t('dashboard.revenueToday', 'Receita hoje')}</p>
-                <div className="w-9 h-9 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 flex items-center justify-center">
-                  <DollarSign className="w-[18px] h-[18px] text-emerald-600 dark:text-emerald-400" />
-                </div>
-              </div>
-
-              <div className="mt-2">
-                <div className="flex items-baseline gap-2.5">
-                  <p className="text-3xl font-bold text-gray-900 dark:text-white tracking-tight">
-                    {formatCurrency(todayRevenue)}
-                  </p>
-                  {revenueChange !== 0 && (
-                    <span className={cn(
-                      'inline-flex items-center gap-0.5 text-xs font-semibold px-1.5 py-0.5 rounded-full',
-                      revenueChange > 0
-                        ? 'text-emerald-700 bg-emerald-50 dark:text-emerald-400 dark:bg-emerald-500/10'
-                        : 'text-red-700 bg-red-50 dark:text-red-400 dark:bg-red-500/10',
-                    )}>
-                      {revenueChange > 0
-                        ? <TrendingUp className="w-3 h-3" />
-                        : <TrendingDown className="w-3 h-3" />
-                      }
-                      {revenueChange > 0 ? '+' : ''}{revenueChange}%
-                    </span>
-                  )}
-                </div>
-
-                {dailyAvg > 0 && (
-                  <div className="mt-3">
-                    <div className="w-full h-1.5 bg-gray-100 dark:bg-gray-700/50 rounded-full overflow-hidden">
-                      <motion.div
-                        className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-emerald-400"
-                        initial={{ width: 0 }}
-                        animate={{ width: `${goalProgress}%` }}
-                        transition={{ duration: 0.8, ease: [0.25, 0.46, 0.45, 0.94], delay: 0.3 }}
-                      />
-                    </div>
-                    <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5">
-                      {t('dashboard.dailyGoal', 'Meta diária')}: {formatCurrency(dailyAvg)}
-                    </p>
-                  </div>
-                )}
-
-                <div className="flex items-center gap-4 mt-3 pt-3 border-t border-gray-100 dark:border-gray-700/30">
-                  <div className="flex items-center gap-1.5">
-                    <Receipt className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
-                    <span className="text-xs text-gray-500 dark:text-gray-400">
-                      {todaySales.length} {todaySales.length !== 1 ? t('dashboard.sales', 'vendas') : t('dashboard.sale', 'venda')}
-                    </span>
-                  </div>
-                  {ticketMedio > 0 && (
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-xs text-gray-400 dark:text-gray-500">{t('dashboard.ticket', 'Ticket')}:</span>
-                      <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">
-                        {formatCurrency(ticketMedio)}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-        </motion.div>
-        )}
-
-        {/* Monthly Revenue Card — oculto em modo times */}
-        {showRevenue && (
-        <motion.div
-          variants={fadeUp}
-          className={cn(
-            'md:col-span-3 rounded-2xl p-5',
-            'bg-white dark:bg-gray-800/60',
-            'border border-gray-100 dark:border-gray-700/50',
-            'shadow-sm',
-          )}
-        >
-          {loadingSales ? (
-            <div className="space-y-3">
-              <div className="flex justify-between">
-                <div className="h-4 w-24 rounded-md shimmer" />
-                <div className="h-8 w-8 rounded-lg shimmer" />
-              </div>
-              <div className="h-8 w-24 rounded-md shimmer mt-2" />
-              <div className="h-3 w-20 rounded-md shimmer mt-2" />
-            </div>
-          ) : (
-            <div className="flex flex-col justify-between h-full">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-medium text-gray-500 dark:text-gray-400">{t('dashboard.revenueMonth', 'Receita do mês')}</p>
-                <div className="w-9 h-9 rounded-xl bg-blue-50 dark:bg-blue-500/10 flex items-center justify-center">
-                  <Wallet className="w-[18px] h-[18px] text-blue-600 dark:text-blue-400" />
-                </div>
-              </div>
-
-              <div className="mt-2">
-                <div className="flex items-baseline gap-2.5">
-                  <p className="text-2xl font-bold text-gray-900 dark:text-white tracking-tight">
-                    {formatCurrency(monthlyRevenue)}
-                  </p>
-                  {monthlyRevenueChange !== 0 && (
-                    <span className={cn(
-                      'inline-flex items-center gap-0.5 text-xs font-semibold px-1.5 py-0.5 rounded-full',
-                      monthlyRevenueChange > 0
-                        ? 'text-emerald-700 bg-emerald-50 dark:text-emerald-400 dark:bg-emerald-500/10'
-                        : 'text-red-700 bg-red-50 dark:text-red-400 dark:bg-red-500/10',
-                    )}>
-                      {monthlyRevenueChange > 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-                      {monthlyRevenueChange > 0 ? '+' : ''}{monthlyRevenueChange}%
-                    </span>
-                  )}
-                </div>
-                <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">
-                  {t('dashboard.vsPrevMonth', 'vs. mês anterior')}
-                </p>
-              </div>
-
-              <div className="flex items-center gap-4 mt-3 pt-3 border-t border-gray-100 dark:border-gray-700/30">
-                <div className="flex items-center gap-1.5">
-                  <Receipt className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
-                  <span className="text-xs text-gray-500 dark:text-gray-400">
-                    {monthlySales.length} {monthlySales.length !== 1 ? t('dashboard.sales', 'vendas') : t('dashboard.sale', 'venda')}
-                  </span>
-                </div>
-              </div>
-            </div>
-          )}
-        </motion.div>
-        )}
-
         {/* Next Appointment Card */}
         {showAgenda && (
         <motion.div
           variants={fadeUp}
           className={cn(
-            'md:col-span-5 rounded-2xl p-5 relative overflow-hidden',
+            'md:col-span-12 rounded-2xl p-5 relative overflow-hidden',
             'bg-gradient-to-br from-red-600 to-red-500',
             'shadow-red dark:shadow-none',
           )}
@@ -628,7 +541,7 @@ export default function DashboardModule() {
         {showOrders && (
           <motion.div
             variants={fadeUp}
-            className="md:col-span-5 rounded-2xl p-5 relative overflow-hidden bg-gradient-to-br from-orange-600 via-red-500 to-red-600 shadow-red dark:shadow-none text-white"
+            className="md:col-span-12 rounded-2xl p-5 relative overflow-hidden bg-gradient-to-br from-orange-600 via-red-500 to-red-600 shadow-red dark:shadow-none text-white"
           >
             <div className="relative z-10">
               <div className="flex items-center justify-between mb-4">
@@ -669,7 +582,7 @@ export default function DashboardModule() {
         {showTasks && (
           <motion.div
             variants={fadeUp}
-            className="md:col-span-5 rounded-2xl p-5 relative overflow-hidden bg-gradient-to-br from-violet-600 to-purple-600 shadow-md shadow-violet-500/20 text-white"
+            className="md:col-span-12 rounded-2xl p-5 relative overflow-hidden bg-gradient-to-br from-violet-600 to-purple-600 shadow-md shadow-violet-500/20 text-white"
           >
             <div className="relative z-10">
               <p className="text-sm font-medium text-white/80 mb-3">Produtividade do time</p>
@@ -703,7 +616,7 @@ export default function DashboardModule() {
           </motion.div>
         )}
 
-        {!showAgenda && !showOrders && !showTasks && (
+        {false && !showAgenda && !showOrders && !showTasks && (
           <motion.div
             variants={fadeUp}
             className="md:col-span-5 rounded-2xl p-6 bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-md"
@@ -717,34 +630,10 @@ export default function DashboardModule() {
         )}
       </div>
 
-      {/* ━━━ KPI Cards (4 cards) ━━━ */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Total Clientes */}
-        <motion.div
-          variants={fadeUp}
-          className={cn(
-            'rounded-2xl p-5',
-            'bg-white dark:bg-gray-800/60',
-            'border border-gray-100 dark:border-gray-700/50',
-            'shadow-sm',
-            'border-l-[3px] border-l-red-500',
-          )}
-        >
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-red-600 dark:text-red-400">{t('dashboard.totalClients', 'Total Clientes')}</p>
-              {isLoading ? (
-                <div className="h-9 w-16 rounded-lg shimmer mt-1" />
-              ) : (
-                <p className="text-3xl font-bold text-gray-900 dark:text-white mt-1 tracking-tight">{activeClients}</p>
-              )}
-            </div>
-            <div className="w-10 h-10 rounded-xl bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
-              <Users className="w-5 h-5 text-red-500 dark:text-red-400" />
-            </div>
-          </div>
-        </motion.div>
-
+      {/* ━━━ KPI Cards — mode-specific (métricas gerais vão na CompactMetricsStrip acima) ━━━
+           Sempre renderizamos 2 cards (Agendamentos+Próximos em servicos, Pedidos+Em andamento
+           em pedidos), então o grid fica 2 colunas para preencher horizontalmente sem gap feio. ━━━ */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         {/* Agendamentos Hoje — apenas no modo serviços */}
         {showAgenda && (
         <motion.div
@@ -878,49 +767,7 @@ export default function DashboardModule() {
           </motion.div>
         )}
 
-        {/* Financeiro — Pendências */}
-        <motion.div
-          variants={fadeUp}
-          className={cn(
-            'rounded-2xl p-5',
-            'bg-white dark:bg-gray-800/60',
-            'border border-gray-100 dark:border-gray-700/50',
-            'shadow-sm',
-            'border-l-[3px]',
-            overdueTransactions.length > 0 ? 'border-l-red-500' : 'border-l-blue-500',
-          )}
-        >
-          <div className="flex items-center justify-between">
-            <div>
-              <p className={cn(
-                'text-sm font-medium',
-                overdueTransactions.length > 0
-                  ? 'text-red-600 dark:text-red-400'
-                  : 'text-gray-600 dark:text-gray-400'
-              )}>
-                {overdueTransactions.length > 0 ? t('dashboard.overdueAccounts', 'Contas Atrasadas') : t('dashboard.pendingAccounts', 'Contas Pendentes')}
-              </p>
-              {isLoading ? (
-                <div className="h-9 w-16 rounded-lg shimmer mt-1" />
-              ) : (
-                <p className="text-3xl font-bold text-gray-900 dark:text-white mt-1 tracking-tight">
-                  {overdueTransactions.length > 0 ? overdueTransactions.length : pendingTransactions.length}
-                </p>
-              )}
-            </div>
-            <div className={cn(
-              'w-10 h-10 rounded-xl flex items-center justify-center',
-              overdueTransactions.length > 0
-                ? 'bg-red-50 dark:bg-red-500/10'
-                : 'bg-blue-50 dark:bg-blue-500/10',
-            )}>
-              {overdueTransactions.length > 0
-                ? <AlertTriangle className="w-5 h-5 text-red-500 dark:text-red-400" />
-                : <Wallet className="w-5 h-5 text-blue-500 dark:text-blue-400" />
-              }
-            </div>
-          </div>
-        </motion.div>
+        {/* Financeiro — Pendências — REMOVIDO: agora mora na CompactMetricsStrip acima */}
       </div>
 
       {/* ━━━ Bottom Section: Client Table + Sidebar ━━━ */}

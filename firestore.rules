@@ -76,13 +76,6 @@ service cloud.firestore {
       return field is string && field.size() > 0;
     }
 
-    // Validate timestamp string (ISO format)
-    function hasTimestamps() {
-      return request.resource.data.keys().hasAll(['createdAt', 'updatedAt'])
-             && request.resource.data.createdAt is string
-             && request.resource.data.updatedAt is string;
-    }
-
     // ============================================
     // USERS COLLECTION
     // ============================================
@@ -780,6 +773,15 @@ service cloud.firestore {
     }
 
     // ============================================
+    // AGENT NONCES (replay protection for HMAC requests)
+    // ============================================
+    // Written exclusively by the server (Admin SDK) when verifying inbound
+    // agent requests. Clients must never read or write these.
+    match /agentNonces/{nonceId} {
+      allow read, write: if false;
+    }
+
+    // ============================================
     // AGENT RUNS (logs do agente IA)
     // ============================================
     match /agentRuns/{runId} {
@@ -791,6 +793,26 @@ service cloud.firestore {
       allow create, update: if isAuthenticated() && incomingBelongsToBusiness() && isAdmin();
 
       allow delete: if isAuthenticated() && isOwnBusiness() && hasMinRole('founder');
+    }
+
+    // ============================================
+    // KNOWLEDGE CHUNKS (RAG index — Wave 3)
+    // ============================================
+    // Only accessed via admin SDK from API routes. Client-side reads not needed.
+    // Reading the embedding array is heavy and not useful for the UI.
+    match /knowledgeChunks/{chunkId} {
+      allow read, write: if false;  // admin-only (via API)
+    }
+
+    // ============================================
+    // AGENT MEMORY (tier-2 semantic facts per contact — Wave 3)
+    // ============================================
+    // Subcollection under businesses/{bId}/agentMemory/{contactId}. Managed
+    // exclusively by agent tools via admin SDK. UI may want to read for a
+    // future "what the agent remembers about this contact" panel.
+    match /businesses/{businessId}/agentMemory/{contactId} {
+      allow read: if isAuthenticated() && businessId == userBusinessId() && isOperator();
+      allow write: if false;  // writes only through API routes
     }
 
     // ============================================
@@ -826,12 +848,11 @@ service cloud.firestore {
                     (resource.data.sharedWith is list && resource.data.sharedWith.hasAny([request.auth.uid]))
                   );
 
-      // Create: admin+ of the business, ciphertext + required fields
+      // Create: admin+ of the business, title required (password optional)
       allow create: if isAuthenticated()
                     && incomingBelongsToBusiness()
                     && isAdmin()
-                    && isNonEmptyString(request.resource.data.title)
-                    && isNonEmptyString(request.resource.data.encryptedPassword);
+                    && isNonEmptyString(request.resource.data.title);
 
       // Update: admin+ of the business, same tenant
       allow update: if isAuthenticated()
@@ -843,6 +864,137 @@ service cloud.firestore {
       allow delete: if isAuthenticated()
                     && isOwnBusiness()
                     && (resource.data.createdBy == request.auth.uid || hasMinRole('founder'));
+    }
+
+    // ============================================
+    // NOTES COLLECTION (Mural de Notas)
+    // ============================================
+    match /notes/{noteId} {
+      // O filtro entre notas pessoais e da equipe (scope/authorId) 
+      // é feito no client-side para evitar a exigência de índices compostos.
+      allow read: if isAuthenticated() && isOwnBusiness();
+
+      // Any authenticated business member can create notes
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && request.resource.data.authorId == request.auth.uid
+                    && isNonEmptyString(request.resource.data.content);
+
+      // Authors can update their own notes; any business member can update team notes
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && (resource.data.authorId == request.auth.uid || resource.data.scope == 'team');
+
+      // Authors can delete their own notes; managers can delete any note
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && (resource.data.authorId == request.auth.uid || isManager());
+    }
+
+    // ============================================
+    // NOTIFICATIONS COLLECTION
+    // ============================================
+    match /notifications/{notifId} {
+      // Users can read their own notifications
+      allow read: if isAuthenticated()
+                  && resource.data.userId == request.auth.uid;
+
+      // Any authenticated business member can create notifications for others
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isNonEmptyString(request.resource.data.title);
+
+      // Users can update their own notifications (mark as read)
+      allow update: if isAuthenticated()
+                    && resource.data.userId == request.auth.uid;
+
+      // Users can delete their own notifications
+      allow delete: if isAuthenticated()
+                    && resource.data.userId == request.auth.uid;
+    }
+
+    // ============================================
+    // FORM TEMPLATES COLLECTION
+    // ============================================
+    match /formTemplates/{templateId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isAdmin();
+      allow update: if isAuthenticated() && isOwnBusiness() && isAdmin();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    // ============================================
+    // FORM RESPONSES COLLECTION
+    // ============================================
+    match /formResponses/{responseId} {
+      // Business members can read responses
+      allow read: if isAuthenticated() && isOwnBusiness();
+      // Public submissions handled by Admin SDK (API route) — no client-side create needed
+      allow create: if isAuthenticated() && incomingBelongsToBusiness();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isManager();
+    }
+
+    // ============================================
+    // REVIEWS COLLECTION
+    // ============================================
+    match /reviews/{reviewId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+      // Public submissions handled by Admin SDK (API route)
+      allow create: if false; // only via server
+      allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    // ============================================
+    // AUTOMATION RULES COLLECTION
+    // ============================================
+    match /automationRules/{ruleId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isAdmin();
+      allow update: if isAuthenticated() && isOwnBusiness() && isAdmin();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    // ============================================
+    // BANK RECONCILIATION COLLECTIONS
+    // ============================================
+    match /bankStatementImports/{importId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isManager();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    match /reconciliationItems/{itemId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isManager();
+      allow update: if isAuthenticated() && isOwnBusiness() && isManager();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    // ============================================
+    // MEMBERSHIPS COLLECTION
+    // ============================================
+    match /memberships/{membershipId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isAdmin();
+      allow update: if isAuthenticated() && isOwnBusiness() && isAdmin();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    match /clientMemberships/{cmId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isManager();
+      allow update: if isAuthenticated() && isOwnBusiness() && isManager();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    // ============================================
+    // CALENDAR SYNC TOKENS COLLECTION
+    // ============================================
+    match /calendarSyncTokens/{uid} {
+      // Only the token owner can read (contains encrypted tokens)
+      allow read: if isAuthenticated() && request.auth.uid == uid;
+      // Created/updated by server (OAuth callback) — no client-side write
+      allow write: if false;
     }
 
     // ============================================

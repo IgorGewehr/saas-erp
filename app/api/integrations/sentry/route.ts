@@ -1,18 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
+import { getIntegrationKeys } from '@/lib/utils/integrationKeys';
 
 export async function GET(request: NextRequest) {
   const auth = await verifyAuth(request);
   if (isAuthError(auth)) return auth;
 
-  const apiKey = request.headers.get('x-api-key');
+  const keys = await getIntegrationKeys(auth.businessId, 'sentry');
+  const apiKey = keys?.apiKey || request.headers.get('x-api-key');
   if (!apiKey) {
-    return NextResponse.json({ error: 'API key required' }, { status: 401 });
+    return NextResponse.json({ error: 'Sentry integration not configured' }, { status: 400 });
   }
 
-  const orgSlug = request.headers.get('x-org-slug');
+  const orgSlug = (keys?.metadata?.org as string) || request.headers.get('x-org-slug');
   if (!orgSlug) {
-    return NextResponse.json({ error: 'Organization slug required (x-org-slug header)' }, { status: 400 });
+    return NextResponse.json({ error: 'Sentry organization slug not configured' }, { status: 400 });
   }
 
   try {

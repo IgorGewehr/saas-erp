@@ -934,19 +934,26 @@ function MediaAttachment({
 
   if (mediaType === 'video') {
     return (
-      <div className="mb-1.5 rounded-xl overflow-hidden max-w-[240px] bg-black/10 dark:bg-white/5 flex items-center justify-center p-4 gap-2">
-        <Video className="w-5 h-5 text-gray-400" />
-        <span className="text-xs text-gray-500 dark:text-gray-400">{t('conversations.mediaVideo', 'Vídeo')}</span>
+      <div className="mb-1.5 rounded-xl overflow-hidden max-w-[280px]">
+        <video
+          controls
+          preload="metadata"
+          className="w-full rounded-xl bg-black"
+          style={{ maxHeight: '200px' }}
+        >
+          <source src={mediaUrl} />
+        </video>
       </div>
     );
   }
 
   if (mediaType === 'audio') {
     return (
-      <div className="mb-1.5 flex items-center gap-2 px-3 py-2 rounded-xl bg-black/5 dark:bg-white/5 min-w-[180px]">
-        <Headphones className="w-4 h-4 text-gray-400 flex-shrink-0" />
-        <div className="flex-1 h-1 rounded-full bg-gray-300 dark:bg-gray-600" />
-        <span className="text-[10px] text-gray-400">{t('conversations.mediaAudio', 'Áudio')}</span>
+      <div className="mb-1.5 min-w-[240px] max-w-[300px]">
+        {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+        <audio controls preload="metadata" className="w-full block">
+          <source src={mediaUrl} />
+        </audio>
       </div>
     );
   }
@@ -2259,15 +2266,40 @@ export default function ConversasModule() {
     messagesEndRef.current?.scrollIntoView({ behavior });
   }, []);
 
-  useEffect(() => {
-    if (selectedConversation) {
-      setTimeout(() => scrollToBottom('instant'), 50);
-    }
-  }, [selectedConversation?.id, scrollToBottom]);
+  // Track the conversation ID for which we've already done the initial instant scroll
+  const initialScrollDoneRef = useRef<string | null>(null);
 
+  // Reset initial scroll flag when conversation changes
   useEffect(() => {
-    if (selectedConversation && messages.length > 0 && !isLoadingOlderRef.current) {
-      scrollToBottom();
+    if (selectedConversation?.id) {
+      initialScrollDoneRef.current = null;
+    }
+  }, [selectedConversation?.id]);
+
+  // Scroll instantly to bottom when messages finish loading for the first time in a conversation.
+  // This fires as soon as isLoadingMessages goes false AND messages are in the DOM.
+  useEffect(() => {
+    if (
+      !isLoadingMessages &&
+      selectedConversation?.id &&
+      messages.length > 0 &&
+      initialScrollDoneRef.current !== selectedConversation.id
+    ) {
+      initialScrollDoneRef.current = selectedConversation.id;
+      // rAF ensures the DOM has painted the messages before scrolling
+      requestAnimationFrame(() => scrollToBottom('instant'));
+    }
+  }, [isLoadingMessages, selectedConversation?.id, messages.length, scrollToBottom]);
+
+  // Smooth scroll when a new message arrives after the initial load
+  useEffect(() => {
+    if (
+      selectedConversation &&
+      messages.length > 0 &&
+      !isLoadingOlderRef.current &&
+      initialScrollDoneRef.current === selectedConversation.id
+    ) {
+      scrollToBottom('smooth');
     }
   }, [messages.length, selectedConversation, scrollToBottom]);
 
@@ -2547,14 +2579,17 @@ export default function ConversasModule() {
       : 'document';
 
     const now = new Date().toISOString();
+    // For audio/image/video, don't store filename as content — the player/thumbnail is
+    // sufficient. Documents keep the filename as a visible label.
+    const messageContent = mediaType === 'document' ? file.name : '';
 
-    // Save to Firestore
-    await addDoc(collection(db, 'conversationMessages'), {
+    // Save to Firestore with 'sending' status — updated after API response
+    const msgRef = await addDoc(collection(db, 'conversationMessages'), {
       conversationId: selectedConversation.id,
       businessId: business.id,
       channel: selectedConversation.channel,
       direction: 'outbound' as const,
-      content: file.name,
+      content: messageContent,
       mediaUrl,
       mediaType,
       status: 'sending' as const,
@@ -2563,18 +2598,22 @@ export default function ConversasModule() {
     });
 
     // Update conversation metadata
+    const mediaLabel = mediaType === 'image' ? t('conversations.mediaImage', 'Imagem')
+      : mediaType === 'video' ? t('conversations.mediaVideo', 'Vídeo')
+      : mediaType === 'audio' ? t('conversations.mediaAudio', 'Áudio')
+      : t('conversations.mediaDocument', 'Documento');
     await updateDoc(doc(db, 'conversations', selectedConversation.id), {
-      lastMessage: `[${mediaType === 'image' ? t('conversations.mediaImage', 'Imagem') : mediaType === 'video' ? t('conversations.mediaVideo', 'Vídeo') : mediaType === 'audio' ? t('conversations.mediaAudio', 'Áudio') : t('conversations.mediaDocument', 'Documento')}] ${file.name}`,
+      lastMessage: `[${mediaLabel}] ${file.name}`,
       lastMessageAt: now,
       lastMessageDirection: 'outbound',
       updatedAt: now,
     });
 
-    // Send via API
+    // Send via API and update message status based on result
     try {
       const authInstance = getAuth();
       const token = await authInstance.currentUser?.getIdToken();
-      await fetch('/api/conversations/send', {
+      const sendRes = await fetch('/api/conversations/send', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2591,8 +2630,20 @@ export default function ConversasModule() {
           mediaType,
         }),
       });
-    } catch {
-      console.warn('Failed to send media via API, saved locally');
+
+      if (sendRes.ok) {
+        await updateDoc(msgRef, { status: 'sent' });
+      } else {
+        const errData = await sendRes.json().catch(() => ({}));
+        console.error('[Media] API send failed:', sendRes.status, errData);
+        await updateDoc(msgRef, {
+          status: 'failed',
+          errorMessage: (errData as { error?: string }).error || `HTTP ${sendRes.status}`,
+        });
+      }
+    } catch (sendErr) {
+      console.error('[Media] Network error sending media:', sendErr);
+      await updateDoc(msgRef, { status: 'failed', errorMessage: 'Erro de conexão' });
     }
   }, [selectedConversation, business?.id, user]);
 
