@@ -22,6 +22,7 @@ import {
   BarChart3, Command, TrendingUp, Users, DollarSign, Calendar,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { RenderMarkdown } from './markdown';
 
 type Role = 'user' | 'assistant';
 type Mode = 'operator' | 'analyst';
@@ -413,15 +414,19 @@ function MessageBubble({
     >
       <div
         className={cn(
-          'max-w-[85%] rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap break-words',
+          'max-w-[85%] rounded-2xl px-3.5 py-2.5 text-sm break-words',
           isUser
-            ? cn('text-white rounded-br-md', accent === 'indigo' ? 'bg-indigo-600' : 'bg-violet-600')
+            ? cn('text-white rounded-br-md whitespace-pre-wrap', accent === 'indigo' ? 'bg-indigo-600' : 'bg-violet-600')
             : msg.isFallback
-              ? 'bg-amber-50 dark:bg-amber-950/30 text-amber-900 dark:text-amber-200 border border-amber-200/60 dark:border-amber-900/40 rounded-bl-md'
+              ? 'bg-amber-50 dark:bg-amber-950/30 text-amber-900 dark:text-amber-200 border border-amber-200/60 dark:border-amber-900/40 rounded-bl-md whitespace-pre-wrap'
               : 'bg-gray-100 dark:bg-gray-800/80 text-gray-800 dark:text-gray-200 rounded-bl-md',
         )}
       >
-        {msg.content}
+        {isUser || msg.isFallback ? (
+          msg.content
+        ) : (
+          <RenderMarkdown source={msg.content} />
+        )}
         {hasTools && !isUser && (
           <div className="mt-1.5 pt-1.5 border-t border-gray-200 dark:border-gray-700/40">
             <button
