@@ -23,7 +23,9 @@ import type { Client, CRMDeal, CRMActivity, CRMActivityType, LeadStatus, Lifecyc
 
 type Action =
   | 'list_contacts'
+  | 'search_contacts'
   | 'list_deals'
+  | 'search_deals'
   | 'get_deal'
   | 'create_deal'
   | 'update_deal_stage'
@@ -52,8 +54,12 @@ export async function POST(req: NextRequest) {
     switch (body.action) {
       case 'list_contacts':
         return NextResponse.json({ ok: true, data: await listContacts(businessId, body.params as { status?: LeadStatus; lifecycleStage?: LifecycleStage; tag?: string; assignedTo?: string; limit?: number }) });
+      case 'search_contacts':
+        return NextResponse.json({ ok: true, data: await searchContacts(businessId, body.params as { query: string; limit?: number }) });
       case 'list_deals':
         return NextResponse.json({ ok: true, data: await listDeals(businessId, body.params as { stage?: string; assignedTo?: string; contactId?: string; limit?: number }) });
+      case 'search_deals':
+        return NextResponse.json({ ok: true, data: await searchDeals(businessId, body.params as { query: string; limit?: number }) });
       case 'get_deal':
         return NextResponse.json({ ok: true, data: await getDeal(businessId, body.params.id as string) });
       case 'create_deal':
@@ -96,6 +102,44 @@ async function listContacts(
   return snap.docs.map((d) => ({ ...(d.data() as Client), id: d.id }));
 }
 
+/** Fuzzy name/phone/email/company search — no index needed (client-side score). */
+async function searchContacts(
+  businessId: string,
+  p: { query: string; limit?: number },
+): Promise<Array<Client & { _score: number }>> {
+  if (!p.query || !p.query.trim()) throw new Error('query required');
+  const cap = Math.min(Math.max(p.limit ?? 10, 1), 50);
+
+  const snap = await adminDb.collection('clients').where('businessId', '==', businessId).limit(1000).get();
+
+  const norm = (s?: string) =>
+    (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+  const q = norm(p.query);
+  const qDigits = p.query.replace(/\D/g, '');
+
+  const scored: Array<Client & { _score: number }> = [];
+  for (const d of snap.docs) {
+    const c = { ...(d.data() as Client), id: d.id };
+    const nName = norm(c.name);
+    const nEmail = norm(c.email);
+    const nCompany = norm(c.company);
+    const phoneDigits = (c.phone || c.whatsapp || '').replace(/\D/g, '');
+
+    let score = 0;
+    if (nName === q) score = 100;
+    else if (nName.startsWith(q)) score = 80;
+    else if (nName.includes(q)) score = 60;
+    else if (nEmail.includes(q)) score = 50;
+    else if (nCompany.includes(q)) score = 40;
+    else if (qDigits && phoneDigits.includes(qDigits)) score = 70;
+
+    if (score > 0) scored.push({ ...c, _score: score });
+  }
+
+  scored.sort((a, b) => b._score - a._score);
+  return scored.slice(0, cap);
+}
+
 // ─── Deals ───────────────────────────────────────────────────────────────────
 
 async function listDeals(
@@ -110,6 +154,40 @@ async function listDeals(
 
   const snap = await q.orderBy('updatedAt', 'desc').limit(limit).get();
   return snap.docs.map((d) => ({ ...(d.data() as CRMDeal), id: d.id }));
+}
+
+/** Fuzzy title/contactName/notes search for deals. */
+async function searchDeals(
+  businessId: string,
+  p: { query: string; limit?: number },
+): Promise<Array<CRMDeal & { _score: number }>> {
+  if (!p.query || !p.query.trim()) throw new Error('query required');
+  const cap = Math.min(Math.max(p.limit ?? 10, 1), 50);
+
+  const snap = await adminDb.collection('crmDeals').where('businessId', '==', businessId).limit(1000).get();
+  const norm = (s?: string) =>
+    (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+  const q = norm(p.query);
+
+  const scored: Array<CRMDeal & { _score: number }> = [];
+  for (const d of snap.docs) {
+    const deal = { ...(d.data() as CRMDeal), id: d.id };
+    const nTitle = norm(deal.title);
+    const nContact = norm(deal.contactName);
+    const nNotes = norm(deal.notes);
+
+    let score = 0;
+    if (nTitle === q) score = 100;
+    else if (nTitle.startsWith(q)) score = 80;
+    else if (nTitle.includes(q)) score = 60;
+    else if (nContact.includes(q)) score = 40;
+    else if (nNotes.includes(q)) score = 25;
+
+    if (score > 0) scored.push({ ...deal, _score: score });
+  }
+
+  scored.sort((a, b) => b._score - a._score);
+  return scored.slice(0, cap);
 }
 
 async function getDeal(businessId: string, id: string): Promise<CRMDeal | null> {

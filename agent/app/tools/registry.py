@@ -693,11 +693,30 @@ FINANCIAL_TOOLS: list[dict[str, Any]] = [
 INVENTORY_TOOLS: list[dict[str, Any]] = [
     _simple_tool(
         "inventory_list",
-        "List products (admin view — includes inactive/out-of-stock).",
-        category={"type": "string"},
+        (
+            "Lista produtos (admin view — inclui inativos se pedido). "
+            "NÃO passe nome de produto em `category` — category é bucket (ex: 'Bebidas', 'Sobremesas'). "
+            "Pra achar produto por nome use inventory_search."
+        ),
+        category={
+            "type": "string",
+            "description": "Bucket (ex: 'Bebidas', 'Higiene'). NÃO é o nome. Pra nome use inventory_search.",
+        },
         isActive={"type": "boolean"},
         onlyDeliverable={"type": "boolean"},
         limit={"type": "integer", "default": 100},
+    ),
+    _simple_tool(
+        "inventory_search",
+        (
+            "Busca fuzzy por produto (nome/SKU/barcode/categoria/descrição). Admin view — "
+            "diferente de catalog_search que é customer-facing (só deliverable ativos). "
+            "Use quando operador mencionou nome específico."
+        ),
+        required=["query"],
+        query={"type": "string"},
+        includeInactive={"type": "boolean"},
+        limit={"type": "integer", "default": 10},
     ),
     _simple_tool("inventory_get", "Fetch a single product.", required=["id"], id={"type": "string"}),
     _simple_tool(
@@ -740,12 +759,26 @@ KANBAN_TOOLS: list[dict[str, Any]] = [
     _simple_tool("kanban_get_board", "Fetch a single board (includes columns).", required=["id"], id={"type": "string"}),
     _simple_tool(
         "kanban_list_cards",
-        "List cards in a board. Optional column/assignee filter.",
+        (
+            "Lista cartões de um board. Filtros são IDs (columnId, assigneeId = uid). "
+            "NÃO passe título de cartão aqui — use kanban_search_cards."
+        ),
         required=["boardId"],
-        boardId={"type": "string"},
-        columnId={"type": "string"},
-        assigneeId={"type": "string"},
+        boardId={"type": "string", "description": "id do board (use kanban_list_boards pra obter)"},
+        columnId={"type": "string", "description": "id da coluna"},
+        assigneeId={"type": "string", "description": "uid do usuário assignee (não o nome)"},
         limit={"type": "integer", "default": 100},
+    ),
+    _simple_tool(
+        "kanban_search_cards",
+        (
+            "Busca fuzzy cartões por título/descrição/assignees. boardId opcional "
+            "restringe a um board. Use quando operador mencionou título/nome no cartão."
+        ),
+        required=["query"],
+        query={"type": "string"},
+        boardId={"type": "string", "description": "opcional: restringe a um board específico"},
+        limit={"type": "integer", "default": 10},
     ),
     _simple_tool("kanban_get_card", "Fetch a single card.", required=["id"], id={"type": "string"}),
     _simple_tool(
@@ -801,20 +834,46 @@ NOTES_TOOLS: list[dict[str, Any]] = [
 CRM_TOOLS: list[dict[str, Any]] = [
     _simple_tool(
         "crm_list_contacts",
-        "Filter CRM contacts by status/lifecycle/tag/assignee.",
+        (
+            "Filtra contatos CRM por status/lifecycle/tag/assignee. TODOS esses filtros "
+            "são enums/IDs — NÃO passe nome de pessoa aqui. Pra achar por nome/email/"
+            "telefone use crm_search_contacts."
+        ),
         status={"type": "string", "enum": ["novo", "contatado", "qualificado", "proposta", "negociacao", "ganho", "perdido"]},
         lifecycleStage={"type": "string", "enum": ["new_lead", "contacted", "qualified", "proposal", "negotiation", "customer", "churned"]},
-        tag={"type": "string"},
-        assignedTo={"type": "string"},
+        tag={"type": "string", "description": "Tag exata (não é texto livre — passe o valor literal da tag)"},
+        assignedTo={"type": "string", "description": "uid do usuário responsável (não o nome)"},
         limit={"type": "integer", "default": 50},
     ),
     _simple_tool(
+        "crm_search_contacts",
+        (
+            "Busca fuzzy contatos CRM por nome/email/telefone/empresa. Tolera acentos, "
+            "case, e números de telefone formatados ou não. Use quando o operador disser "
+            "um nome próprio ('fulano', 'joão silva') ou parte de telefone."
+        ),
+        required=["query"],
+        query={"type": "string", "description": "nome, fragmento de email, telefone ou empresa"},
+        limit={"type": "integer", "default": 10},
+    ),
+    _simple_tool(
         "crm_list_deals",
-        "List deals pipeline. Filter by stage/assignee/contact.",
-        stage={"type": "string"},
+        (
+            "Lista pipeline de deals. Filtros são IDs/enums — stage é bucket do kanban "
+            "(ex: 'proposta_enviada'), contactId é uid. Pra achar deal por título use "
+            "crm_search_deals."
+        ),
+        stage={"type": "string", "description": "nome do estágio do pipeline (não é título)"},
         assignedTo={"type": "string"},
         contactId={"type": "string"},
         limit={"type": "integer", "default": 50},
+    ),
+    _simple_tool(
+        "crm_search_deals",
+        "Busca fuzzy deals por título/contactName/notas. Use quando operador mencionou título ou nome do cliente.",
+        required=["query"],
+        query={"type": "string"},
+        limit={"type": "integer", "default": 10},
     ),
     _simple_tool("crm_get_deal", "Fetch a single deal.", required=["id"], id={"type": "string"}),
     _simple_tool(
@@ -1006,7 +1065,22 @@ SALES_TOOLS: list[dict[str, Any]] = [
 ]
 
 SUPPLIERS_TOOLS: list[dict[str, Any]] = [
-    _simple_tool("suppliers_list", "List suppliers.", includeInactive={"type": "boolean"}, limit={"type": "integer", "default": 100}),
+    _simple_tool(
+        "suppliers_list",
+        "Lista fornecedores ativos (ordenado por razaoSocial). Pra achar por nome/CNPJ use suppliers_search.",
+        includeInactive={"type": "boolean"},
+        limit={"type": "integer", "default": 100},
+    ),
+    _simple_tool(
+        "suppliers_search",
+        (
+            "Busca fuzzy fornecedor por razaoSocial/nomeFantasia/CNPJ. Tolera acentos, "
+            "case, CNPJ formatado ou não. Use quando operador mencionou nome ou CNPJ."
+        ),
+        required=["query"],
+        query={"type": "string", "description": "nome, fragmento de CNPJ (≥8 dígitos) ou razão"},
+        limit={"type": "integer", "default": 10},
+    ),
     _simple_tool("suppliers_get", "Fetch a single supplier.", required=["id"], id={"type": "string"}),
     _simple_tool(
         "suppliers_create",

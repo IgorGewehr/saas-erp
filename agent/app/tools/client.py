@@ -121,6 +121,7 @@ TOOL_ENDPOINTS: dict[str, str] = {
     "financial_summary_month":      "/api/agent/tools/financial",
     # inventory
     "inventory_list":               "/api/agent/tools/inventory",
+    "inventory_search":             "/api/agent/tools/inventory",
     "inventory_get":                "/api/agent/tools/inventory",
     "inventory_create":             "/api/agent/tools/inventory",
     "inventory_update":             "/api/agent/tools/inventory",
@@ -132,6 +133,7 @@ TOOL_ENDPOINTS: dict[str, str] = {
     "kanban_list_boards":           "/api/agent/tools/kanban",
     "kanban_get_board":             "/api/agent/tools/kanban",
     "kanban_list_cards":            "/api/agent/tools/kanban",
+    "kanban_search_cards":          "/api/agent/tools/kanban",
     "kanban_get_card":              "/api/agent/tools/kanban",
     "kanban_create_card":           "/api/agent/tools/kanban",
     "kanban_move_card":             "/api/agent/tools/kanban",
@@ -148,7 +150,9 @@ TOOL_ENDPOINTS: dict[str, str] = {
     "notes_search":                 "/api/agent/tools/notes",
     # crm
     "crm_list_contacts":            "/api/agent/tools/crm",
+    "crm_search_contacts":          "/api/agent/tools/crm",
     "crm_list_deals":               "/api/agent/tools/crm",
+    "crm_search_deals":             "/api/agent/tools/crm",
     "crm_get_deal":                 "/api/agent/tools/crm",
     "crm_create_deal":              "/api/agent/tools/crm",
     "crm_update_deal_stage":        "/api/agent/tools/crm",
@@ -187,6 +191,7 @@ TOOL_ENDPOINTS: dict[str, str] = {
     "sales_summary_today":          "/api/agent/tools/sales",
     # suppliers
     "suppliers_list":               "/api/agent/tools/suppliers",
+    "suppliers_search":             "/api/agent/tools/suppliers",
     "suppliers_get":                "/api/agent/tools/suppliers",
     "suppliers_create":             "/api/agent/tools/suppliers",
     "suppliers_update":             "/api/agent/tools/suppliers",

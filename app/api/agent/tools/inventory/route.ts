@@ -25,6 +25,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 type Action =
   | 'list'
   | 'get'
+  | 'search'
   | 'create'
   | 'update'
   | 'adjust_stock'
@@ -83,6 +84,8 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true, data: await listAll(businessId, body.params as { category?: string; isActive?: boolean; onlyDeliverable?: boolean; limit?: number }) });
       case 'get':
         return NextResponse.json({ ok: true, data: await getProduct(businessId, body.params.id as string) });
+      case 'search':
+        return NextResponse.json({ ok: true, data: await searchProducts(businessId, body.params as { query: string; includeInactive?: boolean; limit?: number }) });
       case 'create':
         return NextResponse.json({ ok: true, data: await createProduct(businessId, body.params as unknown as CreateParams) });
       case 'update':
@@ -118,6 +121,50 @@ async function listAll(
 
   const snap = await q.orderBy('name').limit(limit).get();
   return snap.docs.map((d) => ({ ...(d.data() as Product), id: d.id }));
+}
+
+/** Admin-side fuzzy search over the product catalog. Distinct from
+ * catalog_search (customer-facing, deliverable only). Inclui inactive opcional. */
+async function searchProducts(
+  businessId: string,
+  p: { query: string; includeInactive?: boolean; limit?: number },
+): Promise<Array<Product & { _score: number }>> {
+  if (!p.query || !p.query.trim()) throw new Error('query required');
+  const cap = Math.min(Math.max(p.limit ?? 10, 1), 50);
+
+  let q: FirebaseFirestore.Query = adminDb.collection('products').where('businessId', '==', businessId);
+  if (!p.includeInactive) q = q.where('isActive', '==', true);
+  const snap = await q.limit(1000).get();
+
+  const norm = (s?: string) =>
+    (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+  const query = norm(p.query);
+  const qDigits = p.query.replace(/\D/g, '');
+
+  const scored: Array<Product & { _score: number }> = [];
+  for (const d of snap.docs) {
+    const prod = { ...(d.data() as Product), id: d.id };
+    const nName = norm(prod.name);
+    const nDesc = norm(prod.description);
+    const nCat = norm(prod.category);
+    const nMenuCat = norm(prod.menuCategory);
+    const barcode = (prod.barcode || '').replace(/\D/g, '');
+    const sku = norm(prod.sku);
+
+    let score = 0;
+    if (qDigits && qDigits.length >= 6 && barcode.includes(qDigits)) score = 100;
+    else if (sku === query) score = 95;
+    else if (nName === query) score = 90;
+    else if (nName.startsWith(query)) score = 75;
+    else if (nName.includes(query)) score = 60;
+    else if (nCat.includes(query) || nMenuCat.includes(query)) score = 35;
+    else if (nDesc.includes(query)) score = 20;
+
+    if (score > 0) scored.push({ ...prod, _score: score });
+  }
+
+  scored.sort((a, b) => b._score - a._score);
+  return scored.slice(0, cap);
 }
 
 async function getProduct(businessId: string, id: string): Promise<Product | null> {

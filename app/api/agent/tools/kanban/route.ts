@@ -24,6 +24,7 @@ type Action =
   | 'list_boards'
   | 'get_board'
   | 'list_cards'
+  | 'search_cards'
   | 'get_card'
   | 'create_card'
   | 'move_card'
@@ -67,6 +68,8 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true, data: await getBoard(businessId, body.params.id as string) });
       case 'list_cards':
         return NextResponse.json({ ok: true, data: await listCards(businessId, body.params as unknown as { boardId: string; columnId?: string; assigneeId?: string; limit?: number }) });
+      case 'search_cards':
+        return NextResponse.json({ ok: true, data: await searchCards(businessId, body.params as { query: string; boardId?: string; limit?: number }) });
       case 'get_card':
         return NextResponse.json({ ok: true, data: await getCard(businessId, body.params.id as string) });
       case 'create_card':
@@ -134,6 +137,43 @@ async function listCards(businessId: string, p: { boardId: string; columnId?: st
 
   const snap = await q.orderBy('order', 'asc').limit(limit).get();
   return snap.docs.map((d) => ({ ...(d.data() as KanbanCard), id: d.id }));
+}
+
+/** Fuzzy title/description search across cards, optional board filter. */
+async function searchCards(
+  businessId: string,
+  p: { query: string; boardId?: string; limit?: number },
+): Promise<Array<KanbanCard & { _score: number }>> {
+  if (!p.query || !p.query.trim()) throw new Error('query required');
+  const cap = Math.min(Math.max(p.limit ?? 10, 1), 50);
+
+  let q: FirebaseFirestore.Query = adminDb.collection('kanbanCards').where('businessId', '==', businessId);
+  if (p.boardId) q = q.where('boardId', '==', p.boardId);
+  const snap = await q.limit(1000).get();
+
+  const norm = (s?: string) =>
+    (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+  const query = norm(p.query);
+
+  const scored: Array<KanbanCard & { _score: number }> = [];
+  for (const d of snap.docs) {
+    const card = { ...(d.data() as KanbanCard), id: d.id };
+    const nTitle = norm(card.title);
+    const nDesc = norm(card.description);
+    const nAssignees = (card.assigneeNames || []).map(norm).join(' ');
+
+    let score = 0;
+    if (nTitle === query) score = 100;
+    else if (nTitle.startsWith(query)) score = 80;
+    else if (nTitle.includes(query)) score = 60;
+    else if (nDesc.includes(query)) score = 35;
+    else if (nAssignees.includes(query)) score = 25;
+
+    if (score > 0) scored.push({ ...card, _score: score });
+  }
+
+  scored.sort((a, b) => b._score - a._score);
+  return scored.slice(0, cap);
 }
 
 async function getCard(businessId: string, id: string): Promise<KanbanCard | null> {

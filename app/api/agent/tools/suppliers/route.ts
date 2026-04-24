@@ -16,7 +16,7 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
 import type { Supplier, Address } from '@/lib/types';
 
-type Action = 'list' | 'get' | 'create' | 'update' | 'find_by_cnpj';
+type Action = 'list' | 'get' | 'search' | 'create' | 'update' | 'find_by_cnpj';
 
 interface CreateParams {
   razaoSocial: string;
@@ -59,6 +59,8 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true, data: await updateSupplier(businessId, body.params.id as string, body.params.patch as Partial<Supplier>) });
       case 'find_by_cnpj':
         return NextResponse.json({ ok: true, data: await findByCnpj(businessId, body.params.cnpj as string) });
+      case 'search':
+        return NextResponse.json({ ok: true, data: await searchSuppliers(businessId, body.params as { query: string; limit?: number }) });
       default:
         return NextResponse.json({ ok: false, error: `Unknown action: ${body.action}` }, { status: 400 });
     }
@@ -145,6 +147,41 @@ async function updateSupplier(businessId: string, id: string, patch: Partial<Sup
   clean.updatedAt = new Date().toISOString();
   await ref.update(clean);
   return { ...supplier, ...clean, id: snap.id } as Supplier;
+}
+
+/** Fuzzy razaoSocial/nomeFantasia/CNPJ search (client-side score, no index). */
+async function searchSuppliers(
+  businessId: string,
+  p: { query: string; limit?: number },
+): Promise<Array<Supplier & { _score: number }>> {
+  if (!p.query || !p.query.trim()) throw new Error('query required');
+  const cap = Math.min(Math.max(p.limit ?? 10, 1), 50);
+
+  const snap = await adminDb.collection('suppliers').where('businessId', '==', businessId).limit(1000).get();
+
+  const norm = (s?: string) =>
+    (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+  const q = norm(p.query);
+  const qDigits = p.query.replace(/\D/g, '');
+
+  const scored: Array<Supplier & { _score: number }> = [];
+  for (const d of snap.docs) {
+    const s = { ...(d.data() as Supplier), id: d.id };
+    const nRazao = norm(s.razaoSocial);
+    const nFant = norm(s.nomeFantasia);
+    const cnpjDigits = (s.cnpj || '').replace(/\D/g, '');
+
+    let score = 0;
+    if (qDigits && qDigits.length >= 8 && cnpjDigits.includes(qDigits)) score = 100;
+    else if (nRazao === q || nFant === q) score = 95;
+    else if (nRazao.startsWith(q) || nFant.startsWith(q)) score = 75;
+    else if (nRazao.includes(q) || nFant.includes(q)) score = 55;
+
+    if (score > 0) scored.push({ ...s, _score: score });
+  }
+
+  scored.sort((a, b) => b._score - a._score);
+  return scored.slice(0, cap);
 }
 
 async function findByCnpj(businessId: string, cnpj: string): Promise<Supplier | null> {
