@@ -26,10 +26,11 @@ services:
     image: servicepro-agent:latest
     container_name: servicepro-agent
     restart: unless-stopped
-    # Só expõe localmente quando NÃO há tunnel — quando o tunnel sobe, o host network
-    # não precisa estar exposto pra fora (o tunnel alcança via network interna).
+    # Porta host aleatória alta (evita conflito com outros containers que você roda).
+    # Porta interna do container continua 8080 — host 8129 é só pra acesso local direto.
+    # Cloudflared alcança via nome do serviço na rede Docker (agent:8080), não precisa desse mapeamento.
     ports:
-      - "${AGENT_PORT:-8080}:8080"
+      - "${AGENT_PORT:-8129}:8080"
     env_file:
       - .env
     environment:
