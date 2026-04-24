@@ -108,6 +108,7 @@ export default function FormulariosTab({ businessId, userId, userName, isDark }:
   };
 
   const handleDelete = async (id: string) => {
+    if (!confirm('Tem certeza que deseja excluir este formulário?')) return;
     await deleteDoc(doc(db, 'formTemplates', id));
   };
 

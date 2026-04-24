@@ -125,6 +125,7 @@ export default function AutomacoesTab({ businessId, userId, userName, isDark }: 
   };
 
   const handleDelete = async (id: string) => {
+    if (!confirm('Tem certeza que deseja excluir esta regra de automação?')) return;
     await deleteDoc(doc(db, 'automationRules', id));
   };
 
