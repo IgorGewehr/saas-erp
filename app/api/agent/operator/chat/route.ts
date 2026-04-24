@@ -29,6 +29,7 @@ interface OperatorChatRequest {
   message: string;
   history?: Array<{ role: 'user' | 'assistant'; content: string }>;
   sessionId?: string;         // optional client-supplied id to group runs
+  mode?: 'operator' | 'analyst';  // 'analyst' mode focuses on data queries and insights
 }
 
 interface OperatorChatResponse {
@@ -96,7 +97,7 @@ export async function POST(req: NextRequest) {
     channel: 'dashboard' as const,
     recipient_id: uid,
     history: (body.history || []).slice(-20),          // client-managed rolling window
-    use_case: 'operator' as const,
+    use_case: body.mode === 'analyst' ? 'analyst' as const : 'operator' as const,
     business_name: business.nomeFantasia || business.razaoSocial,
     business_description: business.settings?.aiAgent?.businessDescription,
     tone: business.settings?.aiAgent?.tone || 'friendly',

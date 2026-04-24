@@ -39,6 +39,7 @@ import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatPhone, getInitials } from '@/lib/utils/format';
 import OperatorChatPanel from './OperatorChatPanel';
+import AnalystChatPanel from './AnalystChatPanel';
 
 // ─── Animation ─────────────────────────────────────────
 const stagger = {
@@ -416,6 +417,11 @@ export default function DashboardModule() {
       {/* ━━━ Agente IA — chat operador (linguagem natural) ━━━ */}
       <motion.div variants={fadeUp}>
         <OperatorChatPanel />
+      </motion.div>
+
+      {/* ━━━ AI Analyst — perguntas sobre dados do negócio ━━━ */}
+      <motion.div variants={fadeUp}>
+        <AnalystChatPanel />
       </motion.div>
 
       {/* ━━━ Hero Row: Revenue Today + Monthly Revenue + Mode-specific card ━━━ */}
