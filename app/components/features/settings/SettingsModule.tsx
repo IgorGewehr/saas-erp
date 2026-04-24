@@ -3561,6 +3561,80 @@ function IntegrationRow({
 
 // VaultTab is defined in SenhasModule and imported above.
 
+function KnowledgeReindexPanel() {
+  const [isRunning, setIsRunning] = useState(false);
+  const [result, setResult] = useState<{ upserted: number; skipped: number; pruned: number; errors: number; totalDurationMs: number } | null>(null);
+  const [lastRunAt, setLastRunAt] = useState<string | null>(null);
+
+  const run = async () => {
+    setIsRunning(true);
+    setResult(null);
+    try {
+      const token = await firebaseAuth.currentUser?.getIdToken();
+      if (!token) throw new Error('Autenticação expirada');
+      const res = await fetch('/api/rag/reindex', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ scope: 'all' }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setResult({
+        upserted: data.data.summary.upserted,
+        skipped: data.data.summary.skipped,
+        pruned: data.data.summary.pruned,
+        errors: data.data.summary.errors,
+        totalDurationMs: data.data.totalDurationMs,
+      });
+      setLastRunAt(new Date().toLocaleString('pt-BR'));
+      toast.success(`Reindex concluído — ${data.data.summary.upserted} novos, ${data.data.summary.skipped} inalterados`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Erro no reindex');
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <p className="text-sm text-gray-700 dark:text-gray-300">
+          A base de conhecimento indexa produtos, serviços, snippets e a descrição do negócio
+          para buscas semânticas. O agente usa para responder perguntas como
+          <em> &ldquo;vocês têm opções veganas?&rdquo;</em> ou <em>&ldquo;qual a política de cancelamento?&rdquo;</em>
+        </p>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+          Chunks que não mudaram são pulados automaticamente (content-hash). Custo típico ~$0,02/reindex completo.
+        </p>
+      </div>
+      <div className="flex items-center gap-3">
+        <button
+          onClick={run}
+          disabled={isRunning}
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-semibold"
+        >
+          {isRunning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+          {isRunning ? 'Indexando...' : 'Reindexar base agora'}
+        </button>
+        {lastRunAt && (
+          <span className="text-xs text-gray-500 dark:text-gray-400">
+            Último: {lastRunAt}
+          </span>
+        )}
+      </div>
+      {result && (
+        <div className="bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded-xl p-3 text-xs text-emerald-800 dark:text-emerald-300 flex flex-wrap gap-x-4 gap-y-1">
+          <span><strong>{result.upserted}</strong> novos/atualizados</span>
+          <span><strong>{result.skipped}</strong> inalterados</span>
+          {result.pruned > 0 && <span><strong>{result.pruned}</strong> removidos</span>}
+          {result.errors > 0 && <span className="text-red-700">{result.errors} erros</span>}
+          <span className="ml-auto">{(result.totalDurationMs / 1000).toFixed(1)}s</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AgenteToggleSwitch({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   return (
     <button
@@ -3894,6 +3968,11 @@ function AgenteTab() {
                 <AgenteToggleSwitch checked={autonomousMode} onChange={setAutonomousMode} />
               </div>
             </div>
+          </SectionCard>
+
+          {/* RAG knowledge base — reindex button */}
+          <SectionCard title="Base de conhecimento (RAG)" icon={Info}>
+            <KnowledgeReindexPanel />
           </SectionCard>
         </motion.div>
       )}

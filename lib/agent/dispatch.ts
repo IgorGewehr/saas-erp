@@ -146,16 +146,24 @@ export async function dispatchInboundToAgent(
         content: typeof m.content === 'string' ? m.content : '',
       }));
 
-    // If the conversation is already linked to a Client, pull their aiSummary
-    // for long-term memory across conversations. 5 lines max — enforced at write.
+    // Pull persistent memory for the contact (tier-2 semantic facts).
+    // Merges structured facts (preferences, allergies) with legacy aiSummary
+    // one-line history. Both are capped at 800 chars to bound prompt tokens.
     let clientMemory: string | undefined;
     if (conv.crmContactId) {
       try {
+        const { getMemorySummary } = await import('@/lib/rag/memory');
+        const factsBlock = await getMemorySummary(input.businessId, conv.crmContactId, { maxChars: 500, maxFacts: 12 });
+
         const clientSnap = await db.collection('clients').doc(conv.crmContactId).get();
-        if (clientSnap.exists) {
-          const summary = (clientSnap.data() as { aiSummary?: string }).aiSummary;
-          if (summary && summary.trim()) clientMemory = summary.trim().slice(0, 800);
-        }
+        const aiSummary = clientSnap.exists
+          ? ((clientSnap.data() as { aiSummary?: string }).aiSummary || '').trim()
+          : '';
+
+        const parts: string[] = [];
+        if (factsBlock) parts.push(`Fatos lembrados:\n${factsBlock}`);
+        if (aiSummary) parts.push(`Histórico recente:\n${aiSummary.slice(0, 300)}`);
+        if (parts.length > 0) clientMemory = parts.join('\n\n').slice(0, 800);
       } catch { /* non-fatal */ }
     }
 

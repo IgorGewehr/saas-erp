@@ -796,6 +796,26 @@ service cloud.firestore {
     }
 
     // ============================================
+    // KNOWLEDGE CHUNKS (RAG index — Wave 3)
+    // ============================================
+    // Only accessed via admin SDK from API routes. Client-side reads not needed.
+    // Reading the embedding array is heavy and not useful for the UI.
+    match /knowledgeChunks/{chunkId} {
+      allow read, write: if false;  // admin-only (via API)
+    }
+
+    // ============================================
+    // AGENT MEMORY (tier-2 semantic facts per contact — Wave 3)
+    // ============================================
+    // Subcollection under businesses/{bId}/agentMemory/{contactId}. Managed
+    // exclusively by agent tools via admin SDK. UI may want to read for a
+    // future "what the agent remembers about this contact" panel.
+    match /businesses/{businessId}/agentMemory/{contactId} {
+      allow read: if isAuthenticated() && businessId == userBusinessId() && isOperator();
+      allow write: if false;  // writes only through API routes
+    }
+
+    // ============================================
     // FINANCIAL AUDIT LOG (trilha imutável de mudanças)
     // ============================================
     match /financialAuditLog/{logId} {

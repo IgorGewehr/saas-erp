@@ -939,6 +939,62 @@ SUPPLIERS_TOOLS: list[dict[str, Any]] = [
     _simple_tool("suppliers_find_by_cnpj", "Lookup supplier by CNPJ.", required=["cnpj"], cnpj={"type": "string"}),
 ]
 
+KNOWLEDGE_TOOLS: list[dict[str, Any]] = [
+    _simple_tool(
+        "knowledge_search",
+        (
+            "Busca semântica na base de conhecimento do negócio (produtos, serviços, snippets, "
+            "descrição do negócio, políticas). Use para perguntas que não têm lookup direto via "
+            "outras tools: opções veganas, políticas de cancelamento, 'me fale sobre o estabelecimento'."
+        ),
+        required=["query"],
+        query={"type": "string"},
+        k={"type": "integer", "default": 5, "description": "top-K, max 20"},
+        sources={
+            "type": "array",
+            "items": {
+                "type": "string",
+                "enum": ["product", "service", "snippet", "faq", "business_desc", "policy"],
+            },
+            "description": "Optional: restringe a tipos específicos",
+        },
+        minScore={"type": "number", "description": "threshold de similaridade 0-1 (default 0.3)"},
+    ),
+]
+
+MEMORY_TOOLS: list[dict[str, Any]] = [
+    _simple_tool(
+        "memory_recall",
+        (
+            "Recupera fatos persistentes sobre um contato (preferências, alergias, pedidos recorrentes). "
+            "Use no início de uma conversa com cliente cadastrado."
+        ),
+        required=["contactId"],
+        contactId={"type": "string"},
+    ),
+    _simple_tool(
+        "memory_remember",
+        (
+            "Grava um fato novo sobre o contato para uso futuro. Use quando o cliente revelar "
+            "preferência persistente (ex: 'sem cebola', 'sempre pede pizza sexta à noite', 'alergia X')."
+        ),
+        required=["contactId", "text"],
+        contactId={"type": "string"},
+        text={"type": "string", "description": "Fato em 1 frase pt-BR"},
+        evidence={"type": "string", "description": "origem: 'order:id', 'conv:id', 'explicit'"},
+        confidence={"type": "number", "description": "0-1, padrão 0.7"},
+        validUntil={"type": "string", "description": "ISO date se aplicável (promo, sazonalidade)"},
+        tags={"type": "array", "items": {"type": "string"}},
+    ),
+    _simple_tool(
+        "memory_forget",
+        "Remove um fato específico por id (caso fique desatualizado).",
+        required=["contactId", "factId"],
+        contactId={"type": "string"},
+        factId={"type": "string"},
+    ),
+]
+
 PURCHASE_NOTES_TOOLS: list[dict[str, Any]] = [
     _simple_tool(
         "purchase-notes_list",
@@ -956,7 +1012,7 @@ PURCHASE_NOTES_TOOLS: list[dict[str, Any]] = [
 
 def tools_for_use_case(use_case: UseCase) -> list[dict[str, Any]]:
     """Return the subset of tools the LLM should see, given the business mode."""
-    base = CLIENT_TOOLS[:]
+    base = CLIENT_TOOLS[:] + KNOWLEDGE_TOOLS + MEMORY_TOOLS
     if use_case == "pedidos":
         return base + CATALOG_TOOLS + ORDERS_TOOLS
     if use_case == "servicos":
@@ -982,6 +1038,7 @@ ALL_TOOLS: list[dict[str, Any]] = (
     + FINANCIAL_TOOLS + INVENTORY_TOOLS + KANBAN_TOOLS + NOTES_TOOLS + CRM_TOOLS
     + CONVERSATIONS_ADMIN_TOOLS + TEAM_TOOLS + SERVICES_MGMT_TOOLS + SALES_TOOLS
     + SUPPLIERS_TOOLS + PURCHASE_NOTES_TOOLS
+    + KNOWLEDGE_TOOLS + MEMORY_TOOLS
 )
 TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     t["function"]["name"]: t for t in ALL_TOOLS

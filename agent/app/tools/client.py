@@ -194,6 +194,11 @@ TOOL_ENDPOINTS: dict[str, str] = {
     "purchase-notes_match_products":      "/api/agent/tools/purchase-notes",
     "purchase-notes_apply_to_stock":      "/api/agent/tools/purchase-notes",
     "purchase-notes_list_unmatched":      "/api/agent/tools/purchase-notes",
+    # ─── Wave 3: RAG + Memory ────────────────────────────────────────────
+    "knowledge_search":                   "/api/agent/tools/knowledge",
+    "memory_recall":                      "/api/agent/tools/memory",
+    "memory_remember":                    "/api/agent/tools/memory",
+    "memory_forget":                      "/api/agent/tools/memory",
 }
 
 
