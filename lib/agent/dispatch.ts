@@ -11,6 +11,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import type { Firestore } from 'firebase-admin/firestore';
 import type { Business, Conversation, ConversationChannel } from '@/lib/types';
+import { sendTypingIndicator } from '@/lib/channels/typing';
 
 function dlog(msg: string) {
   const line = `${new Date().toISOString()} ${msg}\n`;
@@ -31,6 +32,12 @@ export interface InboundDispatchInput {
   contactPhone?: string;
   /** Meta user id / phone for outbound send */
   recipientId: string;
+  /**
+   * External id of the inbound message (Meta wamid/mid). Required for the
+   * WhatsApp combined read-receipt + typing indicator call. If absent, the
+   * indicator is skipped on WhatsApp (FB/IG fall back to standalone typing_on).
+   */
+  externalMessageId?: string;
 }
 
 /**
@@ -78,6 +85,20 @@ export async function dispatchInboundToAgent(
       return;
     }
     dlog(`${tag} gates OK — useCase=${business.settings?.useCase || 'servicos'} debounce=${DEBOUNCE_MS}ms`);
+
+    // ─── Humanization: fire typing indicator immediately ──────────────────
+    // Masks the LLM latency (2-6s) behind a natural "typing..." animation on
+    // the user's device. Runs in parallel with debounce wait — doesn't block.
+    // Meta auto-dismisses after ~25s or when our response arrives.
+    if (business.channels) {
+      void sendTypingIndicator({
+        channel: input.channel,
+        channels: business.channels,
+        recipientId: input.recipientId,
+        inboundMessageId: input.externalMessageId,
+      }).catch(() => { /* typing is UX sugar */ });
+      dlog(`${tag} typing indicator fired (${input.channel})`);
+    }
 
     // Debounce: mark this message as the current pending dispatch token.
     const convRef = db.collection('conversations').doc(input.conversationId);

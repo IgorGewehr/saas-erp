@@ -521,8 +521,30 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
         const MEDIA_PREVIEW: Record<string, string> = {
           image: '[Imagem]', audio: '[Audio]', video: '[Video]', document: '[Documento]', sticker: '[Sticker]',
         };
-        const conversationPreview = extracted.content
+        let agentContent = extracted.content;
+        let conversationPreview = extracted.content
           || (hasMedia ? MEDIA_PREVIEW[msg.type] || '[Midia]' : '');
+
+        // ─── Humanization: enrich voice notes + images into text for the agent ──
+        // This runs inline (adds ~1-3s to webhook latency) but keeps the agent's
+        // message history as plain text — no tool-call detour to understand media.
+        if (hasMedia && firebaseMediaUrl && !extracted.content) {
+          if (mediaType === 'audio') {
+            const { enrichAudio } = await import('@/lib/channels/media-enrichment');
+            const enriched = await enrichAudio({ mediaUrl: firebaseMediaUrl, mimeType: extracted.mediaMimeType });
+            if (enriched) {
+              agentContent = enriched.content;
+              conversationPreview = enriched.preview;
+            }
+          } else if (mediaType === 'image') {
+            const { enrichImage } = await import('@/lib/channels/media-enrichment');
+            const enriched = await enrichImage({ mediaUrl: firebaseMediaUrl, mimeType: extracted.mediaMimeType });
+            if (enriched) {
+              agentContent = enriched.content;
+              conversationPreview = enriched.preview;
+            }
+          }
+        }
 
         await saveInboundMessage({
           channel: 'whatsapp',
@@ -530,7 +552,7 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
           externalId: msg.from,
           senderName: value.contacts?.find(c => c.wa_id === msg.from)?.profile.name,
           messageId: msg.id,
-          content: extracted.content,
+          content: agentContent,
           conversationPreview,
           mediaType,
           mediaId: extracted.mediaId,
@@ -724,6 +746,21 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
         }
       }
 
+      // Humanization: enrich voice notes and images so the agent sees text.
+      const fallbackLabel = `[${attachmentType === 'file' ? 'Documento' : attachmentType === 'image' ? 'Imagem' : attachmentType === 'video' ? 'Video' : attachmentType === 'audio' ? 'Audio' : 'Anexo'}]`;
+      let agentContent = event.message.text || fallbackLabel;
+      if (!event.message.text && resolvedMediaUrl) {
+        if (mappedMediaType === 'audio') {
+          const { enrichAudio } = await import('@/lib/channels/media-enrichment');
+          const enriched = await enrichAudio({ mediaUrl: resolvedMediaUrl });
+          if (enriched) agentContent = enriched.content;
+        } else if (mappedMediaType === 'image') {
+          const { enrichImage } = await import('@/lib/channels/media-enrichment');
+          const enriched = await enrichImage({ mediaUrl: resolvedMediaUrl });
+          if (enriched) agentContent = enriched.content;
+        }
+      }
+
       await saveInboundMessage({
         channel,
         channelIdentifier,
@@ -732,7 +769,7 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
         senderName,
         senderAvatarUrl,
         messageId: event.message.mid,
-        content: event.message.text || `[${attachmentType === 'file' ? 'Documento' : attachmentType === 'image' ? 'Imagem' : attachmentType === 'video' ? 'Video' : attachmentType === 'audio' ? 'Audio' : 'Anexo'}]`,
+        content: agentContent,
         mediaType: mappedMediaType,
         mediaUrl: resolvedMediaUrl,
         timestamp: new Date(event.timestamp).toISOString(),
@@ -1376,6 +1413,8 @@ async function saveInboundMessage(params: InboundMessageParams) {
         contactName: params.senderName || params.externalId,
         contactPhone: params.externalId,
         recipientId: params.externalId,
+        // Meta wamid/mid — needed for combined read-receipt + typing indicator
+        externalMessageId: params.messageId,
       }).catch(agentErr => console.warn('[Meta Webhook] Agent dispatch failed:', agentErr));
     } catch (agentErr) {
       console.warn('[Meta Webhook] Agent dispatch failed:', agentErr);

@@ -215,6 +215,90 @@ async def call_tool(business_id: str, tool_name: str, params: dict[str, Any]) ->
 
 # ─── Outbound messaging (agent -> contact) ───────────────────────────────────
 
+# Humanized chunking parameters. Empirically tuned:
+#   - 1000 chars per bubble reads cleanly on mobile (hard cap is ~1600).
+#   - 400-900ms pause feels human — typing at ~80wpm averages there.
+#   - Max 3 chunks — beyond that it looks spammy; a better option is asking
+#     the user for confirmation to continue.
+_CHUNK_MAX_CHARS = 1000
+_CHUNK_MAX_COUNT = 3
+_CHUNK_PAUSE_MIN_MS = 400
+_CHUNK_PAUSE_MAX_MS = 900
+
+
+def _split_for_humanization(text: str) -> list[str]:
+    """Split a long agent reply into 1-3 chunks at natural boundaries.
+
+    Priority of boundaries (preserved in output):
+      1. Double newline (paragraph)
+      2. Single newline
+      3. Sentence end: ". " / "! " / "? "
+      4. Fallback: hard-wrap at the character limit.
+
+    Short messages (< _CHUNK_MAX_CHARS) are returned as a single element.
+    """
+    text = text.strip()
+    if not text:
+        return []
+    if len(text) <= _CHUNK_MAX_CHARS:
+        return [text]
+
+    # First pass — split by paragraphs
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+
+    chunks: list[str] = []
+    buf = ""
+    for p in paragraphs:
+        if len(buf) + len(p) + 2 <= _CHUNK_MAX_CHARS:
+            buf = f"{buf}\n\n{p}" if buf else p
+        else:
+            if buf:
+                chunks.append(buf)
+                buf = ""
+            # If the paragraph itself is too large, split by sentence
+            if len(p) > _CHUNK_MAX_CHARS:
+                chunks.extend(_split_by_sentence(p))
+            else:
+                buf = p
+    if buf:
+        chunks.append(buf)
+
+    # Clamp to max count — combine overflow into the last chunk
+    if len(chunks) > _CHUNK_MAX_COUNT:
+        head = chunks[: _CHUNK_MAX_COUNT - 1]
+        tail = "\n\n".join(chunks[_CHUNK_MAX_COUNT - 1 :])
+        # If tail is still too long, hard-truncate with a graceful suffix
+        if len(tail) > _CHUNK_MAX_CHARS:
+            tail = tail[: _CHUNK_MAX_CHARS - 3].rstrip() + "..."
+        chunks = head + [tail]
+
+    return chunks
+
+
+def _split_by_sentence(paragraph: str) -> list[str]:
+    """Split a single oversized paragraph by sentence boundary. Best-effort."""
+    import re
+
+    parts = re.split(r"(?<=[.!?])\s+", paragraph)
+    chunks: list[str] = []
+    buf = ""
+    for s in parts:
+        if len(buf) + len(s) + 1 <= _CHUNK_MAX_CHARS:
+            buf = f"{buf} {s}" if buf else s
+        else:
+            if buf:
+                chunks.append(buf)
+            if len(s) > _CHUNK_MAX_CHARS:
+                # Last resort — hard wrap
+                for i in range(0, len(s), _CHUNK_MAX_CHARS):
+                    chunks.append(s[i : i + _CHUNK_MAX_CHARS])
+                buf = ""
+            else:
+                buf = s
+    if buf:
+        chunks.append(buf)
+    return chunks
+
 
 async def send_final_message(
     business_id: str,
@@ -230,19 +314,56 @@ async def send_final_message(
 
     For `channel='web'` or `channel='dashboard'`, the response is returned directly in
     the HTTP response from /process — no outbound channel, skip silently.
+
+    HUMANIZATION: long replies are split into 2-3 bubbles with 400-900ms pauses
+    between them — mimics a human typing pace. WhatsApp pricing counts bubbles
+    inside the same 24h session as free, so this doesn't cost extra.
     """
     if channel in ("web", "dashboard"):
         return {"ok": True, "skipped": f"{channel} channel — response returned via HTTP"}
 
-    return await _post(
-        business_id,
-        "/api/conversations/send",
-        {
-            "businessId": business_id,
-            "conversationId": conversation_id,
-            "channel": channel,
-            "recipientId": recipient_id,
-            "content": content,
-            "type": "text",
-        },
-    )
+    chunks = _split_for_humanization(content)
+    if not chunks:
+        return {"ok": True, "skipped": "empty content"}
+
+    # Single chunk — no humanization delay needed
+    if len(chunks) == 1:
+        return await _post(
+            business_id,
+            "/api/conversations/send",
+            {
+                "businessId": business_id,
+                "conversationId": conversation_id,
+                "channel": channel,
+                "recipientId": recipient_id,
+                "content": chunks[0],
+                "type": "text",
+            },
+        )
+
+    # Multi-chunk — send sequentially with random human-like pauses
+    import asyncio
+    import random
+
+    log.info("humanize.chunked", count=len(chunks), lengths=[len(c) for c in chunks])
+    last_result: dict[str, Any] = {}
+    for i, chunk in enumerate(chunks):
+        last_result = await _post(
+            business_id,
+            "/api/conversations/send",
+            {
+                "businessId": business_id,
+                "conversationId": conversation_id,
+                "channel": channel,
+                "recipientId": recipient_id,
+                "content": chunk,
+                "type": "text",
+            },
+        )
+        # Pause between chunks (not after the last one)
+        if i < len(chunks) - 1:
+            await asyncio.sleep(
+                random.uniform(_CHUNK_PAUSE_MIN_MS, _CHUNK_PAUSE_MAX_MS) / 1000.0
+            )
+
+    return last_result
