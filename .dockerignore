@@ -4,8 +4,8 @@ node_modules/
 .pnp.js
 npm-debug.log*
 
-# Build artifacts
-.next/
+# Build artifacts (keep .next/ — it's pre-built locally)
+# .next/  ← NOT excluded: pre-built output is packaged into the image
 out/
 build/
 dist/
