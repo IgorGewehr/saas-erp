@@ -28,6 +28,13 @@
   - [ ] Configuracoes — inviteCodes, sectors, users (verificar scope)
   - [ ] Notas — notes (query so por businessId, filtro scope/authorId client-side)
   - [ ] Senhas — passwordVaultEntries (via admin SDK no server, businessId validado na API route)
+  - [ ] Notificacoes — notifications (userId + businessId filter)
+  - [ ] Formularios — formTemplates, formResponses (businessId filter)
+  - [ ] Reviews — reviews (businessId filter, POST publico rate-limited)
+  - [ ] Automacoes CRM — automationRules (businessId filter)
+  - [ ] Conciliacao — bankStatementImports, reconciliationItems (businessId filter)
+  - [ ] Memberships — memberships, clientMemberships (businessId filter)
+  - [ ] Calendar Sync — calendarSyncTokens (server-only via Admin SDK)
 - [ ] **Todas as criações de documento** incluem `businessId` no payload
 - [ ] **Nenhuma query** usa collection group sem filtro de businessId
 - [ ] **API Routes** (`app/api/`) validam businessId em TODAS as rotas
@@ -264,6 +271,76 @@
 - [ ] Excluir entrada: confirmacao via `confirm()`, removida do Firestore
 - [ ] Acesso restrito: somente admin/founder visualiza o modulo
 - [ ] `encryptedPassword` nunca aparece na listagem (stripado na API)
+
+### 3.14 Notificacoes (Sprint 1)
+- [ ] Badge no sino da TopBar mostra contagem unificada (notifs + mensagens)
+- [ ] Dropdown abre com lista de notificacoes em tempo real
+- [ ] Mark-as-read individual e "marcar todas como lidas" funciona
+- [ ] Clear all remove todas as notificacoes
+- [ ] Ao atribuir tarefa no Kanban, assignees recebem notificacao
+- [ ] Cron gera notificacoes para tarefas vencendo/atrasadas (idempotente)
+
+### 3.15 Recorrencia Financeira (Sprint 1)
+- [ ] Toggle "Recorrente" aparece no form de lancamento quando parcelas = 1
+- [ ] 5 frequencias disponiveis (semanal, quinzenal, mensal, trimestral, anual)
+- [ ] Data de encerramento opcional funciona
+- [ ] Cron gera proxima ocorrencia quando nextDueDate <= hoje
+- [ ] Recorrencia desativa quando endDate e ultrapassada
+
+### 3.16 Google Calendar (Sprint 1)
+- [ ] Botao "Conectar" no Settings → Perfil redireciona para OAuth Google
+- [ ] Callback salva tokens criptografados no Firestore
+- [ ] Criar agendamento → evento aparece no Google Calendar
+- [ ] Editar agendamento → evento atualizado no GCal
+- [ ] Deletar agendamento → evento removido do GCal
+- [ ] Desconectar remove tokens do Firestore
+
+### 3.17 Apple Calendar (Sprint 1)
+- [ ] URL .ics aparece no Settings → Perfil quando business tem slug
+- [ ] Copiar URL funciona
+- [ ] Acessar URL retorna .ics valido com agendamentos futuros
+- [ ] Agendamentos cancelados nao aparecem no feed
+
+### 3.18 Automacoes CRM (Sprint 1)
+- [ ] Aba "Automacoes" no CRM com lista de regras
+- [ ] Criar regra com trigger + config + acoes funciona
+- [ ] Toggle ativar/desativar regra funciona
+- [ ] Excluir regra funciona
+- [ ] Cron executa regras ativas (verificar lastRunAt idempotencia)
+
+### 3.19 Formularios Intake (Sprint 1)
+- [ ] Aba "Formularios" no CRM com builder visual
+- [ ] 8 tipos de campo (text, textarea, number, date, select, radio, checkbox, file)
+- [ ] Pagina publica /forms/[formId] renderiza formulario corretamente
+- [ ] Submit valida campos obrigatorios
+- [ ] Respostas aparecem no LeadDetailPanel do contato
+
+### 3.20 Gestao de Reputacao (Sprint 1)
+- [ ] Pagina publica /review/[slug] com estrelas interativas
+- [ ] Submit rate-limited (5/hora/IP)
+- [ ] Aba "Avaliacoes" nos Relatorios com KPIs (total, media, NPS, %5 estrelas)
+- [ ] Distribuicao de estrelas e ranking por profissional corretos
+
+### 3.21 AI Analyst (Sprint 1)
+- [ ] Painel colapsavel no Dashboard com visual violet
+- [ ] Prompts sugeridos funcionam
+- [ ] Enviar pergunta retorna resposta do agente
+- [ ] Visivel apenas quando aiAgent.enabled = true
+
+### 3.22 Conciliacao Bancaria (Sprint 1)
+- [ ] Aba "Conciliacao" no Financeiro
+- [ ] Upload de .ofx processa corretamente
+- [ ] Upload de .csv (formato BR) processa corretamente
+- [ ] Auto-matching encontra correspondencias por valor + data
+- [ ] Stats bar mostra contagem correta (matched/pending/divergent)
+- [ ] Salvar conciliacao persiste import + items no Firestore
+- [ ] Historico de importacoes anteriores aparece
+
+### 3.23 Memberships (Sprint 2)
+- [ ] Aba "Planos" no CRM com CRUD de planos
+- [ ] Cards visuais com preco e ciclo
+- [ ] Warning aparece quando gateway nao configurado
+- [ ] Criar/editar/desativar plano funciona
 
 ---
 
@@ -504,16 +581,16 @@
 
 | Secao | Items | Verificados | Status |
 |-------|-------|------------|--------|
-| 1. Seguranca & Multi-tenant | 36 | 0 | ⬜ Pendente |
+| 1. Seguranca & Multi-tenant | 43 | 0 | ⬜ Pendente |
 | 2. Integridade de Dados | 24 | 0 | ⬜ Pendente |
-| 3. CRUD por Modulo | 101 | 0 | ⬜ Pendente |
+| 3. CRUD por Modulo | 162 | 0 | ⬜ Pendente |
 | 4. UI/UX | 51 | 0 | ⬜ Pendente |
 | 5. Performance | 18 | 0 | ⬜ Pendente |
 | 6. Integracoes | 19 | 0 | ⬜ Pendente |
 | 7. Acessibilidade | 16 | 0 | ⬜ Pendente |
 | 8. Erros & Edge Cases | 22 | 0 | ⬜ Pendente |
 | 9. Pre-Deploy | 14 | 0 | ⬜ Pendente |
-| **TOTAL** | **301** | **0** | ⬜ |
+| **TOTAL** | **369** | **0** | ⬜ |
 
 ---
 
