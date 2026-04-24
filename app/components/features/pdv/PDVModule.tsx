@@ -57,9 +57,9 @@ import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch, increment } from 'firebase/firestore';
 import { toast } from 'react-toastify';
-import { deductStock, restoreStock } from '@/lib/services/stock';
+import { deductStock, restoreStock, checkStockAvailability } from '@/lib/services/stock';
 import { calculateEarnedPoints, addLoyaltyPoints, redeemLoyaltyPoints, pointsToReais, reaisToPoints } from '@/lib/services/loyalty';
 import { findGiftCard, redeemGiftCard } from '@/lib/services/giftCard';
 import { db } from '@/lib/config/firebase';
@@ -693,6 +693,18 @@ export default function PDVModule() {
       const stockLines = cart
         .filter(item => item.productId)
         .map(item => ({ productId: item.productId!, quantity: item.quantity }));
+
+      // Validate stock availability before committing
+      if (stockLines.length > 0) {
+        const shortages = checkStockAvailability(stockLines, productIndex);
+        if (shortages.length > 0) {
+          const names = shortages.map(s => `${s.productName} (disponível: ${s.available}, pedido: ${s.requested})`).join(', ');
+          setSaleError(`Estoque insuficiente: ${names}`);
+          setIsSaving(false);
+          return;
+        }
+      }
+
       if (stockLines.length > 0) {
         await deductStock(db, stockLines, {
           businessId: business.id,
@@ -723,11 +735,11 @@ export default function PDVModule() {
         updatedAt: now,
       });
 
-      // Client stats in the same batch
+      // Client stats in the same batch (uses increment to prevent race conditions)
       if (selectedClient) {
         batch.update(doc(db, 'clients', selectedClient.id), {
-          totalSpent: (selectedClient.totalSpent || 0) + total,
-          visitCount: (selectedClient.visitCount || 0) + 1,
+          totalSpent: increment(total),
+          visitCount: increment(1),
           lastVisit: now,
           updatedAt: now,
         });

@@ -432,6 +432,7 @@ export interface Appointment {
   followUpSentAt?: string;
   // Commission tracking — set when appointment is marked concluido
   commissionTransactionId?: string; // Firestore ID of the linked Transaction (category: 'Comissoes')
+  googleCalendarEventId?: string;   // Google Calendar event ID for sync
   createdAt: string;
   updatedAt: string;
 }
@@ -518,6 +519,16 @@ export interface Sale {
 export type TransactionType = 'receita' | 'despesa';
 export type TransactionStatus = 'pendente' | 'pago' | 'atrasado' | 'cancelado';
 
+export type RecurrenceFrequency = 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'yearly';
+
+export interface TransactionRecurrence {
+  frequency: RecurrenceFrequency;
+  nextDueDate: string;       // ISO date — when the next copy should be generated
+  endDate?: string;          // optional end date — stops generating after this
+  isActive: boolean;
+  parentTransactionId?: string; // original transaction that spawned this
+}
+
 export interface Transaction {
   id: string;
   businessId: string;
@@ -547,6 +558,8 @@ export interface Transaction {
   installmentGroupId?: string;
   installmentNumber?: number;   // ex: 1 de 3
   installmentTotal?: number;
+  /** Recorrência automática */
+  recurrence?: TransactionRecurrence;
   /** Auditoria: identidade de quem criou/modificou. Preenchido nas mutações. */
   createdBy?: string;
   createdByName?: string;
@@ -2132,4 +2145,90 @@ export interface GiftCard {
   usedAt?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+// ---- Notifications ----
+
+export type NotificationType =
+  | 'task_assigned'
+  | 'task_due_soon'
+  | 'task_overdue'
+  | 'task_mentioned'
+  | 'appointment_reminder'
+  | 'review_received';
+
+export interface AppNotification {
+  id: string;
+  businessId: string;
+  userId: string;           // recipient
+  type: NotificationType;
+  title: string;
+  body: string;
+  isRead: boolean;
+  link?: string;            // e.g. 'Kanban' to navigate to module
+  relatedId?: string;       // card id, appointment id, etc.
+  actorId?: string;         // who triggered (for assigned/mentioned)
+  actorName?: string;
+  createdAt: string;
+}
+
+// ---- CRM Automations ----
+
+export type CRMAutomationTrigger =
+  | 'client_inactive'       // no visit/contact in X days
+  | 'client_birthday'       // birthday today
+  | 'post_appointment'      // X hours after a completed appointment
+  | 'lifecycle_change'      // lifecycle stage changed to X
+  | 'high_churn_risk'       // churn risk score > threshold
+  | 'new_lead';             // new contact created
+
+export type CRMAutomationActionType =
+  | 'send_whatsapp'         // send WhatsApp message
+  | 'create_task'           // create Kanban card
+  | 'add_tag'               // add tag to contact
+  | 'change_lifecycle'      // change lifecycle stage
+  | 'notify_team';          // send in-app notification to team
+
+export interface CRMAutomationCondition {
+  field: string;            // e.g. 'totalSpent', 'visitCount', 'tags', 'lifecycleStage'
+  operator: 'gt' | 'lt' | 'eq' | 'contains' | 'not_contains';
+  value: string | number;
+}
+
+export interface CRMAutomationAction {
+  type: CRMAutomationActionType;
+  value: string;            // message template, tag name, stage, task title, etc.
+  metadata?: Record<string, unknown>;  // e.g. { boardId, columnId } for create_task
+}
+
+export interface CRMAutomationRule {
+  id: string;
+  businessId: string;
+  name: string;
+  trigger: CRMAutomationTrigger;
+  triggerConfig: Record<string, unknown>;  // e.g. { inactiveDays: 30 }, { hoursAfter: 24 }, { stage: 'customer' }
+  conditions: CRMAutomationCondition[];    // AND conditions — all must match
+  actions: CRMAutomationAction[];
+  isActive: boolean;
+  lastRunAt?: string;
+  totalExecutions: number;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ---- Google Calendar Sync ----
+
+export interface CalendarSyncToken {
+  id: string;
+  uid: string;              // Firebase Auth uid
+  businessId: string;
+  provider: 'google';
+  accessToken: string;      // encrypted
+  refreshToken: string;     // encrypted
+  expiresAt: string;        // ISO — when accessToken expires
+  calendarId: string;       // usually 'primary'
+  isActive: boolean;
+  connectedAt: string;
+  lastSyncAt?: string;
 }

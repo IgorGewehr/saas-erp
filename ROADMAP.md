@@ -1,304 +1,334 @@
 # Aevo — Roadmap de Implementacao
 
-**Ultima atualizacao:** 2026-04-21 (rev.2)
-**Baseado em:** AUDIT_REPORT.md + pesquisa competitiva (Trinks, Booksy, Fresha, Square, Vagaro, GlossGenius, Boulevard, Zenoti, Mindbody, Avec, Belasis)
+**Ultima atualizacao:** 2026-04-23 (rev.3 — pos-auditoria)
+**Baseado em:** AUDIT_REPORT.md + pesquisa competitiva + auditoria pre-producao
 
 ---
 
-## Status Atualizado — O que JA EXISTE (verificado no codigo)
+## Estrategia de Implementacao
 
-### Modulos 100% implementados (12 modulos)
+### Features independentes (sem dependencia externa)
+Implementar por completo, na ordem listada.
 
-| # | Modulo | Arquivo | Observacao |
-|---|--------|---------|------------|
-| 1 | Dashboard | `dashboard/DashboardModule.tsx` | KPIs, graficos, metricas em tempo real |
-| 2 | Agenda | `agenda/AgendaModule.tsx` | Calendario semana/mes/dia, 6 status, gestao de servicos |
-| 3 | PDV | `pdv/PDVModule.tsx` | Catalogo, carrinho, 6 formas pgto, NFC-e toggle, recibo |
-| 4 | Kanban | `kanban/KanbanModule.tsx` | Board + List + Calendar + MyTasks views, drag-drop, checklists |
-| 5 | Financeiro | `financial/FinancialModule.tsx` | 6 tabs: visao-geral, lancamentos, contas, fluxo, comissoes, auditoria |
-| 6 | Estoque | `inventory/InventoryModule.tsx` | CRUD completo, movimentacao, categorias, grid/list |
-| 7 | Fiscal | `fiscal/FiscalModule.tsx` | NFe + NFCe + NFSe + SEFAZ completo |
-| 8 | Configuracoes | `settings/SettingsModule.tsx` | Perfil, empresa, fiscal, usuarios, setores, canais, enterprise |
-| 9 | CRM | `crm/CRMModule.tsx` | Leads, deals, pipeline, campanhas/broadcasts, omnichannel inbox |
-| 10 | Conversas | `conversations/ConversasModule.tsx` | WhatsApp + Instagram + Facebook, snippets, notas internas |
-| 11 | Integracoes | `integrations/IntegrationsModule.tsx` | Dashboard enterprise multi-tab (Stripe, OpenAI, Anthropic, etc.) |
-| 12 | Booking Publico | `booking/[slug]/page.tsx` | Pagina publica sem auth, chat com agente IA, agendamento autonomo |
-
-### Features transversais ja implementadas
-
-| Feature | Onde | Detalhes |
-|---------|------|---------|
-| Comissoes automaticas | `lib/services/commission.ts` + Agenda + Financeiro | Criacao/cancelamento auto, taxa por profissional e por servico, tab dedicada no Financeiro |
-| Comissao por servico UI | `agenda/AgendaModule.tsx` | Campo commissionRate no ServiceManagementDialog |
-| PDV → NFC-e | `pdv/PDVModule.tsx` | Toggle NFC-e no checkout, emissao via /api/fiscal/emit |
-| PDV → Recibo | `pdv/PDVModule.tsx` | window.print com layout termico, inclui chave NFC-e |
-| Programa de fidelidade | `lib/services/loyalty.ts` + PDV + Settings | Pontos por real, resgate como pagamento, config por negocio |
-| Gift cards digitais | `lib/services/giftCard.ts` + PDV | Criacao, lookup por codigo, resgate parcial, venda no PDV |
-| DRE | `financial/FinancialModule.tsx` | Tab DRE com periodos mensal/trimestral/anual, export PDF |
-| Fluxo de caixa projetado | `financial/FinancialModule.tsx` | Tab "Fluxo" com previsto vs realizado, grafico |
-| Contas a pagar/receber | `financial/FinancialModule.tsx` | dueDate, parcelas (ate 12x), alertas de vencimento, aging report |
-| Lembretes automaticos | `api/agent/scheduled/run/route.ts` | Cron horario: lembrete, confirmacao, follow-up via WhatsApp |
-| Relatorios dedicados | `reports/ReportsModule.tsx` | 5 abas: vendas, agenda, financeiro, clientes, comissoes + PDF |
-| Kanban avancado | `kanban/KanbanModule.tsx` | 4 views + comentarios + anexos + templates + automacoes + recorrencia |
-| Setores/Departamentos | AuthProvider + Settings | Visibilidade granular em Conversas, Kanban, CRM, Financeiro |
-| Presenca online | AuthProvider + TopBar | 3 estados (online/busy/offline), invisible mode, heartbeat |
+### Features com dependencia externa (gateway de pagamento / TEF)
+Implementar o **esqueleto completo**: tipos, UI, fluxos, validacoes — tudo pronto exceto a chamada real ao gateway. Na UI:
+- Botoes/abas ficam **visiveis mas desabilitados** (cinza) com badge "Em breve"
+- Ou ficam **ocultos** atras de feature flag (`business.enterprise.payments?.isEnabled`)
+- Quando o gateway for integrado, basta conectar ao esqueleto existente
 
 ---
 
-## O que FALTA — Ordenado por Prioridade
+## O que JA EXISTE (15 modulos + 50+ API routes)
 
-### FASE 1 — Table-stakes (sem isso nao compete)
+<details>
+<summary>Expandir lista completa de features implementadas</summary>
 
-> Features presentes em 8+ concorrentes. Sao consideradas basicas pelo mercado.
+- Dashboard (KPIs, graficos, metricas)
+- Agenda (calendario, 6 status, servicos, comissoes auto, lembretes WhatsApp)
+- PDV (carrinho, 8 formas pgto, NFC-e, recibo, fidelidade, gift card, cancelamento atomico com reversao)
+- Kanban (4 views, drag-drop, checklists, labels, comentarios, anexos, templates, automacoes, recorrencia)
+- Financeiro (7 tabs: visao-geral, lancamentos, contas, fluxo, comissoes, DRE, auditoria)
+- Estoque (CRUD, movimentacao, categorias, alertas, BOM/compostos)
+- Fiscal (NFe + NFCe + NFSe + SEFAZ + DANFE + carta correcao + inutilizacao)
+- Configuracoes (10 abas, roles, setores, canais, enterprise)
+- CRM (leads, deals, pipeline, broadcasts, segmentacao, omnichannel inbox)
+- Conversas (WhatsApp + Instagram + Facebook, snippets, notas internas, scroll fix)
+- Integracoes Enterprise (8 provedores: Stripe, OpenAI, Anthropic, GitHub, Vercel, Resend, Cloudflare, Sentry)
+- Booking publico (/booking/[slug] com agente IA)
+- Relatorios (5 abas + export PDF)
+- Mural de Notas (pessoal/equipe, masonry, color picker, resize)
+- Senhas/Cofre (AES-256-GCM, gerador, reveal com audit trail)
+- Programa de fidelidade (pontos, resgate, config, atomico)
+- Gift cards digitais (criacao, resgate parcial, PDV)
+- Comissoes automaticas (por profissional + por servico)
+- Presenca online (3 estados, invisible, heartbeat)
+- Setores/Departamentos (visibilidade granular em todos os modulos)
+- Convite por codigo (6 chars, roles, expiracao)
 
-#### ~~1. Lembretes automaticos de agendamento (WhatsApp/SMS)~~
-✅ **IMPLEMENTADO** (2026-04)
-- `app/api/agent/scheduled/run/route.ts` — cron horario via Vercel
-- 3 automacoes: lembrete (Xh antes), confirmacao (24-26h antes), follow-up (12-36h apos)
-- Idempotente com campos sentAt no documento do agendamento
-- Envio via Meta API com assinatura HMAC
-
-#### 2. No-show protection (deposito/cartao on file)
-- **Prioridade:** CRITICA
-- **Quem tem:** Booksy, Fresha, Square, Boulevard, Zenoti
-- **Impacto:** Protege receita do prestador, reduz cancelamentos de ultima hora
-- **Estado atual:** NAO EXISTE
-- **O que fazer:**
-  - Opcao de exigir deposito antecipado ao agendar (% do valor ou fixo)
-  - Cartao on file: cliente cadastra cartao na booking page
-  - Fee automatica por no-show (configuravel por negocio)
-  - Politica de cancelamento configuravel (ate Xh antes = sem cobranca)
-- **Complexidade:** Alta (requer gateway de pagamento real)
-- **Dependencias:** Pagamento real integrado (#8)
-
-#### ~~3. Comissao por servico — UI de configuracao~~
-✅ **IMPLEMENTADO** (2026-04)
-- Campo `commissionRate` no ServiceManagementDialog (AgendaModule)
-- Input numerico 0-100% salvo no documento do servico
+</details>
 
 ---
 
-### FASE 2 — Diferenciacao competitiva
+## PLANO DE IMPLEMENTACAO — Ordem de Ataque
 
-> Features presentes em 5-7 concorrentes. Diferenciam dos basicos.
+### SPRINT 1 — Features independentes (sem gateway)
 
-#### ~~4. Relatorios dedicados (modulo)~~
-✅ **IMPLEMENTADO** (2026-04)
-- `app/components/features/reports/ReportsModule.tsx`
-- 5 abas: Vendas, Agenda, Financeiro, Clientes, Comissoes
-- KPI cards, graficos, filtros por periodo, exportacao PDF
-
-#### 5. Memberships / Assinaturas / Pacotes recorrentes
+#### 1. Notificacoes de tarefas Kanban
 - **Prioridade:** ALTA
-- **Quem tem:** Trinks, Booksy, Fresha, Vagaro, GlossGenius, Boulevard, Zenoti, Mindbody
-- **Impacto:** Receita recorrente previsivel, fidelizacao
-- **Estado atual:** NAO EXISTE
-- **O que fazer:**
-  - Tipo `Membership`: nome, servicos inclusos, preco mensal, vigencia
-  - Cliente assina plano → cobranca recorrente (requer gateway)
-  - Controle de uso (quantos servicos usou no mes)
-  - Desconto automatico no PDV quando cliente tem plano ativo
-  - Gestao em Settings ou CRM
-- **Complexidade:** Alta
-- **Dependencias:** Gateway de pagamento real
-
-#### ~~6. Programa de fidelidade (pontos/rewards)~~
-✅ **IMPLEMENTADO** (2026-04)
-- `lib/services/loyalty.ts` — calculo, acumulo, resgate, historico
-- Config em Settings → Empresa: pontosPerReal, valorEmCentavos, minResgate, expiracao
-- Integrado no PDV como pagamento ('pontos'), badge no ClientsModule
-- Transacoes atomicas via Firestore runTransaction
-
-#### 7. Google Calendar sync bidirecional
-- **Prioridade:** ALTA
-- **Quem tem:** Square, Booksy, Fresha, Vagaro
-- **Estado atual:** NAO EXISTE — agenda interna apenas
-- **O que fazer:**
-  - OAuth2 com Google (Settings → Integracoes)
-  - Sync bilateral: agendamentos Aevo ↔ Google Calendar
-  - Por profissional (cada operador conecta sua conta)
-  - Webhook ou polling para sync em tempo real
-- **Complexidade:** Media-Alta
-
-#### 8. Pagamento real integrado (PIX QR + link de pagamento)
-- **Prioridade:** ALTA
-- **Quem tem:** Trinks (Stone), Fresha, Square, todos internacionais
-- **Estado atual:** PDV registra metodo de pagamento, mas NAO processa. Stripe so faz analytics.
-- **O que fazer:**
-  - Integrar gateway brasileiro (Asaas, Pagar.me ou Mercado Pago)
-  - PIX: gerar QR code no PDV, webhook confirma pagamento
-  - Link de pagamento: enviar via WhatsApp para o cliente
-  - Cartao: processar via gateway
-  - Cada negocio configura suas credenciais (Settings → Enterprise)
-- **Complexidade:** Alta
-
-#### ~~9. Gift cards digitais~~
-✅ **IMPLEMENTADO** (2026-04)
-- `lib/services/giftCard.ts` — criacao, lookup, resgate parcial
-- Codigo unico 8 chars, status tracking (active/used/expired)
-- Integrado no PDV como pagamento ('gift_card') + modal de venda
-- Validade configuravel
-
----
-
-### FASE 3 — Premium / Diferencial avancado
-
-> Features presentes em 3-4 concorrentes. Posicionam como plataforma premium.
-
-#### 10. Formularios de intake/anamnese por servico
-- **Prioridade:** MEDIA
-- **Quem tem:** Vagaro, GlossGenius, Boulevard, Zenoti, Mindbody
-- **O que fazer:**
-  - Builder de formularios customizaveis por servico
-  - Cliente preenche antes do atendimento (via booking page ou link)
-  - Historico de fichas no perfil do cliente
-  - Templates pre-definidos (anamnese estetica, ficha capilar, etc.)
-- **Complexidade:** Media-Alta
-
-#### 11. Gestao de reputacao (review prompts)
-- **Prioridade:** MEDIA
-- **Quem tem:** GlossGenius, Zenoti, Mindbody
-- **Impacto:** Reviews automaticos melhoram ranking no Google
-- **O que fazer:**
-  - Envio automatico de pedido de avaliacao apos atendimento (WhatsApp/email)
-  - Link direto para Google Reviews ou pagina interna
-  - Dashboard de avaliacoes recebidas
-  - NPS (Net Promoter Score) por profissional
 - **Complexidade:** Media
-
-#### 12. AI Analyst (perguntas em linguagem natural sobre dados)
-- **Prioridade:** MEDIA
-- **Quem tem:** GlossGenius, Zenoti, Mindbody, Square
-- **Vantagem Aevo:** Ja temos integracoes OpenAI + Anthropic + Agente IA
 - **O que fazer:**
-  - Chat no Dashboard onde admin pergunta sobre dados do negocio
-  - "Quem sao meus top 10 clientes?" / "Qual servico da mais lucro?" / "Qual dia da semana tenho mais no-shows?"
-  - Agente consulta Firestore e gera resposta + graficos
-- **Complexidade:** Media (infraestrutura IA ja existe)
+  - Colecao `notifications/{id}` com `userId`, `type`, `title`, `body`, `isRead`, `link`, `createdAt`
+  - Tipos: `task_due_soon` (1h/1d antes), `task_assigned`, `task_mentioned`, `task_overdue`
+  - Cron check (no mesmo `/api/agent/scheduled/run`) — verifica cards com dueDate proximo
+  - Badge no sino da TopBar com contagem de nao-lidas
+  - Dropdown de notificacoes com mark-as-read
+  - onSnapshot para real-time
+- **Estimativa:** 1-2 sessoes
 
-#### 13. Automacoes por comportamento (triggers)
-- **Prioridade:** MEDIA
-- **Quem tem:** Fresha, Mindbody, Trinks
+#### 2. Recorrencia automatica de lancamentos financeiros
+- **Prioridade:** ALTA
+- **Complexidade:** Media
 - **O que fazer:**
-  - Reengajamento: cliente inativo ha X dias → mensagem automatica
-  - Aniversario: parabens + desconto via WhatsApp
-  - Pos-atendimento: agradecimento + pedido de avaliacao
-  - Configuravel por negocio (tipos de trigger, templates, canais)
+  - Campo `recurrence` em Transaction: `{ frequency: 'monthly'|'weekly'|'biweekly'|'quarterly'|'yearly', nextDueDate, endDate?, isActive }`
+  - Cron job gera proxima ocorrencia quando `nextDueDate <= hoje`
+  - UI: toggle "Recorrente" no form de lancamento, com seletor de frequencia
+  - Opcao de pausar/cancelar recorrencia
+- **Estimativa:** 1 sessao
+
+#### 3. Google Calendar sync bidirecional
+- **Prioridade:** ALTA
 - **Complexidade:** Media-Alta
-
-#### ~~14. DRE (Demonstrativo de Resultado do Exercicio)~~
-✅ **IMPLEMENTADO** (2026-04)
-- Tab "DRE" no FinancialModule com DREContent component
-- Receita Bruta → Deducoes → Liquida → CPV → Lucro Bruto → Despesas → Resultado
-- Periodos: mensal, trimestral, anual
-- Exportacao PDF via jsPDF + jspdf-autotable
-- Categorias configuradas: CPV, Deducao, Financeiro
-
-#### 15. Conciliacao bancaria
-- **Prioridade:** MEDIA
-- **Quem tem:** ERPs financeiros completos
-- **Estado atual:** NAO EXISTE — contas bancarias sao apenas listagem
 - **O que fazer:**
-  - Upload de extrato (CSV/OFX)
-  - Matching automatico extrato ↔ transacoes do sistema
-  - Reconciliacao manual para itens nao-matched
-  - Status: conciliado / pendente / divergente
+  - OAuth2 com Google (Settings → Integracao → Google Calendar)
+  - Cada profissional conecta sua conta
+  - Sync Aevo → GCal: ao criar/editar/cancelar agendamento, cria/atualiza/remove evento
+  - Sync GCal → Aevo: webhook (push notifications) ou polling periodico
+  - Campos mapeados: titulo, descricao, data/hora, participantes
+  - API route `/api/integrations/google-calendar` com OAuth callback
+  - Colecao `calendarSyncTokens/{uid}` para refresh tokens
+- **Estimativa:** 2-3 sessoes
+
+#### 4. Apple Calendar sync (.ics feed)
+- **Prioridade:** MEDIA
+- **Complexidade:** Baixa
+- **O que fazer:**
+  - API route `/api/calendar/[businessSlug]/[userId].ics` — gera feed .ics read-only
+  - Inclui agendamentos futuros do profissional
+  - URL para assinatura no Apple Calendar / Outlook
+  - Atualiza automaticamente (sem webhook)
+- **Estimativa:** 0.5 sessao
+
+#### 5. Automacoes por comportamento (triggers CRM)
+- **Prioridade:** ALTA
+- **Complexidade:** Media-Alta
+- **O que fazer:**
+  - Colecao `automationRules/{id}`: `trigger`, `conditions[]`, `actions[]`, `isActive`
+  - Triggers: `client_inactive_Xdays`, `client_birthday`, `post_appointment`, `deal_stage_change`
+  - Actions: `send_whatsapp_template`, `create_task`, `add_tag`, `change_lifecycle_stage`
+  - Cron job avalia regras ativas periodicamente
+  - UI em Settings ou CRM: builder visual de regras
+  - Templates de mensagem com variaveis ({{nome}}, {{servico}}, etc.)
+- **Estimativa:** 2-3 sessoes
+
+#### 6. Formularios de intake/anamnese
+- **Prioridade:** MEDIA
+- **Complexidade:** Media-Alta
+- **O que fazer:**
+  - Colecao `formTemplates/{id}`: builder com campos (text, textarea, checkbox, radio, select, date, file)
+  - Colecao `formResponses/{id}`: respostas preenchidas por cliente
+  - Associar template a servico — cliente preenche antes do atendimento
+  - Link publico ou envio via WhatsApp
+  - Historico de fichas no perfil do cliente (CRM)
+  - Templates pre-definidos: anamnese estetica, ficha capilar, consulta inicial
+- **Estimativa:** 2-3 sessoes
+
+#### 7. Gestao de reputacao (review prompts + NPS)
+- **Prioridade:** MEDIA
+- **Complexidade:** Media
+- **O que fazer:**
+  - Envio automatico de pedido de avaliacao apos atendimento (via automacao #5)
+  - Link direto para Google Reviews (configuravel por negocio)
+  - Pagina interna `/review/[businessSlug]` com formulario simples (1-5 estrelas + comentario)
+  - Colecao `reviews/{id}`: rating, comment, clientId, professionalId, serviceId
+  - Dashboard de avaliacoes no modulo Relatorios (nova aba)
+  - NPS calculado por profissional e por servico
+- **Estimativa:** 1-2 sessoes
+
+#### 8. AI Analyst (chat sobre dados do negocio)
+- **Prioridade:** MEDIA
+- **Complexidade:** Media (infra IA ja existe)
+- **O que fazer:**
+  - Chat no Dashboard: admin faz perguntas em linguagem natural
+  - "Quem sao meus top 10 clientes?" / "Qual servico da mais lucro?" / "Quantos no-shows tive este mes?"
+  - Agente consulta Firestore via function calling e gera resposta
+  - Usa OpenAI ou Anthropic (configuravel por negocio)
+  - Historico de perguntas/respostas por sessao
+- **Estimativa:** 2 sessoes
+
+#### 9. Conciliacao bancaria
+- **Prioridade:** MEDIA
 - **Complexidade:** Alta
-
-#### 16. Multi-location management (multi-filial)
-- **Prioridade:** MEDIA
-- **Quem tem:** Avec, Zenoti, Mindbody
 - **O que fazer:**
-  - Um business pode ter multiplas unidades (locations)
-  - Dashboard consolidado + visao por unidade
-  - Profissionais podem atuar em mais de uma unidade
-  - Estoque por unidade
-- **Complexidade:** Alta (impacta modelo de dados inteiro)
+  - Upload de extrato CSV/OFX no Financeiro
+  - Parser de formatos (Banco do Brasil, Itau, Bradesco, Nubank, Inter)
+  - Matching automatico extrato ↔ transacoes do sistema (por valor + data +/- 3 dias)
+  - UI de reconciliacao: matched (verde), pendente (amarelo), divergente (vermelho)
+  - Reconciliacao manual para itens nao-matched
+  - Status por transacao: conciliado / pendente / divergente
+- **Estimativa:** 2-3 sessoes
 
 ---
 
-### FASE 4 — Bonus / Longo prazo
+### SPRINT 2 — Esqueletos (dependem de gateway externo)
 
-> Features de nicho ou que requerem infraestrutura significativa.
+> Implementar tipos, UI, fluxos e validacoes. Botoes desabilitados com "Em breve" ou ocultos.
+> Quando o gateway for integrado, basta conectar.
 
-| # | Feature | Quem tem | Complexidade |
-|---|---------|----------|-------------|
-| 17 | App mobile nativo (PWA ou React Native) | Trinks, Booksy, Fresha, Vagaro | Muito Alta |
-| 18 | Marketplace de descoberta (clientes encontram salao) | Trinks, Booksy, Fresha, Mindbody | Muito Alta |
-| 19 | Widget de booking embeddavel para websites | Fresha, Boulevard | Media |
-| 20 | Payroll integrado (folha de pagamento) | Vagaro, Zenoti | Alta |
-| 21 | Gestao de gorjetas (tips) | Zenoti, Boulevard, Vagaro | Baixa |
-| 22 | Resource management (salas/equipamentos reservaveis) | Boulevard, Mindbody | Media |
-| 23 | Pre-booking no checkout (agendar retorno ao pagar) | Boulevard | Baixa |
-| 24 | HIPAA compliance (para medspas/clinicas) | Boulevard, Zenoti | Alta |
-| 25 | Referral program (indicacao com incentivos) | Mindbody | Media |
-| 26 | Apple Calendar sync (CalDAV/.ics) | Standard | Baixa |
-| 27 | Two-way SMS com clientes | Zenoti | Media |
-| 28 | Branded app personalizado por negocio | Mindbody | Muito Alta |
+#### 10. TEF — Transferencia Eletronica de Fundos
+- **Prioridade:** ALTA (esqueleto)
+- **Complexidade:** Alta (esqueleto: media)
+- **O que fazer (esqueleto):**
+  - Tipo `TEFConfig`: provider (stone|cielo|rede|getnet|safrapay|pagseguro), terminalId, merchantId, isActive
+  - Tipo `TEFTransaction`: saleId, amount, installments, cardBrand, authCode, nsu, status, receipt
+  - UI no PDV: ao selecionar credito/debito com TEF ativo, exibe "Aguardando pinpad..." (tela de status)
+  - Fluxo: PDV envia comando → agente local (Electron/desktop companion) comunica com pinpad → retorna resultado
+  - Settings → Empresa → TEF: configurar provider e terminal
+  - API route `/api/tef/transaction` (esqueleto — retorna mock em dev)
+  - Comprovante TEF (via, cliente, estabelecimento) integrado ao recibo do PDV
+  - `paymentMethod: 'credito_tef' | 'debito_tef'` adicionado ao tipo Payment
+- **O que fica cinza:**
+  - Botao "Iniciar TEF" no PDV — badge "Em breve — configure TEF em Configuracoes"
+  - Aba TEF em Settings desabilitada ate configuracao
+- **Quando ativar:** Integrar com SDK do adquirente (Stone TEF, Cielo LIO, Rede e-Rede, etc.)
+
+#### 11. Pagamento real integrado (PIX QR + link de pagamento)
+- **Prioridade:** ALTA (esqueleto)
+- **Complexidade:** Alta (esqueleto: media)
+- **O que fazer (esqueleto):**
+  - Tipo `PaymentGatewayConfig`: provider (asaas|pagarme|mercadopago|stripe), apiKey, webhookSecret, isActive
+  - Tipo `PaymentIntent`: amount, method (pix|credit|debit|boleto), status, qrCode?, paymentUrl?, gatewayId
+  - UI no PDV: botao "Gerar PIX" exibe QR code + copia-e-cola (esqueleto com QR mockado)
+  - UI no PDV: botao "Enviar link de pagamento" via WhatsApp (esqueleto — gera link placeholder)
+  - Webhook route `/api/payments/webhook` (esqueleto — loga payload)
+  - Settings → Empresa → Pagamentos: configurar gateway
+  - Cada negocio configura suas proprias credenciais
+- **O que fica cinza:**
+  - Botoes "Gerar PIX" e "Link de pagamento" — badge "Em breve"
+  - Aba Pagamentos em Settings desabilitada
+- **Quando ativar:** Cadastrar no Asaas/Pagar.me, obter API keys, preencher config
+
+#### 12. Memberships / Assinaturas / Pacotes
+- **Prioridade:** ALTA (esqueleto)
+- **Complexidade:** Alta (esqueleto: media)
+- **O que fazer (esqueleto):**
+  - Tipo `Membership`: name, description, services[], price, billingCycle (monthly|quarterly|yearly), maxUsesPerCycle
+  - Tipo `ClientMembership`: clientId, membershipId, status (active|paused|cancelled|expired), startDate, nextBillingDate, usesThisCycle
+  - Colecao `memberships/{id}` e `clientMemberships/{id}` com businessId
+  - UI: aba "Planos" no CRM ou modulo dedicado — CRUD de planos
+  - UI: no perfil do cliente, aba "Assinatura" — atribuir plano, ver uso, pausar/cancelar
+  - PDV: detecta plano ativo → desconto automatico para servicos inclusos
+  - Alerta quando uso excede limite do ciclo
+- **O que fica cinza:**
+  - Botao "Assinar plano" — badge "Em breve — requer gateway de pagamento"
+  - Cobranca recorrente desabilitada (manualmente o admin marca como pago)
+- **Quando ativar:** Gateway de pagamento (#11) integrado com billing recorrente
+
+#### 13. No-show protection (deposito / cartao on file)
+- **Prioridade:** ALTA (esqueleto)
+- **Complexidade:** Alta (esqueleto: media)
+- **O que fazer (esqueleto):**
+  - Tipo `NoShowPolicy`: requireDeposit, depositPercentage, depositFixedAmount, cancellationDeadlineHours, noShowFeePercentage
+  - Campo `noShowPolicy` em Business.settings
+  - Booking page: etapa de "garantia" antes de confirmar agendamento (mostra politica)
+  - Settings → Empresa → Politica de No-show: configurar regras
+  - Ao marcar agendamento como "faltou": calcula fee, registra como transacao pendente
+  - Historico de no-shows no perfil do cliente
+- **O que fica cinza:**
+  - Cobranca do deposito — badge "Em breve — requer gateway de pagamento"
+  - Campo de cartao na booking page desabilitado
+- **Quando ativar:** Gateway (#11) + tokenizacao de cartao
 
 ---
 
-## Vantagens competitivas UNICAS do Aevo
+### SPRINT 3 — Bonus / Longo prazo
 
-Features que **nenhum concorrente combina** na mesma plataforma:
+| # | Feature | Complexidade | Deps |
+|---|---------|-------------|------|
+| 14 | Multi-location (multi-filial) | Alta | — |
+| 15 | Widget de booking embeddavel | Media | — |
+| 16 | App mobile nativo (PWA) | Muito Alta | — |
+| 17 | Marketplace de descoberta | Muito Alta | — |
+| 18 | Payroll integrado | Alta | — |
+| 19 | Resource management (salas/equipamentos) | Media | — |
+| 20 | Pre-booking no checkout | Baixa | — |
+| 21 | Referral program | Media | Gateway |
+| 22 | Two-way SMS | Media | Provedor SMS |
+| 23 | Branded app por negocio | Muito Alta | — |
+
+---
+
+## Tipos que Precisam ser Criados (lib/types/index.ts)
+
+### Sprint 1
+```typescript
+// Notificacoes
+Notification: { id, userId, businessId, type, title, body, isRead, link?, relatedId?, createdAt }
+NotificationType: 'task_due_soon' | 'task_assigned' | 'task_mentioned' | 'task_overdue' | 'appointment_reminder' | 'review_received'
+
+// Recorrencia financeira
+TransactionRecurrence: { frequency, nextDueDate, endDate?, isActive, parentTransactionId }
+
+// Google Calendar
+CalendarSyncToken: { uid, businessId, provider, accessToken, refreshToken, expiresAt, calendarId }
+
+// Automacoes CRM
+AutomationRule: { id, businessId, name, trigger, conditions[], actions[], isActive, lastRunAt?, createdAt }
+AutomationTrigger: 'client_inactive' | 'client_birthday' | 'post_appointment' | 'deal_stage_change' | 'new_lead'
+AutomationAction: 'send_whatsapp' | 'create_task' | 'add_tag' | 'change_stage' | 'send_email'
+
+// Formularios
+FormTemplate: { id, businessId, name, serviceId?, fields: FormField[], isActive, createdAt }
+FormField: { id, type, label, required, options?, placeholder? }
+FormResponse: { id, businessId, templateId, clientId, appointmentId?, responses: Record<string, any>, createdAt }
+
+// Reviews
+Review: { id, businessId, clientId?, professionalId?, serviceId?, rating, comment?, source, createdAt }
+```
+
+### Sprint 2 (esqueletos)
+```typescript
+// TEF
+TEFConfig: { provider, terminalId, merchantId, isActive, connectedAt }
+TEFTransaction: { id, businessId, saleId, amount, installments, cardBrand, authCode, nsu, status, receipt?, createdAt }
+TEFProvider: 'stone' | 'cielo' | 'rede' | 'getnet' | 'safrapay' | 'pagseguro'
+
+// Pagamento real
+PaymentGatewayConfig: { provider, apiKey, webhookSecret, isActive, sandbox }
+PaymentIntent: { id, businessId, saleId?, amount, method, status, qrCode?, paymentUrl?, gatewayId?, paidAt?, createdAt }
+PaymentGatewayProvider: 'asaas' | 'pagarme' | 'mercadopago' | 'stripe'
+
+// Memberships
+Membership: { id, businessId, name, description, services[], price, billingCycle, maxUsesPerCycle, isActive, createdAt }
+ClientMembership: { id, businessId, clientId, membershipId, status, startDate, nextBillingDate, usesThisCycle, createdAt }
+MembershipStatus: 'active' | 'paused' | 'cancelled' | 'expired'
+
+// No-show
+NoShowPolicy: { requireDeposit, depositPercentage?, depositFixedAmount?, cancellationDeadlineHours, noShowFeePercentage }
+```
+
+---
+
+## Vantagens Competitivas UNICAS do Aevo
 
 | Vantagem | Detalhe |
 |----------|---------|
 | **Omnichannel real** | WhatsApp + Instagram + Facebook integrados com CRM + Financeiro |
-| **Fiscal completo** | NFe + NFCe + NFSe com SEFAZ real — Trinks e Avec so tocam superficialmente |
-| **Kanban avancado** | 4 views (board/list/calendar/mytasks) com setores — nenhum concorrente tem |
-| **Agente IA** | Booking publico via chat com IA, integracao OpenAI/Anthropic |
+| **Fiscal completo** | NFe + NFCe + NFSe com SEFAZ real |
+| **Kanban avancado** | 4 views com setores — nenhum concorrente tem |
+| **Agente IA** | Booking via chat, lembretes automaticos, integracao OpenAI/Anthropic |
+| **Cofre de senhas** | AES-256-GCM com audit trail — unico no segmento |
+| **Mural de notas** | Google Keep interno para equipe |
+| **TEF integrado** | (em breve) Pinpad direto no PDV |
 | **Setores/Departamentos** | Visibilidade granular em todos os modulos |
-| **Enterprise integrations** | Stripe, GitHub, Vercel, Resend, Discord, etc. |
-| **Multi-tenant com roles** | 5 niveis de acesso (founder → viewer) com convites por codigo |
+| **Enterprise integrations** | 8 provedores (Stripe, GitHub, Vercel, etc.) |
+| **Multi-tenant com roles** | 5 niveis (founder → viewer) + convites por codigo |
 
 ---
 
-## Resumo Executivo Atualizado
+## Resumo Executivo
 
-| Categoria | Implementado | Faltando |
-|-----------|-------------|----------|
-| **Modulos UI** | 13 completos (incl. Booking + Relatorios) | — |
-| **API Routes** | 50/50 completas | 0 placeholders |
-| **PDV** | Venda + estoque + NFC-e + recibo + fidelidade + gift cards | Pagamento real (gateway) |
-| **Fiscal** | NFe + NFCe + NFSe + SEFAZ + PDV | — Completo |
-| **Financeiro** | 7 tabs: visao-geral, lancamentos, contas, fluxo, comissoes, dre, auditoria | Conciliacao bancaria, recorrencia |
-| **Agendamento** | CRUD + booking + comissoes + lembretes auto | No-show protection |
-| **Omnichannel** | WhatsApp + Meta + lembretes automaticos | Reengajamento, triggers |
-| **CRM** | Contatos + deals + pipeline + broadcasts | Scoring auto, triggers |
-| **Kanban** | Board + List + Calendar + MyTasks + comments + attachments + templates + automations + recurrence | Notificacoes |
-| **Pagamento** | Registro local, 8 metodos (incl. pontos + gift card) | Gateway real (PIX QR, link pgto) |
-
-### Tudo que ja foi implementado (verificado no codigo):
-
-- ✅ PDV → NFC-e + Recibo
-- ✅ Comissao automatica de profissionais (lib/services/commission.ts)
-- ✅ Comissao por servico UI (campo no ServiceManagementDialog)
-- ✅ Booking publico (/booking/[slug] com agente IA)
-- ✅ Contas a pagar/receber (dueDate + parcelas + alertas + aging report)
-- ✅ Fluxo de caixa projetado (tab Fluxo)
-- ✅ Lembretes automaticos WhatsApp (cron horario)
-- ✅ Relatorios dedicados (5 abas + PDF)
-- ✅ Programa de fidelidade (pontos/resgate/config)
-- ✅ Gift cards digitais (criacao/resgate/PDV)
-- ✅ DRE (tab no Financeiro, export PDF)
-- ✅ Aging report financeiro (buckets de vencimento)
-- ✅ NFS-e completa (combobox LC 116)
-- ✅ Kanban avancado (comentarios, anexos, templates, automacoes, recorrencia)
-- ✅ Kanban 4 views (Board, Lista, Calendario, Minhas Tarefas)
-
-### Proxima implementacao sugerida (em ordem):
-
-1. **Google Calendar sync** — pedido frequente, media-alta complexidade
-2. **Pagamento real (PIX QR + link)** — requer gateway brasileiro
-3. **Memberships/Assinaturas** — depende de gateway
-4. **No-show protection** — depende de gateway
-5. **Formularios de intake/anamnese** — media-alta complexidade
-6. **Gestao de reputacao (review prompts)** — media complexidade
-7. **AI Analyst** — infra IA ja existe, aplicar sobre dados do Firestore
-8. **Automacoes por comportamento** — reengajamento, aniversario, pos-atendimento
-9. **Conciliacao bancaria** — upload extrato, matching automatico
+| Categoria | Implementado | Proximo |
+|-----------|-------------|---------|
+| **Modulos UI** | 15 completos | Notificacoes, Automacoes CRM |
+| **API Routes** | 50+ completas | Google Calendar, TEF, Payments |
+| **PDV** | Atomico + NFC-e + fidelidade + gift card + cancelamento | TEF + PIX QR |
+| **Fiscal** | NFe + NFCe + NFSe + SEFAZ completo | — |
+| **Financeiro** | 7 tabs + DRE + aging + fluxo caixa | Recorrencia + conciliacao |
+| **Agendamento** | CRUD + booking + comissoes + lembretes | Google Calendar sync |
+| **CRM** | Pipeline + broadcasts + segmentacao | Automacoes + scoring |
+| **Kanban** | 4 views + templates + automacoes | Notificacoes |
+| **Pagamento** | 8 metodos locais | TEF + PIX + link (esqueleto) |
 
 ---
 
-*Fontes da pesquisa competitiva: Trinks, Booksy, Avec, Belasis, Fresha, Square Appointments, Vagaro, GlossGenius, Boulevard, Zenoti, Mindbody (abril/2026)*
+*Fontes: Trinks, Booksy, Avec, Belasis, Fresha, Square, Vagaro, GlossGenius, Boulevard, Zenoti, Mindbody (abril/2026)*

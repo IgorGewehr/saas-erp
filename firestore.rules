@@ -872,6 +872,28 @@ service cloud.firestore {
     }
 
     // ============================================
+    // NOTIFICATIONS COLLECTION
+    // ============================================
+    match /notifications/{notifId} {
+      // Users can read their own notifications
+      allow read: if isAuthenticated()
+                  && resource.data.userId == request.auth.uid;
+
+      // Any authenticated business member can create notifications for others
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isNonEmptyString(request.resource.data.title);
+
+      // Users can update their own notifications (mark as read)
+      allow update: if isAuthenticated()
+                    && resource.data.userId == request.auth.uid;
+
+      // Users can delete their own notifications
+      allow delete: if isAuthenticated()
+                    && resource.data.userId == request.auth.uid;
+    }
+
+    // ============================================
     // CATCH-ALL: Deny everything else
     // ============================================
     match /{document=**} {

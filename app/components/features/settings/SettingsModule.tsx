@@ -847,11 +847,169 @@ function ProfileTab() {
 
       </> /* end Minha Agenda block */}
 
+      {/* ── Google Calendar Integration ── */}
+      <GoogleCalendarSection />
+      <AppleCalendarSection />
+
       {/* Save Profile */}
       <div className="flex justify-end">
         <SaveButton onClick={handleSave} loading={isSaving} label={t('settings.profile.saveProfile', 'Salvar Perfil')} />
       </div>
     </motion.div>
+  );
+}
+
+// ── Google Calendar Connection (inside ProfileTab) ──
+function GoogleCalendarSection() {
+  const { t } = useTranslation();
+  const { user, business, firebaseUser } = useAuth();
+  const [gcalStatus, setGcalStatus] = useState<{ connected: boolean; connectedAt?: string; lastSyncAt?: string } | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isDisconnecting, setIsDisconnecting] = useState(false);
+
+  useEffect(() => {
+    if (!firebaseUser) return;
+    (async () => {
+      try {
+        const token = await firebaseUser.getIdToken();
+        const res = await fetch('/api/integrations/google-calendar', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) setGcalStatus(await res.json());
+      } catch { /* ignore */ }
+      setIsLoading(false);
+    })();
+  }, [firebaseUser]);
+
+  // Check URL params for connection result
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('gcal_connected') === 'true') {
+      setGcalStatus({ connected: true, connectedAt: new Date().toISOString() });
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+    if (params.get('gcal_error')) {
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
+
+  const handleConnect = () => {
+    if (!user || !business) return;
+    window.location.href = `/api/auth/google/connect?uid=${user.uid}&businessId=${business.id}`;
+  };
+
+  const handleDisconnect = async () => {
+    if (!firebaseUser) return;
+    setIsDisconnecting(true);
+    try {
+      const token = await firebaseUser.getIdToken();
+      await fetch('/api/integrations/google-calendar', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setGcalStatus({ connected: false });
+    } catch { /* ignore */ }
+    setIsDisconnecting(false);
+  };
+
+  if (isLoading) return null;
+
+  return (
+    <div className="p-5 rounded-2xl bg-white dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700/60 space-y-4">
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-500/10 flex items-center justify-center">
+          <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none">
+            <path d="M18 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2Z" stroke="currentColor" strokeWidth="1.5" className="text-blue-500" />
+            <path d="M16 2v4M8 2v4M4 10h16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="text-blue-500" />
+          </svg>
+        </div>
+        <div className="flex-1">
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+            Google Calendar
+          </h3>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            {t('settings.profile.gcalDesc', 'Sincronize agendamentos automaticamente com seu Google Calendar')}
+          </p>
+        </div>
+        {gcalStatus?.connected ? (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium bg-emerald-50 dark:bg-emerald-500/10 px-2.5 py-1 rounded-lg">
+              {t('settings.profile.gcalConnected', 'Conectado')}
+            </span>
+            <button
+              onClick={handleDisconnect}
+              disabled={isDisconnecting}
+              className="text-xs text-red-500 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300 px-2.5 py-1 rounded-lg hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+            >
+              {isDisconnecting ? '...' : t('settings.profile.gcalDisconnect', 'Desconectar')}
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={handleConnect}
+            className="text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-xl transition-colors"
+          >
+            {t('settings.profile.gcalConnect', 'Conectar')}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Apple Calendar / iCal Subscription ──
+function AppleCalendarSection() {
+  const { t } = useTranslation();
+  const { user, business } = useAuth();
+  const [copied, setCopied] = useState(false);
+
+  if (!business?.slug || !user?.uid) return null;
+
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const feedUrl = `${origin}/api/calendar/${business.slug}/${user.uid}`;
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(feedUrl).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <div className="p-5 rounded-2xl bg-white dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700/60 space-y-3">
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 rounded-xl bg-gray-100 dark:bg-gray-700/50 flex items-center justify-center">
+          <Calendar className="w-5 h-5 text-gray-500 dark:text-gray-400" />
+        </div>
+        <div className="flex-1">
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+            Apple Calendar / Outlook
+          </h3>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            {t('settings.profile.icalDesc', 'Assine este feed para ver seus agendamentos em qualquer app de calendário')}
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <input
+          readOnly
+          value={feedUrl}
+          className="flex-1 text-xs px-3 py-2 rounded-lg bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 font-mono truncate"
+          onClick={(e) => (e.target as HTMLInputElement).select()}
+        />
+        <button
+          onClick={handleCopy}
+          className={cn(
+            'px-3 py-2 text-xs font-medium rounded-lg transition-colors',
+            copied
+              ? 'bg-emerald-100 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+              : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+          )}
+        >
+          {copied ? t('settings.profile.copied', 'Copiado!') : t('settings.profile.copy', 'Copiar')}
+        </button>
+      </div>
+    </div>
   );
 }
 
