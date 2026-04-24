@@ -34,6 +34,7 @@ interface ChatMessage {
   costUsd?: number;
   durationMs?: number;
   timestamp: number;
+  isFallback?: boolean;
 }
 
 const SUGGESTIONS: Record<Mode, Array<{ icon: typeof Command; text: string }>> = {
@@ -118,16 +119,26 @@ export default function AgentConsole() {
       try { data = await res.json(); } catch { throw new Error('Resposta inválida do servidor'); }
       if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
+      // Detect empty response — server succeeded but agent couldn't produce text.
+      // Happens when: iteration cap hit, all planner turns emitted tool_calls,
+      // or tool errors prevented a final draft. Show a helpful diagnostic.
+      const hasText = typeof data.response === 'string' && data.response.trim().length > 0;
+      const toolCount = (data.toolCalls || []).length;
+      const fallbackContent = toolCount > 0
+        ? `Tentei ${toolCount} ação${toolCount > 1 ? 'ões' : ''} mas não consegui formular uma resposta. Pode reformular ou tentar algo mais específico?`
+        : 'Não consegui processar agora. Tenta reformular com mais detalhes (ex: "tenho agendamentos essa semana?").';
+
       setMessages((prev) => [
         ...prev,
         {
           role: 'assistant',
-          content: data.response || '(sem resposta)',
+          content: hasText ? data.response : fallbackContent,
           runId: data.runId,
           toolCalls: data.toolCalls || [],
           costUsd: data.costUsd,
           durationMs: data.durationMs,
           timestamp: Date.now(),
+          isFallback: !hasText,
         },
       ]);
     } catch (err) {
@@ -259,10 +270,13 @@ export default function AgentConsole() {
               ))}
             </div>
 
-            {/* Messages area */}
+            {/* Messages area — shrinks when there's little content, expands up to 380px */}
             <div
               ref={scrollRef}
-              className="h-[320px] overflow-y-auto px-4 py-3 space-y-3 border-t border-gray-100 dark:border-gray-700/40"
+              className={cn(
+                'overflow-y-auto px-4 py-3 space-y-3 border-t border-gray-100 dark:border-gray-700/40 transition-[height]',
+                messages.length === 0 ? 'min-h-[120px]' : 'h-[340px] max-h-[420px]',
+              )}
             >
               {messages.length === 0 && !isLoading && (
                 <div className="py-4">
@@ -305,47 +319,66 @@ export default function AgentConsole() {
               )}
             </div>
 
-            {/* Input */}
-            <div className="p-3 border-t border-gray-100 dark:border-gray-700/40">
-              <div className={cn(
-                'flex items-end gap-2 rounded-xl border bg-white dark:bg-gray-900 transition-colors',
-                mode === 'analyst'
-                  ? 'border-gray-200 dark:border-gray-700 focus-within:border-indigo-400 dark:focus-within:border-indigo-600'
-                  : 'border-gray-200 dark:border-gray-700 focus-within:border-violet-400 dark:focus-within:border-violet-600',
-              )}>
+            {/* Input — wrapper is the visual pill; textarea is transparent inside */}
+            <div className="px-3 pb-3 pt-2 border-t border-gray-100 dark:border-gray-700/40">
+              <form
+                onSubmit={(e) => { e.preventDefault(); void send(); }}
+                className={cn(
+                  'group flex items-end gap-2 rounded-xl bg-gray-50 dark:bg-gray-900/60 px-3 py-2 transition-all',
+                  'ring-1 ring-gray-200 dark:ring-gray-700/60',
+                  mode === 'analyst'
+                    ? 'focus-within:ring-2 focus-within:ring-indigo-400/60 dark:focus-within:ring-indigo-500/50'
+                    : 'focus-within:ring-2 focus-within:ring-violet-400/60 dark:focus-within:ring-violet-500/50',
+                )}
+              >
                 <textarea
                   ref={inputRef}
                   value={input}
-                  onChange={(e) => setInput(e.target.value)}
+                  onChange={(e) => {
+                    setInput(e.target.value);
+                    // autosize
+                    e.currentTarget.style.height = 'auto';
+                    e.currentTarget.style.height = `${Math.min(e.currentTarget.scrollHeight, 160)}px`;
+                  }}
                   onKeyDown={keyDown}
                   placeholder={mode === 'operator' ? 'Comande ou pergunte em linguagem natural...' : 'Pergunte sobre dados, métricas, padrões...'}
                   rows={1}
                   disabled={isLoading}
-                  className="flex-1 px-3 py-2 bg-transparent resize-none text-sm outline-none text-gray-900 dark:text-gray-100 placeholder:text-gray-400 max-h-32"
+                  spellCheck={false}
+                  autoComplete="off"
+                  className={cn(
+                    'flex-1 min-h-[22px] max-h-40 px-1 py-0.5 bg-transparent resize-none text-sm leading-6',
+                    'border-0 outline-none focus:outline-none focus:ring-0 focus:border-transparent',
+                    'text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
+                    'disabled:opacity-60',
+                  )}
                 />
                 <button
-                  onClick={() => void send()}
+                  type="submit"
                   disabled={!input.trim() || isLoading}
                   className={cn(
-                    'mb-1 mr-1 w-7 h-7 rounded-lg flex items-center justify-center transition-all',
+                    'self-end w-8 h-8 rounded-lg flex items-center justify-center transition-all flex-shrink-0',
                     input.trim() && !isLoading
-                      ? cn('text-white shadow-sm hover:scale-105 bg-gradient-to-br', meta.color)
-                      : 'bg-gray-100 dark:bg-gray-800 text-gray-400',
+                      ? cn('text-white shadow-sm hover:scale-[1.03] active:scale-95 bg-gradient-to-br', meta.color)
+                      : 'bg-gray-200 dark:bg-gray-800 text-gray-400 dark:text-gray-500',
                   )}
                   aria-label="Enviar"
                 >
-                  {isLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                  {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                 </button>
-              </div>
-              <p className="mt-1.5 text-[10px] text-gray-400 flex items-center justify-between">
+              </form>
+              <div className="mt-1.5 flex items-center justify-between text-[10px] text-gray-400 dark:text-gray-500 px-0.5">
                 <span>Enter envia · Shift+Enter quebra linha</span>
                 {mode === 'operator' && !autonomous && (
                   <span className="flex items-center gap-1"><Lock className="w-2.5 h-2.5" /> escritas pedem confirmação</span>
                 )}
                 {mode === 'operator' && autonomous && (
-                  <span className="flex items-center gap-1 text-amber-600"><Zap className="w-2.5 h-2.5" /> autônomo</span>
+                  <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400"><Zap className="w-2.5 h-2.5" /> autônomo</span>
                 )}
-              </p>
+                {mode === 'analyst' && (
+                  <span className="flex items-center gap-1 text-indigo-600 dark:text-indigo-400"><BarChart3 className="w-2.5 h-2.5" /> read-only</span>
+                )}
+              </div>
             </div>
           </motion.div>
         )}
@@ -383,7 +416,9 @@ function MessageBubble({
           'max-w-[85%] rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap break-words',
           isUser
             ? cn('text-white rounded-br-md', accent === 'indigo' ? 'bg-indigo-600' : 'bg-violet-600')
-            : 'bg-gray-100 dark:bg-gray-800/80 text-gray-800 dark:text-gray-200 rounded-bl-md',
+            : msg.isFallback
+              ? 'bg-amber-50 dark:bg-amber-950/30 text-amber-900 dark:text-amber-200 border border-amber-200/60 dark:border-amber-900/40 rounded-bl-md'
+              : 'bg-gray-100 dark:bg-gray-800/80 text-gray-800 dark:text-gray-200 rounded-bl-md',
         )}
       >
         {msg.content}

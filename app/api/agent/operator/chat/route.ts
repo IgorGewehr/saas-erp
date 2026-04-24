@@ -43,6 +43,9 @@ interface OperatorChatResponse {
   durationMs: number;
   costUsd: number;
   autonomous: boolean;
+  /** When Python returned status='error' or 'skipped', this carries the reason. */
+  agentStatus?: 'success' | 'error' | 'skipped';
+  agentError?: string;
 }
 
 export async function POST(req: NextRequest) {
@@ -223,15 +226,28 @@ export async function POST(req: NextRequest) {
 
   const durationMs = Date.now() - t0;
 
+  // If Python reported an internal error/skip, surface a human-readable message
+  // to the UI rather than letting it see an empty response.
+  let displayResponse = data.final_response;
+  if (data.status !== 'success' && !displayResponse) {
+    if (data.status === 'skipped') {
+      displayResponse = 'Execução ignorada (cota diária do agente atingida ou regra de gate). Tente mais tarde.';
+    } else {
+      displayResponse = `⚠️ O agente encontrou um erro${data.error ? `: ${data.error.slice(0, 200)}` : ''}. Tente reformular ou verifique os logs.`;
+    }
+  }
+
   const response: OperatorChatResponse = {
     ok: true,
     runId: data.run_id,
-    response: data.final_response,
+    response: displayResponse,
     intent: data.intent,
     toolCalls,
     durationMs,
     costUsd: run?.costUsd || 0,
     autonomous,
+    agentStatus: data.status,
+    agentError: data.error,
   };
 
   return NextResponse.json(response);
