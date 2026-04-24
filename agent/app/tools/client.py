@@ -88,6 +88,8 @@ TOOL_ENDPOINTS: dict[str, str] = {
     "agenda_get_next_available": "/api/agent/tools/agenda",
     "agenda_book":               "/api/agent/tools/agenda",
     "agenda_list_by_client":     "/api/agent/tools/agenda",
+    "agenda_list_today":         "/api/agent/tools/agenda",
+    "agenda_list_upcoming":      "/api/agent/tools/agenda",
     "agenda_get":                "/api/agent/tools/agenda",
     "agenda_update":             "/api/agent/tools/agenda",
     "agenda_cancel":             "/api/agent/tools/agenda",

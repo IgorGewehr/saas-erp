@@ -269,6 +269,32 @@ AGENDA_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "agenda_list_today",
+            "description": "List all today's appointments for the business (sorted by startTime). Use when operator asks 'que agendamentos tem hoje?'.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "agenda_list_upcoming",
+            "description": (
+                "List upcoming appointments from today onwards, excluding cancelled/completed. "
+                "Use when operator asks 'próximo agendamento', 'agendamentos da semana', etc."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "default": 20, "description": "1-50"},
+                    "daysAhead": {"type": "integer", "default": 7, "description": "dias à frente 1-60"},
+                    "professionalId": {"type": "string", "description": "filtra por profissional"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "agenda_list_by_client",
             "description": "List a customer's existing appointments (by id or phone).",
             "parameters": {

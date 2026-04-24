@@ -10,6 +10,8 @@ type Action =
   | 'get_next_available'
   | 'book'
   | 'list_by_client'
+  | 'list_upcoming'
+  | 'list_today'
   | 'get'
   | 'update'
   | 'cancel';
@@ -66,6 +68,15 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true, data: await bookAppointment(businessId, body.params as unknown as BookParams) });
       case 'list_by_client':
         return NextResponse.json({ ok: true, data: await listByClient(businessId, (body.params.clientId || body.params.phone) as string, (body.params.limit as number) || 10) });
+      case 'list_today':
+        return NextResponse.json({ ok: true, data: await listToday(businessId) });
+      case 'list_upcoming':
+        return NextResponse.json({ ok: true, data: await listUpcoming(
+          businessId,
+          (body.params.limit as number) || 20,
+          (body.params.daysAhead as number) || 7,
+          body.params.professionalId as string | undefined,
+        ) });
       case 'get':
         return NextResponse.json({ ok: true, data: await getAppointment(businessId, body.params.id as string) });
       case 'update':
@@ -365,6 +376,42 @@ async function listByClient(businessId: string, lookupKey: string, limit: number
     snap = await q.get();
   }
   return snap.docs.map(d => ({ ...(d.data() as Appointment), id: d.id }));
+}
+
+async function listToday(businessId: string): Promise<Appointment[]> {
+  const today = new Date().toISOString().slice(0, 10);
+  const snap = await adminDb
+    .collection('appointments')
+    .where('businessId', '==', businessId)
+    .where('date', '==', today)
+    .orderBy('startTime', 'asc')
+    .get();
+  return snap.docs.map((d) => ({ ...(d.data() as Appointment), id: d.id }));
+}
+
+async function listUpcoming(
+  businessId: string,
+  limit: number,
+  daysAhead: number,
+  professionalId?: string,
+): Promise<Appointment[]> {
+  const today = new Date().toISOString().slice(0, 10);
+  const end = new Date();
+  end.setDate(end.getDate() + Math.min(Math.max(daysAhead, 1), 60));
+  const endIso = end.toISOString().slice(0, 10);
+
+  let q: FirebaseFirestore.Query = adminDb
+    .collection('appointments')
+    .where('businessId', '==', businessId)
+    .where('date', '>=', today)
+    .where('date', '<=', endIso);
+  if (professionalId) q = q.where('professionalId', '==', professionalId);
+
+  const snap = await q.orderBy('date', 'asc').orderBy('startTime', 'asc').limit(Math.min(limit, 50)).get();
+  // Filter out cancelled/concluido client-side — index shape stays stable
+  return snap.docs
+    .map((d) => ({ ...(d.data() as Appointment), id: d.id }))
+    .filter((a) => a.status !== 'cancelado' && a.status !== 'concluido');
 }
 
 async function getAppointment(businessId: string, id: string) {
