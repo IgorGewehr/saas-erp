@@ -3678,6 +3678,14 @@ function AgenteTab() {
   // Operator-specific (dashboard chat)
   const [autonomousMode, setAutonomousMode] = useState<boolean>(current?.operator?.autonomousMode ?? false);
 
+  // Wave 7 — policies + SLAs + calendar + upsell
+  const [policyCancellation, setPolicyCancellation] = useState<string>(current?.policies?.cancellation || '');
+  const [policyRefund, setPolicyRefund] = useState<string>(current?.policies?.refund || '');
+  const [slaPrepMin, setSlaPrepMin] = useState<number>(current?.sla?.prepMaxMinutes || 0);
+  const [slaDeliveryMin, setSlaDeliveryMin] = useState<number>(current?.sla?.deliveryMaxMinutes || 0);
+  const [holidaysStr, setHolidaysStr] = useState<string>((current?.calendar?.holidays || []).join(', '));
+  const [acceptedPaymentsStr, setAcceptedPaymentsStr] = useState<string>((current?.acceptedPaymentMethods || []).join(','));
+
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -3692,6 +3700,12 @@ function AgenteTab() {
     setConfirmationBeforeAppointment(current?.agenda?.confirmationBeforeAppointment ?? true);
     setFollowUpAfter(current?.agenda?.followUpAfter ?? false);
     setAutonomousMode(current?.operator?.autonomousMode ?? false);
+    setPolicyCancellation(current?.policies?.cancellation || '');
+    setPolicyRefund(current?.policies?.refund || '');
+    setSlaPrepMin(current?.sla?.prepMaxMinutes || 0);
+    setSlaDeliveryMin(current?.sla?.deliveryMaxMinutes || 0);
+    setHolidaysStr((current?.calendar?.holidays || []).join(', '));
+    setAcceptedPaymentsStr((current?.acceptedPaymentMethods || []).join(','));
   }, [current]);
 
   const handleSave = async () => {
@@ -3707,6 +3721,29 @@ function AgenteTab() {
         ? { sendReminder, reminderHoursBefore, confirmationBeforeAppointment, followUpAfter }
         : undefined;
 
+      // Wave 7 — parse dynamic fields
+      const holidays = holidaysStr.split(',').map((s) => s.trim()).filter((s) => /^\d{4}-\d{2}-\d{2}$/.test(s));
+      const validPayments = ['dinheiro', 'pix', 'credito', 'debito', 'boleto', 'pontos', 'gift_card', 'voucher', 'outros'];
+      const acceptedPaymentMethods = acceptedPaymentsStr
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter((s) => validPayments.includes(s));
+
+      const policies = (policyCancellation.trim() || policyRefund.trim())
+        ? { cancellation: policyCancellation.trim() || null, refund: policyRefund.trim() || null }
+        : null;
+
+      const sla = (slaPrepMin > 0 || slaDeliveryMin > 0)
+        ? {
+            prepMaxMinutes: slaPrepMin > 0 ? slaPrepMin : null,
+            deliveryMaxMinutes: slaDeliveryMin > 0 ? slaDeliveryMin : null,
+          }
+        : null;
+
+      const calendar = holidays.length > 0
+        ? { holidays, seasonalHours: current?.calendar?.seasonalHours || [] }
+        : null;
+
       const payload: Record<string, unknown> = {
         'settings.aiAgent': {
           enabled,
@@ -3715,6 +3752,15 @@ function AgenteTab() {
           pedidos: pedidos || null,
           agenda: agenda || null,
           operator: { autonomousMode },
+          policies,
+          sla,
+          calendar,
+          acceptedPaymentMethods: acceptedPaymentMethods.length > 0 ? acceptedPaymentMethods : null,
+          // deliveryZones + teamCapacity + upsellRules ficam preservados — UIs dedicadas
+          // virão em uma próxima iteração (podem ser editados direto no Firestore via doc)
+          deliveryZones: current?.deliveryZones || null,
+          teamCapacity: current?.teamCapacity || null,
+          upsellRules: current?.upsellRules || null,
           enabledAt: enabled && !current?.enabledAt ? new Date().toISOString() : (current?.enabledAt || null),
         },
         updatedAt: new Date().toISOString(),
@@ -3966,6 +4012,137 @@ function AgenteTab() {
                   </p>
                 </div>
                 <AgenteToggleSwitch checked={autonomousMode} onChange={setAutonomousMode} />
+              </div>
+            </div>
+          </SectionCard>
+
+          {/* Wave 7: Policies (cancellation, refund) */}
+          <SectionCard title="Políticas" icon={Info}>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                  Política de cancelamento
+                </label>
+                <textarea
+                  value={policyCancellation}
+                  onChange={(e) => setPolicyCancellation(e.target.value)}
+                  maxLength={1000}
+                  rows={2}
+                  placeholder="Ex: Cancelamento sem multa até 2h antes. Após esse prazo, cobramos 30%."
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                />
+                <p className="text-[10px] text-gray-400 mt-0.5 text-right">{policyCancellation.length}/1000</p>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                  Política de estorno/reembolso
+                </label>
+                <textarea
+                  value={policyRefund}
+                  onChange={(e) => setPolicyRefund(e.target.value)}
+                  maxLength={1000}
+                  rows={2}
+                  placeholder="Ex: Estornos em 5 dias úteis via PIX. Cartão pode levar até 2 faturas."
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                />
+                <p className="text-[10px] text-gray-400 mt-0.5 text-right">{policyRefund.length}/1000</p>
+              </div>
+              <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                O agente cita estas políticas literalmente ao responder perguntas relacionadas.
+                Deixe em branco se não tiver política definida — o agente responde "vou confirmar com o time".
+              </p>
+            </div>
+          </SectionCard>
+
+          {/* Wave 7: SLAs */}
+          <SectionCard title="SLAs de atendimento" icon={Info}>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                  Tempo máximo de preparo (min)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={300}
+                  value={slaPrepMin}
+                  onChange={(e) => setSlaPrepMin(Math.max(0, Math.min(300, Number(e.target.value) || 0)))}
+                  placeholder="Ex: 30"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                  Tempo máximo de entrega (min)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={300}
+                  value={slaDeliveryMin}
+                  onChange={(e) => setSlaDeliveryMin(Math.max(0, Math.min(300, Number(e.target.value) || 0)))}
+                  placeholder="Ex: 60"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                />
+              </div>
+            </div>
+            <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-2">
+              O agente usa para definir expectativas honestas ("seu pedido chega em até 45 min").
+              0 desliga a informação.
+            </p>
+          </SectionCard>
+
+          {/* Wave 7: Feriados + Pagamentos aceitos */}
+          <SectionCard title="Feriados & pagamentos" icon={Info}>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                  Feriados (datas fechadas)
+                </label>
+                <input
+                  type="text"
+                  value={holidaysStr}
+                  onChange={(e) => setHolidaysStr(e.target.value)}
+                  placeholder="2026-12-25, 2026-01-01, 2026-04-21"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                />
+                <p className="text-[10px] text-gray-400 mt-0.5">
+                  ISO YYYY-MM-DD separados por vírgula. Nessas datas o agente informa que está fechado.
+                </p>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                  Formas de pagamento aceitas
+                </label>
+                <div className="flex flex-wrap gap-1.5">
+                  {(['dinheiro', 'pix', 'credito', 'debito', 'boleto', 'pontos', 'gift_card', 'voucher'] as const).map((m) => {
+                    const selected = acceptedPaymentsStr.split(',').map((s) => s.trim().toLowerCase()).includes(m);
+                    return (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => {
+                          const current = acceptedPaymentsStr.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+                          const next = selected
+                            ? current.filter((x) => x !== m)
+                            : [...current, m];
+                          setAcceptedPaymentsStr(next.join(','));
+                        }}
+                        className={cn(
+                          'px-3 py-1 rounded-lg text-xs font-medium transition-colors',
+                          selected
+                            ? 'bg-violet-600 text-white'
+                            : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700',
+                        )}
+                      >
+                        {m.replace('_', ' ')}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-gray-400 mt-1.5">
+                  O agente NUNCA oferece método fora desta lista. Selecione os que vocês realmente aceitam.
+                </p>
               </div>
             </div>
           </SectionCard>

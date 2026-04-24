@@ -308,6 +308,65 @@ export interface AiAgentSettings {
     /** Daily spend cap for the operator chat specifically (USD). */
     dailyBudgetUsd?: number;
   };
+
+  /** === Policies — agent cites these verbatim on relevant questions. === */
+  policies?: {
+    /** Cancellation terms (e.g., "sem multa até 2h antes"). */
+    cancellation?: string;
+    /** Refund policy text. */
+    refund?: string;
+    /** Privacy / LGPD summary the agent can quote. */
+    privacy?: string;
+  };
+
+  /** === SLAs — target durations used by the agent to set expectations. === */
+  sla?: {
+    /** Max preparation time before order is ready (pedidos mode). Minutes. */
+    prepMaxMinutes?: number;
+    /** Max total delivery time (order → doorstep). Minutes. */
+    deliveryMaxMinutes?: number;
+    /** First-response SLA on customer messages. Minutes. */
+    firstResponseMinutes?: number;
+  };
+
+  /** === Calendar exceptions — holidays + seasonal hour overrides. === */
+  calendar?: {
+    /** Dates when the business is closed (ISO YYYY-MM-DD). Overrides openingHours. */
+    holidays?: string[];
+    /** Date-range overrides with specific opening hours. */
+    seasonalHours?: Array<{
+      fromDate: string;
+      toDate: string;
+      label?: string;
+      hours: BusinessHoursDay[];
+    }>;
+  };
+
+  /** === Delivery zones + payment method whitelist (pedidos mode). === */
+  deliveryZones?: Array<{
+    name: string;
+    type: 'radius' | 'neighborhood' | 'polygon';
+    value: string;
+    fee?: number;
+    estimatedMinutes?: number;
+  }>;
+
+  /** Payment methods the business accepts — agent never offers one outside this list. */
+  acceptedPaymentMethods?: Array<'dinheiro' | 'pix' | 'credito' | 'debito' | 'boleto' | 'pontos' | 'gift_card' | 'voucher' | 'outros'>;
+
+  /** === Team capacity — upper bound the agent won't exceed. === */
+  teamCapacity?: {
+    maxConcurrentOrders?: number;
+    maxDailyAppointments?: number;
+  };
+
+  /** === Upsell rules — agent suggests X when Y matches. === */
+  upsellRules?: Array<{
+    id: string;
+    trigger: string;
+    suggestion: string;
+    isActive: boolean;
+  }>;
 }
 
 // ---- Fiscal Configuration ----

@@ -200,6 +200,15 @@ async def run_agent(*, run_id: str, business_id: str, req: ProcessRequest) -> Ag
                 "user_role": req.operator_user_role,
                 "autonomous": bool(req.operator_autonomous),
             } if req.use_case in ("operator", "analyst") else {},
+            # Wave 7 — policy-aware settings
+            "policies": req.policies or {},
+            "sla": req.sla or {},
+            "is_closed_today": bool(req.is_closed_today),
+            "seasonal_label": req.seasonal_label,
+            "delivery_zones": req.delivery_zones or [],
+            "accepted_payment_methods": req.accepted_payment_methods or [],
+            "team_capacity": req.team_capacity or {},
+            "upsell_rules": req.upsell_rules or [],
         },
         "contact": {
             "name": req.contact_name,

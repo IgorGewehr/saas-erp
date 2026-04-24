@@ -209,6 +209,14 @@ export async function dispatchInboundToAgent(
       } catch { /* non-fatal — agent falls back to agenda_list_services tool */ }
     }
 
+    // Compute today's effective opening hours (applies holidays + seasonal overrides)
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const holidays = business.settings?.aiAgent?.calendar?.holidays || [];
+    const isClosedToday = holidays.includes(todayIso);
+    const seasonalHours = business.settings?.aiAgent?.calendar?.seasonalHours || [];
+    const activeSeason = seasonalHours.find((s) => todayIso >= s.fromDate && todayIso <= s.toDate);
+    const effectiveHours = activeSeason?.hours || business.settings?.openingHours || null;
+
     const payload = {
       message_id: input.messageId,
       conversation_id: input.conversationId,
@@ -228,11 +236,20 @@ export async function dispatchInboundToAgent(
       // Long-term memory carried over from previous conversations
       client_memory: clientMemory || null,
       // Business operational context (profile / settings)
-      opening_hours: business.settings?.openingHours || null,
+      opening_hours: effectiveHours,
       address: business.endereco || null,
       services_list: servicesList.length > 0 ? servicesList : null,
       // Current date so the agent doesn't have to guess from training data
-      current_date: new Date().toISOString().slice(0, 10),
+      current_date: todayIso,
+      // ─── Wave 7 — policy-aware context ────────────────────────────────
+      policies: business.settings?.aiAgent?.policies || null,
+      sla: business.settings?.aiAgent?.sla || null,
+      is_closed_today: isClosedToday,
+      seasonal_label: activeSeason?.label || null,
+      delivery_zones: business.settings?.aiAgent?.deliveryZones || null,
+      accepted_payment_methods: business.settings?.aiAgent?.acceptedPaymentMethods || null,
+      team_capacity: business.settings?.aiAgent?.teamCapacity || null,
+      upsell_rules: (business.settings?.aiAgent?.upsellRules || []).filter((r) => r.isActive),
     };
 
     const raw = JSON.stringify(payload);

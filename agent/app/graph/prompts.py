@@ -148,14 +148,83 @@ def _base_rules(business_context: dict[str, Any]) -> str:
     if description:
         parts.append(f"Sobre o negócio: {description}")
 
+    # Closed today flag (holiday or seasonal)
+    if business_context.get("is_closed_today"):
+        season = business_context.get("seasonal_label")
+        label = f" ({season})" if season else ""
+        parts.append(f"⚠ HOJE O ESTABELECIMENTO ESTÁ FECHADO{label} — comunique isso ao cliente.")
+
     hours_str = _format_opening_hours(opening_hours)
     if hours_str:
-        parts.append("Horário de funcionamento:")
+        season = business_context.get("seasonal_label")
+        title = f"Horário de funcionamento ({season}):" if season else "Horário de funcionamento:"
+        parts.append(title)
         parts.append(hours_str)
 
     addr_str = _format_address(address)
     if addr_str:
         parts.append(f"Endereço: {addr_str}")
+
+    # ─── Policies block — cited verbatim for cancellation/refund Qs ──────
+    policies = business_context.get("policies") or {}
+    policy_lines: list[str] = []
+    if policies.get("cancellation"):
+        policy_lines.append(f"CANCELAMENTO: {policies['cancellation']}")
+    if policies.get("refund"):
+        policy_lines.append(f"ESTORNO/REEMBOLSO: {policies['refund']}")
+    if policies.get("privacy"):
+        policy_lines.append(f"PRIVACIDADE (LGPD): {policies['privacy']}")
+    if policy_lines:
+        parts.append("")
+        parts.append("<policies>")
+        parts.extend(policy_lines)
+        parts.append("Use essas políticas como base literal ao responder perguntas relacionadas.")
+        parts.append("</policies>")
+
+    # SLA — for expectation setting
+    sla = business_context.get("sla") or {}
+    sla_lines: list[str] = []
+    if sla.get("prepMaxMinutes"):
+        sla_lines.append(f"Preparo máximo: {sla['prepMaxMinutes']} min")
+    if sla.get("deliveryMaxMinutes"):
+        sla_lines.append(f"Entrega máxima: {sla['deliveryMaxMinutes']} min")
+    if sla.get("firstResponseMinutes"):
+        sla_lines.append(f"Primeira resposta esperada: {sla['firstResponseMinutes']} min")
+    if sla_lines:
+        parts.append(f"SLA: {' • '.join(sla_lines)}")
+
+    # Delivery zones + payment whitelist
+    zones = business_context.get("delivery_zones") or []
+    if zones:
+        parts.append("")
+        parts.append("<delivery_zones>")
+        for z in zones[:10]:
+            line = f"• {z.get('name', '?')}"
+            if z.get('type') == 'radius':
+                line += f" (raio {z.get('value', '?')})"
+            elif z.get('type') == 'neighborhood':
+                line += f" — bairro: {z.get('value', '?')}"
+            if z.get('fee') is not None:
+                line += f" — taxa R$ {z['fee']:.2f}"
+            if z.get('estimatedMinutes'):
+                line += f" — ~{z['estimatedMinutes']}min"
+            parts.append(line)
+        parts.append("NÃO aceite entregas fora destas zonas — ofereça retirada quando aplicável.")
+        parts.append("</delivery_zones>")
+
+    methods = business_context.get("accepted_payment_methods") or []
+    if methods:
+        parts.append(f"Formas de pagamento aceitas: {', '.join(methods)} (NUNCA ofereça outra).")
+
+    # Upsell rules — active only
+    upsell = business_context.get("upsell_rules") or []
+    if upsell:
+        parts.append("")
+        parts.append("<upsell_rules>")
+        for r in upsell[:8]:
+            parts.append(f"- Quando: {r.get('trigger', '?')} → Ofereça: {r.get('suggestion', '?')}")
+        parts.append("Sugira NATURALMENTE (uma vez, sem insistir).")
+        parts.append("</upsell_rules>")
 
     client_memory = business_context.get("client_memory") if isinstance(business_context, dict) else None
     if client_memory:
