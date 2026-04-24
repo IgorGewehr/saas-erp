@@ -658,6 +658,51 @@ export interface BankAccount {
   updatedAt: string;
 }
 
+// ---- Bank Reconciliation ----
+
+export type ReconciliationStatus = 'matched' | 'pending' | 'divergent' | 'ignored';
+
+export interface BankStatementEntry {
+  date: string;           // YYYY-MM-DD
+  description: string;
+  amount: number;         // positive = credit, negative = debit
+  balance?: number;
+  reference?: string;     // bank reference / doc number
+}
+
+export interface ReconciliationItem {
+  id: string;
+  businessId: string;
+  bankAccountId: string;
+  importId: string;           // groups items from same upload
+  // Statement side
+  statementDate: string;
+  statementDescription: string;
+  statementAmount: number;
+  statementReference?: string;
+  // Match side
+  transactionId?: string;     // linked transaction ID when matched
+  status: ReconciliationStatus;
+  matchConfidence?: number;   // 0-100 auto-match score
+  reconciledBy?: string;
+  reconciledAt?: string;
+  createdAt: string;
+}
+
+export interface BankStatementImport {
+  id: string;
+  businessId: string;
+  bankAccountId: string;
+  fileName: string;
+  format: 'csv' | 'ofx';
+  totalEntries: number;
+  matched: number;
+  pending: number;
+  divergent: number;
+  importedAt: string;
+  importedBy: string;
+}
+
 // ---- Financial: Employees ----
 export interface Employee {
   id: string;

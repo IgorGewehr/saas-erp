@@ -51,6 +51,7 @@ import {
   Download,
   ChevronRight,
   Repeat,
+  Scale,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -72,6 +73,7 @@ import {
 import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { logAudit } from '@/lib/services/audit';
+import ConciliacaoTab from './ConciliacaoTab';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery as useTanstackQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'react-toastify';
@@ -106,7 +108,7 @@ const PRESET_COLORS = [
   '#820AD1', '#FF7A00', '#1A1A2E', '#14532D', '#7C2D12',
 ];
 
-type FinancialTab = 'visao-geral' | 'lancamentos' | 'contas' | 'fluxo' | 'dre' | 'comissoes' | 'auditoria';
+type FinancialTab = 'visao-geral' | 'lancamentos' | 'contas' | 'fluxo' | 'dre' | 'comissoes' | 'conciliacao' | 'auditoria';
 
 const inputSx = { '& .MuiOutlinedInput-root': { borderRadius: '12px' } };
 
@@ -151,6 +153,7 @@ export default function FinancialModule() {
     { key: 'dre',        label: 'DRE', icon: <FileSpreadsheet size={16} /> },
     { key: 'contas',     label: t('financial.tabs.accounts',  'Contas Bancárias'), icon: <Landmark size={16} /> },
     { key: 'comissoes',  label: 'Comissões', icon: <Users size={16} /> },
+    { key: 'conciliacao', label: t('financial.tabs.reconciliation', 'Conciliação'), icon: <Scale size={16} /> },
     { key: 'auditoria',  label: t('financial.tabs.audit',     'Auditoria'), icon: <History size={16} /> },
   ];
 
@@ -876,6 +879,14 @@ export default function FinancialModule() {
                 transactions={transactions}
                 onMarkPaid={handleMarkAsPaid}
                 showBalances={showBalances}
+              />
+            )}
+
+            {activeTab === 'conciliacao' && (
+              <ConciliacaoTab
+                businessId={business?.id || ''}
+                transactions={transactions}
+                bankAccounts={bankAccounts}
               />
             )}
           </motion.div>
