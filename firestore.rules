@@ -76,13 +76,6 @@ service cloud.firestore {
       return field is string && field.size() > 0;
     }
 
-    // Validate timestamp string (ISO format)
-    function hasTimestamps() {
-      return request.resource.data.keys().hasAll(['createdAt', 'updatedAt'])
-             && request.resource.data.createdAt is string
-             && request.resource.data.updatedAt is string;
-    }
-
     // ============================================
     // USERS COLLECTION
     // ============================================
@@ -777,6 +770,15 @@ service cloud.firestore {
     // Contadores sequenciais (subcollection businesses/{id}/counters/{name})
     match /businesses/{businessId}/counters/{counterId} {
       allow read, write: if isAuthenticated() && belongsToBusiness(businessId);
+    }
+
+    // ============================================
+    // AGENT NONCES (replay protection for HMAC requests)
+    // ============================================
+    // Written exclusively by the server (Admin SDK) when verifying inbound
+    // agent requests. Clients must never read or write these.
+    match /agentNonces/{nonceId} {
+      allow read, write: if false;
     }
 
     // ============================================

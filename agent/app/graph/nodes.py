@@ -32,7 +32,8 @@ from langchain_openai import ChatOpenAI
 from ..config import get_settings
 from ..logging_config import get_logger
 from ..tools.client import ToolError, call_tool
-from ..tools.registry import tools_for_use_case
+from ..tools.registry import get_tool, tools_for_use_case
+from ..tools.validator import validate as validate_tool_args
 from . import prompts
 from .state import AgentState
 
@@ -135,6 +136,40 @@ def _planner_llm(model: str, tools: list[dict[str, Any]]) -> ChatOpenAI:
     return llm.bind_tools(tools) if tools else llm  # type: ignore[return-value]
 
 
+#  Max messages to forward to the planner. Older turns are dropped while keeping
+# the first two (initial human/contact context) and respecting the OpenAI rule
+# that every AIMessage with tool_calls must be followed by its ToolMessage(s).
+_MESSAGE_WINDOW = 20
+_HEAD_KEEP = 2
+
+
+def _window_messages(messages: list[Any]) -> list[Any]:
+    """Return a compacted message list within the planner token budget.
+
+    Strategy:
+      1. If short enough, return as-is.
+      2. Otherwise keep the first `_HEAD_KEEP` messages (original human input,
+         initial context) and the tail that fits the window.
+      3. When the tail starts mid tool_call→tool_result pair, walk forward
+         until we land on a message that is not a lone ToolMessage with no
+         preceding AIMessage in scope — prevents OpenAI validation errors.
+    """
+    if len(messages) <= _MESSAGE_WINDOW:
+        return messages
+
+    head = messages[:_HEAD_KEEP]
+    tail_size = _MESSAGE_WINDOW - _HEAD_KEEP
+    tail = messages[-tail_size:]
+
+    # If the tail begins with a ToolMessage orphaned from its AIMessage, drop it.
+    # We walk forward until we find a HumanMessage / SystemMessage / AIMessage.
+    from langchain_core.messages import ToolMessage as _TM  # local import avoids top-level reorder
+    while tail and isinstance(tail[0], _TM):
+        tail = tail[1:]
+
+    return head + tail
+
+
 async def _invoke_with_retry(llm: Any, messages: list[Any], max_attempts: int = 3) -> Any:
     """Wrap an LLM invoke with exponential backoff for transient errors.
 
@@ -180,7 +215,7 @@ async def planner_node(state: AgentState) -> dict[str, Any]:
         "\nAo criar pedidos use canal e conversation_id acima como channel e conversationId."
     )
 
-    conv_messages = state.get("messages") or []
+    conv_messages = _window_messages(state.get("messages") or [])
     t0 = time.time()
     ai_msg = await _invoke_with_retry(llm, [SystemMessage(content=system), *conv_messages])
     latency = int((time.time() - t0) * 1000)
@@ -233,6 +268,45 @@ async def executor_node(state: AgentState) -> dict[str, Any]:
         call_id = tc.get("id") or f"tool_{int(time.time()*1000)}"
         started = _now_iso()
         t0 = time.time()
+
+        # Pre-flight schema validation. When the LLM emits malformed args we
+        # short-circuit here and return a structured error the planner can see
+        # in its next turn — saves a network round-trip + prevents garbage
+        # hitting the backend.
+        schema = get_tool(name)
+        if schema is None:
+            err = f"Unknown tool: {name}"
+            log.warning("node.executor.unknown_tool", tool=name)
+            return (
+                ToolMessage(content=json.dumps({"error": err}), tool_call_id=call_id, name=name),
+                {
+                    "name": name,
+                    "arguments": args,
+                    "error": err,
+                    "latencyMs": 0,
+                    "startedAt": started,
+                },
+            )
+        schema_errors = validate_tool_args(schema["function"]["parameters"], args)
+        if schema_errors:
+            err = "Invalid arguments: " + "; ".join(schema_errors[:5])
+            log.warning("node.executor.schema_invalid", tool=name, errors=schema_errors)
+            return (
+                ToolMessage(
+                    content=json.dumps({"error": err, "validation": schema_errors}),
+                    tool_call_id=call_id,
+                    name=name,
+                ),
+                {
+                    "name": name,
+                    "arguments": args,
+                    "error": err,
+                    "validation": schema_errors,
+                    "latencyMs": 0,
+                    "startedAt": started,
+                },
+            )
+
         try:
             result = await call_tool(business_id, name, args)
             latency = int((time.time() - t0) * 1000)

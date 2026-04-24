@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
+import { deductStockAdmin, loadProductIndex } from '@/lib/services/stock-admin';
 
 // =============================================================================
 // GET /api/v1/sales — List sales for the authenticated business
@@ -200,45 +201,37 @@ export async function POST(req: NextRequest) {
     if (body.conversationId) saleData.conversationId = body.conversationId;
     if (body.sectorId) saleData.sectorId = body.sectorId;
 
+    // ── Load products + check stock before creating anything ─────────────────
+    const productLines = saleItems
+      .filter((item: any) => !!item.productId)
+      .map((item: any) => ({ productId: item.productId as string, quantity: item.quantity as number }));
+
+    const productIndex = await loadProductIndex(
+      adminDb,
+      productLines.map(l => l.productId),
+      auth.businessId,
+    );
+
     // ── Create the sale document ──────────────────────────────────────────────
     const saleRef = await adminDb.collection('sales').add(saleData);
     const saleId = saleRef.id;
 
-    // ── Update product stock for items with productId ─────────────────────────
-    for (const item of saleItems) {
-      if (item.productId) {
-        const productRef = adminDb.collection('products').doc(item.productId);
-        const productSnap = await productRef.get();
-
-        if (productSnap.exists) {
-          const productData = productSnap.data()!;
-          // Verify product belongs to the same business
-          if (productData.businessId === auth.businessId) {
-            const previousStock = productData.currentStock ?? 0;
-            const newStock = previousStock - item.quantity;
-
-            await productRef.update({
-              currentStock: newStock,
-              updatedAt: now,
-            });
-
-            // Create stock movement record
-            await adminDb.collection('stockMovements').add({
-              businessId: auth.businessId,
-              productId: item.productId,
-              productName: item.description,
-              type: 'saida',
-              quantity: item.quantity,
-              previousStock,
-              newStock,
-              reason: `Venda #${saleId.substring(0, 6)}`,
-              saleId,
-              operatorId: body.operatorId || 'api',
-              operatorName: body.operatorName || 'API',
-              createdAt: now,
-            });
-          }
-        }
+    // ── Deduct stock atomically (batch + BOM expansion) ───────────────────────
+    if (productLines.length > 0) {
+      try {
+        await deductStockAdmin(adminDb, productLines, {
+          businessId: auth.businessId,
+          operatorId: body.operatorId || 'api',
+          operatorName: body.operatorName || 'API',
+          sourceId: saleId,
+          reason: `Venda #${saleId.substring(0, 6)}`,
+          productIndex,
+        });
+      } catch (stockErr) {
+        console.error('[API] sale stock deduction failed:', stockErr);
+        // Sale remains created; stock movement skipped. Surface the error so
+        // the caller can reconcile rather than silently diverging.
+        return apiError('Sale created but stock deduction failed', 500);
       }
     }
 

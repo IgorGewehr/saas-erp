@@ -170,11 +170,15 @@ async function checkAvailability(
     return { date, slots: [] };
   }
 
-  // Load existing appointments for the day
-  const apptsSnap = await adminDb.collection('appointments')
+  // Load existing appointments for the day. When a specific professional is
+  // requested, narrow the query server-side (index: businessId + date + professionalId).
+  let apptsQuery = adminDb.collection('appointments')
     .where('businessId', '==', businessId)
-    .where('date', '==', date)
-    .get();
+    .where('date', '==', date) as FirebaseFirestore.Query;
+  if (professionalId) {
+    apptsQuery = apptsQuery.where('professionalId', '==', professionalId);
+  }
+  const apptsSnap = await apptsQuery.get();
   const appts = apptsSnap.docs
     .map(d => d.data() as Appointment)
     .filter(a => a.status !== 'cancelado');

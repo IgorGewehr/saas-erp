@@ -42,6 +42,7 @@ interface SendRequestBody {
   templateParams?: unknown[]; // template component parameters
   mediaUrl?: string; // URL of the media file (Firebase Storage)
   mediaType?: 'image' | 'video' | 'audio' | 'document'; // type of media
+  clientMessageId?: string; // idempotency key — retries with same key are deduped
 }
 
 interface MetaApiResponse {
@@ -154,7 +155,7 @@ export async function POST(req: NextRequest) {
     // Read the body as text first so we can (a) verify HMAC when agent-signed and (b) reuse it as JSON.
     const rawBody = await req.text();
     const body: SendRequestBody = JSON.parse(rawBody);
-    const { businessId, conversationId, messageId, messageDocId, channel, recipientId, content, type, templateName, templateLanguage, templateParams, mediaUrl, mediaType } = body;
+    const { businessId, conversationId, messageId, messageDocId, channel, recipientId, content, type, templateName, templateLanguage, templateParams, mediaUrl, mediaType, clientMessageId } = body;
 
     // Authentication: accept either a Firebase session (UI) or an HMAC-signed agent call.
     const agentSignature = req.headers.get('x-agent-signature');
@@ -294,6 +295,27 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Idempotency — if this clientMessageId was already delivered for this
+    // business, return the stored result instead of re-hitting the Meta API.
+    if (clientMessageId && typeof clientMessageId === 'string') {
+      const existingSnap = await adminDb
+        .collection('conversationMessages')
+        .where('businessId', '==', businessId)
+        .where('clientMessageId', '==', clientMessageId)
+        .limit(1)
+        .get();
+      if (!existingSnap.empty) {
+        const existing = existingSnap.docs[0].data();
+        return NextResponse.json({
+          ok: true,
+          success: true,
+          externalMessageId: existing.externalMessageId ?? null,
+          messageId: existingSnap.docs[0].id,
+          idempotent: true,
+        });
+      }
+    }
+
     // Send via the appropriate Meta API
     let result: { externalMessageId: string };
 
@@ -339,7 +361,7 @@ export async function POST(req: NextRequest) {
       await updateMessageAfterSend(docIdToUpdate, result.externalMessageId, businessId);
     } else if (conversationId) {
       // Agent-originated send: no pre-existing doc — create one so it appears in the UI
-      await saveAgentMessage(businessId, conversationId, channel, content, result.externalMessageId);
+      await saveAgentMessage(businessId, conversationId, channel, content, result.externalMessageId, clientMessageId);
     }
 
     return NextResponse.json({
@@ -806,10 +828,11 @@ async function saveAgentMessage(
   channel: string,
   content: string,
   externalMessageId: string,
+  clientMessageId?: string,
 ) {
   try {
     const now = new Date().toISOString();
-    await adminDb.collection('conversationMessages').add({
+    const doc: Record<string, unknown> = {
       conversationId,
       businessId,
       channel,
@@ -820,7 +843,9 @@ async function saveAgentMessage(
       externalMessageId,
       sentAt: now,
       createdAt: now,
-    });
+    };
+    if (clientMessageId) doc.clientMessageId = clientMessageId;
+    await adminDb.collection('conversationMessages').add(doc);
     await adminDb.collection('conversations').doc(conversationId).update({
       lastMessage: content,
       lastMessageAt: now,

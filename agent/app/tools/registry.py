@@ -28,7 +28,13 @@ ORDERS_TOOLS: list[dict[str, Any]] = [
             "description": (
                 "Create a new delivery order for the customer. Use after confirming client name, "
                 "items, delivery or pickup, address if delivery, and payment method. Returns the "
-                "order id + sequential number + estimated delivery time."
+                "order id + sequential number + estimated delivery time.\n"
+                'Example: {"clientName":"Ana","clientPhone":"5547999998888",'
+                '"items":[{"productId":"prd_123","quantity":2}],'
+                '"deliveryType":"entrega",'
+                '"deliveryAddress":{"cep":"01310-100","logradouro":"Av Paulista",'
+                '"numero":"1000","bairro":"Bela Vista","municipio":"São Paulo","uf":"SP"},'
+                '"paymentMethod":"pix","channel":"whatsapp","conversationId":"conv_abc"}'
             ),
             "parameters": {
                 "type": "object",
@@ -233,7 +239,13 @@ AGENDA_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "agenda_book",
-            "description": "Book a new appointment after confirming slot + client details.",
+            "description": (
+                "Book a new appointment after confirming slot + client details. Call ONLY after "
+                "the client picked an exact time via interactive list or typed confirmation.\n"
+                'Example: {"clientName":"Ana","clientPhone":"5547999998888",'
+                '"serviceId":"svc_corte","professionalId":"usr_lucas",'
+                '"date":"2026-04-25","startTime":"14:30","duration":45,"price":60}'
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -516,7 +528,11 @@ CONVERSATION_TOOLS: list[dict[str, Any]] = [
                 "Send a WhatsApp list-message with selectable rows (Baileys only). "
                 "Use this to present time-slot options so the client can tap to choose. "
                 "Each row id should be the time string (e.g. '09:00') so you can read "
-                "the client's selection directly from their reply."
+                "the client's selection directly from their reply.\n"
+                'Example: {"conversationId":"conv_abc","bodyText":"Qual horário fica melhor?",'
+                '"buttonText":"Ver horários","sections":[{"title":"Amanhã (25/04)","rows":['
+                '{"id":"09:00","title":"09:00","description":"Corte — R$ 50"},'
+                '{"id":"14:30","title":"14:30","description":"Corte — R$ 50"}]}]}'
             ),
             "parameters": {
                 "type": "object",

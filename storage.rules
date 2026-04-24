@@ -11,6 +11,16 @@ service firebase.storage {
       return request.resource.size < maxSizeMB * 1024 * 1024;
     }
 
+    // Resolves the caller's businessId from the users/{uid} Firestore doc.
+    // Storage rules support firestore.get() and are cached per-invocation.
+    function userBusinessId() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.businessId;
+    }
+
+    function belongsToBusiness(businessId) {
+      return isAuthenticated() && userBusinessId() == businessId;
+    }
+
     function isImage() {
       return request.resource.contentType is string
           && request.resource.contentType.lower().matches('image/.*');
@@ -44,40 +54,40 @@ service firebase.storage {
     // Path: businesses/{businessId}/certificates/{fileName}
     // More specific than the general businesses path below — matched first.
     match /businesses/{businessId}/certificates/{fileName} {
-      allow read:   if isAuthenticated();
-      allow write:  if isAuthenticated()
+      allow read:   if belongsToBusiness(businessId);
+      allow write:  if belongsToBusiness(businessId)
                     && isCertificate()
                     && isUnderSize(10);
-      allow delete: if isAuthenticated();
+      allow delete: if belongsToBusiness(businessId);
     }
 
     // ── General business files (logo, menu images, etc.) ─────────────────────
     // Path: businesses/{businessId}/...
     match /businesses/{businessId}/{path=**} {
-      allow read:   if isAuthenticated();
-      allow write:  if isAuthenticated() && isUnderSize(10);
-      allow delete: if isAuthenticated();
+      allow read:   if belongsToBusiness(businessId);
+      allow write:  if belongsToBusiness(businessId) && isUnderSize(10);
+      allow delete: if belongsToBusiness(businessId);
     }
 
     // ── Product images ────────────────────────────────────────────────────────
     // Path: products/{businessId}/{productId}/{fileName}
     match /products/{businessId}/{productId}/{fileName} {
-      allow read:   if isAuthenticated();
-      allow write:  if isAuthenticated() && isImage() && isUnderSize(5);
-      allow delete: if isAuthenticated();
+      allow read:   if belongsToBusiness(businessId);
+      allow write:  if belongsToBusiness(businessId) && isImage() && isUnderSize(5);
+      allow delete: if belongsToBusiness(businessId);
     }
 
     // ── Conversation media (WhatsApp/FB/IG attachments) ───────────────────────
     // Path: conversations/{businessId}/{conversationId}/{fileName}
     match /conversations/{businessId}/{conversationId}/{fileName} {
-      allow read:  if isAuthenticated();
-      allow write: if isAuthenticated() && isMedia() && isUnderSize(25);
+      allow read:  if belongsToBusiness(businessId);
+      allow write: if belongsToBusiness(businessId) && isMedia() && isUnderSize(25);
     }
 
     // ── Contact avatars (server-only via Admin SDK) ───────────────────────────
     // Path: contactAvatars/{businessId}/...
     match /contactAvatars/{businessId}/{rest=**} {
-      allow read:  if isAuthenticated();
+      allow read:  if belongsToBusiness(businessId);
       allow write: if false;
     }
 

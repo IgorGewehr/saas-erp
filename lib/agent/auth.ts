@@ -11,12 +11,21 @@
  *   x-business-id:     tenant scope for the request
  *
  * Timestamp must be within ±5 minutes. Signature is compared in constant time.
+ *
+ * Replay protection: after a signature verifies, its hash is stored in the
+ * Firestore `agentNonces` collection (TTL = skew window + buffer). A second
+ * request carrying the same signature is rejected as a replay. This catches
+ * network retries and captured-and-replayed requests within the ±5min window.
  */
 
 import crypto from 'crypto';
 import { NextResponse, type NextRequest } from 'next/server';
+import { adminDb } from '@/lib/config/firebaseAdmin';
 
 const MAX_SKEW_MS = 5 * 60 * 1000;
+// How long to remember a signature. Slightly longer than MAX_SKEW_MS so
+// requests right at the edge of the window still get caught.
+const NONCE_TTL_MS = MAX_SKEW_MS + 60 * 1000;
 
 export interface AgentAuthContext {
   businessId: string;
@@ -79,7 +88,48 @@ export async function verifyAgentRequest(req: NextRequest): Promise<AgentAuthCon
     throw new AgentAuthError('Invalid signature');
   }
 
+  await claimNonce(signature, businessId);
+
   return { businessId, rawBody };
+}
+
+/**
+ * Atomically records the signature in Firestore. Throws if the signature has
+ * already been seen in the window. Document IDs use the first 32 bytes of a
+ * SHA-256 of the signature so we never store the raw HMAC value.
+ *
+ * Expired docs are left in place — a scheduled TTL policy on `expiresAt` or
+ * a periodic sweep should clean them up. For correctness we check timestamp
+ * on read, so stale docs outside the window don't cause false rejections.
+ */
+async function claimNonce(signatureHex: string, businessId: string): Promise<void> {
+  const id = crypto.createHash('sha256').update(signatureHex).digest('hex').slice(0, 48);
+  const ref = adminDb.collection('agentNonces').doc(id);
+  const now = Date.now();
+
+  try {
+    await adminDb.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (snap.exists) {
+        const data = snap.data();
+        const expiresAt = (data?.expiresAt as number | undefined) ?? 0;
+        if (expiresAt > now) {
+          throw new AgentAuthError('Replay detected (nonce reuse)', 409);
+        }
+        // Expired — overwrite with fresh claim
+      }
+      tx.set(ref, {
+        businessId,
+        createdAt: now,
+        expiresAt: now + NONCE_TTL_MS,
+      });
+    });
+  } catch (err) {
+    if (err instanceof AgentAuthError) throw err;
+    // Firestore infra failures should not silently allow replays. Surface as
+    // a server error so the caller can retry against a healthy instance.
+    throw new AgentAuthError('Nonce store unavailable', 503);
+  }
 }
 
 /**
