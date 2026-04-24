@@ -258,6 +258,12 @@ export interface BusinessSettings {
   promotions?: BusinessPromotion[];
   /** URL do Google Reviews para redirect pós-avaliação */
   googleReviewUrl?: string;
+  /** TEF — Transferência Eletrônica de Fundos */
+  tef?: TEFConfig;
+  /** Gateway de pagamento (PIX, link, boleto) */
+  paymentGateway?: PaymentGatewayConfig;
+  /** Política de no-show */
+  noShowPolicy?: NoShowPolicy;
 }
 
 export interface AiAgentSettings {
@@ -2336,6 +2342,107 @@ export interface Review {
   comment?: string;
   source: ReviewSource;
   createdAt: string;
+}
+
+// ---- TEF (Transferência Eletrônica de Fundos) ----
+
+export type TEFProvider = 'stone' | 'cielo' | 'rede' | 'getnet' | 'safrapay' | 'pagseguro';
+export type TEFTransactionStatus = 'pending' | 'approved' | 'declined' | 'cancelled' | 'error';
+
+export interface TEFConfig {
+  provider: TEFProvider;
+  terminalId: string;
+  merchantId: string;
+  isActive: boolean;
+  connectedAt?: string;
+}
+
+export interface TEFTransaction {
+  id: string;
+  businessId: string;
+  saleId: string;
+  amount: number;
+  installments: number;
+  cardBrand?: string;
+  authCode?: string;
+  nsu?: string;
+  status: TEFTransactionStatus;
+  receipt?: string;       // comprovante text
+  createdAt: string;
+}
+
+// ---- Payment Gateway (PIX QR + Link) ----
+
+export type PaymentGatewayProvider = 'asaas' | 'pagarme' | 'mercadopago' | 'stripe';
+export type PaymentIntentStatus = 'pending' | 'processing' | 'paid' | 'failed' | 'cancelled' | 'expired';
+
+export interface PaymentGatewayConfig {
+  provider: PaymentGatewayProvider;
+  apiKey: string;          // encrypted
+  webhookSecret?: string;  // encrypted
+  isActive: boolean;
+  sandbox: boolean;
+  connectedAt?: string;
+}
+
+export interface PaymentIntent {
+  id: string;
+  businessId: string;
+  saleId?: string;
+  amount: number;
+  method: 'pix' | 'credit' | 'debit' | 'boleto';
+  status: PaymentIntentStatus;
+  qrCode?: string;         // PIX QR code (base64 or copia-e-cola)
+  paymentUrl?: string;      // link de pagamento
+  gatewayId?: string;       // ID no gateway
+  paidAt?: string;
+  expiresAt?: string;
+  createdAt: string;
+}
+
+// ---- Memberships / Assinaturas ----
+
+export type MembershipBillingCycle = 'monthly' | 'quarterly' | 'yearly';
+export type MembershipStatus = 'active' | 'paused' | 'cancelled' | 'expired';
+
+export interface Membership {
+  id: string;
+  businessId: string;
+  name: string;
+  description?: string;
+  serviceIds: string[];     // services included in the plan
+  price: number;
+  billingCycle: MembershipBillingCycle;
+  maxUsesPerCycle?: number; // null = unlimited
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ClientMembership {
+  id: string;
+  businessId: string;
+  clientId: string;
+  clientName: string;
+  membershipId: string;
+  membershipName: string;   // denormalized
+  status: MembershipStatus;
+  startDate: string;
+  nextBillingDate?: string;
+  usesThisCycle: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ---- No-show Protection ----
+
+export interface NoShowPolicy {
+  isEnabled: boolean;
+  requireDeposit: boolean;
+  depositPercentage?: number;      // % of service price
+  depositFixedAmount?: number;     // fixed amount in BRL
+  cancellationDeadlineHours: number; // hours before appointment
+  noShowFeePercentage?: number;    // % charged on no-show
 }
 
 // ---- Google Calendar Sync ----

@@ -10,7 +10,7 @@ import {
   Users, DollarSign, TrendingUp, MoreVertical, Globe, Instagram, Facebook, Linkedin, Send,
   CheckCircle2, PhoneCall, Video, FileText, MessageCircle, BarChart3, Activity, Layers, Gauge,
   UserPlus, Briefcase, Tag, Hash, AlertTriangle, Heart, Shield, Zap, Brain,
-  Sparkles, Filter,
+  Sparkles, Filter, Crown,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -46,6 +46,7 @@ import { LeadDetailPanel } from './LeadDetailPanel';
 import { ScheduleActionDialog } from './ScheduleActionDialog';
 import AutomacoesTab from './AutomacoesTab';
 import FormulariosTab from './FormulariosTab';
+import MembershipsTab from './MembershipsTab';
 import { SourceIcon } from './SourceIcon';
 
 // ── Tab Config ──────────────────────────────────────────────────────────────
@@ -674,6 +675,7 @@ export default function CRMModule() {
     { key: 'metricas', label: t('crm.tab.metrics', 'Inteligência'), icon: <Brain size={15} />, desc: t('crm.tab.metrics_desc', 'Scores e insights') },
     { key: 'automacoes', label: t('crm.tab.automations', 'Automações'), icon: <Zap size={15} />, desc: t('crm.tab.automations_desc', 'Regras automáticas') },
     { key: 'formularios', label: t('crm.tab.forms', 'Formulários'), icon: <FileText size={15} />, desc: t('crm.tab.forms_desc', 'Fichas de anamnese') },
+    { key: 'planos', label: t('crm.tab.plans', 'Planos'), icon: <Crown size={15} />, desc: t('crm.tab.plans_desc', 'Assinaturas recorrentes') },
   ], [t]);
   const { isDark } = useTheme();
   const { user, business } = useAuth();
@@ -974,6 +976,11 @@ export default function CRMModule() {
             {activeTab === 'formularios' && (
               <div className="flex-1 overflow-y-auto min-h-0">
                 <FormulariosTab businessId={business?.id || ''} userId={user?.uid || ''} userName={user?.name || ''} isDark={isDark} />
+              </div>
+            )}
+            {activeTab === 'planos' && (
+              <div className="flex-1 overflow-y-auto min-h-0">
+                <MembershipsTab businessId={business?.id || ''} userId={user?.uid || ''} isDark={isDark} gatewayConfigured={!!business?.settings?.paymentGateway?.isActive} />
               </div>
             )}
           </motion.div>

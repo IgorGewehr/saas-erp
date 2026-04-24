@@ -971,6 +971,23 @@ service cloud.firestore {
     }
 
     // ============================================
+    // MEMBERSHIPS COLLECTION
+    // ============================================
+    match /memberships/{membershipId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isAdmin();
+      allow update: if isAuthenticated() && isOwnBusiness() && isAdmin();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    match /clientMemberships/{cmId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isManager();
+      allow update: if isAuthenticated() && isOwnBusiness() && isManager();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    // ============================================
     // CALENDAR SYNC TOKENS COLLECTION
     // ============================================
     match /calendarSyncTokens/{uid} {
