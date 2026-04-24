@@ -397,30 +397,33 @@ async function generateRecurringTransactions(): Promise<number> {
       continue;
     }
 
-    const now = new Date().toISOString();
-    const newNextDue = advanceDate(rec.nextDueDate, rec.frequency);
+    try {
+      const now = new Date().toISOString();
+      const newNextDue = advanceDate(rec.nextDueDate, rec.frequency);
 
-    // Create new transaction copy
-    const { recurrence: _r, ...baseTx } = tx;
-    await adminDb.collection('transactions').add({
-      ...baseTx,
-      dueDate: rec.nextDueDate,
-      paymentDate: null,
-      status: 'pendente',
-      recurrenceId: txDoc.id, // link back to parent
-      recurrence: null,       // child is not recurring itself
-      createdAt: now,
-      updatedAt: now,
-    });
+      // Create new transaction copy
+      const { recurrence: _r, ...baseTx } = tx;
+      await adminDb.collection('transactions').add({
+        ...baseTx,
+        dueDate: rec.nextDueDate,
+        paymentDate: null,
+        status: 'pendente',
+        recurrenceId: txDoc.id,
+        recurrence: null,
+        createdAt: now,
+        updatedAt: now,
+      });
 
-    // Update parent's nextDueDate (or deactivate if past endDate)
-    const shouldDeactivate = rec.endDate && newNextDue > rec.endDate;
-    await txDoc.ref.update({
-      'recurrence.nextDueDate': shouldDeactivate ? rec.nextDueDate : newNextDue,
-      'recurrence.isActive': !shouldDeactivate,
-    });
+      const shouldDeactivate = rec.endDate && newNextDue > rec.endDate;
+      await txDoc.ref.update({
+        'recurrence.nextDueDate': shouldDeactivate ? rec.nextDueDate : newNextDue,
+        'recurrence.isActive': !shouldDeactivate,
+      });
 
-    count++;
+      count++;
+    } catch (err) {
+      console.warn(`[recurring] failed for tx ${txDoc.id}:`, err);
+    }
   }
 
   return count;
@@ -517,6 +520,26 @@ async function processCRMAutomations(): Promise<number> {
             const created = c.createdAt as string;
             return created && created.startsWith(today);
           });
+          break;
+        }
+        case 'post_appointment': {
+          // Clients with completed appointments in the last X hours
+          const hoursAfter = Number(triggerConfig.hoursAfter || 24);
+          const cutoff = new Date(now.getTime() - hoursAfter * 60 * 60 * 1000).toISOString();
+          const recentAppts = await adminDb.collection('appointments')
+            .where('businessId', '==', businessId)
+            .where('status', '==', 'concluido')
+            .where('updatedAt', '>=', cutoff)
+            .get();
+          const clientIds = new Set(recentAppts.docs.map(d => d.data().clientId as string).filter(Boolean));
+          matchedClients = clients.filter(c => clientIds.has(c.id));
+          break;
+        }
+        case 'lifecycle_change': {
+          // Clients whose lifecycleStage matches the configured stage
+          const targetStage = triggerConfig.stage as string;
+          if (!targetStage) break;
+          matchedClients = clients.filter(c => c.lifecycleStage === targetStage);
           break;
         }
         default:

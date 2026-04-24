@@ -49,19 +49,45 @@ export function parseOFX(content: string): BankStatementEntry[] {
 // ── CSV Parser ──────────────────────────────────────────────────────────────
 
 /**
+ * Split a CSV line respecting quoted fields.
+ * e.g. `"Supplier, Inc.";100` → ["Supplier, Inc.", "100"]
+ */
+function splitCSVLine(line: string, delimiter: string): string[] {
+  const fields: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') { current += '"'; i++; } // escaped quote
+      else inQuotes = !inQuotes;
+    } else if (ch === delimiter && !inQuotes) {
+      fields.push(current);
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  fields.push(current);
+  return fields;
+}
+
+/**
  * Parse CSV bank statement. Auto-detects delimiter (;, , or \t).
  * Expects columns: date, description, amount (or value/valor).
  * Supports Brazilian formats (DD/MM/YYYY, comma decimal separator).
  */
-export function parseCSV(content: string): BankStatementEntry[] {
+export function parseCSV(rawContent: string): BankStatementEntry[] {
+  // Strip BOM (UTF-8 BOM: \uFEFF)
+  const content = rawContent.replace(/^\uFEFF/, '');
   const lines = content.split(/\r?\n/).filter(l => l.trim());
   if (lines.length < 2) return [];
 
-  // Detect delimiter
+  // Detect delimiter (from header line, ignoring quoted sections)
   const firstLine = lines[0];
   const delimiter = firstLine.includes(';') ? ';' : firstLine.includes('\t') ? '\t' : ',';
 
-  const headers = lines[0].split(delimiter).map(h => h.trim().toLowerCase().replace(/"/g, ''));
+  const headers = splitCSVLine(lines[0], delimiter).map(h => h.trim().toLowerCase().replace(/"/g, ''));
 
   // Find column indices
   const dateIdx = headers.findIndex(h => /^(data|date|dt)$/i.test(h));
@@ -74,7 +100,7 @@ export function parseCSV(content: string): BankStatementEntry[] {
   const entries: BankStatementEntry[] = [];
 
   for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].split(delimiter).map(c => c.trim().replace(/^"|"$/g, ''));
+    const cols = splitCSVLine(lines[i], delimiter).map(c => c.trim().replace(/^"|"$/g, ''));
     if (cols.length <= Math.max(dateIdx, amountIdx)) continue;
 
     const rawDate = cols[dateIdx];

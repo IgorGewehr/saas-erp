@@ -914,6 +914,73 @@ service cloud.firestore {
     }
 
     // ============================================
+    // FORM TEMPLATES COLLECTION
+    // ============================================
+    match /formTemplates/{templateId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isAdmin();
+      allow update: if isAuthenticated() && isOwnBusiness() && isAdmin();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    // ============================================
+    // FORM RESPONSES COLLECTION
+    // ============================================
+    match /formResponses/{responseId} {
+      // Business members can read responses
+      allow read: if isAuthenticated() && isOwnBusiness();
+      // Public submissions handled by Admin SDK (API route) — no client-side create needed
+      allow create: if isAuthenticated() && incomingBelongsToBusiness();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isManager();
+    }
+
+    // ============================================
+    // REVIEWS COLLECTION
+    // ============================================
+    match /reviews/{reviewId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+      // Public submissions handled by Admin SDK (API route)
+      allow create: if false; // only via server
+      allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    // ============================================
+    // AUTOMATION RULES COLLECTION
+    // ============================================
+    match /automationRules/{ruleId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isAdmin();
+      allow update: if isAuthenticated() && isOwnBusiness() && isAdmin();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    // ============================================
+    // BANK RECONCILIATION COLLECTIONS
+    // ============================================
+    match /bankStatementImports/{importId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isManager();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    match /reconciliationItems/{itemId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isManager();
+      allow update: if isAuthenticated() && isOwnBusiness() && isManager();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    // ============================================
+    // CALENDAR SYNC TOKENS COLLECTION
+    // ============================================
+    match /calendarSyncTokens/{uid} {
+      // Only the token owner can read (contains encrypted tokens)
+      allow read: if isAuthenticated() && request.auth.uid == uid;
+      // Created/updated by server (OAuth callback) — no client-side write
+      allow write: if false;
+    }
+
+    // ============================================
     // CATCH-ALL: Deny everything else
     // ============================================
     match /{document=**} {
