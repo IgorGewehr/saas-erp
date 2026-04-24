@@ -1,46 +1,17 @@
 # syntax=docker/dockerfile:1.7
-# ServicePro Next.js app — production image.
+# ServicePro Next.js app — production image (pre-built).
 #
-# Uses Next.js output: 'standalone' (already set em next.config.js) —
-# imagem final fica ~200MB com apenas o que o runtime precisa.
+# Next.js 15.5 has a CSS extraction bug on Linux that prevents building
+# inside Docker. The app must be built locally first:
 #
-# Build:   docker build -t servicepro-app:latest .
-# Run:     docker run --rm -p 8756:3000 --env-file .env servicepro-app:latest
-# Compose: docker compose up -d
+#   npm run build          ← build on Windows/Mac (generates .next/)
+#   docker compose build   ← packages the pre-built output
+#   docker compose --profile tunnel up -d
+#
+# The .next/ directory is included in the build context (not in .dockerignore).
 
-# ─── Stage 1: Install deps ─────────────────────────────────────────────────────
-FROM node:20-bookworm-slim AS deps
+FROM node:20-bookworm-slim
 
-# ffmpeg nativo é usado pela conversão OGG→M4A de áudios (Baileys + Meta audio).
-# Instalar via apt é menor e mais confiável que @ffmpeg-installer/ffmpeg bundle.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-COPY package.json package-lock.json* ./
-# --ignore-scripts evita postinstall problemáticos; só produção
-RUN --mount=type=cache,target=/root/.npm \
-    npm ci --production=false --ignore-scripts
-
-# ─── Stage 2: Build Next.js ────────────────────────────────────────────────────
-FROM node:20-bookworm-slim AS builder
-
-WORKDIR /app
-ENV NEXT_TELEMETRY_DISABLED=1 \
-    NODE_ENV=production
-
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
-
-# Build — next.config.js tem output: 'standalone', gera .next/standalone/
-RUN npm run build
-
-# ─── Stage 3: Runtime — enxuto, non-root ───────────────────────────────────────
-FROM node:20-bookworm-slim AS runtime
-
-# ffmpeg precisa estar no runtime também (Baileys/conversor chama o binário)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     tini \
@@ -48,19 +19,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Non-root user
 RUN groupadd --system --gid 1001 nextjs \
     && useradd --system --uid 1001 --gid 1001 --home-dir /app --shell /sbin/nologin nextjs
 
 WORKDIR /app
 
-# Copia o standalone (server.js auto-gerado pelo Next) + public/ + static/
-COPY --from=builder --chown=nextjs:nextjs /app/public ./public
-COPY --from=builder --chown=nextjs:nextjs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nextjs /app/.next/static ./.next/static
-
-# Firebase admin usa caminho ./firebase-admin-service-account.json se presente
-# (vai ser montado via volume no compose — não entra na imagem)
+# Copy pre-built app (standalone nests files under the project path)
+COPY --chown=nextjs:nextjs .next/standalone/development/service-provider-pro ./
+COPY --chown=nextjs:nextjs .next/static ./.next/static
+COPY --chown=nextjs:nextjs public ./public
 
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
@@ -74,6 +41,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -fsS "http://127.0.0.1:${PORT}/" >/dev/null || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-
-# server.js é o entrypoint que Next.js standalone gera
 CMD ["node", "server.js"]
