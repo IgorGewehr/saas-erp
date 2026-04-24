@@ -7,6 +7,7 @@
  * Actions:
  *   - list               all services (incl. inactive)
  *   - get                single service
+ *   - search             fuzzy match by name/description/category (no index needed)
  *   - create             new service
  *   - update             patch whitelisted fields
  *   - set_active         toggle isActive
@@ -17,7 +18,7 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
 import type { Service } from '@/lib/types';
 
-type Action = 'list' | 'get' | 'create' | 'update' | 'set_active';
+type Action = 'list' | 'get' | 'search' | 'create' | 'update' | 'set_active';
 
 interface CreateParams {
   name: string;
@@ -55,6 +56,8 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true, data: await listServices(businessId, body.params as { includeInactive?: boolean; category?: string; limit?: number }) });
       case 'get':
         return NextResponse.json({ ok: true, data: await getService(businessId, body.params.id as string) });
+      case 'search':
+        return NextResponse.json({ ok: true, data: await searchServices(businessId, body.params as { query: string; includeInactive?: boolean; limit?: number }) });
       case 'create':
         return NextResponse.json({ ok: true, data: await createService(businessId, body.params as unknown as CreateParams) });
       case 'update':
@@ -80,6 +83,54 @@ async function listServices(businessId: string, p: { includeInactive?: boolean; 
 
   const snap = await q.orderBy('name').limit(limit).get();
   return snap.docs.map((d) => ({ ...(d.data() as Service), id: d.id }));
+}
+
+/**
+ * Fuzzy search by name/description/category. No composite index needed — we
+ * pull the active catalog and score client-side with substring + token overlap.
+ * Acceptable since tenants typically have <200 services.
+ */
+async function searchServices(
+  businessId: string,
+  p: { query: string; includeInactive?: boolean; limit?: number },
+): Promise<Array<Service & { _score: number }>> {
+  if (!p.query || !p.query.trim()) throw new Error('query required');
+  const cap = Math.min(Math.max(p.limit ?? 10, 1), 50);
+
+  let q: FirebaseFirestore.Query = adminDb.collection('services').where('businessId', '==', businessId);
+  if (!p.includeInactive) q = q.where('isActive', '==', true);
+  const snap = await q.limit(500).get();
+
+  const norm = (s: string) =>
+    s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+  const query = norm(p.query);
+  const queryTokens = query.split(/\s+/).filter((t) => t.length > 1);
+
+  const scored: Array<Service & { _score: number }> = [];
+  for (const d of snap.docs) {
+    const s = { ...(d.data() as Service), id: d.id };
+    const nName = norm(s.name || '');
+    const nCat = norm(s.category || '');
+    const nDesc = norm(s.description || '');
+    const hay = `${nName} ${nCat} ${nDesc}`;
+
+    let score = 0;
+    if (nName === query) score = 100;
+    else if (nName.startsWith(query)) score = 80;
+    else if (nName.includes(query)) score = 60;
+    else if (hay.includes(query)) score = 40;
+    else {
+      // token overlap
+      const hayTokens = new Set(hay.split(/\s+/));
+      const hits = queryTokens.filter((t) => hayTokens.has(t)).length;
+      if (hits > 0) score = Math.round((hits / queryTokens.length) * 30);
+    }
+
+    if (score > 0) scored.push({ ...s, _score: score });
+  }
+
+  scored.sort((a, b) => b._score - a._score);
+  return scored.slice(0, cap);
 }
 
 async function getService(businessId: string, id: string): Promise<Service | null> {

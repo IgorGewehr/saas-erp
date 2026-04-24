@@ -173,6 +173,7 @@ TOOL_ENDPOINTS: dict[str, str] = {
     "team_capacity_today":          "/api/agent/tools/team",
     # services (admin)
     "services_list":                "/api/agent/tools/services",
+    "services_search":              "/api/agent/tools/services",
     "services_get":                 "/api/agent/tools/services",
     "services_create":              "/api/agent/tools/services",
     "services_update":              "/api/agent/tools/services",

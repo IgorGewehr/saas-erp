@@ -899,10 +899,35 @@ TEAM_TOOLS: list[dict[str, Any]] = [
 SERVICES_MGMT_TOOLS: list[dict[str, Any]] = [
     _simple_tool(
         "services_list",
-        "List services catalog (admin view — can include inactive).",
-        includeInactive={"type": "boolean"},
-        category={"type": "string"},
+        (
+            "Lista o catálogo de serviços do negócio. SEM filtro retorna todos "
+            "os serviços ativos (use isso 90% das vezes). "
+            "NÃO passe o nome de um serviço em `category` — category é o BUCKET "
+            "de agrupamento (ex: 'Estética', 'Cabelo', 'Depilação'), não o nome. "
+            "Pra achar serviço por nome use services_search."
+        ),
+        includeInactive={"type": "boolean", "description": "true inclui serviços desativados"},
+        category={
+            "type": "string",
+            "description": (
+                "Bucket de agrupamento (ex: 'Estética', 'Cabelo'). SÓ use se o operador "
+                "pedir explicitamente 'serviços de categoria X'. Se ele disser o nome de "
+                "um serviço (ex: 'maquiagem', 'corte feminino'), use services_search."
+            ),
+        },
         limit={"type": "integer", "default": 100},
+    ),
+    _simple_tool(
+        "services_search",
+        (
+            "Busca fuzzy por serviços via nome/descrição/categoria. Tolera acentos, "
+            "case e espaços. Use quando o usuário mencionou um nome específico "
+            "('você tem maquiagem?', 'tem corte feminino?'). Retorna ordenado por relevância."
+        ),
+        required=["query"],
+        query={"type": "string", "description": "Texto a procurar (nome do serviço ou fragmento)"},
+        includeInactive={"type": "boolean"},
+        limit={"type": "integer", "default": 10},
     ),
     _simple_tool("services_get", "Fetch a single service.", required=["id"], id={"type": "string"}),
     _simple_tool(
