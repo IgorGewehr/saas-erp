@@ -15,12 +15,12 @@ class ProcessRequest(BaseModel):
     message: str
     contact_name: str
     contact_phone: str | None = None
-    channel: Literal["whatsapp", "facebook", "instagram", "web"] = "whatsapp"
+    channel: Literal["whatsapp", "facebook", "instagram", "web", "dashboard"] = "whatsapp"
     recipient_id: str  # Meta user id or phone for outbound send
     # Prior messages to ground the model (most recent last), optional
     history: list[dict[str, Any]] = Field(default_factory=list)
     # Business-level config — passed by the webhook so we don't re-fetch
-    use_case: Literal["pedidos", "servicos", "simples"] = "servicos"
+    use_case: Literal["pedidos", "servicos", "simples", "operator"] = "servicos"
     business_name: str | None = None
     business_description: str | None = None
     tone: Literal["formal", "casual", "friendly"] = "friendly"
@@ -34,6 +34,13 @@ class ProcessRequest(BaseModel):
     address: dict[str, Any] | None = None              # business.endereco
     services_list: list[dict[str, Any]] | None = None  # active services (agenda mode pre-load)
     current_date: str | None = None  # ISO date YYYY-MM-DD injected by dispatcher
+    # Operator context (use_case='operator' only) — populated from UI session
+    operator_user_id: str | None = None
+    operator_user_name: str | None = None
+    operator_user_role: Literal["founder", "admin", "manager", "operator", "viewer"] | None = None
+    # Autonomous execution: when true, destructive tools auto-execute without UI confirm.
+    # Controlled by business.settings.aiAgent.operator.autonomousMode toggle.
+    operator_autonomous: bool = False
 
 
 class ProcessResponse(BaseModel):

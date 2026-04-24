@@ -16,6 +16,9 @@ dependencies = [
     "langchain-core>=0.3.15",
     "langchain-openai>=0.2.10",
     "openai>=1.55.0",
+    # Observability — used for @traceable decorator + metadata tagging.
+    # Auto-no-op when LANGCHAIN_API_KEY is absent.
+    "langsmith>=0.1.120",
 ]
 
 [project.optional-dependencies]

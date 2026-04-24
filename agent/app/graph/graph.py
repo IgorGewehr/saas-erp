@@ -29,6 +29,7 @@ from langgraph.graph.message import add_messages
 
 from ..config import get_settings
 from ..logging_config import get_logger
+from ..observability import build_run_config
 from ..schemas import ProcessRequest
 from .nodes import executor_node, planner_node, planner_routes_to, responder_node, router_node
 from .state import AgentRunResult, AgentState
@@ -170,8 +171,20 @@ async def run_agent(*, run_id: str, business_id: str, req: ProcessRequest) -> Ag
     }
 
     graph = get_graph()
+    # LangSmith config — every nested run (nodes, LLM calls, tool calls) inherits
+    # these tags + metadata. Essential for multi-tenant debugging.
+    run_config = build_run_config(
+        run_id=run_id,
+        business_id=business_id,
+        conversation_id=req.conversation_id,
+        message_id=req.message_id,
+        use_case=req.use_case or "servicos",
+        channel=req.channel or "whatsapp",
+        model=model,
+    )
+
     try:
-        final = await graph.ainvoke(state, {"recursion_limit": 32})
+        final = await graph.ainvoke(state, run_config)
     except Exception as e:
         latency = int((time.time() - t0) * 1000)
         log.error("graph.invoke_failed", run_id=run_id, error=str(e), latency_ms=latency)

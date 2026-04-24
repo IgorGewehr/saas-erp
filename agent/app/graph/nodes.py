@@ -31,11 +31,22 @@ from langchain_openai import ChatOpenAI
 
 from ..config import get_settings
 from ..logging_config import get_logger
+from ..observability import redact_if_enabled
 from ..tools.client import ToolError, call_tool
 from ..tools.registry import get_tool, tools_for_use_case
 from ..tools.validator import validate as validate_tool_args
 from . import prompts
 from .state import AgentState
+
+# LangSmith @traceable decorator — runs are auto-traced when env is set, but
+# this gives us explicit control over run_name, metadata and run_type per node.
+try:
+    from langsmith import traceable  # type: ignore
+except Exception:  # pragma: no cover — LangSmith is optional
+    def traceable(*dargs, **dkwargs):  # type: ignore[misc]
+        def _wrap(fn):
+            return fn
+        return _wrap if dargs or dkwargs else dargs[0]
 
 log = get_logger("nodes")
 
@@ -72,6 +83,7 @@ def _cost_for(model: str, in_tokens: int, out_tokens: int) -> float:
 # ─── 1. Router — intent classification ───────────────────────────────────────
 
 
+@traceable(run_type="chain", name="agent.router")
 async def router_node(state: AgentState) -> dict[str, Any]:
     settings = get_settings()
     model_name = settings.openai_model_router
@@ -111,7 +123,8 @@ async def router_node(state: AgentState) -> dict[str, Any]:
         "total_tokens_out": state.get("total_tokens_out", 0) + tokens_out,
         "node_traces": _push_trace(state, {
             "node": "router",
-            "input": user_message[:240],
+            # PII-scrubbed mirror of input — the agent state keeps the real text.
+            "input": redact_if_enabled(user_message[:240]),
             "output": intent,
             "tokensIn": tokens_in,
             "tokensOut": tokens_out,
@@ -192,6 +205,7 @@ async def _invoke_with_retry(llm: Any, messages: list[Any], max_attempts: int = 
     raise last_err or RuntimeError("LLM invoke failed")
 
 
+@traceable(run_type="chain", name="agent.planner")
 async def planner_node(state: AgentState) -> dict[str, Any]:
     settings = get_settings()
     use_case = state.get("use_case") or "servicos"
@@ -239,7 +253,8 @@ async def planner_node(state: AgentState) -> dict[str, Any]:
         "total_tokens_out": state.get("total_tokens_out", 0) + tokens_out,
         "node_traces": _push_trace(state, {
             "node": "planner",
-            "output": (
+            # PII-scrubbed trace. Tool args may contain client phone/address/CPF.
+            "output": redact_if_enabled(
                 [{"name": tc["name"], "args": tc.get("args")} for tc in (ai_msg.tool_calls or [])]
                 if has_tools
                 else (ai_msg.content if isinstance(ai_msg.content, str) else str(ai_msg.content))[:300]
@@ -255,6 +270,7 @@ async def planner_node(state: AgentState) -> dict[str, Any]:
 # ─── 3. Executor — run tool_calls in parallel ────────────────────────────────
 
 
+@traceable(run_type="chain", name="agent.executor")
 async def executor_node(state: AgentState) -> dict[str, Any]:
     business_id = state["business_id"]
     # Last message is the AIMessage with tool_calls
@@ -369,6 +385,7 @@ async def executor_node(state: AgentState) -> dict[str, Any]:
 # ─── 4. Responder — polish the final answer ─────────────────────────────────
 
 
+@traceable(run_type="chain", name="agent.responder")
 async def responder_node(state: AgentState) -> dict[str, Any]:
     """Take the last planner AIMessage and rewrite for the customer in the business tone."""
     # If an interactive message was already sent to the client, skip the text response
@@ -422,8 +439,8 @@ async def responder_node(state: AgentState) -> dict[str, Any]:
         "total_tokens_out": state.get("total_tokens_out", 0) + tokens_out,
         "node_traces": _push_trace(state, {
             "node": "responder",
-            "input": draft[:300],
-            "output": final[:300],
+            "input": redact_if_enabled(draft[:300]),
+            "output": redact_if_enabled(final[:300]),
             "tokensIn": tokens_in,
             "tokensOut": tokens_out,
             "latencyMs": latency,

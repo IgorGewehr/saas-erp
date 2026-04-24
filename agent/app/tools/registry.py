@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-UseCase = Literal["pedidos", "servicos", "simples"]
+UseCase = Literal["pedidos", "servicos", "simples", "operator"]
 
 
 # ─── Orders (pedidos) ────────────────────────────────────────────────────────
@@ -588,6 +588,372 @@ CONVERSATION_TOOLS: list[dict[str, Any]] = [
 ]
 
 
+# ─── Operator tools (Wave 1 — full CRUD for dashboard chat use_case) ─────────
+#
+# These are exposed only when use_case='operator' (dashboard chat). They cover
+# every module the operator might ask the agent to drive via natural language.
+# Schemas are intentionally terse — the operator already knows the system;
+# descriptions are enough to disambiguate, not tutorial.
+
+def _simple_tool(_name: str, _desc: str, /, required: list[str] | None = None, **props: Any) -> dict[str, Any]:
+    """Helper to declare a tool with a single flat param object.
+
+    The first two positional-only args avoid collisions with props that may
+    themselves be named ``name`` (as happens with a property called 'name').
+    """
+    return {
+        "type": "function",
+        "function": {
+            "name": _name,
+            "description": _desc,
+            "parameters": {
+                "type": "object",
+                "properties": props,
+                **({"required": required} if required else {}),
+            },
+        },
+    }
+
+
+FINANCIAL_TOOLS: list[dict[str, Any]] = [
+    _simple_tool(
+        "financial_list",
+        "List transactions (receita=income, despesa=expense). Filters by type/status/date.",
+        type={"type": "string", "enum": ["receita", "despesa"]},
+        status={"type": "string", "enum": ["pendente", "pago", "atrasado", "cancelado"]},
+        fromDate={"type": "string", "description": "YYYY-MM-DD"},
+        toDate={"type": "string", "description": "YYYY-MM-DD"},
+        category={"type": "string"},
+        limit={"type": "integer", "default": 50},
+    ),
+    _simple_tool("financial_get", "Fetch a single transaction by id.", required=["id"], id={"type": "string"}),
+    _simple_tool(
+        "financial_create_receivable",
+        "Create an income (receita) account receivable. Supports installments.",
+        required=["description", "amount"],
+        description={"type": "string"},
+        amount={"type": "number"},
+        dueDate={"type": "string"},
+        category={"type": "string"},
+        clientId={"type": "string"},
+        clientName={"type": "string"},
+        installments={"type": "integer", "default": 1, "description": "1-48"},
+        notes={"type": "string"},
+    ),
+    _simple_tool(
+        "financial_create_payable",
+        "Create an expense (despesa) account payable. Supports installments.",
+        required=["description", "amount"],
+        description={"type": "string"},
+        amount={"type": "number"},
+        dueDate={"type": "string"},
+        category={"type": "string"},
+        installments={"type": "integer", "default": 1},
+        notes={"type": "string"},
+    ),
+    _simple_tool(
+        "financial_mark_paid",
+        "Mark a pending transaction as paid.",
+        required=["id"],
+        id={"type": "string"},
+        paymentDate={"type": "string", "description": "YYYY-MM-DD (default: today)"},
+        paymentMethod={"type": "string", "enum": ["dinheiro", "pix", "credito", "debito", "boleto", "pontos", "gift_card", "outros"]},
+    ),
+    _simple_tool("financial_cancel", "Cancel a transaction.", required=["id"], id={"type": "string"}, reason={"type": "string"}),
+    _simple_tool("financial_summary_today", "Snapshot of today's in/out, pending, overdue."),
+    _simple_tool("financial_summary_month", "Summary for a month. Month format YYYY-MM (default: current).", month={"type": "string"}),
+]
+
+INVENTORY_TOOLS: list[dict[str, Any]] = [
+    _simple_tool(
+        "inventory_list",
+        "List products (admin view — includes inactive/out-of-stock).",
+        category={"type": "string"},
+        isActive={"type": "boolean"},
+        onlyDeliverable={"type": "boolean"},
+        limit={"type": "integer", "default": 100},
+    ),
+    _simple_tool("inventory_get", "Fetch a single product.", required=["id"], id={"type": "string"}),
+    _simple_tool(
+        "inventory_create",
+        "Create a new product. salePrice and costPrice in BRL.",
+        required=["name", "category", "salePrice", "costPrice"],
+        name={"type": "string"},
+        category={"type": "string"},
+        unit={"type": "string", "default": "UN"},
+        salePrice={"type": "number"},
+        costPrice={"type": "number"},
+        currentStock={"type": "number", "default": 0},
+        minStock={"type": "number"},
+        sku={"type": "string"},
+        description={"type": "string"},
+        isDeliverable={"type": "boolean"},
+    ),
+    _simple_tool(
+        "inventory_update",
+        "Patch a product (name, prices, stock thresholds, isActive, etc).",
+        required=["id", "patch"],
+        id={"type": "string"},
+        patch={"type": "object"},
+    ),
+    _simple_tool(
+        "inventory_adjust_stock",
+        "Add/remove stock with audit row. delta>0=entrada, delta<0=saida.",
+        required=["productId", "delta", "reason"],
+        productId={"type": "string"},
+        delta={"type": "number"},
+        reason={"type": "string"},
+    ),
+    _simple_tool("inventory_list_low_stock", "Products at or below minStock.", limit={"type": "integer", "default": 50}),
+    _simple_tool("inventory_set_active", "Toggle isActive flag.", required=["id", "isActive"], id={"type": "string"}, isActive={"type": "boolean"}),
+    _simple_tool("inventory_set_out_of_stock", "Zero-out currentStock (temporary runout).", required=["id"], id={"type": "string"}),
+]
+
+KANBAN_TOOLS: list[dict[str, Any]] = [
+    _simple_tool("kanban_list_boards", "List all active kanban boards."),
+    _simple_tool("kanban_get_board", "Fetch a single board (includes columns).", required=["id"], id={"type": "string"}),
+    _simple_tool(
+        "kanban_list_cards",
+        "List cards in a board. Optional column/assignee filter.",
+        required=["boardId"],
+        boardId={"type": "string"},
+        columnId={"type": "string"},
+        assigneeId={"type": "string"},
+        limit={"type": "integer", "default": 100},
+    ),
+    _simple_tool("kanban_get_card", "Fetch a single card.", required=["id"], id={"type": "string"}),
+    _simple_tool(
+        "kanban_create_card",
+        "Create a new card. Falls back to the first column if columnId omitted.",
+        required=["boardId", "title"],
+        boardId={"type": "string"},
+        columnId={"type": "string"},
+        title={"type": "string"},
+        description={"type": "string"},
+        priority={"type": "string", "enum": ["urgent", "high", "medium", "low"]},
+        assigneeIds={"type": "array", "items": {"type": "string"}},
+        dueDate={"type": "string"},
+    ),
+    _simple_tool("kanban_move_card", "Move card to another column.", required=["id", "columnId"], id={"type": "string"}, columnId={"type": "string"}),
+    _simple_tool("kanban_update_card", "Patch a card (title/description/priority/dueDate/etc).", required=["id", "patch"], id={"type": "string"}, patch={"type": "object"}),
+    _simple_tool(
+        "kanban_assign",
+        "Replace assignees on a card.",
+        required=["id", "assigneeIds"],
+        id={"type": "string"},
+        assigneeIds={"type": "array", "items": {"type": "string"}},
+    ),
+    _simple_tool("kanban_add_comment", "Append a comment to a card.", required=["id", "text"], id={"type": "string"}, text={"type": "string"}),
+    _simple_tool("kanban_archive_card", "Delete a card (no restore).", required=["id"], id={"type": "string"}),
+]
+
+NOTES_TOOLS: list[dict[str, Any]] = [
+    _simple_tool(
+        "notes_list",
+        "List notes. scope='personal' requires authorId.",
+        scope={"type": "string", "enum": ["personal", "team"]},
+        authorId={"type": "string"},
+        onlyPinned={"type": "boolean"},
+        limit={"type": "integer", "default": 50},
+    ),
+    _simple_tool("notes_get", "Fetch a single note.", required=["id"], id={"type": "string"}),
+    _simple_tool(
+        "notes_create",
+        "Create a note. color defaults to yellow, scope to team.",
+        required=["title", "content"],
+        title={"type": "string"},
+        content={"type": "string"},
+        color={"type": "string", "enum": ["yellow", "green", "blue", "pink", "purple", "orange", "red", "neutral"]},
+        scope={"type": "string", "enum": ["personal", "team"]},
+        isPinned={"type": "boolean"},
+    ),
+    _simple_tool("notes_update", "Patch title/content/color/pinned.", required=["id", "patch"], id={"type": "string"}, patch={"type": "object"}),
+    _simple_tool("notes_delete", "Hard-delete a note.", required=["id"], id={"type": "string"}),
+    _simple_tool("notes_search", "Keyword search across title+content.", required=["query"], query={"type": "string"}, scope={"type": "string", "enum": ["personal", "team"]}, limit={"type": "integer", "default": 20}),
+]
+
+CRM_TOOLS: list[dict[str, Any]] = [
+    _simple_tool(
+        "crm_list_contacts",
+        "Filter CRM contacts by status/lifecycle/tag/assignee.",
+        status={"type": "string", "enum": ["novo", "contatado", "qualificado", "proposta", "negociacao", "ganho", "perdido"]},
+        lifecycleStage={"type": "string", "enum": ["new_lead", "contacted", "qualified", "proposal", "negotiation", "customer", "churned"]},
+        tag={"type": "string"},
+        assignedTo={"type": "string"},
+        limit={"type": "integer", "default": 50},
+    ),
+    _simple_tool(
+        "crm_list_deals",
+        "List deals pipeline. Filter by stage/assignee/contact.",
+        stage={"type": "string"},
+        assignedTo={"type": "string"},
+        contactId={"type": "string"},
+        limit={"type": "integer", "default": 50},
+    ),
+    _simple_tool("crm_get_deal", "Fetch a single deal.", required=["id"], id={"type": "string"}),
+    _simple_tool(
+        "crm_create_deal",
+        "Create a deal. Requires linked contactId, title, value, stage.",
+        required=["contactId", "title", "value", "stage"],
+        contactId={"type": "string"},
+        title={"type": "string"},
+        value={"type": "number"},
+        stage={"type": "string"},
+        probability={"type": "integer", "description": "0-100"},
+        expectedCloseDate={"type": "string"},
+        assignedTo={"type": "string"},
+        notes={"type": "string"},
+    ),
+    _simple_tool("crm_update_deal_stage", "Move deal to a new stage.", required=["id", "stage"], id={"type": "string"}, stage={"type": "string"}, probability={"type": "integer"}),
+    _simple_tool("crm_close_deal", "Close won (won=true) or lost (false with reason).", required=["id", "won"], id={"type": "string"}, won={"type": "boolean"}, reason={"type": "string"}),
+    _simple_tool(
+        "crm_list_activities",
+        "List CRM activities (calls, emails, tasks, notes).",
+        contactId={"type": "string"},
+        dealId={"type": "string"},
+        type={"type": "string", "enum": ["ligacao", "email", "reuniao", "whatsapp", "tarefa", "nota", "proposta"]},
+        limit={"type": "integer", "default": 50},
+    ),
+    _simple_tool(
+        "crm_log_activity",
+        "Log a CRM activity. Requires contactId or dealId.",
+        required=["type", "title"],
+        type={"type": "string", "enum": ["ligacao", "email", "reuniao", "whatsapp", "tarefa", "nota", "proposta"]},
+        title={"type": "string"},
+        description={"type": "string"},
+        contactId={"type": "string"},
+        dealId={"type": "string"},
+        scheduledAt={"type": "string"},
+        isCompleted={"type": "boolean"},
+        duration={"type": "integer", "description": "minutes"},
+    ),
+    _simple_tool("crm_list_segments", "List all segments for the business."),
+    _simple_tool("crm_segment_query", "Resolve a segment to its contact list.", required=["segmentId"], segmentId={"type": "string"}, limit={"type": "integer", "default": 100}),
+]
+
+CONVERSATIONS_ADMIN_TOOLS: list[dict[str, Any]] = [
+    _simple_tool(
+        "conversations_list",
+        "List conversation threads with filters.",
+        channel={"type": "string", "enum": ["whatsapp", "facebook", "instagram"]},
+        status={"type": "string", "enum": ["open", "waiting", "resolved"]},
+        priority={"type": "string", "enum": ["low", "medium", "high", "urgent"]},
+        limit={"type": "integer", "default": 30},
+    ),
+    _simple_tool("conversations_get", "Fetch single conversation.", required=["id"], id={"type": "string"}),
+    _simple_tool("conversations_list_messages", "List messages in a conversation (newest-last).", required=["conversationId"], conversationId={"type": "string"}, limit={"type": "integer", "default": 50}),
+    _simple_tool("conversations_set_label", "Add (remove=false) or remove (true) a label on a conversation.", required=["id", "label"], id={"type": "string"}, label={"type": "string"}, remove={"type": "boolean"}),
+    _simple_tool("conversations_set_priority", "Set priority.", required=["id", "priority"], id={"type": "string"}, priority={"type": "string", "enum": ["low", "medium", "high", "urgent"]}),
+    _simple_tool("conversations_set_status", "Set status.", required=["id", "status"], id={"type": "string"}, status={"type": "string", "enum": ["open", "waiting", "resolved"]}),
+    _simple_tool(
+        "conversations_list_snippets",
+        "List snippet (quick-reply) library.",
+        category={"type": "string"},
+        sectorId={"type": "string"},
+        limit={"type": "integer", "default": 50},
+    ),
+    _simple_tool("conversations_search_snippets", "Keyword search in snippets.", required=["query"], query={"type": "string"}, limit={"type": "integer", "default": 20}),
+]
+
+TEAM_TOOLS: list[dict[str, Any]] = [
+    _simple_tool("team_list_sectors", "List sectors/departments."),
+    _simple_tool(
+        "team_list_members",
+        "List team members with filters.",
+        sectorId={"type": "string"},
+        role={"type": "string", "enum": ["founder", "admin", "manager", "operator", "viewer"]},
+        isProfessional={"type": "boolean"},
+        isActive={"type": "boolean"},
+        limit={"type": "integer", "default": 100},
+    ),
+    _simple_tool("team_get_member", "Fetch a single user.", required=["id"], id={"type": "string"}),
+    _simple_tool("team_capacity_today", "Pending work per team member (appointments/orders/kanban/conversations).", userId={"type": "string"}),
+]
+
+SERVICES_MGMT_TOOLS: list[dict[str, Any]] = [
+    _simple_tool(
+        "services_list",
+        "List services catalog (admin view — can include inactive).",
+        includeInactive={"type": "boolean"},
+        category={"type": "string"},
+        limit={"type": "integer", "default": 100},
+    ),
+    _simple_tool("services_get", "Fetch a single service.", required=["id"], id={"type": "string"}),
+    _simple_tool(
+        "services_create",
+        "Create a new service in the catalog.",
+        required=["name", "duration", "price"],
+        name={"type": "string"},
+        duration={"type": "integer", "description": "minutes"},
+        price={"type": "number"},
+        description={"type": "string"},
+        category={"type": "string"},
+        color={"type": "string"},
+        commissionRate={"type": "number", "description": "0-100 (%)"},
+    ),
+    _simple_tool("services_update", "Patch a service.", required=["id", "patch"], id={"type": "string"}, patch={"type": "object"}),
+    _simple_tool("services_set_active", "Toggle isActive.", required=["id", "isActive"], id={"type": "string"}, isActive={"type": "boolean"}),
+]
+
+SALES_TOOLS: list[dict[str, Any]] = [
+    _simple_tool(
+        "sales_list",
+        "List PDV sales transactions with filters.",
+        status={"type": "string", "enum": ["aberta", "finalizada", "cancelada"]},
+        fromDate={"type": "string"},
+        toDate={"type": "string"},
+        limit={"type": "integer", "default": 50},
+    ),
+    _simple_tool("sales_get", "Fetch a single sale.", required=["id"], id={"type": "string"}),
+    _simple_tool("sales_list_by_client", "List sales for a specific client.", required=["clientId"], clientId={"type": "string"}, limit={"type": "integer", "default": 20}),
+    _simple_tool(
+        "sales_create",
+        "Create a new PDV sale. items + payments required; totals auto-computed if omitted.",
+        required=["items", "payments"],
+        clientId={"type": "string"},
+        clientName={"type": "string"},
+        items={"type": "array"},
+        payments={"type": "array"},
+        discount={"type": "number"},
+        tip={"type": "number"},
+        notes={"type": "string"},
+    ),
+    _simple_tool("sales_cancel", "Cancel a finalized sale.", required=["id"], id={"type": "string"}, reason={"type": "string"}),
+    _simple_tool("sales_summary_today", "Today's sales summary (revenue, count, payment breakdown)."),
+]
+
+SUPPLIERS_TOOLS: list[dict[str, Any]] = [
+    _simple_tool("suppliers_list", "List suppliers.", includeInactive={"type": "boolean"}, limit={"type": "integer", "default": 100}),
+    _simple_tool("suppliers_get", "Fetch a single supplier.", required=["id"], id={"type": "string"}),
+    _simple_tool(
+        "suppliers_create",
+        "Create a new supplier. De-dups by CNPJ.",
+        required=["razaoSocial", "cnpj"],
+        razaoSocial={"type": "string"},
+        nomeFantasia={"type": "string"},
+        cnpj={"type": "string"},
+        phone={"type": "string"},
+        email={"type": "string"},
+    ),
+    _simple_tool("suppliers_update", "Patch a supplier.", required=["id", "patch"], id={"type": "string"}, patch={"type": "object"}),
+    _simple_tool("suppliers_find_by_cnpj", "Lookup supplier by CNPJ.", required=["cnpj"], cnpj={"type": "string"}),
+]
+
+PURCHASE_NOTES_TOOLS: list[dict[str, Any]] = [
+    _simple_tool(
+        "purchase-notes_list",
+        "List purchase notes (NF-e de compra).",
+        status={"type": "string", "enum": ["pendente", "importada", "cancelada"]},
+        supplierId={"type": "string"},
+        limit={"type": "integer", "default": 30},
+    ),
+    _simple_tool("purchase-notes_get", "Fetch a single purchase note with items.", required=["id"], id={"type": "string"}),
+    _simple_tool("purchase-notes_match_products", "Fuzzy-match note items against products catalog. Preview only.", required=["id"], id={"type": "string"}),
+    _simple_tool("purchase-notes_apply_to_stock", "Apply matched items to inventory (creates stockMovements). Idempotent.", required=["id"], id={"type": "string"}),
+    _simple_tool("purchase-notes_list_unmatched", "List notes with unmatched items pending review.", limit={"type": "integer", "default": 20}),
+]
+
+
 def tools_for_use_case(use_case: UseCase) -> list[dict[str, Any]]:
     """Return the subset of tools the LLM should see, given the business mode."""
     base = CLIENT_TOOLS[:]
@@ -595,6 +961,17 @@ def tools_for_use_case(use_case: UseCase) -> list[dict[str, Any]]:
         return base + CATALOG_TOOLS + ORDERS_TOOLS
     if use_case == "servicos":
         return base + AGENDA_TOOLS + CONVERSATION_TOOLS
+    if use_case == "operator":
+        # Dashboard chat — full CRUD over all modules.
+        return (
+            base
+            + CATALOG_TOOLS + ORDERS_TOOLS
+            + AGENDA_TOOLS + CONVERSATION_TOOLS
+            + FINANCIAL_TOOLS + INVENTORY_TOOLS + KANBAN_TOOLS
+            + NOTES_TOOLS + CRM_TOOLS + CONVERSATIONS_ADMIN_TOOLS
+            + TEAM_TOOLS + SERVICES_MGMT_TOOLS + SALES_TOOLS
+            + SUPPLIERS_TOOLS + PURCHASE_NOTES_TOOLS
+        )
     # simples / times — generic CRM only
     return base
 
@@ -602,6 +979,9 @@ def tools_for_use_case(use_case: UseCase) -> list[dict[str, Any]]:
 # Backwards-compatible exports
 ALL_TOOLS: list[dict[str, Any]] = (
     ORDERS_TOOLS + AGENDA_TOOLS + CATALOG_TOOLS + CLIENT_TOOLS + CONVERSATION_TOOLS
+    + FINANCIAL_TOOLS + INVENTORY_TOOLS + KANBAN_TOOLS + NOTES_TOOLS + CRM_TOOLS
+    + CONVERSATIONS_ADMIN_TOOLS + TEAM_TOOLS + SERVICES_MGMT_TOOLS + SALES_TOOLS
+    + SUPPLIERS_TOOLS + PURCHASE_NOTES_TOOLS
 )
 TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     t["function"]["name"]: t for t in ALL_TOOLS
