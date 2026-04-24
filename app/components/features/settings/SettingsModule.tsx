@@ -849,6 +849,7 @@ function ProfileTab() {
 
       {/* ── Google Calendar Integration ── */}
       <GoogleCalendarSection />
+      <AppleCalendarSection />
 
       {/* Save Profile */}
       <div className="flex justify-end">
@@ -951,6 +952,62 @@ function GoogleCalendarSection() {
             {t('settings.profile.gcalConnect', 'Conectar')}
           </button>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ── Apple Calendar / iCal Subscription ──
+function AppleCalendarSection() {
+  const { t } = useTranslation();
+  const { user, business } = useAuth();
+  const [copied, setCopied] = useState(false);
+
+  if (!business?.slug || !user?.uid) return null;
+
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const feedUrl = `${origin}/api/calendar/${business.slug}/${user.uid}`;
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(feedUrl).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <div className="p-5 rounded-2xl bg-white dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700/60 space-y-3">
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 rounded-xl bg-gray-100 dark:bg-gray-700/50 flex items-center justify-center">
+          <Calendar className="w-5 h-5 text-gray-500 dark:text-gray-400" />
+        </div>
+        <div className="flex-1">
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+            Apple Calendar / Outlook
+          </h3>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            {t('settings.profile.icalDesc', 'Assine este feed para ver seus agendamentos em qualquer app de calendário')}
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <input
+          readOnly
+          value={feedUrl}
+          className="flex-1 text-xs px-3 py-2 rounded-lg bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 font-mono truncate"
+          onClick={(e) => (e.target as HTMLInputElement).select()}
+        />
+        <button
+          onClick={handleCopy}
+          className={cn(
+            'px-3 py-2 text-xs font-medium rounded-lg transition-colors',
+            copied
+              ? 'bg-emerald-100 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+              : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+          )}
+        >
+          {copied ? t('settings.profile.copied', 'Copiado!') : t('settings.profile.copy', 'Copiar')}
+        </button>
       </div>
     </div>
   );
