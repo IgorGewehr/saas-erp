@@ -60,9 +60,10 @@ export async function POST(req: NextRequest) {
   } catch {
     return NextResponse.json({ ok: false, error: 'Invalid JSON body' }, { status: 400 });
   }
-  if (!body.message || typeof body.message !== 'string') {
+  if (!body.message || typeof body.message !== 'string' || !body.message.trim()) {
     return NextResponse.json({ ok: false, error: 'message required' }, { status: 400 });
   }
+  body.message = body.message.trim();
   if (body.message.length > 4000) {
     return NextResponse.json({ ok: false, error: 'message too long (max 4000 chars)' }, { status: 400 });
   }
@@ -150,12 +151,12 @@ export async function POST(req: NextRequest) {
   clearTimeout(timer);
 
   if (!agentRes.ok) {
-    const body = await agentRes.text().catch(() => '');
-    console.error('[operator.chat] agent HTTP', agentRes.status, body);
-    return NextResponse.json({ ok: false, error: `Agent error ${agentRes.status}: ${body}` }, { status: 502 });
+    const errBody = await agentRes.text().catch(() => '');
+    console.error('[operator.chat] agent HTTP', agentRes.status, errBody);
+    return NextResponse.json({ ok: false, error: `O agente retornou erro (${agentRes.status}). Tente novamente.` }, { status: 502 });
   }
 
-  const data = (await agentRes.json()) as {
+  let data: {
     run_id: string;
     final_response: string | null;
     intent: string | null;
@@ -163,6 +164,17 @@ export async function POST(req: NextRequest) {
     status: 'success' | 'error' | 'skipped';
     error?: string;
   };
+
+  try {
+    data = await agentRes.json();
+  } catch {
+    console.error('[operator.chat] agent returned invalid JSON');
+    return NextResponse.json({ ok: false, error: 'O agente retornou uma resposta inválida. Tente novamente.' }, { status: 502 });
+  }
+
+  if (!data.run_id) {
+    return NextResponse.json({ ok: false, error: data.error || 'O agente não retornou um resultado. Tente novamente.' }, { status: 502 });
+  }
 
   // 7. Fetch run details for tool calls (persisted by agent)
   const runDoc = await adminDb.collection('agentRuns').doc(data.run_id).get();

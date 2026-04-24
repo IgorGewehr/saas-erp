@@ -88,7 +88,8 @@ export default function AnalystChatPanel() {
         body: JSON.stringify({ message, history, sessionId, mode: 'analyst' }),
       });
 
-      const data = await res.json();
+      let data;
+      try { data = await res.json(); } catch { throw new Error('Resposta inválida do servidor'); }
       if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
       setMessages(prev => [...prev, {

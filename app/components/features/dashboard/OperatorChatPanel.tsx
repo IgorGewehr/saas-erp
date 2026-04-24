@@ -89,7 +89,12 @@ export default function OperatorChatPanel() {
         body: JSON.stringify({ message, history, sessionId }),
       });
 
-      const data = await res.json();
+      let data;
+      try {
+        data = await res.json();
+      } catch {
+        throw new Error('Resposta inválida do servidor');
+      }
 
       if (!res.ok || !data.ok) {
         throw new Error(data.error || `HTTP ${res.status}`);
