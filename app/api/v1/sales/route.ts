@@ -145,6 +145,13 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // ── Validate payments cover the total ───────────────────────────────────
+    const expectedTotal = items.reduce((sum: number, it: any) => sum + (it.quantity * it.unitPrice - (it.discount || 0)), 0);
+    const paymentSum = payments.reduce((sum: number, p: any) => sum + p.amount, 0);
+    if (Math.abs(paymentSum - expectedTotal) > 0.01) {
+      return apiError(`Sum of payments (${paymentSum.toFixed(2)}) does not match total (${expectedTotal.toFixed(2)})`, 400);
+    }
+
     // ── Validate optional status ──────────────────────────────────────────────
     const status = body.status || 'finalizada';
     if (!['aberta', 'finalizada', 'cancelada'].includes(status)) {
