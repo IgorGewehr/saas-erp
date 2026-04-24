@@ -86,6 +86,13 @@ import {
 } from 'lucide-react';
 import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector, Service, WorkingHours, DaySchedule, UseCase } from '@/lib/types';
 import { CachedImage } from '@/app/components/ui/CachedImage';
+import {
+  DeliveryZonesEditor,
+  UpsellRulesEditor,
+  AgentSandbox,
+  type DeliveryZone,
+  type UpsellRule,
+} from './AgentPolicyEditors';
 import { ROLE_LABELS, ROLE_HIERARCHY, USER_STATUS_LABELS, INTEGRATION_PROVIDERS, API_KEY_SCOPES, API_KEY_SCOPE_GROUPS, SECTOR_COLORS, DEFAULT_WORKING_HOURS, USE_CASE_LABELS, USE_CASE_DESCRIPTIONS } from '@/lib/types';
 import { formatDate, formatCurrency } from '@/lib/utils/format';
 import { VaultTab } from '@/app/components/features/senhas/SenhasModule';
@@ -3686,6 +3693,10 @@ function AgenteTab() {
   const [holidaysStr, setHolidaysStr] = useState<string>((current?.calendar?.holidays || []).join(', '));
   const [acceptedPaymentsStr, setAcceptedPaymentsStr] = useState<string>((current?.acceptedPaymentMethods || []).join(','));
 
+  // QW2/QW3 — delivery zones + upsell rules (structured objects)
+  const [deliveryZones, setDeliveryZones] = useState<DeliveryZone[]>(current?.deliveryZones || []);
+  const [upsellRules, setUpsellRules] = useState<UpsellRule[]>(current?.upsellRules || []);
+
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -3706,6 +3717,8 @@ function AgenteTab() {
     setSlaDeliveryMin(current?.sla?.deliveryMaxMinutes || 0);
     setHolidaysStr((current?.calendar?.holidays || []).join(', '));
     setAcceptedPaymentsStr((current?.acceptedPaymentMethods || []).join(','));
+    setDeliveryZones(current?.deliveryZones || []);
+    setUpsellRules(current?.upsellRules || []);
   }, [current]);
 
   const handleSave = async () => {
@@ -3756,11 +3769,9 @@ function AgenteTab() {
           sla,
           calendar,
           acceptedPaymentMethods: acceptedPaymentMethods.length > 0 ? acceptedPaymentMethods : null,
-          // deliveryZones + teamCapacity + upsellRules ficam preservados — UIs dedicadas
-          // virão em uma próxima iteração (podem ser editados direto no Firestore via doc)
-          deliveryZones: current?.deliveryZones || null,
+          deliveryZones: deliveryZones.length > 0 ? deliveryZones : null,
           teamCapacity: current?.teamCapacity || null,
-          upsellRules: current?.upsellRules || null,
+          upsellRules: upsellRules.length > 0 ? upsellRules : null,
           enabledAt: enabled && !current?.enabledAt ? new Date().toISOString() : (current?.enabledAt || null),
         },
         updatedAt: new Date().toISOString(),
@@ -4145,6 +4156,23 @@ function AgenteTab() {
                 </p>
               </div>
             </div>
+          </SectionCard>
+
+          {/* QW2 — Delivery Zones editor */}
+          {useCase === 'pedidos' && (
+            <SectionCard title="Zonas de entrega" icon={Info}>
+              <DeliveryZonesEditor value={deliveryZones} onChange={setDeliveryZones} />
+            </SectionCard>
+          )}
+
+          {/* QW3 — Upsell Rules editor */}
+          <SectionCard title="Regras de upsell" icon={Info}>
+            <UpsellRulesEditor value={upsellRules} onChange={setUpsellRules} />
+          </SectionCard>
+
+          {/* QW4 — Sandbox */}
+          <SectionCard title="Sandbox — testar o agente" icon={Sparkles}>
+            <AgentSandbox />
           </SectionCard>
 
           {/* RAG knowledge base — reindex button */}
