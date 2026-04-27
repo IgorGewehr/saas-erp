@@ -21,6 +21,7 @@ import crypto from 'crypto';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, AgentAuthError } from '@/lib/agent/auth';
 import { checkRateLimit, getClientIp, rateLimitHeaders } from '@/lib/utils/rateLimit';
+import { sendFinancialNotifications } from '@/app/api/financial/notify/route';
 import type { Appointment, Business, Conversation } from '@/lib/types';
 
 const RATE_LIMIT = 4;              // max 4 manual triggers
@@ -70,6 +71,7 @@ interface RunStats {
   confirmationsAsked: number;
   followUpsSent: number;
   businessesProcessed: number;
+  financialNotifsSent: number;
   errors: Array<{ appointmentId: string; phase: string; error: string }>;
 }
 
@@ -97,6 +99,7 @@ async function runSweep(req: NextRequest): Promise<NextResponse> {
     confirmationsAsked: 0,
     followUpsSent: 0,
     businessesProcessed: 0,
+    financialNotifsSent: 0,
     errors: [],
   };
 
@@ -142,6 +145,15 @@ async function runSweep(req: NextRequest): Promise<NextResponse> {
         automationsRun = await processCRMAutomations();
       } catch (err) {
         console.warn('[scheduled] CRM automations failed:', err);
+      }
+      // Financial due-date notifications — run per business (cron already has targets)
+      try {
+        for (const biz of targets) {
+          const n = await sendFinancialNotifications(biz);
+          stats.financialNotifsSent += n;
+        }
+      } catch (err) {
+        console.warn('[scheduled] financial notifications failed:', err);
       }
     }
 

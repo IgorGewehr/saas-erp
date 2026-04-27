@@ -123,6 +123,10 @@ export interface Business {
   settings?: BusinessSettings;
   // Enterprise
   enterprise?: EnterpriseSettings;
+  // Financial settings (notifications, etc.)
+  financial?: {
+    notificationSettings?: FinancialNotificationSettings;
+  };
   // Omnichannel (WhatsApp, Facebook, Instagram)
   channels?: ChannelCredentials;
   // Status
@@ -666,8 +670,22 @@ export interface Transaction {
   createdByName?: string;
   updatedBy?: string;
   updatedByName?: string;
+  /** Idempotência de notificações — preenchido pelo cron ao enviar alerta */
+  dueSoonNotifiedAt?: string;
+  overdueNotifiedAt?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+// ---- Financial Notification Settings ----
+export interface FinancialNotificationSettings {
+  enabled: boolean;
+  /** Days before due date to send reminder (1, 2, 3, or 7) */
+  dueSoonDays: number;
+  sendEmail: boolean;
+  sendWhatsApp: boolean;
+  notifyPayable: boolean;    // contas a pagar
+  notifyReceivable: boolean; // contas a receber (cobrança)
 }
 
 // ---- Budget (Orçamento por categoria/mês) ----

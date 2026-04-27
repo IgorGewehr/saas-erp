@@ -64,6 +64,8 @@ import {
   Loader2,
   Upload,
   Settings2,
+  Bell,
+  BellOff,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -123,6 +125,7 @@ import type {
   DasRecord,
   DasStatus,
   SimplesAnexo,
+  FinancialNotificationSettings,
 } from '@/lib/types';
 
 // ==========================================
@@ -222,6 +225,16 @@ export default function FinancialModule() {
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [showBalances, setShowBalances] = useState(true);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
+  const [showAlertsModal, setShowAlertsModal] = useState(false);
+  const [alertSettings, setAlertSettings] = useState<FinancialNotificationSettings>({
+    enabled: false,
+    dueSoonDays: 3,
+    sendEmail: false,
+    sendWhatsApp: true,
+    notifyPayable: true,
+    notifyReceivable: true,
+  });
+  const [isSavingAlerts, setIsSavingAlerts] = useState(false);
 
   // Installment group dialog
   const [installmentGroupId, setInstallmentGroupId] = useState<string | null>(null);
@@ -288,6 +301,14 @@ export default function FinancialModule() {
   const deferredTxClientName = useDeferredValue(txClientName);
 
   // Restore saved filter from localStorage on mount
+  // Load notification settings from Firestore
+  useEffect(() => {
+    if (!business?.id) return;
+    const ns = business.financial?.notificationSettings;
+    if (ns) setAlertSettings(prev => ({ ...prev, ...ns }));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [business?.id]);
+
   useEffect(() => {
     try {
       const saved = localStorage.getItem('financial_tx_filters');
@@ -613,6 +634,22 @@ export default function FinancialModule() {
     queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
     toast.success(`${pending.length} parcela(s) quitada(s)`);
   }, [installmentGroupTxs, business?.id, queryClient]);
+
+  const handleSaveAlerts = useCallback(async () => {
+    if (!business?.id) return;
+    setIsSavingAlerts(true);
+    try {
+      await updateDoc(doc(db, 'businesses', business.id), {
+        'financial.notificationSettings': alertSettings,
+        updatedAt: new Date().toISOString(),
+      });
+      setShowAlertsModal(false);
+    } catch (err) {
+      console.error('[financial-alerts] save failed:', err);
+    } finally {
+      setIsSavingAlerts(false);
+    }
+  }, [business?.id, alertSettings]);
 
   const openNewForm = useCallback(() => {
     setEditingTransaction(null);
@@ -1054,6 +1091,17 @@ export default function FinancialModule() {
             <p className="text-sm text-slate-400 dark:text-gray-500 mt-0.5">{t('financial.header.subtitle', 'Gestão financeira completa')}</p>
           </div>
           <div className="flex items-center gap-3">
+            <Tooltip title={alertSettings.enabled ? 'Alertas de vencimento ativos' : 'Configurar alertas de vencimento'}>
+              <IconButton
+                onClick={() => setShowAlertsModal(true)}
+                size="small"
+                sx={{ border: isDark ? '1px solid #374151' : '1px solid #E2E8F0', borderRadius: '10px', width: 36, height: 36, position: 'relative' }}
+              >
+                {alertSettings.enabled
+                  ? <Bell size={16} className="text-emerald-500" />
+                  : <BellOff size={16} className="text-slate-400 dark:text-gray-500" />}
+              </IconButton>
+            </Tooltip>
             <Tooltip title={showBalances ? t('financial.header.hideBalances', 'Ocultar saldos') : t('financial.header.showBalances', 'Mostrar saldos')}>
               <IconButton
                 onClick={() => setShowBalances(!showBalances)}
@@ -1506,6 +1554,124 @@ export default function FinancialModule() {
             sx={{ backgroundColor: '#DC2626', '&:hover': { backgroundColor: '#B91C1C' }, '&.Mui-disabled': { backgroundColor: '#FCA5A5', color: '#fff' }, borderRadius: '12px', textTransform: 'none', fontWeight: 700, px: 4 }}
           >
             {isSaving ? t('financial.form.saving', 'Salvando...') : editingTransaction ? t('financial.form.save', 'Salvar') : t('financial.form.createTransaction', 'Criar Transação')}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* ===== FINANCIAL ALERTS MODAL ===== */}
+      <Dialog
+        open={showAlertsModal}
+        onClose={() => setShowAlertsModal(false)}
+        maxWidth="xs"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: '20px', backgroundColor: isDark ? '#111827' : undefined } }}
+      >
+        <DialogTitle sx={{ fontFamily: '"Plus Jakarta Sans", sans-serif', fontWeight: 700, color: isDark ? '#F1F5F9' : undefined, display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Bell size={18} className="text-emerald-500" />
+          Alertas de Vencimento
+        </DialogTitle>
+        <DialogContent>
+          <div className="space-y-5 pt-1">
+            {/* Enable toggle */}
+            <label className="flex items-center justify-between cursor-pointer">
+              <span className="text-sm font-semibold text-slate-700 dark:text-gray-300">Ativar notificações automáticas</span>
+              <button
+                type="button"
+                onClick={() => setAlertSettings(s => ({ ...s, enabled: !s.enabled }))}
+                className={`relative w-11 h-6 rounded-full transition-colors ${alertSettings.enabled ? 'bg-emerald-500' : 'bg-slate-200 dark:bg-gray-700'}`}
+              >
+                <span className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white shadow transition-transform ${alertSettings.enabled ? 'translate-x-5' : ''}`} />
+              </button>
+            </label>
+
+            {alertSettings.enabled && (
+              <>
+                {/* Days before */}
+                <div>
+                  <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase tracking-wide mb-2">Avisar com antecedência</p>
+                  <div className="flex gap-2">
+                    {[1, 2, 3, 7].map(d => (
+                      <button
+                        key={d}
+                        type="button"
+                        onClick={() => setAlertSettings(s => ({ ...s, dueSoonDays: d }))}
+                        className={`flex-1 py-1.5 rounded-lg text-sm font-semibold border transition-colors ${alertSettings.dueSoonDays === d ? 'bg-emerald-500 text-white border-emerald-500' : 'border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:border-emerald-300'}`}
+                      >
+                        {d}d
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Channels */}
+                <div>
+                  <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase tracking-wide mb-2">Canais de envio</p>
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={alertSettings.sendWhatsApp}
+                        onChange={e => setAlertSettings(s => ({ ...s, sendWhatsApp: e.target.checked }))}
+                        className="w-4 h-4 accent-emerald-500"
+                      />
+                      <span className="text-sm text-slate-700 dark:text-gray-300">WhatsApp (via conversa existente)</span>
+                    </label>
+                    <label className="flex items-center gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={alertSettings.sendEmail}
+                        onChange={e => setAlertSettings(s => ({ ...s, sendEmail: e.target.checked }))}
+                        className="w-4 h-4 accent-emerald-500"
+                      />
+                      <span className="text-sm text-slate-700 dark:text-gray-300">E-mail via Resend</span>
+                      {!business?.enterprise?.integrations?.find(i => i.provider === 'resend' && i.isActive) && (
+                        <span className="text-xs text-amber-500 font-medium">(requer integração)</span>
+                      )}
+                    </label>
+                  </div>
+                </div>
+
+                {/* Types */}
+                <div>
+                  <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase tracking-wide mb-2">Tipo de transação</p>
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={alertSettings.notifyPayable}
+                        onChange={e => setAlertSettings(s => ({ ...s, notifyPayable: e.target.checked }))}
+                        className="w-4 h-4 accent-emerald-500"
+                      />
+                      <span className="text-sm text-slate-700 dark:text-gray-300">Contas a pagar (lembrete interno)</span>
+                    </label>
+                    <label className="flex items-center gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={alertSettings.notifyReceivable}
+                        onChange={e => setAlertSettings(s => ({ ...s, notifyReceivable: e.target.checked }))}
+                        className="w-4 h-4 accent-emerald-500"
+                      />
+                      <span className="text-sm text-slate-700 dark:text-gray-300">Contas a receber (cobrança de clientes)</span>
+                    </label>
+                  </div>
+                </div>
+              </>
+            )}
+
+            <p className="text-xs text-slate-400 dark:text-gray-500">
+              Notificações são enviadas automaticamente pelo sistema (cron horário). Clientes só são notificados se houver uma conversa ativa vinculada.
+            </p>
+          </div>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, py: 2, gap: 1 }}>
+          <Button onClick={() => setShowAlertsModal(false)} sx={{ color: '#64748B', textTransform: 'none', fontWeight: 600, borderRadius: '12px' }}>Cancelar</Button>
+          <Button
+            onClick={handleSaveAlerts}
+            disabled={isSavingAlerts}
+            variant="contained"
+            sx={{ backgroundColor: '#10B981', '&:hover': { backgroundColor: '#059669' }, borderRadius: '12px', textTransform: 'none', fontWeight: 700 }}
+          >
+            {isSavingAlerts ? 'Salvando...' : 'Salvar'}
           </Button>
         </DialogActions>
       </Dialog>
