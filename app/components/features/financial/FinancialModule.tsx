@@ -1174,7 +1174,7 @@ export default function FinancialModule() {
             )}
 
             {activeTab === 'fluxo' && (
-              <CashFlowProjection transactions={transactions} businessName={business?.razaoSocial ?? ''} />
+              <CashFlowProjection transactions={transactions} bankAccounts={bankAccounts} businessName={business?.razaoSocial ?? ''} />
             )}
 
             {activeTab === 'dre' && (
@@ -2662,92 +2662,208 @@ function EnterpriseFinancialCards({
 // CASH FLOW PROJECTION (30/60/90 day)
 // ==========================================
 
-function CashFlowProjection({ transactions, businessName }: { transactions: Transaction[]; businessName: string }) {
-  const [horizon, setHorizon] = useState<30 | 60 | 90>(30);
+function CashFlowProjection({
+  transactions,
+  bankAccounts,
+  businessName,
+}: {
+  transactions: Transaction[];
+  bankAccounts: BankAccount[];
+  businessName: string;
+}) {
+  const { isDark } = useTheme();
+  const [viewMode, setViewMode]   = useState<'daily' | 'weekly'>('weekly');
+  const [horizon,  setHorizon]    = useState<30 | 60 | 90>(30);
+  const [scenario, setScenario]   = useState<'otimista' | 'conservador'>('otimista');
 
-  const projection = useMemo(() => {
-    const today = new Date();
-    const cutoff = new Date(today);
-    cutoff.setDate(cutoff.getDate() + horizon);
+  // Starting balance from active bank accounts
+  const startingBalance = useMemo(
+    () => bankAccounts.filter(a => a.isActive).reduce((s, a) => s + a.balance, 0),
+    [bankAccounts],
+  );
 
-    // Use due date for unpaid, payment date for paid (past context)
+  // ── Helper: advance a date by one recurrence period ─────────────────────────
+  function advanceRecurrence(dateStr: string, frequency: string, dayOfMonth?: number): string {
+    const d = new Date(dateStr + 'T00:00:00');
+    switch (frequency) {
+      case 'weekly':    d.setDate(d.getDate() + 7); break;
+      case 'biweekly':  d.setDate(d.getDate() + 14); break;
+      case 'monthly':   d.setMonth(d.getMonth() + 1); if (dayOfMonth) d.setDate(Math.min(dayOfMonth, 28)); break;
+      case 'quarterly': d.setMonth(d.getMonth() + 3); if (dayOfMonth) d.setDate(Math.min(dayOfMonth, 28)); break;
+      case 'yearly':    d.setFullYear(d.getFullYear() + 1); if (dayOfMonth) d.setDate(Math.min(dayOfMonth, 28)); break;
+    }
+    return d.toISOString().slice(0, 10);
+  }
+
+  // ── 13-week rolling projection ───────────────────────────────────────────────
+  const weeklyProjection = useMemo(() => {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const todayStr  = today.toISOString().slice(0, 10);
+    const maxDate   = new Date(today); maxDate.setDate(today.getDate() + 91);
+    const maxDateStr = maxDate.toISOString().slice(0, 10);
+
+    // Build 13 weekly buckets
+    const weeks = Array.from({ length: 13 }, (_, i) => {
+      const start = new Date(today); start.setDate(today.getDate() + i * 7);
+      const end   = new Date(today); end.setDate(today.getDate() + i * 7 + 6);
+      const label = `S${i + 1} (${start.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })})`;
+      return {
+        name: label,
+        startStr: start.toISOString().slice(0, 10),
+        endStr:   end.toISOString().slice(0, 10),
+        receitas: 0, despesas: 0,
+      };
+    });
+
+    const weekOf = (dateStr: string): number => {
+      const ms = new Date(dateStr + 'T00:00:00').getTime() - today.getTime();
+      return Math.floor(ms / (7 * 86400000));
+    };
+
+    // 1. Regular pending/overdue transactions
+    for (const tx of transactions) {
+      if (tx.status === 'cancelado' || tx.status === 'pago') continue;
+      if (scenario === 'conservador' && tx.status === 'atrasado') continue;
+      const dateStr = tx.dueDate;
+      if (!dateStr || dateStr < todayStr || dateStr > maxDateStr) continue;
+      const w = weekOf(dateStr);
+      if (w >= 0 && w < 13) {
+        if (tx.type === 'receita') weeks[w].receitas += tx.amount;
+        else weeks[w].despesas += tx.amount;
+      }
+    }
+
+    // 2. Recurring transactions — project forward within horizon
+    for (const tx of transactions.filter(t => t.recurrence?.isActive && t.recurrence.nextDueDate)) {
+      const freq = tx.recurrence!.frequency;
+      const dom  = tx.recurrence!.dayOfMonth;
+      let next = tx.recurrence!.nextDueDate!;
+      let guard = 0;
+      while (next <= maxDateStr && guard++ < 52) {
+        if (next >= todayStr) {
+          const w = weekOf(next);
+          if (w >= 0 && w < 13) {
+            if (tx.type === 'receita') weeks[w].receitas += tx.amount;
+            else weeks[w].despesas += tx.amount;
+          }
+        }
+        next = advanceRecurrence(next, freq, dom);
+      }
+    }
+
+    // 3. Compute running balance starting from bank accounts
+    let running = startingBalance;
+    const data = weeks.map(w => {
+      running += w.receitas - w.despesas;
+      return {
+        name:     w.name,
+        receitas: w.receitas,
+        despesas: w.despesas,
+        saldo:    w.receitas - w.despesas,
+        acumulado: running,
+      };
+    });
+
+    return {
+      data,
+      totals: {
+        receitas: data.reduce((s, d) => s + d.receitas, 0),
+        despesas: data.reduce((s, d) => s + d.despesas, 0),
+        finalBalance: running,
+      },
+    };
+  }, [transactions, startingBalance, scenario]);
+
+  // ── Daily projection (existing logic, unchanged) ──────────────────────────
+  const dailyProjection = useMemo(() => {
+    const today    = new Date();
+    const todayStr = today.toISOString().slice(0, 10);
+    const cutoff   = new Date(today); cutoff.setDate(today.getDate() + horizon);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+
     const relevant = transactions.filter(t => {
       if (t.status === 'cancelado') return false;
       const dateStr = t.dueDate || t.paymentDate;
-      if (!dateStr) return false;
-      const d = new Date(dateStr + 'T12:00:00');
-      return d >= new Date(today.toISOString().slice(0, 10)) && d <= cutoff;
+      return dateStr && dateStr >= todayStr && dateStr <= cutoffStr;
     });
 
-    // Bucket by date
-    const byDate = new Map<string, { receitas: number; despesas: number; items: Transaction[] }>();
+    const byDate = new Map<string, { receitas: number; despesas: number }>();
     for (const tx of relevant) {
       const key = (tx.dueDate || tx.paymentDate)!;
-      const bucket = byDate.get(key) || { receitas: 0, despesas: 0, items: [] };
+      const bucket = byDate.get(key) || { receitas: 0, despesas: 0 };
       if (tx.type === 'receita') bucket.receitas += tx.amount;
       else bucket.despesas += tx.amount;
-      bucket.items.push(tx);
       byDate.set(key, bucket);
     }
 
-    const sorted = Array.from(byDate.entries())
+    let running = startingBalance;
+    const data = Array.from(byDate.entries())
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([date, b]) => ({
-        date,
-        receitas: b.receitas,
-        despesas: b.despesas,
-        saldo: b.receitas - b.despesas,
-        count: b.items.length,
-      }));
+      .map(([date, b]) => {
+        running += b.receitas - b.despesas;
+        return { date, receitas: b.receitas, despesas: b.despesas, saldo: b.receitas - b.despesas, acumulado: running };
+      });
 
-    // Cumulative balance over the horizon
-    let running = 0;
-    const withCumulative = sorted.map(s => {
-      running += s.saldo;
-      return { ...s, acumulado: running };
-    });
-
-    const totals = {
-      receitas: withCumulative.reduce((s, d) => s + d.receitas, 0),
-      despesas: withCumulative.reduce((s, d) => s + d.despesas, 0),
-      pendingCount: relevant.filter(t => t.status === 'pendente' || t.status === 'atrasado').length,
+    return {
+      data,
+      totals: {
+        receitas: data.reduce((s, d) => s + d.receitas, 0),
+        despesas: data.reduce((s, d) => s + d.despesas, 0),
+        finalBalance: running,
+      },
     };
+  }, [transactions, horizon, startingBalance]);
 
-    return { data: withCumulative, totals };
-  }, [transactions, horizon]);
+  const active = viewMode === 'weekly' ? weeklyProjection : dailyProjection;
+  const positiveEnd = active.totals.finalBalance >= 0;
 
   return (
     <div className="space-y-5">
-      {/* Controls */}
+      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">
-            Projeção de Fluxo de Caixa
-          </h3>
+          <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">Projeção de Fluxo de Caixa</h3>
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            Entradas e saídas previstas nos próximos {horizon} dias
+            {viewMode === 'weekly' ? `Rolling 13 semanas · ${scenario === 'otimista' ? 'inclui atrasados' : 'exclui atrasados'}` : `Próximos ${horizon} dias`}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="inline-flex bg-gray-100 dark:bg-gray-800/60 rounded-xl p-0.5">
-            {([30, 60, 90] as const).map(h => (
-              <button
-                key={h}
-                onClick={() => setHorizon(h)}
-                className={cn(
-                  'px-3 py-1.5 rounded-lg text-xs font-bold transition-colors',
-                  horizon === h
-                    ? 'bg-white dark:bg-gray-900 shadow-sm text-gray-900 dark:text-gray-100'
-                    : 'text-gray-500 dark:text-gray-400',
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* View mode toggle */}
+          <div className="flex items-center gap-1 p-1 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl">
+            {([['daily', 'Diário'], ['weekly', '13 Semanas']] as const).map(([mode, label]) => (
+              <button key={mode} onClick={() => setViewMode(mode)}
+                className={cn('px-3 py-1.5 rounded-lg text-xs font-medium transition-all',
+                  viewMode === mode ? 'bg-red-600 text-white shadow-sm' : 'text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800'
                 )}
-              >
-                {h} dias
-              </button>
+              >{label}</button>
             ))}
           </div>
+          {viewMode === 'daily' ? (
+            <div className="inline-flex bg-gray-100 dark:bg-gray-800/60 rounded-xl p-0.5">
+              {([30, 60, 90] as const).map(h => (
+                <button key={h} onClick={() => setHorizon(h)}
+                  className={cn('px-3 py-1.5 rounded-lg text-xs font-bold transition-colors',
+                    horizon === h ? 'bg-white dark:bg-gray-900 shadow-sm text-gray-900 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400'
+                  )}
+                >{h}d</button>
+              ))}
+            </div>
+          ) : (
+            <div className="flex items-center gap-1 p-1 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl">
+              {([['otimista', 'Otimista'], ['conservador', 'Conservador']] as const).map(([s, label]) => (
+                <button key={s} onClick={() => setScenario(s)}
+                  className={cn('px-3 py-1.5 rounded-lg text-xs font-medium transition-all',
+                    scenario === s ? (s === 'otimista' ? 'bg-emerald-600 text-white shadow-sm' : 'bg-amber-500 text-white shadow-sm') : 'text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800'
+                  )}
+                >{label}</button>
+              ))}
+            </div>
+          )}
           <button
-            onClick={() => exportCashFlowCSV(projection.data as CashFlowRow[], horizon, businessName)}
-            title="Exportar CSV"
+            onClick={() => exportCashFlowCSV(
+              active.data.map(d => ({ date: ('date' in d ? d.date : d.name) as string, receitas: d.receitas, despesas: d.despesas, saldo: d.saldo, acumulado: d.acumulado })),
+              viewMode === 'weekly' ? 13 : horizon, businessName
+            )}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
           >
             <Download size={13} /> CSV
@@ -2755,64 +2871,82 @@ function CashFlowProjection({ transactions, businessName }: { transactions: Tran
         </div>
       </div>
 
-      {/* KPIs */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <div className="bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 rounded-xl p-4">
-          <p className="text-[10px] uppercase tracking-wider text-emerald-700 dark:text-emerald-400 font-bold">Receitas previstas</p>
-          <p className="text-2xl font-bold text-emerald-700 dark:text-emerald-300 mt-1">{formatCurrency(projection.totals.receitas)}</p>
-        </div>
-        <div className="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 rounded-xl p-4">
-          <p className="text-[10px] uppercase tracking-wider text-red-700 dark:text-red-400 font-bold">Despesas previstas</p>
-          <p className="text-2xl font-bold text-red-700 dark:text-red-300 mt-1">{formatCurrency(projection.totals.despesas)}</p>
-        </div>
-        <div className={cn(
-          'rounded-xl p-4 border',
-          projection.totals.receitas - projection.totals.despesas >= 0
-            ? 'bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-500/30'
-            : 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30',
-        )}>
-          <p className={cn(
-            'text-[10px] uppercase tracking-wider font-bold',
-            projection.totals.receitas - projection.totals.despesas >= 0
-              ? 'text-blue-700 dark:text-blue-400'
-              : 'text-amber-700 dark:text-amber-400',
-          )}>Resultado previsto</p>
-          <p className={cn(
-            'text-2xl font-bold mt-1',
-            projection.totals.receitas - projection.totals.despesas >= 0
-              ? 'text-blue-700 dark:text-blue-300'
-              : 'text-amber-700 dark:text-amber-300',
-          )}>
-            {formatCurrency(projection.totals.receitas - projection.totals.despesas)}
-          </p>
-        </div>
+      {/* KPI cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          { label: 'Saldo Inicial', value: startingBalance, color: 'text-slate-700 dark:text-gray-200', bg: 'bg-white dark:bg-gray-900 border-slate-100 dark:border-gray-800' },
+          { label: 'Entradas Previstas', value: active.totals.receitas, color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/20' },
+          { label: 'Saídas Previstas', value: active.totals.despesas, color: 'text-red-600 dark:text-red-400', bg: 'bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/20' },
+          { label: 'Saldo Final Projetado', value: active.totals.finalBalance, color: positiveEnd ? 'text-blue-600 dark:text-blue-400' : 'text-orange-600 dark:text-orange-400', bg: positiveEnd ? 'bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-500/20' : 'bg-orange-50 dark:bg-orange-500/10 border-orange-200 dark:border-orange-500/20' },
+        ].map(k => (
+          <div key={k.label} className={`rounded-xl p-4 border ${k.bg}`}>
+            <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 dark:text-gray-500 mb-1">{k.label}</p>
+            <p className={`text-lg font-bold font-display ${k.color}`}>{formatCurrency(k.value)}</p>
+          </div>
+        ))}
       </div>
 
+      {/* Negative balance warning */}
+      {!positiveEnd && (
+        <div className="flex items-center gap-3 px-4 py-3 bg-orange-50 dark:bg-orange-500/10 border border-orange-200 dark:border-orange-500/20 rounded-2xl">
+          <AlertTriangle size={16} className="text-orange-600 dark:text-orange-400 shrink-0" />
+          <p className="text-sm text-orange-800 dark:text-orange-200">
+            Projeção indica saldo negativo de <strong>{formatCurrency(Math.abs(active.totals.finalBalance))}</strong> ao final do período.
+          </p>
+        </div>
+      )}
+
       {/* Chart */}
-      {projection.data.length === 0 ? (
-        <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-12 text-center">
+      {active.data.length === 0 ? (
+        <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl p-12 text-center">
           <TrendingUp className="w-10 h-10 text-gray-300 dark:text-gray-700 mx-auto mb-3" />
           <p className="text-sm font-semibold text-gray-700 dark:text-gray-300">Nenhum lançamento previsto neste horizonte</p>
-          <p className="text-xs text-gray-500 mt-1">Transações com data de vencimento nos próximos {horizon} dias aparecem aqui</p>
+          <p className="text-xs text-gray-500 mt-1">Transações pendentes com data de vencimento futura aparecem aqui</p>
         </div>
       ) : (
-        <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4">
-          <ResponsiveContainer width="100%" height={300}>
-            <ComposedChart data={projection.data}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" opacity={0.3} />
-              <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 11 }} />
-              {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-              <Tooltip {...({
-                formatter: (value: number) => formatCurrency(value),
-                contentStyle: { borderRadius: '12px', border: 'none', boxShadow: '0 4px 16px rgba(0,0,0,0.1)' },
-              } as any)} />
+        <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl p-5">
+          <ResponsiveContainer width="100%" height={320}>
+            <ComposedChart data={active.data} margin={{ top: 4, right: 16, left: 8, bottom: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#1E293B' : '#F1F5F9'} vertical={false} />
+              <XAxis dataKey={viewMode === 'weekly' ? 'name' : 'date'} tick={{ fontSize: 10, fill: '#94A3B8' }} axisLine={false} tickLine={false} interval={viewMode === 'weekly' ? 1 : 'preserveStartEnd'} />
+              <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94A3B8', fontSize: 11 }} tickFormatter={v => `R$${(v / 1000).toFixed(0)}k`} width={56} />
+              <RechartsTooltip
+                formatter={(v: number, name: string) => [formatCurrency(v), name]}
+                contentStyle={{ background: isDark ? '#1e293b' : '#fff', border: isDark ? '1px solid #374151' : '1px solid #E2E8F0', borderRadius: 10, fontSize: 12 }}
+              />
               <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
-              <Bar dataKey="receitas" fill="#10B981" name="Receitas" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="despesas" fill="#EF4444" name="Despesas" radius={[4, 4, 0, 0]} />
-              <Line type="monotone" dataKey="acumulado" stroke="#3B82F6" name="Saldo acumulado" strokeWidth={2} dot={{ r: 3 }} />
+              <Bar dataKey="receitas" fill="#10B981" name="Entradas" radius={[4, 4, 0, 0]} barSize={viewMode === 'weekly' ? 14 : 8} />
+              <Bar dataKey="despesas" fill="#EF4444" name="Saídas" radius={[4, 4, 0, 0]} barSize={viewMode === 'weekly' ? 14 : 8} />
+              <Line type="monotone" dataKey="acumulado" stroke="#3B82F6" name="Saldo projetado" strokeWidth={2.5} dot={{ r: 3, fill: '#3B82F6', strokeWidth: 2, stroke: '#fff' }} />
             </ComposedChart>
           </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* Weekly table (13 semanas mode only) */}
+      {viewMode === 'weekly' && active.data.length > 0 && (
+        <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl overflow-hidden shadow-sm">
+          <div className="px-5 py-3 border-b border-slate-100 dark:border-gray-800">
+            <span className="text-sm font-semibold text-slate-800 dark:text-gray-200">Detalhamento Semanal</span>
+          </div>
+          <div className="divide-y divide-slate-50 dark:divide-gray-800">
+            <div className="grid grid-cols-5 px-5 py-2 text-[10px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wide">
+              <div className="col-span-2">Semana</div>
+              <div className="text-right">Entradas</div>
+              <div className="text-right">Saídas</div>
+              <div className="text-right">Saldo Acum.</div>
+            </div>
+            {active.data.map((row, i) => (
+              <div key={i} className={cn('grid grid-cols-5 px-5 py-2.5 text-sm hover:bg-slate-50 dark:hover:bg-gray-800/40 transition-colors', row.acumulado < 0 && 'bg-red-50/30 dark:bg-red-500/5')}>
+                <div className="col-span-2 text-slate-700 dark:text-gray-300 font-medium">{'name' in row ? row.name : ''}</div>
+                <div className="text-right text-emerald-600 dark:text-emerald-400 tabular-nums">{row.receitas > 0 ? `+${formatCurrency(row.receitas)}` : '—'}</div>
+                <div className="text-right text-red-600 dark:text-red-400 tabular-nums">{row.despesas > 0 ? `-${formatCurrency(row.despesas)}` : '—'}</div>
+                <div className={cn('text-right font-semibold tabular-nums', row.acumulado >= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-orange-600 dark:text-orange-400')}>
+                  {formatCurrency(row.acumulado)}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>
