@@ -53,6 +53,7 @@ import {
   Repeat,
   Scale,
   RotateCcw,
+  Filter,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -232,6 +233,48 @@ export default function FinancialModule() {
   const [txSortField, setTxSortField] = useState('dueDate');
   const [txSortDir, setTxSortDir] = useState<'asc' | 'desc'>('desc');
 
+  // Advanced filters
+  const [txDateFrom, setTxDateFrom] = useState('');
+  const [txDateTo, setTxDateTo] = useState('');
+  const [txCategory, setTxCategory] = useState('');
+  const [txBankAccount, setTxBankAccount] = useState('');
+  const [txPaymentMethod, setTxPaymentMethod] = useState('');
+  const [txSectorId, setTxSectorId] = useState('');
+  const [txClientName, setTxClientName] = useState('');
+
+  // Restore saved filter from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('financial_tx_filters');
+      if (saved) {
+        const f = JSON.parse(saved);
+        if (f.dateFrom)      setTxDateFrom(f.dateFrom);
+        if (f.dateTo)        setTxDateTo(f.dateTo);
+        if (f.category)      setTxCategory(f.category);
+        if (f.bankAccount)   setTxBankAccount(f.bankAccount);
+        if (f.paymentMethod) setTxPaymentMethod(f.paymentMethod);
+        if (f.sectorId)      setTxSectorId(f.sectorId);
+        if (f.clientName)    setTxClientName(f.clientName);
+      }
+    } catch { /* ignore */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const saveTxFilters = useCallback(() => {
+    localStorage.setItem('financial_tx_filters', JSON.stringify({
+      dateFrom: txDateFrom, dateTo: txDateTo, category: txCategory,
+      bankAccount: txBankAccount, paymentMethod: txPaymentMethod,
+      sectorId: txSectorId, clientName: txClientName,
+    }));
+    toast.success('Filtro salvo como favorito');
+  }, [txDateFrom, txDateTo, txCategory, txBankAccount, txPaymentMethod, txSectorId, txClientName]);
+
+  const clearTxFilters = useCallback(() => {
+    setTxDateFrom(''); setTxDateTo(''); setTxCategory('');
+    setTxBankAccount(''); setTxPaymentMethod(''); setTxSectorId(''); setTxClientName('');
+    localStorage.removeItem('financial_tx_filters');
+  }, []);
+
   // ---- Firestore Queries ----
   const { data: transactions = [], isLoading: isLoadingTransactions } = useTanstackQuery({
     queryKey: ['transactions', business?.id],
@@ -308,14 +351,25 @@ export default function FinancialModule() {
     return { receitas, despesas, lucro, aReceber, aPagar, totalContas };
   }, [transactions, bankAccounts]);
 
+  // Derive unique categories from transactions for the filter dropdown
+  const txAvailableCategories = useMemo(() => {
+    const cats = new Set<string>();
+    transactions.forEach(t => { if (t.category) cats.add(t.category); });
+    return Array.from(cats).sort();
+  }, [transactions]);
+
   const filteredTransactions = useMemo(() => {
     let filtered = [...transactions];
+
+    // Tab quick-filter
     switch (txFilterTab) {
       case 'receitas': filtered = filtered.filter((t) => t.type === 'receita'); break;
       case 'despesas': filtered = filtered.filter((t) => t.type === 'despesa'); break;
       case 'pendentes': filtered = filtered.filter((t) => t.status === 'pendente'); break;
       case 'atrasadas': filtered = filtered.filter((t) => t.status === 'atrasado'); break;
     }
+
+    // Text search
     if (txSearch) {
       const q = txSearch.toLowerCase();
       filtered = filtered.filter((t) =>
@@ -324,6 +378,18 @@ export default function FinancialModule() {
         (t.clientName && t.clientName.toLowerCase().includes(q))
       );
     }
+    // Advanced filters (AND logic — all active filters must match)
+    if (txDateFrom)       filtered = filtered.filter(t => (t.dueDate || t.paymentDate || '') >= txDateFrom);
+    if (txDateTo)         filtered = filtered.filter(t => (t.dueDate || t.paymentDate || '') <= txDateTo);
+    if (txCategory)       filtered = filtered.filter(t => t.category === txCategory);
+    if (txBankAccount)    filtered = filtered.filter(t => t.bankAccountId === txBankAccount);
+    if (txPaymentMethod)  filtered = filtered.filter(t => t.paymentMethod === txPaymentMethod);
+    if (txSectorId)       filtered = filtered.filter(t => t.sectorId === txSectorId);
+    if (txClientName) {
+      const cq = txClientName.toLowerCase();
+      filtered = filtered.filter(t => (t.clientName || '').toLowerCase().includes(cq));
+    }
+
     filtered.sort((a, b) => {
       const aVal = (a as unknown as Record<string, unknown>)[txSortField];
       const bVal = (b as unknown as Record<string, unknown>)[txSortField];
@@ -332,7 +398,7 @@ export default function FinancialModule() {
       return 0;
     });
     return filtered;
-  }, [transactions, txFilterTab, txSearch, txSortField, txSortDir]);
+  }, [transactions, txFilterTab, txSearch, txDateFrom, txDateTo, txCategory, txBankAccount, txPaymentMethod, txSectorId, txClientName, txSortField, txSortDir]);
 
   // Monthly data for charts
   const monthlyData = useMemo(() => {
@@ -888,6 +954,18 @@ export default function FinancialModule() {
                 onDelete={(id) => setShowDeleteConfirm(id)}
                 getStatusChipColor={getStatusChipColor}
                 statusLabel={statusLabel}
+                // Advanced filters
+                dateFrom={txDateFrom}    onDateFromChange={setTxDateFrom}
+                dateTo={txDateTo}        onDateToChange={setTxDateTo}
+                category={txCategory}   onCategoryChange={setTxCategory}
+                bankAccount={txBankAccount} onBankAccountChange={setTxBankAccount}
+                paymentMethod={txPaymentMethod} onPaymentMethodChange={setTxPaymentMethod}
+                sectorId={txSectorId}   onSectorIdChange={setTxSectorId}
+                clientName={txClientName} onClientNameChange={setTxClientName}
+                availableCategories={txAvailableCategories}
+                bankAccounts={bankAccounts}
+                onSaveFilters={saveTxFilters}
+                onClearFilters={clearTxFilters}
               />
             )}
 
@@ -2181,21 +2259,16 @@ function AuditLogView({ businessId }: { businessId?: string }) {
 }
 
 function TransactionsContent({
-  transactions,
-  allTransactions,
-  filterTab,
-  onFilterChange,
-  search,
-  onSearchChange,
-  sortField,
-  sortDir,
-  onSort,
-  onMarkPaid,
-  onRevertPaid,
-  onEdit,
-  onDelete,
-  getStatusChipColor,
-  statusLabel,
+  transactions, allTransactions, filterTab, onFilterChange,
+  search, onSearchChange, sortField, sortDir, onSort,
+  onMarkPaid, onRevertPaid, onEdit, onDelete,
+  getStatusChipColor, statusLabel,
+  dateFrom, onDateFromChange, dateTo, onDateToChange,
+  category, onCategoryChange, bankAccount, onBankAccountChange,
+  paymentMethod, onPaymentMethodChange, sectorId, onSectorIdChange,
+  clientName, onClientNameChange,
+  availableCategories, bankAccounts,
+  onSaveFilters, onClearFilters,
 }: {
   transactions: Transaction[];
   allTransactions: Transaction[];
@@ -2212,8 +2285,22 @@ function TransactionsContent({
   onDelete: (id: string) => void;
   getStatusChipColor: (s: TransactionStatus) => { bg: string; text: string; border: string };
   statusLabel: (s: TransactionStatus) => string;
+  dateFrom: string; onDateFromChange: (v: string) => void;
+  dateTo: string;   onDateToChange:   (v: string) => void;
+  category: string; onCategoryChange: (v: string) => void;
+  bankAccount: string; onBankAccountChange: (v: string) => void;
+  paymentMethod: string; onPaymentMethodChange: (v: string) => void;
+  sectorId: string; onSectorIdChange: (v: string) => void;
+  clientName: string; onClientNameChange: (v: string) => void;
+  availableCategories: string[];
+  bankAccounts: import('@/lib/types').BankAccount[];
+  onSaveFilters: () => void;
+  onClearFilters: () => void;
 }) {
   const { t } = useTranslation();
+  const { sectors } = useAuth();
+  const [showFilters, setShowFilters] = useState(false);
+
   const filterTabs = [
     { key: 'todas', label: t('financial.txFilter.all', 'Todas'), count: allTransactions.length },
     { key: 'receitas', label: t('financial.txFilter.income', 'Receitas'), count: allTransactions.filter((tx) => tx.type === 'receita').length },
@@ -2221,6 +2308,11 @@ function TransactionsContent({
     { key: 'pendentes', label: t('financial.txFilter.pending', 'Pendentes'), count: allTransactions.filter((tx) => tx.status === 'pendente').length },
     { key: 'atrasadas', label: t('financial.txFilter.overdue', 'Atrasadas'), count: allTransactions.filter((tx) => tx.status === 'atrasado').length },
   ];
+
+  const activeFilterCount = [dateFrom, dateTo, category, bankAccount, paymentMethod, sectorId, clientName].filter(Boolean).length;
+
+  const inputCls = 'w-full px-3 py-1.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-slate-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400 transition-all';
+  const labelCls = 'block text-[10px] font-semibold uppercase tracking-wide text-slate-400 dark:text-gray-500 mb-1';
 
   return (
     <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl">
@@ -2249,9 +2341,128 @@ function TransactionsContent({
             >
               <Download size={13} /> PDF
             </button>
+            {/* Advanced filters toggle */}
+            <button
+              onClick={() => setShowFilters(v => !v)}
+              className={cn(
+                'flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border transition-colors',
+                showFilters || activeFilterCount > 0
+                  ? 'border-red-400 bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400'
+                  : 'border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-white/[0.04]'
+              )}
+            >
+              <Filter size={13} />
+              Filtros
+              {activeFilterCount > 0 && (
+                <span className="flex items-center justify-center w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-bold">{activeFilterCount}</span>
+              )}
+            </button>
           </div>
         </div>
-        <div className="flex gap-1 overflow-x-auto">
+
+        {/* ── Advanced filter panel ── */}
+        <AnimatePresence>
+          {showFilters && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              className="overflow-hidden"
+            >
+              <div className="mt-3 p-4 bg-slate-50 dark:bg-gray-800/40 rounded-xl border border-slate-200 dark:border-gray-700 space-y-3">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  {/* Date range */}
+                  <div>
+                    <label className={labelCls}>De</label>
+                    <input type="date" value={dateFrom} onChange={e => onDateFromChange(e.target.value)} className={inputCls} />
+                  </div>
+                  <div>
+                    <label className={labelCls}>Até</label>
+                    <input type="date" value={dateTo} onChange={e => onDateToChange(e.target.value)} className={inputCls} />
+                  </div>
+
+                  {/* Category */}
+                  <div>
+                    <label className={labelCls}>Categoria</label>
+                    <select value={category} onChange={e => onCategoryChange(e.target.value)} className={inputCls}>
+                      <option value="">Todas</option>
+                      {availableCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+
+                  {/* Bank account */}
+                  <div>
+                    <label className={labelCls}>Conta Bancária</label>
+                    <select value={bankAccount} onChange={e => onBankAccountChange(e.target.value)} className={inputCls}>
+                      <option value="">Todas</option>
+                      {bankAccounts.filter(a => a.isActive).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                    </select>
+                  </div>
+
+                  {/* Payment method */}
+                  <div>
+                    <label className={labelCls}>Forma de Pagamento</label>
+                    <select value={paymentMethod} onChange={e => onPaymentMethodChange(e.target.value)} className={inputCls}>
+                      <option value="">Todas</option>
+                      <option value="dinheiro">Dinheiro</option>
+                      <option value="pix">PIX</option>
+                      <option value="credito">Cartão de Crédito</option>
+                      <option value="debito">Cartão de Débito</option>
+                      <option value="boleto">Boleto</option>
+                      <option value="creditoLoja">Crédito em Loja</option>
+                      <option value="outros">Outros</option>
+                    </select>
+                  </div>
+
+                  {/* Sector */}
+                  <div>
+                    <label className={labelCls}>Setor</label>
+                    <select value={sectorId} onChange={e => onSectorIdChange(e.target.value)} className={inputCls}>
+                      <option value="">Todos</option>
+                      {sectors.filter(s => s.isActive).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  </div>
+
+                  {/* Client */}
+                  <div>
+                    <label className={labelCls}>Cliente</label>
+                    <input
+                      type="text"
+                      value={clientName}
+                      onChange={e => onClientNameChange(e.target.value)}
+                      placeholder="Nome do cliente..."
+                      className={inputCls}
+                    />
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex items-end gap-2">
+                    <button
+                      onClick={onClearFilters}
+                      className="flex-1 px-3 py-1.5 rounded-xl text-xs font-medium border border-slate-200 dark:border-gray-700 text-slate-500 dark:text-gray-400 hover:bg-white dark:hover:bg-gray-900 transition-colors"
+                    >
+                      Limpar
+                    </button>
+                    <button
+                      onClick={onSaveFilters}
+                      className="flex-1 px-3 py-1.5 rounded-xl text-xs font-medium bg-red-600 hover:bg-red-700 text-white transition-colors"
+                    >
+                      Salvar
+                    </button>
+                  </div>
+                </div>
+
+                {activeFilterCount > 0 && (
+                  <p className="text-[11px] text-slate-500 dark:text-gray-400">
+                    {activeFilterCount} filtro{activeFilterCount > 1 ? 's' : ''} ativo{activeFilterCount > 1 ? 's' : ''} — mostrando {transactions.length} de {allTransactions.length} transações
+                  </p>
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <div className="flex gap-1 overflow-x-auto mt-3">
           {filterTabs.map((tab) => (
             <button key={tab.key} onClick={() => onFilterChange(tab.key as 'todas' | 'receitas' | 'despesas' | 'pendentes' | 'atrasadas')}
               className={cn('flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all duration-200',
