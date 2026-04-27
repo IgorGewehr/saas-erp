@@ -364,14 +364,23 @@ async function sendToContact(business: Business & { id: string }, appt: Appointm
 
 // ─── Recurring transaction generation ───────────────────────────────────────
 
-function advanceDate(dateStr: string, frequency: string): string {
+function advanceDate(dateStr: string, frequency: string, dayOfMonth?: number): string {
   const d = new Date(dateStr + 'T00:00:00');
   switch (frequency) {
     case 'weekly':    d.setDate(d.getDate() + 7); break;
     case 'biweekly':  d.setDate(d.getDate() + 14); break;
-    case 'monthly':   d.setMonth(d.getMonth() + 1); break;
-    case 'quarterly': d.setMonth(d.getMonth() + 3); break;
-    case 'yearly':    d.setFullYear(d.getFullYear() + 1); break;
+    case 'monthly':   
+      d.setMonth(d.getMonth() + 1); 
+      if (dayOfMonth) d.setDate(dayOfMonth);
+      break;
+    case 'quarterly': 
+      d.setMonth(d.getMonth() + 3); 
+      if (dayOfMonth) d.setDate(dayOfMonth);
+      break;
+    case 'yearly':    
+      d.setFullYear(d.getFullYear() + 1); 
+      if (dayOfMonth) d.setDate(dayOfMonth);
+      break;
   }
   return d.toISOString().slice(0, 10);
 }
@@ -399,7 +408,7 @@ async function generateRecurringTransactions(): Promise<number> {
 
     try {
       const now = new Date().toISOString();
-      const newNextDue = advanceDate(rec.nextDueDate, rec.frequency);
+      const newNextDue = advanceDate(rec.nextDueDate, rec.frequency, rec.dayOfMonth);
 
       // Create new transaction copy
       const { recurrence: _r, ...baseTx } = tx;
