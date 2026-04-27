@@ -670,6 +670,19 @@ export interface Transaction {
   updatedAt: string;
 }
 
+// ---- Budget (Orçamento por categoria/mês) ----
+export interface Budget {
+  id: string;
+  businessId: string;
+  year: number;
+  month: number;      // 1-12
+  category: string;
+  type: 'receita' | 'despesa';
+  amount: number;     // meta orçada
+  createdAt: string;
+  updatedAt: string;
+}
+
 // ---- Audit log (alterações em entidades financeiras) ----
 export type AuditAction = 'create' | 'update' | 'delete' | 'pay' | 'cancel' | 'restore';
 
