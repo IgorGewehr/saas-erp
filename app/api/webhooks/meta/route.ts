@@ -1097,15 +1097,36 @@ async function fetchSenderProfile(
       }
     }
 
+    // Resolve profile picture URL.
+    // Instagram IGSIDs: profile_pic is a valid inline field.
+    // Facebook PSIDs: use the /picture edge (redirect=false) — the industry-standard approach.
+    //   The edge returns { data: { url, is_silhouette } }. is_silhouette=true means no real photo.
+    let rawPic: string | undefined = data.profile_pic || data.picture?.data?.url || undefined;
+
+    if (channel !== 'instagram' && !rawPic) {
+      try {
+        const picRes = await fetch(
+          `https://graph.facebook.com/v21.0/${senderId}/picture?redirect=false&type=large&access_token=${pageAccessToken}`,
+          { signal: AbortSignal.timeout(5000) },
+        );
+        if (picRes.ok) {
+          const picData = await picRes.json();
+          if (picData?.data?.url && !picData.data.is_silhouette) {
+            rawPic = picData.data.url;
+          }
+        }
+      } catch {
+        // Non-fatal — profile without picture is acceptable
+      }
+    }
+
     // Persist the ephemeral Meta CDN URL to Firebase Storage so it never expires.
-    // profile_pic may be absent for Instagram (requires instagram_basic permission).
-    const rawPic = data.profile_pic || data.picture?.data?.url || undefined;
     const profilePic = rawPic
       ? await persistProfilePic(rawPic, senderId)
       : undefined;
 
     if (!rawPic) {
-      console.log(`[Profile] No profile_pic returned for ${channel} sender=${senderId} (permission or private account)`);
+      console.log(`[Profile] No profile picture for ${channel} sender=${senderId} (private account or silhouette)`);
     }
 
     return { name, profilePic };

@@ -328,7 +328,7 @@ export async function POST(req: NextRequest) {
         const isBaileys = waConfig && 'connectedVia' in waConfig && waConfig.connectedVia === 'baileys';
 
         if (isBaileys) {
-          result = await sendWhatsAppBaileys(businessId, recipientId, content, conversationId);
+          result = await sendWhatsAppBaileys(businessId, recipientId, content, conversationId, mediaOpts);
         } else {
           result = await sendWhatsApp(channels, recipientId, content, {
             type: type || 'text',
@@ -344,6 +344,14 @@ export async function POST(req: NextRequest) {
         result = await sendFacebookMessenger(channels, recipientId, content, mediaOpts);
         break;
       case 'instagram': {
+        // Instagram DM API only supports image and video attachments for outbound messages.
+        // Audio and document types are not accepted by the Messaging API and will be rejected.
+        if (mediaOpts && (mediaOpts.mediaType === 'audio' || mediaOpts.mediaType === 'document')) {
+          return NextResponse.json({
+            error: `Instagram não suporta envio de ${mediaOpts.mediaType === 'audio' ? 'áudio' : 'documentos'} via API. Apenas imagens e vídeos podem ser enviados pelo Instagram.`,
+            code: 'unsupported_media_type',
+          }, { status: 400 });
+        }
         const igMediaOpts = await prepareMediaForInstagram(mediaOpts, businessId);
         result = await sendInstagram(channels, recipientId, content, igMediaOpts);
         break;
@@ -404,6 +412,7 @@ async function sendWhatsAppBaileys(
   recipientId: string,
   content: string,
   conversationId: string,
+  mediaOpts?: MediaOptions,
 ): Promise<{ externalMessageId: string }> {
   const session = sessions.get(businessId);
 
@@ -490,9 +499,40 @@ async function sendWhatsAppBaileys(
     console.warn('[Baileys Send] onWhatsApp falhou, tentando envio direto:', (err as Error).message);
   }
 
+  // ── Build message content ──
+  let messageContent: Record<string, unknown>;
+
+  if (mediaOpts) {
+    // Download the file from Firebase Storage so Baileys can stream it directly
+    const mediaRes = await fetch(mediaOpts.mediaUrl, { signal: AbortSignal.timeout(30_000) });
+    if (!mediaRes.ok) throw new Error(`[Baileys] Falha ao baixar mídia: HTTP ${mediaRes.status}`);
+    const mediaBuffer = Buffer.from(await mediaRes.arrayBuffer());
+    const mimeType = mediaRes.headers.get('content-type') || 'application/octet-stream';
+
+    switch (mediaOpts.mediaType) {
+      case 'audio':
+        // ptt=false → regular audio file (not voice note)
+        messageContent = { audio: mediaBuffer, mimetype: mimeType || 'audio/mp4', ptt: false };
+        break;
+      case 'image':
+        messageContent = { image: mediaBuffer, caption: content || undefined };
+        break;
+      case 'video':
+        messageContent = { video: mediaBuffer, caption: content || undefined };
+        break;
+      case 'document':
+        messageContent = { document: mediaBuffer, mimetype: mimeType, fileName: content || 'document' };
+        break;
+      default:
+        messageContent = { text: content };
+    }
+  } else {
+    messageContent = { text: content };
+  }
+
   // ── Send message ──
   try {
-    const sent = await session.sock.sendMessage(targetJid, { text: content });
+    const sent = await session.sock.sendMessage(targetJid, messageContent);
     const externalMessageId = sent?.key?.id || `baileys_${Date.now()}`;
 
     return { externalMessageId };
@@ -501,6 +541,7 @@ async function sendWhatsAppBaileys(
     const errorStack = err instanceof Error ? err.stack?.split('\n').slice(0, 3).join(' | ') : '';
     console.error('[Baileys Send] Erro ao enviar mensagem:', {
       jid: targetJid,
+      mediaType: mediaOpts?.mediaType,
       error: errorMsg,
       stack: errorStack,
     });

@@ -2556,6 +2556,27 @@ export default function ConversasModule() {
       alert(t('conversations.fileTooLarge', 'Arquivo muito grande. Máximo 16MB.'));
       return;
     }
+
+    // Validate audio format for WhatsApp and Instagram channels
+    const channel = selectedConversation?.channel;
+    if (file.type.startsWith('audio/')) {
+      const WA_SUPPORTED_AUDIO = ['audio/aac', 'audio/mp4', 'audio/mpeg', 'audio/amr', 'audio/ogg', 'audio/opus'];
+      if (channel === 'whatsapp' && !WA_SUPPORTED_AUDIO.includes(file.type)) {
+        alert(`Formato de áudio não suportado pelo WhatsApp (${file.type}).\nUse MP3, M4A, AAC, AMR ou OGG/Opus.`);
+        return;
+      }
+      if (channel === 'instagram') {
+        alert('Instagram não suporta envio de áudio via API. Use imagens ou vídeos.');
+        return;
+      }
+    }
+    if (file.type === 'application/pdf' || file.type.startsWith('application/') || file.type === 'text/plain') {
+      if (channel === 'instagram') {
+        alert('Instagram não suporta envio de documentos via API. Use imagens ou vídeos.');
+        return;
+      }
+    }
+
     setAttachment(file);
     // Reset input so the same file can be re-selected
     e.target.value = '';
@@ -2568,9 +2589,9 @@ export default function ConversasModule() {
   const sendMediaMessage = useCallback(async (file: File) => {
     if (!selectedConversation || !business?.id || !user) return;
 
-    // Upload to Firebase Storage
+    // Upload to Firebase Storage with explicit content-type so Meta APIs receive the correct MIME.
     const storageRef = ref(storage, `conversations/${business.id}/${selectedConversation.id}/${Date.now()}_${file.name}`);
-    await uploadBytes(storageRef, file);
+    await uploadBytes(storageRef, file, { contentType: file.type || 'application/octet-stream' });
     const mediaUrl = await getDownloadURL(storageRef);
 
     const mediaType: 'image' | 'video' | 'audio' | 'document' = file.type.startsWith('image/') ? 'image'
