@@ -394,7 +394,7 @@ export default function FinancialModule() {
       return ids;
     },
     enabled: !!business?.id,
-    staleTime: 2 * 60 * 1000,
+    staleTime: 30 * 1000,
   });
 
   const isTransactionLocked = useCallback((tx: Transaction): boolean => {
@@ -691,8 +691,9 @@ export default function FinancialModule() {
       // Excluir arquivos removidos
       for (const att of formAttachmentsToDelete) {
         try {
-          const fileRef = ref(storage, att.url);
-          await deleteObject(fileRef);
+          // Use stored path (not download URL) — ref() doesn't accept HTTPS URLs
+          const fileRef = att.path ? ref(storage, att.path) : null;
+          if (fileRef) await deleteObject(fileRef);
         } catch (e) {
           console.error('Falha ao excluir anexo do storage:', e);
         }
@@ -711,6 +712,7 @@ export default function FinancialModule() {
             id: fileId,
             name: file.name,
             url,
+            path: storageRef.fullPath,
             size: file.size,
             type: file.type,
             createdAt: now,
@@ -1687,6 +1689,7 @@ function OverviewContent({
   const [dashboardPeriod, setDashboardPeriod] = useState<DashboardPeriod>('30d');
   const [agingType, setAgingType] = useState<'ambos' | 'receber' | 'pagar'>('ambos');
   const [expandedAgingClient, setExpandedAgingClient] = useState<string | null>(null);
+  useEffect(() => { setExpandedAgingClient(null); }, [agingType]);
 
   // Period-filtered transactions for KPI + period-specific analytics
   const periodDays: Record<DashboardPeriod, number> = { '30d': 30, '3m': 90, '6m': 180, '12m': 365 };
@@ -1920,7 +1923,7 @@ function OverviewContent({
 
         // Ranking por cliente
         const clientMap = new Map<string, { total: number; count: number; oldest: string; txIds: string[] }>();
-        pending.filter(tx => tx.clientName).forEach(tx => {
+        pending.filter(tx => tx.clientName?.trim() && tx.dueDate).forEach(tx => {
           const key = tx.clientName!;
           const entry = clientMap.get(key) ?? { total: 0, count: 0, oldest: tx.dueDate!, txIds: [] };
           entry.total += tx.amount;
@@ -2012,9 +2015,11 @@ function OverviewContent({
                               {showBalances ? formatCurrency(data.total) : '****'}
                             </span>
                             <button
-                              onClick={(e) => {
+                              onClick={async (e) => {
                                 e.stopPropagation();
-                                data.txIds.forEach(id => onMarkPaid(id));
+                                const results = await Promise.allSettled(data.txIds.map(id => onMarkPaid(id)));
+                                const failed = results.filter(r => r.status === 'rejected').length;
+                                if (failed > 0) toast.error(`${failed} transação(ões) não foram quitadas. Tente novamente.`);
                               }}
                               className="px-2.5 py-1 text-[11px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 border border-emerald-200/60 dark:border-emerald-500/20 rounded-lg transition-colors"
                             >
@@ -4440,11 +4445,11 @@ function RecurringContent({
     });
   }, [recurrences]);
 
-  const now = new Date();
-  const todayStr = now.toISOString().slice(0, 10);
+  const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   // Calcular métricas
   const kpis = useMemo(() => {
+    const now = new Date();
     const in30Days = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     let receitas30 = 0;
     let despesas30 = 0;
@@ -4455,7 +4460,7 @@ function RecurringContent({
       }
     }
     return { active: recurrences.length, receitas30, despesas30, saldo30: receitas30 - despesas30 };
-  }, [recurrences, now]);
+  }, [recurrences]);
 
   const getDaysLabel = (dateStr?: string): string => {
     if (!dateStr) return '—';

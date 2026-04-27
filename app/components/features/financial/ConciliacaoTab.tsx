@@ -172,14 +172,15 @@ export default function ConciliacaoTab({ businessId, transactions, bankAccounts 
     setIsSaving(true);
     try {
       const now = new Date().toISOString();
-      const batch = writeBatch(db);
       const importRef = doc(collection(db, 'bankStatementImports'));
 
-      const matched  = items.filter(i => i.status === 'matched').length;
-      const pending  = items.filter(i => i.status === 'pending' || i.status === 'review').length;
+      const matched   = items.filter(i => i.status === 'matched').length;
+      const pending   = items.filter(i => i.status === 'pending' || i.status === 'review').length;
       const divergent = items.filter(i => i.status === 'divergent').length;
 
-      batch.set(importRef, {
+      // First batch: always write the import summary doc
+      const firstBatch = writeBatch(db);
+      firstBatch.set(importRef, {
         businessId,
         bankAccountId: selectedBankId || null,
         fileName,
@@ -190,27 +191,34 @@ export default function ConciliacaoTab({ businessId, transactions, bankAccounts 
         importedBy: user.uid,
         config: { amountTolerance, dateTolerance },
       });
+      await firstBatch.commit();
 
-      for (const item of items) {
-        if (item.status === 'ignored') continue;
-        const itemRef = doc(collection(db, 'reconciliationItems'));
-        batch.set(itemRef, {
-          businessId,
-          bankAccountId: selectedBankId || null,
-          importId: importRef.id,
-          statementDate: item.date,
-          statementDescription: item.description,
-          statementAmount: item.amount,
-          statementReference: item.reference || null,
-          transactionId: item.matchedTxId || null,
-          status: item.status === 'review' ? 'pending' : item.status,
-          matchConfidence: item.confidence || null,
-          ...(item.status === 'matched' ? { reconciledBy: user.uid, reconciledAt: now } : {}),
-          createdAt: now,
-        });
+      // Chunk remaining item docs into batches of 499 (Firestore hard limit is 500)
+      const toWrite = items.filter(i => i.status !== 'ignored');
+      const CHUNK = 499;
+      for (let offset = 0; offset < toWrite.length; offset += CHUNK) {
+        const chunk = toWrite.slice(offset, offset + CHUNK);
+        const itemBatch = writeBatch(db);
+        for (const item of chunk) {
+          const itemRef = doc(collection(db, 'reconciliationItems'));
+          itemBatch.set(itemRef, {
+            businessId,
+            bankAccountId: selectedBankId || null,
+            importId: importRef.id,
+            statementDate: item.date,
+            statementDescription: item.description,
+            statementAmount: item.amount,
+            statementReference: item.reference || null,
+            transactionId: item.matchedTxId || null,
+            status: item.status === 'review' ? 'pending' : item.status,
+            matchConfidence: item.confidence || null,
+            ...(item.status === 'matched' ? { reconciledBy: user.uid, reconciledAt: now } : {}),
+            createdAt: now,
+          });
+        }
+        await itemBatch.commit();
       }
 
-      await batch.commit();
       setSaved(true);
     } catch (err) {
       console.error('Save error:', err);
