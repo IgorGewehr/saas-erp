@@ -88,8 +88,10 @@ import {
   exportDRECSV,
   exportDREPDF,
   exportCashFlowCSV,
+  exportDRESectorCSV,
   type DREData,
   type CashFlowRow,
+  type SectorDRERow,
 } from '@/lib/utils/financial-export';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
 import type {
@@ -1358,6 +1360,8 @@ export default function FinancialModule() {
 // TAB: VISAO GERAL
 // ==========================================
 
+type DashboardPeriod = '30d' | '3m' | '6m' | '12m';
+
 function OverviewContent({
   metrics,
   showBalances,
@@ -1387,21 +1391,125 @@ function OverviewContent({
 }) {
   const { t } = useTranslation();
   const hiddenValue = '******';
+  const [dashboardPeriod, setDashboardPeriod] = useState<DashboardPeriod>('30d');
+
+  // Period-filtered transactions for KPI + period-specific analytics
+  const periodDays: Record<DashboardPeriod, number> = { '30d': 30, '3m': 90, '6m': 180, '12m': 365 };
+  const days = periodDays[dashboardPeriod];
+
+  const { periodTx, prevTx } = useMemo(() => {
+    const now = Date.now();
+    const ms = days * 86400000;
+    const cutoffCurrent = now - ms;
+    const cutoffPrev = now - ms * 2;
+    const ref = (t: Transaction) => {
+      const d = t.paymentDate || t.dueDate;
+      return d ? new Date(d).getTime() : 0;
+    };
+    return {
+      periodTx: transactions.filter(t => ref(t) >= cutoffCurrent),
+      prevTx: transactions.filter(t => ref(t) >= cutoffPrev && ref(t) < cutoffCurrent),
+    };
+  }, [transactions, days]);
+
+  const periodMetrics = useMemo(() => {
+    const paid = (arr: Transaction[], type: 'receita' | 'despesa') =>
+      arr.filter(t => t.type === type && t.status === 'pago').reduce((s, t) => s + t.amount, 0);
+    const pending = (arr: Transaction[], type: 'receita' | 'despesa') =>
+      arr.filter(t => t.type === type && (t.status === 'pendente' || t.status === 'atrasado')).reduce((s, t) => s + t.amount, 0);
+    const r = paid(periodTx, 'receita');
+    const d = paid(periodTx, 'despesa');
+    const pr = paid(prevTx, 'receita');
+    const pd = paid(prevTx, 'despesa');
+    const delta = (curr: number, prev: number) => prev === 0 ? null : ((curr - prev) / prev) * 100;
+    return {
+      receitas: r, despesas: d, lucro: r - d,
+      aReceber: pending(periodTx, 'receita'),
+      aPagar: pending(periodTx, 'despesa'),
+      deltaReceitas: delta(r, pr),
+      deltaDespesas: delta(d, pd),
+      deltaLucro: delta(r - d, pr - pd),
+    };
+  }, [periodTx, prevTx]);
+
+  // Waterfall chart data
+  const waterfallData = useMemo(() => {
+    const r = periodMetrics.receitas;
+    const d = periodMetrics.despesas;
+    const res = r - d;
+    return [
+      { name: 'Receitas', bottom: 0, value: r, fill: '#10b981' },
+      { name: 'Despesas', bottom: Math.max(0, res), value: d, fill: '#ef4444' },
+      { name: 'Resultado', bottom: 0, value: Math.max(0, res), fill: res >= 0 ? '#3b82f6' : '#f97316' },
+    ];
+  }, [periodMetrics]);
+
+  // Top 5 expense categories (period-filtered)
+  const topExpenseCategories = useMemo(() => {
+    const cats: Record<string, number> = {};
+    periodTx.filter(t => t.type === 'despesa' && t.status === 'pago' && t.category)
+      .forEach(t => { cats[t.category!] = (cats[t.category!] || 0) + t.amount; });
+    const total = Object.values(cats).reduce((s, v) => s + v, 0);
+    const colors = ['#ef4444', '#f97316', '#f59e0b', '#8b5cf6', '#6366f1'];
+    return Object.entries(cats)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 5)
+      .map(([name, amount], i) => ({ name, amount, color: colors[i], pct: total > 0 ? (amount / total) * 100 : 0 }));
+  }, [periodTx]);
+
+  // Top 5 clients by revenue (period-filtered)
+  const topClients = useMemo(() => {
+    const clients: Record<string, number> = {};
+    periodTx.filter(t => t.type === 'receita' && t.status === 'pago' && t.clientName)
+      .forEach(t => { clients[t.clientName!] = (clients[t.clientName!] || 0) + t.amount; });
+    const max = Math.max(...Object.values(clients), 0);
+    return Object.entries(clients)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 5)
+      .map(([name, amount]) => ({ name, amount, pct: max > 0 ? (amount / max) * 100 : 0 }));
+  }, [periodTx]);
 
   const overdueCount = transactions.filter(t =>
     t.status === 'pendente' && t.dueDate && new Date(t.dueDate + 'T00:00:00') < new Date()
   ).length;
 
+  const PERIOD_LABELS: Record<DashboardPeriod, string> = { '30d': 'Últ. 30 dias', '3m': 'Últ. 3 meses', '6m': 'Últ. 6 meses', '12m': 'Últ. 12 meses' };
+
+  function DeltaBadge({ delta }: { delta: number | null }) {
+    if (delta === null) return null;
+    const isUp = delta >= 0;
+    return (
+      <span className={cn('inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full', isUp ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400')}>
+        {isUp ? <TrendingUp size={9} /> : <TrendingDown size={9} />}
+        {Math.abs(delta).toFixed(1)}%
+      </span>
+    );
+  }
+
   return (
     <div className="space-y-6">
+      {/* Period selector */}
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-slate-400 dark:text-gray-500 font-medium">Período:</span>
+        <div className="flex items-center gap-1 p-1 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl">
+          {(['30d', '3m', '6m', '12m'] as DashboardPeriod[]).map(p => (
+            <button key={p} onClick={() => setDashboardPeriod(p)}
+              className={cn('px-3 py-1 rounded-lg text-xs font-medium transition-all',
+                dashboardPeriod === p ? 'bg-red-600 text-white shadow-sm' : 'text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800'
+              )}
+            >{PERIOD_LABELS[p]}</button>
+          ))}
+        </div>
+      </div>
+
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
         {[
-          { label: t('financial.kpi.paidIncome', 'Receitas Pagas'), value: metrics.receitas, icon: <TrendingUp size={18} />, color: 'emerald' },
-          { label: t('financial.kpi.paidExpenses', 'Despesas Pagas'), value: metrics.despesas, icon: <TrendingDown size={18} />, color: 'red' },
-          { label: t('financial.kpi.result', 'Resultado'), value: metrics.lucro, icon: <DollarSign size={18} />, color: metrics.lucro >= 0 ? 'blue' : 'red' },
-          { label: t('financial.kpi.toReceive', 'A Receber'), value: metrics.aReceber, icon: <Clock size={18} />, color: 'amber' },
-          { label: t('financial.kpi.toPay', 'A Pagar'), value: metrics.aPagar, icon: <AlertTriangle size={18} />, color: 'orange' },
+          { label: t('financial.kpi.paidIncome', 'Receitas Pagas'), value: periodMetrics.receitas, delta: periodMetrics.deltaReceitas, icon: <TrendingUp size={18} />, color: 'emerald' },
+          { label: t('financial.kpi.paidExpenses', 'Despesas Pagas'), value: periodMetrics.despesas, delta: periodMetrics.deltaDespesas, icon: <TrendingDown size={18} />, color: 'red' },
+          { label: t('financial.kpi.result', 'Resultado'), value: periodMetrics.lucro, delta: periodMetrics.deltaLucro, icon: <DollarSign size={18} />, color: periodMetrics.lucro >= 0 ? 'blue' : 'red' },
+          { label: t('financial.kpi.toReceive', 'A Receber'), value: periodMetrics.aReceber, delta: null, icon: <Clock size={18} />, color: 'amber' },
+          { label: t('financial.kpi.toPay', 'A Pagar'), value: periodMetrics.aPagar, delta: null, icon: <AlertTriangle size={18} />, color: 'orange' },
         ].map((card, i) => {
           const cm: Record<string, { iconBg: string; iconTxt: string; valTxt: string }> = {
             emerald: { iconBg: 'bg-emerald-50 dark:bg-emerald-500/10', iconTxt: 'text-emerald-600 dark:text-emerald-400', valTxt: 'text-emerald-600 dark:text-emerald-400' },
@@ -1417,6 +1525,7 @@ function OverviewContent({
             >
               <div className="flex items-center justify-between mb-3">
                 <div className={cn('w-10 h-10 rounded-xl flex items-center justify-center shadow-sm', c.iconBg, c.iconTxt, 'group-hover:scale-110 transition-transform duration-200')}>{card.icon}</div>
+                <DeltaBadge delta={card.delta ?? null} />
               </div>
               <p className="text-[11px] text-slate-400 dark:text-gray-500 font-medium mb-1 uppercase tracking-wide">{card.label}</p>
               <p className={cn('text-xl font-display font-bold leading-none', c.valTxt)}>
@@ -1597,6 +1706,104 @@ function OverviewContent({
           )}
         </motion.div>
       </div>
+
+      {/* Waterfall + Top 5 Row */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Waterfall chart */}
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.45 }}
+          className="lg:col-span-2 bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-6 hover:shadow-md transition-all"
+        >
+          <div className="mb-4">
+            <h3 className="text-base font-display font-bold text-slate-900 dark:text-gray-100">Resultado do Período</h3>
+            <p className="text-xs text-slate-400 dark:text-gray-500 mt-0.5">Receitas → Despesas → Resultado ({PERIOD_LABELS[dashboardPeriod]})</p>
+          </div>
+          {periodMetrics.receitas > 0 || periodMetrics.despesas > 0 ? (
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={waterfallData} margin={{ top: 8, right: 8, left: 8, bottom: 4 }} barCategoryGap="35%">
+                <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#1E293B' : '#F1F5F9'} vertical={false} />
+                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#94A3B8', fontSize: 13 }} />
+                <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94A3B8', fontSize: 11 }} tickFormatter={fmtChart} />
+                <RechartsTooltip
+                  formatter={(value: number, name: string) => name === 'bottom' ? null : [formatCurrency(value), waterfallData.find(d => d.value === value)?.name ?? '']}
+                  contentStyle={{ background: isDark ? '#1e293b' : '#fff', border: isDark ? '1px solid #374151' : '1px solid #E2E8F0', borderRadius: 10, fontSize: 13 }}
+                />
+                <Bar dataKey="bottom" stackId="wf" fill="transparent" legendType="none" />
+                <Bar dataKey="value" stackId="wf" radius={[6, 6, 0, 0]} barSize={60}>
+                  {waterfallData.map((entry, index) => (
+                    <Cell key={index} fill={entry.fill} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="flex flex-col items-center justify-center h-[220px] text-slate-400 dark:text-gray-500">
+              <BarChart3 size={32} strokeWidth={1.5} />
+              <p className="mt-2 text-sm">Sem dados neste período</p>
+            </div>
+          )}
+        </motion.div>
+
+        {/* Top 5 expense categories */}
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.5 }}
+          className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-5 hover:shadow-md transition-all"
+        >
+          <h3 className="text-sm font-display font-bold text-slate-900 dark:text-gray-100 mb-0.5">Top 5 — Despesas</h3>
+          <p className="text-xs text-slate-400 dark:text-gray-500 mb-4">Por categoria no período</p>
+          {topExpenseCategories.length > 0 ? (
+            <div className="space-y-3">
+              {topExpenseCategories.map((c, i) => (
+                <div key={c.name}>
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] font-bold text-slate-400 dark:text-gray-500 w-4">#{i + 1}</span>
+                      <span className="text-xs font-medium text-slate-700 dark:text-gray-300 truncate max-w-[120px]">{c.name}</span>
+                    </div>
+                    <span className="text-xs font-bold text-slate-800 dark:text-gray-200 tabular-nums">
+                      {showBalances ? formatCurrency(c.amount) : '***'}
+                    </span>
+                  </div>
+                  <div className="h-1.5 rounded-full bg-slate-100 dark:bg-gray-800 overflow-hidden">
+                    <div className="h-full rounded-full transition-all duration-500" style={{ width: `${c.pct}%`, backgroundColor: c.color }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center h-[160px] text-slate-400 dark:text-gray-500">
+              <Receipt size={28} strokeWidth={1.5} />
+              <p className="mt-2 text-xs">Sem despesas no período</p>
+            </div>
+          )}
+        </motion.div>
+      </div>
+
+      {/* Top 5 clients */}
+      {topClients.length > 0 && (
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.55 }}
+          className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-5 hover:shadow-md transition-all"
+        >
+          <h3 className="text-sm font-display font-bold text-slate-900 dark:text-gray-100 mb-0.5">Top 5 — Clientes por Receita</h3>
+          <p className="text-xs text-slate-400 dark:text-gray-500 mb-4">Transações pagas no período</p>
+          <div className="space-y-3">
+            {topClients.map((c, i) => (
+              <div key={c.name} className="flex items-center gap-3">
+                <span className="text-[10px] font-bold text-slate-400 dark:text-gray-500 w-4 flex-shrink-0">#{i + 1}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-medium text-slate-700 dark:text-gray-300 truncate">{c.name}</span>
+                    <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 tabular-nums ml-2 flex-shrink-0">
+                      {showBalances ? formatCurrency(c.amount) : '***'}
+                    </span>
+                  </div>
+                  <div className="h-1.5 rounded-full bg-slate-100 dark:bg-gray-800 overflow-hidden">
+                    <div className="h-full rounded-full bg-emerald-500 transition-all duration-500" style={{ width: `${c.pct}%` }} />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </motion.div>
+      )}
 
       {/* Recent Transactions */}
       <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.5 }}
@@ -2835,6 +3042,7 @@ const DEDUCAO_CATEGORIES = new Set(['Impostos']);
 const FINANCEIRO_RECEITA_CATEGORIES = new Set(['Juros']);
 
 function DREContent({ transactions, businessName }: { transactions: Transaction[]; businessName: string }) {
+  const { sectors } = useAuth();
   const [period, setPeriod] = useState<DrePeriod>('mensal');
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const now = new Date();
@@ -2842,6 +3050,7 @@ function DREContent({ transactions, businessName }: { transactions: Transaction[
   });
   const [selectedYear, setSelectedYear] = useState(() => String(new Date().getFullYear()));
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
+  const [viewMode, setViewMode] = useState<'consolidado' | 'por-setor'>('consolidado');
 
   // Filter transactions by period
   const periodTransactions = useMemo(() => {
@@ -2944,6 +3153,33 @@ function DREContent({ transactions, businessName }: { transactions: Transaction[
       margemLiquida,
     };
   }, [periodTransactions]);
+
+  // Sector DRE computation
+  const sectorDRE = useMemo((): SectorDRERow[] => {
+    const sectorMap = new Map<string, { receitas: number; despesas: number }>();
+
+    // "Sem setor" bucket for unassigned transactions
+    sectorMap.set('__none__', { receitas: 0, despesas: 0 });
+
+    for (const t of periodTransactions) {
+      const key = t.sectorId || '__none__';
+      if (!sectorMap.has(key)) sectorMap.set(key, { receitas: 0, despesas: 0 });
+      const bucket = sectorMap.get(key)!;
+      if (t.type === 'receita') bucket.receitas += t.amount;
+      else bucket.despesas += t.amount;
+    }
+
+    const rows: SectorDRERow[] = [];
+    for (const [key, { receitas, despesas }] of sectorMap.entries()) {
+      if (receitas === 0 && despesas === 0) continue;
+      const sector = sectors.find(s => s.id === key);
+      const sectorName = key === '__none__' ? 'Sem Setor' : (sector?.name ?? key);
+      const resultado = receitas - despesas;
+      const margem = receitas > 0 ? (resultado / receitas) * 100 : 0;
+      rows.push({ sectorName, receitas, despesas, resultado, margem });
+    }
+    return rows.sort((a, b) => b.receitas - a.receitas);
+  }, [periodTransactions, sectors]);
 
   const toggleSection = (key: string) => {
     setExpandedSections(prev => {
@@ -3137,24 +3373,44 @@ function DREContent({ transactions, businessName }: { transactions: Transaction[
               })}
             </select>
           )}
+          {/* View mode toggle */}
+          <div className="flex items-center gap-1 p-1 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl">
+            {(['consolidado', 'por-setor'] as const).map(mode => (
+              <button
+                key={mode}
+                onClick={() => setViewMode(mode)}
+                className={cn(
+                  'px-3 py-1.5 rounded-lg text-xs font-medium transition-all whitespace-nowrap',
+                  viewMode === mode ? 'bg-red-600 text-white shadow-sm' : 'text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800'
+                )}
+              >
+                {mode === 'consolidado' ? 'Consolidado' : 'Por Setor'}
+              </button>
+            ))}
+          </div>
           <motion.button
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
-            onClick={() => exportDRECSV(dre as DREData, periodLabel, businessName)}
+            onClick={() => viewMode === 'por-setor'
+              ? exportDRESectorCSV(sectorDRE, periodLabel, businessName)
+              : exportDRECSV(dre as DREData, periodLabel, businessName)
+            }
             className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl text-sm font-medium text-slate-700 dark:text-gray-300 hover:bg-slate-50 dark:hover:bg-gray-800 transition-all shadow-sm"
           >
             <Download size={15} />
             CSV
           </motion.button>
-          <motion.button
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            onClick={handleExportPDF}
-            className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl text-sm font-medium text-slate-700 dark:text-gray-300 hover:bg-slate-50 dark:hover:bg-gray-800 transition-all shadow-sm"
-          >
-            <Download size={15} />
-            PDF
-          </motion.button>
+          {viewMode === 'consolidado' && (
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={handleExportPDF}
+              className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl text-sm font-medium text-slate-700 dark:text-gray-300 hover:bg-slate-50 dark:hover:bg-gray-800 transition-all shadow-sm"
+            >
+              <Download size={15} />
+              PDF
+            </motion.button>
+          )}
         </div>
       </div>
 
@@ -3175,83 +3431,171 @@ function DREContent({ transactions, businessName }: { transactions: Transaction[
         ))}
       </div>
 
-      {/* DRE Table */}
-      <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl overflow-hidden shadow-sm">
-        <div className="px-4 py-3 border-b border-slate-100 dark:border-gray-800 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <FileSpreadsheet size={16} className="text-red-500" />
-            <span className="text-sm font-semibold text-slate-800 dark:text-gray-200">Estrutura do DRE</span>
-          </div>
-          <button
-            onClick={() => {
-              const allKeys = ['receita', 'deducao', 'cpv', 'opex'];
-              const allExpanded = allKeys.every(k => expandedSections.has(k));
-              setExpandedSections(allExpanded ? new Set() : new Set(allKeys));
-            }}
-            className="text-xs text-red-500 hover:text-red-600 font-medium"
-          >
-            {['receita', 'deducao', 'cpv', 'opex'].every(k => expandedSections.has(k)) ? 'Recolher tudo' : 'Expandir tudo'}
-          </button>
-        </div>
+      {/* Consolidated DRE Table */}
+      <AnimatePresence mode="wait">
+        {viewMode === 'consolidado' ? (
+          <motion.div key="consolidado" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.2 }}>
+            <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl overflow-hidden shadow-sm">
+              <div className="px-4 py-3 border-b border-slate-100 dark:border-gray-800 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <FileSpreadsheet size={16} className="text-red-500" />
+                  <span className="text-sm font-semibold text-slate-800 dark:text-gray-200">Estrutura do DRE</span>
+                </div>
+                <button
+                  onClick={() => {
+                    const allKeys = ['receita', 'deducao', 'cpv', 'opex'];
+                    const allExpanded = allKeys.every(k => expandedSections.has(k));
+                    setExpandedSections(allExpanded ? new Set() : new Set(allKeys));
+                  }}
+                  className="text-xs text-red-500 hover:text-red-600 font-medium"
+                >
+                  {['receita', 'deducao', 'cpv', 'opex'].every(k => expandedSections.has(k)) ? 'Recolher tudo' : 'Expandir tudo'}
+                </button>
+              </div>
 
-        <div className="divide-y-0">
-          <DreRow label="RECEITA BRUTA" value={dre.receitaBruta} isHeader expandKey="receita" items={dre.receitaByCategory} />
-          <DreRow label="Deduções da Receita" value={-dre.totalDeducoes} sign="-" expandKey="deducao" items={dre.deducaoByCategory} />
-          <DreRow label="RECEITA LÍQUIDA" value={dre.receitaLiquida} sign="=" isResult />
+              <div className="divide-y-0">
+                <DreRow label="RECEITA BRUTA" value={dre.receitaBruta} isHeader expandKey="receita" items={dre.receitaByCategory} />
+                <DreRow label="Deduções da Receita" value={-dre.totalDeducoes} sign="-" expandKey="deducao" items={dre.deducaoByCategory} />
+                <DreRow label="RECEITA LÍQUIDA" value={dre.receitaLiquida} sign="=" isResult />
 
-          <div className="h-px bg-slate-200 dark:bg-gray-700 my-0.5" />
+                <div className="h-px bg-slate-200 dark:bg-gray-700 my-0.5" />
 
-          <DreRow label="Custo dos Serviços/Produtos (CPV)" value={-dre.totalCPV} sign="-" expandKey="cpv" items={dre.cpvByCategory} />
-          <DreRow label="LUCRO BRUTO" value={dre.lucroBruto} sign="=" isResult />
+                <DreRow label="Custo dos Serviços/Produtos (CPV)" value={-dre.totalCPV} sign="-" expandKey="cpv" items={dre.cpvByCategory} />
+                <DreRow label="LUCRO BRUTO" value={dre.lucroBruto} sign="=" isResult />
 
-          <div className="h-px bg-slate-200 dark:bg-gray-700 my-0.5" />
+                <div className="h-px bg-slate-200 dark:bg-gray-700 my-0.5" />
 
-          <DreRow label="Despesas Operacionais" value={-dre.totalOpex} sign="-" expandKey="opex" items={dre.opexByCategory} />
-          <DreRow label="RESULTADO OPERACIONAL (EBIT)" value={dre.resultadoOperacional} sign="=" isResult />
+                <DreRow label="Despesas Operacionais" value={-dre.totalOpex} sign="-" expandKey="opex" items={dre.opexByCategory} />
+                <DreRow label="RESULTADO OPERACIONAL (EBIT)" value={dre.resultadoOperacional} sign="=" isResult />
 
-          {(dre.receitaFinanceira > 0 || dre.despesaFinanceira > 0) && (
-            <>
-              <div className="h-px bg-slate-200 dark:bg-gray-700 my-0.5" />
-              {dre.receitaFinanceira > 0 && (
-                <DreRow label="Receita Financeira (Juros)" value={dre.receitaFinanceira} sign="+" />
-              )}
-              {dre.despesaFinanceira > 0 && (
-                <DreRow label="Despesa Financeira (Juros)" value={-dre.despesaFinanceira} sign="-" />
-              )}
-              <DreRow label="Resultado Financeiro" value={dre.resultadoFinanceiro} sign="=" isResult />
-            </>
-          )}
+                {(dre.receitaFinanceira > 0 || dre.despesaFinanceira > 0) && (
+                  <>
+                    <div className="h-px bg-slate-200 dark:bg-gray-700 my-0.5" />
+                    {dre.receitaFinanceira > 0 && (
+                      <DreRow label="Receita Financeira (Juros)" value={dre.receitaFinanceira} sign="+" />
+                    )}
+                    {dre.despesaFinanceira > 0 && (
+                      <DreRow label="Despesa Financeira (Juros)" value={-dre.despesaFinanceira} sign="-" />
+                    )}
+                    <DreRow label="Resultado Financeiro" value={dre.resultadoFinanceiro} sign="=" isResult />
+                  </>
+                )}
 
-          <div className="h-1 bg-red-600/10 dark:bg-red-500/10 my-0.5" />
+                <div className="h-1 bg-red-600/10 dark:bg-red-500/10 my-0.5" />
 
-          <div className={cn(
-            'flex items-center justify-between py-4 px-4',
-            dre.resultadoLiquido >= 0 ? 'bg-emerald-50 dark:bg-emerald-900/20' : 'bg-red-50 dark:bg-red-900/20'
-          )}>
-            <div>
-              <p className="text-xs text-slate-500 dark:text-gray-400 font-medium mb-0.5">RESULTADO LÍQUIDO</p>
-              <p className={cn('text-2xl font-bold font-display', dre.resultadoLiquido >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
-                {formatCurrency(dre.resultadoLiquido)}
-              </p>
+                <div className={cn(
+                  'flex items-center justify-between py-4 px-4',
+                  dre.resultadoLiquido >= 0 ? 'bg-emerald-50 dark:bg-emerald-900/20' : 'bg-red-50 dark:bg-red-900/20'
+                )}>
+                  <div>
+                    <p className="text-xs text-slate-500 dark:text-gray-400 font-medium mb-0.5">RESULTADO LÍQUIDO</p>
+                    <p className={cn('text-2xl font-bold font-display', dre.resultadoLiquido >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+                      {formatCurrency(dre.resultadoLiquido)}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-xs text-slate-500 dark:text-gray-400 mb-0.5">Margem Líquida</p>
+                    <p className={cn('text-lg font-bold font-display', dre.margemLiquida >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+                      {dre.margemLiquida.toFixed(1)}%
+                    </p>
+                  </div>
+                </div>
+              </div>
             </div>
-            <div className="text-right">
-              <p className="text-xs text-slate-500 dark:text-gray-400 mb-0.5">Margem Líquida</p>
-              <p className={cn('text-lg font-bold font-display', dre.margemLiquida >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
-                {dre.margemLiquida.toFixed(1)}%
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
 
-      {/* Empty state */}
-      {periodTransactions.length === 0 && (
-        <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
-          <FileSpreadsheet size={40} strokeWidth={1.5} />
-          <p className="mt-3 text-sm font-medium">Nenhum lançamento pago neste período</p>
-          <p className="text-xs mt-1">Apenas transações com status "pago" entram no DRE</p>
-        </div>
-      )}
+            {/* Empty state (consolidated) */}
+            {periodTransactions.length === 0 && (
+              <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500 mt-4">
+                <FileSpreadsheet size={40} strokeWidth={1.5} />
+                <p className="mt-3 text-sm font-medium">Nenhum lançamento pago neste período</p>
+                <p className="text-xs mt-1">Apenas transações com status "pago" entram no DRE</p>
+              </div>
+            )}
+          </motion.div>
+        ) : (
+          <motion.div key="por-setor" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.2 }} className="space-y-4">
+            {/* Sector comparison bar chart */}
+            {sectorDRE.length > 0 ? (
+              <>
+                <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-4 shadow-sm">
+                  <div className="flex items-center gap-2 mb-4">
+                    <BarChart3 size={16} className="text-red-500" />
+                    <span className="text-sm font-semibold text-slate-800 dark:text-gray-200">Resultado por Departamento</span>
+                  </div>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <BarChart data={sectorDRE} margin={{ top: 4, right: 4, left: 4, bottom: 4 }} barCategoryGap="30%">
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(100,116,139,0.12)" />
+                      <XAxis dataKey="sectorName" tick={{ fontSize: 12, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                      <YAxis tickFormatter={(v) => `R$${(v / 1000).toFixed(0)}k`} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} width={60} />
+                      <RechartsTooltip
+                        formatter={(value: number, name: string) => [
+                          formatCurrency(value),
+                          name === 'receitas' ? 'Receitas' : name === 'despesas' ? 'Despesas' : 'Resultado',
+                        ]}
+                        contentStyle={{ background: 'var(--tooltip-bg, #1e293b)', border: 'none', borderRadius: 10, color: '#e2e8f0', fontSize: 13 }}
+                      />
+                      <Legend formatter={(v) => v === 'receitas' ? 'Receitas' : v === 'despesas' ? 'Despesas' : 'Resultado'} wrapperStyle={{ fontSize: 12 }} />
+                      <Bar dataKey="receitas" fill="#10b981" radius={[4, 4, 0, 0]} name="receitas" />
+                      <Bar dataKey="despesas" fill="#ef4444" radius={[4, 4, 0, 0]} name="despesas" />
+                      <Bar dataKey="resultado" radius={[4, 4, 0, 0]} name="resultado">
+                        {sectorDRE.map((entry, index) => (
+                          <Cell key={index} fill={entry.resultado >= 0 ? '#3b82f6' : '#f97316'} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {/* Sector cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {sectorDRE.map(s => {
+                    const sector = sectors.find(sec => sec.name === s.sectorName);
+                    const isPositive = s.resultado >= 0;
+                    return (
+                      <div key={s.sectorName} className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-4 shadow-sm">
+                        <div className="flex items-center gap-2 mb-3">
+                          {sector?.color && (
+                            <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: sector.color }} />
+                          )}
+                          <span className="text-sm font-semibold text-slate-800 dark:text-gray-200 truncate">{s.sectorName}</span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2">
+                          <div>
+                            <p className="text-[10px] text-slate-400 dark:text-gray-500 mb-0.5">Receitas</p>
+                            <p className="text-sm font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">{formatCurrency(s.receitas)}</p>
+                          </div>
+                          <div>
+                            <p className="text-[10px] text-slate-400 dark:text-gray-500 mb-0.5">Despesas</p>
+                            <p className="text-sm font-bold text-red-600 dark:text-red-400 tabular-nums">{formatCurrency(s.despesas)}</p>
+                          </div>
+                          <div>
+                            <p className="text-[10px] text-slate-400 dark:text-gray-500 mb-0.5">Resultado</p>
+                            <p className={cn('text-sm font-bold tabular-nums', isPositive ? 'text-blue-600 dark:text-blue-400' : 'text-orange-500 dark:text-orange-400')}>
+                              {isPositive ? '+' : ''}{formatCurrency(s.resultado)}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="mt-2.5 pt-2.5 border-t border-slate-100 dark:border-gray-800 flex items-center justify-between">
+                          <span className="text-[11px] text-slate-400 dark:text-gray-500">Margem</span>
+                          <span className={cn('text-[11px] font-bold', isPositive ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+                            {s.margem.toFixed(1)}%
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            ) : (
+              <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
+                <FileSpreadsheet size={40} strokeWidth={1.5} />
+                <p className="mt-3 text-sm font-medium">Nenhum lançamento com setor neste período</p>
+                <p className="text-xs mt-1">Associe transações a setores para ver esta visão</p>
+              </div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

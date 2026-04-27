@@ -301,6 +301,44 @@ export interface CashFlowRow {
   acumulado: number;
 }
 
+// ─── 5.5 DRE BY SECTOR CSV ───────────────────────────────────────────────────
+
+export interface SectorDRERow {
+  sectorName: string;
+  receitas: number;
+  despesas: number;
+  resultado: number;
+  margem: number;
+}
+
+export function exportDRESectorCSV(
+  rows: SectorDRERow[],
+  period: string,
+  businessName: string,
+  filename = `dre_setores_${period.replace(/\//g, '-')}.csv`,
+) {
+  const fmtR = (v: number) => v.toFixed(2).replace('.', ',');
+  const lines: string[] = [
+    BOM,
+    row([businessName]),
+    row([`DRE por Setor — ${period}`]),
+    row([`Gerado em ${new Date().toLocaleString('pt-BR')}`]),
+    '',
+    row(['Setor', 'Receitas (R$)', 'Despesas (R$)', 'Resultado (R$)', 'Margem (%)']),
+    ...rows.map(r => row([r.sectorName, fmtR(r.receitas), fmtR(r.despesas), fmtR(r.resultado), fmtR(r.margem)])),
+    '',
+    row(['TOTAL',
+      fmtR(rows.reduce((s, r) => s + r.receitas, 0)),
+      fmtR(rows.reduce((s, r) => s + r.despesas, 0)),
+      fmtR(rows.reduce((s, r) => s + r.resultado, 0)),
+      '',
+    ]),
+  ];
+  triggerDownload(lines.join('\n'), filename, 'text/csv;charset=utf-8;');
+}
+
+// ─── 6. CASH FLOW CSV ────────────────────────────────────────────────────────
+
 export function exportCashFlowCSV(
   data: CashFlowRow[],
   horizon: number,
