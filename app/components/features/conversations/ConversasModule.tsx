@@ -2262,8 +2262,17 @@ export default function ConversasModule() {
 
   // ── Auto-scroll to bottom ──────────────────────────────────────────────────
 
+  // Scroll the messages container to the absolute bottom.
+  // Using scrollTop = scrollHeight directly on the container is more reliable than
+  // scrollIntoView, which can be affected by other scrollable ancestors.
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
-    messagesEndRef.current?.scrollIntoView({ behavior });
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    if (behavior === 'instant') {
+      container.scrollTop = container.scrollHeight;
+    } else {
+      container.scrollTo({ top: container.scrollHeight, behavior });
+    }
   }, []);
 
   // Track the conversation ID for which we've already done the initial instant scroll
@@ -2276,8 +2285,9 @@ export default function ConversasModule() {
     }
   }, [selectedConversation?.id]);
 
-  // Scroll instantly to bottom when messages finish loading for the first time in a conversation.
-  // This fires as soon as isLoadingMessages goes false AND messages are in the DOM.
+  // Scroll to bottom when messages finish loading for the first time in a conversation.
+  // Two-pass strategy: immediate rAF for text messages, delayed pass for images/media
+  // that finish loading after the initial DOM paint and would otherwise push content down.
   useEffect(() => {
     if (
       !isLoadingMessages &&
@@ -2286,8 +2296,13 @@ export default function ConversasModule() {
       initialScrollDoneRef.current !== selectedConversation.id
     ) {
       initialScrollDoneRef.current = selectedConversation.id;
-      // rAF ensures the DOM has painted the messages before scrolling
+
+      // Pass 1: scroll as soon as the DOM is painted (catches text-only conversations)
       requestAnimationFrame(() => scrollToBottom('instant'));
+
+      // Pass 2: re-scroll after a short delay to catch images/media that load
+      // asynchronously and shift layout after the first scroll
+      setTimeout(() => scrollToBottom('instant'), 350);
     }
   }, [isLoadingMessages, selectedConversation?.id, messages.length, scrollToBottom]);
 
