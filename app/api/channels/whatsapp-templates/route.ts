@@ -11,8 +11,9 @@ const META_GRAPH = 'https://graph.facebook.com/v21.0';
  * Fetches approved WhatsApp message templates for a business from Meta Graph API.
  *
  * Flow:
- * 1. Get the business's phoneNumberId and decrypted access token from Firestore
- * 2. Fetch the WABA ID from the phoneNumberId via Graph API
+ * 1. Get the business's phoneNumberId/wabaId and decrypted access token from Firestore
+ * 2. Resolve WABA ID: use stored wabaId, or discover via phone number ID lookup,
+ *    or treat stored ID as WABA ID (legacy fallback)
  * 3. List APPROVED templates from the WABA
  * 4. Return simplified template objects (name, language, category, components)
  */
@@ -57,33 +58,50 @@ export async function GET(req: NextRequest) {
 
     const phoneNumberId: string = waConfig.phoneNumberId;
 
-    // Step 1: Get WABA ID from phone number ID
-    const phoneRes = await fetch(
-      `${META_GRAPH}/${phoneNumberId}?fields=id,whatsapp_business_account`,
-      {
-        headers: { Authorization: `Bearer ${accessToken}` },
-        signal: AbortSignal.timeout(10000),
-      },
-    );
-
-    if (!phoneRes.ok) {
-      const err = await phoneRes.text();
-      console.error('[WhatsApp Templates] Failed to get phone number info:', err);
-      return NextResponse.json(
-        { error: 'Não foi possível obter informações do número do WhatsApp.' },
-        { status: 502 },
-      );
-    }
-
-    const phoneData = await phoneRes.json();
-    const wabaId: string | undefined = phoneData?.whatsapp_business_account?.id;
+    // Step 1: Resolve WABA ID — use stored wabaId when available (avoids extra round-trip),
+    // otherwise discover it via the Meta API (handles both phone number IDs and legacy data
+    // where the WABA ID was mistakenly stored as phoneNumberId).
+    let wabaId: string | undefined = waConfig.wabaId as string | undefined;
 
     if (!wabaId) {
-      console.error('[WhatsApp Templates] No WABA ID in response:', phoneData);
-      return NextResponse.json(
-        { error: 'Não foi possível obter o ID do WhatsApp Business Account.' },
-        { status: 502 },
+      // Try treating stored ID as a phone number ID → fetch its parent WABA
+      const phoneRes = await fetch(
+        `${META_GRAPH}/${phoneNumberId}?fields=id,whatsapp_business_account`,
+        {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          signal: AbortSignal.timeout(10000),
+        },
       );
+
+      if (phoneRes.ok) {
+        const phoneData = await phoneRes.json();
+        wabaId = phoneData?.whatsapp_business_account?.id;
+      }
+
+      // Fallback: stored ID might itself be a WABA ID (legacy data before meta-signup fix)
+      if (!wabaId) {
+        const wabaTestRes = await fetch(
+          `${META_GRAPH}/${phoneNumberId}/phone_numbers?fields=id&limit=1`,
+          {
+            headers: { Authorization: `Bearer ${accessToken}` },
+            signal: AbortSignal.timeout(10000),
+          },
+        );
+        if (wabaTestRes.ok) {
+          wabaId = phoneNumberId; // stored ID is actually the WABA ID
+        }
+      }
+
+      if (!wabaId) {
+        console.error('[WhatsApp Templates] Could not resolve WABA ID for phoneNumberId:', phoneNumberId);
+        return NextResponse.json(
+          { error: 'Não foi possível obter informações do número do WhatsApp.' },
+          { status: 502 },
+        );
+      }
+
+      // Backfill wabaId so future calls skip this discovery step
+      adminDb.doc(`businesses/${businessId}`).update({ 'channels.whatsapp.wabaId': wabaId }).catch(() => {});
     }
 
     // Step 2: List APPROVED templates from WABA

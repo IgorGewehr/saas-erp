@@ -430,6 +430,7 @@ export async function POST(req: NextRequest) {
     if (phoneNumberId) {
       channelUpdates['channels.whatsapp'] = {
         phoneNumberId,
+        wabaId: wabaIdFromScopes || null,
         accessToken: await encryptToken(longLivedToken),
         isConnected: true,
         connectedAt: new Date().toISOString(),

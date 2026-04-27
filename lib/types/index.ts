@@ -562,6 +562,8 @@ export type PaymentMethod =
   | 'credito'
   | 'debito'
   | 'boleto'
+  | 'creditoLoja'
+  | 'semPagamento'
   | 'pontos'
   | 'gift_card'
   | 'outros';
@@ -1595,6 +1597,7 @@ export interface ConversationMessage {
   status: MessageStatus;
   externalMessageId?: string; // Meta API message ID (wamid, mid)
   senderName?: string;
+  senderAvatarUrl?: string;
   mediaUrl?: string;
   mediaType?: 'image' | 'audio' | 'video' | 'document';
   isInternal?: boolean;

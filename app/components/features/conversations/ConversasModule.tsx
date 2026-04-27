@@ -2262,8 +2262,17 @@ export default function ConversasModule() {
 
   // ── Auto-scroll to bottom ──────────────────────────────────────────────────
 
+  // Scroll the messages container to the absolute bottom.
+  // Using scrollTop = scrollHeight directly on the container is more reliable than
+  // scrollIntoView, which can be affected by other scrollable ancestors.
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
-    messagesEndRef.current?.scrollIntoView({ behavior });
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    if (behavior === 'instant') {
+      container.scrollTop = container.scrollHeight;
+    } else {
+      container.scrollTo({ top: container.scrollHeight, behavior });
+    }
   }, []);
 
   // Track the conversation ID for which we've already done the initial instant scroll
@@ -2276,8 +2285,9 @@ export default function ConversasModule() {
     }
   }, [selectedConversation?.id]);
 
-  // Scroll instantly to bottom when messages finish loading for the first time in a conversation.
-  // This fires as soon as isLoadingMessages goes false AND messages are in the DOM.
+  // Scroll to bottom when messages finish loading for the first time in a conversation.
+  // Two-pass strategy: immediate rAF for text messages, delayed pass for images/media
+  // that finish loading after the initial DOM paint and would otherwise push content down.
   useEffect(() => {
     if (
       !isLoadingMessages &&
@@ -2286,8 +2296,13 @@ export default function ConversasModule() {
       initialScrollDoneRef.current !== selectedConversation.id
     ) {
       initialScrollDoneRef.current = selectedConversation.id;
-      // rAF ensures the DOM has painted the messages before scrolling
+
+      // Pass 1: scroll as soon as the DOM is painted (catches text-only conversations)
       requestAnimationFrame(() => scrollToBottom('instant'));
+
+      // Pass 2: re-scroll after a short delay to catch images/media that load
+      // asynchronously and shift layout after the first scroll
+      setTimeout(() => scrollToBottom('instant'), 350);
     }
   }, [isLoadingMessages, selectedConversation?.id, messages.length, scrollToBottom]);
 
@@ -2556,10 +2571,21 @@ export default function ConversasModule() {
       alert(t('conversations.fileTooLarge', 'Arquivo muito grande. Máximo 16MB.'));
       return;
     }
+
+    // Validate audio format for WhatsApp (Cloud API requires specific MIME types)
+    const channel = selectedConversation?.channel;
+    if (file.type.startsWith('audio/') && channel === 'whatsapp') {
+      const WA_SUPPORTED_AUDIO = ['audio/aac', 'audio/mp4', 'audio/mpeg', 'audio/amr', 'audio/ogg', 'audio/opus'];
+      if (!WA_SUPPORTED_AUDIO.includes(file.type)) {
+        alert(`Formato de áudio não suportado pelo WhatsApp (${file.type}).\nUse MP3, M4A, AAC, AMR ou OGG/Opus.`);
+        return;
+      }
+    }
+
     setAttachment(file);
     // Reset input so the same file can be re-selected
     e.target.value = '';
-  }, []);
+  }, [selectedConversation]);
 
   const handleRemoveAttachment = useCallback(() => {
     setAttachment(null);
@@ -2568,49 +2594,49 @@ export default function ConversasModule() {
   const sendMediaMessage = useCallback(async (file: File) => {
     if (!selectedConversation || !business?.id || !user) return;
 
-    // Upload to Firebase Storage
-    const storageRef = ref(storage, `conversations/${business.id}/${selectedConversation.id}/${Date.now()}_${file.name}`);
-    await uploadBytes(storageRef, file);
-    const mediaUrl = await getDownloadURL(storageRef);
-
     const mediaType: 'image' | 'video' | 'audio' | 'document' = file.type.startsWith('image/') ? 'image'
       : file.type.startsWith('video/') ? 'video'
       : file.type.startsWith('audio/') ? 'audio'
       : 'document';
-
     const now = new Date().toISOString();
-    // For audio/image/video, don't store filename as content — the player/thumbnail is
-    // sufficient. Documents keep the filename as a visible label.
     const messageContent = mediaType === 'document' ? file.name : '';
 
-    // Save to Firestore with 'sending' status — updated after API response
-    const msgRef = await addDoc(collection(db, 'conversationMessages'), {
-      conversationId: selectedConversation.id,
-      businessId: business.id,
-      channel: selectedConversation.channel,
-      direction: 'outbound' as const,
-      content: messageContent,
-      mediaUrl,
-      mediaType,
-      status: 'sending' as const,
-      senderName: user.name,
-      sentAt: now,
-    });
+    let msgRef: Awaited<ReturnType<typeof addDoc>> | null = null;
 
-    // Update conversation metadata
-    const mediaLabel = mediaType === 'image' ? t('conversations.mediaImage', 'Imagem')
-      : mediaType === 'video' ? t('conversations.mediaVideo', 'Vídeo')
-      : mediaType === 'audio' ? t('conversations.mediaAudio', 'Áudio')
-      : t('conversations.mediaDocument', 'Documento');
-    await updateDoc(doc(db, 'conversations', selectedConversation.id), {
-      lastMessage: `[${mediaLabel}] ${file.name}`,
-      lastMessageAt: now,
-      lastMessageDirection: 'outbound',
-      updatedAt: now,
-    });
-
-    // Send via API and update message status based on result
     try {
+      // 1. Upload to Firebase Storage with explicit content-type so Meta APIs receive
+      //    the correct MIME header when fetching the file.
+      const storageRef = ref(storage, `conversations/${business.id}/${selectedConversation.id}/${Date.now()}_${file.name}`);
+      await uploadBytes(storageRef, file, { contentType: file.type || 'application/octet-stream' });
+      const mediaUrl = await getDownloadURL(storageRef);
+
+      // 2. Save to Firestore with 'sending' status
+      msgRef = await addDoc(collection(db, 'conversationMessages'), {
+        conversationId: selectedConversation.id,
+        businessId: business.id,
+        channel: selectedConversation.channel,
+        direction: 'outbound' as const,
+        content: messageContent,
+        mediaUrl,
+        mediaType,
+        status: 'sending' as const,
+        senderName: user.name,
+        sentAt: now,
+      });
+
+      // 3. Update conversation last-message preview
+      const mediaLabel = mediaType === 'image' ? t('conversations.mediaImage', 'Imagem')
+        : mediaType === 'video' ? t('conversations.mediaVideo', 'Vídeo')
+        : mediaType === 'audio' ? t('conversations.mediaAudio', 'Áudio')
+        : t('conversations.mediaDocument', 'Documento');
+      await updateDoc(doc(db, 'conversations', selectedConversation.id), {
+        lastMessage: `[${mediaLabel}] ${file.name}`,
+        lastMessageAt: now,
+        lastMessageDirection: 'outbound',
+        updatedAt: now,
+      });
+
+      // 4. Send via Meta API
       const authInstance = getAuth();
       const token = await authInstance.currentUser?.getIdToken();
       const sendRes = await fetch('/api/conversations/send', {
@@ -2634,16 +2660,19 @@ export default function ConversasModule() {
       if (sendRes.ok) {
         await updateDoc(msgRef, { status: 'sent' });
       } else {
-        const errData = await sendRes.json().catch(() => ({}));
+        const errData = await sendRes.json().catch(() => ({})) as { error?: string };
+        const errMsg = errData.error || `HTTP ${sendRes.status}`;
         console.error('[Media] API send failed:', sendRes.status, errData);
-        await updateDoc(msgRef, {
-          status: 'failed',
-          errorMessage: (errData as { error?: string }).error || `HTTP ${sendRes.status}`,
-        });
+        await updateDoc(msgRef, { status: 'failed', errorMessage: errMsg });
+        toast.error(`Falha ao enviar mídia: ${errMsg}`);
       }
-    } catch (sendErr) {
-      console.error('[Media] Network error sending media:', sendErr);
-      await updateDoc(msgRef, { status: 'failed', errorMessage: 'Erro de conexão' });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error('[Media] Error during send:', errMsg);
+      toast.error(`Falha ao enviar mídia: ${errMsg}`);
+      if (msgRef) {
+        await updateDoc(msgRef, { status: 'failed', errorMessage: errMsg }).catch(() => {});
+      }
     }
   }, [selectedConversation, business?.id, user]);
 
@@ -2706,14 +2735,9 @@ export default function ConversasModule() {
     setAttachment(null);
     setIsSending(true);
 
-    // If there is a media attachment, send it first
+    // If there is a media attachment, send it (errors are handled + toasted inside sendMediaMessage)
     if (currentAttachment) {
-      try {
-        await sendMediaMessage(currentAttachment);
-      } catch (err) {
-        console.error('Error sending media:', err);
-        setAttachment(currentAttachment);
-      }
+      await sendMediaMessage(currentAttachment);
     }
 
     // If no text, just finish
