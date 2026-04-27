@@ -280,17 +280,20 @@ export default function FinancialModule() {
   useEffect(() => {
     try {
       const saved = localStorage.getItem('financial_tx_filters');
-      if (saved) {
-        const f = JSON.parse(saved);
-        if (f.dateFrom)      setTxDateFrom(f.dateFrom);
-        if (f.dateTo)        setTxDateTo(f.dateTo);
-        if (f.category)      setTxCategory(f.category);
-        if (f.bankAccount)   setTxBankAccount(f.bankAccount);
-        if (f.paymentMethod) setTxPaymentMethod(f.paymentMethod);
-        if (f.sectorId)      setTxSectorId(f.sectorId);
-        if (f.clientName)    setTxClientName(f.clientName);
-      }
-    } catch { /* ignore */ }
+      if (!saved) return;
+      const f = JSON.parse(saved);
+      if (typeof f !== 'object' || f === null) return;
+      // Strict validators — prevent arbitrary strings from localStorage polluting state
+      const isDate = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+      const isStr  = (v: unknown): v is string => typeof v === 'string' && v.length <= 200;
+      if (isDate(f.dateFrom))    setTxDateFrom(f.dateFrom);
+      if (isDate(f.dateTo))      setTxDateTo(f.dateTo);
+      if (isStr(f.category))     setTxCategory(f.category);
+      if (isStr(f.bankAccount))  setTxBankAccount(f.bankAccount);
+      if (isStr(f.paymentMethod))setTxPaymentMethod(f.paymentMethod);
+      if (isStr(f.sectorId))     setTxSectorId(f.sectorId);
+      if (isStr(f.clientName))   setTxClientName(f.clientName);
+    } catch { /* ignore malformed JSON */ }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1166,7 +1169,7 @@ export default function FinancialModule() {
             )}
 
             {activeTab === 'fluxo' && (
-              <CashFlowProjection transactions={transactions} />
+              <CashFlowProjection transactions={transactions} businessName={business?.razaoSocial ?? ''} />
             )}
 
             {activeTab === 'dre' && (
@@ -2644,7 +2647,7 @@ function EnterpriseFinancialCards({
 // CASH FLOW PROJECTION (30/60/90 day)
 // ==========================================
 
-function CashFlowProjection({ transactions }: { transactions: Transaction[] }) {
+function CashFlowProjection({ transactions, businessName }: { transactions: Transaction[]; businessName: string }) {
   const [horizon, setHorizon] = useState<30 | 60 | 90>(30);
 
   const projection = useMemo(() => {
@@ -2728,7 +2731,7 @@ function CashFlowProjection({ transactions }: { transactions: Transaction[] }) {
             ))}
           </div>
           <button
-            onClick={() => exportCashFlowCSV(projection.data as CashFlowRow[], horizon, '')}
+            onClick={() => exportCashFlowCSV(projection.data as CashFlowRow[], horizon, businessName)}
             title="Exportar CSV"
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
           >

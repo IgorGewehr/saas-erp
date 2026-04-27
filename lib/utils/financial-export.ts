@@ -34,6 +34,10 @@ function triggerBlobDownload(blob: Blob, filename: string) {
 
 function csvEscape(v: unknown): string {
   const s = v == null ? '' : String(v);
+  // OWASP: prefix formula-injection chars so spreadsheets treat value as text
+  if (/^[=+\-@\t\r]/.test(s)) {
+    return `"'${s.replace(/"/g, '""')}"`;
+  }
   if (s.includes(',') || s.includes('"') || s.includes('\n')) {
     return `"${s.replace(/"/g, '""')}"`;
   }
