@@ -52,6 +52,7 @@ import {
   ChevronRight,
   Repeat,
   Scale,
+  RotateCcw,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -70,7 +71,7 @@ import {
   Pie,
   Cell,
 } from 'recharts';
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch, getDoc } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { logAudit } from '@/lib/services/audit';
 import ConciliacaoTab from './ConciliacaoTab';
@@ -391,6 +392,22 @@ export default function FinancialModule() {
     }
   }, [business?.id, queryClient]);
 
+  const handleRevertToPending = useCallback(async (id: string) => {
+    if (!business?.id) return;
+    try {
+      await updateDoc(doc(db, 'transactions', id), {
+        status: 'pendente',
+        paymentDate: null,
+        updatedAt: new Date().toISOString(),
+      });
+      queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
+      toast.info(t('financial.toast.revertedToPending', 'Transação revertida para pendente'));
+    } catch (err) {
+      console.error('Error reverting transaction:', err);
+      toast.error(t('financial.toast.updateError', 'Erro ao atualizar transação'));
+    }
+  }, [business?.id, queryClient]);
+
   const openNewForm = useCallback(() => {
     setEditingTransaction(null);
     setFormType('receita');
@@ -413,23 +430,35 @@ export default function FinancialModule() {
     setShowForm(true);
   }, []);
 
-  const openEditForm = useCallback((transaction: Transaction) => {
-    setEditingTransaction(transaction);
-    setFormType(transaction.type);
-    setFormDescription(transaction.description);
-    setFormCategory(transaction.category ?? '');
-    setFormAmount(transaction.amount.toString());
-    setFormDueDate(transaction.dueDate ?? '');
-    setFormPaymentDate(transaction.paymentDate || '');
-    setFormPaymentMethod(transaction.paymentMethod || '');
-    setFormNotes(transaction.notes || '');
-    setFormClientName(transaction.clientName || '');
-    setFormBankAccount(transaction.bankAccountId || '');
-    setFormStatus(transaction.status);
-    setFormSectorId(transaction.sectorId || '');
-    setFormRecurrence(!!transaction.recurrence?.isActive);
-    setFormRecurrenceFrequency(transaction.recurrence?.frequency || 'monthly');
-    setFormRecurrenceEndDate(transaction.recurrence?.endDate || '');
+  const openEditForm = useCallback(async (transaction: Transaction) => {
+    // Always fetch fresh data from Firestore before opening the edit form.
+    // This prevents a race condition where the React Query cache is stale (e.g., the
+    // transaction was just marked as paid but the cache hasn't refreshed yet), causing
+    // the form to load old values and revert the status on save.
+    let tx = transaction;
+    try {
+      const fresh = await getDoc(doc(db, 'transactions', transaction.id));
+      if (fresh.exists()) tx = { ...fresh.data(), id: fresh.id } as Transaction;
+    } catch {
+      // Fall back to cached version if Firestore fetch fails
+    }
+
+    setEditingTransaction(tx);
+    setFormType(tx.type);
+    setFormDescription(tx.description);
+    setFormCategory(tx.category ?? '');
+    setFormAmount(tx.amount.toString());
+    setFormDueDate(tx.dueDate ?? '');
+    setFormPaymentDate(tx.paymentDate || '');
+    setFormPaymentMethod(tx.paymentMethod || '');
+    setFormNotes(tx.notes || '');
+    setFormClientName(tx.clientName || '');
+    setFormBankAccount(tx.bankAccountId || '');
+    setFormStatus(tx.status);
+    setFormSectorId(tx.sectorId || '');
+    setFormRecurrence(!!tx.recurrence?.isActive);
+    setFormRecurrenceFrequency(tx.recurrence?.frequency || 'monthly');
+    setFormRecurrenceEndDate(tx.recurrence?.endDate || '');
     setShowForm(true);
   }, []);
 
@@ -845,6 +874,7 @@ export default function FinancialModule() {
                 sortDir={txSortDir}
                 onSort={handleTxSort}
                 onMarkPaid={handleMarkAsPaid}
+                onRevertPaid={handleRevertToPending}
                 onEdit={openEditForm}
                 onDelete={(id) => setShowDeleteConfirm(id)}
                 getStatusChipColor={getStatusChipColor}
@@ -2143,6 +2173,7 @@ function TransactionsContent({
   sortDir,
   onSort,
   onMarkPaid,
+  onRevertPaid,
   onEdit,
   onDelete,
   getStatusChipColor,
@@ -2158,6 +2189,7 @@ function TransactionsContent({
   sortDir: 'asc' | 'desc';
   onSort: (f: string) => void;
   onMarkPaid: (id: string) => void;
+  onRevertPaid: (id: string) => void;
   onEdit: (t: Transaction) => void;
   onDelete: (id: string) => void;
   getStatusChipColor: (s: TransactionStatus) => { bg: string; text: string; border: string };
@@ -2267,6 +2299,13 @@ function TransactionsContent({
                     </td>
                     <td className="px-5 py-3">
                       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        {tx.status === 'pago' && (
+                          <Tooltip title={t('financial.txList.revertPaid', 'Reverter para pendente')}>
+                            <IconButton size="small" onClick={() => onRevertPaid(tx.id)} sx={{ color: '#64748B', '&:hover': { color: '#F59E0B' } }}>
+                              <RotateCcw size={14} />
+                            </IconButton>
+                          </Tooltip>
+                        )}
                         <Tooltip title={t('financial.txList.edit', 'Editar')}><IconButton size="small" onClick={() => onEdit(tx)} sx={{ color: '#64748B' }}><Edit3 size={14} /></IconButton></Tooltip>
                         <Tooltip title={t('financial.txList.delete', 'Excluir')}><IconButton size="small" onClick={() => onDelete(tx.id)} sx={{ color: '#64748B', '&:hover': { color: '#EF4444' } }}><Trash2 size={14} /></IconButton></Tooltip>
                       </div>
