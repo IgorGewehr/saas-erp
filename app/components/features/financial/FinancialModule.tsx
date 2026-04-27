@@ -1102,6 +1102,7 @@ export default function FinancialModule() {
                 broadcasts={broadcasts}
                 crmContacts={crmContacts}
                 onGoToRecurrences={() => setActiveTab('recorrentes')}
+                onMarkPaid={handleMarkAsPaid}
               />
             )}
 
@@ -1661,6 +1662,7 @@ function OverviewContent({
   broadcasts,
   crmContacts,
   onGoToRecurrences,
+  onMarkPaid,
 }: {
   metrics: { receitas: number; despesas: number; lucro: number; aReceber: number; aPagar: number; totalContas: number };
   showBalances: boolean;
@@ -1675,10 +1677,13 @@ function OverviewContent({
   broadcasts: Broadcast[];
   crmContacts: CRMContact[];
   onGoToRecurrences?: () => void;
+  onMarkPaid: (id: string) => void;
 }) {
   const { t } = useTranslation();
   const hiddenValue = '******';
   const [dashboardPeriod, setDashboardPeriod] = useState<DashboardPeriod>('30d');
+  const [agingType, setAgingType] = useState<'ambos' | 'receber' | 'pagar'>('ambos');
+  const [expandedAgingClient, setExpandedAgingClient] = useState<string | null>(null);
 
   // Period-filtered transactions for KPI + period-specific analytics
   const periodDays: Record<DashboardPeriod, number> = { '30d': 30, '3m': 90, '6m': 180, '12m': 365 };
@@ -1873,31 +1878,31 @@ function OverviewContent({
         </motion.div>
       )}
 
-      {/* Aging Report */}
+      {/* Aging Report — aprimorado (2.4) */}
       {(() => {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const pending = transactions.filter(tx =>
-          (tx.status === 'pendente' || tx.status === 'atrasado') && tx.dueDate
+        const today = new Date(); today.setHours(0, 0, 0, 0);
+        const allPending = transactions.filter(tx => (tx.status === 'pendente' || tx.status === 'atrasado') && tx.dueDate);
+        if (allPending.length === 0) return null;
+
+        const pending = allPending.filter(tx =>
+          agingType === 'ambos' ? true :
+          agingType === 'receber' ? tx.type === 'receita' :
+          tx.type === 'despesa'
         );
-        if (pending.length === 0) return null;
 
         const buckets = [
-          { label: t('financial.aging.current', 'A vencer'), range: '0', min: 0, max: 0, color: 'emerald', txs: [] as typeof pending },
-          { label: t('financial.aging.d30', '1–30 dias'), range: '30', min: 1, max: 30, color: 'amber', txs: [] as typeof pending },
-          { label: t('financial.aging.d60', '31–60 dias'), range: '60', min: 31, max: 60, color: 'orange', txs: [] as typeof pending },
-          { label: t('financial.aging.d90', '61–90 dias'), range: '90', min: 61, max: 90, color: 'red', txs: [] as typeof pending },
-          { label: t('financial.aging.d90plus', '+90 dias'), range: '90+', min: 91, max: Infinity, color: 'rose', txs: [] as typeof pending },
+          { label: 'A vencer',    range: '0',   color: 'emerald', txs: [] as typeof pending },
+          { label: '1–30 dias',   range: '30',  color: 'amber',   txs: [] as typeof pending },
+          { label: '31–60 dias',  range: '60',  color: 'orange',  txs: [] as typeof pending },
+          { label: '61–90 dias',  range: '90',  color: 'red',     txs: [] as typeof pending },
+          { label: '+90 dias',    range: '90+', color: 'rose',    txs: [] as typeof pending },
         ];
-
         pending.forEach(tx => {
-          const due = new Date(tx.dueDate + 'T00:00:00');
-          const diffDays = Math.round((today.getTime() - due.getTime()) / 86400000);
-          // diffDays > 0 means overdue, < 0 means not yet due
-          if (diffDays <= 0) buckets[0].txs.push(tx);
-          else if (diffDays <= 30) buckets[1].txs.push(tx);
-          else if (diffDays <= 60) buckets[2].txs.push(tx);
-          else if (diffDays <= 90) buckets[3].txs.push(tx);
+          const diff = Math.round((today.getTime() - new Date(tx.dueDate + 'T00:00:00').getTime()) / 86400000);
+          if (diff <= 0) buckets[0].txs.push(tx);
+          else if (diff <= 30) buckets[1].txs.push(tx);
+          else if (diff <= 60) buckets[2].txs.push(tx);
+          else if (diff <= 90) buckets[3].txs.push(tx);
           else buckets[4].txs.push(tx);
         });
 
@@ -1908,40 +1913,145 @@ function OverviewContent({
           red:     { bar: 'bg-red-500',     badge: 'bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-400', text: 'text-red-600 dark:text-red-400' },
           rose:    { bar: 'bg-rose-600',    badge: 'bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/30 text-rose-700 dark:text-rose-400', text: 'text-rose-600 dark:text-rose-400' },
         };
-
         const totalPending = pending.reduce((s, tx) => s + tx.amount, 0);
+
+        // Ranking por cliente
+        const clientMap = new Map<string, { total: number; count: number; oldest: string; txIds: string[] }>();
+        pending.filter(tx => tx.clientName).forEach(tx => {
+          const key = tx.clientName!;
+          const entry = clientMap.get(key) ?? { total: 0, count: 0, oldest: tx.dueDate!, txIds: [] };
+          entry.total += tx.amount;
+          entry.count += 1;
+          entry.txIds.push(tx.id);
+          if (tx.dueDate && tx.dueDate < entry.oldest) entry.oldest = tx.dueDate;
+          clientMap.set(key, entry);
+        });
+        const clientRanking = [...clientMap.entries()]
+          .sort(([, a], [, b]) => b.total - a.total)
+          .slice(0, 8);
 
         return (
           <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
-            className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-5 hover:shadow-md transition-all"
+            className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-5 hover:shadow-md transition-all space-y-4"
           >
-            <div className="flex items-center justify-between mb-4">
+            {/* Header + type filter */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
-                <h3 className="text-sm font-display font-bold text-slate-900 dark:text-gray-100">{t('financial.aging.title', 'Aging Report — Contas Pendentes')}</h3>
-                <p className="text-xs text-slate-400 dark:text-gray-500 mt-0.5">{t('financial.aging.subtitle', 'Distribuição por tempo de vencimento')}</p>
+                <h3 className="text-sm font-display font-bold text-slate-900 dark:text-gray-100">Aging Report — Contas Pendentes</h3>
+                <p className="text-xs text-slate-400 dark:text-gray-500 mt-0.5">Distribuição por tempo de vencimento</p>
               </div>
-              <span className="text-xs font-semibold text-slate-500 dark:text-gray-400">
-                {t('financial.aging.total', 'Total: {{v}}', { v: formatCurrency(totalPending) })}
-              </span>
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1 p-1 bg-slate-50 dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-xl">
+                  {([['ambos', 'Ambos'], ['receber', 'A Receber'], ['pagar', 'A Pagar']] as const).map(([val, label]) => (
+                    <button key={val} onClick={() => setAgingType(val)}
+                      className={cn('px-2.5 py-1 rounded-lg text-xs font-medium transition-all',
+                        agingType === val ? 'bg-white dark:bg-gray-900 text-slate-800 dark:text-gray-100 shadow-sm' : 'text-slate-500 dark:text-gray-400 hover:text-slate-700 dark:hover:text-gray-300'
+                      )}
+                    >{label}</button>
+                  ))}
+                </div>
+                <span className="text-xs font-semibold text-slate-500 dark:text-gray-400 whitespace-nowrap">
+                  Total: {showBalances ? formatCurrency(totalPending) : '****'}
+                </span>
+              </div>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-              {buckets.map(b => {
-                if (b.txs.length === 0) return null;
-                const bTotal = b.txs.reduce((s, tx) => s + tx.amount, 0);
-                const pct = totalPending > 0 ? (bTotal / totalPending) * 100 : 0;
-                const c = colorMap[b.color];
-                return (
-                  <div key={b.range} className={`rounded-xl border p-3 ${c.badge}`}>
-                    <p className="text-[10px] font-semibold uppercase tracking-wider mb-1 opacity-70">{b.label}</p>
-                    <p className="text-sm font-bold mb-0.5">{formatCurrency(bTotal)}</p>
-                    <p className="text-[10px] opacity-60 mb-2">{b.txs.length} {b.txs.length === 1 ? t('financial.aging.transaction', 'transação') : t('financial.aging.transactions', 'transações')}</p>
-                    <div className="h-1 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
-                      <div className={`h-full rounded-full ${c.bar}`} style={{ width: `${pct}%` }} />
+
+            {/* Buckets */}
+            {pending.length > 0 ? (
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                {buckets.map(b => {
+                  if (b.txs.length === 0) return null;
+                  const bTotal = b.txs.reduce((s, tx) => s + tx.amount, 0);
+                  const pct = totalPending > 0 ? (bTotal / totalPending) * 100 : 0;
+                  const c = colorMap[b.color];
+                  return (
+                    <div key={b.range} className={`rounded-xl border p-3 ${c.badge}`}>
+                      <p className="text-[10px] font-semibold uppercase tracking-wider mb-1 opacity-70">{b.label}</p>
+                      <p className="text-sm font-bold mb-0.5">{showBalances ? formatCurrency(bTotal) : '****'}</p>
+                      <p className="text-[10px] opacity-60 mb-2">{b.txs.length} transação{b.txs.length !== 1 ? 'ões' : ''}</p>
+                      <div className="h-1 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                        <div className={`h-full rounded-full ${c.bar}`} style={{ width: `${pct}%` }} />
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="text-sm text-slate-400 dark:text-gray-500 text-center py-4">Nenhuma conta pendente para este filtro</p>
+            )}
+
+            {/* Ranking por cliente */}
+            {clientRanking.length > 0 && (
+              <div>
+                <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase tracking-wide mb-2">Por Cliente</p>
+                <div className="divide-y divide-slate-50 dark:divide-gray-800 rounded-xl border border-slate-100 dark:border-gray-800 overflow-hidden">
+                  {clientRanking.map(([name, data]) => {
+                    const isExpanded = expandedAgingClient === name;
+                    const clientTxs = pending.filter(tx => tx.clientName === name);
+                    const oldestDiff = Math.round((today.getTime() - new Date(data.oldest + 'T00:00:00').getTime()) / 86400000);
+                    return (
+                      <div key={name}>
+                        <div
+                          className="flex items-center justify-between px-4 py-3 hover:bg-slate-50 dark:hover:bg-gray-800/40 transition-colors cursor-pointer"
+                          onClick={() => setExpandedAgingClient(isExpanded ? null : name)}
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <ChevronRight size={14} className={cn('text-slate-400 shrink-0 transition-transform', isExpanded && 'rotate-90')} />
+                            <div className="min-w-0">
+                              <p className="text-sm font-semibold text-slate-800 dark:text-gray-200 truncate">{name}</p>
+                              <p className="text-[11px] text-slate-400 dark:text-gray-500">
+                                {data.count} transaç{data.count !== 1 ? 'ões' : 'ão'} · mais antiga: {oldestDiff <= 0 ? 'a vencer' : `${oldestDiff}d atraso`}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3 ml-4 shrink-0">
+                            <span className="text-sm font-bold text-slate-800 dark:text-gray-200 tabular-nums">
+                              {showBalances ? formatCurrency(data.total) : '****'}
+                            </span>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                data.txIds.forEach(id => onMarkPaid(id));
+                              }}
+                              className="px-2.5 py-1 text-[11px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 border border-emerald-200/60 dark:border-emerald-500/20 rounded-lg transition-colors"
+                            >
+                              Quitar tudo
+                            </button>
+                          </div>
+                        </div>
+                        {isExpanded && (
+                          <div className="bg-slate-50/50 dark:bg-gray-900/40">
+                            {clientTxs.map(tx => {
+                              const diff = Math.round((today.getTime() - new Date(tx.dueDate + 'T00:00:00').getTime()) / 86400000);
+                              return (
+                                <div key={tx.id} className="flex items-center justify-between px-8 py-2.5 border-t border-slate-100 dark:border-gray-800">
+                                  <div className="min-w-0">
+                                    <p className="text-xs font-medium text-slate-700 dark:text-gray-300 truncate">{tx.description}</p>
+                                    <p className={cn('text-[11px]', diff > 0 ? 'text-red-500 dark:text-red-400' : 'text-slate-400 dark:text-gray-500')}>
+                                      {diff <= 0 ? `vence ${formatDate(tx.dueDate)}` : `${diff}d em atraso · ${formatDate(tx.dueDate)}`}
+                                    </p>
+                                  </div>
+                                  <div className="flex items-center gap-2 ml-4 shrink-0">
+                                    <span className="text-xs font-bold text-slate-700 dark:text-gray-300 tabular-nums">
+                                      {showBalances ? formatCurrency(tx.amount) : '****'}
+                                    </span>
+                                    <Tooltip title="Marcar como pago">
+                                      <IconButton size="small" onClick={() => onMarkPaid(tx.id)} sx={{ color: '#10B981', '&:hover': { backgroundColor: '#D1FAE5' } }}>
+                                        <CheckCircle2 size={14} />
+                                      </IconButton>
+                                    </Tooltip>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </motion.div>
         );
       })()}
