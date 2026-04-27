@@ -144,17 +144,26 @@ interface MatchResult {
   confidence: number;   // 0-100
 }
 
+export interface AutoMatchConfig {
+  /** Max R$ difference to still consider an amount match. Default: 0.01 */
+  amountTolerance?: number;
+  /** Max days difference for date match. Default: 3 */
+  dateTolerance?: number;
+}
+
 /**
  * Auto-match statement entries against existing transactions.
  * Matching criteria (scored):
- *   - Amount exact match: +50
- *   - Date within ±3 days: +30
- *   - Description similarity: +20
+ *   - Amount within tolerance: +50 (exact) or +40 (absolute)
+ *   - Date within dateTolerance: up to +30
+ *   - Description word overlap: up to +20
  */
 export function autoMatch(
   entries: BankStatementEntry[],
   transactions: Transaction[],
+  config: AutoMatchConfig = {},
 ): MatchResult[] {
+  const { amountTolerance = 0.01, dateTolerance = 3 } = config;
   const results: MatchResult[] = [];
   const usedTxIds = new Set<string>();
 
@@ -167,29 +176,30 @@ export function autoMatch(
 
       let score = 0;
 
-      // Amount match (exact or within 1 cent)
+      // Amount match within configurable tolerance
       const txAmount = tx.type === 'despesa' ? -tx.amount : tx.amount;
-      if (Math.abs(entry.amount - txAmount) < 0.02) {
+      if (Math.abs(entry.amount - txAmount) <= amountTolerance) {
         score += 50;
-      } else if (Math.abs(Math.abs(entry.amount) - tx.amount) < 0.02) {
-        score += 40; // absolute match
+      } else if (Math.abs(Math.abs(entry.amount) - tx.amount) <= amountTolerance) {
+        score += 40; // absolute match (sign agnostic)
       } else {
-        continue; // skip if amount doesn't match at all
+        continue; // skip — amount too far off
       }
 
-      // Date proximity (±3 days)
+      // Date proximity within configurable tolerance
       const txDate = tx.paymentDate || tx.dueDate;
       if (txDate) {
-        const entryDate = new Date(entry.date + 'T00:00:00');
-        const transDate = new Date(txDate + 'T00:00:00');
-        const daysDiff = Math.abs(entryDate.getTime() - transDate.getTime()) / (24 * 60 * 60 * 1000);
+        const daysDiff = Math.abs(
+          new Date(entry.date + 'T00:00:00').getTime() -
+          new Date(txDate + 'T00:00:00').getTime()
+        ) / 86400000;
         if (daysDiff === 0) score += 30;
         else if (daysDiff <= 1) score += 25;
-        else if (daysDiff <= 3) score += 15;
-        else if (daysDiff <= 7) score += 5;
+        else if (daysDiff <= dateTolerance) score += 15;
+        else if (daysDiff <= dateTolerance * 2) score += 5;
       }
 
-      // Description similarity (simple word overlap)
+      // Description similarity (word overlap)
       if (entry.description && tx.description) {
         const entryWords = new Set(entry.description.toLowerCase().split(/\s+/));
         const txWords = tx.description.toLowerCase().split(/\s+/);
