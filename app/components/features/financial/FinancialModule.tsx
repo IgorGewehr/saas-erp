@@ -61,6 +61,7 @@ import {
   CalendarDays,
   ChevronsRight,
   Lock,
+  Loader2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -114,6 +115,7 @@ import type {
   ConversationChannel,
   CRMContact,
   TransactionAttachment,
+  Budget,
 } from '@/lib/types';
 
 // ==========================================
@@ -130,7 +132,7 @@ const PRESET_COLORS = [
   '#820AD1', '#FF7A00', '#1A1A2E', '#14532D', '#7C2D12',
 ];
 
-type FinancialTab = 'visao-geral' | 'lancamentos' | 'recorrentes' | 'contas' | 'fluxo' | 'dre' | 'comissoes' | 'conciliacao' | 'auditoria';
+type FinancialTab = 'visao-geral' | 'lancamentos' | 'recorrentes' | 'contas' | 'fluxo' | 'dre' | 'orcamento' | 'comissoes' | 'conciliacao' | 'auditoria';
 
 const inputSx = { '& .MuiOutlinedInput-root': { borderRadius: '12px' } };
 
@@ -183,6 +185,7 @@ export default function FinancialModule() {
     { key: 'recorrentes', label: 'Recorrentes', icon: <Repeat size={16} /> },
     { key: 'fluxo',      label: t('financial.tabs.cashflow',  'Fluxo de Caixa'), icon: <TrendingUp size={16} /> },
     { key: 'dre',        label: 'DRE', icon: <FileSpreadsheet size={16} /> },
+    { key: 'orcamento',  label: 'Orçamento', icon: <Target size={16} /> },
     { key: 'contas',     label: t('financial.tabs.accounts',  'Contas Bancárias'), icon: <Landmark size={16} /> },
     { key: 'comissoes',  label: 'Comissões', icon: <Users size={16} /> },
     { key: 'conciliacao', label: t('financial.tabs.reconciliation', 'Conciliação'), icon: <Scale size={16} /> },
@@ -1187,6 +1190,13 @@ export default function FinancialModule() {
                 transactions={transactions}
                 onMarkPaid={handleMarkAsPaid}
                 showBalances={showBalances}
+              />
+            )}
+
+            {activeTab === 'orcamento' && (
+              <BudgetContent
+                transactions={transactions}
+                businessId={business?.id || ''}
               />
             )}
 
@@ -2904,6 +2914,467 @@ function AuditLogView({ businessId }: { businessId?: string }) {
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+// ==========================================
+// TAB: ORÇAMENTO (Budget vs Realizado — 3.1)
+// ==========================================
+
+function BudgetContent({
+  transactions,
+  businessId,
+}: {
+  transactions: Transaction[];
+  businessId: string;
+}) {
+  const { user, business } = useAuth();
+  const queryClient = useQueryClient();
+  const { isDark } = useTheme();
+
+  const now = new Date();
+  const [selYear,  setSelYear]  = useState(now.getFullYear());
+  const [selMonth, setSelMonth] = useState(now.getMonth() + 1);
+  const [showForm, setShowForm] = useState(false);
+  const [formCat,  setFormCat]  = useState('');
+  const [formType, setFormType] = useState<'receita' | 'despesa'>('despesa');
+  const [formAmt,  setFormAmt]  = useState('');
+  const [editId,   setEditId]   = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isCopying, setIsCopying] = useState(false);
+
+  // ── Queries ──────────────────────────────────────────────────────────────────
+  const { data: budgets = [], refetch } = useTanstackQuery<Budget[]>({
+    queryKey: ['budgets', businessId, selYear, selMonth],
+    queryFn: async () => {
+      if (!businessId) return [];
+      const q = query(
+        collection(db, 'budgets'),
+        where('businessId', '==', businessId),
+        where('year', '==', selYear),
+        where('month', '==', selMonth),
+      );
+      const snap = await getDocs(q);
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Budget));
+    },
+    enabled: !!businessId,
+    staleTime: 60 * 1000,
+  });
+
+  // ── Realizado: paid transactions for the selected month ───────────────────
+  const realized = useMemo(() => {
+    const prefix = `${selYear}-${String(selMonth).padStart(2, '0')}`;
+    const map = new Map<string, { receita: number; despesa: number }>();
+    transactions
+      .filter(t => t.status === 'pago' && (t.paymentDate || t.dueDate || '').startsWith(prefix))
+      .forEach(t => {
+        const cat = t.category || 'Outros';
+        const entry = map.get(cat) ?? { receita: 0, despesa: 0 };
+        if (t.type === 'receita') entry.receita += t.amount;
+        else entry.despesa += t.amount;
+        map.set(cat, entry);
+      });
+    return map;
+  }, [transactions, selYear, selMonth]);
+
+  // ── Merged rows: union of budgeted and realized categories ────────────────
+  const rows = useMemo(() => {
+    const categories = new Set<string>([
+      ...budgets.map(b => b.category),
+      ...Array.from(realized.keys()),
+    ]);
+    return Array.from(categories).sort().map(cat => {
+      const bRec  = budgets.find(b => b.category === cat && b.type === 'receita');
+      const bDesp = budgets.find(b => b.category === cat && b.type === 'despesa');
+      const real  = realized.get(cat) ?? { receita: 0, despesa: 0 };
+      return {
+        category: cat,
+        budgetedReceita:  bRec?.amount  ?? 0,
+        budgetedDespesa:  bDesp?.amount ?? 0,
+        realizedReceita:  real.receita,
+        realizedDespesa:  real.despesa,
+        budgetRecId:  bRec?.id,
+        budgetDespId: bDesp?.id,
+      };
+    });
+  }, [budgets, realized]);
+
+  // Alerts: categories reaching ≥ 80% of their budget
+  const alerts = useMemo(() =>
+    rows.filter(r => {
+      const despPct = r.budgetedDespesa > 0 ? (r.realizedDespesa / r.budgetedDespesa) * 100 : 0;
+      const recPct  = r.budgetedReceita > 0 ? (r.realizedReceita  / r.budgetedReceita)  * 100 : 0;
+      return despPct >= 80 || recPct >= 80;
+    }),
+  [rows]);
+
+  // Chart data
+  const chartData = useMemo(() =>
+    rows
+      .filter(r => r.budgetedDespesa > 0 || r.budgetedReceita > 0)
+      .map(r => ({
+        name: r.category.length > 12 ? r.category.slice(0, 11) + '…' : r.category,
+        'Orçado (D)':    r.budgetedDespesa,
+        'Realizado (D)': r.realizedDespesa,
+        'Orçado (R)':    r.budgetedReceita,
+        'Realizado (R)': r.realizedReceita,
+      })),
+  [rows]);
+
+  // ── Handlers ─────────────────────────────────────────────────────────────────
+  const openAdd = (cat = '', type: 'receita' | 'despesa' = 'despesa', id: string | null = null, amt = '') => {
+    setFormCat(cat); setFormType(type); setFormAmt(amt); setEditId(id); setShowForm(true);
+  };
+
+  const handleSave = async () => {
+    if (!businessId || !formCat.trim() || !formAmt || parseFloat(formAmt) <= 0) return;
+    if (!user) return;
+    setIsSaving(true);
+    try {
+      const now = new Date().toISOString();
+      const data = {
+        businessId,
+        year: selYear,
+        month: selMonth,
+        category: formCat.trim(),
+        type: formType,
+        amount: parseFloat(formAmt),
+        updatedAt: now,
+      };
+      if (editId) {
+        await updateDoc(doc(db, 'budgets', editId), data);
+      } else {
+        await addDoc(collection(db, 'budgets'), { ...data, createdAt: now });
+      }
+      queryClient.invalidateQueries({ queryKey: ['budgets', businessId, selYear, selMonth] });
+      setShowForm(false);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    await deleteDoc(doc(db, 'budgets', id));
+    queryClient.invalidateQueries({ queryKey: ['budgets', businessId, selYear, selMonth] });
+  };
+
+  const handleCopyPrevMonth = async () => {
+    if (!businessId || !user) return;
+    setIsCopying(true);
+    try {
+      const prevMonth = selMonth === 1 ? 12 : selMonth - 1;
+      const prevYear  = selMonth === 1 ? selYear - 1 : selYear;
+      const q = query(
+        collection(db, 'budgets'),
+        where('businessId', '==', businessId),
+        where('year', '==', prevYear),
+        where('month', '==', prevMonth),
+      );
+      const snap = await getDocs(q);
+      if (snap.empty) { toast.info('Sem orçamento no mês anterior para copiar.'); return; }
+      const batch = writeBatch(db);
+      const nowStr = new Date().toISOString();
+      snap.docs.forEach(d => {
+        const { year: _y, month: _m, ...rest } = d.data();
+        const ref = doc(collection(db, 'budgets'));
+        batch.set(ref, { ...rest, year: selYear, month: selMonth, createdAt: nowStr, updatedAt: nowStr });
+      });
+      await batch.commit();
+      queryClient.invalidateQueries({ queryKey: ['budgets', businessId, selYear, selMonth] });
+      toast.success(`${snap.size} meta(s) copiadas do mês anterior.`);
+    } finally {
+      setIsCopying(false);
+    }
+  };
+
+  const monthNames = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+  const availableCategories = useMemo(() => {
+    const cats = new Set<string>([...budgets.map(b => b.category), ...Array.from(realized.keys())]);
+    transactions.forEach(t => { if (t.category) cats.add(t.category); });
+    return Array.from(cats).sort();
+  }, [budgets, realized, transactions]);
+
+  const totalBudgetedDesp  = rows.reduce((s, r) => s + r.budgetedDespesa, 0);
+  const totalRealizedDesp  = rows.reduce((s, r) => s + r.realizedDespesa, 0);
+  const totalBudgetedRec   = rows.reduce((s, r) => s + r.budgetedReceita, 0);
+  const totalRealizedRec   = rows.reduce((s, r) => s + r.realizedReceita, 0);
+
+  return (
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">Orçamento vs Realizado</h3>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">Compare metas com resultados por categoria</p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Month selector */}
+          <select value={selMonth} onChange={e => setSelMonth(Number(e.target.value))}
+            className="px-3 py-1.5 rounded-xl text-xs font-medium bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 text-slate-700 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-red-500"
+          >
+            {monthNames.map((m, i) => <option key={i+1} value={i+1}>{m}</option>)}
+          </select>
+          <select value={selYear} onChange={e => setSelYear(Number(e.target.value))}
+            className="px-3 py-1.5 rounded-xl text-xs font-medium bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 text-slate-700 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-red-500"
+          >
+            {[0,1,2].map(d => { const y = now.getFullYear() - d; return <option key={y} value={y}>{y}</option>; })}
+          </select>
+          <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
+            onClick={handleCopyPrevMonth} disabled={isCopying}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800 disabled:opacity-50 transition-all"
+          >
+            {isCopying ? <Loader2 size={13} className="animate-spin" /> : <ChevronsRight size={13} />}
+            Copiar mês anterior
+          </motion.button>
+          <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
+            onClick={() => openAdd()}
+            className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-xs font-semibold bg-red-600 hover:bg-red-700 text-white transition-all"
+          >
+            <Plus size={13} />
+            Nova meta
+          </motion.button>
+        </div>
+      </div>
+
+      {/* Alert banner */}
+      {alerts.length > 0 && (
+        <div className="flex items-start gap-3 px-4 py-3 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 rounded-2xl">
+          <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+          <div>
+            <p className="text-sm font-semibold text-amber-900 dark:text-amber-100">
+              {alerts.length} categoria{alerts.length > 1 ? 's' : ''} atingiu 80% do orçamento
+            </p>
+            <p className="text-xs text-amber-700 dark:text-amber-400 mt-0.5">
+              {alerts.map(a => a.category).join(' · ')}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* KPI summary */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          { label: 'Orçado Despesas',    value: totalBudgetedDesp,  color: 'text-slate-700 dark:text-gray-200' },
+          { label: 'Realizado Despesas', value: totalRealizedDesp,  color: totalRealizedDesp > totalBudgetedDesp && totalBudgetedDesp > 0 ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400' },
+          { label: 'Orçado Receitas',    value: totalBudgetedRec,   color: 'text-slate-700 dark:text-gray-200' },
+          { label: 'Realizado Receitas', value: totalRealizedRec,   color: totalRealizedRec >= totalBudgetedRec && totalBudgetedRec > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400' },
+        ].map(k => (
+          <div key={k.label} className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-4 shadow-sm">
+            <p className="text-xs text-slate-400 dark:text-gray-500 mb-1">{k.label}</p>
+            <p className={`text-lg font-bold font-display ${k.color}`}>{formatCurrency(k.value)}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Bar chart */}
+      {chartData.length > 0 && (
+        <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-5 shadow-sm">
+          <p className="text-sm font-semibold text-slate-800 dark:text-gray-200 mb-4">Orçado vs Realizado por Categoria</p>
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={chartData} margin={{ top: 4, right: 8, left: 8, bottom: 4 }} barCategoryGap="25%">
+              <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#1E293B' : '#F1F5F9'} vertical={false} />
+              <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#94A3B8', fontSize: 11 }} />
+              <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94A3B8', fontSize: 11 }} tickFormatter={v => `R$${(v/1000).toFixed(0)}k`} width={52} />
+              <RechartsTooltip formatter={(v: number) => formatCurrency(v)} contentStyle={{ background: isDark ? '#1e293b' : '#fff', border: isDark ? '1px solid #374151' : '1px solid #E2E8F0', borderRadius: 10, fontSize: 12 }} />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              <Bar dataKey="Orçado (D)"    fill="#fca5a5" radius={[3,3,0,0]} />
+              <Bar dataKey="Realizado (D)" fill="#ef4444" radius={[3,3,0,0]} />
+              <Bar dataKey="Orçado (R)"    fill="#6ee7b7" radius={[3,3,0,0]} />
+              <Bar dataKey="Realizado (R)" fill="#10b981" radius={[3,3,0,0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* Budget vs Realized table */}
+      <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl overflow-hidden shadow-sm">
+        <div className="px-5 py-3 border-b border-slate-100 dark:border-gray-800 flex items-center justify-between">
+          <span className="text-sm font-semibold text-slate-800 dark:text-gray-200">Metas por Categoria — {monthNames[selMonth - 1]} {selYear}</span>
+          <span className="text-xs text-slate-400 dark:text-gray-500">{rows.length} categoria{rows.length !== 1 ? 's' : ''}</span>
+        </div>
+
+        {rows.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
+            <Target size={40} strokeWidth={1.5} />
+            <p className="mt-3 text-sm font-medium">Nenhuma meta definida para este mês</p>
+            <p className="text-xs mt-1">Clique em "Nova meta" ou copie o mês anterior</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-50 dark:divide-gray-800">
+            {/* Column headers */}
+            <div className="grid grid-cols-12 px-5 py-2 text-[10px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wide">
+              <div className="col-span-3">Categoria</div>
+              <div className="col-span-2 text-right">Orçado</div>
+              <div className="col-span-2 text-right">Realizado</div>
+              <div className="col-span-2 text-right">Variação</div>
+              <div className="col-span-2">Progresso</div>
+              <div className="col-span-1" />
+            </div>
+            {rows.map(r => {
+              const showDesp = r.budgetedDespesa > 0 || r.realizedDespesa > 0;
+              const showRec  = r.budgetedReceita > 0 || r.realizedReceita > 0;
+              return (
+                <div key={r.category}>
+                  {showDesp && (() => {
+                    const pct     = r.budgetedDespesa > 0 ? Math.min(100, (r.realizedDespesa / r.budgetedDespesa) * 100) : 0;
+                    const varAmt  = r.realizedDespesa - r.budgetedDespesa;
+                    const isOver  = varAmt > 0 && r.budgetedDespesa > 0;
+                    const barCls  = pct >= 100 ? 'bg-red-500' : pct >= 80 ? 'bg-amber-400' : 'bg-emerald-500';
+                    return (
+                      <div className="grid grid-cols-12 items-center px-5 py-3 hover:bg-slate-50 dark:hover:bg-gray-800/40 transition-colors">
+                        <div className="col-span-3">
+                          <p className="text-sm font-medium text-slate-800 dark:text-gray-200 truncate">{r.category}</p>
+                          <span className="text-[10px] text-red-500 font-medium">Despesa</span>
+                        </div>
+                        <div className="col-span-2 text-right text-sm text-slate-600 dark:text-gray-400 tabular-nums">
+                          {r.budgetedDespesa > 0 ? formatCurrency(r.budgetedDespesa) : '—'}
+                        </div>
+                        <div className="col-span-2 text-right text-sm font-semibold text-slate-800 dark:text-gray-200 tabular-nums">
+                          {formatCurrency(r.realizedDespesa)}
+                        </div>
+                        <div className={`col-span-2 text-right text-sm font-semibold tabular-nums ${r.budgetedDespesa === 0 ? 'text-slate-400' : isOver ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                          {r.budgetedDespesa > 0 ? `${isOver ? '+' : ''}${formatCurrency(varAmt)}` : '—'}
+                        </div>
+                        <div className="col-span-2 pr-3">
+                          {r.budgetedDespesa > 0 ? (
+                            <div>
+                              <div className="h-1.5 rounded-full bg-slate-100 dark:bg-gray-800 overflow-hidden mb-0.5">
+                                <div className={`h-full rounded-full transition-all ${barCls}`} style={{ width: `${pct}%` }} />
+                              </div>
+                              <span className="text-[10px] text-slate-400">{pct.toFixed(0)}%</span>
+                            </div>
+                          ) : <span className="text-[10px] text-slate-300 dark:text-gray-600">sem meta</span>}
+                        </div>
+                        <div className="col-span-1 flex items-center justify-end gap-0.5">
+                          <Tooltip title="Editar meta">
+                            <IconButton size="small" onClick={() => openAdd(r.category, 'despesa', r.budgetDespId ?? null, r.budgetedDespesa.toString())} sx={{ color: '#94A3B8' }}>
+                              <Edit3 size={13} />
+                            </IconButton>
+                          </Tooltip>
+                          {r.budgetDespId && (
+                            <Tooltip title="Remover meta">
+                              <IconButton size="small" onClick={() => handleDelete(r.budgetDespId!)} sx={{ color: '#94A3B8', '&:hover': { color: '#EF4444' } }}>
+                                <Trash2 size={13} />
+                              </IconButton>
+                            </Tooltip>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                  {showRec && (() => {
+                    const pct    = r.budgetedReceita > 0 ? Math.min(100, (r.realizedReceita / r.budgetedReceita) * 100) : 0;
+                    const varAmt = r.realizedReceita - r.budgetedReceita;
+                    const isUnder = varAmt < 0 && r.budgetedReceita > 0;
+                    const barCls  = pct >= 100 ? 'bg-emerald-500' : pct >= 80 ? 'bg-blue-400' : 'bg-amber-400';
+                    return (
+                      <div className="grid grid-cols-12 items-center px-5 py-3 hover:bg-slate-50 dark:hover:bg-gray-800/40 transition-colors bg-emerald-50/20 dark:bg-emerald-500/[0.03]">
+                        <div className="col-span-3">
+                          <p className="text-sm font-medium text-slate-800 dark:text-gray-200 truncate">{r.category}</p>
+                          <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">Receita</span>
+                        </div>
+                        <div className="col-span-2 text-right text-sm text-slate-600 dark:text-gray-400 tabular-nums">
+                          {r.budgetedReceita > 0 ? formatCurrency(r.budgetedReceita) : '—'}
+                        </div>
+                        <div className="col-span-2 text-right text-sm font-semibold text-slate-800 dark:text-gray-200 tabular-nums">
+                          {formatCurrency(r.realizedReceita)}
+                        </div>
+                        <div className={`col-span-2 text-right text-sm font-semibold tabular-nums ${r.budgetedReceita === 0 ? 'text-slate-400' : isUnder ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                          {r.budgetedReceita > 0 ? `${varAmt >= 0 ? '+' : ''}${formatCurrency(varAmt)}` : '—'}
+                        </div>
+                        <div className="col-span-2 pr-3">
+                          {r.budgetedReceita > 0 ? (
+                            <div>
+                              <div className="h-1.5 rounded-full bg-slate-100 dark:bg-gray-800 overflow-hidden mb-0.5">
+                                <div className={`h-full rounded-full transition-all ${barCls}`} style={{ width: `${pct}%` }} />
+                              </div>
+                              <span className="text-[10px] text-slate-400">{pct.toFixed(0)}%</span>
+                            </div>
+                          ) : <span className="text-[10px] text-slate-300 dark:text-gray-600">sem meta</span>}
+                        </div>
+                        <div className="col-span-1 flex items-center justify-end gap-0.5">
+                          <Tooltip title="Editar meta">
+                            <IconButton size="small" onClick={() => openAdd(r.category, 'receita', r.budgetRecId ?? null, r.budgetedReceita.toString())} sx={{ color: '#94A3B8' }}>
+                              <Edit3 size={13} />
+                            </IconButton>
+                          </Tooltip>
+                          {r.budgetRecId && (
+                            <Tooltip title="Remover meta">
+                              <IconButton size="small" onClick={() => handleDelete(r.budgetRecId!)} sx={{ color: '#94A3B8', '&:hover': { color: '#EF4444' } }}>
+                                <Trash2 size={13} />
+                              </IconButton>
+                            </Tooltip>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Add/Edit budget dialog */}
+      <Dialog open={showForm} onClose={() => setShowForm(false)} maxWidth="xs" fullWidth
+        PaperProps={{ sx: { borderRadius: '20px', backgroundColor: isDark ? '#111827' : undefined } }}
+      >
+        <DialogTitle sx={{ fontFamily: '"Plus Jakarta Sans", sans-serif', fontWeight: 700, fontSize: '1rem', color: isDark ? '#F1F5F9' : undefined }}>
+          {editId ? 'Editar Meta' : 'Nova Meta de Orçamento'}
+        </DialogTitle>
+        <DialogContent sx={{ pt: 1 }}>
+          <div className="space-y-3 pt-1">
+            <div>
+              <label className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1 block">Tipo</label>
+              <div className="flex gap-2">
+                {(['despesa', 'receita'] as const).map(t => (
+                  <button key={t} onClick={() => setFormType(t)}
+                    className={cn('flex-1 py-2 rounded-xl text-sm font-semibold border transition-all',
+                      formType === t
+                        ? t === 'despesa' ? 'bg-red-600 text-white border-red-600' : 'bg-emerald-600 text-white border-emerald-600'
+                        : 'border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800'
+                    )}
+                  >{t === 'despesa' ? 'Despesa' : 'Receita'}</button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1 block">Categoria</label>
+              <input
+                list="budget-cats"
+                value={formCat}
+                onChange={e => setFormCat(e.target.value)}
+                placeholder="Ex: Marketing, Aluguel, Serviços..."
+                className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-red-500/20"
+              />
+              <datalist id="budget-cats">
+                {availableCategories.map(c => <option key={c} value={c} />)}
+              </datalist>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1 block">Valor da Meta (R$)</label>
+              <input
+                type="number" min="0" step="0.01"
+                value={formAmt}
+                onChange={e => setFormAmt(e.target.value)}
+                placeholder="0,00"
+                className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-red-500/20"
+              />
+            </div>
+          </div>
+        </DialogContent>
+        <Divider />
+        <DialogActions sx={{ px: 3, py: 2 }}>
+          <Button onClick={() => setShowForm(false)} sx={{ color: '#64748B', textTransform: 'none', fontWeight: 600, borderRadius: '12px' }}>Cancelar</Button>
+          <Button onClick={handleSave} disabled={isSaving || !formCat.trim() || !formAmt || parseFloat(formAmt) <= 0} variant="contained"
+            sx={{ backgroundColor: '#DC2626', '&:hover': { backgroundColor: '#B91C1C' }, '&.Mui-disabled': { backgroundColor: '#FCA5A5', color: '#fff' }, textTransform: 'none', fontWeight: 700, borderRadius: '12px' }}
+          >
+            {isSaving ? 'Salvando...' : editId ? 'Salvar' : 'Criar Meta'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </div>
   );
 }
