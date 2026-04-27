@@ -54,6 +54,9 @@ import {
   Scale,
   RotateCcw,
   Filter,
+  Paperclip,
+  FileText,
+  Image as ImageIcon,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -73,7 +76,8 @@ import {
   Cell,
 } from 'recharts';
 import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch, getDoc } from 'firebase/firestore';
-import { db } from '@/lib/config/firebase';
+import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
+import { db, storage } from '@/lib/config/firebase';
 import { logAudit } from '@/lib/services/audit';
 import ConciliacaoTab from './ConciliacaoTab';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -105,6 +109,7 @@ import type {
   Broadcast,
   ConversationChannel,
   CRMContact,
+  TransactionAttachment,
 } from '@/lib/types';
 
 // ==========================================
@@ -121,7 +126,7 @@ const PRESET_COLORS = [
   '#820AD1', '#FF7A00', '#1A1A2E', '#14532D', '#7C2D12',
 ];
 
-type FinancialTab = 'visao-geral' | 'lancamentos' | 'contas' | 'fluxo' | 'dre' | 'comissoes' | 'conciliacao' | 'auditoria';
+type FinancialTab = 'visao-geral' | 'lancamentos' | 'recorrentes' | 'contas' | 'fluxo' | 'dre' | 'comissoes' | 'conciliacao' | 'auditoria';
 
 const inputSx = { '& .MuiOutlinedInput-root': { borderRadius: '12px' } };
 
@@ -129,14 +134,23 @@ const inputSx = { '& .MuiOutlinedInput-root': { borderRadius: '12px' } };
 // HELPERS
 // ==========================================
 
-function computeNextDueDate(currentDue: string, frequency: string): string {
+function computeNextDueDate(currentDue: string, frequency: string, dayOfMonth?: number): string {
   const d = new Date(currentDue + 'T00:00:00');
   switch (frequency) {
     case 'weekly':    d.setDate(d.getDate() + 7); break;
     case 'biweekly':  d.setDate(d.getDate() + 14); break;
-    case 'monthly':   d.setMonth(d.getMonth() + 1); break;
-    case 'quarterly': d.setMonth(d.getMonth() + 3); break;
-    case 'yearly':    d.setFullYear(d.getFullYear() + 1); break;
+    case 'monthly':   
+      d.setMonth(d.getMonth() + 1); 
+      if (dayOfMonth) d.setDate(dayOfMonth);
+      break;
+    case 'quarterly': 
+      d.setMonth(d.getMonth() + 3); 
+      if (dayOfMonth) d.setDate(dayOfMonth);
+      break;
+    case 'yearly':    
+      d.setFullYear(d.getFullYear() + 1); 
+      if (dayOfMonth) d.setDate(dayOfMonth);
+      break;
   }
   return d.toISOString().slice(0, 10);
 }
@@ -162,6 +176,7 @@ export default function FinancialModule() {
   const TABS: { key: FinancialTab; label: string; icon: React.ReactNode }[] = [
     { key: 'visao-geral', label: t('financial.tabs.overview', 'Visão Geral'), icon: <BarChart3 size={16} /> },
     { key: 'lancamentos', label: t('financial.tabs.transactions', 'Transações'), icon: <ArrowRightLeft size={16} /> },
+    { key: 'recorrentes', label: 'Recorrentes', icon: <Repeat size={16} /> },
     { key: 'fluxo',      label: t('financial.tabs.cashflow',  'Fluxo de Caixa'), icon: <TrendingUp size={16} /> },
     { key: 'dre',        label: 'DRE', icon: <FileSpreadsheet size={16} /> },
     { key: 'contas',     label: t('financial.tabs.accounts',  'Contas Bancárias'), icon: <Landmark size={16} /> },
@@ -209,6 +224,9 @@ export default function FinancialModule() {
   const [formClientName, setFormClientName] = useState('');
   const [formBankAccount, setFormBankAccount] = useState('');
   const [formStatus, setFormStatus] = useState<TransactionStatus>('pendente');
+  const [formAttachments, setFormAttachments] = useState<TransactionAttachment[]>([]);
+  const [formFilesToUpload, setFormFilesToUpload] = useState<File[]>([]);
+  const [formAttachmentsToDelete, setFormAttachmentsToDelete] = useState<TransactionAttachment[]>([]);
 
   // Bank account form state
   const [bankName, setBankName] = useState('');
@@ -228,6 +246,8 @@ export default function FinancialModule() {
   const [formRecurrence, setFormRecurrence] = useState(false);
   const [formRecurrenceFrequency, setFormRecurrenceFrequency] = useState<'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'yearly'>('monthly');
   const [formRecurrenceEndDate, setFormRecurrenceEndDate] = useState('');
+  const [formRecurrenceDay, setFormRecurrenceDay] = useState<string>('');
+  const [formRecurrenceLabel, setFormRecurrenceLabel] = useState<string>('');
 
   // Transactions tab state
   const [txFilterTab, setTxFilterTab] = useState<'todas' | 'receitas' | 'despesas' | 'pendentes' | 'atrasadas'>('todas');
@@ -508,6 +528,11 @@ export default function FinancialModule() {
     setFormRecurrence(false);
     setFormRecurrenceFrequency('monthly');
     setFormRecurrenceEndDate('');
+    setFormRecurrenceDay('');
+    setFormRecurrenceLabel('');
+    setFormAttachments([]);
+    setFormFilesToUpload([]);
+    setFormAttachmentsToDelete([]);
     setShowForm(true);
   }, []);
 
@@ -540,6 +565,11 @@ export default function FinancialModule() {
     setFormRecurrence(!!tx.recurrence?.isActive);
     setFormRecurrenceFrequency(tx.recurrence?.frequency || 'monthly');
     setFormRecurrenceEndDate(tx.recurrence?.endDate || '');
+    setFormRecurrenceDay(tx.recurrence?.dayOfMonth?.toString() || '');
+    setFormRecurrenceLabel(tx.recurrence?.label || '');
+    setFormAttachments(tx.attachments || []);
+    setFormFilesToUpload([]);
+    setFormAttachmentsToDelete([]);
     setShowForm(true);
   }, []);
 
@@ -557,6 +587,36 @@ export default function FinancialModule() {
       const status: TransactionStatus = formPaymentDate ? 'pago' : formStatus;
       const actor = { uid: user.uid, name: user.name };
 
+      // Excluir arquivos removidos
+      for (const att of formAttachmentsToDelete) {
+        try {
+          const fileRef = ref(storage, att.url);
+          await deleteObject(fileRef);
+        } catch (e) {
+          console.error('Falha ao excluir anexo do storage:', e);
+        }
+      }
+
+      let finalAttachments = [...formAttachments];
+      if (formFilesToUpload.length > 0) {
+        for (const file of formFilesToUpload) {
+          const fileId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          // Limpar caracteres estranhos do nome
+          const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+          const storageRef = ref(storage, `businesses/${business.id}/financial_attachments/${fileId}_${safeName}`);
+          await uploadBytes(storageRef, file);
+          const url = await getDownloadURL(storageRef);
+          finalAttachments.push({
+            id: fileId,
+            name: file.name,
+            url,
+            size: file.size,
+            type: file.type,
+            createdAt: now,
+          });
+        }
+      }
+
       const baseTx: Record<string, unknown> = {
         businessId: business.id,
         type: formType,
@@ -571,15 +631,18 @@ export default function FinancialModule() {
         clientName: formClientName || null,
         bankAccountId: formBankAccount || null,
         sectorId: formSectorId || null,
+        attachments: finalAttachments,
         updatedByName: user.name,
         updatedBy: user.uid,
         updatedAt: now,
         ...(formRecurrence && formDueDate && formInstallments <= 1 ? {
           recurrence: {
             frequency: formRecurrenceFrequency,
-            nextDueDate: computeNextDueDate(formDueDate, formRecurrenceFrequency),
+            nextDueDate: computeNextDueDate(formDueDate, formRecurrenceFrequency, formRecurrenceDay ? parseInt(formRecurrenceDay, 10) : undefined),
             ...(formRecurrenceEndDate ? { endDate: formRecurrenceEndDate } : {}),
             isActive: true,
+            ...(formRecurrenceDay ? { dayOfMonth: parseInt(formRecurrenceDay, 10) } : {}),
+            ...(formRecurrenceLabel ? { label: formRecurrenceLabel } : {}),
           },
         } : {}),
       };
@@ -940,6 +1003,7 @@ export default function FinancialModule() {
                 sectors={sectors}
                 broadcasts={broadcasts}
                 crmContacts={crmContacts}
+                onGoToRecurrences={() => setActiveTab('recorrentes')}
               />
             )}
 
@@ -972,6 +1036,14 @@ export default function FinancialModule() {
                 bankAccounts={bankAccounts}
                 onSaveFilters={saveTxFilters}
                 onClearFilters={clearTxFilters}
+              />
+            )}
+
+            {activeTab === 'recorrentes' && (
+              <RecurringContent
+                transactions={transactions}
+                showBalances={showBalances}
+                onEdit={openEditForm}
               />
             )}
 
@@ -1166,36 +1238,124 @@ export default function FinancialModule() {
                   </div>
                 </button>
                 {formRecurrence && (
-                  <div className="grid grid-cols-2 gap-3">
-                    <FormControl size="small">
-                      <InputLabel>{t('financial.form.frequency', 'Frequência')}</InputLabel>
-                      <Select
-                        value={formRecurrenceFrequency}
-                        onChange={(e) => setFormRecurrenceFrequency(e.target.value as typeof formRecurrenceFrequency)}
-                        label={t('financial.form.frequency', 'Frequência')}
-                        sx={{ borderRadius: '12px' }}
-                      >
-                        {Object.entries(RECURRENCE_LABELS).map(([k, v]) => (
-                          <MenuItem key={k} value={k}>{v}</MenuItem>
-                        ))}
-                      </Select>
-                    </FormControl>
-                    <TextField
-                      label={t('financial.form.recurrenceEnd', 'Encerrar em')}
-                      type="date"
-                      value={formRecurrenceEndDate}
-                      onChange={(e) => setFormRecurrenceEndDate(e.target.value)}
-                      size="small"
-                      InputLabelProps={{ shrink: true }}
-                      helperText={!formRecurrenceEndDate ? 'Sem data de encerramento' : ''}
-                      sx={inputSx}
-                    />
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <FormControl size="small">
+                        <InputLabel>{t('financial.form.frequency', 'Frequência')}</InputLabel>
+                        <Select
+                          value={formRecurrenceFrequency}
+                          onChange={(e) => setFormRecurrenceFrequency(e.target.value as typeof formRecurrenceFrequency)}
+                          label={t('financial.form.frequency', 'Frequência')}
+                          sx={{ borderRadius: '12px' }}
+                        >
+                          {Object.entries(RECURRENCE_LABELS).map(([k, v]) => (
+                            <MenuItem key={k} value={k}>{v}</MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                      <TextField
+                        label={t('financial.form.recurrenceEnd', 'Encerrar em')}
+                        type="date"
+                        value={formRecurrenceEndDate}
+                        onChange={(e) => setFormRecurrenceEndDate(e.target.value)}
+                        size="small"
+                        InputLabelProps={{ shrink: true }}
+                        helperText={!formRecurrenceEndDate ? 'Sem data de encerramento' : ''}
+                        sx={inputSx}
+                      />
+                    </div>
+                    {['monthly', 'quarterly', 'yearly'].includes(formRecurrenceFrequency) && (
+                      <div className="grid grid-cols-2 gap-3 bg-slate-50 dark:bg-gray-800/50 p-3 rounded-xl border border-slate-100 dark:border-gray-800">
+                        <TextField
+                          label="Nome da Recorrência (Opcional)"
+                          value={formRecurrenceLabel}
+                          onChange={(e) => setFormRecurrenceLabel(e.target.value)}
+                          size="small"
+                          placeholder="Ex: Aluguel, Internet..."
+                          sx={inputSx}
+                        />
+                        <TextField
+                          label="Dia Fixo de Vencimento"
+                          type="number"
+                          value={formRecurrenceDay}
+                          onChange={(e) => setFormRecurrenceDay(e.target.value)}
+                          size="small"
+                          inputProps={{ min: 1, max: 28 }}
+                          placeholder="Ex: 5"
+                          helperText="Se vazio, usa o dia da primeira parcela"
+                          sx={inputSx}
+                        />
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
             )}
 
             <TextField label={t('financial.form.notes', 'Observações')} value={formNotes} onChange={(e) => setFormNotes(e.target.value)} fullWidth multiline rows={2} size="small" sx={inputSx} />
+            
+            {/* --- Anexos --- */}
+            <div className="mt-4 border border-slate-200 dark:border-gray-700 rounded-xl p-4 bg-slate-50 dark:bg-gray-800/50">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <Paperclip size={16} className="text-slate-500 dark:text-gray-400" />
+                  <span className="text-sm font-semibold text-slate-700 dark:text-gray-300">Anexos e Comprovantes</span>
+                </div>
+                <Button component="label" size="small" variant="outlined" sx={{ textTransform: 'none', borderRadius: '8px' }}>
+                  Adicionar
+                  <input
+                    type="file"
+                    multiple
+                    hidden
+                    accept="image/*,.pdf,.jpg,.jpeg,.png"
+                    onChange={(e) => {
+                      if (!e.target.files) return;
+                      const MAX_MB = 10;
+                      const valid: File[] = [];
+                      for (const file of Array.from(e.target.files)) {
+                        if (file.size > MAX_MB * 1024 * 1024) {
+                          toast.error(`"${file.name}" excede ${MAX_MB}MB e não foi adicionado.`);
+                        } else {
+                          valid.push(file);
+                        }
+                      }
+                      if (valid.length) setFormFilesToUpload(prev => [...prev, ...valid]);
+                      e.target.value = '';
+                    }}
+                  />
+                </Button>
+              </div>
+              
+              <div className="space-y-2">
+                {formAttachments.filter(a => !formAttachmentsToDelete.includes(a)).map(att => (
+                  <div key={att.id} className="flex items-center justify-between bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 p-2 rounded-lg">
+                    <div className="flex items-center gap-2 overflow-hidden pr-2">
+                      {att.type?.includes('image') ? <ImageIcon size={16} className="text-blue-500 shrink-0" /> : <FileText size={16} className="text-red-500 shrink-0" />}
+                      <a href={att.url} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline truncate">{att.name}</a>
+                    </div>
+                    <IconButton size="small" onClick={() => setFormAttachmentsToDelete(prev => [...prev, att])}>
+                      <X size={14} className="text-slate-400 hover:text-red-500 transition-colors" />
+                    </IconButton>
+                  </div>
+                ))}
+                {formFilesToUpload.map((f, idx) => (
+                  <div key={idx} className="flex items-center justify-between bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 p-2 rounded-lg">
+                    <div className="flex items-center gap-2 overflow-hidden pr-2">
+                      {f.type?.includes('image') ? <ImageIcon size={16} className="text-slate-400 shrink-0" /> : <FileText size={16} className="text-slate-400 shrink-0" />}
+                      <span className="text-xs text-slate-600 dark:text-gray-400 truncate">{f.name}</span>
+                      <span className="text-[10px] text-slate-400 bg-slate-100 dark:bg-gray-800 px-1.5 py-0.5 rounded shrink-0">novo</span>
+                    </div>
+                    <IconButton size="small" onClick={() => setFormFilesToUpload(prev => prev.filter((_, i) => i !== idx))}>
+                      <X size={14} className="text-slate-400 hover:text-red-500 transition-colors" />
+                    </IconButton>
+                  </div>
+                ))}
+                {formAttachments.filter(a => !formAttachmentsToDelete.includes(a)).length === 0 && formFilesToUpload.length === 0 && (
+                  <p className="text-xs text-slate-400 dark:text-gray-500 text-center py-2">Nenhum anexo adicionado</p>
+                )}
+              </div>
+            </div>
+
           </div>
         </DialogContent>
         <Divider />
@@ -1379,6 +1539,7 @@ function OverviewContent({
   sectors,
   broadcasts,
   crmContacts,
+  onGoToRecurrences,
 }: {
   metrics: { receitas: number; despesas: number; lucro: number; aReceber: number; aPagar: number; totalContas: number };
   showBalances: boolean;
@@ -1392,6 +1553,7 @@ function OverviewContent({
   sectors: Sector[];
   broadcasts: Broadcast[];
   crmContacts: CRMContact[];
+  onGoToRecurrences?: () => void;
 }) {
   const { t } = useTranslation();
   const hiddenValue = '******';
@@ -1475,17 +1637,27 @@ function OverviewContent({
       .map(([name, amount]) => ({ name, amount, pct: max > 0 ? (amount / max) * 100 : 0 }));
   }, [periodTx]);
 
+  const upcomingRecurrences = useMemo(() => {
+    const in3Days = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
+    return transactions.filter(t => 
+      t.recurrence?.isActive && 
+      t.recurrence.nextDueDate && 
+      t.recurrence.nextDueDate <= in3Days
+    );
+  }, [transactions]);
+
   const overdueCount = transactions.filter(t =>
     t.status === 'pendente' && t.dueDate && new Date(t.dueDate + 'T00:00:00') < new Date()
   ).length;
 
   const PERIOD_LABELS: Record<DashboardPeriod, string> = { '30d': 'Últ. 30 dias', '3m': 'Últ. 3 meses', '6m': 'Últ. 6 meses', '12m': 'Últ. 12 meses' };
 
-  function DeltaBadge({ delta }: { delta: number | null }) {
+  function DeltaBadge({ delta, invert = false }: { delta: number | null; invert?: boolean }) {
     if (delta === null) return null;
     const isUp = delta >= 0;
+    const isGood = invert ? !isUp : isUp;
     return (
-      <span className={cn('inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full', isUp ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400')}>
+      <span className={cn('inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full', isGood ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400')}>
         {isUp ? <TrendingUp size={9} /> : <TrendingDown size={9} />}
         {Math.abs(delta).toFixed(1)}%
       </span>
@@ -1494,6 +1666,32 @@ function OverviewContent({
 
   return (
     <div className="space-y-6">
+      {upcomingRecurrences.length > 0 && (
+        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-800/50 flex items-center justify-center shrink-0">
+              <Repeat size={18} className="text-amber-600 dark:text-amber-400" />
+            </div>
+            <div>
+              <p className="text-sm font-bold text-amber-900 dark:text-amber-100">
+                {upcomingRecurrences.length} recorrência(s) vencendo em breve!
+              </p>
+              <p className="text-xs text-amber-700 dark:text-amber-400 mt-0.5">
+                Acesse o painel para verificar assinaturas e contratos recorrentes ativos.
+              </p>
+            </div>
+          </div>
+          {onGoToRecurrences && (
+            <button
+              onClick={onGoToRecurrences}
+              className="px-4 py-2 text-sm font-semibold bg-amber-100 dark:bg-amber-800/50 text-amber-800 dark:text-amber-100 hover:bg-amber-200 dark:hover:bg-amber-800 rounded-xl transition-colors shrink-0"
+            >
+              Acessar Painel
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Period selector */}
       <div className="flex items-center gap-2">
         <span className="text-xs text-slate-400 dark:text-gray-500 font-medium">Período:</span>
@@ -1511,11 +1709,11 @@ function OverviewContent({
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
         {[
-          { label: t('financial.kpi.paidIncome', 'Receitas Pagas'), value: periodMetrics.receitas, delta: periodMetrics.deltaReceitas, icon: <TrendingUp size={18} />, color: 'emerald' },
-          { label: t('financial.kpi.paidExpenses', 'Despesas Pagas'), value: periodMetrics.despesas, delta: periodMetrics.deltaDespesas, icon: <TrendingDown size={18} />, color: 'red' },
-          { label: t('financial.kpi.result', 'Resultado'), value: periodMetrics.lucro, delta: periodMetrics.deltaLucro, icon: <DollarSign size={18} />, color: periodMetrics.lucro >= 0 ? 'blue' : 'red' },
-          { label: t('financial.kpi.toReceive', 'A Receber'), value: periodMetrics.aReceber, delta: null, icon: <Clock size={18} />, color: 'amber' },
-          { label: t('financial.kpi.toPay', 'A Pagar'), value: periodMetrics.aPagar, delta: null, icon: <AlertTriangle size={18} />, color: 'orange' },
+          { label: t('financial.kpi.paidIncome', 'Receitas Pagas'), value: periodMetrics.receitas, delta: periodMetrics.deltaReceitas, invertDelta: false, icon: <TrendingUp size={18} />, color: 'emerald' },
+          { label: t('financial.kpi.paidExpenses', 'Despesas Pagas'), value: periodMetrics.despesas, delta: periodMetrics.deltaDespesas, invertDelta: true, icon: <TrendingDown size={18} />, color: 'red' },
+          { label: t('financial.kpi.result', 'Resultado'), value: periodMetrics.lucro, delta: periodMetrics.deltaLucro, invertDelta: false, icon: <DollarSign size={18} />, color: periodMetrics.lucro >= 0 ? 'blue' : 'red' },
+          { label: t('financial.kpi.toReceive', 'A Receber'), value: periodMetrics.aReceber, delta: null, invertDelta: false, icon: <Clock size={18} />, color: 'amber' },
+          { label: t('financial.kpi.toPay', 'A Pagar'), value: periodMetrics.aPagar, delta: null, invertDelta: false, icon: <AlertTriangle size={18} />, color: 'orange' },
         ].map((card, i) => {
           const cm: Record<string, { iconBg: string; iconTxt: string; valTxt: string }> = {
             emerald: { iconBg: 'bg-emerald-50 dark:bg-emerald-500/10', iconTxt: 'text-emerald-600 dark:text-emerald-400', valTxt: 'text-emerald-600 dark:text-emerald-400' },
@@ -1531,7 +1729,7 @@ function OverviewContent({
             >
               <div className="flex items-center justify-between mb-3">
                 <div className={cn('w-10 h-10 rounded-xl flex items-center justify-center shadow-sm', c.iconBg, c.iconTxt, 'group-hover:scale-110 transition-transform duration-200')}>{card.icon}</div>
-                <DeltaBadge delta={card.delta ?? null} />
+                <DeltaBadge delta={card.delta ?? null} invert={card.invertDelta} />
               </div>
               <p className="text-[11px] text-slate-400 dark:text-gray-500 font-medium mb-1 uppercase tracking-wide">{card.label}</p>
               <p className={cn('text-xl font-display font-bold leading-none', c.valTxt)}>
@@ -2725,7 +2923,14 @@ function TransactionsContent({
                   >
                     <td className="px-5 py-3 text-sm text-slate-500 dark:text-gray-400 whitespace-nowrap">{formatDate(tx.dueDate)}</td>
                     <td className="px-5 py-3">
-                      <p className="text-sm font-medium text-slate-800 dark:text-gray-200 truncate max-w-[220px]">{tx.description}</p>
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-sm font-medium text-slate-800 dark:text-gray-200 truncate max-w-[220px]">{tx.description}</p>
+                        {tx.attachments && tx.attachments.length > 0 && (
+                          <Tooltip title={`${tx.attachments.length} anexo(s)`}>
+                            <Paperclip size={14} className="text-slate-400 dark:text-gray-500 shrink-0" />
+                          </Tooltip>
+                        )}
+                      </div>
                       {tx.clientName && <p className="text-xs text-slate-400 dark:text-gray-500 truncate">{tx.clientName}</p>}
                     </td>
                     <td className="px-5 py-3">
@@ -3749,6 +3954,171 @@ function BankAccountsContent({
           </motion.button>
         </div>
       )}
+    </div>
+  );
+}
+
+// ==========================================
+// TAB: RECORRENTES
+// ==========================================
+
+function RecurringContent({
+  transactions,
+  showBalances,
+  onEdit,
+}: {
+  transactions: Transaction[];
+  showBalances: boolean;
+  onEdit: (tx: Transaction) => void;
+}) {
+  const { t } = useTranslation();
+
+  // Filtrar apenas as "matrizes" de recorrência ativas
+  const recurrences = useMemo(() => {
+    return transactions.filter(t => t.recurrence?.isActive);
+  }, [transactions]);
+
+  // Ordenar por data mais próxima do vencimento
+  const sortedRecurrences = useMemo(() => {
+    return [...recurrences].sort((a, b) => {
+      const dateA = a.recurrence?.nextDueDate || '';
+      const dateB = b.recurrence?.nextDueDate || '';
+      return dateA.localeCompare(dateB);
+    });
+  }, [recurrences]);
+
+  const now = new Date();
+  const todayStr = now.toISOString().slice(0, 10);
+
+  // Calcular métricas
+  const kpis = useMemo(() => {
+    const in30Days = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    let receitas30 = 0;
+    let despesas30 = 0;
+    for (const r of recurrences) {
+      if (r.recurrence?.nextDueDate && r.recurrence.nextDueDate <= in30Days) {
+        if (r.type === 'receita') receitas30 += r.amount;
+        else despesas30 += r.amount;
+      }
+    }
+    return { active: recurrences.length, receitas30, despesas30, saldo30: receitas30 - despesas30 };
+  }, [recurrences, now]);
+
+  const getDaysLabel = (dateStr?: string): string => {
+    if (!dateStr) return '—';
+    const diff = Math.round((new Date(dateStr + 'T00:00:00').getTime() - new Date(todayStr + 'T00:00:00').getTime()) / 86400000);
+    if (diff < 0) return `${Math.abs(diff)}d atraso`;
+    if (diff === 0) return 'Hoje';
+    if (diff === 1) return 'Amanhã';
+    return `em ${diff}d`;
+  };
+
+  const getUrgency = (dateStr?: string) => {
+    if (!dateStr) return { color: 'text-slate-500', bg: 'bg-slate-100 dark:bg-gray-800', border: 'border-slate-200' };
+    if (dateStr < todayStr) return { color: 'text-red-600 dark:text-red-400', bg: 'bg-red-50 dark:bg-red-900/20', border: 'border-red-200 dark:border-red-800' };
+    
+    const diffMs = new Date(`${dateStr}T00:00:00`).getTime() - new Date(`${todayStr}T00:00:00`).getTime();
+    const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+    
+    if (diffDays <= 3) return { color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-900/20', border: 'border-amber-200 dark:border-amber-800' };
+    return { color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-900/20', border: 'border-emerald-200 dark:border-emerald-800' };
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* KPI Cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-4 shadow-sm">
+          <p className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1">Recorrências Ativas</p>
+          <p className="text-2xl font-display font-bold text-slate-900 dark:text-gray-100">{kpis.active}</p>
+        </div>
+        <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-4 shadow-sm">
+          <p className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1">Entradas 30d</p>
+          <p className="text-lg font-display font-bold text-emerald-600 dark:text-emerald-400">
+            {showBalances ? formatCurrency(kpis.receitas30) : 'R$ ****'}
+          </p>
+        </div>
+        <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-4 shadow-sm">
+          <p className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1">Saídas 30d</p>
+          <p className="text-lg font-display font-bold text-red-600 dark:text-red-400">
+            {showBalances ? formatCurrency(kpis.despesas30) : 'R$ ****'}
+          </p>
+        </div>
+        <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-4 shadow-sm">
+          <p className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1">Saldo Previsto 30d</p>
+          <p className={cn('text-lg font-display font-bold', kpis.saldo30 >= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-orange-600 dark:text-orange-400')}>
+            {showBalances ? formatCurrency(kpis.saldo30) : 'R$ ****'}
+          </p>
+        </div>
+      </div>
+
+      {/* Lista de Recorrentes */}
+      <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl overflow-hidden shadow-sm">
+        <div className="px-6 py-4 border-b border-slate-100 dark:border-gray-800">
+          <h3 className="text-base font-display font-bold text-slate-900 dark:text-gray-100">Próximos Vencimentos</h3>
+        </div>
+
+        {sortedRecurrences.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
+            <Repeat size={40} strokeWidth={1.5} />
+            <p className="mt-3 text-sm font-medium">Nenhuma recorrência ativa</p>
+            <p className="text-xs mt-1">Crie transações e ative "Lançamento recorrente" para gerenciar</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-50 dark:divide-gray-800">
+            {sortedRecurrences.map((tx) => {
+              const u = getUrgency(tx.recurrence?.nextDueDate);
+              return (
+                <div key={tx.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 px-6 py-4 hover:bg-slate-50 dark:hover:bg-gray-800/40 transition-colors">
+                  <div className="flex items-start gap-4 flex-1 min-w-0">
+                    <div className={cn('w-12 h-12 rounded-2xl flex items-center justify-center border shrink-0 flex-col gap-0', u.bg, u.border)}>
+                      <span className={cn('text-[10px] font-bold leading-none', u.color)}>
+                        {getDaysLabel(tx.recurrence?.nextDueDate)}
+                      </span>
+                      {tx.recurrence?.nextDueDate && (
+                        <span className={cn('text-[9px] leading-none mt-0.5 opacity-70', u.color)}>
+                          {tx.recurrence.nextDueDate.slice(5).replace('-', '/')}
+                        </span>
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-slate-900 dark:text-gray-100 truncate">
+                        {tx.recurrence?.label || tx.description}
+                      </p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-xs text-slate-500 dark:text-gray-400 bg-slate-100 dark:bg-gray-800 px-2 py-0.5 rounded-md">
+                          {RECURRENCE_LABELS[tx.recurrence?.frequency || 'monthly'] || tx.recurrence?.frequency}
+                        </span>
+                        {tx.recurrence?.dayOfMonth && (
+                          <span className="text-[11px] text-slate-400 dark:text-gray-500">
+                            Dia fixo: {tx.recurrence.dayOfMonth}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="flex items-center justify-between sm:justify-end gap-6 sm:w-1/3 shrink-0">
+                    <div className="text-left sm:text-right">
+                      <p className="text-xs text-slate-400 dark:text-gray-500 mb-0.5">Valor Agendado</p>
+                      <p className={cn('text-sm font-bold', tx.type === 'receita' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+                        {tx.type === 'receita' ? '+' : '-'}{showBalances ? formatCurrency(tx.amount) : 'R$ ****'}
+                      </p>
+                    </div>
+                    
+                    <button 
+                      onClick={() => onEdit(tx)}
+                      className="px-3 py-1.5 text-xs font-semibold bg-white dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-lg hover:bg-slate-50 dark:hover:bg-gray-700 text-slate-600 dark:text-gray-300 transition-colors shadow-sm"
+                    >
+                      Editar
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
