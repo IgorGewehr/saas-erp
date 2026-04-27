@@ -2557,22 +2557,12 @@ export default function ConversasModule() {
       return;
     }
 
-    // Validate audio format for WhatsApp and Instagram channels
+    // Validate audio format for WhatsApp (Cloud API requires specific MIME types)
     const channel = selectedConversation?.channel;
-    if (file.type.startsWith('audio/')) {
+    if (file.type.startsWith('audio/') && channel === 'whatsapp') {
       const WA_SUPPORTED_AUDIO = ['audio/aac', 'audio/mp4', 'audio/mpeg', 'audio/amr', 'audio/ogg', 'audio/opus'];
-      if (channel === 'whatsapp' && !WA_SUPPORTED_AUDIO.includes(file.type)) {
+      if (!WA_SUPPORTED_AUDIO.includes(file.type)) {
         alert(`Formato de áudio não suportado pelo WhatsApp (${file.type}).\nUse MP3, M4A, AAC, AMR ou OGG/Opus.`);
-        return;
-      }
-      if (channel === 'instagram') {
-        alert('Instagram não suporta envio de áudio via API. Use imagens ou vídeos.');
-        return;
-      }
-    }
-    if (file.type === 'application/pdf' || file.type.startsWith('application/') || file.type === 'text/plain') {
-      if (channel === 'instagram') {
-        alert('Instagram não suporta envio de documentos via API. Use imagens ou vídeos.');
         return;
       }
     }

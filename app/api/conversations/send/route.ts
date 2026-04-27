@@ -344,14 +344,6 @@ export async function POST(req: NextRequest) {
         result = await sendFacebookMessenger(channels, recipientId, content, mediaOpts);
         break;
       case 'instagram': {
-        // Instagram DM API only supports image and video attachments for outbound messages.
-        // Audio and document types are not accepted by the Messaging API and will be rejected.
-        if (mediaOpts && (mediaOpts.mediaType === 'audio' || mediaOpts.mediaType === 'document')) {
-          return NextResponse.json({
-            error: `Instagram não suporta envio de ${mediaOpts.mediaType === 'audio' ? 'áudio' : 'documentos'} via API. Apenas imagens e vídeos podem ser enviados pelo Instagram.`,
-            code: 'unsupported_media_type',
-          }, { status: 400 });
-        }
         const igMediaOpts = await prepareMediaForInstagram(mediaOpts, businessId);
         result = await sendInstagram(channels, recipientId, content, igMediaOpts);
         break;
