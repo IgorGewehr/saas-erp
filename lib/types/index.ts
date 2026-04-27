@@ -618,6 +618,8 @@ export interface TransactionAttachment {
   id: string;
   name: string;
   url: string;
+  /** Firebase Storage path (e.g. businesses/{id}/financial_attachments/{file}) — used for deletion */
+  path: string;
   size: number;
   type: string;
   createdAt: string;
