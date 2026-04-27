@@ -683,6 +683,30 @@ export interface Budget {
   updatedAt: string;
 }
 
+// ---- DAS / Simples Nacional ----
+export type DasStatus = 'pendente' | 'pago' | 'atrasado';
+export type SimplesAnexo = 'I' | 'II' | 'III' | 'IV' | 'V';
+
+export interface DasRecord {
+  id: string;
+  businessId: string;
+  /** Referência no formato AAAAMM, ex: "202604" */
+  competencia: string;
+  receitaBruta: number;   // receita bruta do mês de competência
+  rbt12: number;          // receita bruta acumulada nos últimos 12 meses
+  anexo: SimplesAnexo;
+  aliquotaEfetiva: number;  // % calculada
+  valorDas: number;
+  /** Vencimento: sempre dia 20 do mês seguinte à competência */
+  vencimento: string;
+  status: DasStatus;
+  pagoEm?: string;
+  recibo?: string;      // Storage download URL
+  reciboPath?: string;  // Storage path (for deletion)
+  createdAt: string;
+  updatedAt: string;
+}
+
 // ---- Audit log (alterações em entidades financeiras) ----
 export type AuditAction = 'create' | 'update' | 'delete' | 'pay' | 'cancel' | 'restore';
 
