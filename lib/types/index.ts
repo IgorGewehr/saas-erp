@@ -610,6 +610,17 @@ export interface TransactionRecurrence {
   endDate?: string;          // optional end date — stops generating after this
   isActive: boolean;
   parentTransactionId?: string; // original transaction that spawned this
+  dayOfMonth?: number;       // fixed day of month for next occurrences (1-28)
+  label?: string;            // user-friendly name (e.g. "Aluguel")
+}
+
+export interface TransactionAttachment {
+  id: string;
+  name: string;
+  url: string;
+  size: number;
+  type: string;
+  createdAt: string;
 }
 
 export interface Transaction {
@@ -643,6 +654,11 @@ export interface Transaction {
   installmentTotal?: number;
   /** Recorrência automática */
   recurrence?: TransactionRecurrence;
+  /** Anexos (recibos, NFs, etc) */
+  attachments?: TransactionAttachment[];
+  /** Lock fiscal: true quando existe NF-e/NFC-e/NFSe autorizada vinculada via saleId */
+  isLocked?: boolean;
+  lockedReason?: string;
   /** Auditoria: identidade de quem criou/modificou. Preenchido nas mutações. */
   createdBy?: string;
   createdByName?: string;
