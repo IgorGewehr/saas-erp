@@ -1042,8 +1042,8 @@ async function persistProfilePic(
  * Fetches sender profile (name + avatar) from Facebook/Instagram Graph API,
  * then persists the profile picture to Firebase Storage for a permanent URL.
  *
- * Instagram: fields=name,username,profile_pic
- * Facebook:  fields=first_name,last_name,name,profile_pic
+ * Instagram: fields=name,profile_pic (username is NOT valid on IGSID endpoint)
+ * Facebook:  fields=first_name,last_name,profile_pic (falls back to name-only on error)
  */
 async function fetchSenderProfile(
   senderId: string,
@@ -1051,20 +1051,31 @@ async function fetchSenderProfile(
   channel: 'facebook' | 'instagram' = 'facebook',
 ): Promise<{ name: string; profilePic?: string } | null> {
   try {
-    // Facebook Messenger PSIDs: first_name + last_name + profile_pic (standard Messenger Profile API)
-    // Instagram IGSIDs: name + username + profile_pic
-    // Note: profile_pic for Instagram requires instagram_basic permission — may be absent.
+    // Instagram IGSIDs: name + profile_pic only — "username" is NOT a valid field on the
+    // IGSID endpoint and causes the entire request to fail with a 400 error.
+    // Facebook Messenger PSIDs: first_name + last_name + profile_pic.
     const fields = channel === 'instagram'
-      ? 'name,username,profile_pic'
+      ? 'name,profile_pic'
       : 'first_name,last_name,profile_pic';
 
     const url = `https://graph.facebook.com/v21.0/${senderId}?fields=${fields}&access_token=${pageAccessToken}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    let res = await fetch(url, { signal: AbortSignal.timeout(5000) });
 
+    // If the first call fails (e.g. profile_pic not permitted for this account),
+    // retry with name-only fields to at least recover the display name.
     if (!res.ok) {
       const errorText = await res.text().catch(() => '');
       console.warn(`[Profile] Fetch failed (${channel}) sender=${senderId} status=${res.status}:`, errorText);
-      return null;
+
+      const fallbackFields = channel === 'instagram' ? 'name' : 'first_name,last_name,name';
+      const fallbackUrl = `https://graph.facebook.com/v21.0/${senderId}?fields=${fallbackFields}&access_token=${pageAccessToken}`;
+      res = await fetch(fallbackUrl, { signal: AbortSignal.timeout(5000) });
+
+      if (!res.ok) {
+        const fallbackError = await res.text().catch(() => '');
+        console.warn(`[Profile] Fallback fetch also failed (${channel}) sender=${senderId} status=${res.status}:`, fallbackError);
+        return null;
+      }
     }
 
     const data = await res.json();
@@ -1073,13 +1084,14 @@ async function fetchSenderProfile(
     // Build name with best available data
     let name: string;
     if (channel === 'instagram') {
-      name = data.name || (data.username ? `@${data.username}` : senderId);
+      name = data.name || senderId;
     } else {
-      // Facebook: combine first + last; fall back to senderId if both empty
+      // Facebook: combine first + last, fall back to full name field, then senderId
       if (data.first_name || data.last_name) {
         name = [data.first_name, data.last_name].filter(Boolean).join(' ');
+      } else if (data.name) {
+        name = data.name;
       } else {
-        // API returned no name fields — token may be a user token instead of page token
         console.warn(`[Profile] Facebook returned no name fields for sender=${senderId}. Token may not be a Page Access Token.`);
         name = senderId;
       }
@@ -1330,14 +1342,23 @@ async function saveInboundMessage(params: InboundMessageParams) {
       const nameIsPlaceholder = !currentName
         || /^\d+$/.test(currentName)
         || PLACEHOLDER_NAMES.includes(currentName);
-      if (params.senderName && nameIsPlaceholder) {
+      // Only update if the incoming name is a real name (not another placeholder or numeric ID).
+      // This prevents a failed fetch from "updating" a placeholder with another placeholder,
+      // which caused old contacts to stay stuck as "Usuário do Facebook" forever.
+      const newNameIsReal = !!params.senderName
+        && !PLACEHOLDER_NAMES.includes(params.senderName)
+        && !/^\d+$/.test(params.senderName);
+      if (newNameIsReal && nameIsPlaceholder) {
         enrichUpdate.contactName = params.senderName;
       }
-      // Enrich avatar if missing or if we now have a permanent Firebase Storage URL
+      // Enrich avatar if missing, if the stored URL is an expiring Meta CDN URL,
+      // or if the conversation is being resurrected (re-fetch may have gotten a better photo).
       const currentAvatar = existingData.contactAvatarUrl as string | undefined;
+      const isResurrect = existingData.isDeleted === true;
       const newAvatarIsBetter = params.senderAvatarUrl && (
         !currentAvatar
-        || (currentAvatar.includes('fbcdn.net') && params.senderAvatarUrl.includes('firebasestorage'))
+        || currentAvatar.includes('fbcdn.net')
+        || (isResurrect && params.senderAvatarUrl.includes('firebasestorage'))
       );
       if (newAvatarIsBetter) {
         enrichUpdate.contactAvatarUrl = params.senderAvatarUrl;
