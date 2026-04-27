@@ -60,6 +60,7 @@ import {
   XCircle,
   CalendarDays,
   ChevronsRight,
+  Lock,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -374,6 +375,31 @@ export default function FinancialModule() {
     staleTime: 5 * 60 * 1000,
   });
 
+  // Fiscal documents with status 'autorizada' — used to build the set of locked saleIds
+  const { data: authorizedFiscalSaleIds = new Set<string>() } = useTanstackQuery({
+    queryKey: ['fiscalLocks', business?.id],
+    queryFn: async () => {
+      if (!business?.id) return new Set<string>();
+      const q = query(
+        collection(db, 'fiscalDocuments'),
+        where('businessId', '==', business.id),
+        where('status', '==', 'autorizada'),
+      );
+      const snap = await getDocs(q);
+      const ids = new Set<string>();
+      snap.docs.forEach(d => { const saleId = d.data().saleId as string | undefined; if (saleId) ids.add(saleId); });
+      return ids;
+    },
+    enabled: !!business?.id,
+    staleTime: 2 * 60 * 1000,
+  });
+
+  const isTransactionLocked = useCallback((tx: Transaction): boolean => {
+    if (tx.isLocked) return true;
+    if (tx.saleId && authorizedFiscalSaleIds.has(tx.saleId)) return true;
+    return false;
+  }, [authorizedFiscalSaleIds]);
+
   // ---- Computed ----
   const summaryMetrics = useMemo(() => {
     const receitas = transactions.filter((t) => t.type === 'receita' && t.status === 'pago').reduce((s, t) => s + t.amount, 0);
@@ -603,15 +629,22 @@ export default function FinancialModule() {
 
   const openEditForm = useCallback(async (transaction: Transaction) => {
     // Always fetch fresh data from Firestore before opening the edit form.
-    // This prevents a race condition where the React Query cache is stale (e.g., the
-    // transaction was just marked as paid but the cache hasn't refreshed yet), causing
-    // the form to load old values and revert the status on save.
     let tx = transaction;
     try {
       const fresh = await getDoc(doc(db, 'transactions', transaction.id));
       if (fresh.exists()) tx = { ...fresh.data(), id: fresh.id } as Transaction;
     } catch {
       // Fall back to cached version if Firestore fetch fails
+    }
+
+    // Lock guard: block editing if linked to an authorized fiscal document
+    if (isTransactionLocked(tx)) {
+      toast.error('Esta transação está vinculada a um documento fiscal autorizado e não pode ser alterada.');
+      // Backfill isLocked flag so the icon shows without querying fiscal docs next time
+      if (!tx.isLocked && tx.saleId) {
+        updateDoc(doc(db, 'transactions', tx.id), { isLocked: true, lockedReason: 'Documento fiscal autorizado' }).catch(() => {});
+      }
+      return;
     }
 
     setEditingTransaction(tx);
@@ -1086,8 +1119,16 @@ export default function FinancialModule() {
                 onMarkPaid={handleMarkAsPaid}
                 onRevertPaid={handleRevertToPending}
                 onEdit={openEditForm}
-                onDelete={(id) => setShowDeleteConfirm(id)}
+                onDelete={(id) => {
+                  const tx = transactions.find(t => t.id === id);
+                  if (tx && isTransactionLocked(tx)) {
+                    toast.error('Esta transação está vinculada a um documento fiscal autorizado e não pode ser excluída.');
+                    return;
+                  }
+                  setShowDeleteConfirm(id);
+                }}
                 onViewInstallments={handleOpenInstallmentGroup}
+                getIsLocked={isTransactionLocked}
                 getStatusChipColor={getStatusChipColor}
                 statusLabel={statusLabel}
                 // Advanced filters
@@ -2950,7 +2991,7 @@ function TransactionsContent({
   transactions, allTransactions, filterTab, onFilterChange,
   search, onSearchChange, sortField, sortDir, onSort,
   onMarkPaid, onRevertPaid, onEdit, onDelete, onViewInstallments,
-  getStatusChipColor, statusLabel,
+  getStatusChipColor, statusLabel, getIsLocked,
   dateFrom, onDateFromChange, dateTo, onDateToChange,
   category, onCategoryChange, bankAccount, onBankAccountChange,
   paymentMethod, onPaymentMethodChange, sectorId, onSectorIdChange,
@@ -2974,6 +3015,7 @@ function TransactionsContent({
   onViewInstallments: (groupId: string) => void;
   getStatusChipColor: (s: TransactionStatus) => { bg: string; text: string; border: string };
   statusLabel: (s: TransactionStatus) => string;
+  getIsLocked: (t: Transaction) => boolean;
   dateFrom: string; onDateFromChange: (v: string) => void;
   dateTo: string;   onDateToChange:   (v: string) => void;
   category: string; onCategoryChange: (v: string) => void;
@@ -3195,6 +3237,7 @@ function TransactionsContent({
             <AnimatePresence>
               {transactions.map((tx, i) => {
                 const sc = getStatusChipColor(tx.status);
+                const locked = getIsLocked(tx);
                 return (
                   <motion.tr key={tx.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ delay: i * 0.015 }}
                     className="hover:bg-slate-50/50 dark:hover:bg-white/[0.02] transition-colors group"
@@ -3250,17 +3293,25 @@ function TransactionsContent({
                       )}
                     </td>
                     <td className="px-5 py-3">
-                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        {tx.status === 'pago' && (
-                          <Tooltip title={t('financial.txList.revertPaid', 'Reverter para pendente')}>
-                            <IconButton size="small" onClick={() => onRevertPaid(tx.id)} sx={{ color: '#64748B', '&:hover': { color: '#F59E0B' } }}>
-                              <RotateCcw size={14} />
-                            </IconButton>
-                          </Tooltip>
-                        )}
-                        <Tooltip title={t('financial.txList.edit', 'Editar')}><IconButton size="small" onClick={() => onEdit(tx)} sx={{ color: '#64748B' }}><Edit3 size={14} /></IconButton></Tooltip>
-                        <Tooltip title={t('financial.txList.delete', 'Excluir')}><IconButton size="small" onClick={() => onDelete(tx.id)} sx={{ color: '#64748B', '&:hover': { color: '#EF4444' } }}><Trash2 size={14} /></IconButton></Tooltip>
-                      </div>
+                      {locked ? (
+                        <Tooltip title="Vinculado a documento fiscal autorizado — não pode ser alterado">
+                          <div className="flex items-center gap-1 opacity-50 group-hover:opacity-100 transition-opacity">
+                            <Lock size={14} className="text-amber-500" />
+                          </div>
+                        </Tooltip>
+                      ) : (
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          {tx.status === 'pago' && (
+                            <Tooltip title={t('financial.txList.revertPaid', 'Reverter para pendente')}>
+                              <IconButton size="small" onClick={() => onRevertPaid(tx.id)} sx={{ color: '#64748B', '&:hover': { color: '#F59E0B' } }}>
+                                <RotateCcw size={14} />
+                              </IconButton>
+                            </Tooltip>
+                          )}
+                          <Tooltip title={t('financial.txList.edit', 'Editar')}><IconButton size="small" onClick={() => onEdit(tx)} sx={{ color: '#64748B' }}><Edit3 size={14} /></IconButton></Tooltip>
+                          <Tooltip title={t('financial.txList.delete', 'Excluir')}><IconButton size="small" onClick={() => onDelete(tx.id)} sx={{ color: '#64748B', '&:hover': { color: '#EF4444' } }}><Trash2 size={14} /></IconButton></Tooltip>
+                        </div>
+                      )}
                     </td>
                   </motion.tr>
                 );
