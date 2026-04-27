@@ -562,6 +562,8 @@ export type PaymentMethod =
   | 'credito'
   | 'debito'
   | 'boleto'
+  | 'creditoLoja'
+  | 'semPagamento'
   | 'pontos'
   | 'gift_card'
   | 'outros';

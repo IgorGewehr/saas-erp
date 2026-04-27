@@ -24,6 +24,7 @@ import {
   AlertTriangle,
   User,
   Building2,
+  MapPin,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { collection, getDocs, query, where, doc, setDoc } from 'firebase/firestore';
@@ -34,6 +35,7 @@ import type { FiscalDocType, PaymentMethod, CRMContact } from '@/lib/types';
 import { NfseServicoCombobox } from './NfseServicoCombobox';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatCPFCNPJ } from '@/lib/utils/format';
+import { maskCpfCnpj, maskPhone, maskCep, unmaskDigits } from '@/lib/utils/fiscal-masks';
 import { useTranslation } from 'react-i18next';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -95,10 +97,31 @@ const PAYMENT_SEFAZ_CODES: Record<PaymentMethod, string> = {
   credito: '03',
   debito: '04',
   boleto: '15',
+  creditoLoja: '05',
+  semPagamento: '90',
   pontos: '99',
   gift_card: '99',
   outros: '99',
 };
+
+const NFE_NATUREZAS = [
+  'Venda de mercadoria',
+  'Prestação de serviço',
+  'Devolução de mercadoria',
+  'Transferência',
+  'Remessa para conserto',
+  'Remessa para industrialização',
+  'Retorno de industrialização',
+  'Remessa em demonstração',
+  'Bonificação',
+] as const;
+
+const NFE_FINALIDADES = [
+  { value: '1', label: '1 - Normal' },
+  { value: '2', label: '2 - Complementar' },
+  { value: '3', label: '3 - Ajuste' },
+  { value: '4', label: '4 - Devolução / Retorno' },
+] as const;
 
 const inputClasses = cn(
   'w-full px-3.5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
@@ -140,6 +163,8 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
     credito: t('fiscal.emit.paymentCredito', 'Cartão de Crédito'),
     debito: t('fiscal.emit.paymentDebito', 'Cartão de Débito'),
     boleto: t('fiscal.emit.paymentBoleto', 'Boleto'),
+    creditoLoja: t('fiscal.emit.paymentCreditoLoja', 'Crédito em Loja'),
+    semPagamento: t('fiscal.emit.paymentSemPagamento', 'Sem Pagamento'),
     pontos: t('fiscal.emit.paymentPontos', 'Pontos'),
     gift_card: t('fiscal.emit.paymentGiftCard', 'Gift Card'),
     outros: t('fiscal.emit.paymentOutros', 'Outros'),
@@ -152,6 +177,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
   }), [t]);
 
   const [isEmitting, setIsEmitting] = useState(false);
+  const [isFetchingCep, setIsFetchingCep] = useState(false);
   const [clients, setClients] = useState<CRMContact[]>([]);
 
   // ── NFSe State ──
@@ -178,11 +204,19 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
   const [nfceItems, setNfceItems] = useState<NFCeItemForm[]>([createEmptyNFCeItem()]);
   const [nfcePayments, setNfcePayments] = useState<PaymentForm[]>([{ id: '1', method: 'dinheiro', amount: 0 }]);
 
+  // ── NFSe extras ──
+  const [nfseNbs, setNfseNbs] = useState('');
+
+  // ── NFCe extras ──
+  const [nfceInfoAdicionais, setNfceInfoAdicionais] = useState('');
+
   // ── NFe State (same items/payment structure as NFCe + recipient details) ──
   const [nfeRecipientDoc, setNfeRecipientDoc] = useState('');
   const [nfeRecipientName, setNfeRecipientName] = useState('');
   const [nfeRecipientIE, setNfeRecipientIE] = useState('');
-  const [nfeNatureza, setNfeNatureza] = useState('Venda de mercadoria');
+  const [nfeNatureza, setNfeNatureza] = useState<string>(NFE_NATUREZAS[0]);
+  const [nfeFinalidade, setNfeFinalidade] = useState<'1' | '2' | '3' | '4'>('1');
+  const [nfeInfoAdicionais, setNfeInfoAdicionais] = useState('');
   const [nfeItems, setNfeItems] = useState<NFCeItemForm[]>([createEmptyNFCeItem()]);
   const [nfePayments, setNfePayments] = useState<PaymentForm[]>([{ id: '1', method: 'dinheiro', amount: 0 }]);
 
@@ -266,6 +300,30 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
     }
   };
 
+  // ── CEP lookup via ViaCEP (NFe recipient address) ──
+  const fetchCep = async (cep: string) => {
+    const digits = unmaskDigits(cep);
+    if (digits.length !== 8) return;
+    setIsFetchingCep(true);
+    try {
+      const res = await fetch(`https://viacep.com.br/ws/${digits}/json/`);
+      const data = await res.json();
+      if (data.erro) { toast.error('CEP não encontrado'); return; }
+      setNfeRecipientAddress(prev => ({
+        ...prev,
+        logradouro: data.logradouro || prev.logradouro,
+        bairro: data.bairro || prev.bairro,
+        municipio: data.localidade || prev.municipio,
+        codigoMunicipio: data.ibge || prev.codigoMunicipio,
+        uf: data.uf || prev.uf,
+      }));
+    } catch {
+      toast.error('Erro ao buscar CEP. Verifique a conexão.');
+    } finally {
+      setIsFetchingCep(false);
+    }
+  };
+
   // ── Get certificate from Firebase Storage ──
   const getCertificate = async (): Promise<{ pfxBase64: string; password: string }> => {
     const cert = business?.fiscal?.certificate;
@@ -337,15 +395,18 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
           [nfseForm.tomadorTipo === 'cnpj' ? 'cnpj' : 'cpf']: cleanDoc,
           nome: nfseForm.tomadorNome,
           email: nfseForm.tomadorEmail || undefined,
+          telefone: unmaskDigits(nfseForm.tomadorPhone) || undefined,
         },
         codigoServico: nfseForm.codigoTributacaoNacional || undefined,
         codigoServicoMunicipal: nfseForm.codigoTributacaoMunicipal || undefined,
+        nbs: nfseNbs.trim() || undefined,
         discriminacao: nfseForm.discriminacao,
         valorServicos: nfseForm.valorServicos,
         valorDeducoes: nfseForm.valorDeducoes > 0 ? nfseForm.valorDeducoes : undefined,
         valorDesconto: nfseForm.valorDescontoIncondicionado > 0 ? nfseForm.valorDescontoIncondicionado : undefined,
         aliquotaIss: nfseForm.aliquotaISS,
         issRetido: nfseForm.tipoRetencaoISSQN !== '1',
+        tipoRetencaoISSQN: nfseForm.tipoRetencaoISSQN,
         informacoesAdicionais: nfseForm.informacoesAdicionais || undefined,
       };
 
@@ -471,6 +532,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
             token: fiscalConfig.nfceConfig.cscToken || '',
           },
         } : {}),
+        ...(nfceInfoAdicionais.trim() ? { informacoesAdicionais: nfceInfoAdicionais.trim() } : {}),
         certificado,
       };
 
@@ -577,7 +639,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
         serie: String(fiscalConfig?.nfeConfig?.series || '1'),
         naturezaOperacao: nfeNatureza,
         tipoOperacao: '1',
-        finalidade: '1',
+        finalidade: nfeFinalidade,
         consumidorFinal: isDestPJ ? '0' : '1',
         presencaComprador: '9',
         ufEmitente: emitEndereco?.uf || 'SP',
@@ -616,6 +678,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
             valor: p.amount || itemsTotal(nfeItems),
           })),
         },
+        ...(nfeInfoAdicionais.trim() ? { informacoesAdicionais: nfeInfoAdicionais.trim() } : {}),
         certificado,
       };
 
@@ -783,8 +846,9 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
                     </label>
                     <input
                       value={nfseForm.tomadorDocumento}
-                      onChange={(e) => setNfseForm(prev => ({ ...prev, tomadorDocumento: e.target.value }))}
+                      onChange={(e) => setNfseForm(prev => ({ ...prev, tomadorDocumento: maskCpfCnpj(e.target.value) }))}
                       placeholder={nfseForm.tomadorTipo === 'cpf' ? '000.000.000-00' : '00.000.000/0001-00'}
+                      maxLength={nfseForm.tomadorTipo === 'cpf' ? 14 : 18}
                       className={inputClasses}
                     />
                   </div>
@@ -815,8 +879,9 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
                     <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.emit.telefone', 'Telefone')}</label>
                     <input
                       value={nfseForm.tomadorPhone}
-                      onChange={(e) => setNfseForm(prev => ({ ...prev, tomadorPhone: e.target.value }))}
+                      onChange={(e) => setNfseForm(prev => ({ ...prev, tomadorPhone: maskPhone(e.target.value) }))}
                       placeholder="(00) 00000-0000"
+                      maxLength={15}
                       className={inputClasses}
                     />
                   </div>
@@ -852,6 +917,20 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
                     }))
                   }
                 />
+
+                <div>
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">
+                    {t('fiscal.emit.nbs', 'Código NBS')}
+                    <span className="ml-1 text-gray-400 dark:text-gray-500 font-normal">(opcional — exigido por alguns municípios)</span>
+                  </label>
+                  <input
+                    value={nfseNbs}
+                    onChange={(e) => setNfseNbs(e.target.value.replace(/\D/g, '').slice(0, 9))}
+                    placeholder="Ex: 101010100"
+                    maxLength={9}
+                    className={inputClasses}
+                  />
+                </div>
               </div>
 
               {/* Valores + ISSQN */}
@@ -977,7 +1056,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.emit.cpfLabel', 'CPF')}</label>
-                    <input value={nfceConsumidorCpf} onChange={(e) => setNfceConsumidorCpf(e.target.value)} placeholder={t('fiscal.emit.opcionalPlaceholder', 'Opcional')} className={inputClasses} />
+                    <input value={nfceConsumidorCpf} onChange={(e) => setNfceConsumidorCpf(maskCpfCnpj(e.target.value))} placeholder="000.000.000-00" maxLength={14} className={inputClasses} />
                   </div>
                   <div>
                     <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.emit.nomeLabel', 'Nome')}</label>
@@ -1003,6 +1082,18 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
                 onRemove={(id) => setNfcePayments(prev => prev.filter(p => p.id !== id))}
                 paymentLabels={PAYMENT_METHOD_LABELS}
               />
+
+              {/* Informações Adicionais */}
+              <div>
+                <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.emit.infoAdicionais', 'Informações Adicionais')}</label>
+                <textarea
+                  value={nfceInfoAdicionais}
+                  onChange={(e) => setNfceInfoAdicionais(e.target.value)}
+                  placeholder={t('fiscal.emit.infoAdicionaisPlaceholder', 'Observações opcionais...')}
+                  rows={2}
+                  className={cn(inputClasses, 'resize-none')}
+                />
+              </div>
             </div>
           )}
 
@@ -1030,7 +1121,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div>
                     <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">CPF/CNPJ *</label>
-                    <input value={nfeRecipientDoc} onChange={(e) => setNfeRecipientDoc(e.target.value)} className={inputClasses} />
+                    <input value={nfeRecipientDoc} onChange={(e) => setNfeRecipientDoc(maskCpfCnpj(e.target.value))} placeholder="000.000.000-00" maxLength={18} className={inputClasses} />
                   </div>
                   <div>
                     <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">Nome/Razao Social *</label>
@@ -1041,7 +1132,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
                     <input value={nfeRecipientIE} onChange={(e) => setNfeRecipientIE(e.target.value)} placeholder={t('fiscal.emit.opcionalPlaceholder', 'Opcional')} className={inputClasses} />
                   </div>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div>
                     <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.emit.indicadorIE', 'Indicador IE')}</label>
                     <select
@@ -1057,14 +1148,16 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
                   <div>
                     <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.emit.naturezaOperacao', 'Natureza da Operação')}</label>
                     <select value={nfeNatureza} onChange={(e) => setNfeNatureza(e.target.value)} className={selectClasses}>
-                      {[
-                        t('fiscal.emit.naturezas.venda', 'Venda de mercadoria'),
-                        t('fiscal.emit.naturezas.servico', 'Prestação de serviço'),
-                        t('fiscal.emit.naturezas.devolucao', 'Devolução de mercadoria'),
-                        t('fiscal.emit.naturezas.transferencia', 'Transferência'),
-                        t('fiscal.emit.naturezas.remessa', 'Remessa para conserto'),
-                      ].map(n => (
+                      {NFE_NATUREZAS.map(n => (
                         <option key={n} value={n}>{n}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.emit.finalidade', 'Finalidade')}</label>
+                    <select value={nfeFinalidade} onChange={(e) => setNfeFinalidade(e.target.value as '1' | '2' | '3' | '4')} className={selectClasses}>
+                      {NFE_FINALIDADES.map(f => (
+                        <option key={f.value} value={f.value}>{f.label}</option>
                       ))}
                     </select>
                   </div>
@@ -1102,7 +1195,25 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
                     </div>
                     <div>
                       <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.emit.cep', 'CEP')}</label>
-                      <input value={nfeRecipientAddress.cep} onChange={(e) => setNfeRecipientAddress(prev => ({ ...prev, cep: e.target.value }))} placeholder="00000-000" className={inputClasses} />
+                      <div className="flex gap-2">
+                        <input
+                          value={nfeRecipientAddress.cep}
+                          onChange={(e) => setNfeRecipientAddress(prev => ({ ...prev, cep: maskCep(e.target.value) }))}
+                          onBlur={(e) => fetchCep(e.target.value)}
+                          placeholder="00000-000"
+                          maxLength={9}
+                          className={cn(inputClasses, 'flex-1')}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => fetchCep(nfeRecipientAddress.cep)}
+                          disabled={isFetchingCep}
+                          title="Buscar endereço pelo CEP"
+                          className="px-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-500 dark:text-gray-400 hover:text-red-500 dark:hover:text-red-400 hover:border-red-300 dark:hover:border-red-500/40 transition-colors disabled:opacity-50"
+                        >
+                          {isFetchingCep ? <Loader2 className="w-4 h-4 animate-spin" /> : <MapPin className="w-4 h-4" />}
+                        </button>
+                      </div>
                     </div>
                     <div>
                       <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.emit.complemento', 'Complemento')}</label>
@@ -1129,6 +1240,18 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
                 onRemove={(id) => setNfePayments(prev => prev.filter(p => p.id !== id))}
                 paymentLabels={PAYMENT_METHOD_LABELS}
               />
+
+              {/* Informações Adicionais */}
+              <div>
+                <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.emit.infoAdicionais', 'Informações Adicionais')}</label>
+                <textarea
+                  value={nfeInfoAdicionais}
+                  onChange={(e) => setNfeInfoAdicionais(e.target.value)}
+                  placeholder={t('fiscal.emit.infoAdicionaisPlaceholder', 'Observações opcionais...')}
+                  rows={2}
+                  className={cn(inputClasses, 'resize-none')}
+                />
+              </div>
             </div>
           )}
 
