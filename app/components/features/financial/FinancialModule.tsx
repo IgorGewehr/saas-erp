@@ -63,6 +63,7 @@ import {
   Lock,
   Loader2,
   Upload,
+  Settings2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -99,9 +100,11 @@ import {
   exportDREPDF,
   exportCashFlowCSV,
   exportDRESectorCSV,
+  exportCommissionsCSV,
   type DREData,
   type CashFlowRow,
   type SectorDRERow,
+  type CommissionRow,
 } from '@/lib/utils/financial-export';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
 import type {
@@ -1197,6 +1200,7 @@ export default function FinancialModule() {
                 transactions={transactions}
                 onMarkPaid={handleMarkAsPaid}
                 showBalances={showBalances}
+                businessName={business?.razaoSocial ?? ''}
               />
             )}
 
@@ -4607,7 +4611,7 @@ function TransactionsContent({
 // TAB: COMISSÕES
 // ==========================================
 
-type CommissionPeriod = 'mes' | 'mes_anterior' | 'todos';
+type CommissionPeriod = 'mes' | 'mes_anterior' | 'personalizado' | 'todos';
 
 interface ProfessionalCommissionGroup {
   professionalId: string;
@@ -4623,27 +4627,66 @@ function CommissionsContent({
   transactions,
   onMarkPaid,
   showBalances,
+  businessName,
 }: {
   transactions: Transaction[];
   onMarkPaid: (id: string) => void;
   showBalances: boolean;
+  businessName: string;
 }) {
+  const { business } = useAuth();
+  const queryClient = useQueryClient();
   const [period, setPeriod] = useState<CommissionPeriod>('mes');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo]     = useState('');
   const [expandedProfessional, setExpandedProfessional] = useState<string | null>(null);
   const [markingPaid, setMarkingPaid] = useState<string | null>(null);
+  const [payingAll, setPayingAll]     = useState<string | null>(null);
+  const [showRules, setShowRules]     = useState(false);
+  const [editingRate, setEditingRate] = useState<{ uid: string; value: string } | null>(null);
+  const [savingRate, setSavingRate]   = useState(false);
+
+  // Load business members for commission rules panel
+  const { data: members = [] } = useTanstackQuery<import('@/lib/types').User[]>({
+    queryKey: ['members', business?.id],
+    queryFn: async () => {
+      if (!business?.id) return [];
+      const snap = await getDocs(query(collection(db, 'users'), where('businessId', '==', business.id)));
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as import('@/lib/types').User));
+    },
+    enabled: !!business?.id && showRules,
+    staleTime: 2 * 60 * 1000,
+  });
+
+  const handleSaveRate = async (uid: string, rate: number) => {
+    if (isNaN(rate) || rate < 0 || rate > 100) { toast.error('Taxa deve ser entre 0 e 100%'); return; }
+    setSavingRate(true);
+    try {
+      await updateDoc(doc(db, 'users', uid), { commissionRate: rate });
+      queryClient.invalidateQueries({ queryKey: ['members', business?.id] });
+      setEditingRate(null);
+      toast.success('Taxa de comissão atualizada');
+    } finally { setSavingRate(false); }
+  };
 
   // Filter commission transactions by period
   const commissionTx = useMemo<Transaction[]>(() => {
     const all = transactions.filter(t => t.category === 'Comissoes' && t.type === 'despesa');
     if (period === 'todos') return all;
+    if (period === 'personalizado') {
+      return all.filter(t => {
+        const d = t.dueDate ?? '';
+        return (!dateFrom || d >= dateFrom) && (!dateTo || d <= dateTo);
+      });
+    }
     const now = new Date();
     const monthOffset = period === 'mes_anterior' ? -1 : 0;
     const y = now.getFullYear();
     const m = now.getMonth() + monthOffset;
     const start = new Date(y, m, 1).toISOString().slice(0, 10);
-    const end = new Date(y, m + 1, 0).toISOString().slice(0, 10);
+    const end   = new Date(y, m + 1, 0).toISOString().slice(0, 10);
     return all.filter(t => t.dueDate && t.dueDate >= start && t.dueDate <= end);
-  }, [transactions, period]);
+  }, [transactions, period, dateFrom, dateTo]);
 
   // Group by professional
   const grouped = useMemo<ProfessionalCommissionGroup[]>(() => {
@@ -4672,12 +4715,29 @@ function CommissionsContent({
   const periodLabels: Record<CommissionPeriod, string> = {
     mes: 'Este mês',
     mes_anterior: 'Mês anterior',
+    personalizado: 'Período',
     todos: 'Todos',
   };
+
+  const periodLabel = period === 'personalizado' && (dateFrom || dateTo)
+    ? `${dateFrom ? formatDate(dateFrom) : '...'} – ${dateTo ? formatDate(dateTo) : '...'}`
+    : periodLabels[period];
 
   const handleMarkPaid = async (id: string) => {
     setMarkingPaid(id);
     try { await onMarkPaid(id); } finally { setMarkingPaid(null); }
+  };
+
+  const handlePayAll = async (group: ProfessionalCommissionGroup) => {
+    const pending = group.transactions.filter(t => t.status === 'pendente');
+    if (!pending.length) return;
+    setPayingAll(group.professionalId);
+    try {
+      const results = await Promise.allSettled(pending.map(t => onMarkPaid(t.id)));
+      const failed = results.filter(r => r.status === 'rejected').length;
+      if (failed > 0) toast.error(`${failed} comissão(ões) não foram pagas`);
+      else toast.success(`${pending.length} comissão(ões) pagas`);
+    } finally { setPayingAll(null); }
   };
 
   const statusChip = (status: TransactionStatus) => {
@@ -4689,8 +4749,99 @@ function CommissionsContent({
     pendente: 'Pendente', pago: 'Pago', cancelado: 'Cancelado', atrasado: 'Atrasado'
   }[status] ?? status);
 
+  const csvRows: CommissionRow[] = commissionTx.map(t => ({
+    professionalName: t.clientName ?? '—',
+    description: t.description,
+    date: t.dueDate ?? '',
+    amount: t.amount,
+    status: t.status,
+    notes: t.notes ?? '',
+  }));
+
   return (
     <div className="space-y-4">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">Comissões</h3>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">{commissionTx.length} lançamento(s) · {periodLabel}</p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
+            onClick={() => setShowRules(v => !v)}
+            className={cn('flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border transition-colors',
+              showRules ? 'border-violet-400 bg-violet-50 dark:bg-violet-500/10 text-violet-700 dark:text-violet-400' : 'border-slate-200 dark:border-gray-700 text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800'
+            )}
+          >
+            <Settings2 size={13} />
+            Regras
+          </motion.button>
+          <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
+            onClick={() => exportCommissionsCSV(csvRows, periodLabel, businessName)}
+            disabled={csvRows.length === 0}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800 disabled:opacity-40 transition-all"
+          >
+            <Download size={13} /> CSV
+          </motion.button>
+        </div>
+      </div>
+
+      {/* Commission rules panel */}
+      <AnimatePresence>
+        {showRules && (
+          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+            <div className="bg-white dark:bg-gray-900 border border-violet-200 dark:border-violet-500/20 rounded-2xl overflow-hidden shadow-sm">
+              <div className="px-5 py-3 border-b border-violet-100 dark:border-violet-500/10 bg-violet-50/50 dark:bg-violet-500/5">
+                <p className="text-sm font-semibold text-violet-800 dark:text-violet-200">Regras de Comissão por Profissional</p>
+                <p className="text-xs text-violet-600 dark:text-violet-400 mt-0.5">Taxa padrão do profissional. Serviços individuais podem sobrescrever.</p>
+              </div>
+              {members.length === 0 ? (
+                <div className="flex items-center justify-center py-6 text-slate-400 dark:text-gray-500 text-sm">
+                  <Loader2 size={16} className="animate-spin mr-2" /> Carregando membros...
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-50 dark:divide-gray-800">
+                  {members.filter(m => m.name).map(m => (
+                    <div key={m.id} className="flex items-center gap-4 px-5 py-3">
+                      <div className="w-8 h-8 rounded-full bg-gradient-to-br from-red-100 to-rose-100 dark:from-red-900/40 dark:to-rose-900/30 flex items-center justify-center text-xs font-bold text-red-700 dark:text-red-400 shrink-0">
+                        {(m.name || '?').split(' ').map((n: string) => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-slate-800 dark:text-gray-200 truncate">{m.name}</p>
+                        <p className="text-[11px] text-slate-400 dark:text-gray-500">{m.role}</p>
+                      </div>
+                      {editingRate?.uid === m.id ? (
+                        <div className="flex items-center gap-2">
+                          <input type="number" min="0" max="100" step="0.5"
+                            value={editingRate.value}
+                            onChange={e => setEditingRate({ uid: m.id, value: e.target.value })}
+                            onKeyDown={e => { if (e.key === 'Enter') handleSaveRate(m.id, parseFloat(editingRate.value)); if (e.key === 'Escape') setEditingRate(null); }}
+                            className="w-20 px-2 py-1 text-sm rounded-lg border border-violet-300 dark:border-violet-600 bg-white dark:bg-gray-900 text-slate-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                            autoFocus
+                          />
+                          <span className="text-sm text-slate-500">%</span>
+                          <button onClick={() => handleSaveRate(m.id, parseFloat(editingRate.value))} disabled={savingRate}
+                            className="px-2 py-1 rounded-lg bg-violet-600 text-white text-xs font-medium disabled:opacity-50"
+                          >{savingRate ? '...' : '✓'}</button>
+                          <button onClick={() => setEditingRate(null)} className="p-1 text-slate-400 hover:text-slate-600"><X size={14} /></button>
+                        </div>
+                      ) : (
+                        <button onClick={() => setEditingRate({ uid: m.id, value: String(m.commissionRate ?? 0) })}
+                          className="flex items-center gap-1.5 px-3 py-1 rounded-lg border border-slate-200 dark:border-gray-700 hover:border-violet-300 hover:bg-violet-50 dark:hover:bg-violet-500/10 transition-colors"
+                        >
+                          <span className={cn('text-sm font-bold', (m.commissionRate ?? 0) > 0 ? 'text-violet-600 dark:text-violet-400' : 'text-slate-400')}>{m.commissionRate ?? 0}%</span>
+                          <Edit3 size={11} className="text-slate-400" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* KPI cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         {[
@@ -4713,21 +4864,29 @@ function CommissionsContent({
         <div className="px-6 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-100 dark:border-gray-800">
           <div>
             <h3 className="text-base font-display font-bold text-slate-900 dark:text-gray-100">Por Profissional</h3>
-            <p className="text-xs text-slate-400 dark:text-gray-500 mt-0.5">Clique para expandir os lançamentos</p>
+            <p className="text-xs text-slate-400 dark:text-gray-500 mt-0.5">Clique para expandir · "Pagar todas" quita as pendentes de uma vez</p>
           </div>
-          <div className="flex gap-1 p-1 bg-slate-50 dark:bg-gray-800 rounded-xl">
-            {(Object.entries(periodLabels) as [CommissionPeriod, string][]).map(([key, label]) => (
-              <button
-                key={key}
-                onClick={() => setPeriod(key)}
-                className={cn(
-                  'px-3 py-1.5 rounded-lg text-xs font-medium transition-all',
-                  period === key
-                    ? 'bg-white dark:bg-gray-700 text-slate-900 dark:text-gray-100 shadow-sm'
-                    : 'text-slate-500 dark:text-gray-400 hover:text-slate-700 dark:hover:text-gray-300'
-                )}
-              >{label}</button>
-            ))}
+          <div className="flex flex-wrap gap-2 items-center">
+            <div className="flex gap-1 p-1 bg-slate-50 dark:bg-gray-800 rounded-xl">
+              {(Object.entries(periodLabels) as [CommissionPeriod, string][]).map(([key, label]) => (
+                <button key={key} onClick={() => setPeriod(key)}
+                  className={cn('px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all',
+                    period === key ? 'bg-white dark:bg-gray-700 text-slate-900 dark:text-gray-100 shadow-sm' : 'text-slate-500 dark:text-gray-400 hover:text-slate-700 dark:hover:text-gray-300'
+                  )}
+                >{label}</button>
+              ))}
+            </div>
+            {period === 'personalizado' && (
+              <div className="flex items-center gap-1.5">
+                <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+                  className="px-2 py-1 text-xs rounded-lg border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-700 dark:text-gray-300 focus:outline-none focus:ring-1 focus:ring-red-500"
+                />
+                <span className="text-slate-400 text-xs">–</span>
+                <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+                  className="px-2 py-1 text-xs rounded-lg border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-700 dark:text-gray-300 focus:outline-none focus:ring-1 focus:ring-red-500"
+                />
+              </div>
+            )}
           </div>
         </div>
 
@@ -4735,101 +4894,98 @@ function CommissionsContent({
           <div className="py-16 flex flex-col items-center text-slate-400 dark:text-gray-500">
             <Users size={40} strokeWidth={1.5} />
             <p className="mt-3 text-sm font-medium">Nenhuma comissão no período</p>
-            <p className="text-xs mt-1">Configure a taxa de comissão dos profissionais em Configurações → Usuários</p>
+            <p className="text-xs mt-1">Configure a taxa de comissão dos profissionais clicando em "Regras"</p>
           </div>
         ) : (
           <div className="divide-y divide-slate-100 dark:divide-gray-800">
-            {grouped.map(group => (
-              <div key={group.professionalId}>
-                {/* Professional row */}
-                <button
-                  type="button"
-                  onClick={() => setExpandedProfessional(expandedProfessional === group.professionalId ? null : group.professionalId)}
-                  className="w-full flex items-center gap-4 px-6 py-4 hover:bg-slate-50 dark:hover:bg-white/[0.02] transition-colors text-left"
-                >
-                  {/* Avatar */}
-                  <div className="w-9 h-9 rounded-full bg-gradient-to-br from-red-100 to-rose-100 dark:from-red-900/40 dark:to-rose-900/30 border border-red-200/60 dark:border-red-800/40 flex items-center justify-center text-xs font-bold text-red-700 dark:text-red-400 flex-shrink-0">
-                    {(group.professionalName || '?').split(' ').map(n => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold text-slate-900 dark:text-gray-100 truncate">{group.professionalName}</p>
-                    <p className="text-xs text-slate-400 dark:text-gray-500">{group.transactions.length} lançamento{group.transactions.length !== 1 ? 's' : ''}</p>
-                  </div>
-                  {/* Totals */}
-                  <div className="hidden sm:flex items-center gap-6 text-right">
-                    <div>
-                      <p className="text-[10px] text-slate-400 dark:text-gray-500 uppercase tracking-wide">Pendente</p>
-                      <p className="text-sm font-bold text-amber-600 dark:text-amber-400">
-                        {showBalances ? formatCurrency(group.totalPendente) : '****'}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-[10px] text-slate-400 dark:text-gray-500 uppercase tracking-wide">Pago</p>
-                      <p className="text-sm font-bold text-emerald-600 dark:text-emerald-400">
-                        {showBalances ? formatCurrency(group.totalPago) : '****'}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-[10px] text-slate-400 dark:text-gray-500 uppercase tracking-wide">Total</p>
-                      <p className="text-sm font-bold text-slate-800 dark:text-gray-100">
-                        {showBalances ? formatCurrency(group.totalGeral) : '****'}
-                      </p>
-                    </div>
-                  </div>
-                  <ChevronDown
-                    size={16}
-                    className={cn('text-slate-400 dark:text-gray-500 transition-transform flex-shrink-0', expandedProfessional === group.professionalId && 'rotate-180')}
-                  />
-                </button>
-
-                {/* Expanded transactions */}
-                <AnimatePresence>
-                  {expandedProfessional === group.professionalId && (
-                    <motion.div
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.2 }}
-                      className="overflow-hidden"
+            {grouped.map(group => {
+              const paidPct = group.totalGeral > 0 ? (group.totalPago / group.totalGeral) * 100 : 0;
+              const hasPending = group.totalPendente > 0;
+              return (
+                <div key={group.professionalId}>
+                  <div className="flex items-center gap-4 px-6 py-4 hover:bg-slate-50 dark:hover:bg-white/[0.02] transition-colors">
+                    {/* Expand button */}
+                    <button type="button"
+                      onClick={() => setExpandedProfessional(expandedProfessional === group.professionalId ? null : group.professionalId)}
+                      className="flex items-center gap-4 flex-1 min-w-0 text-left"
                     >
-                      <div className="bg-slate-50/70 dark:bg-white/[0.01] border-t border-slate-100 dark:border-gray-800/60">
-                        {group.transactions
-                          .sort((a, b) => (b.dueDate ?? '').localeCompare(a.dueDate ?? ''))
-                          .map(tx => (
-                          <div key={tx.id} className="flex items-center gap-3 px-6 py-3 border-b border-slate-100 dark:border-gray-800/40 last:border-0">
-                            <div className="flex-1 min-w-0">
-                              <p className="text-sm text-slate-800 dark:text-gray-200 truncate">{tx.description}</p>
-                              <div className="flex items-center gap-2 mt-0.5">
-                                <p className="text-[11px] text-slate-400 dark:text-gray-500">{formatDate(tx.dueDate)}</p>
-                                {tx.notes && <p className="text-[11px] text-slate-400 dark:text-gray-500 truncate">· {tx.notes}</p>}
-                              </div>
-                            </div>
-                            <p className="text-sm font-bold text-slate-800 dark:text-gray-100 flex-shrink-0">
-                              {showBalances ? formatCurrency(tx.amount) : '****'}
-                            </p>
-                            <span className={cn('text-[11px] font-semibold px-2 py-0.5 rounded-lg border flex-shrink-0', statusChip(tx.status))}>
-                              {statusText(tx.status)}
-                            </span>
-                            {tx.status === 'pendente' && (
-                              <button
-                                onClick={() => handleMarkPaid(tx.id)}
-                                disabled={markingPaid === tx.id}
-                                title="Marcar como pago"
-                                className="flex-shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-[11px] font-semibold transition-colors"
-                              >
-                                {markingPaid === tx.id
-                                  ? <><span className="w-3 h-3 border border-white/60 border-t-white rounded-full animate-spin" /></>
-                                  : <><CheckCircle2 size={12} /> Pagar</>}
-                              </button>
-                            )}
-                          </div>
-                        ))}
+                      <div className="w-9 h-9 rounded-full bg-gradient-to-br from-red-100 to-rose-100 dark:from-red-900/40 dark:to-rose-900/30 border border-red-200/60 dark:border-red-800/40 flex items-center justify-center text-xs font-bold text-red-700 dark:text-red-400 flex-shrink-0">
+                        {(group.professionalName || '?').split(' ').map(n => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()}
                       </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-            ))}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-slate-900 dark:text-gray-100 truncate">{group.professionalName}</p>
+                        <div className="flex items-center gap-2 mt-1">
+                          <div className="flex-1 h-1 rounded-full bg-slate-100 dark:bg-gray-800 overflow-hidden max-w-[80px]">
+                            <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${paidPct}%` }} />
+                          </div>
+                          <span className="text-[10px] text-slate-400 dark:text-gray-500">{paidPct.toFixed(0)}% pago</span>
+                        </div>
+                      </div>
+                    </button>
+                    {/* Totals + actions */}
+                    <div className="hidden sm:flex items-center gap-4 text-right shrink-0">
+                      <div>
+                        <p className="text-[10px] text-slate-400 dark:text-gray-500 uppercase tracking-wide">Pendente</p>
+                        <p className="text-sm font-bold text-amber-600 dark:text-amber-400">{showBalances ? formatCurrency(group.totalPendente) : '****'}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-slate-400 dark:text-gray-500 uppercase tracking-wide">Pago</p>
+                        <p className="text-sm font-bold text-emerald-600 dark:text-emerald-400">{showBalances ? formatCurrency(group.totalPago) : '****'}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-slate-400 dark:text-gray-500 uppercase tracking-wide">Total</p>
+                        <p className="text-sm font-bold text-slate-800 dark:text-gray-100">{showBalances ? formatCurrency(group.totalGeral) : '****'}</p>
+                      </div>
+                    </div>
+                    {hasPending && (
+                      <button onClick={() => handlePayAll(group)} disabled={payingAll === group.professionalId}
+                        className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold transition-colors shrink-0"
+                      >
+                        {payingAll === group.professionalId
+                          ? <Loader2 size={12} className="animate-spin" />
+                          : <><ChevronsRight size={12} /> Pagar todas</>}
+                      </button>
+                    )}
+                    <ChevronDown size={16}
+                      onClick={() => setExpandedProfessional(expandedProfessional === group.professionalId ? null : group.professionalId)}
+                      className={cn('text-slate-400 dark:text-gray-500 transition-transform flex-shrink-0 cursor-pointer', expandedProfessional === group.professionalId && 'rotate-180')}
+                    />
+                  </div>
+
+                  {/* Expanded transactions */}
+                  <AnimatePresence>
+                    {expandedProfessional === group.professionalId && (
+                      <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
+                        <div className="bg-slate-50/70 dark:bg-white/[0.01] border-t border-slate-100 dark:border-gray-800/60">
+                          {group.transactions
+                            .sort((a, b) => (b.dueDate ?? '').localeCompare(a.dueDate ?? ''))
+                            .map(tx => (
+                            <div key={tx.id} className="flex items-center gap-3 px-6 py-3 border-b border-slate-100 dark:border-gray-800/40 last:border-0">
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm text-slate-800 dark:text-gray-200 truncate">{tx.description}</p>
+                                <div className="flex items-center gap-2 mt-0.5">
+                                  <p className="text-[11px] text-slate-400 dark:text-gray-500">{formatDate(tx.dueDate)}</p>
+                                  {tx.notes && <p className="text-[11px] text-slate-400 dark:text-gray-500 truncate">· {tx.notes}</p>}
+                                </div>
+                              </div>
+                              <p className="text-sm font-bold text-slate-800 dark:text-gray-100 flex-shrink-0">{showBalances ? formatCurrency(tx.amount) : '****'}</p>
+                              <span className={cn('text-[11px] font-semibold px-2 py-0.5 rounded-lg border flex-shrink-0', statusChip(tx.status))}>{statusText(tx.status)}</span>
+                              {tx.status === 'pendente' && (
+                                <button onClick={() => handleMarkPaid(tx.id)} disabled={markingPaid === tx.id}
+                                  className="flex-shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-[11px] font-semibold transition-colors"
+                                >
+                                  {markingPaid === tx.id ? <span className="w-3 h-3 border border-white/60 border-t-white rounded-full animate-spin" /> : <><CheckCircle2 size={12} /> Pagar</>}
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
