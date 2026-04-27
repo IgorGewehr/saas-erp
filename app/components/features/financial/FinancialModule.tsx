@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useCallback, useEffect, useDeferredValue } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useDeferredValue, useRef } from 'react';
 import {
   Dialog,
   DialogTitle,
@@ -62,6 +62,7 @@ import {
   ChevronsRight,
   Lock,
   Loader2,
+  Upload,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -116,6 +117,9 @@ import type {
   CRMContact,
   TransactionAttachment,
   Budget,
+  DasRecord,
+  DasStatus,
+  SimplesAnexo,
 } from '@/lib/types';
 
 // ==========================================
@@ -132,7 +136,7 @@ const PRESET_COLORS = [
   '#820AD1', '#FF7A00', '#1A1A2E', '#14532D', '#7C2D12',
 ];
 
-type FinancialTab = 'visao-geral' | 'lancamentos' | 'recorrentes' | 'contas' | 'fluxo' | 'dre' | 'orcamento' | 'comissoes' | 'conciliacao' | 'auditoria';
+type FinancialTab = 'visao-geral' | 'lancamentos' | 'recorrentes' | 'contas' | 'fluxo' | 'dre' | 'orcamento' | 'das' | 'comissoes' | 'conciliacao' | 'auditoria';
 
 const inputSx = { '& .MuiOutlinedInput-root': { borderRadius: '12px' } };
 
@@ -186,6 +190,7 @@ export default function FinancialModule() {
     { key: 'fluxo',      label: t('financial.tabs.cashflow',  'Fluxo de Caixa'), icon: <TrendingUp size={16} /> },
     { key: 'dre',        label: 'DRE', icon: <FileSpreadsheet size={16} /> },
     { key: 'orcamento',  label: 'Orçamento', icon: <Target size={16} /> },
+    { key: 'das',        label: 'DAS / Simples', icon: <Receipt size={16} /> },
     { key: 'contas',     label: t('financial.tabs.accounts',  'Contas Bancárias'), icon: <Landmark size={16} /> },
     { key: 'comissoes',  label: 'Comissões', icon: <Users size={16} /> },
     { key: 'conciliacao', label: t('financial.tabs.reconciliation', 'Conciliação'), icon: <Scale size={16} /> },
@@ -1111,6 +1116,8 @@ export default function FinancialModule() {
                 crmContacts={crmContacts}
                 onGoToRecurrences={() => setActiveTab('recorrentes')}
                 onMarkPaid={handleMarkAsPaid}
+                onGoToDAS={() => setActiveTab('das')}
+                businessId={business?.id || ''}
               />
             )}
 
@@ -1195,6 +1202,13 @@ export default function FinancialModule() {
 
             {activeTab === 'orcamento' && (
               <BudgetContent
+                transactions={transactions}
+                businessId={business?.id || ''}
+              />
+            )}
+
+            {activeTab === 'das' && (
+              <DASContent
                 transactions={transactions}
                 businessId={business?.id || ''}
               />
@@ -1678,6 +1692,8 @@ function OverviewContent({
   crmContacts,
   onGoToRecurrences,
   onMarkPaid,
+  onGoToDAS,
+  businessId: overviewBusinessId,
 }: {
   metrics: { receitas: number; despesas: number; lucro: number; aReceber: number; aPagar: number; totalContas: number };
   showBalances: boolean;
@@ -1693,6 +1709,8 @@ function OverviewContent({
   crmContacts: CRMContact[];
   onGoToRecurrences?: () => void;
   onMarkPaid: (id: string) => void;
+  onGoToDAS: () => void;
+  businessId: string;
 }) {
   const { t } = useTranslation();
   const hiddenValue = '******';
@@ -1833,6 +1851,9 @@ function OverviewContent({
           )}
         </div>
       )}
+
+      {/* DAS Widget */}
+      <DASWidget businessId={overviewBusinessId} onGoToDAS={onGoToDAS} />
 
       {/* Period selector */}
       <div className="flex items-center gap-2">
@@ -3049,6 +3070,523 @@ function AuditLogView({ businessId }: { businessId?: string }) {
         </div>
       )}
     </div>
+  );
+}
+
+// ==========================================
+// TAB: DAS / SIMPLES NACIONAL (3.3)
+// ==========================================
+
+// Tabelas Simples Nacional 2024 (Resolução CGSN nº 140/2018 atualizada)
+const SIMPLES_TABELAS: Record<SimplesAnexo, { limite: number; aliquota: number; deducao: number; faixa: string }[]> = {
+  I:   [ // Comércio
+    { faixa: '1ª', limite: 180000,   aliquota: 4.00,  deducao: 0 },
+    { faixa: '2ª', limite: 360000,   aliquota: 7.30,  deducao: 5940 },
+    { faixa: '3ª', limite: 720000,   aliquota: 9.50,  deducao: 13860 },
+    { faixa: '4ª', limite: 1800000,  aliquota: 10.70, deducao: 22500 },
+    { faixa: '5ª', limite: 3600000,  aliquota: 14.30, deducao: 87300 },
+    { faixa: '6ª', limite: 4800000,  aliquota: 19.00, deducao: 378000 },
+  ],
+  II:  [ // Indústria
+    { faixa: '1ª', limite: 180000,   aliquota: 4.50,  deducao: 0 },
+    { faixa: '2ª', limite: 360000,   aliquota: 7.80,  deducao: 5940 },
+    { faixa: '3ª', limite: 720000,   aliquota: 10.00, deducao: 13860 },
+    { faixa: '4ª', limite: 1800000,  aliquota: 11.20, deducao: 22500 },
+    { faixa: '5ª', limite: 3600000,  aliquota: 14.70, deducao: 85500 },
+    { faixa: '6ª', limite: 4800000,  aliquota: 30.00, deducao: 720000 },
+  ],
+  III: [ // Serviços (tecnologia, comunicação, corretagem)
+    { faixa: '1ª', limite: 180000,   aliquota: 6.00,  deducao: 0 },
+    { faixa: '2ª', limite: 360000,   aliquota: 11.20, deducao: 9360 },
+    { faixa: '3ª', limite: 720000,   aliquota: 13.50, deducao: 17640 },
+    { faixa: '4ª', limite: 1800000,  aliquota: 16.00, deducao: 35640 },
+    { faixa: '5ª', limite: 3600000,  aliquota: 21.00, deducao: 125640 },
+    { faixa: '6ª', limite: 4800000,  aliquota: 33.00, deducao: 648000 },
+  ],
+  IV:  [ // Serviços (construção, limpeza, vigilância, advocacia)
+    { faixa: '1ª', limite: 180000,   aliquota: 4.50,  deducao: 0 },
+    { faixa: '2ª', limite: 360000,   aliquota: 9.00,  deducao: 8100 },
+    { faixa: '3ª', limite: 720000,   aliquota: 10.20, deducao: 12420 },
+    { faixa: '4ª', limite: 1800000,  aliquota: 14.00, deducao: 39780 },
+    { faixa: '5ª', limite: 3600000,  aliquota: 22.00, deducao: 183780 },
+    { faixa: '6ª', limite: 4800000,  aliquota: 33.00, deducao: 828000 },
+  ],
+  V:   [ // Serviços (fator R — TI, medicina, engenharia, arquitetura)
+    { faixa: '1ª', limite: 180000,   aliquota: 15.50, deducao: 0 },
+    { faixa: '2ª', limite: 360000,   aliquota: 18.00, deducao: 4500 },
+    { faixa: '3ª', limite: 720000,   aliquota: 19.50, deducao: 9900 },
+    { faixa: '4ª', limite: 1800000,  aliquota: 20.50, deducao: 17100 },
+    { faixa: '5ª', limite: 3600000,  aliquota: 23.00, deducao: 62100 },
+    { faixa: '6ª', limite: 4800000,  aliquota: 30.50, deducao: 540000 },
+  ],
+};
+
+const ANEXO_LABELS: Record<SimplesAnexo, string> = {
+  I:   'Anexo I — Comércio',
+  II:  'Anexo II — Indústria',
+  III: 'Anexo III — Serviços (tecnologia, comunicação)',
+  IV:  'Anexo IV — Serviços (construção, limpeza, advocacia)',
+  V:   'Anexo V — Serviços com fator R (TI, medicina, engenharia)',
+};
+
+function calcDAS(rbt12: number, receitaBruta: number, anexo: SimplesAnexo): { faixa: string; aliquotaNominal: number; aliquotaEfetiva: number; valorDas: number; deducao: number } {
+  if (rbt12 <= 0 || receitaBruta <= 0) return { faixa: '—', aliquotaNominal: 0, aliquotaEfetiva: 0, valorDas: 0, deducao: 0 };
+  const tabela = SIMPLES_TABELAS[anexo];
+  const row = tabela.find(r => rbt12 <= r.limite) ?? tabela[tabela.length - 1];
+  const aliquotaEfetiva = ((rbt12 * (row.aliquota / 100)) - row.deducao) / rbt12;
+  return {
+    faixa: row.faixa,
+    aliquotaNominal: row.aliquota,
+    aliquotaEfetiva: aliquotaEfetiva * 100,
+    valorDas: receitaBruta * aliquotaEfetiva,
+    deducao: row.deducao,
+  };
+}
+
+function dasVencimento(competencia: string): string {
+  const year = parseInt(competencia.slice(0, 4));
+  const month = parseInt(competencia.slice(4, 6));
+  const nextMonth = month === 12 ? 1 : month + 1;
+  const nextYear  = month === 12 ? year + 1 : year;
+  return `${nextYear}-${String(nextMonth).padStart(2, '0')}-20`;
+}
+
+function competenciaLabel(c: string): string {
+  const months = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  return `${months[parseInt(c.slice(4, 6)) - 1]}/${c.slice(0, 4)}`;
+}
+
+function DASContent({ transactions, businessId }: { transactions: Transaction[]; businessId: string }) {
+  const { user } = useAuth();
+  const { isDark } = useTheme();
+  const queryClient = useQueryClient();
+  const dasFileRef = useRef<HTMLInputElement>(null);
+
+  const now = new Date();
+  const currentComp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+  const [selComp,    setSelComp]    = useState(currentComp);
+  const [anexo,      setAnexo]      = useState<SimplesAnexo>('III');
+  const [manualRec,  setManualRec]  = useState('');
+  const [manualRbt,  setManualRbt]  = useState('');
+  const [isSaving,   setIsSaving]   = useState(false);
+  const [uploadingId,setUploadingId]= useState<string | null>(null);
+  const [showTabela, setShowTabela] = useState(false);
+
+  // Auto-calc receita bruta from paid transactions in selected competência
+  const autoReceita = useMemo(() => {
+    const prefix = `${selComp.slice(0, 4)}-${selComp.slice(4, 6)}`;
+    return transactions
+      .filter(t => t.type === 'receita' && t.status === 'pago' && (t.paymentDate || t.dueDate || '').startsWith(prefix))
+      .reduce((s, t) => s + t.amount, 0);
+  }, [transactions, selComp]);
+
+  // Auto-calc RBT12 = paid receitas in last 12 months
+  const autoRbt12 = useMemo(() => {
+    const compYear  = parseInt(selComp.slice(0, 4));
+    const compMonth = parseInt(selComp.slice(4, 6));
+    const cutoffDate = new Date(compYear, compMonth - 12, 1);
+    const cutoffStr  = cutoffDate.toISOString().slice(0, 7);
+    const endStr     = `${selComp.slice(0, 4)}-${selComp.slice(4, 6)}`;
+    return transactions
+      .filter(t => {
+        if (t.type !== 'receita' || t.status !== 'pago') return false;
+        const d = (t.paymentDate || t.dueDate || '').slice(0, 7);
+        return d >= cutoffStr && d <= endStr;
+      })
+      .reduce((s, t) => s + t.amount, 0);
+  }, [transactions, selComp]);
+
+  const receitaBruta = parseFloat(manualRec) || autoReceita;
+  const rbt12        = parseFloat(manualRbt) || autoRbt12;
+  const calc         = useMemo(() => calcDAS(rbt12, receitaBruta, anexo), [rbt12, receitaBruta, anexo]);
+
+  // Firestore: dasRecords
+  const { data: dasRecords = [] } = useTanstackQuery<DasRecord[]>({
+    queryKey: ['dasRecords', businessId],
+    queryFn: async () => {
+      if (!businessId) return [];
+      const q = query(
+        collection(db, 'dasRecords'),
+        where('businessId', '==', businessId),
+        orderBy('competencia', 'desc'),
+      );
+      const snap = await getDocs(q);
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as DasRecord));
+    },
+    enabled: !!businessId,
+    staleTime: 60 * 1000,
+  });
+
+  const currentRecord = dasRecords.find(r => r.competencia === selComp);
+
+  const handleSaveDAS = async () => {
+    if (!businessId || !user || calc.valorDas <= 0) return;
+    setIsSaving(true);
+    try {
+      const nowStr = new Date().toISOString();
+      const data: Omit<DasRecord, 'id'> = {
+        businessId,
+        competencia: selComp,
+        receitaBruta,
+        rbt12,
+        anexo,
+        aliquotaEfetiva: calc.aliquotaEfetiva,
+        valorDas: calc.valorDas,
+        vencimento: dasVencimento(selComp),
+        status: 'pendente',
+        createdAt: currentRecord?.createdAt ?? nowStr,
+        updatedAt: nowStr,
+      };
+      if (currentRecord) {
+        await updateDoc(doc(db, 'dasRecords', currentRecord.id), { ...data });
+      } else {
+        await addDoc(collection(db, 'dasRecords'), data);
+      }
+      queryClient.invalidateQueries({ queryKey: ['dasRecords', businessId] });
+      toast.success('DAS gerado com sucesso');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleMarkPago = async (record: DasRecord) => {
+    if (!businessId) return;
+    await updateDoc(doc(db, 'dasRecords', record.id), {
+      status: 'pago',
+      pagoEm: new Date().toISOString().slice(0, 10),
+      updatedAt: new Date().toISOString(),
+    });
+    queryClient.invalidateQueries({ queryKey: ['dasRecords', businessId] });
+    toast.success('DAS marcado como pago');
+  };
+
+  const handleUploadRecibo = async (record: DasRecord, file: File) => {
+    if (!businessId) return;
+    if (file.size > 10 * 1024 * 1024) { toast.error('Arquivo muito grande. Máximo 10MB.'); return; }
+    setUploadingId(record.id);
+    try {
+      const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+      const path = `businesses/${businessId}/das/${record.competencia}_${safeName}`;
+      const storageRef = ref(storage, path);
+      await uploadBytes(storageRef, file);
+      const url = await getDownloadURL(storageRef);
+      await updateDoc(doc(db, 'dasRecords', record.id), {
+        recibo: url, reciboPath: path, updatedAt: new Date().toISOString(),
+      });
+      queryClient.invalidateQueries({ queryKey: ['dasRecords', businessId] });
+      toast.success('Comprovante enviado');
+    } finally {
+      setUploadingId(null);
+    }
+  };
+
+  // Available competências (current month + last 23)
+  const competencias = useMemo(() => {
+    const list: string[] = [];
+    for (let i = 0; i < 24; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      list.push(`${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}`);
+    }
+    return list;
+  }, []);
+
+  const todayStr = now.toISOString().slice(0, 10);
+  const statusColor: Record<DasStatus, string> = {
+    pendente: 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-500/20',
+    pago:     'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-500/20',
+    atrasado: 'bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-400 border-red-200 dark:border-red-500/20',
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">DAS — Simples Nacional</h3>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">Calcule, registre e acompanhe o pagamento mensal do DAS</p>
+        </div>
+        <button onClick={() => setShowTabela(v => !v)}
+          className={cn('flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border transition-colors',
+            showTabela ? 'border-violet-400 bg-violet-50 dark:bg-violet-500/10 text-violet-700 dark:text-violet-400' : 'border-slate-200 dark:border-gray-700 text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800'
+          )}
+        >
+          <FileSpreadsheet size={13} />
+          {showTabela ? 'Ocultar' : 'Ver'} Tabela de Alíquotas
+        </button>
+      </div>
+
+      {/* Alíquota table */}
+      <AnimatePresence>
+        {showTabela && (
+          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+            <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl overflow-hidden shadow-sm">
+              <div className="px-5 py-3 border-b border-slate-100 dark:border-gray-800">
+                <span className="text-sm font-semibold text-slate-800 dark:text-gray-200">Tabela Simples Nacional 2024 — {ANEXO_LABELS[anexo]}</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 dark:bg-gray-800/60">
+                    <tr>
+                      {['Faixa', 'RBT12 até', 'Alíquota Nominal', 'Parcela a Deduzir'].map(h => (
+                        <th key={h} className="px-4 py-2.5 text-left text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wide">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50 dark:divide-gray-800">
+                    {SIMPLES_TABELAS[anexo].map((row, i) => {
+                      const isActive = rbt12 > 0 && rbt12 <= row.limite && (i === 0 || rbt12 > SIMPLES_TABELAS[anexo][i - 1].limite);
+                      return (
+                        <tr key={i} className={cn(isActive && 'bg-violet-50/50 dark:bg-violet-500/5')}>
+                          <td className="px-4 py-2.5 text-slate-700 dark:text-gray-300 font-medium">
+                            {row.faixa} {isActive && <span className="ml-1 text-[10px] text-violet-600 dark:text-violet-400 font-bold">← atual</span>}
+                          </td>
+                          <td className="px-4 py-2.5 text-slate-600 dark:text-gray-400 tabular-nums">{formatCurrency(row.limite)}</td>
+                          <td className="px-4 py-2.5 font-semibold text-slate-800 dark:text-gray-200">{row.aliquota.toFixed(2).replace('.', ',')}%</td>
+                          <td className="px-4 py-2.5 text-slate-600 dark:text-gray-400 tabular-nums">{row.deducao > 0 ? formatCurrency(row.deducao) : '—'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Calculator */}
+      <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-5 shadow-sm space-y-4">
+        <p className="text-sm font-semibold text-slate-800 dark:text-gray-200">Calcular DAS</p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {/* Competência */}
+          <div>
+            <label className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1 block">Competência</label>
+            <select value={selComp} onChange={e => setSelComp(e.target.value)}
+              className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-red-500/20"
+            >
+              {competencias.map(c => <option key={c} value={c}>{competenciaLabel(c)}</option>)}
+            </select>
+          </div>
+          {/* Anexo */}
+          <div>
+            <label className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1 block">Anexo / Atividade</label>
+            <select value={anexo} onChange={e => setAnexo(e.target.value as SimplesAnexo)}
+              className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-red-500/20"
+            >
+              {(Object.keys(ANEXO_LABELS) as SimplesAnexo[]).map(a => <option key={a} value={a}>{ANEXO_LABELS[a]}</option>)}
+            </select>
+          </div>
+          {/* Vencimento preview */}
+          <div className="flex flex-col justify-end">
+            <label className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1 block">Vencimento</label>
+            <div className="px-3 py-2 text-sm rounded-xl border border-slate-100 dark:border-gray-800 bg-slate-50 dark:bg-gray-800 text-slate-700 dark:text-gray-300 font-medium">
+              {formatDate(dasVencimento(selComp))}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1 block">
+              Receita Bruta do Mês
+              {autoReceita > 0 && <span className="ml-1 text-emerald-600 dark:text-emerald-400">(calculada: {formatCurrency(autoReceita)})</span>}
+            </label>
+            <input type="number" min="0" step="0.01" value={manualRec} onChange={e => setManualRec(e.target.value)}
+              placeholder={autoReceita > 0 ? `${autoReceita.toFixed(2)} (auto)` : 'Ex: 15000,00'}
+              className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-red-500/20"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1 block">
+              RBT12 (últimos 12 meses)
+              {autoRbt12 > 0 && <span className="ml-1 text-emerald-600 dark:text-emerald-400">(calculado: {formatCurrency(autoRbt12)})</span>}
+            </label>
+            <input type="number" min="0" step="0.01" value={manualRbt} onChange={e => setManualRbt(e.target.value)}
+              placeholder={autoRbt12 > 0 ? `${autoRbt12.toFixed(2)} (auto)` : 'Ex: 180000,00'}
+              className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-red-500/20"
+            />
+          </div>
+        </div>
+
+        {/* Result */}
+        {calc.valorDas > 0 && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 bg-slate-50 dark:bg-gray-800/50 rounded-xl border border-slate-100 dark:border-gray-700">
+            {[
+              { label: 'Faixa', value: `${calc.faixa} faixa` },
+              { label: 'Alíquota Nominal', value: `${calc.aliquotaNominal.toFixed(2).replace('.', ',')}%` },
+              { label: 'Alíquota Efetiva', value: `${calc.aliquotaEfetiva.toFixed(4).replace('.', ',')}%` },
+              { label: 'Valor DAS', value: formatCurrency(calc.valorDas) },
+            ].map(k => (
+              <div key={k.label}>
+                <p className="text-[10px] text-slate-400 dark:text-gray-500 uppercase tracking-wide mb-0.5">{k.label}</p>
+                <p className={cn('text-sm font-bold', k.label === 'Valor DAS' ? 'text-red-600 dark:text-red-400 text-base' : 'text-slate-800 dark:text-gray-200')}>{k.value}</p>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="flex items-center gap-3">
+          <Button onClick={handleSaveDAS} disabled={isSaving || calc.valorDas <= 0} variant="contained"
+            sx={{ backgroundColor: '#DC2626', '&:hover': { backgroundColor: '#B91C1C' }, '&.Mui-disabled': { backgroundColor: '#FCA5A5', color: '#fff' }, textTransform: 'none', fontWeight: 700, borderRadius: '12px' }}
+          >
+            {isSaving ? 'Salvando...' : currentRecord ? 'Atualizar DAS' : 'Gerar DAS'}
+          </Button>
+          {calc.valorDas <= 0 && <p className="text-xs text-slate-400 dark:text-gray-500">Preencha RBT12 e Receita Bruta para calcular</p>}
+        </div>
+      </div>
+
+      {/* History */}
+      <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl overflow-hidden shadow-sm">
+        <div className="px-5 py-3 border-b border-slate-100 dark:border-gray-800">
+          <span className="text-sm font-semibold text-slate-800 dark:text-gray-200">Histórico de DAS</span>
+        </div>
+
+        {dasRecords.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
+            <Receipt size={40} strokeWidth={1.5} />
+            <p className="mt-3 text-sm font-medium">Nenhum DAS registrado ainda</p>
+            <p className="text-xs mt-1">Use a calculadora acima para gerar o primeiro DAS</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-50 dark:divide-gray-800">
+            {dasRecords.map(record => {
+              const daysToVenc = Math.round((new Date(record.vencimento + 'T00:00:00').getTime() - new Date(todayStr + 'T00:00:00').getTime()) / 86400000);
+              const isAlert = record.status === 'pendente' && daysToVenc >= 0 && daysToVenc <= 5;
+              const isLate  = record.status !== 'pago' && record.vencimento < todayStr;
+              const effectiveStatus: DasStatus = isLate ? 'atrasado' : record.status;
+              return (
+                <div key={record.id} className={cn('px-5 py-4 hover:bg-slate-50 dark:hover:bg-gray-800/40 transition-colors', isAlert && 'bg-amber-50/40 dark:bg-amber-500/5')}>
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-bold text-slate-800 dark:text-gray-200">{competenciaLabel(record.competencia)}</span>
+                        <span className={cn('text-[10px] font-semibold px-2 py-0.5 rounded-full border', statusColor[effectiveStatus])}>
+                          {effectiveStatus === 'pago' ? 'Pago' : effectiveStatus === 'atrasado' ? 'Atrasado' : 'Pendente'}
+                        </span>
+                        {isAlert && <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400">⚠ vence em {daysToVenc}d</span>}
+                      </div>
+                      <div className="flex items-center gap-4 mt-1 text-xs text-slate-500 dark:text-gray-400">
+                        <span>Venc: {formatDate(record.vencimento)}</span>
+                        <span>{ANEXO_LABELS[record.anexo].split('—')[0].trim()}</span>
+                        <span>Alíq efetiva: {record.aliquotaEfetiva.toFixed(2).replace('.', ',')}%</span>
+                        {record.pagoEm && <span>Pago em {formatDate(record.pagoEm)}</span>}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span className="text-base font-bold text-red-600 dark:text-red-400 tabular-nums">{formatCurrency(record.valorDas)}</span>
+                      <div className="flex items-center gap-1">
+                        {record.status !== 'pago' && (
+                          <Tooltip title="Marcar como pago">
+                            <IconButton size="small" onClick={() => handleMarkPago(record)} sx={{ color: '#10B981', '&:hover': { backgroundColor: '#D1FAE5' } }}>
+                              <CheckCircle2 size={15} />
+                            </IconButton>
+                          </Tooltip>
+                        )}
+                        {record.recibo ? (
+                          <Tooltip title="Ver comprovante">
+                            <IconButton size="small" href={record.recibo} target="_blank" component="a" sx={{ color: '#6366F1' }}>
+                              <Paperclip size={15} />
+                            </IconButton>
+                          </Tooltip>
+                        ) : (
+                          <Tooltip title="Anexar comprovante">
+                            <IconButton size="small" onClick={() => { setUploadingId(record.id); dasFileRef.current?.click(); }} disabled={uploadingId === record.id} sx={{ color: '#94A3B8' }}>
+                              {uploadingId === record.id ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
+                            </IconButton>
+                          </Tooltip>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Hidden file input for receipt */}
+      <input ref={dasFileRef} type="file" accept="image/*,.pdf" className="hidden"
+        onChange={async e => {
+          const file = e.target.files?.[0];
+          const record = dasRecords.find(r => r.id === uploadingId);
+          if (file && record) await handleUploadRecibo(record, file);
+          if (dasFileRef.current) dasFileRef.current.value = '';
+        }}
+      />
+    </div>
+  );
+}
+
+// Widget for OverviewContent dashboard
+function DASWidget({ businessId, onGoToDAS }: { businessId: string; onGoToDAS: () => void }) {
+  const [record, setRecord] = useState<DasRecord | null | undefined>(undefined);
+
+  useEffect(() => {
+    if (!businessId) return;
+    const now = new Date();
+    const comp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+    getDocs(query(
+      collection(db, 'dasRecords'),
+      where('businessId', '==', businessId),
+      where('competencia', '==', comp),
+    )).then(snap => {
+      setRecord(snap.empty ? null : { ...snap.docs[0].data(), id: snap.docs[0].id } as DasRecord);
+    }).catch(() => setRecord(null));
+  }, [businessId]);
+
+  if (record === undefined) return null;
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  const comp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const venc = dasVencimento(comp);
+  const daysToVenc = Math.round((new Date(venc + 'T00:00:00').getTime() - new Date(todayStr + 'T00:00:00').getTime()) / 86400000);
+  const isAlert = daysToVenc >= 0 && daysToVenc <= 5;
+
+  if (!record) {
+    return (
+      <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+        className="flex items-center justify-between px-5 py-4 bg-slate-50 dark:bg-gray-800/50 border border-slate-200 dark:border-gray-700 rounded-2xl"
+      >
+        <div className="flex items-center gap-3">
+          <Receipt size={18} className="text-slate-400 dark:text-gray-500" />
+          <div>
+            <p className="text-sm font-semibold text-slate-700 dark:text-gray-300">DAS {competenciaLabel(comp)}</p>
+            <p className="text-xs text-slate-400 dark:text-gray-500">Vence {formatDate(venc)} · Não gerado</p>
+          </div>
+        </div>
+        <button onClick={onGoToDAS} className="text-xs font-semibold text-red-600 dark:text-red-400 hover:underline">Calcular →</button>
+      </motion.div>
+    );
+  }
+
+  const isPago = record.status === 'pago';
+  return (
+    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+      className={cn('flex items-center justify-between px-5 py-4 rounded-2xl border',
+        isPago ? 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/20' :
+        isAlert ? 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20' :
+        'bg-slate-50 dark:bg-gray-800/50 border-slate-200 dark:border-gray-700'
+      )}
+    >
+      <div className="flex items-center gap-3">
+        <Receipt size={18} className={isPago ? 'text-emerald-500' : isAlert ? 'text-amber-500' : 'text-slate-400 dark:text-gray-500'} />
+        <div>
+          <p className="text-sm font-semibold text-slate-800 dark:text-gray-200">
+            DAS {competenciaLabel(comp)} — {formatCurrency(record.valorDas)}
+          </p>
+          <p className="text-xs text-slate-500 dark:text-gray-400">
+            {isPago ? `Pago em ${formatDate(record.pagoEm)}` : isAlert ? `⚠ Vence em ${daysToVenc} dia${daysToVenc !== 1 ? 's' : ''}` : `Vence ${formatDate(venc)}`}
+          </p>
+        </div>
+      </div>
+      <button onClick={onGoToDAS} className="text-xs font-semibold text-red-600 dark:text-red-400 hover:underline">
+        {isPago ? 'Ver' : 'Gerenciar'} →
+      </button>
+    </motion.div>
   );
 }
 
