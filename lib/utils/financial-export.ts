@@ -376,3 +376,43 @@ export function exportCashFlowCSV(
 
   triggerDownload(lines.join('\n'), filename, 'text/csv;charset=utf-8;');
 }
+
+// ─── 7. COMMISSIONS CSV ───────────────────────────────────────────────────────
+
+export interface CommissionRow {
+  professionalName: string;
+  description: string;
+  date: string;
+  amount: number;
+  status: string;
+  notes?: string;
+}
+
+export function exportCommissionsCSV(
+  rows: CommissionRow[],
+  period: string,
+  businessName: string,
+  filename = `comissoes_${new Date().toISOString().slice(0, 10)}.csv`,
+) {
+  const statusLabel: Record<string, string> = { pendente: 'Pendente', pago: 'Pago', cancelado: 'Cancelado', atrasado: 'Atrasado' };
+  const lines: string[] = [
+    BOM,
+    row([businessName]),
+    row([`Folha de Comissões — ${period}`]),
+    row([`Gerado em ${new Date().toLocaleString('pt-BR')}`]),
+    '',
+    row(['Profissional', 'Descrição', 'Data', 'Valor (R$)', 'Status', 'Observações']),
+    ...rows.map(r => row([
+      r.professionalName,
+      r.description,
+      formatDate(r.date),
+      fmtR(r.amount),
+      statusLabel[r.status] ?? r.status,
+      r.notes ?? '',
+    ])),
+    '',
+    row(['TOTAL PENDENTE', fmtR(rows.filter(r => r.status === 'pendente').reduce((s, r) => s + r.amount, 0))]),
+    row(['TOTAL PAGO',     fmtR(rows.filter(r => r.status === 'pago').reduce((s, r) => s + r.amount, 0))]),
+  ];
+  triggerDownload(lines.join('\n'), filename, 'text/csv;charset=utf-8;');
+}
