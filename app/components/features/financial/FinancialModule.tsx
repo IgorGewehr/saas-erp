@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useDeferredValue } from 'react';
 import {
   Dialog,
   DialogTitle,
@@ -244,6 +244,9 @@ export default function FinancialModule() {
   const [txSectorId, setTxSectorId] = useState('');
   const [txClientName, setTxClientName] = useState('');
 
+  const deferredTxSearch = useDeferredValue(txSearch);
+  const deferredTxClientName = useDeferredValue(txClientName);
+
   // Restore saved filter from localStorage on mount
   useEffect(() => {
     try {
@@ -272,6 +275,7 @@ export default function FinancialModule() {
   }, [txDateFrom, txDateTo, txCategory, txBankAccount, txPaymentMethod, txSectorId, txClientName]);
 
   const clearTxFilters = useCallback(() => {
+    setTxSearch('');
     setTxDateFrom(''); setTxDateTo(''); setTxCategory('');
     setTxBankAccount(''); setTxPaymentMethod(''); setTxSectorId(''); setTxClientName('');
     localStorage.removeItem('financial_tx_filters');
@@ -372,8 +376,8 @@ export default function FinancialModule() {
     }
 
     // Text search
-    if (txSearch) {
-      const q = txSearch.toLowerCase();
+    if (deferredTxSearch) {
+      const q = deferredTxSearch.toLowerCase();
       filtered = filtered.filter((t) =>
         t.description.toLowerCase().includes(q) ||
         (t.category || '').toLowerCase().includes(q) ||
@@ -387,8 +391,8 @@ export default function FinancialModule() {
     if (txBankAccount)    filtered = filtered.filter(t => t.bankAccountId === txBankAccount);
     if (txPaymentMethod)  filtered = filtered.filter(t => t.paymentMethod === txPaymentMethod);
     if (txSectorId)       filtered = filtered.filter(t => t.sectorId === txSectorId);
-    if (txClientName) {
-      const cq = txClientName.toLowerCase();
+    if (deferredTxClientName) {
+      const cq = deferredTxClientName.toLowerCase();
       filtered = filtered.filter(t => (t.clientName || '').toLowerCase().includes(cq));
     }
 
@@ -400,7 +404,7 @@ export default function FinancialModule() {
       return 0;
     });
     return filtered;
-  }, [transactions, txFilterTab, txSearch, txDateFrom, txDateTo, txCategory, txBankAccount, txPaymentMethod, txSectorId, txClientName, txSortField, txSortDir]);
+  }, [transactions, txFilterTab, deferredTxSearch, txDateFrom, txDateTo, txCategory, txBankAccount, txPaymentMethod, txSectorId, deferredTxClientName, txSortField, txSortDir]);
 
   // Monthly data for charts
   const monthlyData = useMemo(() => {
@@ -1398,13 +1402,15 @@ function OverviewContent({
   const days = periodDays[dashboardPeriod];
 
   const { periodTx, prevTx } = useMemo(() => {
-    const now = Date.now();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const now = today.getTime() + 86400000; // End of today
     const ms = days * 86400000;
     const cutoffCurrent = now - ms;
     const cutoffPrev = now - ms * 2;
     const ref = (t: Transaction) => {
       const d = t.paymentDate || t.dueDate;
-      return d ? new Date(d).getTime() : 0;
+      return d ? new Date(d + 'T00:00:00').getTime() : 0;
     };
     return {
       periodTx: transactions.filter(t => ref(t) >= cutoffCurrent),
@@ -2773,7 +2779,14 @@ function TransactionsContent({
       {transactions.length === 0 && (
         <div className="flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
           <Receipt size={36} strokeWidth={1.5} />
-          <p className="mt-3 text-sm">{t('financial.txList.empty', 'Nenhuma transação encontrada')}</p>
+          <p className="mt-3 text-sm">
+            {(activeFilterCount > 0 || search) ? 'Nenhum resultado para estes filtros' : t('financial.txList.empty', 'Nenhuma transação encontrada')}
+          </p>
+          {(activeFilterCount > 0 || search) && (
+            <button onClick={onClearFilters} className="mt-4 px-4 py-2 bg-slate-100 dark:bg-gray-800 hover:bg-slate-200 dark:hover:bg-gray-700 text-slate-600 dark:text-gray-300 rounded-xl text-sm font-medium transition-colors">
+              Limpar Filtros
+            </button>
+          )}
         </div>
       )}
 
@@ -3537,7 +3550,7 @@ function DREContent({ transactions, businessName }: { transactions: Transaction[
                       <Legend formatter={(v) => v === 'receitas' ? 'Receitas' : v === 'despesas' ? 'Despesas' : 'Resultado'} wrapperStyle={{ fontSize: 12 }} />
                       <Bar dataKey="receitas" fill="#10b981" radius={[4, 4, 0, 0]} name="receitas" />
                       <Bar dataKey="despesas" fill="#ef4444" radius={[4, 4, 0, 0]} name="despesas" />
-                      <Bar dataKey="resultado" radius={[4, 4, 0, 0]} name="resultado">
+                      <Bar dataKey="resultado" fill="#3b82f6" radius={[4, 4, 0, 0]} name="resultado">
                         {sectorDRE.map((entry, index) => (
                           <Cell key={index} fill={entry.resultado >= 0 ? '#3b82f6' : '#f97316'} />
                         ))}
