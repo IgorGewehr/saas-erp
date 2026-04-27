@@ -11,6 +11,8 @@ import { formatCurrency, formatDate } from '@/lib/utils/format';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
+const fmtR = (v: number) => v.toFixed(2).replace('.', ',');
+
 function triggerDownload(content: string, filename: string, mime: string) {
   const blob = new Blob([content], { type: mime });
   const url = URL.createObjectURL(blob);
@@ -18,7 +20,7 @@ function triggerDownload(content: string, filename: string, mime: string) {
   a.href = url;
   a.download = filename;
   a.click();
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 100);
 }
 
 function triggerBlobDownload(blob: Blob, filename: string) {
@@ -27,7 +29,7 @@ function triggerBlobDownload(blob: Blob, filename: string) {
   a.href = url;
   a.download = filename;
   a.click();
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 100);
 }
 
 function csvEscape(v: unknown): string {
@@ -189,7 +191,6 @@ export function exportDRECSV(
   businessName: string,
   filename = `dre_${period.replace(/\//g, '-')}.csv`,
 ) {
-  const fmtR = (v: number) => v.toFixed(2).replace('.', ',');
   const lines: string[] = [
     BOM,
     row([businessName]),
@@ -243,26 +244,33 @@ export async function exportDREPDF(
   const red: [number, number, number] = [220, 38, 38];
   const gray: [number, number, number] = [100, 116, 139];
 
-  const sections: Array<[string, number, boolean, [number,number,number]?]> = [
-    ['Receita Bruta', dre.receitaBruta, true],
-    ...[...dre.receitaByCategory.entries()].map(([k, v]) => [`  ${k}`, v, false, gray] as [string,number,boolean,[number,number,number]]),
-    ['(-) Deduções', -dre.totalDeducoes, false, red],
-    ...[...dre.deducaoByCategory.entries()].map(([k, v]) => [`  ${k}`, -v, false, gray] as [string,number,boolean,[number,number,number]]),
-    ['(=) Receita Líquida', dre.receitaLiquida, true],
-    ['(-) CPV / CSV', -dre.totalCPV, false, red],
-    ...[...dre.cpvByCategory.entries()].map(([k, v]) => [`  ${k}`, -v, false, gray] as [string,number,boolean,[number,number,number]]),
-    ['(=) Lucro Bruto', dre.lucroBruto, true, dre.lucroBruto >= 0 ? green : red],
-    ['(-) Despesas Operacionais', -dre.totalOpex, false, red],
-    ...[...dre.opexByCategory.entries()].map(([k, v]) => [`  ${k}`, -v, false, gray] as [string,number,boolean,[number,number,number]]),
-    ['(=) Resultado Operacional', dre.resultadoOperacional, true, dre.resultadoOperacional >= 0 ? green : red],
-    ['(+/-) Resultado Financeiro', dre.resultadoFinanceiro, false],
-    ['(=) Resultado Líquido', dre.resultadoLiquido, true, dre.resultadoLiquido >= 0 ? green : red],
+  interface DRESectionRow {
+    label: string;
+    value: number;
+    bold: boolean;
+    color?: [number, number, number];
+  }
+
+  const sections: DRESectionRow[] = [
+    { label: 'Receita Bruta', value: dre.receitaBruta, bold: true },
+    ...[...dre.receitaByCategory.entries()].map(([k, v]) => ({ label: `  ${k}`, value: v, bold: false, color: gray } as DRESectionRow)),
+    { label: '(-) Deduções', value: -dre.totalDeducoes, bold: false, color: red },
+    ...[...dre.deducaoByCategory.entries()].map(([k, v]) => ({ label: `  ${k}`, value: -v, bold: false, color: gray } as DRESectionRow)),
+    { label: '(=) Receita Líquida', value: dre.receitaLiquida, bold: true },
+    { label: '(-) CPV / CSV', value: -dre.totalCPV, bold: false, color: red },
+    ...[...dre.cpvByCategory.entries()].map(([k, v]) => ({ label: `  ${k}`, value: -v, bold: false, color: gray } as DRESectionRow)),
+    { label: '(=) Lucro Bruto', value: dre.lucroBruto, bold: true, color: dre.lucroBruto >= 0 ? green : red },
+    { label: '(-) Despesas Operacionais', value: -dre.totalOpex, bold: false, color: red },
+    ...[...dre.opexByCategory.entries()].map(([k, v]) => ({ label: `  ${k}`, value: -v, bold: false, color: gray } as DRESectionRow)),
+    { label: '(=) Resultado Operacional', value: dre.resultadoOperacional, bold: true, color: dre.resultadoOperacional >= 0 ? green : red },
+    { label: '(+/-) Resultado Financeiro', value: dre.resultadoFinanceiro, bold: false },
+    { label: '(=) Resultado Líquido', value: dre.resultadoLiquido, bold: true, color: dre.resultadoLiquido >= 0 ? green : red },
   ];
 
   autoTable(doc, {
     startY: 36,
     head: [['Conta', 'Valor']],
-    body: sections.map(([label, value, bold, color]) => {
+    body: sections.map(({ label, value }) => {
       return [label, formatCurrency(Math.abs(value)) + (value < 0 ? ' (saída)' : '')];
     }),
     styles: { fontSize: 9, cellPadding: 3 },
@@ -273,7 +281,7 @@ export async function exportDREPDF(
     },
     didParseCell: (data) => {
       if (data.section === 'body') {
-        const [, , bold, color] = sections[data.row.index];
+        const { bold, color } = sections[data.row.index];
         if (bold) data.cell.styles.fontStyle = 'bold';
         if (color) data.cell.styles.textColor = color;
       }
@@ -291,7 +299,7 @@ export async function exportDREPDF(
   triggerBlobDownload(doc.output('blob'), filename);
 }
 
-// ─── 5. CASH FLOW CSV ────────────────────────────────────────────────────────
+// ─── 5. CASH FLOW CSV (TYPES) ────────────────────────────────────────────────
 
 export interface CashFlowRow {
   date: string;
@@ -317,7 +325,6 @@ export function exportDRESectorCSV(
   businessName: string,
   filename = `dre_setores_${period.replace(/\//g, '-')}.csv`,
 ) {
-  const fmtR = (v: number) => v.toFixed(2).replace('.', ',');
   const lines: string[] = [
     BOM,
     row([businessName]),
@@ -345,7 +352,6 @@ export function exportCashFlowCSV(
   businessName: string,
   filename = `fluxo_caixa_${new Date().toISOString().slice(0, 10)}.csv`,
 ) {
-  const fmtR = (v: number) => v.toFixed(2).replace('.', ',');
   const lines: string[] = [
     BOM,
     row([businessName]),
