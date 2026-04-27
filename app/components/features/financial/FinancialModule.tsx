@@ -57,6 +57,9 @@ import {
   Paperclip,
   FileText,
   Image as ImageIcon,
+  XCircle,
+  CalendarDays,
+  ChevronsRight,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -207,6 +210,11 @@ export default function FinancialModule() {
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [showBalances, setShowBalances] = useState(true);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
+
+  // Installment group dialog
+  const [installmentGroupId, setInstallmentGroupId] = useState<string | null>(null);
+  const [installmentGroupTxs, setInstallmentGroupTxs] = useState<Transaction[]>([]);
+  const [isLoadingGroup, setIsLoadingGroup] = useState(false);
   const [showBankForm, setShowBankForm] = useState(false);
   const [editingBankAccount, setEditingBankAccount] = useState<BankAccount | null>(null);
   const [showDeleteBankConfirm, setShowDeleteBankConfirm] = useState<string | null>(null);
@@ -508,6 +516,63 @@ export default function FinancialModule() {
       toast.error(t('financial.toast.updateError', 'Erro ao atualizar transação'));
     }
   }, [business?.id, queryClient]);
+
+  // ---- Installment Group Handlers ----
+  const handleOpenInstallmentGroup = useCallback(async (groupId: string) => {
+    if (!business?.id) return;
+    setIsLoadingGroup(true);
+    setInstallmentGroupId(groupId);
+    setInstallmentGroupTxs([]);
+    try {
+      const q = query(
+        collection(db, 'transactions'),
+        where('businessId', '==', business.id),
+        where('installmentGroupId', '==', groupId),
+        orderBy('installmentNumber', 'asc'),
+      );
+      const snap = await getDocs(q);
+      setInstallmentGroupTxs(snap.docs.map(d => ({ ...d.data(), id: d.id } as Transaction)));
+    } finally {
+      setIsLoadingGroup(false);
+    }
+  }, [business?.id]);
+
+  const handleUpdateInstallmentDate = useCallback(async (id: string, newDate: string) => {
+    if (!business?.id) return;
+    await updateDoc(doc(db, 'transactions', id), { dueDate: newDate, updatedAt: new Date().toISOString() });
+    setInstallmentGroupTxs(prev => prev.map(t => t.id === id ? { ...t, dueDate: newDate } : t));
+    queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
+  }, [business?.id, queryClient]);
+
+  const handleMarkInstallmentPaid = useCallback(async (id: string) => {
+    if (!business?.id) return;
+    const today = new Date().toISOString().slice(0, 10);
+    await updateDoc(doc(db, 'transactions', id), { status: 'pago', paymentDate: today, updatedAt: new Date().toISOString() });
+    setInstallmentGroupTxs(prev => prev.map(t => t.id === id ? { ...t, status: 'pago' as TransactionStatus, paymentDate: today } : t));
+    queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
+    toast.success('Parcela quitada');
+  }, [business?.id, queryClient]);
+
+  const handleCancelInstallment = useCallback(async (id: string) => {
+    if (!business?.id) return;
+    await updateDoc(doc(db, 'transactions', id), { status: 'cancelado', updatedAt: new Date().toISOString() });
+    setInstallmentGroupTxs(prev => prev.map(t => t.id === id ? { ...t, status: 'cancelado' as TransactionStatus } : t));
+    queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
+    toast.info('Parcela cancelada');
+  }, [business?.id, queryClient]);
+
+  const handlePayAllPendingInstallments = useCallback(async () => {
+    if (!business?.id) return;
+    const pending = installmentGroupTxs.filter(t => t.status === 'pendente' || t.status === 'atrasado');
+    if (!pending.length) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const batch = writeBatch(db);
+    pending.forEach(t => batch.update(doc(db, 'transactions', t.id), { status: 'pago', paymentDate: today, updatedAt: new Date().toISOString() }));
+    await batch.commit();
+    setInstallmentGroupTxs(prev => prev.map(t => pending.find(p => p.id === t.id) ? { ...t, status: 'pago' as TransactionStatus, paymentDate: today } : t));
+    queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
+    toast.success(`${pending.length} parcela(s) quitada(s)`);
+  }, [installmentGroupTxs, business?.id, queryClient]);
 
   const openNewForm = useCallback(() => {
     setEditingTransaction(null);
@@ -1022,6 +1087,7 @@ export default function FinancialModule() {
                 onRevertPaid={handleRevertToPending}
                 onEdit={openEditForm}
                 onDelete={(id) => setShowDeleteConfirm(id)}
+                onViewInstallments={handleOpenInstallmentGroup}
                 getStatusChipColor={getStatusChipColor}
                 statusLabel={statusLabel}
                 // Advanced filters
@@ -1368,6 +1434,20 @@ export default function FinancialModule() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* ===== INSTALLMENT GROUP DIALOG ===== */}
+      {installmentGroupId && (
+        <InstallmentGroupDialog
+          groupTxs={installmentGroupTxs}
+          isLoading={isLoadingGroup}
+          showBalances={showBalances}
+          onClose={() => setInstallmentGroupId(null)}
+          onUpdateDate={handleUpdateInstallmentDate}
+          onMarkPaid={handleMarkInstallmentPaid}
+          onCancel={handleCancelInstallment}
+          onPayAll={handlePayAllPendingInstallments}
+        />
+      )}
 
       {/* ===== DELETE TRANSACTION CONFIRM ===== */}
       <Dialog
@@ -2669,10 +2749,207 @@ function AuditLogView({ businessId }: { businessId?: string }) {
   );
 }
 
+// ==========================================
+// INSTALLMENT GROUP DIALOG
+// ==========================================
+
+function InstallmentGroupDialog({
+  groupTxs,
+  isLoading,
+  onClose,
+  onUpdateDate,
+  onMarkPaid,
+  onCancel,
+  onPayAll,
+  showBalances,
+}: {
+  groupTxs: Transaction[];
+  isLoading: boolean;
+  onClose: () => void;
+  onUpdateDate: (id: string, date: string) => Promise<void>;
+  onMarkPaid: (id: string) => Promise<void>;
+  onCancel: (id: string) => Promise<void>;
+  onPayAll: () => Promise<void>;
+  showBalances: boolean;
+}) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingDate, setEditingDate] = useState('');
+  const [saving, setSaving] = useState<string | null>(null);
+  const { isDark } = useTheme();
+
+  const pendingCount = groupTxs.filter(t => t.status === 'pendente' || t.status === 'atrasado').length;
+  const totalPaid = groupTxs.filter(t => t.status === 'pago').reduce((s, t) => s + t.amount, 0);
+  const totalPending = groupTxs.filter(t => t.status === 'pendente' || t.status === 'atrasado').reduce((s, t) => s + t.amount, 0);
+  const totalAmount = groupTxs.reduce((s, t) => s + (t.status !== 'cancelado' ? t.amount : 0), 0);
+
+  const statusColors: Record<string, { bg: string; text: string }> = {
+    pago:      { bg: '#D1FAE5', text: '#065F46' },
+    pendente:  { bg: '#FEF3C7', text: '#92400E' },
+    atrasado:  { bg: '#FEE2E2', text: '#991B1B' },
+    cancelado: { bg: '#F1F5F9', text: '#94A3B8' },
+  };
+
+  async function commitDate(id: string) {
+    if (!editingDate) { setEditingId(null); return; }
+    setSaving(id);
+    try { await onUpdateDate(id, editingDate); } finally { setSaving(null); setEditingId(null); }
+  }
+
+  const base = groupTxs[0];
+  const title = base ? base.description.replace(/\s*\(\d+\/\d+\)\s*$/, '') : 'Parcelas';
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      maxWidth="md"
+      fullWidth
+      PaperProps={{ sx: { borderRadius: '20px', backgroundColor: isDark ? '#111827' : undefined } }}
+    >
+      <DialogTitle sx={{ fontFamily: '"Plus Jakarta Sans", sans-serif', fontWeight: 700, fontSize: '1rem', color: isDark ? '#F1F5F9' : undefined, pb: 0 }}>
+        <div className="flex items-center gap-2">
+          <Layers size={18} className="text-violet-500" />
+          <span>{title}</span>
+          <span className="text-sm font-normal text-slate-400 dark:text-gray-500 ml-1">
+            {groupTxs.length} parcela{groupTxs.length !== 1 ? 's' : ''}
+          </span>
+        </div>
+      </DialogTitle>
+
+      <DialogContent sx={{ pt: 2 }}>
+        {/* Summary strip */}
+        <div className="grid grid-cols-3 gap-3 mb-4">
+          {[
+            { label: 'Total', value: totalAmount, color: 'text-slate-800 dark:text-gray-100' },
+            { label: 'Pago', value: totalPaid, color: 'text-emerald-600 dark:text-emerald-400' },
+            { label: 'Pendente', value: totalPending, color: 'text-amber-600 dark:text-amber-400' },
+          ].map(k => (
+            <div key={k.label} className="bg-slate-50 dark:bg-gray-800/60 rounded-xl p-3 text-center">
+              <p className="text-[10px] text-slate-400 dark:text-gray-500 uppercase tracking-wide mb-0.5">{k.label}</p>
+              <p className={cn('text-sm font-bold font-display', k.color)}>{showBalances ? formatCurrency(k.value) : 'R$ ****'}</p>
+            </div>
+          ))}
+        </div>
+
+        {isLoading ? (
+          <div className="flex items-center justify-center py-10 text-slate-400 dark:text-gray-500">
+            <div className="w-6 h-6 rounded-full border-2 border-violet-500 border-t-transparent animate-spin" />
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-xl border border-slate-100 dark:border-gray-800">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-50 dark:bg-gray-800/60">
+                  <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wide">#</th>
+                  <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wide">Vencimento</th>
+                  <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wide">Valor</th>
+                  <th className="px-4 py-2.5 text-center text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wide">Status</th>
+                  <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wide">Ações</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50 dark:divide-gray-800">
+                {groupTxs.map((tx) => {
+                  const sc = statusColors[tx.status] ?? statusColors.pendente;
+                  const isEditing = editingId === tx.id;
+                  const isCancelled = tx.status === 'cancelado';
+                  const isPaid = tx.status === 'pago';
+                  return (
+                    <tr key={tx.id} className={cn('transition-colors', isCancelled && 'opacity-40')}>
+                      <td className="px-4 py-3">
+                        <span className="w-6 h-6 rounded-full bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400 text-xs font-bold flex items-center justify-center">
+                          {tx.installmentNumber}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        {isEditing ? (
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="date"
+                              value={editingDate}
+                              onChange={e => setEditingDate(e.target.value)}
+                              onKeyDown={e => { if (e.key === 'Enter') commitDate(tx.id); if (e.key === 'Escape') setEditingId(null); }}
+                              autoFocus
+                              className="border border-violet-300 dark:border-violet-600 rounded-lg px-2 py-1 text-sm bg-white dark:bg-gray-900 text-slate-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                            />
+                            <button onClick={() => commitDate(tx.id)} disabled={!!saving} className="p-1 text-emerald-600 hover:text-emerald-700 disabled:opacity-50">
+                              {saving === tx.id ? <div className="w-3.5 h-3.5 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin" /> : <CheckCircle2 size={15} />}
+                            </button>
+                            <button onClick={() => setEditingId(null)} className="p-1 text-slate-400 hover:text-slate-600"><X size={15} /></button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => { if (!isCancelled && !isPaid) { setEditingId(tx.id); setEditingDate(tx.dueDate || ''); } }}
+                            className={cn('flex items-center gap-1.5 text-sm text-slate-600 dark:text-gray-400 group/date', !isCancelled && !isPaid && 'hover:text-violet-600 dark:hover:text-violet-400 cursor-pointer')}
+                          >
+                            {formatDate(tx.dueDate)}
+                            {!isCancelled && !isPaid && <CalendarDays size={12} className="opacity-0 group-hover/date:opacity-100 transition-opacity text-violet-500" />}
+                          </button>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right font-semibold text-slate-800 dark:text-gray-200 tabular-nums">
+                        {showBalances ? formatCurrency(tx.amount) : '****'}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full" style={{ backgroundColor: sc.bg, color: sc.text }}>
+                          {tx.status === 'pago' ? 'Pago' : tx.status === 'pendente' ? 'Pendente' : tx.status === 'atrasado' ? 'Atrasado' : 'Cancelado'}
+                        </span>
+                        {tx.status === 'pago' && tx.paymentDate && (
+                          <p className="text-[10px] text-slate-400 dark:text-gray-500 mt-0.5">{formatDate(tx.paymentDate)}</p>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-end gap-1">
+                          {(tx.status === 'pendente' || tx.status === 'atrasado') && (
+                            <Tooltip title="Quitar parcela">
+                              <IconButton size="small" onClick={() => onMarkPaid(tx.id)} sx={{ color: '#10B981', '&:hover': { backgroundColor: '#D1FAE5' } }}>
+                                <CheckCircle2 size={15} />
+                              </IconButton>
+                            </Tooltip>
+                          )}
+                          {(tx.status === 'pendente' || tx.status === 'atrasado') && (
+                            <Tooltip title="Cancelar parcela">
+                              <IconButton size="small" onClick={() => onCancel(tx.id)} sx={{ color: '#94A3B8', '&:hover': { color: '#EF4444', backgroundColor: '#FEE2E2' } }}>
+                                <XCircle size={15} />
+                              </IconButton>
+                            </Tooltip>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </DialogContent>
+
+      <Divider />
+      <DialogActions sx={{ px: 3, py: 2, justifyContent: 'space-between' }}>
+        <div>
+          {pendingCount > 0 && (
+            <Button
+              onClick={onPayAll}
+              variant="outlined"
+              startIcon={<ChevronsRight size={15} />}
+              sx={{ textTransform: 'none', borderRadius: '10px', borderColor: '#10B981', color: '#10B981', fontWeight: 600, '&:hover': { backgroundColor: '#D1FAE5', borderColor: '#10B981' } }}
+            >
+              Quitar {pendingCount} pendente{pendingCount > 1 ? 's' : ''}
+            </Button>
+          )}
+        </div>
+        <Button onClick={onClose} sx={{ color: '#64748B', textTransform: 'none', fontWeight: 600, borderRadius: '10px' }}>
+          Fechar
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
 function TransactionsContent({
   transactions, allTransactions, filterTab, onFilterChange,
   search, onSearchChange, sortField, sortDir, onSort,
-  onMarkPaid, onRevertPaid, onEdit, onDelete,
+  onMarkPaid, onRevertPaid, onEdit, onDelete, onViewInstallments,
   getStatusChipColor, statusLabel,
   dateFrom, onDateFromChange, dateTo, onDateToChange,
   category, onCategoryChange, bankAccount, onBankAccountChange,
@@ -2694,6 +2971,7 @@ function TransactionsContent({
   onRevertPaid: (id: string) => void;
   onEdit: (t: Transaction) => void;
   onDelete: (id: string) => void;
+  onViewInstallments: (groupId: string) => void;
   getStatusChipColor: (s: TransactionStatus) => { bg: string; text: string; border: string };
   statusLabel: (s: TransactionStatus) => string;
   dateFrom: string; onDateFromChange: (v: string) => void;
@@ -2923,8 +3201,19 @@ function TransactionsContent({
                   >
                     <td className="px-5 py-3 text-sm text-slate-500 dark:text-gray-400 whitespace-nowrap">{formatDate(tx.dueDate)}</td>
                     <td className="px-5 py-3">
-                      <div className="flex items-center gap-1.5">
-                        <p className="text-sm font-medium text-slate-800 dark:text-gray-200 truncate max-w-[220px]">{tx.description}</p>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <p className="text-sm font-medium text-slate-800 dark:text-gray-200 truncate max-w-[200px]">{tx.description}</p>
+                        {tx.installmentGroupId && (
+                          <Tooltip title="Ver grupo de parcelas">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); onViewInstallments(tx.installmentGroupId!); }}
+                              className="inline-flex items-center gap-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400 hover:bg-violet-100 dark:hover:bg-violet-500/20 border border-violet-200/60 dark:border-violet-500/20 transition-colors shrink-0"
+                            >
+                              <Layers size={9} />
+                              {tx.installmentNumber}/{tx.installmentTotal}
+                            </button>
+                          </Tooltip>
+                        )}
                         {tx.attachments && tx.attachments.length > 0 && (
                           <Tooltip title={`${tx.attachments.length} anexo(s)`}>
                             <Paperclip size={14} className="text-slate-400 dark:text-gray-500 shrink-0" />
