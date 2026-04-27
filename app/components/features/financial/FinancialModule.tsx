@@ -81,6 +81,15 @@ import { toast } from 'react-toastify';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
+import {
+  exportTransactionsCSV,
+  exportTransactionsPDF,
+  exportDRECSV,
+  exportDREPDF,
+  exportCashFlowCSV,
+  type DREData,
+  type CashFlowRow,
+} from '@/lib/utils/financial-export';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
 import type {
   Transaction,
@@ -1981,21 +1990,30 @@ function CashFlowProjection({ transactions }: { transactions: Transaction[] }) {
             Entradas e saídas previstas nos próximos {horizon} dias
           </p>
         </div>
-        <div className="inline-flex bg-gray-100 dark:bg-gray-800/60 rounded-xl p-0.5">
-          {([30, 60, 90] as const).map(h => (
-            <button
-              key={h}
-              onClick={() => setHorizon(h)}
-              className={cn(
-                'px-3 py-1.5 rounded-lg text-xs font-bold transition-colors',
-                horizon === h
-                  ? 'bg-white dark:bg-gray-900 shadow-sm text-gray-900 dark:text-gray-100'
-                  : 'text-gray-500 dark:text-gray-400',
-              )}
-            >
-              {h} dias
-            </button>
-          ))}
+        <div className="flex items-center gap-2">
+          <div className="inline-flex bg-gray-100 dark:bg-gray-800/60 rounded-xl p-0.5">
+            {([30, 60, 90] as const).map(h => (
+              <button
+                key={h}
+                onClick={() => setHorizon(h)}
+                className={cn(
+                  'px-3 py-1.5 rounded-lg text-xs font-bold transition-colors',
+                  horizon === h
+                    ? 'bg-white dark:bg-gray-900 shadow-sm text-gray-900 dark:text-gray-100'
+                    : 'text-gray-500 dark:text-gray-400',
+                )}
+              >
+                {h} dias
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={() => exportCashFlowCSV(projection.data as CashFlowRow[], horizon, '')}
+            title="Exportar CSV"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
+          >
+            <Download size={13} /> CSV
+          </button>
         </div>
       </div>
 
@@ -2210,11 +2228,27 @@ function TransactionsContent({
       <div className="px-6 pt-6 pb-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
           <h3 className="text-base font-display font-bold text-slate-900 dark:text-gray-100">{t('financial.txList.title', 'Transações')}</h3>
-          <div className="relative w-full sm:w-72">
-            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-gray-500" />
-            <input type="text" placeholder={t('financial.txList.searchPlaceholder', 'Buscar transação...')} value={search} onChange={(e) => onSearchChange(e.target.value)}
-              className="w-full pl-9 pr-4 py-2 bg-slate-50 dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-xl text-sm text-slate-900 dark:text-gray-100 placeholder:text-slate-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 transition-all"
-            />
+          <div className="flex items-center gap-2">
+            <div className="relative w-full sm:w-64">
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-gray-500" />
+              <input type="text" placeholder={t('financial.txList.searchPlaceholder', 'Buscar transação...')} value={search} onChange={(e) => onSearchChange(e.target.value)}
+                className="w-full pl-9 pr-4 py-2 bg-slate-50 dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-xl text-sm text-slate-900 dark:text-gray-100 placeholder:text-slate-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 transition-all"
+              />
+            </div>
+            <button
+              onClick={() => exportTransactionsCSV(transactions)}
+              title={t('financial.export.csvTooltip', 'Exportar CSV')}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
+            >
+              <Download size={13} /> CSV
+            </button>
+            <button
+              onClick={() => exportTransactionsPDF(transactions, '', t('financial.export.allPeriods', 'Todos os períodos'))}
+              title={t('financial.export.pdfTooltip', 'Exportar PDF')}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
+            >
+              <Download size={13} /> PDF
+            </button>
           </div>
         </div>
         <div className="flex gap-1 overflow-x-auto">
@@ -2892,6 +2926,15 @@ function DREContent({ transactions, businessName }: { transactions: Transaction[
               })}
             </select>
           )}
+          <motion.button
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            onClick={() => exportDRECSV(dre as DREData, periodLabel, businessName)}
+            className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl text-sm font-medium text-slate-700 dark:text-gray-300 hover:bg-slate-50 dark:hover:bg-gray-800 transition-all shadow-sm"
+          >
+            <Download size={15} />
+            CSV
+          </motion.button>
           <motion.button
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
