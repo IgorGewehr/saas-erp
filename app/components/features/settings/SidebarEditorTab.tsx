@@ -167,7 +167,15 @@ function mergeWithAccessible(
     }
   }
 
-  return merged.filter(s => s.items.length > 0);
+  // Defensive dedup: items within a section and sections by key
+  const seenSectionKeys = new Set<string>();
+  return merged
+    .map(s => ({ ...s, items: [...new Set(s.items)] }))
+    .filter(s => {
+      if (seenSectionKeys.has(s.key)) return false;
+      seenSectionKeys.add(s.key);
+      return s.items.length > 0;
+    });
 }
 
 // ─── Drag ID helpers ──────────────────────────────────────────────────────────
