@@ -3,22 +3,20 @@
 /**
  * Hero AI input — Canva/Perplexity-style centerpiece for the dashboard.
  *
- * The dashboard's primary interaction surface. Big gradient pill with
- * suggestion chips and an inline conversation panel that expands below
- * when there are messages. Operator/Analyst modes share input but keep
- * independent histories.
+ * The dashboard's primary interaction surface. Pill input with operator/
+ * analyst modes (independent histories) and inline conversation panel that
+ * expands when there are messages. Sem chips de sugestão — minimalismo.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { getAuth } from 'firebase/auth';
 import {
   Sparkles, Loader2, ChevronDown, ChevronUp, Zap, Lock,
-  BarChart3, Command, Plus, ArrowUp, MessageSquarePlus,
+  BarChart3, Command, ArrowUp, MessageSquarePlus,
   AlertCircle,
 } from 'lucide-react';
-import type { UseCase } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { RenderMarkdown } from './markdown';
 
@@ -37,50 +35,6 @@ interface ChatMessage {
   isFallback?: boolean;
 }
 
-// ─── Suggestion sets — contextual per mode and use case ──────────────────────
-const SUGGESTIONS: Record<Mode, Record<UseCase, string[]>> = {
-  operator: {
-    servicos: [
-      'Tenho agendamentos hoje?',
-      'Qual o próximo cliente?',
-      'Receita de hoje',
-      'Quem está online da equipe?',
-    ],
-    pedidos: [
-      'Pedidos em andamento agora',
-      'Faturamento de hoje',
-      'Produtos com estoque baixo',
-      'Tem pedido atrasado?',
-    ],
-    simples: [
-      'Como está o caixa hoje?',
-      'Contas a pagar próximas',
-      'Top 5 clientes',
-      'Resumo do dia',
-    ],
-  },
-  analyst: {
-    servicos: [
-      'Resumo de vendas da semana',
-      'Top serviços por receita',
-      'Taxa de no-show este mês',
-      'Clientes mais lucrativos',
-    ],
-    pedidos: [
-      'Faturamento por canal',
-      'Tempo médio de entrega',
-      'Itens mais vendidos',
-      'Conversão por horário',
-    ],
-    simples: [
-      'Resumo financeiro do mês',
-      'Top 10 clientes por faturamento',
-      'Comparativo com mês anterior',
-      'Margem média por produto',
-    ],
-  },
-};
-
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function AgentHeroInput({
   greeting,
@@ -92,7 +46,6 @@ export default function AgentHeroInput({
   subtitle: string;
 }) {
   const { user, business } = useAuth();
-  const useCase: UseCase = (business?.settings?.useCase as UseCase) || 'servicos';
 
   const [mode, setMode] = useState<Mode>('operator');
   const [input, setInput] = useState('');
@@ -117,13 +70,6 @@ export default function AgentHeroInput({
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages, isLoading]);
-
-  // Suggestions cycle on demand for variety.
-  const [suggestionOffset, setSuggestionOffset] = useState(0);
-  const visibleSuggestions = useMemo(() => {
-    const pool = SUGGESTIONS[mode][useCase] ?? SUGGESTIONS[mode].servicos;
-    return pool.map((_, i) => pool[(i + suggestionOffset) % pool.length]);
-  }, [mode, useCase, suggestionOffset]);
 
   const send = async (text?: string) => {
     const message = (text ?? input).trim();
@@ -394,56 +340,6 @@ export default function AgentHeroInput({
             <span className="hidden sm:block">Enter envia · Shift+Enter quebra linha</span>
           </div>
         </motion.div>
-
-        {/* ── Suggestion chips (only when no conversation) ───────────────── */}
-        <AnimatePresence>
-          {!hasConversation && canUse && (
-            <motion.div
-              key="suggestions"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -4 }}
-              transition={{ duration: 0.4, delay: 0.18 }}
-              className="mt-5 flex flex-wrap items-center justify-center gap-2"
-            >
-              {visibleSuggestions.map((s, i) => (
-                <motion.button
-                  key={`${mode}-${useCase}-${i}-${s}`}
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.3, delay: 0.22 + i * 0.04 }}
-                  whileTap={{ scale: 0.97 }}
-                  onClick={() => void send(s)}
-                  disabled={isLoading}
-                  className={cn(
-                    'inline-flex items-center px-3 py-1.5 rounded-full text-xs',
-                    'bg-red-50/80 dark:bg-red-500/10',
-                    'border border-red-200/70 dark:border-red-500/25',
-                    'text-red-700 dark:text-red-300',
-                    'hover:bg-red-100 dark:hover:bg-red-500/20',
-                    'hover:border-red-300 dark:hover:border-red-500/50',
-                    'hover:text-red-800 dark:hover:text-red-200',
-                    'transition-colors',
-                  )}
-                >
-                  {s}
-                </motion.button>
-              ))}
-              <motion.button
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ duration: 0.3, delay: 0.22 + visibleSuggestions.length * 0.04 }}
-                whileTap={{ scale: 0.92 }}
-                onClick={() => setSuggestionOffset((v) => v + 1)}
-                className="w-7 h-7 rounded-full bg-red-50/80 dark:bg-red-500/10 border border-red-200/70 dark:border-red-500/25 text-red-500 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-500/20 inline-flex items-center justify-center transition-colors"
-                aria-label="Mais sugestões"
-                title="Mais sugestões"
-              >
-                <Plus className="w-3.5 h-3.5" />
-              </motion.button>
-            </motion.div>
-          )}
-        </AnimatePresence>
 
         {/* ── Conversation panel ─────────────────────────────────────────── */}
         <AnimatePresence>
