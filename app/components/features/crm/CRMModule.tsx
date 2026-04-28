@@ -10,7 +10,7 @@ import {
   Users, DollarSign, TrendingUp, MoreVertical, Globe, Instagram, Facebook, Linkedin, Send,
   CheckCircle2, PhoneCall, Video, FileText, MessageCircle, BarChart3, Activity, Layers, Gauge,
   UserPlus, Briefcase, Tag, Hash, AlertTriangle, Heart, Shield, Zap, Brain,
-  Sparkles, Filter, Crown,
+  Sparkles, Filter, Crown, Settings2, GripVertical, Eye, EyeOff, ChevronUp, ChevronDown,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -28,9 +28,10 @@ import { db } from '@/lib/config/firebase';
 import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot } from 'firebase/firestore';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
-  CRMContact, CRMDeal, CRMPipelineStage, CRMActivity, CRMActivityType,
+  CRMContact, CRMDeal, CRMPipelineStage, CRMStageConfig, CRMPipelineConfig, CRMActivity, CRMActivityType,
   LeadStatus, LeadSource, User, Broadcast, BroadcastStatus, ContactProfile,
 } from '@/lib/types';
+import { ROLE_HIERARCHY } from '@/lib/types';
 
 // ── Extracted sub-components ────────────────────────────────────────────────
 import {
@@ -39,6 +40,7 @@ import {
   BROADCAST_STATUS_LABELS, ALL_PRESET_TAGS, getTagConfig, relativeTime,
   applyPhoneMask, stripPhoneMask, parseCurrencyInput, formatCurrencyInput,
   PROFILE_CONFIG, getScoreColor, getChurnLabel,
+  DEFAULT_CRM_PIPELINE, getVisibleStages, getStageLabel,
   type CRMTab,
 } from './shared';
 import { KanbanBoard } from './KanbanBoard';
@@ -100,8 +102,8 @@ function CRMSkeleton() {
 // CONTACT FORM DIALOG
 // ==========================================
 
-function ContactFormDialog({ open, onClose, onSave, contact, members }: {
-  open: boolean; onClose: () => void; onSave: (data: Partial<CRMContact>) => Promise<void>; contact: CRMContact | null; members: User[];
+function ContactFormDialog({ open, onClose, onSave, contact, members, stages }: {
+  open: boolean; onClose: () => void; onSave: (data: Partial<CRMContact>) => Promise<void>; contact: CRMContact | null; members: User[]; stages: CRMStageConfig[];
 }) {
   const { t } = useTranslation();
   const [name, setName] = useState('');
@@ -189,7 +191,7 @@ function ContactFormDialog({ open, onClose, onSave, contact, members }: {
             <FormControl size="small" fullWidth><InputLabel>{t('crm.filter.source', 'Origem')}</InputLabel><Select value={source} onChange={(e) => setSource(e.target.value as LeadSource)} label={t('crm.form.source', 'Origem')} sx={{ borderRadius: '10px' }}>{ALL_SOURCES.map((s) => <MenuItem key={s} value={s}>{t('crm.source.' + s, SOURCE_LABELS[s])}</MenuItem>)}</Select></FormControl>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <FormControl size="small" fullWidth><InputLabel>{t('crm.form.status', 'Status')}</InputLabel><Select value={status} onChange={(e) => setStatus(e.target.value as LeadStatus)} label={t('crm.form.status', 'Status')} sx={{ borderRadius: '10px' }}>{ALL_STATUSES.map((s) => <MenuItem key={s} value={s}>{t('crm.status.' + s, STATUS_LABELS[s])}</MenuItem>)}</Select></FormControl>
+            <FormControl size="small" fullWidth><InputLabel>{t('crm.form.status', 'Status')}</InputLabel><Select value={status} onChange={(e) => setStatus(e.target.value as LeadStatus)} label={t('crm.form.status', 'Status')} sx={{ borderRadius: '10px' }}>{stages.map((s) => <MenuItem key={s.id} value={s.id}>{s.name}</MenuItem>)}</Select></FormControl>
             <FormControl size="small" fullWidth><InputLabel>{t('crm.form.assignedTo', 'Responsável')}</InputLabel><Select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} label={t('crm.form.assignedTo', 'Responsável')} sx={{ borderRadius: '10px' }}><MenuItem value="">{t('crm.form.none', 'Nenhum')}</MenuItem>{members.map((m) => <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>)}</Select></FormControl>
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -665,6 +667,192 @@ function CampaignsTab({ businessId }: { businessId: string }) {
 // MAIN ORCHESTRATOR
 // ==========================================
 
+// ─── Pipeline Settings Modal ──────────────────────────────────────────────────
+
+function PipelineSettingsModal({
+  current,
+  businessId,
+  onClose,
+  onSaved,
+}: {
+  current?: CRMPipelineConfig;
+  businessId: string;
+  onClose: () => void;
+  onSaved: (cfg: CRMPipelineConfig) => void;
+}) {
+  const [stages, setStages] = useState<CRMStageConfig[]>(
+    current?.stages?.length ? [...current.stages].sort((a, b) => a.order - b.order) : [...DEFAULT_CRM_PIPELINE]
+  );
+  const [saving, setSaving] = useState(false);
+
+  const update = (i: number, patch: Partial<CRMStageConfig>) =>
+    setStages(prev => prev.map((s, idx) => idx === i ? { ...s, ...patch } : s));
+
+  const move = (i: number, dir: -1 | 1) => {
+    const j = i + dir;
+    if (j < 0 || j >= stages.length) return;
+    setStages(prev => {
+      const next = [...prev];
+      [next[i], next[j]] = [next[j], next[i]];
+      return next.map((s, idx) => ({ ...s, order: idx }));
+    });
+  };
+
+  const setWon = (i: number) =>
+    setStages(prev => prev.map((s, idx) => ({ ...s, isWon: idx === i, isLost: idx === i ? false : s.isLost })));
+
+  const setLost = (i: number) =>
+    setStages(prev => prev.map((s, idx) => ({ ...s, isLost: idx === i, isWon: idx === i ? false : s.isWon })));
+
+  const handleSave = async () => {
+    setSaving(true);
+    const cfg: CRMPipelineConfig = {
+      stages: stages.map((s, idx) => ({ ...s, order: idx })),
+    };
+    try {
+      await updateDoc(doc(db, 'businesses', businessId), {
+        'settings.crmPipeline': cfg,
+        updatedAt: new Date().toISOString(),
+      });
+      onSaved(cfg);
+      onClose();
+    } catch (err) {
+      console.error('Pipeline save error:', err);
+      toast.error('Erro ao salvar configurações do pipeline');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 16 }}
+        transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+        className="w-full max-w-lg bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 flex flex-col max-h-[90vh]"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800 flex-shrink-0">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
+              <Settings2 className="w-4 h-4 text-red-500" />
+            </div>
+            <div>
+              <h2 className="font-semibold text-gray-900 dark:text-white text-sm">Configurar Pipeline</h2>
+              <p className="text-[10px] text-gray-400">Renomeie, reordene e personalize os estágios</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Stage list */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+          {/* Legend */}
+          <div className="grid grid-cols-[auto_1fr_auto_auto_auto_auto] gap-2 px-2 pb-1 text-[9px] font-semibold text-gray-400 uppercase tracking-wider">
+            <span />
+            <span>Nome do estágio</span>
+            <span className="text-center">Ganho</span>
+            <span className="text-center">Perdido</span>
+            <span className="text-center">Visível</span>
+            <span />
+          </div>
+
+          {stages.map((stage, i) => (
+            <div key={stage.id} className={cn(
+              'grid grid-cols-[auto_1fr_auto_auto_auto_auto] gap-2 items-center p-2.5 rounded-xl border transition-colors',
+              stage.isVisible === false
+                ? 'border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/20 opacity-60'
+                : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900'
+            )}>
+              {/* Color + name */}
+              <input
+                type="color"
+                value={stage.color}
+                onChange={e => update(i, { color: e.target.value })}
+                className="w-7 h-7 rounded-lg border-0 cursor-pointer bg-transparent flex-shrink-0"
+              />
+              <input
+                value={stage.name}
+                onChange={e => update(i, { name: e.target.value })}
+                className="w-full px-2 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-red-500/30"
+              />
+
+              {/* Won toggle */}
+              <button
+                onClick={() => setWon(i)}
+                title="Marcar como estágio de ganho"
+                className={cn('w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all text-[10px]',
+                  stage.isWon ? 'border-emerald-500 bg-emerald-500 text-white' : 'border-gray-300 dark:border-gray-600 text-gray-300'
+                )}
+              >W</button>
+
+              {/* Lost toggle */}
+              <button
+                onClick={() => setLost(i)}
+                title="Marcar como estágio de perda"
+                className={cn('w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all text-[10px]',
+                  stage.isLost ? 'border-red-500 bg-red-500 text-white' : 'border-gray-300 dark:border-gray-600 text-gray-300'
+                )}
+              >L</button>
+
+              {/* Visibility toggle */}
+              <button
+                onClick={() => update(i, { isVisible: stage.isVisible === false ? true : false })}
+                title={stage.isVisible === false ? 'Mostrar no kanban' : 'Ocultar do kanban'}
+                className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+              >
+                {stage.isVisible === false
+                  ? <EyeOff className="w-3.5 h-3.5" />
+                  : <Eye className="w-3.5 h-3.5" />}
+              </button>
+
+              {/* Reorder */}
+              <div className="flex flex-col gap-0.5">
+                <button onClick={() => move(i, -1)} disabled={i === 0}
+                  className="p-0.5 text-gray-300 dark:text-gray-600 hover:text-gray-500 disabled:opacity-20 transition-colors">
+                  <ChevronUp className="w-3 h-3" />
+                </button>
+                <button onClick={() => move(i, 1)} disabled={i === stages.length - 1}
+                  className="p-0.5 text-gray-300 dark:text-gray-600 hover:text-gray-500 disabled:opacity-20 transition-colors">
+                  <ChevronDown className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+          ))}
+
+          <p className="text-[10px] text-gray-400 text-center pt-1">
+            W = estágio de conversão (verde) · L = estágio de perda (vermelho) · Olho = visível no kanban
+          </p>
+        </div>
+
+        {/* Footer */}
+        <div className="flex gap-2 justify-end px-6 py-4 border-t border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/30 flex-shrink-0">
+          <button onClick={onClose} className="px-4 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+            Cancelar
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors disabled:opacity-50"
+          >
+            {saving ? 'Salvando...' : 'Salvar pipeline'}
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export default function CRMModule() {
   const { t } = useTranslation();
 
@@ -681,6 +869,13 @@ export default function CRMModule() {
   const { user, business } = useAuth();
   const { setActivePage } = useAppContext();
   const queryClient = useQueryClient();
+
+  const isAdmin = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
+  const [pipelineConfig, setPipelineConfig] = useState<CRMPipelineConfig | undefined>(business?.settings?.crmPipeline);
+  const [showPipelineSettings, setShowPipelineSettings] = useState(false);
+
+  // Effective visible stages — recomputed when config changes
+  const stages = useMemo(() => getVisibleStages(pipelineConfig), [pipelineConfig]);
 
   const [activeTab, setActiveTab] = useState<CRMTab>('kanban');
   const [selectedContact, setSelectedContact] = useState<CRMContact | null>(null);
@@ -898,6 +1093,16 @@ export default function CRMModule() {
               </button>
             );
           })}
+          {/* Pipeline settings gear — only on kanban tab, admin only */}
+          {activeTab === 'kanban' && isAdmin && (
+            <button
+              onClick={() => setShowPipelineSettings(true)}
+              className="ml-auto mr-1 p-2 rounded-lg text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+              title="Configurar estágios do pipeline"
+            >
+              <Settings2 className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -939,6 +1144,7 @@ export default function CRMModule() {
 
             {activeTab === 'kanban' && (
               <KanbanBoard contacts={contacts}
+                stages={stages}
                 onSelectContact={(c) => { setSelectedContact(c); setDetailOpen(true); }}
                 selectedContactId={selectedContact?.id || null}
                 onStatusChange={handleStatusChange}
@@ -991,6 +1197,18 @@ export default function CRMModule() {
           OVERLAYS & DIALOGS
           ═══════════════════════════════════════════════════════════ */}
 
+      {/* Pipeline settings modal */}
+      <AnimatePresence>
+        {showPipelineSettings && (
+          <PipelineSettingsModal
+            current={pipelineConfig}
+            businessId={business!.id}
+            onClose={() => setShowPipelineSettings(false)}
+            onSaved={cfg => setPipelineConfig(cfg)}
+          />
+        )}
+      </AnimatePresence>
+
       {/* Lead Detail Panel */}
       <AnimatePresence>
         {detailOpen && selectedContact && (
@@ -998,6 +1216,7 @@ export default function CRMModule() {
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               className="fixed inset-0 bg-black/30 backdrop-blur-sm z-30" onClick={() => setDetailOpen(false)} />
             <LeadDetailPanel contact={selectedContact} activities={activities}
+              stages={stages}
               onClose={() => setDetailOpen(false)}
               onEdit={() => { setEditingContact(selectedContact); setContactDialogOpen(true); setDetailOpen(false); }}
               onDelete={() => { setDeleteContactConfirm(selectedContact); setDetailOpen(false); }}
@@ -1017,7 +1236,7 @@ export default function CRMModule() {
       )}
 
       {/* Form Dialogs */}
-      <ContactFormDialog open={contactDialogOpen} onClose={() => { setContactDialogOpen(false); setEditingContact(null); }} onSave={handleSaveContact} contact={editingContact} members={members} />
+      <ContactFormDialog open={contactDialogOpen} onClose={() => { setContactDialogOpen(false); setEditingContact(null); }} onSave={handleSaveContact} contact={editingContact} members={members} stages={stages} />
       <DealFormDialog open={dealDialogOpen} onClose={() => { setDealDialogOpen(false); setEditingDeal(null); }} onSave={handleSaveDeal} deal={editingDeal} contacts={contacts} members={members} />
       <ActivityFormDialog open={activityDialogOpen} onClose={() => { setActivityDialogOpen(false); setEditingActivity(null); }} onSave={handleSaveActivity} activity={editingActivity} contacts={contacts} deals={deals} members={members} />
 

@@ -1,4 +1,4 @@
-import type { CRMPipelineStage, CRMActivityType, LeadStatus, LeadSource, BroadcastStatus, ContactProfile, ConversationTone, PriceSensitivity } from '@/lib/types';
+import type { CRMPipelineStage, CRMStageConfig, CRMPipelineConfig, CRMActivityType, LeadStatus, LeadSource, BroadcastStatus, ContactProfile, ConversationTone, PriceSensitivity } from '@/lib/types';
 import { formatDate } from '@/lib/utils/format';
 
 // Pipeline
@@ -60,6 +60,62 @@ export const ACTIVITY_COLORS: Record<CRMActivityType, string> = {
 export const ALL_SOURCES: LeadSource[] = ['site', 'indicacao', 'whatsapp', 'instagram', 'facebook', 'google_ads', 'linkedin', 'evento', 'email', 'telefone', 'outro'];
 export const ALL_STATUSES: LeadStatus[] = ['novo', 'contatado', 'qualificado', 'proposta', 'negociacao', 'ganho', 'perdido'];
 export const ALL_ACTIVITY_TYPES: CRMActivityType[] = ['ligacao', 'email', 'reuniao', 'whatsapp', 'tarefa', 'nota', 'proposta'];
+
+// ── Pipeline data-driven ───────────────────────────────────────────────────────
+
+/** Pipeline padrão — espelha KANBAN_COLUMNS para compatibilidade retroativa */
+export const DEFAULT_CRM_PIPELINE: CRMStageConfig[] = [
+  { id: 'novo',        name: 'Novo',        color: '#3B82F6', order: 0 },
+  { id: 'contatado',   name: 'Contatado',   color: '#10B981', order: 1 },
+  { id: 'qualificado', name: 'Qualificado', color: '#8B5CF6', order: 2 },
+  { id: 'proposta',    name: 'Proposta',    color: '#F59E0B', order: 3 },
+  { id: 'negociacao',  name: 'Negociação',  color: '#EA580C', order: 4 },
+  { id: 'ganho',       name: 'Ganho',       color: '#166534', order: 5, isWon: true  },
+  { id: 'perdido',     name: 'Perdido',     color: '#991B1B', order: 6, isLost: true },
+];
+
+/**
+ * Retorna os estágios efetivos do pipeline.
+ * Se não houver config, usa DEFAULT_CRM_PIPELINE.
+ * Garante que todos os 7 LeadStatus canônicos estejam presentes.
+ */
+export function getEffectivePipeline(config?: CRMPipelineConfig): CRMStageConfig[] {
+  const base = config?.stages?.length ? config.stages : DEFAULT_CRM_PIPELINE;
+  const configuredIds = new Set(base.map(s => s.id));
+  const merged = [...base];
+  // Garante que nenhum status padrão fique órfão (segurança de dados legados)
+  for (const def of DEFAULT_CRM_PIPELINE) {
+    if (!configuredIds.has(def.id)) merged.push({ ...def, order: merged.length });
+  }
+  return merged.sort((a, b) => a.order - b.order);
+}
+
+/** Estágios visíveis (usados no Kanban) */
+export function getVisibleStages(config?: CRMPipelineConfig): CRMStageConfig[] {
+  return getEffectivePipeline(config).filter(s => s.isVisible !== false);
+}
+
+/** Label de exibição de um status, respeitando config customizada */
+export function getStageLabel(stages: CRMStageConfig[], status: LeadStatus): string {
+  return stages.find(s => s.id === status)?.name ?? STATUS_LABELS[status] ?? status;
+}
+
+/** Cor de fundo + texto de um status, respeitando config customizada */
+export function getStageColors(stages: CRMStageConfig[], status: LeadStatus): { bg: string; text: string } {
+  const stage = stages.find(s => s.id === status);
+  if (stage) return { bg: stage.color + '20', text: stage.color };
+  return STATUS_COLORS[status] ?? { bg: '#F3F4F680', text: '#6B7280' };
+}
+
+/** ID do estágio marcado como "Won" */
+export function getWonStageId(stages: CRMStageConfig[]): LeadStatus {
+  return stages.find(s => s.isWon)?.id ?? 'ganho';
+}
+
+/** ID do estágio marcado como "Lost" */
+export function getLostStageId(stages: CRMStageConfig[]): LeadStatus {
+  return stages.find(s => s.isLost)?.id ?? 'perdido';
+}
 
 export const BROADCAST_STATUS_LABELS: Record<BroadcastStatus, { label: string; color: string; bg: string }> = {
   draft: { label: 'Rascunho', color: 'text-gray-600 dark:text-gray-400', bg: 'bg-gray-100 dark:bg-gray-800' },

@@ -18,12 +18,13 @@ import {
   STATUS_LABELS, STATUS_COLORS, ACTIVITY_LABELS, ACTIVITY_COLORS,
   PROFILE_CONFIG, TONE_CONFIG, SENSITIVITY_CONFIG,
   getScoreColor, getChurnLabel, formatDaysSince, relativeTime,
+  getStageLabel, getStageColors, DEFAULT_CRM_PIPELINE,
 } from './shared';
 import { SourceIcon } from './SourceIcon';
 import { TagPicker } from './TagSystem';
 import { collection, query, where, orderBy, getDocs } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
-import type { CRMContact, CRMActivity, CRMActivityType, ContactScores, FormResponse } from '@/lib/types';
+import type { CRMContact, CRMActivity, CRMActivityType, CRMStageConfig, ContactScores, FormResponse } from '@/lib/types';
 
 const ACTIVITY_ICONS_MAP: Record<CRMActivityType, React.ReactNode> = {
   ligacao: <Phone size={12} />, email: <Mail size={12} />, reuniao: <Calendar size={12} />,
@@ -107,9 +108,10 @@ function InsightChip({ text, variant = 'neutral' }: { text: string; variant?: 'p
 
 // ── Main Panel ─────────────────────────────────────────────────────────────
 
-export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete, onTagsChange, onSchedule, onOpenConversations }: {
+export function LeadDetailPanel({ contact, activities, stages, onClose, onEdit, onDelete, onTagsChange, onSchedule, onOpenConversations }: {
   contact: CRMContact;
   activities: CRMActivity[];
+  stages?: CRMStageConfig[];
   onClose: () => void;
   onEdit: () => void;
   onDelete: () => void;
@@ -139,8 +141,9 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
     }).catch(() => {});
   }, [contact.businessId, contact.id]);
 
+  const effectiveStages = stages ?? DEFAULT_CRM_PIPELINE;
   const currentTags = contact.tags || [];
-  const sc = STATUS_COLORS[contact.status];
+  const sc = getStageColors(effectiveStages, contact.status);
   const profileCfg = contact.profile ? PROFILE_CONFIG[contact.profile] : null;
   const rh = contact.relationshipHistory;
   const bi = contact.behavioralInsights;
@@ -199,7 +202,7 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
               <p className="text-[11px] text-gray-400 dark:text-gray-500">{contact.role ? `${contact.role} · ` : ''}{contact.company}</p>
             )}
             <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-              <Chip label={STATUS_LABELS[contact.status]} size="small" sx={{ backgroundColor: sc.bg, color: sc.text, fontWeight: 600, fontSize: '0.6rem', height: 20 }} />
+              <Chip label={getStageLabel(effectiveStages, contact.status)} size="small" sx={{ backgroundColor: sc.bg, color: sc.text, fontWeight: 600, fontSize: '0.6rem', height: 20 }} />
               {profileCfg && (
                 <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-md border', profileCfg.bg, profileCfg.text, profileCfg.border)}>
                   {profileCfg.label}

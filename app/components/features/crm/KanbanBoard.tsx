@@ -5,12 +5,13 @@ import { useTranslation } from 'react-i18next';
 import { Layers } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
-import { KANBAN_COLUMNS } from './shared';
+import { getWonStageId } from './shared';
 import { LeadCard } from './LeadCard';
-import type { CRMContact, LeadStatus, LeadSource } from '@/lib/types';
+import type { CRMContact, CRMStageConfig, LeadStatus, LeadSource } from '@/lib/types';
 
-export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onStatusChange, onNewContact, searchQuery, filterTags, filterSource }: {
+export function KanbanBoard({ contacts, stages, onSelectContact, selectedContactId, onStatusChange, onNewContact, searchQuery, filterTags, filterSource }: {
   contacts: CRMContact[];
+  stages: CRMStageConfig[];
   onSelectContact: (c: CRMContact) => void;
   selectedContactId: string | null;
   onStatusChange: (contactId: string, newStatus: LeadStatus) => Promise<void>;
@@ -91,7 +92,8 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
   const avgScore = totalLeads > 0
     ? Math.round(filtered.reduce((s, c) => s + (c.scores?.overall ?? c.score ?? 0), 0) / totalLeads)
     : 0;
-  const wonLeads = filtered.filter((c) => c.status === 'ganho').length;
+  const wonStageId = getWonStageId(stages);
+  const wonLeads = filtered.filter((c) => c.status === wonStageId).length;
 
   return (
     <div className="flex flex-col flex-1 min-h-0 gap-4">
@@ -119,15 +121,15 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
       {/* Kanban Board */}
       <div className="flex-1 overflow-x-auto overflow-y-hidden pb-4 min-h-0" style={{ scrollbarWidth: 'thin' }}>
         <div className="flex gap-3 min-w-max h-full">
-          {KANBAN_COLUMNS.map((col, ci) => {
+          {stages.map((stage, ci) => {
             const columnContacts = filtered
-              .filter((c) => c.status === col.status)
+              .filter((c) => c.status === stage.id)
               .sort((a, b) => (b.scores?.overall ?? b.score) - (a.scores?.overall ?? a.score));
-            const isDragOver = dragOverStatus === col.status;
+            const isDragOver = dragOverStatus === stage.id;
 
             return (
               <motion.div
-                key={col.status}
+                key={stage.id}
                 initial={{ opacity: 0, y: 16 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: ci * 0.05 }}
@@ -136,15 +138,15 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
                 {/* Column header */}
                 <div className="flex items-center justify-between mb-2.5 px-1">
                   <div className="flex items-center gap-2">
-                    <div className="w-3 h-3 rounded-full" style={{ backgroundColor: col.color }} />
-                    <h3 className="text-sm font-bold text-gray-800 dark:text-gray-200">{col.label}</h3>
+                    <div className="w-3 h-3 rounded-full" style={{ backgroundColor: stage.color }} />
+                    <h3 className="text-sm font-bold text-gray-800 dark:text-gray-200">{stage.name}</h3>
                     <span className="text-xs font-bold bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 px-2 py-0.5 rounded-full">
                       {columnContacts.length}
                     </span>
                   </div>
                 </div>
 
-                {/* Drop zone — plain div so Framer Motion doesn't intercept drag events */}
+                {/* Drop zone */}
                 <div
                   className={cn(
                     'flex-1 space-y-2.5 rounded-xl p-2.5 transition-colors duration-150 overflow-y-auto min-h-[120px]',
@@ -152,10 +154,10 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
                       ? 'bg-red-50/50 dark:bg-red-500/[0.06] border-2 border-dashed border-red-400/50 dark:border-red-500/30'
                       : 'bg-gray-50/50 dark:bg-white/[0.015] border-2 border-transparent',
                   )}
-                  onDragEnter={(e) => handleDragEnter(e, col.status)}
+                  onDragEnter={(e) => handleDragEnter(e, stage.id)}
                   onDragOver={handleDragOver}
                   onDragLeave={handleDragLeave}
-                  onDrop={(e) => handleDrop(e, col.status)}
+                  onDrop={(e) => handleDrop(e, stage.id)}
                 >
                   {columnContacts.map((contact) => (
                     <LeadCard
@@ -173,7 +175,7 @@ export function KanbanBoard({ contacts, onSelectContact, selectedContactId, onSt
                     <div className="flex flex-col items-center justify-center h-28 text-gray-300 dark:text-gray-600">
                       <Layers size={22} strokeWidth={1.5} />
                       <p className="text-xs mt-2">{t('crm.kanban.noLeads', 'Nenhum lead')}</p>
-                      {col.status === 'novo' && (
+                      {stage.order === 0 && (
                         <button
                           onClick={onNewContact}
                           className="mt-2 text-xs font-semibold text-red-500 dark:text-red-400 hover:text-red-600 transition-colors"
