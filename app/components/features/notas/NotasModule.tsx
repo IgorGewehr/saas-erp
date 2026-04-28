@@ -67,14 +67,14 @@ type ActiveTab = 'personal' | 'team';
 // ─── Color palette ─────────────────────────────────────────────────────────────
 
 const COLOR_OPTIONS: { key: NoteColor; label: string; bg: string; border: string; text: string; dot: string }[] = [
-  { key: 'yellow',  label: 'Amarelo', bg: 'bg-yellow-50 dark:bg-yellow-900',   border: 'border-yellow-200 dark:border-yellow-700', text: 'text-yellow-900 dark:text-yellow-100', dot: 'bg-yellow-400' },
-  { key: 'green',   label: 'Verde',   bg: 'bg-green-50 dark:bg-green-900',     border: 'border-green-200 dark:border-green-700',   text: 'text-green-900 dark:text-green-100',   dot: 'bg-green-400' },
-  { key: 'blue',    label: 'Azul',    bg: 'bg-blue-50 dark:bg-blue-900',       border: 'border-blue-200 dark:border-blue-700',     text: 'text-blue-900 dark:text-blue-100',     dot: 'bg-blue-400' },
-  { key: 'pink',    label: 'Rosa',    bg: 'bg-pink-50 dark:bg-pink-900',       border: 'border-pink-200 dark:border-pink-700',     text: 'text-pink-900 dark:text-pink-100',     dot: 'bg-pink-400' },
-  { key: 'purple',  label: 'Roxo',    bg: 'bg-purple-50 dark:bg-purple-900',   border: 'border-purple-200 dark:border-purple-700', text: 'text-purple-900 dark:text-purple-100', dot: 'bg-purple-400' },
-  { key: 'orange',  label: 'Laranja', bg: 'bg-orange-50 dark:bg-orange-900',   border: 'border-orange-200 dark:border-orange-700', text: 'text-orange-900 dark:text-orange-100', dot: 'bg-orange-400' },
-  { key: 'red',     label: 'Vermelho',bg: 'bg-red-50 dark:bg-red-900',         border: 'border-red-200 dark:border-red-700',       text: 'text-red-900 dark:text-red-100',       dot: 'bg-red-400' },
-  { key: 'neutral', label: 'Neutro',  bg: 'bg-gray-50 dark:bg-gray-800',       border: 'border-gray-200 dark:border-gray-700',     text: 'text-gray-900 dark:text-gray-100',     dot: 'bg-gray-400' },
+  { key: 'yellow',  label: 'Amarelo', bg: 'bg-yellow-50 dark:bg-yellow-800/70',   border: 'border-yellow-200 dark:border-yellow-600/50', text: 'text-yellow-900 dark:text-yellow-50',  dot: 'bg-yellow-400' },
+  { key: 'green',   label: 'Verde',   bg: 'bg-green-50 dark:bg-green-800/70',     border: 'border-green-200 dark:border-green-600/50',   text: 'text-green-900 dark:text-green-50',    dot: 'bg-green-400' },
+  { key: 'blue',    label: 'Azul',    bg: 'bg-blue-50 dark:bg-blue-800/70',       border: 'border-blue-200 dark:border-blue-600/50',     text: 'text-blue-900 dark:text-blue-50',      dot: 'bg-blue-400' },
+  { key: 'pink',    label: 'Rosa',    bg: 'bg-pink-50 dark:bg-pink-800/70',       border: 'border-pink-200 dark:border-pink-600/50',     text: 'text-pink-900 dark:text-pink-50',      dot: 'bg-pink-400' },
+  { key: 'purple',  label: 'Roxo',    bg: 'bg-purple-50 dark:bg-purple-800/70',   border: 'border-purple-200 dark:border-purple-600/50', text: 'text-purple-900 dark:text-purple-50',  dot: 'bg-purple-400' },
+  { key: 'orange',  label: 'Laranja', bg: 'bg-orange-50 dark:bg-orange-800/70',   border: 'border-orange-200 dark:border-orange-600/50', text: 'text-orange-900 dark:text-orange-50',  dot: 'bg-orange-400' },
+  { key: 'red',     label: 'Vermelho',bg: 'bg-red-50 dark:bg-red-800/70',         border: 'border-red-200 dark:border-red-600/50',       text: 'text-red-900 dark:text-red-50',        dot: 'bg-red-400' },
+  { key: 'neutral', label: 'Neutro',  bg: 'bg-gray-50 dark:bg-gray-700/80',       border: 'border-gray-200 dark:border-gray-600/50',     text: 'text-gray-900 dark:text-gray-50',      dot: 'bg-gray-400' },
 ];
 
 function getColorConfig(color: NoteColor) {
@@ -199,50 +199,50 @@ function NoteCard({
         <button
           onClick={() => onPin(note)}
           title={note.isPinned ? 'Desafixar' : 'Fixar no topo'}
-          className="p-1.5 rounded-lg hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
+          className="p-1.5 rounded-lg hover:bg-black/10 dark:hover:bg-white/20 transition-colors"
         >
           {note.isPinned
-            ? <PinOff className="w-3.5 h-3.5 text-gray-500 dark:text-gray-400" />
-            : <Pin className="w-3.5 h-3.5 text-gray-500 dark:text-gray-400" />}
+            ? <PinOff className="w-3.5 h-3.5 text-black/55 dark:text-white/75" />
+            : <Pin className="w-3.5 h-3.5 text-black/55 dark:text-white/75" />}
         </button>
         <button
           onClick={() => onEdit(note)}
           title="Editar"
-          className="p-1.5 rounded-lg hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
+          className="p-1.5 rounded-lg hover:bg-black/10 dark:hover:bg-white/20 transition-colors"
         >
-          <Pencil className="w-3.5 h-3.5 text-gray-500 dark:text-gray-400" />
+          <Pencil className="w-3.5 h-3.5 text-black/55 dark:text-white/75" />
         </button>
         {!confirmDelete ? (
           <button
             onClick={() => setConfirmDelete(true)}
             title="Excluir"
-            className="p-1.5 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors"
+            className="p-1.5 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors"
           >
-            <Trash2 className="w-3.5 h-3.5 text-gray-500 dark:text-gray-400 hover:text-red-500" />
+            <Trash2 className="w-3.5 h-3.5 text-black/55 dark:text-white/75 hover:text-red-500 dark:hover:text-red-400" />
           </button>
         ) : (
-          <div className="flex items-center gap-0.5 bg-red-50 dark:bg-red-900/30 rounded-lg px-1">
+          <div className="flex items-center gap-0.5 bg-black/10 dark:bg-white/10 rounded-lg px-1">
             <button
               onClick={() => onDelete(note)}
               title="Confirmar exclusão"
               className="p-1.5 rounded-lg hover:bg-red-100 dark:hover:bg-red-800/50 transition-colors"
             >
-              <Check className="w-3.5 h-3.5 text-red-500" />
+              <Check className="w-3.5 h-3.5 text-red-500 dark:text-red-400" />
             </button>
             <button
               onClick={() => setConfirmDelete(false)}
               title="Cancelar"
-              className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+              className="p-1.5 rounded-lg hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
             >
-              <X className="w-3.5 h-3.5 text-gray-500" />
+              <X className="w-3.5 h-3.5 text-black/55 dark:text-white/75" />
             </button>
           </div>
         )}
       </div>
 
       {/* Expand hint — appears on hover bottom-right */}
-      <div className="absolute bottom-3 right-3 opacity-0 group-hover:opacity-40 transition-opacity duration-150 pointer-events-none">
-        <Maximize2 className="w-3 h-3 text-gray-500 dark:text-gray-400" />
+      <div className="absolute bottom-3 right-3 opacity-0 group-hover:opacity-50 transition-opacity duration-150 pointer-events-none">
+        <Maximize2 className="w-3 h-3 text-black dark:text-white" />
       </div>
 
       {/* Title */}
@@ -256,7 +256,7 @@ function NoteCard({
       <div className="relative flex-1 min-h-0 overflow-hidden">
         <p className={cn(
           'text-sm leading-relaxed whitespace-pre-wrap break-words h-full',
-          note.title ? 'text-gray-700 dark:text-gray-300' : cn('font-medium', color.text),
+          note.title ? 'text-black/70 dark:text-white/80' : cn('font-medium', color.text),
           !note.title && 'pr-14',
         )}>
           {note.content}
@@ -266,16 +266,16 @@ function NoteCard({
       </div>
 
       {/* Footer */}
-      <div className="mt-2 pt-2 border-t border-black/10 dark:border-white/10 flex items-center justify-between gap-2 shrink-0">
-        <span className="text-[11px] text-gray-400 dark:text-gray-500">
+      <div className="mt-2 pt-2 border-t border-black/10 dark:border-white/20 flex items-center justify-between gap-2 shrink-0">
+        <span className="text-[11px] font-medium text-black/50 dark:text-white/60">
           {formatDateTime(note.updatedAt)}
         </span>
         {isTeam && (
           <div className="flex items-center gap-1.5">
-            <div className="w-5 h-5 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-[9px] font-bold text-gray-600 dark:text-gray-300">
+            <div className="w-5 h-5 rounded-full bg-black/15 dark:bg-white/20 flex items-center justify-center text-[9px] font-bold text-black/70 dark:text-white/90">
               {note.authorInitials}
             </div>
-            <span className="text-[11px] text-gray-400 dark:text-gray-500 max-w-[100px] truncate">
+            <span className="text-[11px] font-medium text-black/50 dark:text-white/60 max-w-[100px] truncate">
               {note.authorName}
             </span>
           </div>
@@ -657,9 +657,9 @@ function NotePreviewModal({
             <button
               onClick={onClose}
               title="Fechar (Esc)"
-              className="p-1.5 rounded-xl hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
+              className="p-1.5 rounded-xl hover:bg-black/10 dark:hover:bg-white/20 transition-colors"
             >
-              <X className="w-4 h-4 text-gray-500 dark:text-gray-400" />
+              <X className="w-4 h-4 text-black/55 dark:text-white/75" />
             </button>
           </div>
         </div>
@@ -668,26 +668,26 @@ function NotePreviewModal({
         <div className="flex-1 overflow-y-auto px-6 pb-2">
           <p className={cn(
             'text-sm leading-relaxed whitespace-pre-wrap break-words select-text',
-            note.title ? 'text-gray-700 dark:text-gray-300' : cn('font-medium text-[15px]', color.text),
+            note.title ? 'text-black/70 dark:text-white/85' : cn('font-medium text-[15px]', color.text),
           )}>
             {note.content}
           </p>
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-3.5 border-t border-black/10 dark:border-white/10 flex items-center gap-3 shrink-0">
-          <span className="text-[11px] text-gray-400 dark:text-gray-500">
+        <div className="px-6 py-3.5 border-t border-black/10 dark:border-white/20 flex items-center gap-3 shrink-0">
+          <span className="text-[11px] font-medium text-black/50 dark:text-white/65">
             {formatDateTime(note.updatedAt)}
           </span>
           {isTeam && (
             <div className="flex items-center gap-1.5">
-              <div className="w-5 h-5 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-[9px] font-bold text-gray-600 dark:text-gray-300">
+              <div className="w-5 h-5 rounded-full bg-black/15 dark:bg-white/20 flex items-center justify-center text-[9px] font-bold text-black/70 dark:text-white/90">
                 {note.authorInitials}
               </div>
-              <span className="text-[11px] text-gray-400 dark:text-gray-500">{note.authorName}</span>
+              <span className="text-[11px] font-medium text-black/50 dark:text-white/65">{note.authorName}</span>
             </div>
           )}
-          <span className="text-[10px] text-gray-400/60 dark:text-gray-500/60 italic ml-auto">
+          <span className="text-[10px] text-black/35 dark:text-white/40 italic ml-auto">
             Esc para fechar
           </span>
         </div>
