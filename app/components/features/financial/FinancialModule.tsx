@@ -224,36 +224,38 @@ export default function FinancialModule() {
   const [activeTab, setActiveTab] = useState<FinancialTab>('visao-geral');
 
   // ── Scrollable tab bar ────────────────────────────────────────────────────
-  const tabsRef = useRef<HTMLDivElement>(null);
+  // Use a callback ref (state) instead of useRef so effects re-run when the
+  // tab bar mounts — the module has an early-return skeleton that causes
+  // tabsRef.current to be null when effects first run on mount.
+  const [tabsEl, setTabsEl] = useState<HTMLDivElement | null>(null);
   const [canScrollLeft,  setCanScrollLeft]  = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
 
   const checkScroll = useCallback(() => {
-    const el = tabsRef.current;
-    if (!el) return;
-    setCanScrollLeft(el.scrollLeft > 1);
-    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
-  }, []);
+    if (!tabsEl) return;
+    setCanScrollLeft(tabsEl.scrollLeft > 1);
+    setCanScrollRight(tabsEl.scrollLeft + tabsEl.clientWidth < tabsEl.scrollWidth - 1);
+  }, [tabsEl]);
 
   const scrollTabsBy = useCallback((amount: number) => {
-    tabsRef.current?.scrollBy({ left: amount, behavior: 'smooth' });
-  }, []);
+    tabsEl?.scrollBy({ left: amount, behavior: 'smooth' });
+  }, [tabsEl]);
 
+  // Wheel listener — re-runs when tabsEl appears (loading → loaded transition)
   useEffect(() => {
-    const el = tabsRef.current;
-    if (!el) return;
+    if (!tabsEl) return;
+    checkScroll();
     const onWheel = (e: WheelEvent) => {
       if (e.deltaY === 0) return;
       e.preventDefault();
-      el.scrollLeft += e.deltaY;
+      tabsEl.scrollLeft += e.deltaY;
       checkScroll();
     };
-    el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
-  }, [checkScroll]);
+    tabsEl.addEventListener('wheel', onWheel, { passive: false });
+    return () => tabsEl.removeEventListener('wheel', onWheel);
+  }, [tabsEl, checkScroll]);
 
   useEffect(() => {
-    checkScroll();
     window.addEventListener('resize', checkScroll);
     return () => window.removeEventListener('resize', checkScroll);
   }, [checkScroll]);
@@ -1204,7 +1206,7 @@ export default function FinancialModule() {
           </AnimatePresence>
 
           <div
-            ref={tabsRef}
+            ref={setTabsEl}
             onScroll={checkScroll}
             className="overflow-x-auto scrollbar-hide"
           >
