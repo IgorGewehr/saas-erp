@@ -199,6 +199,7 @@ function findDuplicate(form: ClientFormData, clients: Client[], editingId?: stri
 
   for (const c of clients) {
     if (editingId && c.id === editingId) continue;
+    if (c.mergedInto) continue; // skip already-merged secondary records
     if (cpfCnpj && digits(c.cpfCnpj) === cpfCnpj) return { client: c, field: form.tipo === 'pj' ? 'CNPJ' : 'CPF' };
     if (email && normEmail(c.email) === email) return { client: c, field: 'e-mail' };
     if (phone) {
@@ -826,7 +827,6 @@ function ImportModal({
   const [importing, setImporting] = useState(false);
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState<ImportResult | null>(null);
-  const fileRef = useState<HTMLInputElement | null>(null);
 
   const handleFile = (file: File) => {
     Papa.parse<Record<string, string>>(file, {
@@ -1163,7 +1163,7 @@ function ImportModal({
 // ─── Merge duplicates ────────────────────────────────────────────────────────
 
 function detectDuplicates(clients: Client[]): [Client, Client][] {
-  const active = clients.filter(c => c.isActive !== false && !(c as unknown as Record<string, unknown>).mergedInto);
+  const active = clients.filter(c => c.isActive !== false && !c.mergedInto);
   const pairs: [Client, Client][] = [];
   const seen = new Set<string>();
 
@@ -1496,13 +1496,16 @@ function LoyaltySettingsModal({
 
   const handleSave = async () => {
     setSaving(true);
+    const parsePositive = (raw: string, fallback: number, min = 1) =>
+      Math.max(min, Number.isFinite(Number(raw)) && Number(raw) > 0 ? Number(raw) : fallback);
     const cfg: LoyaltyConfig = {
       isEnabled,
-      pointsPerReal: Math.max(0, Number(pointsPerReal) || 1),
-      pointValueInCentavos: Math.max(1, Number(pointValue) || 1),
-      minPointsToRedeem: Math.max(1, Number(minRedeem) || 100),
-      expirationDays: expireDays ? Number(expireDays) : null,
-      tiers: tiers.filter(t => t.name.trim()),
+      pointsPerReal:        parsePositive(pointsPerReal, 1, 0),
+      pointValueInCentavos: parsePositive(pointValue, 1),
+      minPointsToRedeem:    parsePositive(minRedeem, 100),
+      expirationDays: expireDays && Number.isFinite(Number(expireDays)) && Number(expireDays) > 0
+        ? Number(expireDays) : null,
+      tiers: tiers.filter(t => t.name.trim()).sort((a, b) => a.minPoints - b.minPoints),
     };
     try {
       await updateDoc(doc(db, 'businesses', businessId), { 'settings.loyalty': cfg, updatedAt: new Date().toISOString() });
@@ -1814,14 +1817,17 @@ function LoyaltyHistorySection({ clientId, businessId }: { clientId: string; bus
   const { data: history = [], isLoading } = useQuery({
     queryKey: ['loyalty-history', clientId],
     queryFn: async (): Promise<LoyaltyHistoryEntry[]> => {
+      // No orderBy to avoid requiring a composite Firestore index — sort client-side
       const snap = await getDocs(query(
         collection(db, 'loyaltyHistory'),
         where('businessId', '==', businessId),
         where('clientId', '==', clientId),
-        orderBy('createdAt', 'desc'),
-        firestoreLimit(15),
+        firestoreLimit(30),
       ));
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as LoyaltyHistoryEntry));
+      return snap.docs
+        .map(d => ({ ...d.data(), id: d.id } as LoyaltyHistoryEntry))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        .slice(0, 15);
     },
     enabled: !!clientId && !!businessId,
     staleTime: 60 * 1000,
@@ -1936,30 +1942,31 @@ function ClientTimeline({ client, businessId }: { client: Client; businessId: st
         ))),
       ]);
 
-      convSnap?.docs.forEach(d => {
+      convSnap?.docs?.forEach(d => {
         const v = d.data();
         all.push({
           id: `conv_${d.id}`, kind: 'conversation',
           title: `Conversa via ${CH_LABEL[v.channel] ?? v.channel}`,
           subtitle: v.lastMessage ? String(v.lastMessage).slice(0, 70) : undefined,
           status: v.status,
-          timestamp: v.lastMessageAt || v.createdAt,
+          timestamp: v.lastMessageAt || v.createdAt || '',
         });
       });
 
-      apptSnap?.docs.forEach(d => {
+      apptSnap?.docs?.forEach(d => {
         const v = d.data();
+        const dateStr = v.date ? `${v.date}T${v.startTime ?? '00:00'}` : (v.createdAt || '');
         all.push({
           id: `appt_${d.id}`, kind: 'appointment',
           title: v.serviceName || 'Agendamento',
-          subtitle: v.professionalName ? `com ${v.professionalName} • ${v.date} ${v.startTime}` : `${v.date} às ${v.startTime}`,
+          subtitle: v.professionalName ? `com ${v.professionalName} • ${v.date} ${v.startTime}` : `${v.date ?? ''} às ${v.startTime ?? ''}`,
           amount: v.price,
           status: v.status,
-          timestamp: `${v.date}T${v.startTime ?? '00:00'}`,
+          timestamp: dateStr,
         });
       });
 
-      salesSnap?.docs.forEach(d => {
+      salesSnap?.docs?.forEach(d => {
         const v = d.data();
         const items: Array<{ description: string }> = v.items || [];
         all.push({
@@ -1968,11 +1975,11 @@ function ClientTimeline({ client, businessId }: { client: Client; businessId: st
           subtitle: items.slice(0, 2).map(i => i.description).join(', ') || undefined,
           amount: v.total,
           status: v.status,
-          timestamp: v.createdAt,
+          timestamp: v.createdAt || '',
         });
       });
 
-      txSnap?.docs.forEach(d => {
+      txSnap?.docs?.forEach(d => {
         const v = d.data();
         all.push({
           id: `tx_${d.id}`, kind: v.type === 'receita' ? 'transaction_in' : 'transaction_out',
@@ -1980,11 +1987,17 @@ function ClientTimeline({ client, businessId }: { client: Client; businessId: st
           subtitle: v.category || undefined,
           amount: v.amount,
           status: v.status,
-          timestamp: v.paymentDate || v.dueDate || v.createdAt,
+          timestamp: v.paymentDate || v.dueDate || v.createdAt || '',
         });
       });
 
-      all.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+      // Sort descending; empty timestamps go to end
+      all.sort((a, b) => {
+        if (!a.timestamp && !b.timestamp) return 0;
+        if (!a.timestamp) return 1;
+        if (!b.timestamp) return -1;
+        return b.timestamp.localeCompare(a.timestamp);
+      });
       const seen = new Set<string>();
       return all.filter(e => { if (seen.has(e.id)) return false; seen.add(e.id); return true; });
     },
@@ -2086,6 +2099,13 @@ function ClientDetailPanel({ client, onClose, onEdit, loyaltyConfig: loyaltyCfg 
   const [activeTab, setActiveTab] = useState<'perfil' | 'timeline'>('perfil');
   const [showPointsAdjust, setShowPointsAdjust] = useState(false);
   const [localPoints, setLocalPoints] = useState<number | null>(null);
+
+  // Reset local points state whenever the selected client changes
+  const prevClientId = useState(client.id);
+  if (prevClientId[0] !== client.id) {
+    prevClientId[1](client.id);
+    setLocalPoints(null);
+  }
 
   const displayPoints = localPoints ?? client.loyaltyPoints ?? 0;
   const tiers = loyaltyCfg?.tiers ?? DEFAULT_LOYALTY_TIERS;
@@ -2211,7 +2231,9 @@ function ClientDetailPanel({ client, onClose, onEdit, loyaltyConfig: loyaltyCfg 
                 const sorted = [...tiers].sort((a, b) => a.minPoints - b.minPoints);
                 const nextTier = sorted.find(t => t.minPoints > displayPoints);
                 if (!nextTier || !currentTier) return null;
-                const progress = Math.min(100, ((displayPoints - currentTier.minPoints) / (nextTier.minPoints - currentTier.minPoints)) * 100);
+                const range = nextTier.minPoints - currentTier.minPoints;
+                if (range === 0) return null;
+                const progress = Math.min(100, Math.max(0, ((displayPoints - currentTier.minPoints) / range) * 100));
                 return (
                   <div className="space-y-1">
                     <div className="flex justify-between text-[9px] text-amber-600 dark:text-amber-400">
@@ -2409,7 +2431,9 @@ export default function ClientsModule() {
         tipo: data.tipo,
         cpfCnpj: data.cpfCnpj.trim() || undefined,
         inscricaoEstadual: data.inscricaoEstadual.trim() || undefined,
-        indicadorIE: (data.indicadorIE || undefined) as '1' | '2' | '9' | undefined,
+        indicadorIE: (['1', '2', '9'] as const).includes(data.indicadorIE as '1' | '2' | '9')
+          ? (data.indicadorIE as '1' | '2' | '9')
+          : undefined,
         source: data.source,
         status: data.status,
         notes: data.notes.trim() || undefined,
@@ -2470,8 +2494,8 @@ export default function ClientsModule() {
 
   // ─── Filtered & sorted list ──────────────────────────────────────────────────
   const filtered = useMemo(() => {
-    // Drop any malformed entries (corrupted docs missing name) before rendering.
-    let list = clients.filter(c => c && typeof c.name === 'string' && c.name.length > 0);
+    // Drop malformed entries and already-merged secondary records
+    let list = clients.filter(c => c && typeof c.name === 'string' && c.name.length > 0 && !c.mergedInto);
     const term = search.trim().toLowerCase();
     if (term) {
       list = list.filter(c =>
@@ -2493,8 +2517,8 @@ export default function ClientsModule() {
     }
     if (filterChurnRisk !== 'all') {
       list = list.filter(c => {
-        const risk = c.scores?.churnRisk;
-        if (risk == null) return false;
+        // Clients with no scores are treated as 'minimal' risk (not filtered out)
+        const risk = c.scores?.churnRisk ?? 0;
         return getChurnLevel(risk) === filterChurnRisk;
       });
     }
@@ -2517,7 +2541,8 @@ export default function ClientsModule() {
     const active = clients.filter(c => c.status === 'ganho').length;
     const pj = clients.filter(c => c.tipo === 'pj').length;
     const totalSpent = clients.reduce((s, c) => s + (c.totalSpent || 0), 0);
-    const avgTicket = active > 0 ? totalSpent / clients.filter(c => (c.totalSpent || 0) > 0).length : 0;
+    const withSpent = clients.filter(c => (c.totalSpent || 0) > 0);
+    const avgTicket = withSpent.length > 0 ? totalSpent / withSpent.length : 0;
     return { total: clients.length, active, pj, totalSpent, avgTicket };
   }, [clients]);
 

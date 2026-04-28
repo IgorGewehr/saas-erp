@@ -1629,6 +1629,10 @@ export interface Client {
   /** Saldo de pontos de fidelidade */
   loyaltyPoints?: number;
 
+  // ── Merge de duplicatas ────────────────────────────
+  mergedInto?: string;   // ID do cliente primário que absorveu este
+  mergedAt?: string;     // ISO timestamp do merge
+
   // ── Inteligência & AI Agent ────────────────────────
   profile?: ContactProfile;
   relationshipHistory?: RelationshipHistory;
