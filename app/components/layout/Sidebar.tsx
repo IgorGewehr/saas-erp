@@ -430,14 +430,16 @@ function SidebarContent({
       return { key: ps.key, title: ps.title, isCollapsed: ps.isCollapsed, items };
     });
 
-    // Items visible but not assigned to any section (added after prefs were saved)
+    // Items visible but not assigned to any section (added after prefs were saved).
+    // Place each item in its original menuSections section so the sidebar matches the editor.
     const unassigned = [...allVisibleMap.values()].filter(
       item => !assignedIds.has(item.id) && !hiddenSet.has(item.id)
     );
-    if (unassigned.length > 0) {
-      const first = sections[0];
-      if (first) first.items.push(...unassigned);
-      else sections.push({ key: '__other__', title: 'Outros', isCollapsed: false, items: unassigned });
+    for (const item of unassigned) {
+      const originalKey = menuSections.find(s => s.items.some(i => i.id === item.id))?.key;
+      const target = sections.find(s => s.key === originalKey) ?? sections[0];
+      if (target) target.items.push(item);
+      else sections.push({ key: '__other__', title: 'Outros', isCollapsed: false, items: [item] });
     }
 
     return sections.filter(s => s.items.length > 0);
