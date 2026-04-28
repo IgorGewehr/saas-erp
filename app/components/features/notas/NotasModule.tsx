@@ -177,9 +177,9 @@ function NoteCard({
       exit={{ opacity: 0, scale: 0.92, y: -6 }}
       transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
       onClick={() => onPreview(note)}
-      style={{ breakInside: 'avoid', marginBottom: '16px', display: 'block' }}
       className={cn(
         'group relative rounded-2xl border p-4 cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5',
+        'flex flex-col h-52',
         color.bg,
         color.border,
       )}
@@ -247,18 +247,26 @@ function NoteCard({
 
       {/* Title */}
       {note.title && (
-        <h3 className={cn('font-semibold text-sm mb-2 pr-16 leading-snug break-words line-clamp-3', color.text)}>
+        <h3 className={cn('font-semibold text-sm mb-1.5 pr-16 leading-snug break-words line-clamp-2 shrink-0', color.text)}>
           {note.title}
         </h3>
       )}
 
-      {/* Content */}
-      <p className={cn('text-sm leading-relaxed whitespace-pre-wrap break-words line-clamp-[12]', note.title ? 'text-gray-700 dark:text-gray-300' : cn('font-medium', color.text), !note.title && 'pr-16')}>
-        {note.content}
-      </p>
+      {/* Content — grows to fill card, fades out at the bottom when overflowing */}
+      <div className="relative flex-1 min-h-0 overflow-hidden">
+        <p className={cn(
+          'text-sm leading-relaxed whitespace-pre-wrap break-words h-full',
+          note.title ? 'text-gray-700 dark:text-gray-300' : cn('font-medium', color.text),
+          !note.title && 'pr-14',
+        )}>
+          {note.content}
+        </p>
+        {/* Fade gradient — inherits the card background color */}
+        <div className="absolute bottom-0 left-0 right-0 h-8 pointer-events-none bg-gradient-to-t from-inherit to-transparent" />
+      </div>
 
       {/* Footer */}
-      <div className="mt-3 pt-2.5 border-t border-black/10 dark:border-white/10 flex items-center justify-between gap-2">
+      <div className="mt-2 pt-2 border-t border-black/10 dark:border-white/10 flex items-center justify-between gap-2 shrink-0">
         <span className="text-[11px] text-gray-400 dark:text-gray-500">
           {formatDateTime(note.updatedAt)}
         </span>
@@ -895,14 +903,10 @@ export default function NotasModule() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="columns-1 sm:columns-2 lg:columns-3 xl:columns-4 gap-4"
+            className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
           >
             {[0, 1, 2, 3, 4, 5].map(i => (
-              <div
-                key={i}
-                className="shimmer rounded-2xl mb-4"
-                style={{ height: `${120 + (i % 3) * 40}px`, breakInside: 'avoid', display: 'block' }}
-              />
+              <div key={i} className="shimmer rounded-2xl h-52" />
             ))}
           </motion.div>
         ) : displayed.length === 0 ? (
@@ -924,7 +928,7 @@ export default function NotasModule() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.18 }}
-            className="columns-1 sm:columns-2 lg:columns-3 xl:columns-4 gap-4"
+            className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
           >
             {displayed.map(note => (
               <NoteCard
