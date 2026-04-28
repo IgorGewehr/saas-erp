@@ -1,6 +1,12 @@
 import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
 import { getAuth, Auth } from 'firebase/auth';
-import { getFirestore, Firestore } from 'firebase/firestore';
+import {
+  initializeFirestore,
+  getFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  Firestore,
+} from 'firebase/firestore';
 import { getStorage, FirebaseStorage } from 'firebase/storage';
 
 const firebaseConfig = {
@@ -26,8 +32,20 @@ const g = globalThis as typeof globalThis & {
 if (!g._fb_app) {
   g._fb_app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 }
-if (!g._fb_auth)    g._fb_auth    = getAuth(g._fb_app);
-if (!g._fb_db)      g._fb_db      = getFirestore(g._fb_app);
+if (!g._fb_auth) g._fb_auth = getAuth(g._fb_app);
+if (!g._fb_db) {
+  // Use initializeFirestore only on first call (before getFirestore would lock the instance).
+  // persistentLocalCache stores snapshots in IndexedDB — second visit loads from cache
+  // in <50ms instead of waiting for a network round trip.
+  try {
+    g._fb_db = initializeFirestore(g._fb_app, {
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+    });
+  } catch {
+    // Firestore already initialized (e.g. HMR re-evaluation) — fall back to getFirestore
+    g._fb_db = getFirestore(g._fb_app);
+  }
+}
 if (!g._fb_storage) g._fb_storage = getStorage(g._fb_app);
 
 export const app     = g._fb_app;

@@ -733,7 +733,7 @@ export default function FinancialModule() {
     setIsSaving(true);
     try {
       const now = new Date().toISOString();
-      const status: TransactionStatus = formPaymentDate ? 'pago' : formStatus;
+      const status: TransactionStatus = formStatus;
       const actor = { uid: user.uid, name: user.name };
 
       // Excluir arquivos removidos

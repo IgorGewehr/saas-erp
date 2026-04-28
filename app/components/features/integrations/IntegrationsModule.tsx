@@ -14,15 +14,16 @@ import { db } from '@/lib/config/firebase';
 import type { EnterpriseSettings, IntegrationConfig, IntegrationProvider } from '@/lib/types';
 import type { User } from '@/lib/types';
 
-// Lazy load tabs for code splitting
-import OverviewTab from './tabs/OverviewTab';
-import RevenueTab from './tabs/RevenueTab';
-import CostsTab from './tabs/CostsTab';
-import InfrastructureTab from './tabs/InfrastructureTab';
-import MonitoringTab from './tabs/MonitoringTab';
-import PlatformTab from './tabs/PlatformTab';
-import CommunicationTab from './tabs/CommunicationTab';
-import TeamTab from './tabs/TeamTab';
+import { lazy, Suspense } from 'react';
+
+const OverviewTab      = lazy(() => import('./tabs/OverviewTab'));
+const RevenueTab       = lazy(() => import('./tabs/RevenueTab'));
+const CostsTab         = lazy(() => import('./tabs/CostsTab'));
+const InfrastructureTab = lazy(() => import('./tabs/InfrastructureTab'));
+const MonitoringTab    = lazy(() => import('./tabs/MonitoringTab'));
+const PlatformTab      = lazy(() => import('./tabs/PlatformTab'));
+const CommunicationTab = lazy(() => import('./tabs/CommunicationTab'));
+const TeamTab          = lazy(() => import('./tabs/TeamTab'));
 
 // ─── Tab Configuration ──────────────────────────────────────────────────────────
 
@@ -271,17 +272,23 @@ export default function IntegrationsModule() {
       </div>
 
       {/* ─── Tab Content ─────────────────────────────────────────────────── */}
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={activeTab}
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -4 }}
-          transition={{ duration: 0.2 }}
-        >
-          {renderTab()}
-        </motion.div>
-      </AnimatePresence>
+      <Suspense fallback={
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 pt-2">
+          {[0,1,2,3].map(i => <div key={i} className="h-[110px] rounded-2xl shimmer" />)}
+        </div>
+      }>
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={activeTab}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.2 }}
+          >
+            {renderTab()}
+          </motion.div>
+        </AnimatePresence>
+      </Suspense>
     </motion.div>
   );
 }

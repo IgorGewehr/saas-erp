@@ -154,7 +154,7 @@ const pageVariants: import('framer-motion').Variants = {
 // ─── Layout ───────────────────────────────────────────────────────────────────
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
-  const { isAuthenticated, isLoading, business, firebaseUser } = useAuth();
+  const { isAuthReady, isLoading, business, firebaseUser } = useAuth();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [activePage, setActivePage] = useState<MenuPage>('Dashboard');
@@ -162,14 +162,14 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const waRestored = useRef(false);
 
   useEffect(() => {
-    if (!isLoading && !isAuthenticated) {
+    if (isAuthReady && !firebaseUser) {
       router.replace('/login');
     }
-  }, [isAuthenticated, isLoading, router]);
+  }, [isAuthReady, firebaseUser, router]);
 
   // ── Auto-restore WhatsApp Baileys session after server restart ──
   useEffect(() => {
-    if (!isAuthenticated || !business?.id || !firebaseUser || waRestored.current) return;
+    if (!firebaseUser || !business?.id || waRestored.current) return;
 
     // Only restore if WhatsApp is marked as connected in Firestore
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -193,7 +193,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         // Silent — restore is best-effort
       }
     })();
-  }, [isAuthenticated, business, firebaseUser]);
+  }, [firebaseUser, business]);
 
   const handleMenuSelect = (page: MenuPage) => {
     prevPageRef.current = activePage;
@@ -201,7 +201,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     setMobileMenuOpen(false);
   };
 
-  if (isLoading || !isAuthenticated) {
+  // isAuthReady → used only for redirect (avoids waiting for Firestore before redirecting non-authed users)
+  // isLoading   → used for render (ensures user doc is ready before the app shell mounts)
+  // With Firestore IndexedDB cache enabled, isLoading resolves from cache on return visits (<50ms)
+  if (!isAuthReady || isLoading || !firebaseUser) {
     return <LoadingSkeleton />;
   }
 

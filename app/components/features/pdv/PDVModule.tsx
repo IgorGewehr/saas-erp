@@ -280,7 +280,12 @@ export default function PDVModule() {
         orderBy('name', 'asc'),
       );
       const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as CRMContact));
+      return snap.docs.map(d => {
+        const data = d.data();
+        // Normalize legacy `nome` field to `name` (migration from old CRM schema)
+        if (!data.name && data.nome) data.name = data.nome;
+        return { ...data, id: d.id } as CRMContact;
+      });
     },
     enabled: !!business?.id,
   });
@@ -417,16 +422,30 @@ export default function PDVModule() {
   }, []);
 
   const updateQuantity = useCallback((cartItemId: string, delta: number) => {
-    setCart((prev) => {
-      return prev
+    setCart((prev) =>
+      prev
         .map((c) => {
           if (c.id !== cartItemId) return c;
           const newQty = c.quantity + delta;
           if (newQty <= 0) return null;
           return { ...c, quantity: newQty, total: newQty * c.unitPrice };
         })
-        .filter(Boolean) as CartItem[];
-    });
+        .filter(Boolean) as CartItem[],
+    );
+  }, []);
+
+  // Used by product-grid cards: item.id is productId/serviceId, not the cart-item's own id
+  const updateQuantityByItemId = useCallback((itemId: string, delta: number) => {
+    setCart((prev) =>
+      prev
+        .map((c) => {
+          if (c.productId !== itemId && c.serviceId !== itemId) return c;
+          const newQty = c.quantity + delta;
+          if (newQty <= 0) return null;
+          return { ...c, quantity: newQty, total: newQty * c.unitPrice };
+        })
+        .filter(Boolean) as CartItem[],
+    );
   }, []);
 
   const removeFromCart = useCallback((cartItemId: string) => {
@@ -1486,7 +1505,7 @@ export default function PDVModule() {
         </div>
 
         {/* Product/Service Grid */}
-        <div className="flex-1 overflow-y-auto px-6 pb-6">
+        <div className="flex-1 overflow-y-auto px-6 pt-3 pb-6">
           <div className="grid grid-cols-2 xl:grid-cols-3 gap-3">
             <AnimatePresence mode="popLayout">
               {catalogItems.map((item, index) => {
@@ -1557,7 +1576,14 @@ export default function PDVModule() {
                       )}>
                         {formatCurrency(price)}
                       </span>
-                      {item.type === 'product' && (
+                      {inCartQty > 0 ? (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); updateQuantityByItemId(item.id, -1); }}
+                          className="w-7 h-7 rounded-lg bg-white dark:bg-gray-700 border border-red-200 dark:border-red-500/30 flex items-center justify-center text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors shadow-sm"
+                        >
+                          <Minus size={13} />
+                        </button>
+                      ) : item.type === 'product' ? (
                         <span className={cn(
                           'text-[10px] font-medium rounded-md px-1.5 py-0.5',
                           (item as Product).currentStock <= (item as Product).minStock
@@ -1566,7 +1592,7 @@ export default function PDVModule() {
                         )}>
                           {(item as Product).currentStock} un
                         </span>
-                      )}
+                      ) : null}
                     </div>
                   </motion.button>
                 );
@@ -1681,74 +1707,17 @@ export default function PDVModule() {
           )}
         </div>
 
-        {/* Cart Items + Checkout (scrollable) */}
+        {/* Checkout (scrollable) */}
         <div className="flex-1 overflow-y-auto min-h-0">
-          <div className="px-6 py-4">
-          <AnimatePresence mode="popLayout">
-            {cart.length === 0 ? (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="flex flex-col items-center justify-center py-16 text-slate-300 dark:text-gray-600"
-              >
-                <ShoppingCart size={48} strokeWidth={1.2} />
-                <p className="mt-3 text-sm text-slate-400 dark:text-gray-500">{t('pdv.cart.emptyTitle', 'Carrinho vazio')}</p>
-                <p className="text-xs text-slate-300 dark:text-gray-600 mt-1">{t('pdv.cart.emptyDesc', 'Clique em um produto ou serviço para adicionar')}</p>
-              </motion.div>
-            ) : (
-              <div className="space-y-2">
-                {cart.map((item) => (
-                  <motion.div
-                    key={item.id}
-                    layout
-                    initial={{ opacity: 0, x: 20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -20 }}
-                    className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 dark:bg-gray-800/50 border border-slate-100 dark:border-gray-700/50 group"
-                  >
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-slate-900 dark:text-gray-100 truncate">{item.description}</p>
-                      <p className="text-xs text-slate-400 dark:text-gray-500 mt-0.5">
-                        {formatCurrency(item.unitPrice)} cada
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        onClick={() => updateQuantity(item.id, -1)}
-                        className="w-7 h-7 rounded-lg bg-white dark:bg-gray-700 border border-slate-200 dark:border-gray-600 flex items-center justify-center text-slate-500 dark:text-gray-400 hover:border-red-300 hover:text-red-600 dark:hover:text-red-400 transition-colors"
-                      >
-                        <Minus size={14} />
-                      </button>
-                      <span className="w-8 text-center text-sm font-semibold text-slate-900 dark:text-gray-100">
-                        {item.quantity}
-                      </span>
-                      <button
-                        onClick={() => updateQuantity(item.id, 1)}
-                        className="w-7 h-7 rounded-lg bg-white dark:bg-gray-700 border border-slate-200 dark:border-gray-600 flex items-center justify-center text-slate-500 dark:text-gray-400 hover:border-red-300 hover:text-red-600 dark:hover:text-red-400 transition-colors"
-                      >
-                        <Plus size={14} />
-                      </button>
-                    </div>
-                    <p className="text-sm font-bold text-slate-900 dark:text-gray-100 w-20 text-right">
-                      {formatCurrency(item.unitPrice * item.quantity)}
-                    </p>
-                    <button
-                      onClick={() => removeFromCart(item.id)}
-                      className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-300 dark:text-gray-600 hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-500 dark:hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
-                    >
-                      <X size={14} />
-                    </button>
-                  </motion.div>
-                ))}
-              </div>
-            )}
-          </AnimatePresence>
-          </div>
-
-        {/* Checkout Section */}
-        {cart.length > 0 && (
+          {cart.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 px-6 text-slate-300 dark:text-gray-600">
+              <ShoppingCart size={48} strokeWidth={1.2} />
+              <p className="mt-3 text-sm text-slate-400 dark:text-gray-500">{t('pdv.cart.emptyTitle', 'Carrinho vazio')}</p>
+              <p className="text-xs text-slate-300 dark:text-gray-600 mt-1">{t('pdv.cart.emptyDesc', 'Clique em um produto ou serviço para adicionar')}</p>
+            </div>
+          ) : (
           <div
-            className="border-t border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-800/50 px-6 py-4 sticky bottom-0"
+            className="px-6 py-4"
           >
             {/* Subtotal & Discount */}
             <div className="space-y-2 mb-4">
@@ -2185,7 +2154,7 @@ export default function PDVModule() {
               </Button>
             </div>
           </div>
-        )}
+          )}
         </div>
       </div>
 
