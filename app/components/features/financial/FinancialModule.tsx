@@ -1976,7 +1976,7 @@ export default function FinancialModule() {
 // TAB: VISAO GERAL
 // ==========================================
 
-type DashboardPeriod = '30d' | '3m' | '6m' | '12m';
+type DashboardPeriod = '30d' | '3m' | '6m' | '12m' | 'month';
 
 function OverviewContent({
   metrics,
@@ -2016,6 +2016,10 @@ function OverviewContent({
   const { t } = useTranslation();
   const hiddenValue = '******';
   const [dashboardPeriod, setDashboardPeriod] = useState<DashboardPeriod>('30d');
+  const [selectedMonth, setSelectedMonth] = useState<string>(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  });
   const [agingType, setAgingType] = useState<'ambos' | 'receber' | 'pagar'>('ambos');
   const [expandedAgingClient, setExpandedAgingClient] = useState<string | null>(null);
   const [dismissedRecurringBanner, setDismissedRecurringBanner] = useState(false);
@@ -2027,25 +2031,39 @@ function OverviewContent({
   }, [transactions]);
 
   // Period-filtered transactions for KPI + period-specific analytics
-  const periodDays: Record<DashboardPeriod, number> = { '30d': 30, '3m': 90, '6m': 180, '12m': 365 };
-  const days = periodDays[dashboardPeriod];
+  const periodDays: Record<Exclude<DashboardPeriod, 'month'>, number> = { '30d': 30, '3m': 90, '6m': 180, '12m': 365 };
 
   const { periodTx, prevTx } = useMemo(() => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const now = today.getTime() + 86400000; // End of today
-    const ms = days * 86400000;
-    const cutoffCurrent = now - ms;
-    const cutoffPrev = now - ms * 2;
-    const ref = (t: Transaction) => {
+    const txDate = (t: Transaction) => {
       const d = t.paymentDate || t.dueDate;
       return d ? new Date(d + 'T00:00:00').getTime() : 0;
     };
+
+    if (dashboardPeriod === 'month') {
+      const [y, m] = selectedMonth.split('-').map(Number);
+      const start = new Date(y, m - 1, 1).getTime();
+      const end   = new Date(y, m, 0, 23, 59, 59, 999).getTime();
+      const prevM = m === 1 ? 12 : m - 1;
+      const prevY = m === 1 ? y - 1 : y;
+      const prevStart = new Date(prevY, prevM - 1, 1).getTime();
+      const prevEnd   = new Date(prevY, prevM, 0, 23, 59, 59, 999).getTime();
+      return {
+        periodTx: transactions.filter(t => { const d = txDate(t); return d >= start && d <= end; }),
+        prevTx:   transactions.filter(t => { const d = txDate(t); return d >= prevStart && d <= prevEnd; }),
+      };
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const now = today.getTime() + 86400000;
+    const ms = periodDays[dashboardPeriod] * 86400000;
+    const cutoffCurrent = now - ms;
+    const cutoffPrev    = now - ms * 2;
     return {
-      periodTx: transactions.filter(t => ref(t) >= cutoffCurrent),
-      prevTx: transactions.filter(t => ref(t) >= cutoffPrev && ref(t) < cutoffCurrent),
+      periodTx: transactions.filter(t => txDate(t) >= cutoffCurrent),
+      prevTx:   transactions.filter(t => txDate(t) >= cutoffPrev && txDate(t) < cutoffCurrent),
     };
-  }, [transactions, days]);
+  }, [transactions, dashboardPeriod, selectedMonth, periodDays]);
 
   const periodMetrics = useMemo(() => {
     const paid = (arr: Transaction[], type: 'receita' | 'despesa') =>
@@ -2117,7 +2135,13 @@ function OverviewContent({
     t.status === 'pendente' && t.dueDate && new Date(t.dueDate + 'T00:00:00') < new Date()
   ).length;
 
-  const PERIOD_LABELS: Record<DashboardPeriod, string> = { '30d': 'Últ. 30 dias', '3m': 'Últ. 3 meses', '6m': 'Últ. 6 meses', '12m': 'Últ. 12 meses' };
+  const PERIOD_LABELS: Record<DashboardPeriod, string> = {
+    '30d': 'Últ. 30 dias', '3m': 'Últ. 3 meses', '6m': 'Últ. 6 meses', '12m': 'Últ. 12 meses',
+    'month': (() => {
+      const [y, m] = selectedMonth.split('-').map(Number);
+      return new Date(y, m - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+    })(),
+  };
 
   function DeltaBadge({ delta, invert = false }: { delta: number | null; invert?: boolean }) {
     if (delta === null) return null;
@@ -2169,7 +2193,7 @@ function OverviewContent({
       <DASWidget businessId={overviewBusinessId} onGoToDAS={onGoToDAS} />
 
       {/* Period selector */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <span className="text-xs text-slate-400 dark:text-gray-500 font-medium">Período:</span>
         <div className="flex items-center gap-1 p-1 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl">
           {(['30d', '3m', '6m', '12m'] as DashboardPeriod[]).map(p => (
@@ -2179,7 +2203,32 @@ function OverviewContent({
               )}
             >{PERIOD_LABELS[p]}</button>
           ))}
+          <button
+            onClick={() => setDashboardPeriod('month')}
+            className={cn('px-3 py-1 rounded-lg text-xs font-medium transition-all',
+              dashboardPeriod === 'month' ? 'bg-red-600 text-white shadow-sm' : 'text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800'
+            )}
+          >Mês específico</button>
         </div>
+        {/* Month/year picker — only visible when 'month' is selected */}
+        {dashboardPeriod === 'month' && (
+          <motion.div
+            initial={{ opacity: 0, x: -6 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -6 }}
+            transition={{ duration: 0.15 }}
+            className="flex items-center gap-1.5"
+          >
+            <input
+              type="month"
+              value={selectedMonth}
+              max={`${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`}
+              onChange={e => setSelectedMonth(e.target.value)}
+              className="px-2.5 py-1 rounded-lg text-xs font-medium bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 text-slate-700 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-red-400/30 focus:border-red-300 dark:focus:border-red-700 transition-all"
+              style={{ colorScheme: 'dark' }}
+            />
+          </motion.div>
+        )}
       </div>
 
       {/* KPI Cards */}
