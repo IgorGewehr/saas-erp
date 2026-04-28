@@ -234,16 +234,16 @@ export default function DashboardModule() {
       variants={stagger}
       initial="hidden"
       animate="visible"
-      className="max-w-6xl mx-auto space-y-6 sm:space-y-8"
+      className="max-w-7xl mx-auto min-h-[calc(100vh-7rem)] flex flex-col justify-center gap-y-10 sm:gap-y-14 py-6 sm:py-10"
     >
       {/* ━━━ Hero with AI input ━━━ */}
-      <motion.section variants={fadeUp} className="pt-2 sm:pt-6">
+      <motion.section variants={fadeUp}>
         <AgentHeroInput greeting={greeting} firstName={firstName} subtitle={subtitle} />
       </motion.section>
 
       {/* ━━━ Module circles — single line, centered. pt-3 dá folga pro hover-lift ━━━ */}
       <motion.section variants={fadeUp}>
-        <div className="flex flex-nowrap items-start justify-center gap-x-3 sm:gap-x-4 lg:gap-x-5 overflow-x-auto pt-3 pb-2 -mx-1 px-1 scrollbar-thin">
+        <div className="flex flex-nowrap items-start justify-center gap-x-4 sm:gap-x-6 lg:gap-x-8 overflow-x-auto pt-3 pb-2 -mx-1 px-1 scrollbar-thin">
           {visibleModules.map((m, i) => (
             <ModuleCircle
               key={m.id}
@@ -257,7 +257,7 @@ export default function DashboardModule() {
 
       {/* ━━━ Mini-cards: 4 KPIs operacionais alinhados com a linha de ícones ━━━ */}
       <motion.section variants={fadeUp}>
-        <div className="flex justify-center gap-2.5 sm:gap-3 max-w-[920px] mx-auto">
+        <div className="flex justify-center gap-3 sm:gap-4 max-w-[1080px] mx-auto">
           {/* Agenda (servicos) ou Pedidos (pedidos) */}
           {showAgenda && (
             <MiniCard
@@ -364,19 +364,19 @@ function ModuleCircle({
       whileTap={{ scale: 0.95 }}
       onClick={onClick}
       transition={{ duration: 0.25, delay: index * 0.025, ease: [0.22, 1, 0.36, 1] }}
-      className="group flex flex-col items-center gap-2 flex-shrink-0 w-[68px] sm:w-[76px] focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/30 rounded-2xl"
+      className="group flex flex-col items-center gap-2 flex-shrink-0 w-[72px] sm:w-[84px] focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/30 rounded-2xl"
     >
       <div
         className={cn(
-          'w-12 h-12 sm:w-14 sm:h-14 rounded-2xl flex items-center justify-center',
+          'w-14 h-14 sm:w-16 sm:h-16 rounded-2xl flex items-center justify-center',
           'border border-gray-200/60 dark:border-gray-700/40',
           'group-hover:border-gray-300 dark:group-hover:border-gray-600/60 transition-colors',
           module.bg,
         )}
       >
-        <Icon className={cn('w-5 h-5 sm:w-[22px] sm:h-[22px]', module.iconColor)} strokeWidth={1.9} />
+        <Icon className={cn('w-6 h-6 sm:w-[26px] sm:h-[26px]', module.iconColor)} strokeWidth={1.9} />
       </div>
-      <span className="text-[10px] sm:text-xs font-medium text-gray-600 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-gray-200 transition-colors text-center leading-tight">
+      <span className="text-[11px] sm:text-xs font-medium text-gray-600 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-gray-200 transition-colors text-center leading-tight">
         {module.label}
       </span>
     </motion.button>
@@ -419,7 +419,7 @@ function MiniCard({
       whileTap={{ scale: 0.98 }}
       onClick={onClick}
       className={cn(
-        'group relative flex-1 min-w-0 max-w-[220px] rounded-xl px-3 py-2.5 text-left',
+        'group relative flex-1 min-w-0 max-w-[260px] rounded-xl px-4 py-3 text-left',
         'bg-white/60 dark:bg-gray-800/30',
         'border border-gray-200/60 dark:border-gray-700/40',
         'hover:border-gray-300 dark:hover:border-gray-600/60',
@@ -429,32 +429,32 @@ function MiniCard({
       {/* Top accent line — fica acima da borda, com cap rounded e inset dos lados */}
       <span
         className={cn(
-          'absolute -top-px inset-x-3 h-[2px] rounded-full transition-all',
+          'absolute -top-px inset-x-4 h-[2px] rounded-full transition-all',
           a.line,
-          'group-hover:inset-x-2',
+          'group-hover:inset-x-3',
         )}
         aria-hidden
       />
 
-      <div className="flex items-center gap-2 mb-1">
-        <div className={cn('w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0', a.bg)}>
-          <Icon className={cn('w-3.5 h-3.5', a.icon)} strokeWidth={1.9} />
+      <div className="flex items-center gap-2 mb-1.5">
+        <div className={cn('w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0', a.bg)}>
+          <Icon className={cn('w-4 h-4', a.icon)} strokeWidth={1.9} />
         </div>
-        <p className="text-[10px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 truncate">
+        <p className="text-[11px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 truncate">
           {label}
         </p>
       </div>
       {loading ? (
         <>
-          <div className="h-5 w-10 rounded shimmer mb-1" />
-          <div className="h-3 w-20 rounded shimmer" />
+          <div className="h-6 w-12 rounded shimmer mb-1" />
+          <div className="h-3 w-24 rounded shimmer" />
         </>
       ) : (
         <>
-          <p className="font-display text-lg font-semibold text-gray-900 dark:text-white leading-none">
+          <p className="font-display text-2xl font-semibold text-gray-900 dark:text-white leading-none">
             {value}
           </p>
-          <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 truncate">
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1.5 truncate">
             {subtitle}
           </p>
         </>
