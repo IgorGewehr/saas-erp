@@ -123,6 +123,53 @@ function computeDefaultSections(isEnterprise: boolean, useCase: UseCase, roleVal
   })).filter(s => s.items.length > 0);
 }
 
+/**
+ * Merge saved prefs with the current access context:
+ * - Remove items that are no longer accessible (mode/role changed)
+ * - Add newly accessible items (e.g. Cardápio after switching to 'pedidos' mode)
+ *   into their original DEFAULT_SECTIONS section, creating the section if needed.
+ */
+function mergeWithAccessible(
+  savedSections: SidebarSectionPref[],
+  hiddenItems: string[],
+  isEnterprise: boolean,
+  useCase: UseCase,
+  roleValue: number,
+): SidebarSectionPref[] {
+  const hiddenSet = new Set(hiddenItems);
+
+  // Filter each saved section to only accessible, non-hidden items (protected always kept)
+  const merged = savedSections.map(s => ({
+    ...s,
+    items: s.items.filter(id =>
+      isItemAccessible(id, isEnterprise, useCase, roleValue) &&
+      (PROTECTED_ITEMS.has(id) || !hiddenSet.has(id))
+    ),
+  }));
+
+  // Find accessible items not present in any saved section
+  const assignedIds = new Set(merged.flatMap(s => s.items));
+  const unassigned = Object.keys(ITEM_ICONS).filter(
+    id => isItemAccessible(id, isEnterprise, useCase, roleValue) && !assignedIds.has(id) && !hiddenSet.has(id)
+  );
+
+  if (unassigned.length > 0) {
+    for (const id of unassigned) {
+      const defaultSection = DEFAULT_SECTIONS.find(ds => ds.items.includes(id));
+      if (!defaultSection) continue;
+      const target = merged.find(s => s.key === defaultSection.key);
+      if (target) {
+        target.items.push(id);
+      } else {
+        // Section doesn't exist in saved prefs yet — create it
+        merged.push({ key: defaultSection.key, title: defaultSection.title, isCollapsed: false, items: [id] });
+      }
+    }
+  }
+
+  return merged.filter(s => s.items.length > 0);
+}
+
 // ─── Drag ID helpers ──────────────────────────────────────────────────────────
 
 function sectionDragId(key: string) { return `section::${key}`; }
@@ -339,11 +386,12 @@ export default function SidebarEditorTab() {
   const currentUseCase: UseCase = (business?.settings?.useCase as UseCase) || 'servicos';
   const userRoleValue = ROLE_HIERARCHY[user?.role ?? 'viewer'];
 
-  const [sections, setSections] = useState<SidebarSectionPref[]>(() =>
-    user?.sidebarPrefs?.sections?.length
-      ? user.sidebarPrefs.sections
-      : computeDefaultSections(isEnterprise, currentUseCase, userRoleValue)
-  );
+  const [sections, setSections] = useState<SidebarSectionPref[]>(() => {
+    const saved = user?.sidebarPrefs;
+    return saved?.sections?.length
+      ? mergeWithAccessible(saved.sections, saved.hiddenItems ?? [], isEnterprise, currentUseCase, userRoleValue)
+      : computeDefaultSections(isEnterprise, currentUseCase, userRoleValue);
+  });
   const [hiddenItems, setHiddenItems] = useState<Set<string>>(() =>
     new Set(user?.sidebarPrefs?.hiddenItems ?? [])
   );
@@ -351,11 +399,16 @@ export default function SidebarEditorTab() {
   const [saved, setSaved] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
 
-  // Sync with server prefs (multi-device) and recompute defaults when access context changes
+  // Sync with server prefs (multi-device) and recompute when mode/role/enterprise changes
   useEffect(() => {
-    if (user?.sidebarPrefs?.sections?.length) {
-      setSections(user.sidebarPrefs.sections);
-      setHiddenItems(new Set(user.sidebarPrefs.hiddenItems ?? []));
+    const savedPrefs = user?.sidebarPrefs;
+    if (savedPrefs?.sections?.length) {
+      setSections(mergeWithAccessible(
+        savedPrefs.sections,
+        savedPrefs.hiddenItems ?? [],
+        isEnterprise, currentUseCase, userRoleValue,
+      ));
+      setHiddenItems(new Set(savedPrefs.hiddenItems ?? []));
     } else {
       setSections(computeDefaultSections(isEnterprise, currentUseCase, userRoleValue));
     }
