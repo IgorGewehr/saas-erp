@@ -35,6 +35,20 @@ interface ChatMessage {
   isFallback?: boolean;
 }
 
+// ─── Subtitle with highlighted day number ────────────────────────────────────
+function SubtitleWithDay({ text }: { text: string }) {
+  const match = text.match(/\d+/);
+  if (!match) return <>{text}</>;
+  const idx = text.indexOf(match[0]);
+  return (
+    <>
+      {text.slice(0, idx)}
+      <span className="text-red-500 dark:text-red-400 font-semibold">{match[0]}</span>
+      {text.slice(idx + match[0].length)}
+    </>
+  );
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function AgentHeroInput({
   greeting,
@@ -159,14 +173,14 @@ export default function AgentHeroInput({
               transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
               className="text-center mb-6"
             >
-              <h1 className="font-display text-2xl sm:text-3xl font-semibold tracking-tight text-gray-900 dark:text-white">
+              <h1 className="font-display text-3xl sm:text-4xl font-semibold tracking-tight text-gray-900 dark:text-white">
                 {greeting},{' '}
                 <span className="bg-gradient-to-r from-red-500 via-rose-400 to-red-400 bg-clip-text text-transparent">
                   {firstName}
                 </span>
               </h1>
-              <p className="mt-1 text-xs sm:text-sm text-gray-500 dark:text-gray-500">
-                {subtitle}
+              <p className="mt-1.5 text-sm sm:text-[15px] text-gray-500 dark:text-gray-500">
+                <SubtitleWithDay text={subtitle} />
               </p>
             </motion.div>
           ) : (

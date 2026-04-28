@@ -4,13 +4,13 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
-import { getInitials, formatCurrency } from '@/lib/utils/format';
+import { getInitials } from '@/lib/utils/format';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
-import { collection, query, where, orderBy, limit, getDocs, onSnapshot, updateDoc, doc, writeBatch, getDocsFromCache } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, onSnapshot, updateDoc, doc, writeBatch, getDocsFromCache, getDocs } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useQuery } from '@tanstack/react-query';
-import type { User as UserType, Product, Appointment, CRMContact, AppNotification } from '@/lib/types';
+import type { User as UserType, AppNotification } from '@/lib/types';
 import {
   Search,
   Bell,
@@ -23,13 +23,9 @@ import {
   Moon,
   Users,
   Wifi,
-  WifiOff,
   Clock,
   Check,
-  Package,
   Calendar,
-  Contact,
-  DollarSign,
   CheckSquare,
   MessageSquare,
   AlertTriangle,
@@ -347,28 +343,13 @@ function ThemeToggle() {
   );
 }
 
-// ─── Search Result Types ──────────────────────────────
-interface SearchResult {
-  id: string;
-  type: 'client' | 'product' | 'appointment' | 'contact';
-  title: string;
-  subtitle: string;
-  page: MenuPage;
-  icon: React.ElementType;
-}
-
 // ─── TopBar ───────────────────────────────────────────
 export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) {
   const { t } = useTranslation();
   const { user, business, signOut, updateUserProfile } = useAuth();
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [isStatusOpen, setIsStatusOpen]     = useState(false);
-  const [isFocused, setIsFocused]           = useState(false);
-  const [searchValue, setSearchValue]       = useState('');
-  const [showResults, setShowResults]       = useState(false);
-  const userMenuRef  = useRef<HTMLDivElement>(null);
-  const searchRef    = useRef<HTMLInputElement>(null);
-  const searchBoxRef = useRef<HTMLDivElement>(null);
+  const userMenuRef = useRef<HTMLDivElement>(null);
 
   const currentStatus = (user?.userStatus || 'online') as UserStatus;
   const statusCfg = STATUS_STYLE[currentStatus];
@@ -447,6 +428,12 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
     await batch.commit();
   }, [notifications]);
 
+  const handleDeleteNotif = useCallback(async (id: string) => {
+    const batch = writeBatch(db);
+    batch.delete(doc(db, 'notifications', id));
+    await batch.commit();
+  }, []);
+
   // Close notif dropdown on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -485,113 +472,12 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
     return `${days}d`;
   }
 
-  // ── Global Search Data ──
-
-  const { data: searchProducts = [] } = useQuery({
-    queryKey: ['search-products', businessId],
-    queryFn: async () => {
-      const q = query(collection(db, 'products'), where('businessId', '==', businessId), orderBy('name', 'asc'), limit(200));
-      const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Product));
-    },
-    enabled: !!businessId,
-    staleTime: 2 * 60 * 1000,
-  });
-
-  const { data: searchAppointments = [] } = useQuery({
-    queryKey: ['search-appointments', businessId],
-    queryFn: async () => {
-      const q = query(collection(db, 'appointments'), where('businessId', '==', businessId), orderBy('date', 'desc'), limit(200));
-      const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Appointment));
-    },
-    enabled: !!businessId,
-    staleTime: 2 * 60 * 1000,
-  });
-
-  const { data: searchContacts = [] } = useQuery({
-    queryKey: ['search-clients', businessId],
-    queryFn: async () => {
-      const q = query(collection(db, 'clients'), where('businessId', '==', businessId), orderBy('createdAt', 'desc'), limit(200));
-      const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as CRMContact));
-    },
-    enabled: !!businessId,
-    staleTime: 2 * 60 * 1000,
-  });
-
-  const searchResults = useMemo<SearchResult[]>(() => {
-    const term = searchValue.trim().toLowerCase();
-    if (term.length < 2) return [];
-    const results: SearchResult[] = [];
-    const limit = 12;
-
-    for (const p of searchProducts) {
-      if (results.length >= limit) break;
-      const match = p.name?.toLowerCase().includes(term)
-        || p.sku?.toLowerCase().includes(term)
-        || p.barcode?.includes(term)
-        || p.category?.toLowerCase().includes(term);
-      if (match) {
-        results.push({ id: p.id, type: 'product', title: p.name, subtitle: formatCurrency(p.salePrice), page: 'Estoque', icon: Package });
-      }
-    }
-
-    for (const a of searchAppointments) {
-      if (results.length >= limit) break;
-      const match = a.clientName?.toLowerCase().includes(term)
-        || a.serviceName?.toLowerCase().includes(term);
-      if (match) {
-        results.push({ id: a.id, type: 'appointment', title: `${a.clientName} — ${a.serviceName}`, subtitle: `${a.date} ${a.startTime}`, page: 'Agenda', icon: Calendar });
-      }
-    }
-
-    for (const ct of searchContacts) {
-      if (results.length >= limit) break;
-      const match = ct.name?.toLowerCase().includes(term)
-        || ct.cpfCnpj?.includes(term)
-        || ct.email?.toLowerCase().includes(term)
-        || ct.phone?.includes(term)
-        || ct.company?.toLowerCase().includes(term);
-      if (match) {
-        results.push({ id: ct.id, type: 'contact', title: ct.name, subtitle: ct.company || ct.cpfCnpj || ct.email || '', page: 'Clientes', icon: Contact });
-      }
-    }
-
-    return results;
-  }, [searchValue, searchProducts, searchAppointments, searchContacts]);
-
-  const handleSelectResult = useCallback((result: SearchResult) => {
-    setSearchValue('');
-    setShowResults(false);
-    searchRef.current?.blur();
-    onNavigate?.(result.page);
-  }, [onNavigate]);
-
-  // Close results on outside click
-  useEffect(() => {
-    const h = (e: MouseEvent) => {
-      if (searchBoxRef.current && !searchBoxRef.current.contains(e.target as Node)) setShowResults(false);
-    };
-    document.addEventListener('mousedown', h);
-    return () => document.removeEventListener('mousedown', h);
-  }, []);
-
   useEffect(() => {
     const h = (e: MouseEvent) => {
       if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) setIsUserMenuOpen(false);
     };
     document.addEventListener('mousedown', h);
     return () => document.removeEventListener('mousedown', h);
-  }, []);
-
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); searchRef.current?.focus(); setShowResults(true); }
-      if (e.key === 'Escape') { setShowResults(false); searchRef.current?.blur(); }
-    };
-    document.addEventListener('keydown', h);
-    return () => document.removeEventListener('keydown', h);
   }, []);
 
   return (
@@ -612,118 +498,23 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
             <Menu className="w-[18px] h-[18px]" />
           </button>
 
-          {/* Search — global with results dropdown */}
-          <div ref={searchBoxRef} className="hidden md:block relative">
-            <motion.div
-              animate={{ width: isFocused ? 360 : 240 }}
-              transition={{ type: 'spring', stiffness: 400, damping: 35 }}
-              className="relative"
-            >
-              <Search className={cn(
-                'absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 pointer-events-none transition-colors duration-200',
-                isFocused ? 'text-red-400' : 'text-gray-400 dark:text-gray-500'
-              )} />
-              <input
-                ref={searchRef}
-                type="text"
-                placeholder={t('topbar.searchPlaceholder')}
-                value={searchValue}
-                onChange={(e) => { setSearchValue(e.target.value); setShowResults(true); }}
-                onFocus={() => { setIsFocused(true); setShowResults(true); }}
-                onBlur={() => setIsFocused(false)}
-                className={cn(
-                  'w-full pl-8 pr-10 py-2 rounded-xl text-sm',
-                  'bg-gray-50/80 dark:bg-white/[0.04] border text-gray-900 dark:text-gray-100',
-                  'placeholder:text-gray-400 dark:placeholder:text-gray-500',
-                  'transition-all duration-200 focus:outline-none',
-                  isFocused
-                    ? 'border-red-200 dark:border-red-500/30 bg-white dark:bg-white/[0.06] shadow-[0_0_0_3px_rgba(220,38,38,0.08)]'
-                    : 'border-gray-200/80 dark:border-gray-700/50 hover:border-gray-300 dark:hover:border-gray-600'
-                )}
-              />
-              <div className={cn(
-                'absolute right-2.5 top-1/2 -translate-y-1/2',
-                'text-[10px] font-medium transition-opacity duration-200',
-                (isFocused || searchValue) && 'opacity-0'
-              )}>
-                <kbd className="px-1 py-0.5 rounded bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-400 dark:text-gray-500 font-mono text-[10px]">⌘K</kbd>
-              </div>
-            </motion.div>
-
-            {/* Search Results Dropdown */}
-            <AnimatePresence>
-              {showResults && searchValue.trim().length >= 2 && (
-                <motion.div
-                  initial={{ opacity: 0, y: 4, scale: 0.98 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 4, scale: 0.98 }}
-                  transition={{ duration: 0.15 }}
-                  className={cn(
-                    'absolute left-0 top-full mt-2 w-[400px] z-50',
-                    'bg-white dark:bg-[#1e293b] rounded-2xl',
-                    'border border-gray-200/80 dark:border-gray-700/50',
-                    'shadow-[0_8px_30px_rgba(0,0,0,0.12)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.4)]',
-                    'overflow-hidden'
-                  )}
-                >
-                  {searchResults.length === 0 ? (
-                    <div className="py-8 px-4 text-center">
-                      <Search className="w-8 h-8 text-gray-300 dark:text-gray-600 mx-auto mb-2" />
-                      <p className="text-sm text-gray-400 dark:text-gray-500">
-                        {t('topbar.noResults')} &quot;{searchValue}&quot;
-                      </p>
-                      <p className="text-xs text-gray-300 dark:text-gray-600 mt-1">
-                        {t('topbar.searchHint')}
-                      </p>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="px-3 py-2 border-b border-gray-100 dark:border-gray-700/50">
-                        <span className="text-[11px] font-medium text-gray-400 dark:text-gray-500">
-                          {t('topbar.results', { count: searchResults.length })}
-                        </span>
-                      </div>
-                      <div className="max-h-[340px] overflow-y-auto p-1.5" style={{ scrollbarWidth: 'thin' }}>
-                        {searchResults.map((result, idx) => {
-                          const Icon = result.icon;
-                          const typeColors = {
-                            client: 'bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400',
-                            product: 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
-                            appointment: 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400',
-                            contact: 'bg-purple-50 dark:bg-purple-500/10 text-purple-600 dark:text-purple-400',
-                          };
-                          const typeLabels = { client: t('topbar.typeClient'), product: t('topbar.typeProduct'), appointment: t('topbar.typeAppointment'), contact: t('topbar.typeContact') };
-                          return (
-                            <button
-                              key={`${result.type}-${result.id}`}
-                              onMouseDown={(e) => { e.preventDefault(); handleSelectResult(result); }}
-                              className="flex items-center gap-3 w-full px-2.5 py-2 rounded-xl hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors text-left"
-                            >
-                              <div className={cn('w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0', typeColors[result.type])}>
-                                <Icon className="w-4 h-4" />
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <p className="text-[13px] font-medium text-gray-800 dark:text-gray-100 truncate">{result.title}</p>
-                                <p className="text-[11px] text-gray-400 dark:text-gray-500 truncate">{result.subtitle}</p>
-                              </div>
-                              <span className="text-[10px] font-medium text-gray-300 dark:text-gray-600 flex-shrink-0">
-                                {typeLabels[result.type]}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <div className="px-3 py-2 border-t border-gray-100 dark:border-gray-700/50 bg-gray-50/50 dark:bg-white/[0.01]">
-                        <p className="text-[10px] text-gray-400 dark:text-gray-500 text-center">
-                          {t('topbar.pressEnter')}
-                        </p>
-                      </div>
-                    </>
-                  )}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
+          {/* Search — opens Command Palette (Cmd+K) */}
+          <button
+            onClick={() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true }))}
+            className={cn(
+              'hidden md:flex items-center gap-2.5 h-9 px-3 rounded-xl min-w-[220px]',
+              'bg-gray-50/80 dark:bg-white/[0.04] border border-gray-200/80 dark:border-gray-700/50',
+              'text-gray-400 dark:text-gray-500',
+              'hover:bg-white dark:hover:bg-white/[0.07] hover:border-gray-300 dark:hover:border-gray-600 hover:text-gray-600 dark:hover:text-gray-400',
+              'transition-all duration-150 active:scale-[0.98]',
+            )}
+          >
+            <Search className="w-3.5 h-3.5 flex-shrink-0" />
+            <span className="text-sm flex-1 text-left">{t('topbar.searchPlaceholder')}</span>
+            <kbd className="flex items-center gap-0.5 text-[10px] font-medium text-gray-300 dark:text-gray-600 bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded px-1.5 py-0.5">
+              ⌘K
+            </kbd>
+          </button>
         </div>
 
         {/* ── Right: Presence + Theme + Bell + User ── */}
@@ -829,14 +620,14 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
                         const Icon = NOTIF_ICON[n.type] || Bell;
                         const colorCls = NOTIF_COLOR[n.type] || 'text-gray-500 bg-gray-50 dark:bg-gray-500/10';
                         return (
-                          <button
+                          <div
                             key={n.id}
                             onClick={() => {
                               if (!n.isRead) handleMarkRead(n.id);
                               if (n.link) { onNavigate?.(n.link as MenuPage); setIsNotifOpen(false); }
                             }}
                             className={cn(
-                              'w-full flex items-start gap-3 px-4 py-3 text-left transition-colors',
+                              'group relative w-full flex items-start gap-3 px-4 py-3 cursor-pointer transition-colors',
                               'hover:bg-gray-50 dark:hover:bg-white/[0.04]',
                               !n.isRead && 'bg-blue-50/40 dark:bg-blue-500/[0.05]'
                             )}
@@ -855,10 +646,37 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
                                 {timeAgo(n.createdAt)}
                               </p>
                             </div>
-                            {!n.isRead && (
-                              <div className="w-2 h-2 rounded-full bg-blue-500 shrink-0 mt-2" />
-                            )}
-                          </button>
+                            {/* right: dot when idle, action buttons on hover */}
+                            <div className="shrink-0 flex items-start pt-1.5">
+                              {!n.isRead && (
+                                <div className="w-2 h-2 rounded-full bg-blue-500 group-hover:hidden mt-0.5" />
+                              )}
+                              <div className="hidden group-hover:flex items-center gap-0.5">
+                                {!n.isRead && (
+                                  <button
+                                    onClick={e => { e.stopPropagation(); handleMarkRead(n.id); }}
+                                    title="Marcar como lida"
+                                    className={cn(
+                                      'w-6 h-6 flex items-center justify-center rounded-md transition-colors',
+                                      'text-blue-500 hover:bg-blue-100 dark:hover:bg-blue-500/20'
+                                    )}
+                                  >
+                                    <Check className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                                <button
+                                  onClick={e => { e.stopPropagation(); handleDeleteNotif(n.id); }}
+                                  title="Excluir notificação"
+                                  className={cn(
+                                    'w-6 h-6 flex items-center justify-center rounded-md transition-colors',
+                                    'text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/20'
+                                  )}
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          </div>
                         );
                       })
                     )}

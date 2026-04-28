@@ -92,19 +92,19 @@ interface ModuleEntry {
 // alguns acentos frios (cyan/violet/purple/slate/zinc) — todos os ícones em
 // uma única linha (flex-nowrap centrado, scroll horizontal se overflow).
 const MODULES: ModuleEntry[] = [
-  { id: 'Clientes',    label: 'Clientes',    icon: Users,           bg: 'bg-red-50 dark:bg-red-500/10',          iconColor: 'text-red-600 dark:text-red-400' },
-  { id: 'CRM',         label: 'CRM',         icon: Target,          bg: 'bg-rose-50 dark:bg-rose-500/10',        iconColor: 'text-rose-600 dark:text-rose-400' },
-  { id: 'Conversas',   label: 'Conversas',   icon: MessageSquare,   bg: 'bg-pink-50 dark:bg-pink-500/10',        iconColor: 'text-pink-600 dark:text-pink-400' },
-  { id: 'Agenda',      label: 'Agenda',      icon: Calendar,        bg: 'bg-amber-50/80 dark:bg-amber-500/10',   iconColor: 'text-amber-600 dark:text-amber-400',   useCases: ['servicos'] },
-  { id: 'Pedidos',     label: 'Pedidos',     icon: ClipboardCheck,  bg: 'bg-orange-50 dark:bg-orange-500/10',    iconColor: 'text-orange-600 dark:text-orange-400', useCases: ['pedidos'] },
-  { id: 'PDV',         label: 'PDV',         icon: ShoppingCart,    bg: 'bg-emerald-50 dark:bg-emerald-500/10',  iconColor: 'text-emerald-600 dark:text-emerald-400' },
-  { id: 'Vendas',      label: 'Vendas',      icon: ClipboardList,   bg: 'bg-indigo-50 dark:bg-indigo-500/10',    iconColor: 'text-indigo-600 dark:text-indigo-400' },
-  { id: 'Kanban',      label: 'Kanban',      icon: KanbanIcon,      bg: 'bg-purple-50 dark:bg-purple-500/10',    iconColor: 'text-purple-600 dark:text-purple-400' },
-  { id: 'Financeiro',  label: 'Financeiro',  icon: DollarSign,      bg: 'bg-cyan-50 dark:bg-cyan-500/10',        iconColor: 'text-cyan-600 dark:text-cyan-400' },
-  { id: 'Relatórios',  label: 'Relatórios',  icon: BarChart3,       bg: 'bg-violet-50/80 dark:bg-violet-500/10', iconColor: 'text-violet-600 dark:text-violet-400' },
-  { id: 'NFSe',        label: 'Fiscal',      icon: FileCheck2,      bg: 'bg-slate-100 dark:bg-slate-500/10',     iconColor: 'text-slate-600 dark:text-slate-400' },
-  { id: 'Notas',       label: 'Notas',       icon: StickyNote,      bg: 'bg-yellow-50 dark:bg-yellow-500/10',    iconColor: 'text-yellow-600 dark:text-yellow-400' },
-  { id: 'Senhas',      label: 'Senhas',      icon: KeyRound,        bg: 'bg-zinc-100 dark:bg-zinc-500/10',       iconColor: 'text-zinc-600 dark:text-zinc-400',     minRole: 'admin' },
+  { id: 'Clientes',    label: 'Clientes',    icon: Users,           bg: 'bg-red-100 dark:bg-red-500/10',          iconColor: 'text-red-700 dark:text-red-400' },
+  { id: 'CRM',         label: 'CRM',         icon: Target,          bg: 'bg-rose-100 dark:bg-rose-500/10',        iconColor: 'text-rose-700 dark:text-rose-400' },
+  { id: 'Conversas',   label: 'Conversas',   icon: MessageSquare,   bg: 'bg-pink-100 dark:bg-pink-500/10',        iconColor: 'text-pink-700 dark:text-pink-400' },
+  { id: 'Agenda',      label: 'Agenda',      icon: Calendar,        bg: 'bg-amber-100 dark:bg-amber-500/10',      iconColor: 'text-amber-700 dark:text-amber-400',   useCases: ['servicos'] },
+  { id: 'Pedidos',     label: 'Pedidos',     icon: ClipboardCheck,  bg: 'bg-orange-100 dark:bg-orange-500/10',    iconColor: 'text-orange-700 dark:text-orange-400', useCases: ['pedidos'] },
+  { id: 'PDV',         label: 'PDV',         icon: ShoppingCart,    bg: 'bg-emerald-100 dark:bg-emerald-500/10',  iconColor: 'text-emerald-700 dark:text-emerald-400' },
+  { id: 'Vendas',      label: 'Vendas',      icon: ClipboardList,   bg: 'bg-indigo-100 dark:bg-indigo-500/10',    iconColor: 'text-indigo-700 dark:text-indigo-400' },
+  { id: 'Kanban',      label: 'Kanban',      icon: KanbanIcon,      bg: 'bg-purple-100 dark:bg-purple-500/10',    iconColor: 'text-purple-700 dark:text-purple-400' },
+  { id: 'Financeiro',  label: 'Financeiro',  icon: DollarSign,      bg: 'bg-cyan-100 dark:bg-cyan-500/10',        iconColor: 'text-cyan-700 dark:text-cyan-400' },
+  { id: 'Relatórios',  label: 'Relatórios',  icon: BarChart3,       bg: 'bg-violet-100 dark:bg-violet-500/10',    iconColor: 'text-violet-700 dark:text-violet-400' },
+  { id: 'NFSe',        label: 'Fiscal',      icon: FileCheck2,      bg: 'bg-slate-200 dark:bg-slate-500/10',      iconColor: 'text-slate-700 dark:text-slate-400' },
+  { id: 'Notas',       label: 'Notas',       icon: StickyNote,      bg: 'bg-yellow-100 dark:bg-yellow-500/10',    iconColor: 'text-yellow-700 dark:text-yellow-400' },
+  { id: 'Senhas',      label: 'Senhas',      icon: KeyRound,        bg: 'bg-zinc-200 dark:bg-zinc-500/10',        iconColor: 'text-zinc-700 dark:text-zinc-400',     minRole: 'admin' },
 ];
 
 // ─── Main component ─────────────────────────────────────────────────────────
@@ -240,7 +240,7 @@ export default function DashboardModule() {
       variants={stagger}
       initial="hidden"
       animate="visible"
-      className="max-w-7xl mx-auto min-h-[calc(100vh-7rem)] flex flex-col justify-center gap-y-10 sm:gap-y-14 py-6 sm:py-10"
+      className="max-w-7xl mx-auto h-full flex flex-col justify-center gap-y-10 sm:gap-y-14 px-4 sm:px-5 lg:px-7"
     >
       {/* ━━━ Hero with AI input ━━━ */}
       <motion.section variants={fadeUp}>
@@ -392,12 +392,12 @@ function ModuleCircle({
 // ─── Mini card ──────────────────────────────────────────────────────────────
 type AccentKey = 'amber' | 'orange' | 'pink' | 'rose' | 'cyan' | 'red';
 const ACCENT: Record<AccentKey, { bg: string; icon: string; line: string }> = {
-  amber:  { bg: 'bg-amber-50 dark:bg-amber-500/10',   icon: 'text-amber-600 dark:text-amber-400',   line: 'bg-amber-500 dark:bg-amber-400' },
-  orange: { bg: 'bg-orange-50 dark:bg-orange-500/10', icon: 'text-orange-600 dark:text-orange-400', line: 'bg-orange-500 dark:bg-orange-400' },
-  pink:   { bg: 'bg-pink-50 dark:bg-pink-500/10',     icon: 'text-pink-600 dark:text-pink-400',     line: 'bg-pink-500 dark:bg-pink-400' },
-  rose:   { bg: 'bg-rose-50 dark:bg-rose-500/10',     icon: 'text-rose-600 dark:text-rose-400',     line: 'bg-rose-500 dark:bg-rose-400' },
-  cyan:   { bg: 'bg-cyan-50 dark:bg-cyan-500/10',     icon: 'text-cyan-600 dark:text-cyan-400',     line: 'bg-cyan-500 dark:bg-cyan-400' },
-  red:    { bg: 'bg-red-50 dark:bg-red-500/10',       icon: 'text-red-600 dark:text-red-400',       line: 'bg-red-500 dark:bg-red-400' },
+  amber:  { bg: 'bg-amber-100 dark:bg-amber-500/10',   icon: 'text-amber-700 dark:text-amber-400',   line: 'bg-amber-500 dark:bg-amber-400' },
+  orange: { bg: 'bg-orange-100 dark:bg-orange-500/10', icon: 'text-orange-700 dark:text-orange-400', line: 'bg-orange-500 dark:bg-orange-400' },
+  pink:   { bg: 'bg-pink-100 dark:bg-pink-500/10',     icon: 'text-pink-700 dark:text-pink-400',     line: 'bg-pink-500 dark:bg-pink-400' },
+  rose:   { bg: 'bg-rose-100 dark:bg-rose-500/10',     icon: 'text-rose-700 dark:text-rose-400',     line: 'bg-rose-500 dark:bg-rose-400' },
+  cyan:   { bg: 'bg-cyan-100 dark:bg-cyan-500/10',     icon: 'text-cyan-700 dark:text-cyan-400',     line: 'bg-cyan-500 dark:bg-cyan-400' },
+  red:    { bg: 'bg-red-100 dark:bg-red-500/10',       icon: 'text-red-700 dark:text-red-400',       line: 'bg-red-500 dark:bg-red-400' },
 };
 
 function MiniCard({
