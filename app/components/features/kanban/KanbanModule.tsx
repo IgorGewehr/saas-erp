@@ -311,7 +311,7 @@ function KanbanCardItem({
   members: MemberDisplay[];
   onOpen: () => void;
   onDragStart: (e: React.DragEvent, card: KanbanCard) => void;
-  onDragOverCard: (e: React.DragEvent, card: KanbanCard) => void;
+  onDragOverCard: (e: React.DragEvent, card: KanbanCard, position: 'before' | 'after') => void;
   onDropOnCard: (e: React.DragEvent, card: KanbanCard) => void;
   isDragging: boolean;
 }) {
@@ -329,7 +329,12 @@ function KanbanCardItem({
       exit="exit"
       draggable
       onDragStart={(e) => onDragStart(e as unknown as React.DragEvent, card)}
-      onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); onDragOverCard(e as unknown as React.DragEvent, card); }}
+      onDragOver={(e) => {
+        e.preventDefault(); e.stopPropagation();
+        const rect = e.currentTarget.getBoundingClientRect();
+        const position = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+        onDragOverCard(e as unknown as React.DragEvent, card, position);
+      }}
       onDrop={(e) => onDropOnCard(e as unknown as React.DragEvent, card)}
       onClick={onOpen}
       className={cn(
@@ -447,6 +452,7 @@ function KanbanColumnComponent({
   dragOverColumnId,
   draggingCardId,
   dragOverCardId,
+  dragOverPosition,
 }: {
   column: KanbanColumn;
   cards: KanbanCard[];
@@ -457,11 +463,12 @@ function KanbanColumnComponent({
   onDragStart: (e: React.DragEvent, card: KanbanCard) => void;
   onDragOver: (e: React.DragEvent, columnId: string) => void;
   onDrop: (e: React.DragEvent, columnId: string) => void;
-  onDragOverCard: (e: React.DragEvent, card: KanbanCard) => void;
+  onDragOverCard: (e: React.DragEvent, card: KanbanCard, position: 'before' | 'after') => void;
   onDropOnCard: (e: React.DragEvent, card: KanbanCard) => void;
   dragOverColumnId: string | null;
   draggingCardId: string | null;
   dragOverCardId: string | null;
+  dragOverPosition: 'before' | 'after' | null;
 }) {
   const { t } = useTranslation();
   const isOverLimit = column.cardLimit ? cards.length >= column.cardLimit : false;
@@ -539,19 +546,20 @@ function KanbanColumnComponent({
       >
         <AnimatePresence mode="popLayout">
           {cards.flatMap(card => {
-            const showIndicator = dragOverCardId === card.id && draggingCardId !== card.id;
+            const isTarget = dragOverCardId === card.id && draggingCardId !== card.id;
+            const indicatorEl = (key: string) => (
+              <motion.div
+                key={key}
+                layout
+                initial={{ opacity: 0, scaleY: 0 }}
+                animate={{ opacity: 1, scaleY: 1 }}
+                exit={{ opacity: 0, scaleY: 0 }}
+                transition={{ duration: 0.12 }}
+                className="h-0.5 bg-blue-400 dark:bg-blue-500 rounded-full mx-1 origin-top"
+              />
+            );
             return [
-              showIndicator ? (
-                <motion.div
-                  key={`${card.id}-drop-indicator`}
-                  layout
-                  initial={{ opacity: 0, scaleY: 0 }}
-                  animate={{ opacity: 1, scaleY: 1 }}
-                  exit={{ opacity: 0, scaleY: 0 }}
-                  transition={{ duration: 0.12 }}
-                  className="h-0.5 bg-blue-400 dark:bg-blue-500 rounded-full mx-1 origin-top"
-                />
-              ) : null,
+              isTarget && dragOverPosition === 'before' ? indicatorEl(`${card.id}-before`) : null,
               <KanbanCardItem
                 key={card.id}
                 card={card}
@@ -562,6 +570,7 @@ function KanbanColumnComponent({
                 onDropOnCard={onDropOnCard}
                 isDragging={draggingCardId === card.id}
               />,
+              isTarget && dragOverPosition === 'after' ? indicatorEl(`${card.id}-after`) : null,
             ].filter((el): el is React.ReactElement => el !== null);
           })}
         </AnimatePresence>
@@ -2909,6 +2918,7 @@ export default function KanbanModule() {
   const [draggingCard, setDraggingCard] = useState<KanbanCard | null>(null);
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
   const [dragOverCardId, setDragOverCardId] = useState<string | null>(null);
+  const [dragOverPosition, setDragOverPosition] = useState<'before' | 'after' | null>(null);
 
   // Toast state
   const [toast, setToast] = useState<{ message: string; type: 'error' | 'success' } | null>(null);
@@ -3092,10 +3102,11 @@ export default function KanbanModule() {
   }, []);
 
   // Card-level drag over — stops propagation so column handler doesn't clear dragOverCardId
-  const handleDragOverCard = useCallback((e: React.DragEvent, card: KanbanCard) => {
+  const handleDragOverCard = useCallback((e: React.DragEvent, card: KanbanCard, position: 'before' | 'after') => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     setDragOverCardId(card.id);
+    setDragOverPosition(position);
     setDragOverColumn(card.columnId); // highlight the column too
   }, []);
 
@@ -3103,9 +3114,26 @@ export default function KanbanModule() {
     e.preventDefault();
     setDragOverColumn(null);
     setDragOverCardId(null);
+    setDragOverPosition(null);
     if (!draggingCard || !business?.id) return;
     if (!canEdit) { showToast(t('kanban.errors.noPermission', 'Sem permissão para mover cards')); setDraggingCard(null); return; }
     if (draggingCard.columnId === targetColumnId) {
+      // Same column drop on empty space → append to end
+      const columnCards = cards.filter(c => c.columnId === targetColumnId).sort((a, b) => a.order - b.order);
+      const alreadyLast = columnCards[columnCards.length - 1]?.id === draggingCard.id;
+      if (!alreadyLast) {
+        try {
+          const reordered = [...columnCards.filter(c => c.id !== draggingCard.id), draggingCard];
+          const batch = writeBatch(db);
+          reordered.forEach((card, i) => {
+            batch.update(doc(db, 'kanbanCards', card.id), { order: i, updatedAt: new Date().toISOString() });
+          });
+          await batch.commit();
+        } catch (err) {
+          console.error('Error reordering cards:', err);
+          showToast(t('kanban.errors.moveCard', 'Erro ao mover card'));
+        }
+      }
       setDraggingCard(null);
       return;
     }
@@ -3201,6 +3229,7 @@ export default function KanbanModule() {
     setDraggingCard(null);
     setDragOverColumn(null);
     setDragOverCardId(null);
+    setDragOverPosition(null);
   }, []);
 
   // Drop on a specific card — handles within-column reorder; cross-column drops
@@ -3218,6 +3247,7 @@ export default function KanbanModule() {
     e.stopPropagation(); // prevent column's handleDrop from firing
     setDragOverColumn(null);
     setDragOverCardId(null);
+    setDragOverPosition(null);
 
     if (!business?.id || !canEdit) {
       if (!canEdit) showToast(t('kanban.errors.noPermission', 'Sem permissão para mover cards'));
@@ -3229,10 +3259,13 @@ export default function KanbanModule() {
       .filter(c => c.columnId === targetCard.columnId)
       .sort((a, b) => a.order - b.order);
 
-    // Remove dragging card, then insert before target card
+    // Remove dragging card, then insert before or after target card based on cursor position
     const reordered = columnCards.filter(c => c.id !== draggingCard.id);
-    const insertAt = reordered.findIndex(c => c.id === targetCard.id);
-    reordered.splice(insertAt >= 0 ? insertAt : reordered.length, 0, draggingCard);
+    const targetIdx = reordered.findIndex(c => c.id === targetCard.id);
+    const insertAt = dragOverPosition === 'after'
+      ? (targetIdx >= 0 ? targetIdx + 1 : reordered.length)
+      : (targetIdx >= 0 ? targetIdx : reordered.length);
+    reordered.splice(insertAt, 0, draggingCard);
 
     try {
       const batch = writeBatch(db);
@@ -3696,6 +3729,7 @@ export default function KanbanModule() {
                 dragOverColumnId={dragOverColumn}
                 draggingCardId={draggingCard?.id || null}
                 dragOverCardId={dragOverCardId}
+                dragOverPosition={dragOverPosition}
               />
             );
           })}
