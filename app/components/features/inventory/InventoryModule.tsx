@@ -2061,7 +2061,7 @@ export default function InventoryModule() {
     const ext = file.name.split('.').pop() || 'jpg';
     const fileName = `${productId}_${Date.now()}.${ext}`;
     const storageRef = ref(storage, `products/${business.id}/${productId}/${fileName}`);
-    await uploadBytes(storageRef, file);
+    await uploadBytes(storageRef, file, { contentType: file.type || 'image/jpeg' });
     return getDownloadURL(storageRef);
   }
 

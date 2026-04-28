@@ -6,6 +6,9 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import Sidebar, { type MenuPage } from '@/app/components/layout/Sidebar';
 import TopBar from '@/app/components/layout/TopBar';
+import { TabProvider, useTabContext } from '@/app/components/layout/TabContext';
+import { TabBar } from '@/app/components/layout/TabBar';
+import { CommandPalette } from '@/app/components/layout/CommandPalette';
 import { AppContext } from './AppContext';
 
 // ─── Loading skeleton ────────────────────────────────────────────────────────
@@ -56,8 +59,6 @@ function LoadingSkeleton() {
 }
 
 // ─── Navigation progress bar ─────────────────────────────────────────────────
-// key={trigger} causes React to remount on each navigation, restarting the animation.
-// No AnimatePresence needed — the bar self-completes: fills then fades out.
 function NavProgress({ trigger }: { trigger: string }) {
   return (
     <motion.div
@@ -74,143 +75,78 @@ function NavProgress({ trigger }: { trigger: string }) {
   );
 }
 
-// ─── Ambient background orbs ──────────────────────────────────────────────────
+// ─── Ambient background ───────────────────────────────────────────────────────
 function AmbientBackground() {
   return (
     <div className="fixed inset-0 overflow-hidden pointer-events-none z-0" aria-hidden>
-      {/* Top-right warm orb */}
       <motion.div
         className="absolute rounded-full"
-        style={{
-          width: 700,
-          height: 700,
-          top: '-15%',
-          right: '-10%',
-          background: 'radial-gradient(circle, rgba(220,38,38,1) 0%, transparent 68%)',
-          opacity: 0,
-        }}
+        style={{ width: 700, height: 700, top: '-15%', right: '-10%', background: 'radial-gradient(circle, rgba(220,38,38,1) 0%, transparent 68%)', opacity: 0 }}
         animate={{ opacity: [0.03, 0.055, 0.03], x: [0, 28, -12, 0], y: [0, -18, 26, 0] }}
         transition={{ duration: 28, repeat: Infinity, ease: 'easeInOut' }}
       />
-      {/* Bottom-left cool orb */}
       <motion.div
         className="absolute rounded-full"
-        style={{
-          width: 500,
-          height: 500,
-          bottom: '5%',
-          left: '10%',
-          background: 'radial-gradient(circle, rgba(244,63,94,1) 0%, transparent 68%)',
-          opacity: 0,
-        }}
+        style={{ width: 500, height: 500, bottom: '5%', left: '10%', background: 'radial-gradient(circle, rgba(244,63,94,1) 0%, transparent 68%)', opacity: 0 }}
         animate={{ opacity: [0.02, 0.04, 0.02], x: [0, -18, 10, 0], y: [0, 14, -22, 0] }}
         transition={{ duration: 22, repeat: Infinity, ease: 'easeInOut', delay: 9 }}
       />
-      {/* Subtle dot grid overlay */}
       <div
         className="absolute inset-0 opacity-[0.018] dark:opacity-[0.035]"
-        style={{
-          backgroundImage: 'radial-gradient(circle, #94a3b8 1px, transparent 1px)',
-          backgroundSize: '32px 32px',
-        }}
+        style={{ backgroundImage: 'radial-gradient(circle, #94a3b8 1px, transparent 1px)', backgroundSize: '32px 32px' }}
       />
     </div>
   );
 }
 
-// ─── Page transition variants ─────────────────────────────────────────────────
-const pageVariants: import('framer-motion').Variants = {
-  initial: {
-    opacity: 0,
-    y: 14,
-    scale: 0.994,
-    filter: 'blur(5px)',
-  },
-  animate: {
-    opacity: 1,
-    y: 0,
-    scale: 1,
-    filter: 'blur(0px)',
-    transition: {
-      duration: 0.38,
-      ease: [0.22, 1, 0.36, 1],
-      opacity: { duration: 0.22 },
-      filter: { duration: 0.3 },
-      scale: { duration: 0.38 },
-    },
-  },
-  exit: {
-    opacity: 0,
-    y: -4,
-    scale: 0.998,
-    // No blur on exit — blur during AnimatePresence exit can stall on low-end GPUs
-    transition: {
-      duration: 0.15,
-      ease: [0.4, 0, 1, 1],
-    },
-  },
-};
-
-// ─── Layout ───────────────────────────────────────────────────────────────────
-export default function AppLayout({ children }: { children: React.ReactNode }) {
+// ─── Inner layout — uses TabContext ───────────────────────────────────────────
+function AppLayoutContent({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const { isAuthReady, isLoading, business, firebaseUser } = useAuth();
+  const { openTab, activeTabId } = useTabContext();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [activePage, setActivePage] = useState<MenuPage>('Dashboard');
-  const prevPageRef = useRef<MenuPage>('Dashboard');
   const waRestored = useRef(false);
 
+  // activePage is always derived from the active tab
+  const activePage = (activeTabId ?? 'Dashboard') as MenuPage;
+
   useEffect(() => {
-    if (isAuthReady && !firebaseUser) {
-      router.replace('/login');
-    }
+    if (isAuthReady && !firebaseUser) router.replace('/login');
   }, [isAuthReady, firebaseUser, router]);
 
-  // ── Auto-restore WhatsApp Baileys session after server restart ──
+  // Auto-restore WhatsApp Baileys session after server restart
   useEffect(() => {
     if (!firebaseUser || !business?.id || waRestored.current) return;
-
-    // Only restore if WhatsApp is marked as connected in Firestore
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const waChannel = (business as any)?.channels?.whatsapp as { isConnected?: boolean; connectedVia?: string } | undefined;
     if (!waChannel?.isConnected || waChannel.connectedVia !== 'baileys') return;
-
     waRestored.current = true;
-
     (async () => {
       try {
         const token = await firebaseUser.getIdToken();
         await fetch('/api/whatsapp/restore', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify({ businessId: business.id }),
         });
-      } catch {
-        // Silent — restore is best-effort
-      }
+      } catch { /* silent — restore is best-effort */ }
     })();
   }, [firebaseUser, business]);
 
   const handleMenuSelect = (page: MenuPage) => {
-    prevPageRef.current = activePage;
-    setActivePage(page);
+    openTab(page);
     setMobileMenuOpen(false);
   };
 
-  // isAuthReady → used only for redirect (avoids waiting for Firestore before redirecting non-authed users)
-  // isLoading   → used for render (ensures user doc is ready before the app shell mounts)
-  // With Firestore IndexedDB cache enabled, isLoading resolves from cache on return visits (<50ms)
-  if (!isAuthReady || isLoading || !firebaseUser) {
-    return <LoadingSkeleton />;
-  }
+  if (!isAuthReady || isLoading || !firebaseUser) return <LoadingSkeleton />;
 
   return (
     <AppContext.Provider value={{ activePage, setActivePage: handleMenuSelect, sidebarCollapsed }}>
       <AmbientBackground />
+
+      {/* Global command palette — listens to Cmd+K globally */}
+      <CommandPalette />
 
       <div className="relative h-screen flex overflow-hidden bg-gradient-to-br from-gray-50/90 to-gray-100/90 dark:from-[#0B0F19]/95 dark:to-[#0d1117]/95 z-10">
         <Sidebar
@@ -222,32 +158,30 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           onMobileClose={() => setMobileMenuOpen(false)}
         />
 
-        {/* Main content — expands smoothly as sidebar collapses */}
         <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
           <TopBar
             onMobileMenuToggle={() => setMobileMenuOpen(!mobileMenuOpen)}
             onNavigate={handleMenuSelect}
           />
 
-          <main className="relative flex-1 min-h-0 overflow-hidden">
-            {/* Page transition progress line */}
-            <NavProgress trigger={activePage} />
+          {/* Safari-inspired tab bar */}
+          <TabBar />
 
-            <AnimatePresence mode="popLayout" initial={false}>
-              <motion.div
-                key={activePage}
-                variants={pageVariants}
-                initial="initial"
-                animate="animate"
-                exit="exit"
-                className="h-full overflow-y-auto will-change-transform"
-              >
-                {children}
-              </motion.div>
-            </AnimatePresence>
+          <main className="relative flex-1 min-h-0 overflow-hidden">
+            <NavProgress trigger={activePage} />
+            {children}
           </main>
         </div>
       </div>
     </AppContext.Provider>
+  );
+}
+
+// ─── Root layout — provides TabContext ────────────────────────────────────────
+export default function AppLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <TabProvider>
+      <AppLayoutContent>{children}</AppLayoutContent>
+    </TabProvider>
   );
 }
