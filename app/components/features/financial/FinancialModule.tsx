@@ -635,6 +635,29 @@ export default function FinancialModule() {
     toast.success(`${pending.length} parcela(s) quitada(s)`);
   }, [installmentGroupTxs, business?.id, queryClient]);
 
+  // ── Recurring: count urgent (overdue + ≤3d) for tab badge ──────────────────
+  const urgentRecurringCount = useMemo(() => {
+    const in3d = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
+    return transactions.filter(tx => tx.recurrence?.isActive && tx.recurrence.nextDueDate && tx.recurrence.nextDueDate <= in3d).length;
+  }, [transactions]);
+
+  const handlePauseRecurrence = useCallback(async (txId: string) => {
+    await updateDoc(doc(db, 'transactions', txId), {
+      'recurrence.isActive': false,
+      updatedAt: new Date().toISOString(),
+    });
+    queryClient.invalidateQueries({ queryKey: ['transactions', business?.id] });
+  }, [business?.id, queryClient]);
+
+  const handleMarkRecurringPaid = useCallback(async (txId: string) => {
+    await updateDoc(doc(db, 'transactions', txId), {
+      status: 'pago',
+      paymentDate: new Date().toISOString().slice(0, 10),
+      updatedAt: new Date().toISOString(),
+    });
+    queryClient.invalidateQueries({ queryKey: ['transactions', business?.id] });
+  }, [business?.id, queryClient]);
+
   const handleSaveAlerts = useCallback(async () => {
     if (!business?.id) return;
     setIsSavingAlerts(true);
@@ -1138,6 +1161,14 @@ export default function FinancialModule() {
             >
               {tab.icon}
               {tab.label}
+              {tab.key === 'recorrentes' && urgentRecurringCount > 0 && (
+                <span className={cn(
+                  'min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold flex items-center justify-center leading-none',
+                  activeTab === 'recorrentes' ? 'bg-white/30 text-white' : 'bg-amber-500 text-white'
+                )}>
+                  {urgentRecurringCount}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -1218,6 +1249,8 @@ export default function FinancialModule() {
                 transactions={transactions}
                 showBalances={showBalances}
                 onEdit={openEditForm}
+                onPause={handlePauseRecurrence}
+                onMarkPaid={handleMarkRecurringPaid}
               />
             )}
 
@@ -1887,7 +1920,13 @@ function OverviewContent({
   const [dashboardPeriod, setDashboardPeriod] = useState<DashboardPeriod>('30d');
   const [agingType, setAgingType] = useState<'ambos' | 'receber' | 'pagar'>('ambos');
   const [expandedAgingClient, setExpandedAgingClient] = useState<string | null>(null);
+  const [dismissedRecurringBanner, setDismissedRecurringBanner] = useState(false);
   useEffect(() => { setExpandedAgingClient(null); }, [agingType]);
+
+  const urgentRecurrings = useMemo(() => {
+    const in3d = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
+    return transactions.filter(tx => tx.recurrence?.isActive && tx.recurrence.nextDueDate && tx.recurrence.nextDueDate <= in3d);
+  }, [transactions]);
 
   // Period-filtered transactions for KPI + period-specific analytics
   const periodDays: Record<DashboardPeriod, number> = { '30d': 30, '3m': 90, '6m': 180, '12m': 365 };
@@ -1996,29 +2035,35 @@ function OverviewContent({
 
   return (
     <div className="space-y-6">
-      {upcomingRecurrences.length > 0 && (
-        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-800/50 flex items-center justify-center shrink-0">
-              <Repeat size={18} className="text-amber-600 dark:text-amber-400" />
+      {upcomingRecurrences.length > 0 && !dismissedRecurringBanner && (
+        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-3 flex-1 min-w-0">
+            <div className="w-9 h-9 rounded-full bg-amber-100 dark:bg-amber-800/50 flex items-center justify-center shrink-0 mt-0.5">
+              <Repeat size={16} className="text-amber-600 dark:text-amber-400" />
             </div>
-            <div>
+            <div className="min-w-0">
               <p className="text-sm font-bold text-amber-900 dark:text-amber-100">
-                {upcomingRecurrences.length} recorrência(s) vencendo em breve!
+                {upcomingRecurrences.length} recorrência{upcomingRecurrences.length > 1 ? 's' : ''} vencendo em breve
               </p>
-              <p className="text-xs text-amber-700 dark:text-amber-400 mt-0.5">
-                Acesse o painel para verificar assinaturas e contratos recorrentes ativos.
+              <p className="text-xs text-amber-700 dark:text-amber-300 mt-0.5 truncate">
+                {upcomingRecurrences.slice(0, 3).map(tx => tx.recurrence?.label || tx.description).join(' · ')}
+                {upcomingRecurrences.length > 3 && ` · +${upcomingRecurrences.length - 3} mais`}
               </p>
             </div>
           </div>
-          {onGoToRecurrences && (
-            <button
-              onClick={onGoToRecurrences}
-              className="px-4 py-2 text-sm font-semibold bg-amber-100 dark:bg-amber-800/50 text-amber-800 dark:text-amber-100 hover:bg-amber-200 dark:hover:bg-amber-800 rounded-xl transition-colors shrink-0"
-            >
-              Acessar Painel
+          <div className="flex items-center gap-2 shrink-0">
+            {onGoToRecurrences && (
+              <button
+                onClick={onGoToRecurrences}
+                className="px-3 py-1.5 text-xs font-semibold bg-amber-100 dark:bg-amber-800/50 text-amber-800 dark:text-amber-100 hover:bg-amber-200 dark:hover:bg-amber-800 rounded-lg transition-colors"
+              >
+                Ver painel →
+              </button>
+            )}
+            <button onClick={() => setDismissedRecurringBanner(true)} className="text-amber-400 hover:text-amber-600 dark:hover:text-amber-300 transition-colors p-1">
+              <X size={14} />
             </button>
-          )}
+          </div>
         </div>
       )}
 
@@ -5885,47 +5930,58 @@ function BankAccountsContent({
 // TAB: RECORRENTES
 // ==========================================
 
+type RecurringFilter = 'all' | '7d' | '15d' | '30d';
+
 function RecurringContent({
   transactions,
   showBalances,
   onEdit,
+  onPause,
+  onMarkPaid,
 }: {
   transactions: Transaction[];
   showBalances: boolean;
   onEdit: (tx: Transaction) => void;
+  onPause: (txId: string) => Promise<void>;
+  onMarkPaid: (txId: string) => Promise<void>;
 }) {
-  const { t } = useTranslation();
-
-  // Filtrar apenas as "matrizes" de recorrência ativas
-  const recurrences = useMemo(() => {
-    return transactions.filter(t => t.recurrence?.isActive);
-  }, [transactions]);
-
-  // Ordenar por data mais próxima do vencimento
-  const sortedRecurrences = useMemo(() => {
-    return [...recurrences].sort((a, b) => {
-      const dateA = a.recurrence?.nextDueDate || '';
-      const dateB = b.recurrence?.nextDueDate || '';
-      return dateA.localeCompare(dateB);
-    });
-  }, [recurrences]);
+  const [filter, setFilter] = useState<RecurringFilter>('all');
+  const [pausingId, setPausingId] = useState<string | null>(null);
+  const [payingId, setPayingId] = useState<string | null>(null);
 
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
-  // Calcular métricas
+  const allRecurrences = useMemo(() =>
+    transactions.filter(t => t.recurrence?.isActive)
+  , [transactions]);
+
+  const filteredRecurrences = useMemo(() => {
+    if (filter === 'all') return allRecurrences;
+    const days = filter === '7d' ? 7 : filter === '15d' ? 15 : 30;
+    const cutoff = new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+    return allRecurrences.filter(tx => tx.recurrence?.nextDueDate && tx.recurrence.nextDueDate <= cutoff);
+  }, [allRecurrences, filter]);
+
+  const sortedRecurrences = useMemo(() =>
+    [...filteredRecurrences].sort((a, b) => (a.recurrence?.nextDueDate || '').localeCompare(b.recurrence?.nextDueDate || ''))
+  , [filteredRecurrences]);
+
+  const despesas = sortedRecurrences.filter(t => t.type === 'despesa');
+  const receitas = sortedRecurrences.filter(t => t.type === 'receita');
+
   const kpis = useMemo(() => {
     const now = new Date();
-    const in30Days = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    let receitas30 = 0;
-    let despesas30 = 0;
-    for (const r of recurrences) {
+    const in30Days = new Date(now.getTime() + 30 * 86400000).toISOString().slice(0, 10);
+    let receitas30 = 0, despesas30 = 0;
+    for (const r of allRecurrences) {
       if (r.recurrence?.nextDueDate && r.recurrence.nextDueDate <= in30Days) {
         if (r.type === 'receita') receitas30 += r.amount;
         else despesas30 += r.amount;
       }
     }
-    return { active: recurrences.length, receitas30, despesas30, saldo30: receitas30 - despesas30 };
-  }, [recurrences]);
+    const urgentCount = allRecurrences.filter(r => r.recurrence?.nextDueDate && r.recurrence.nextDueDate <= new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10)).length;
+    return { active: allRecurrences.length, receitas30, despesas30, saldo30: receitas30 - despesas30, urgentCount };
+  }, [allRecurrences]);
 
   const getDaysLabel = (dateStr?: string): string => {
     if (!dateStr) return '—';
@@ -5937,23 +5993,135 @@ function RecurringContent({
   };
 
   const getUrgency = (dateStr?: string) => {
-    if (!dateStr) return { color: 'text-slate-500', bg: 'bg-slate-100 dark:bg-gray-800', border: 'border-slate-200' };
+    if (!dateStr) return { color: 'text-slate-500', bg: 'bg-slate-100 dark:bg-gray-800', border: 'border-slate-200 dark:border-gray-700' };
     if (dateStr < todayStr) return { color: 'text-red-600 dark:text-red-400', bg: 'bg-red-50 dark:bg-red-900/20', border: 'border-red-200 dark:border-red-800' };
-    
-    const diffMs = new Date(`${dateStr}T00:00:00`).getTime() - new Date(`${todayStr}T00:00:00`).getTime();
-    const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-    
-    if (diffDays <= 3) return { color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-900/20', border: 'border-amber-200 dark:border-amber-800' };
+    const diffDays = Math.ceil((new Date(dateStr + 'T00:00:00').getTime() - new Date(todayStr + 'T00:00:00').getTime()) / 86400000);
+    if (diffDays <= 2) return { color: 'text-red-600 dark:text-red-400', bg: 'bg-red-50 dark:bg-red-900/20', border: 'border-red-200 dark:border-red-800' };
+    if (diffDays <= 7) return { color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-900/20', border: 'border-amber-200 dark:border-amber-800' };
     return { color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-900/20', border: 'border-emerald-200 dark:border-emerald-800' };
   };
 
+  const handlePause = async (tx: Transaction) => {
+    setPausingId(tx.id);
+    try { await onPause(tx.id); } finally { setPausingId(null); }
+  };
+
+  const handlePay = async (tx: Transaction) => {
+    setPayingId(tx.id);
+    try { await onMarkPaid(tx.id); } finally { setPayingId(null); }
+  };
+
+  const FILTER_LABELS: Record<RecurringFilter, string> = { all: 'Todas', '7d': '7 dias', '15d': '15 dias', '30d': '30 dias' };
+
+  const RecurringGroup = ({ items, title, icon }: { items: Transaction[]; title: string; icon: React.ReactNode }) => {
+    if (items.length === 0) return null;
+    return (
+      <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl overflow-hidden shadow-sm">
+        <div className="px-6 py-3 border-b border-slate-100 dark:border-gray-800 flex items-center gap-2">
+          {icon}
+          <h3 className="text-sm font-display font-bold text-slate-900 dark:text-gray-100">{title}</h3>
+          <span className="ml-auto text-xs text-slate-400 dark:text-gray-500 font-medium">{items.length} recorrência{items.length !== 1 ? 's' : ''}</span>
+        </div>
+        <div className="divide-y divide-slate-50 dark:divide-gray-800">
+          {items.map((tx) => {
+            const u = getUrgency(tx.recurrence?.nextDueDate);
+            const isOverdue = tx.recurrence?.nextDueDate && tx.recurrence.nextDueDate < todayStr;
+            return (
+              <div key={tx.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-5 py-3.5 hover:bg-slate-50 dark:hover:bg-gray-800/40 transition-colors">
+                {/* Left: urgency badge + info */}
+                <div className="flex items-center gap-3 flex-1 min-w-0">
+                  <div className={cn('w-14 h-12 rounded-xl flex items-center justify-center border shrink-0 flex-col gap-0.5', u.bg, u.border)}>
+                    <span className={cn('text-[10px] font-bold leading-none', u.color)}>
+                      {getDaysLabel(tx.recurrence?.nextDueDate)}
+                    </span>
+                    {tx.recurrence?.nextDueDate && (
+                      <span className={cn('text-[9px] leading-none opacity-70', u.color)}>
+                        {tx.recurrence.nextDueDate.slice(5).replace('-', '/')}
+                      </span>
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-slate-900 dark:text-gray-100 truncate">
+                      {tx.recurrence?.label || tx.description}
+                    </p>
+                    <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                      <span className="text-[11px] text-slate-500 dark:text-gray-400 bg-slate-100 dark:bg-gray-800 px-1.5 py-0.5 rounded-md">
+                        {RECURRENCE_LABELS[tx.recurrence?.frequency || 'monthly']}
+                      </span>
+                      {tx.recurrence?.dayOfMonth && (
+                        <span className="text-[11px] text-slate-400 dark:text-gray-500">dia {tx.recurrence.dayOfMonth}</span>
+                      )}
+                      {tx.category && (
+                        <span className="text-[11px] text-slate-400 dark:text-gray-500">{tx.category}</span>
+                      )}
+                      {isOverdue && (
+                        <span className="text-[10px] font-bold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/30 px-1.5 py-0.5 rounded-full">ATRASADO</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right: value + actions */}
+                <div className="flex items-center gap-2 shrink-0">
+                  <div className="text-right mr-2">
+                    <p className="text-xs text-slate-400 dark:text-gray-500 leading-none mb-0.5">Valor</p>
+                    <p className={cn('text-sm font-bold', tx.type === 'receita' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+                      {tx.type === 'receita' ? '+' : '-'}{showBalances ? formatCurrency(tx.amount) : 'R$ ****'}
+                    </p>
+                  </div>
+
+                  {/* Quitar agora */}
+                  <button
+                    onClick={() => handlePay(tx)}
+                    disabled={payingId === tx.id}
+                    title="Quitar agora"
+                    className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900/40 transition-colors disabled:opacity-50"
+                  >
+                    {payingId === tx.id ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
+                    Quitar
+                  </button>
+
+                  {/* Editar */}
+                  <button
+                    onClick={() => onEdit(tx)}
+                    title="Editar"
+                    className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-gray-300 hover:bg-slate-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
+                  >
+                    <Edit3 size={14} />
+                  </button>
+
+                  {/* Pausar */}
+                  <button
+                    onClick={() => handlePause(tx)}
+                    disabled={pausingId === tx.id}
+                    title="Pausar recorrência"
+                    className="p-1.5 text-slate-400 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    {pausingId === tx.id ? <Loader2 size={14} className="animate-spin" /> : <XCircle size={14} />}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {/* KPI Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-4 shadow-sm">
-          <p className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1">Recorrências Ativas</p>
-          <p className="text-2xl font-display font-bold text-slate-900 dark:text-gray-100">{kpis.active}</p>
+          <p className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1">Ativas</p>
+          <div className="flex items-end gap-2">
+            <p className="text-2xl font-display font-bold text-slate-900 dark:text-gray-100">{kpis.active}</p>
+            {kpis.urgentCount > 0 && (
+              <span className="mb-0.5 px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-amber-500 text-white leading-none">
+                {kpis.urgentCount} urgente{kpis.urgentCount !== 1 ? 's' : ''}
+              </span>
+            )}
+          </div>
         </div>
         <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-4 shadow-sm">
           <p className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1">Entradas 30d</p>
@@ -5975,73 +6143,44 @@ function RecurringContent({
         </div>
       </div>
 
-      {/* Lista de Recorrentes */}
-      <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl overflow-hidden shadow-sm">
-        <div className="px-6 py-4 border-b border-slate-100 dark:border-gray-800">
-          <h3 className="text-base font-display font-bold text-slate-900 dark:text-gray-100">Próximos Vencimentos</h3>
+      {/* Filter bar */}
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-slate-400 dark:text-gray-500 font-medium">Mostrar vencimentos:</span>
+        <div className="flex items-center gap-1 p-1 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl">
+          {(['all', '7d', '15d', '30d'] as RecurringFilter[]).map(f => (
+            <button key={f} onClick={() => setFilter(f)}
+              className={cn('px-3 py-1 rounded-lg text-xs font-medium transition-all',
+                filter === f ? 'bg-red-600 text-white shadow-sm' : 'text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800'
+              )}
+            >{FILTER_LABELS[f]}</button>
+          ))}
         </div>
-
-        {sortedRecurrences.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
-            <Repeat size={40} strokeWidth={1.5} />
-            <p className="mt-3 text-sm font-medium">Nenhuma recorrência ativa</p>
-            <p className="text-xs mt-1">Crie transações e ative "Lançamento recorrente" para gerenciar</p>
-          </div>
-        ) : (
-          <div className="divide-y divide-slate-50 dark:divide-gray-800">
-            {sortedRecurrences.map((tx) => {
-              const u = getUrgency(tx.recurrence?.nextDueDate);
-              return (
-                <div key={tx.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 px-6 py-4 hover:bg-slate-50 dark:hover:bg-gray-800/40 transition-colors">
-                  <div className="flex items-start gap-4 flex-1 min-w-0">
-                    <div className={cn('w-12 h-12 rounded-2xl flex items-center justify-center border shrink-0 flex-col gap-0', u.bg, u.border)}>
-                      <span className={cn('text-[10px] font-bold leading-none', u.color)}>
-                        {getDaysLabel(tx.recurrence?.nextDueDate)}
-                      </span>
-                      {tx.recurrence?.nextDueDate && (
-                        <span className={cn('text-[9px] leading-none mt-0.5 opacity-70', u.color)}>
-                          {tx.recurrence.nextDueDate.slice(5).replace('-', '/')}
-                        </span>
-                      )}
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-sm font-bold text-slate-900 dark:text-gray-100 truncate">
-                        {tx.recurrence?.label || tx.description}
-                      </p>
-                      <div className="flex items-center gap-2 mt-1">
-                        <span className="text-xs text-slate-500 dark:text-gray-400 bg-slate-100 dark:bg-gray-800 px-2 py-0.5 rounded-md">
-                          {RECURRENCE_LABELS[tx.recurrence?.frequency || 'monthly'] || tx.recurrence?.frequency}
-                        </span>
-                        {tx.recurrence?.dayOfMonth && (
-                          <span className="text-[11px] text-slate-400 dark:text-gray-500">
-                            Dia fixo: {tx.recurrence.dayOfMonth}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                  
-                  <div className="flex items-center justify-between sm:justify-end gap-6 sm:w-1/3 shrink-0">
-                    <div className="text-left sm:text-right">
-                      <p className="text-xs text-slate-400 dark:text-gray-500 mb-0.5">Valor Agendado</p>
-                      <p className={cn('text-sm font-bold', tx.type === 'receita' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
-                        {tx.type === 'receita' ? '+' : '-'}{showBalances ? formatCurrency(tx.amount) : 'R$ ****'}
-                      </p>
-                    </div>
-                    
-                    <button 
-                      onClick={() => onEdit(tx)}
-                      className="px-3 py-1.5 text-xs font-semibold bg-white dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-lg hover:bg-slate-50 dark:hover:bg-gray-700 text-slate-600 dark:text-gray-300 transition-colors shadow-sm"
-                    >
-                      Editar
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+        {filter !== 'all' && filteredRecurrences.length === 0 && (
+          <span className="text-xs text-slate-400 dark:text-gray-500">Nenhum vencimento nesse período</span>
         )}
       </div>
+
+      {/* Groups */}
+      {allRecurrences.length === 0 ? (
+        <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
+          <Repeat size={40} strokeWidth={1.5} />
+          <p className="mt-3 text-sm font-medium">Nenhuma recorrência ativa</p>
+          <p className="text-xs mt-1">Crie transações e ative "Lançamento recorrente" para gerenciar</p>
+        </div>
+      ) : (
+        <>
+          <RecurringGroup
+            items={despesas}
+            title="Despesas Recorrentes"
+            icon={<ArrowDownRight size={16} className="text-red-500" />}
+          />
+          <RecurringGroup
+            items={receitas}
+            title="Receitas Recorrentes"
+            icon={<ArrowUpRight size={16} className="text-emerald-500" />}
+          />
+        </>
+      )}
     </div>
   );
 }
