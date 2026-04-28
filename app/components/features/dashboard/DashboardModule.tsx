@@ -39,6 +39,9 @@ import {
   FileCheck2,
   Target,
   MessageSquare,
+  Kanban as KanbanIcon,
+  StickyNote,
+  KeyRound,
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -86,8 +89,8 @@ interface ModuleEntry {
 }
 
 // Paleta majoritariamente quente (família red/rose/pink/amber/orange) com
-// alguns acentos frios (cyan/violet/slate) só para devolver a navegação
-// visual — todos os ícones em uma única linha (flex-nowrap centrado).
+// alguns acentos frios (cyan/violet/purple/slate/zinc) — todos os ícones em
+// uma única linha (flex-nowrap centrado, scroll horizontal se overflow).
 const MODULES: ModuleEntry[] = [
   { id: 'Clientes',    label: 'Clientes',    icon: Users,           bg: 'bg-red-50 dark:bg-red-500/10',          iconColor: 'text-red-600 dark:text-red-400' },
   { id: 'CRM',         label: 'CRM',         icon: Target,          bg: 'bg-rose-50 dark:bg-rose-500/10',        iconColor: 'text-rose-600 dark:text-rose-400' },
@@ -96,9 +99,12 @@ const MODULES: ModuleEntry[] = [
   { id: 'Pedidos',     label: 'Pedidos',     icon: ClipboardCheck,  bg: 'bg-orange-50 dark:bg-orange-500/10',    iconColor: 'text-orange-600 dark:text-orange-400', useCases: ['pedidos'] },
   { id: 'PDV',         label: 'PDV',         icon: ShoppingCart,    bg: 'bg-emerald-50 dark:bg-emerald-500/10',  iconColor: 'text-emerald-600 dark:text-emerald-400' },
   { id: 'Vendas',      label: 'Vendas',      icon: ClipboardList,   bg: 'bg-indigo-50 dark:bg-indigo-500/10',    iconColor: 'text-indigo-600 dark:text-indigo-400' },
+  { id: 'Kanban',      label: 'Kanban',      icon: KanbanIcon,      bg: 'bg-purple-50 dark:bg-purple-500/10',    iconColor: 'text-purple-600 dark:text-purple-400' },
   { id: 'Financeiro',  label: 'Financeiro',  icon: DollarSign,      bg: 'bg-cyan-50 dark:bg-cyan-500/10',        iconColor: 'text-cyan-600 dark:text-cyan-400' },
   { id: 'Relatórios',  label: 'Relatórios',  icon: BarChart3,       bg: 'bg-violet-50/80 dark:bg-violet-500/10', iconColor: 'text-violet-600 dark:text-violet-400' },
   { id: 'NFSe',        label: 'Fiscal',      icon: FileCheck2,      bg: 'bg-slate-100 dark:bg-slate-500/10',     iconColor: 'text-slate-600 dark:text-slate-400' },
+  { id: 'Notas',       label: 'Notas',       icon: StickyNote,      bg: 'bg-yellow-50 dark:bg-yellow-500/10',    iconColor: 'text-yellow-600 dark:text-yellow-400' },
+  { id: 'Senhas',      label: 'Senhas',      icon: KeyRound,        bg: 'bg-zinc-100 dark:bg-zinc-500/10',       iconColor: 'text-zinc-600 dark:text-zinc-400',     minRole: 'admin' },
 ];
 
 // ─── Main component ─────────────────────────────────────────────────────────
@@ -243,7 +249,7 @@ export default function DashboardModule() {
 
       {/* ━━━ Module circles — single line, centered. pt-3 dá folga pro hover-lift ━━━ */}
       <motion.section variants={fadeUp}>
-        <div className="flex flex-nowrap items-start justify-center gap-x-4 sm:gap-x-6 lg:gap-x-8 overflow-x-auto pt-3 pb-2 -mx-1 px-1 scrollbar-thin">
+        <div className="flex flex-nowrap items-start justify-center gap-x-2.5 sm:gap-x-4 lg:gap-x-5 overflow-x-auto pt-3 pb-2 -mx-1 px-1 scrollbar-thin">
           {visibleModules.map((m, i) => (
             <ModuleCircle
               key={m.id}
@@ -364,19 +370,19 @@ function ModuleCircle({
       whileTap={{ scale: 0.95 }}
       onClick={onClick}
       transition={{ duration: 0.25, delay: index * 0.025, ease: [0.22, 1, 0.36, 1] }}
-      className="group flex flex-col items-center gap-2 flex-shrink-0 w-[72px] sm:w-[84px] focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/30 rounded-2xl"
+      className="group flex flex-col items-center gap-1.5 flex-shrink-0 w-[60px] sm:w-[68px] focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/30 rounded-2xl"
     >
       <div
         className={cn(
-          'w-14 h-14 sm:w-16 sm:h-16 rounded-2xl flex items-center justify-center',
+          'w-11 h-11 sm:w-12 sm:h-12 rounded-xl flex items-center justify-center',
           'border border-gray-200/60 dark:border-gray-700/40',
           'group-hover:border-gray-300 dark:group-hover:border-gray-600/60 transition-colors',
           module.bg,
         )}
       >
-        <Icon className={cn('w-6 h-6 sm:w-[26px] sm:h-[26px]', module.iconColor)} strokeWidth={1.9} />
+        <Icon className={cn('w-[18px] h-[18px] sm:w-5 sm:h-5', module.iconColor)} strokeWidth={1.9} />
       </div>
-      <span className="text-[11px] sm:text-xs font-medium text-gray-600 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-gray-200 transition-colors text-center leading-tight">
+      <span className="text-[10px] sm:text-[11px] font-medium text-gray-600 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-gray-200 transition-colors text-center leading-tight">
         {module.label}
       </span>
     </motion.button>
