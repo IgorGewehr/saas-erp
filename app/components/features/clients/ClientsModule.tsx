@@ -9,7 +9,7 @@ import {
   Download, Upload, UserCheck, Gift, Calendar, MessageSquare, History, Clock,
   FileDown,
 } from 'lucide-react';
-import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, limit as firestoreLimit, orderBy } from 'firebase/firestore';
+import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, limit as firestoreLimit, orderBy, writeBatch } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -1158,6 +1158,295 @@ function ImportModal({
   );
 }
 
+// ─── Merge duplicates ────────────────────────────────────────────────────────
+
+function detectDuplicates(clients: Client[]): [Client, Client][] {
+  const active = clients.filter(c => c.isActive !== false && !(c as unknown as Record<string, unknown>).mergedInto);
+  const pairs: [Client, Client][] = [];
+  const seen = new Set<string>();
+
+  const addPair = (a: Client, b: Client) => {
+    const key = [a.id, b.id].sort().join('|');
+    if (!seen.has(key)) { seen.add(key); pairs.push([a, b]); }
+  };
+
+  const byCpf  = new Map<string, Client[]>();
+  const byMail = new Map<string, Client[]>();
+  const byPhone = new Map<string, Client[]>();
+
+  for (const c of active) {
+    const cpf = digits(c.cpfCnpj);
+    if (cpf.length >= 6) { const g = byCpf.get(cpf) ?? []; g.push(c); byCpf.set(cpf, g); }
+
+    const mail = normEmail(c.email);
+    if (mail) { const g = byMail.get(mail) ?? []; g.push(c); byMail.set(mail, g); }
+
+    const ph = digits(c.phone || c.whatsapp || '').slice(-8);
+    if (ph.length === 8) { const g = byPhone.get(ph) ?? []; g.push(c); byPhone.set(ph, g); }
+  }
+
+  for (const group of [...byCpf.values(), ...byMail.values(), ...byPhone.values()]) {
+    for (let i = 0; i < group.length - 1; i++)
+      for (let j = i + 1; j < group.length; j++)
+        addPair(group[i], group[j]);
+  }
+
+  return pairs;
+}
+
+async function reassociateRelatedDocs(oldId: string, newId: string, businessId: string) {
+  const targets = [
+    { col: 'conversations', field: 'crmContactId' },
+    { col: 'appointments',  field: 'clientId' },
+    { col: 'sales',         field: 'clientId' },
+    { col: 'transactions',  field: 'clientId' },
+    { col: 'transactions',  field: 'contactId' },
+  ];
+  for (const { col, field } of targets) {
+    try {
+      const snap = await getDocs(query(
+        collection(db, col),
+        where('businessId', '==', businessId),
+        where(field, '==', oldId),
+      ));
+      if (snap.empty) continue;
+      const batch = writeBatch(db);
+      snap.docs.forEach(d => batch.update(d.ref, { [field]: newId, updatedAt: new Date().toISOString() }));
+      await batch.commit();
+    } catch { /* best-effort */ }
+  }
+}
+
+function MergeModal({
+  clients,
+  businessId,
+  onClose,
+  onDone,
+}: {
+  clients: Client[];
+  businessId: string;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const pairs = useMemo(() => detectDuplicates(clients), [clients]);
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  const [primaryIds, setPrimaryIds] = useState<Record<string, string>>({});
+  const [fillEmpty, setFillEmpty] = useState<Record<string, boolean>>({});
+  const [merging, setMerging] = useState<string | null>(null);
+  const [merged, setMerged] = useState<Set<string>>(new Set());
+
+  const activePairs = pairs.filter(([a, b]) => {
+    const key = [a.id, b.id].sort().join('|');
+    return !dismissed.has(key) && !merged.has(key);
+  });
+
+  const pairKey = (a: Client, b: Client) => [a.id, b.id].sort().join('|');
+
+  const handleMerge = async (a: Client, b: Client) => {
+    const key = pairKey(a, b);
+    const primaryId = primaryIds[key] ?? a.id;
+    const primary   = primaryId === a.id ? a : b;
+    const secondary = primaryId === a.id ? b : a;
+    const fill = fillEmpty[key] ?? true;
+
+    setMerging(key);
+    try {
+      const now = new Date().toISOString();
+      const updates: Record<string, unknown> = { updatedAt: now };
+
+      if (fill) {
+        if (!primary.email      && secondary.email)      updates.email      = secondary.email;
+        if (!primary.phone      && secondary.phone)      updates.phone      = secondary.phone;
+        if (!primary.whatsapp   && secondary.whatsapp)   updates.whatsapp   = secondary.whatsapp;
+        if (!primary.company    && secondary.company)    updates.company    = secondary.company;
+        if (!primary.cpfCnpj    && secondary.cpfCnpj)    updates.cpfCnpj    = secondary.cpfCnpj;
+        if (!primary.notes      && secondary.notes)      updates.notes      = secondary.notes;
+        if (!primary.endereco   && secondary.endereco)   updates.endereco   = secondary.endereco;
+
+        const allTags = [...new Set([...(primary.tags ?? []), ...(secondary.tags ?? [])])];
+        if (allTags.length) updates.tags = allTags;
+
+        if ((secondary.totalSpent ?? 0) > 0)
+          updates.totalSpent = (primary.totalSpent ?? 0) + (secondary.totalSpent ?? 0);
+        if ((secondary.visitCount ?? 0) > 0)
+          updates.visitCount = (primary.visitCount ?? 0) + (secondary.visitCount ?? 0);
+        if ((secondary.loyaltyPoints ?? 0) > 0)
+          updates.loyaltyPoints = (primary.loyaltyPoints ?? 0) + (secondary.loyaltyPoints ?? 0);
+      }
+
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'clients', primary.id), updates);
+      batch.update(doc(db, 'clients', secondary.id), {
+        isActive: false,
+        mergedInto: primary.id,
+        mergedAt: now,
+        updatedAt: now,
+      });
+      await batch.commit();
+
+      // Reassociate related docs in background (fire-and-forget)
+      reassociateRelatedDocs(secondary.id, primary.id, businessId);
+
+      setMerged(prev => new Set([...prev, key]));
+      onDone();
+    } catch (err) {
+      console.error('Merge error:', err);
+    } finally {
+      setMerging(null);
+    }
+  };
+
+  const ClientCard = ({ client, isPrimary, onSelect }: { client: Client; isPrimary: boolean; onSelect: () => void }) => (
+    <div
+      onClick={onSelect}
+      className={cn(
+        'flex-1 rounded-xl p-3 border-2 cursor-pointer transition-all',
+        isPrimary
+          ? 'border-emerald-400 dark:border-emerald-500 bg-emerald-50/50 dark:bg-emerald-500/5'
+          : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
+      )}
+    >
+      <div className="flex items-center gap-2 mb-2">
+        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+          {(client.name?.[0] ?? '?').toUpperCase()}
+        </div>
+        <div className="min-w-0">
+          <p className="text-xs font-semibold text-gray-900 dark:text-white truncate">{client.name}</p>
+          {client.company && <p className="text-[10px] text-gray-400 truncate">{client.company}</p>}
+        </div>
+        {isPrimary && (
+          <span className="ml-auto flex-shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400">
+            MANTER
+          </span>
+        )}
+      </div>
+      <div className="space-y-0.5 text-[10px] text-gray-500 dark:text-gray-400">
+        {client.email  && <p className="truncate">✉ {client.email}</p>}
+        {client.phone  && <p>📞 {client.phone}</p>}
+        {client.cpfCnpj && <p>📄 {client.cpfCnpj}</p>}
+        {(client.totalSpent ?? 0) > 0 && <p className="text-emerald-600 dark:text-emerald-400 font-medium">💰 {formatCurrency(client.totalSpent ?? 0)}</p>}
+        <p className="text-gray-300 dark:text-gray-600">Cadastro: {formatDate(client.createdAt)}</p>
+      </div>
+    </div>
+  );
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 16 }}
+        transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+        className="w-full max-w-xl bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 overflow-hidden flex flex-col max-h-[90vh]"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800 flex-shrink-0">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center">
+              <Users className="w-4 h-4 text-amber-500" />
+            </div>
+            <div>
+              <h2 className="font-semibold text-gray-900 dark:text-white text-sm">Duplicatas detectadas</h2>
+              <p className="text-[10px] text-gray-400">
+                {activePairs.length > 0 ? `${activePairs.length} par${activePairs.length > 1 ? 'es' : ''} encontrado${activePairs.length > 1 ? 's' : ''}` : 'Nenhuma duplicata pendente'}
+              </p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          {activePairs.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 px-6 text-center">
+              <CheckCircle2 className="w-10 h-10 text-emerald-400 mb-3" />
+              <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Tudo limpo!</p>
+              <p className="text-xs text-gray-400 mt-1">Nenhuma duplicata encontrada na base de clientes.</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-gray-100 dark:divide-gray-800">
+              {activePairs.map(([a, b]) => {
+                const key = pairKey(a, b);
+                const primaryId = primaryIds[key] ?? a.id;
+                const fill = fillEmpty[key] ?? true;
+                const isMerging = merging === key;
+
+                return (
+                  <div key={key} className="p-4 space-y-3">
+                    {/* Cards */}
+                    <div className="flex gap-2">
+                      <ClientCard client={a} isPrimary={primaryId === a.id}
+                        onSelect={() => setPrimaryIds(p => ({ ...p, [key]: a.id }))} />
+                      <div className="flex items-center flex-shrink-0 text-gray-300 dark:text-gray-600 font-light text-lg">VS</div>
+                      <ClientCard client={b} isPrimary={primaryId === b.id}
+                        onSelect={() => setPrimaryIds(p => ({ ...p, [key]: b.id }))} />
+                    </div>
+
+                    {/* Options */}
+                    <div className="flex items-center gap-3">
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={fill}
+                          onChange={e => setFillEmpty(p => ({ ...p, [key]: e.target.checked }))}
+                          className="w-3.5 h-3.5 rounded accent-red-500"
+                        />
+                        <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                          Copiar campos vazios + somar totais
+                        </span>
+                      </label>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setDismissed(p => new Set([...p, key]))}
+                        className="flex-1 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 text-xs font-medium text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                      >
+                        Ignorar este par
+                      </button>
+                      <button
+                        onClick={() => handleMerge(a, b)}
+                        disabled={isMerging}
+                        className="flex-1 px-3 py-2 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
+                      >
+                        {isMerging ? (
+                          <>
+                            <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 0.8, ease: 'linear' }}>
+                              <Star className="w-3 h-3" />
+                            </motion.div>
+                            Mesclando...
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle2 className="w-3 h-3" />
+                            Mesclar — manter {primaryId === a.id ? a.name.split(' ')[0] : b.name.split(' ')[0]}
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="px-6 py-3 border-t border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/30 flex-shrink-0">
+          <p className="text-[10px] text-gray-400 text-center">
+            Clicar no card verde seleciona qual registro será mantido. O outro é desativado e suas conversas, compras e agendamentos são transferidos.
+          </p>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 // ─── Client Timeline ─────────────────────────────────────────────────────────
 
 type TimelineEventKind = 'conversation' | 'appointment' | 'sale' | 'transaction_in' | 'transaction_out';
@@ -1602,6 +1891,7 @@ export default function ClientsModule() {
   const [sortBy, setSortBy] = useState<'name' | 'totalSpent' | 'createdAt' | 'churnRisk'>('name');
   const [showExport, setShowExport] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [showMerge, setShowMerge] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
   const [showForm, setShowForm] = useState(false);
@@ -1742,6 +2032,9 @@ export default function ClientsModule() {
     return list;
   }, [clients, search, filterTipo, filterStatus, filterTags, filterChurnRisk, sortBy]);
 
+  // ─── Duplicate count (for badge) ─────────────────────────────────────────────
+  const dupeCount = useMemo(() => detectDuplicates(clients).length, [clients]);
+
   // ─── KPIs ────────────────────────────────────────────────────────────────────
   const kpis = useMemo(() => {
     const active = clients.filter(c => c.status === 'ganho').length;
@@ -1817,6 +2110,18 @@ export default function ClientsModule() {
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">{clients.length} clientes cadastrados</p>
         </div>
         <div className="flex items-center gap-2">
+          {dupeCount > 0 && (
+            <button
+              onClick={() => setShowMerge(true)}
+              className="inline-flex items-center gap-2 px-4 py-2.5 border border-amber-300 dark:border-amber-500/40 text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10 hover:bg-amber-100 dark:hover:bg-amber-500/20 text-sm font-medium rounded-xl transition-colors"
+            >
+              <Users className="w-4 h-4" />
+              Duplicatas
+              <span className="bg-amber-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none">
+                {dupeCount}
+              </span>
+            </button>
+          )}
           <button
             onClick={() => setShowImport(true)}
             className="inline-flex items-center gap-2 px-4 py-2.5 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 text-sm font-medium rounded-xl transition-colors"
@@ -2196,6 +2501,18 @@ export default function ClientsModule() {
               </div>
             </motion.div>
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Merge duplicates modal */}
+      <AnimatePresence>
+        {showMerge && (
+          <MergeModal
+            clients={clients}
+            businessId={business!.id}
+            onClose={() => setShowMerge(false)}
+            onDone={() => queryClient.invalidateQueries({ queryKey: ['clients', business?.id] })}
+          />
         )}
       </AnimatePresence>
 
