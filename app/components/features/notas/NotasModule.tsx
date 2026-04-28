@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   StickyNote,
@@ -377,13 +377,28 @@ function NoteModal({
   const backdropMouseDown = useRef<{ x: number; y: number } | null>(null);
   const savedSize = getSavedModalSize();
 
+  const MAX_ATTACHMENTS = 10;
+
   const handleFilePick = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
+    e.target.value = ''; // always clear so same file can be re-selected
     if (!files.length) return;
-    e.target.value = '';
+
+    // Guard: businessId must be present before uploading to Storage
+    if (!businessId || !noteId) {
+      alert('Erro: sessão inválida. Recarregue a página e tente novamente.');
+      return;
+    }
+
+    // Enforce max attachment count
+    const remaining = MAX_ATTACHMENTS - form.attachments.length;
+    if (remaining <= 0) {
+      alert(`Máximo de ${MAX_ATTACHMENTS} arquivos por nota.`);
+      return;
+    }
 
     const MAX_MB = 10;
-    const valid = files.filter(f => {
+    const valid = files.slice(0, remaining).filter(f => {
       if (f.size > MAX_MB * 1024 * 1024) { alert(`"${f.name}" excede ${MAX_MB}MB.`); return false; }
       return true;
     });
@@ -422,6 +437,18 @@ function NoteModal({
     setForm(f => ({ ...f, attachments: f.attachments.filter(a => a.id !== att.id) }));
     try { await deleteObject(storageRef(storage, att.path)); } catch { /* ignore — may already be gone */ }
   };
+
+  // Cleanup uploads that were added this session but never saved
+  const handleClose = useCallback(async () => {
+    if (!saving) {
+      const originalIds = new Set((initial?.attachments ?? []).map(a => a.id));
+      const unsaved = form.attachments.filter(a => !originalIds.has(a.id));
+      for (const att of unsaved) {
+        try { await deleteObject(storageRef(storage, att.path)); } catch { /* ignore */ }
+      }
+    }
+    onClose();
+  }, [form.attachments, initial?.attachments, saving, onClose]);
 
   // Focus textarea on open
   useEffect(() => {
@@ -482,7 +509,7 @@ function NoteModal({
         if (!origin) return;
         // Only close if mouse didn't move (true click, not a resize drag release)
         const dist = Math.abs(e.clientX - origin.x) + Math.abs(e.clientY - origin.y);
-        if (dist < 6) onClose();
+        if (dist < 6) handleClose();
       }}
     >
       <motion.div
@@ -514,7 +541,7 @@ function NoteModal({
               Ctrl+Enter para salvar
             </span>
             <button
-              onClick={onClose}
+              onClick={handleClose}
               className="p-1.5 rounded-lg hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
             >
               <X className="w-4 h-4 text-black/40 dark:text-white/40" />
@@ -820,7 +847,7 @@ function NotePreviewModal({
           {/* Image gallery */}
           {(note.attachments?.filter(a => a.type === 'image') ?? []).length > 0 && (
             <div className="space-y-2">
-              {note.attachments!.filter(a => a.type === 'image').map(img => (
+              {(note.attachments ?? []).filter(a => a.type === 'image').map(img => (
                 <div key={img.id} className="relative group/img rounded-xl overflow-hidden">
                   <img
                     src={img.url}
@@ -845,7 +872,7 @@ function NotePreviewModal({
           {/* File attachments (non-image) */}
           {(note.attachments?.filter(a => a.type === 'file') ?? []).length > 0 && (
             <div className="space-y-1">
-              {note.attachments!.filter(a => a.type === 'file').map(f => (
+              {(note.attachments ?? []).filter(a => a.type === 'file').map(f => (
                 <a
                   key={f.id}
                   href={f.url}
@@ -933,23 +960,18 @@ export default function NotasModule() {
 
   // ── Sorted notes (tab filter + pinned first) ──────────────────────────────
 
-  const sortedNotes = useCallback(() => {
-    // Filter by active tab (personal = only mine, team = all team notes)
+  const displayed = useMemo(() => {
     let filtered = notes.filter(n =>
       activeTab === 'personal'
         ? n.scope === 'personal' && n.authorId === user?.uid
         : n.scope === 'team',
     );
-
-    // Text search
     if (search.trim()) {
       const q = search.toLowerCase();
       filtered = filtered.filter(n =>
         n.title.toLowerCase().includes(q) || n.content.toLowerCase().includes(q),
       );
     }
-
-    // Sort: pinned first, then by updatedAt desc
     return [
       ...filtered.filter(n => n.isPinned).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
       ...filtered.filter(n => !n.isPinned).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
@@ -1025,8 +1047,6 @@ export default function NotasModule() {
     setEditingNote(null);
     setShowModal(true);
   };
-
-  const displayed = sortedNotes();
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -1166,7 +1186,7 @@ export default function NotasModule() {
             noteId={pendingNoteId.current}
             businessId={business?.id ?? ''}
             tab={activeTab}
-            onClose={() => setShowModal(false)}
+            onClose={() => { setShowModal(false); }}
             onSave={handleCreate}
           />
         )}
