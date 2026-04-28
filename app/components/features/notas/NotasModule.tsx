@@ -208,13 +208,10 @@ function NoteCard({
         </div>
       )}
 
-      {/* Actions — visible on hover; stopPropagation so they don't open the preview */}
-      <div
-        className="absolute top-2.5 right-2.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150"
-        onClick={e => e.stopPropagation()}
-      >
+      {/* Actions — visible on hover; each button stops propagation individually */}
+      <div className="absolute top-2.5 right-2.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
         <button
-          onClick={() => onPin(note)}
+          onClick={(e) => { e.stopPropagation(); onPin(note); }}
           title={note.isPinned ? 'Desafixar' : 'Fixar no topo'}
           className="p-1.5 rounded-lg hover:bg-black/10 dark:hover:bg-white/20 transition-colors"
         >
@@ -223,7 +220,7 @@ function NoteCard({
             : <Pin className="w-3.5 h-3.5 text-black/55 dark:text-white/75" />}
         </button>
         <button
-          onClick={() => onEdit(note)}
+          onClick={(e) => { e.stopPropagation(); onEdit(note); }}
           title="Editar"
           className="p-1.5 rounded-lg hover:bg-black/10 dark:hover:bg-white/20 transition-colors"
         >
@@ -231,7 +228,7 @@ function NoteCard({
         </button>
         {!confirmDelete ? (
           <button
-            onClick={() => setConfirmDelete(true)}
+            onClick={(e) => { e.stopPropagation(); setConfirmDelete(true); }}
             title="Excluir"
             className="p-1.5 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors"
           >
@@ -240,14 +237,14 @@ function NoteCard({
         ) : (
           <div className="flex items-center gap-0.5 bg-black/10 dark:bg-white/10 rounded-lg px-1">
             <button
-              onClick={() => onDelete(note)}
+              onClick={(e) => { e.stopPropagation(); onDelete(note); }}
               title="Confirmar exclusão"
               className="p-1.5 rounded-lg hover:bg-red-100 dark:hover:bg-red-800/50 transition-colors"
             >
               <Check className="w-3.5 h-3.5 text-red-500 dark:text-red-400" />
             </button>
             <button
-              onClick={() => setConfirmDelete(false)}
+              onClick={(e) => { e.stopPropagation(); setConfirmDelete(false); }}
               title="Cancelar"
               className="p-1.5 rounded-lg hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
             >
@@ -290,7 +287,13 @@ function NoteCard({
       )}
 
       {/* Content — grows to fill card, fades out at the bottom when overflowing */}
-      <div className="relative flex-1 min-h-0 overflow-hidden">
+      <div
+        className="relative flex-1 min-h-0 overflow-hidden"
+        style={{
+          maskImage: 'linear-gradient(to bottom, black 55%, transparent 100%)',
+          WebkitMaskImage: 'linear-gradient(to bottom, black 55%, transparent 100%)',
+        }}
+      >
         <p className={cn(
           'text-sm leading-relaxed whitespace-pre-wrap break-words h-full',
           note.title ? 'text-black/70 dark:text-white/80' : cn('font-medium', color.text),
@@ -298,8 +301,6 @@ function NoteCard({
         )}>
           {note.content}
         </p>
-        {/* Fade gradient — inherits the card background color */}
-        <div className="absolute bottom-0 left-0 right-0 h-8 pointer-events-none bg-gradient-to-t from-inherit to-transparent" />
       </div>
 
       {/* Footer */}
