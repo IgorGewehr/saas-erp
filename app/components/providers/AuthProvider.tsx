@@ -36,6 +36,9 @@ interface AuthContextType {
   sectors: Sector[];
   userSectorIds: string[];
   isLoading: boolean;
+  // true as soon as onAuthStateChanged fires (Firebase Auth cache ~100ms).
+  // Use this — not isLoading — to decide when to show the app shell.
+  isAuthReady: boolean;
   isAuthenticated: boolean;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (email: string, password: string, name: string, inviteCode?: string) => Promise<void>;
@@ -71,6 +74,8 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
   const [business, setBusiness]       = useState<Business | null>(null);
   const [sectors, setSectors]         = useState<Sector[]>([]);
   const [isLoading, setIsLoading]     = useState(true);
+  // Becomes true as soon as onAuthStateChanged fires (whether logged in or not).
+  const [isAuthReady, setIsAuthReady] = useState(false);
 
   // Derived: sector IDs the current user belongs to
   const userSectorIds = React.useMemo(() => {
@@ -95,6 +100,8 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
       unsubBiz = null;
 
       setFirebaseUser(fbUser);
+      // Auth state is now known — unblock the app shell regardless of Firestore load state.
+      setIsAuthReady(true);
 
       if (!fbUser) {
         setUser(null);
@@ -373,7 +380,7 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider value={{
-      user, firebaseUser, business, sectors, userSectorIds, isLoading,
+      user, firebaseUser, business, sectors, userSectorIds, isLoading, isAuthReady,
       isAuthenticated: !!user,
       signIn, signUp, signInWithGoogle, signOut, updateUserProfile, refreshUser,
     }}>

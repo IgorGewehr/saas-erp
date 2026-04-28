@@ -7,7 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { getInitials, formatCurrency } from '@/lib/utils/format';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
-import { collection, query, where, orderBy, limit, getDocs, onSnapshot, updateDoc, doc, writeBatch } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, getDocs, onSnapshot, updateDoc, doc, writeBatch, getDocsFromCache } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useQuery } from '@tanstack/react-query';
 import type { User as UserType, Product, Appointment, CRMContact, AppNotification } from '@/lib/types';
@@ -81,27 +81,36 @@ function relativeTime(dateStr?: string | null, t?: (key: string, opts?: Record<s
 function TeamPresencePanel() {
   const { t } = useTranslation();
   const { user, business } = useAuth();
-  const [open, setOpen]       = useState(false);
-  const [members, setMembers] = useState<UserType[]>([]);
+  const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
-  // Live subscription — updates in real-time
-  useEffect(() => {
-    if (!business?.id) return;
-    const q = query(collection(db, 'users'), where('businessId', '==', business.id));
-    const unsub = onSnapshot(q, (snap) => {
+  // Poll every 60s (aligned with the heartbeat interval — presence data is only
+  // accurate to within 60s anyway, so there's no value in a persistent socket here).
+  const { data: members = [] } = useQuery({
+    queryKey: ['team-presence', business?.id],
+    queryFn: async () => {
+      const q = query(collection(db, 'users'), where('businessId', '==', business!.id));
+      // Serve from IndexedDB cache first for instant paint, then validate against network
+      let snap;
+      try {
+        snap = await getDocsFromCache(q);
+        if (snap.empty) snap = await getDocs(q);
+      } catch {
+        snap = await getDocs(q);
+      }
       const data = snap.docs.map(d => ({ ...d.data(), id: d.id }) as UserType);
-      // Sort: online first, then by name
       data.sort((a, b) => {
         const ao = isOnline(a) ? 1 : 0;
         const bo = isOnline(b) ? 1 : 0;
         if (ao !== bo) return bo - ao;
         return a.name.localeCompare(b.name);
       });
-      setMembers(data);
-    });
-    return () => unsub();
-  }, [business?.id]);
+      return data;
+    },
+    enabled: !!business?.id,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
 
   // Close on outside click
   useEffect(() => {
