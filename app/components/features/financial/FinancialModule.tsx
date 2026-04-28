@@ -850,8 +850,9 @@ export default function FinancialModule() {
         updatedAt: now,
         // Use paymentDate as fallback when dueDate is missing (e.g. already-paid transaction being made recurrent)
         recurrence: (() => {
-          const baseDate = formDueDate || formPaymentDate;
-          if (!formRecurrence || !baseDate || formInstallments > 1) return null;
+          if (!formRecurrence || formInstallments > 1) return null;
+          // Fall back to today when neither dueDate nor paymentDate is set
+          const baseDate = formDueDate || formPaymentDate || new Date().toISOString().slice(0, 10);
           return {
             frequency: formRecurrenceFrequency,
             nextDueDate: computeNextDueDate(baseDate, formRecurrenceFrequency, formRecurrenceDay ? parseInt(formRecurrenceDay, 10) : undefined),
