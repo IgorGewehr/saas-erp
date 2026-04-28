@@ -57,7 +57,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import type { SidebarPrefs, SidebarSectionPref } from '@/lib/types';
+import { ROLE_HIERARCHY } from '@/lib/types';
+import type { SidebarPrefs, SidebarSectionPref, UseCase, UserRole } from '@/lib/types';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -87,6 +88,40 @@ const ITEM_LABELS: Record<string, string> = {
   Configurações: 'Configurações', Kanban: 'Kanban', Relatórios: 'Relatórios',
   Pedidos: 'Pedidos', Cardápio: 'Cardápio', Senhas: 'Senhas',
 };
+
+// ─── Access restrictions (mirrors Sidebar.tsx filterItems logic) ──────────────
+
+const ITEM_RESTRICTIONS: Partial<Record<string, {
+  enterpriseOnly?: boolean;
+  useCases?: UseCase[];
+  minRole?: UserRole;
+}>> = {
+  CRM:        { enterpriseOnly: true, useCases: ['pedidos', 'servicos', 'simples'] },
+  Agenda:     { useCases: ['servicos'] },
+  Kanban:     { enterpriseOnly: true },
+  Pedidos:    { useCases: ['pedidos'] },
+  'Cardápio': { useCases: ['pedidos'] },
+  NFSe:       { useCases: ['pedidos', 'servicos', 'simples'], minRole: 'manager' as UserRole },
+  NFCe:       { useCases: ['pedidos', 'servicos', 'simples'], minRole: 'manager' as UserRole },
+  NFe:        { useCases: ['pedidos', 'servicos', 'simples'], minRole: 'manager' as UserRole },
+  Senhas:     { minRole: 'admin' as UserRole },
+};
+
+function isItemAccessible(id: string, isEnterprise: boolean, useCase: UseCase, roleValue: number): boolean {
+  const r = ITEM_RESTRICTIONS[id];
+  if (!r) return true;
+  if (r.enterpriseOnly && !isEnterprise) return false;
+  if (r.useCases && !r.useCases.includes(useCase)) return false;
+  if (r.minRole && roleValue < ROLE_HIERARCHY[r.minRole]) return false;
+  return true;
+}
+
+function computeDefaultSections(isEnterprise: boolean, useCase: UseCase, roleValue: number): SidebarSectionPref[] {
+  return DEFAULT_SECTIONS.map(s => ({
+    ...s,
+    items: s.items.filter(id => isItemAccessible(id, isEnterprise, useCase, roleValue)),
+  })).filter(s => s.items.length > 0);
+}
 
 // ─── Drag ID helpers ──────────────────────────────────────────────────────────
 
@@ -299,9 +334,15 @@ function SortableSection({
 // ─── Main SidebarEditorTab ────────────────────────────────────────────────────
 
 export default function SidebarEditorTab() {
-  const { user, updateUserProfile } = useAuth();
+  const { user, business, updateUserProfile } = useAuth();
+  const isEnterprise = !!business?.enterprise?.isEnabled;
+  const currentUseCase: UseCase = (business?.settings?.useCase as UseCase) || 'servicos';
+  const userRoleValue = ROLE_HIERARCHY[user?.role ?? 'viewer'];
+
   const [sections, setSections] = useState<SidebarSectionPref[]>(() =>
-    user?.sidebarPrefs?.sections?.length ? user.sidebarPrefs.sections : DEFAULT_SECTIONS
+    user?.sidebarPrefs?.sections?.length
+      ? user.sidebarPrefs.sections
+      : computeDefaultSections(isEnterprise, currentUseCase, userRoleValue)
   );
   const [hiddenItems, setHiddenItems] = useState<Set<string>>(() =>
     new Set(user?.sidebarPrefs?.hiddenItems ?? [])
@@ -310,13 +351,15 @@ export default function SidebarEditorTab() {
   const [saved, setSaved] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
 
-  // Reset local state when user prefs change externally
+  // Sync with server prefs (multi-device) and recompute defaults when access context changes
   useEffect(() => {
     if (user?.sidebarPrefs?.sections?.length) {
       setSections(user.sidebarPrefs.sections);
       setHiddenItems(new Set(user.sidebarPrefs.hiddenItems ?? []));
+    } else {
+      setSections(computeDefaultSections(isEnterprise, currentUseCase, userRoleValue));
     }
-  }, [user?.uid]); // only on user change, not on every update
+  }, [user?.uid, user?.sidebarPrefs, isEnterprise, currentUseCase, userRoleValue]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -389,7 +432,7 @@ export default function SidebarEditorTab() {
 
   // ── Mutations ──────────────────────────────────────────────────────────────
 
-  const toggleHidden = (itemId: string) => {
+  const toggleHidden = useCallback((itemId: string) => {
     if (PROTECTED_ITEMS.has(itemId)) return;
     setHiddenItems(prev => {
       const next = new Set(prev);
@@ -397,37 +440,44 @@ export default function SidebarEditorTab() {
       else next.add(itemId);
       return next;
     });
-  };
+  }, []);
 
-  const renameSection = (key: string, newTitle: string) => {
+  const renameSection = useCallback((key: string, newTitle: string) => {
     setSections(prev => prev.map(s => s.key === key ? { ...s, title: newTitle } : s));
-  };
+  }, []);
 
-  const deleteSection = (key: string) => {
+  const deleteSection = useCallback((key: string) => {
     setSections(prev => {
       const target = prev.find(s => s.key === key);
       if (!target) return prev;
-      // Move items to first built-in section
       const orphans = target.items;
-      return prev
-        .filter(s => s.key !== key)
-        .map((s, i) => i === 0 ? { ...s, items: [...s.items, ...orphans] } : s);
+      const remaining = prev.filter(s => s.key !== key);
+      // Prefer built-in sections in priority order for receiving orphaned items
+      const PREFERRED = ['principal', 'gestao', 'fiscal', 'sistema'];
+      const destIdx = PREFERRED.reduce<number>((found, k) => {
+        if (found !== -1) return found;
+        const i = remaining.findIndex(s => s.key === k);
+        return i !== -1 ? i : -1;
+      }, -1);
+      return remaining.map((s, i) =>
+        i === (destIdx !== -1 ? destIdx : 0) ? { ...s, items: [...s.items, ...orphans] } : s
+      );
     });
-  };
+  }, []);
 
-  const toggleCollapse = (key: string) => {
+  const toggleCollapse = useCallback((key: string) => {
     setSections(prev => prev.map(s => s.key === key ? { ...s, isCollapsed: !s.isCollapsed } : s));
-  };
+  }, []);
 
-  const addSection = () => {
+  const addSection = useCallback(() => {
     const newKey = `custom_${Date.now()}`;
     setSections(prev => [...prev, { key: newKey, title: 'Nova Seção', isCollapsed: false, items: [] }]);
-  };
+  }, []);
 
-  const resetToDefault = () => {
-    setSections(DEFAULT_SECTIONS);
+  const resetToDefault = useCallback(() => {
+    setSections(computeDefaultSections(isEnterprise, currentUseCase, userRoleValue));
     setHiddenItems(new Set());
-  };
+  }, [isEnterprise, currentUseCase, userRoleValue]);
 
   const handleSave = async () => {
     setSaving(true);
