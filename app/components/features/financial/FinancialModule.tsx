@@ -59,6 +59,8 @@ import {
   FileText,
   Image as ImageIcon,
   XCircle,
+  PauseCircle,
+  PlayCircle,
   CalendarDays,
   ChevronsRight,
   Lock,
@@ -154,18 +156,22 @@ const inputSx = { '& .MuiOutlinedInput-root': { borderRadius: '12px' } };
 function computeNextDueDate(currentDue: string, frequency: string, dayOfMonth?: number): string {
   const d = new Date(currentDue + 'T00:00:00');
   switch (frequency) {
-    case 'weekly':    d.setDate(d.getDate() + 7); break;
-    case 'biweekly':  d.setDate(d.getDate() + 14); break;
-    case 'monthly':   
-      d.setMonth(d.getMonth() + 1); 
+    case 'weekly':      d.setDate(d.getDate() + 7); break;
+    case 'biweekly':    d.setDate(d.getDate() + 14); break;
+    case 'monthly':
+      d.setMonth(d.getMonth() + 1);
       if (dayOfMonth) d.setDate(dayOfMonth);
       break;
-    case 'quarterly': 
-      d.setMonth(d.getMonth() + 3); 
+    case 'quarterly':
+      d.setMonth(d.getMonth() + 3);
       if (dayOfMonth) d.setDate(dayOfMonth);
       break;
-    case 'yearly':    
-      d.setFullYear(d.getFullYear() + 1); 
+    case 'semiannual':
+      d.setMonth(d.getMonth() + 6);
+      if (dayOfMonth) d.setDate(dayOfMonth);
+      break;
+    case 'yearly':
+      d.setFullYear(d.getFullYear() + 1);
       if (dayOfMonth) d.setDate(dayOfMonth);
       break;
   }
@@ -177,6 +183,7 @@ const RECURRENCE_LABELS: Record<string, string> = {
   biweekly: 'Quinzenal',
   monthly: 'Mensal',
   quarterly: 'Trimestral',
+  semiannual: 'Semestral',
   yearly: 'Anual',
 };
 
@@ -316,7 +323,7 @@ export default function FinancialModule() {
   const [formInstallments, setFormInstallments] = useState(1);
   const [formInstallmentInterval, setFormInstallmentInterval] = useState<'monthly' | 'weekly'>('monthly');
   const [formRecurrence, setFormRecurrence] = useState(false);
-  const [formRecurrenceFrequency, setFormRecurrenceFrequency] = useState<'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'yearly'>('monthly');
+  const [formRecurrenceFrequency, setFormRecurrenceFrequency] = useState<'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'semiannual' | 'yearly'>('monthly');
   const [formRecurrenceEndDate, setFormRecurrenceEndDate] = useState('');
   const [formRecurrenceDay, setFormRecurrenceDay] = useState<string>('');
   const [formRecurrenceLabel, setFormRecurrenceLabel] = useState<string>('');
@@ -689,13 +696,52 @@ export default function FinancialModule() {
   }, [business?.id, queryClient]);
 
   const handleMarkRecurringPaid = useCallback(async (txId: string) => {
+    const tx = transactions.find(t => t.id === txId);
+    const rec = tx?.recurrence;
+    const now = new Date().toISOString();
+    const today = now.slice(0, 10);
+
+    if (rec?.isActive && rec.nextDueDate && rec.frequency) {
+      const nextDate = computeNextDueDate(rec.nextDueDate, rec.frequency, rec.dayOfMonth);
+      const seriesEnds = rec.endDate && nextDate > rec.endDate;
+      await updateDoc(doc(db, 'transactions', txId), {
+        status: 'pago',
+        paymentDate: today,
+        updatedAt: now,
+        'recurrence.nextDueDate': nextDate,
+        ...(seriesEnds ? { 'recurrence.isActive': false } : {}),
+      });
+    } else {
+      await updateDoc(doc(db, 'transactions', txId), {
+        status: 'pago',
+        paymentDate: today,
+        updatedAt: now,
+      });
+    }
+    queryClient.invalidateQueries({ queryKey: ['transactions', business?.id] });
+  }, [business?.id, queryClient, transactions]);
+
+  const handleResumeRecurrence = useCallback(async (txId: string) => {
     await updateDoc(doc(db, 'transactions', txId), {
-      status: 'pago',
-      paymentDate: new Date().toISOString().slice(0, 10),
+      'recurrence.isActive': true,
       updatedAt: new Date().toISOString(),
     });
     queryClient.invalidateQueries({ queryKey: ['transactions', business?.id] });
   }, [business?.id, queryClient]);
+
+  const handleSkipRecurrence = useCallback(async (txId: string) => {
+    const tx = transactions.find(t => t.id === txId);
+    const rec = tx?.recurrence;
+    if (!rec?.nextDueDate || !rec.frequency) return;
+    const nextDate = computeNextDueDate(rec.nextDueDate, rec.frequency, rec.dayOfMonth);
+    const seriesEnds = rec.endDate && nextDate > rec.endDate;
+    await updateDoc(doc(db, 'transactions', txId), {
+      'recurrence.nextDueDate': nextDate,
+      updatedAt: new Date().toISOString(),
+      ...(seriesEnds ? { 'recurrence.isActive': false } : {}),
+    });
+    queryClient.invalidateQueries({ queryKey: ['transactions', business?.id] });
+  }, [business?.id, queryClient, transactions]);
 
   const handleSaveAlerts = useCallback(async () => {
     if (!business?.id) return;
@@ -1337,7 +1383,9 @@ export default function FinancialModule() {
                 showBalances={showBalances}
                 onEdit={openEditForm}
                 onPause={handlePauseRecurrence}
+                onResume={handleResumeRecurrence}
                 onMarkPaid={handleMarkRecurringPaid}
+                onSkip={handleSkipRecurrence}
               />
             )}
 
@@ -1646,7 +1694,7 @@ export default function FinancialModule() {
                         sx={inputSx}
                       />
                     </div>
-                    {['monthly', 'quarterly', 'yearly'].includes(formRecurrenceFrequency) && (
+                    {['monthly', 'quarterly', 'semiannual', 'yearly'].includes(formRecurrenceFrequency) && (
                       <div className="grid grid-cols-2 gap-3 bg-slate-50 dark:bg-gray-800/50 p-3 rounded-xl border border-slate-100 dark:border-gray-800">
                         <TextField
                           label="Nome da Recorrência (Opcional)"
@@ -6222,22 +6270,32 @@ function RecurringContent({
   showBalances,
   onEdit,
   onPause,
+  onResume,
   onMarkPaid,
+  onSkip,
 }: {
   transactions: Transaction[];
   showBalances: boolean;
   onEdit: (tx: Transaction) => void;
   onPause: (txId: string) => Promise<void>;
+  onResume: (txId: string) => Promise<void>;
   onMarkPaid: (txId: string) => Promise<void>;
+  onSkip: (txId: string) => Promise<void>;
 }) {
   const [filter, setFilter] = useState<RecurringFilter>('all');
   const [pausingId, setPausingId] = useState<string | null>(null);
+  const [resumingId, setResumingId] = useState<string | null>(null);
   const [payingId, setPayingId] = useState<string | null>(null);
+  const [skippingId, setSkippingId] = useState<string | null>(null);
 
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   const allRecurrences = useMemo(() =>
     transactions.filter(t => t.recurrence?.isActive)
+  , [transactions]);
+
+  const pausedRecurrences = useMemo(() =>
+    transactions.filter(t => t.recurrence && t.recurrence.isActive === false)
   , [transactions]);
 
   const filteredRecurrences = useMemo(() => {
@@ -6281,7 +6339,7 @@ function RecurringContent({
     if (!dateStr) return { color: 'text-slate-500', bg: 'bg-slate-100 dark:bg-gray-800', border: 'border-slate-200 dark:border-gray-700' };
     if (dateStr < todayStr) return { color: 'text-red-600 dark:text-red-400', bg: 'bg-red-50 dark:bg-red-900/20', border: 'border-red-200 dark:border-red-800' };
     const diffDays = Math.ceil((new Date(dateStr + 'T00:00:00').getTime() - new Date(todayStr + 'T00:00:00').getTime()) / 86400000);
-    if (diffDays <= 2) return { color: 'text-red-600 dark:text-red-400', bg: 'bg-red-50 dark:bg-red-900/20', border: 'border-red-200 dark:border-red-800' };
+    if (diffDays <= 3) return { color: 'text-red-600 dark:text-red-400', bg: 'bg-red-50 dark:bg-red-900/20', border: 'border-red-200 dark:border-red-800' };
     if (diffDays <= 7) return { color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-900/20', border: 'border-amber-200 dark:border-amber-800' };
     return { color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-900/20', border: 'border-emerald-200 dark:border-emerald-800' };
   };
@@ -6291,9 +6349,19 @@ function RecurringContent({
     try { await onPause(tx.id); } finally { setPausingId(null); }
   };
 
+  const handleResume = async (tx: Transaction) => {
+    setResumingId(tx.id);
+    try { await onResume(tx.id); } finally { setResumingId(null); }
+  };
+
   const handlePay = async (tx: Transaction) => {
     setPayingId(tx.id);
     try { await onMarkPaid(tx.id); } finally { setPayingId(null); }
+  };
+
+  const handleSkip = async (tx: Transaction) => {
+    setSkippingId(tx.id);
+    try { await onSkip(tx.id); } finally { setSkippingId(null); }
   };
 
   const FILTER_LABELS: Record<RecurringFilter, string> = { all: 'Todas', '7d': '7 dias', '15d': '15 dias', '30d': '30 dias' };
@@ -6373,6 +6441,16 @@ function RecurringContent({
                     className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-gray-300 hover:bg-slate-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
                   >
                     <Edit3 size={14} />
+                  </button>
+
+                  {/* Pular ocorrência */}
+                  <button
+                    onClick={() => handleSkip(tx)}
+                    disabled={skippingId === tx.id}
+                    title="Pular este vencimento (avança para o próximo sem quitar)"
+                    className="p-1.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    {skippingId === tx.id ? <Loader2 size={14} className="animate-spin" /> : <ChevronRight size={14} />}
                   </button>
 
                   {/* Pausar */}
@@ -6465,6 +6543,59 @@ function RecurringContent({
             icon={<ArrowUpRight size={16} className="text-emerald-500" />}
           />
         </>
+      )}
+
+      {/* Paused recurrences */}
+      {pausedRecurrences.length > 0 && (
+        <div className="bg-white dark:bg-gray-900 border border-dashed border-slate-200 dark:border-gray-700 rounded-2xl overflow-hidden">
+          <div className="px-6 py-3 border-b border-slate-100 dark:border-gray-800 flex items-center gap-2">
+            <PauseCircle size={16} className="text-slate-400 dark:text-gray-500" />
+            <h3 className="text-sm font-display font-bold text-slate-500 dark:text-gray-400">Pausadas</h3>
+            <span className="ml-auto text-xs text-slate-400 dark:text-gray-500 font-medium">{pausedRecurrences.length} recorrência{pausedRecurrences.length !== 1 ? 's' : ''}</span>
+          </div>
+          <div className="divide-y divide-slate-50 dark:divide-gray-800">
+            {pausedRecurrences.map((tx) => (
+              <div key={tx.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-5 py-3.5 opacity-60">
+                <div className="flex items-center gap-3 flex-1 min-w-0">
+                  <div className="w-14 h-12 rounded-xl flex items-center justify-center border shrink-0 flex-col gap-0.5 bg-slate-100 dark:bg-gray-800 border-slate-200 dark:border-gray-700">
+                    <PauseCircle size={16} className="text-slate-400 dark:text-gray-500" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-slate-700 dark:text-gray-300 truncate">
+                      {tx.recurrence?.label || tx.description}
+                    </p>
+                    <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                      <span className="text-[11px] text-slate-400 dark:text-gray-500 bg-slate-100 dark:bg-gray-800 px-1.5 py-0.5 rounded-md">
+                        {RECURRENCE_LABELS[tx.recurrence?.frequency || 'monthly']}
+                      </span>
+                      {tx.category && <span className="text-[11px] text-slate-400 dark:text-gray-500">{tx.category}</span>}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <div className="text-right mr-2">
+                    <p className="text-xs text-slate-400 dark:text-gray-500 leading-none mb-0.5">Valor</p>
+                    <p className={cn('text-sm font-bold', tx.type === 'receita' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+                      {tx.type === 'receita' ? '+' : '-'}{showBalances ? formatCurrency(tx.amount) : 'R$ ****'}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => handleResume(tx)}
+                    disabled={resumingId === tx.id}
+                    title="Retomar recorrência"
+                    className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors disabled:opacity-50 opacity-100"
+                  >
+                    {resumingId === tx.id ? <Loader2 size={12} className="animate-spin" /> : <PlayCircle size={12} />}
+                    Retomar
+                  </button>
+                  <button onClick={() => onEdit(tx)} title="Editar" className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-gray-300 hover:bg-slate-100 dark:hover:bg-gray-800 rounded-lg transition-colors opacity-100">
+                    <Edit3 size={14} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );

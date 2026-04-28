@@ -310,6 +310,23 @@ export interface BusinessSettings {
   paymentGateway?: PaymentGatewayConfig;
   /** Política de no-show */
   noShowPolicy?: NoShowPolicy;
+  /** Pipeline do CRM (estágios customizáveis) */
+  crmPipeline?: CRMPipelineConfig;
+}
+
+/** Estágio customizável do pipeline de leads */
+export interface CRMStageConfig {
+  id: LeadStatus;          // ID canônico (igual ao valor de LeadStatus)
+  name: string;            // nome exibido (editável pelo usuário)
+  color: string;           // hex
+  order: number;
+  isVisible?: boolean;     // false = estágio oculto do kanban
+  isWon?: boolean;         // marca este estágio como "convertido"
+  isLost?: boolean;        // marca este estágio como "perdido"
+}
+
+export interface CRMPipelineConfig {
+  stages: CRMStageConfig[];
 }
 
 export interface AiAgentSettings {
@@ -648,7 +665,7 @@ export interface Sale {
 export type TransactionType = 'receita' | 'despesa';
 export type TransactionStatus = 'pendente' | 'pago' | 'atrasado' | 'cancelado';
 
-export type RecurrenceFrequency = 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'yearly';
+export type RecurrenceFrequency = 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'semiannual' | 'yearly';
 
 export interface TransactionRecurrence {
   frequency: RecurrenceFrequency;
