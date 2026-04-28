@@ -395,8 +395,9 @@ function SidebarContent({
     }
 
     const prefs = user?.sidebarPrefs;
-    if (!prefs?.sections?.length) {
-      // No prefs — use hardcoded defaults
+
+    // No prefs saved at all — use hardcoded defaults
+    if (!prefs) {
       return menuSections.map(s => ({
         key: s.key,
         title: s.title,
@@ -406,6 +407,17 @@ function SidebarContent({
     }
 
     const hiddenSet = new Set(prefs.hiddenItems ?? []);
+
+    // Prefs exist but sections not set yet — use defaults with hidden filter applied
+    if (!prefs.sections?.length) {
+      return menuSections.map(s => ({
+        key: s.key,
+        title: s.title,
+        isCollapsed: false,
+        items: filterItems(s.items).filter(item => PROTECTED.has(item.id) || !hiddenSet.has(item.id)),
+      })).filter(s => s.items.length > 0);
+    }
+
     const assignedIds = new Set<string>();
 
     const sections = prefs.sections.map(ps => {
@@ -435,19 +447,31 @@ function SidebarContent({
   const handleToggleSectionCollapse = useCallback(async (sectionKey: string) => {
     if (!user?.uid) return;
     const prefs = user.sidebarPrefs;
-    if (!prefs?.sections?.length) return;
-    const updatedSections = prefs.sections.map((s: SidebarSectionPref) =>
-      s.key === sectionKey ? { ...s, isCollapsed: !s.isCollapsed } : s
-    );
-    // Optimistic update via updateUserProfile would reload the whole user doc —
-    // use direct updateDoc for this lightweight toggle
+
+    let updatedSections: SidebarSectionPref[];
+    if (!prefs?.sections?.length) {
+      // Bootstrap prefs from defaults, toggling the target section
+      updatedSections = menuSections
+        .map(s => ({
+          key: s.key,
+          title: s.title,
+          isCollapsed: s.key === sectionKey,
+          items: filterItems(s.items).map(item => item.id),
+        }))
+        .filter(s => s.items.length > 0);
+    } else {
+      updatedSections = prefs.sections.map((s: SidebarSectionPref) =>
+        s.key === sectionKey ? { ...s, isCollapsed: !s.isCollapsed } : s
+      );
+    }
+
     try {
       await updateDoc(doc(db, 'users', user.uid), {
         'sidebarPrefs.sections': updatedSections,
         updatedAt: new Date().toISOString(),
       });
-    } catch { /* ignore — UI already reflects default */ }
-  }, [user?.uid, user?.sidebarPrefs]);
+    } catch { /* ignore */ }
+  }, [user?.uid, user?.sidebarPrefs, menuSections, filterItems]);
 
   return (
     <div
@@ -522,9 +546,7 @@ function SidebarContent({
               title={section.title}
               isCollapsed={collapsed}
               isSectionCollapsed={section.isCollapsed}
-              onToggle={user?.sidebarPrefs?.sections?.length
-                ? () => handleToggleSectionCollapse(section.key)
-                : undefined}
+              onToggle={() => handleToggleSectionCollapse(section.key)}
             />
 
             <AnimatePresence initial={false}>
