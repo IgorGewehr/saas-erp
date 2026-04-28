@@ -442,16 +442,21 @@ export default function SidebarEditorTab() {
     if (!activeInfo || !overInfo) return;
     if (activeInfo.type !== 'item') return; // section moves handled in dragEnd
 
+    const itemId = activeInfo.itemId!;
     const toKey = overInfo.sectionKey;
 
-    // Remove item from ALL sections first (idempotent — handles multiple firings
-    // during a single drag gesture without producing duplicates)
-    const itemId = activeInfo.itemId!;
     setSections(prev => {
+      // If the item is already in the target section return prev unchanged.
+      // Returning the same reference tells React nothing changed → no re-render
+      // → dnd-kit doesn't recalculate → no infinite loop.
+      const currentSection = prev.find(s => s.items.includes(itemId));
+      if (currentSection?.key === toKey) return prev;
+
+      // Remove from all sections (idempotent across multiple firings)
       const next = prev.map(s => ({ ...s, items: s.items.filter(id => id !== itemId) }));
       const to = next.find(s => s.key === toKey);
       if (!to) return prev;
-      // Insert at the position of the over item, or at end of section
+
       const overItemId = overInfo.itemId;
       const insertIdx = overItemId ? to.items.indexOf(overItemId) : to.items.length;
       to.items.splice(insertIdx < 0 ? to.items.length : insertIdx, 0, itemId);
