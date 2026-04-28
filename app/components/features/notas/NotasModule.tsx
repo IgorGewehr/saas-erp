@@ -17,6 +17,11 @@ import {
   Palette,
   ChevronDown,
   Maximize2,
+  ImageIcon,
+  Paperclip,
+  Loader2,
+  Download,
+  ExternalLink,
 } from 'lucide-react';
 import {
   collection,
@@ -24,18 +29,29 @@ import {
   where,
   orderBy,
   onSnapshot,
-  addDoc,
   updateDoc,
   deleteDoc,
   doc,
+  setDoc,
   serverTimestamp,
 } from 'firebase/firestore';
-import { db } from '@/lib/config/firebase';
+import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
+import { db, storage } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/utils/format';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+interface NoteAttachment {
+  id: string;
+  name: string;
+  url: string;
+  path: string;
+  type: 'image' | 'file';
+  size: number;
+  createdAt: string;
+}
 
 interface Note {
   id: string;
@@ -48,6 +64,7 @@ interface Note {
   color: NoteColor;
   scope: 'personal' | 'team';
   isPinned: boolean;
+  attachments?: NoteAttachment[];
   createdAt: string;
   updatedAt: string;
 }
@@ -245,6 +262,26 @@ function NoteCard({
         <Maximize2 className="w-3 h-3 text-black dark:text-white" />
       </div>
 
+      {/* Image thumbnails — shown when note has images */}
+      {(() => {
+        const imgs = note.attachments?.filter(a => a.type === 'image') ?? [];
+        if (!imgs.length) return null;
+        return (
+          <div className="flex gap-1 mb-2 shrink-0 overflow-hidden rounded-lg">
+            {imgs.slice(0, 3).map((img, i) => (
+              <div key={img.id} className="relative flex-1 min-w-0">
+                <img src={img.url} alt={img.name} className="w-full h-12 object-cover" style={{ borderRadius: i === 0 ? '8px 0 0 8px' : i === imgs.length - 1 || i === 2 ? '0 8px 8px 0' : '0' }} />
+              </div>
+            ))}
+            {imgs.length > 3 && (
+              <div className="w-8 h-12 bg-black/20 dark:bg-white/20 flex items-center justify-center text-[10px] font-bold text-white dark:text-black rounded-r-lg flex-shrink-0">
+                +{imgs.length - 3}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Title */}
       {note.title && (
         <h3 className={cn('font-semibold text-sm mb-1.5 pr-16 leading-snug break-words line-clamp-2 shrink-0', color.text)}>
@@ -292,6 +329,7 @@ interface NoteFormData {
   content: string;
   color: NoteColor;
   scope: 'personal' | 'team';
+  attachments: NoteAttachment[];
 }
 
 const NOTE_MODAL_SIZE_KEY = 'notas_modal_size';
@@ -311,11 +349,15 @@ function getSavedModalSize(): { w: number; h: number } {
 
 function NoteModal({
   initial,
+  noteId,
+  businessId,
   tab,
   onClose,
   onSave,
 }: {
   initial?: Note;
+  noteId: string;
+  businessId: string;
   tab: ActiveTab;
   onClose: () => void;
   onSave: (data: NoteFormData) => Promise<void>;
@@ -325,12 +367,61 @@ function NoteModal({
     content: initial?.content ?? '',
     color: initial?.color ?? 'yellow',
     scope: initial?.scope ?? tab,
+    attachments: initial?.attachments ?? [],
   });
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const contentRef = useRef<HTMLTextAreaElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const backdropMouseDown = useRef<{ x: number; y: number } | null>(null);
   const savedSize = getSavedModalSize();
+
+  const handleFilePick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    if (!files.length) return;
+    e.target.value = '';
+
+    const MAX_MB = 10;
+    const valid = files.filter(f => {
+      if (f.size > MAX_MB * 1024 * 1024) { alert(`"${f.name}" excede ${MAX_MB}MB.`); return false; }
+      return true;
+    });
+    if (!valid.length) return;
+
+    setUploading(true);
+    try {
+      const newAtts: NoteAttachment[] = [];
+      for (const file of valid) {
+        const fileId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const path = `businesses/${businessId}/notes/${noteId}/${fileId}_${safeName}`;
+        const sRef = storageRef(storage, path);
+        await uploadBytes(sRef, file);
+        const url = await getDownloadURL(sRef);
+        newAtts.push({
+          id: fileId,
+          name: file.name,
+          url,
+          path,
+          type: file.type.startsWith('image/') ? 'image' : 'file',
+          size: file.size,
+          createdAt: new Date().toISOString(),
+        });
+      }
+      setForm(f => ({ ...f, attachments: [...f.attachments, ...newAtts] }));
+    } catch (err) {
+      console.error('[notas] upload failed:', err);
+      alert('Erro ao enviar arquivo. Tente novamente.');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleRemoveAttachment = async (att: NoteAttachment) => {
+    setForm(f => ({ ...f, attachments: f.attachments.filter(a => a.id !== att.id) }));
+    try { await deleteObject(storageRef(storage, att.path)); } catch { /* ignore — may already be gone */ }
+  };
 
   // Focus textarea on open
   useEffect(() => {
@@ -459,12 +550,72 @@ function NoteModal({
             style={{ outline: 'none', boxShadow: 'none' }}
             className="flex-1 w-full bg-transparent border-0 resize-none text-sm text-black/80 dark:text-white/80 placeholder-black/30 dark:placeholder-white/30 leading-relaxed min-h-0 overflow-y-auto"
           />
+
+          {/* Attachments preview */}
+          {form.attachments.length > 0 && (
+            <div className="flex-shrink-0 border-t border-black/[0.06] dark:border-white/[0.06] pt-2 space-y-1.5">
+              <p className="text-[10px] font-semibold text-black/40 dark:text-white/40 uppercase tracking-wide">
+                {form.attachments.length} anexo{form.attachments.length !== 1 ? 's' : ''}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {form.attachments.map(att => (
+                  <div key={att.id} className="group/att relative">
+                    {att.type === 'image' ? (
+                      <img
+                        src={att.url}
+                        alt={att.name}
+                        className="h-14 w-20 object-cover rounded-xl border border-black/10 dark:border-white/10"
+                      />
+                    ) : (
+                      <div className="h-14 w-20 rounded-xl border border-black/10 dark:border-white/10 bg-black/10 dark:bg-white/10 flex flex-col items-center justify-center gap-1 px-1">
+                        <Paperclip className="w-4 h-4 text-black/40 dark:text-white/40" />
+                        <span className="text-[9px] text-black/40 dark:text-white/40 truncate w-full text-center px-1">{att.name}</span>
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveAttachment(att)}
+                      className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center opacity-0 group-hover/att:opacity-100 transition-opacity shadow-sm"
+                    >
+                      <X className="w-3 h-3 text-white" />
+                    </button>
+                  </div>
+                ))}
+                {uploading && (
+                  <div className="h-14 w-20 rounded-xl border border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5 flex items-center justify-center">
+                    <Loader2 className="w-4 h-4 text-black/40 dark:text-white/40 animate-spin" />
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Footer */}
         <div className="flex items-center justify-between px-5 py-3 flex-shrink-0 border-t border-black/[0.06] dark:border-white/[0.06]">
           <div className="flex items-center gap-2">
             <ColorPicker value={form.color} onChange={c => setForm(f => ({ ...f, color: c }))} />
+
+            {/* Attach files */}
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              title="Adicionar imagem ou arquivo"
+              className="flex items-center gap-1 p-1.5 rounded-lg hover:bg-black/10 dark:hover:bg-white/10 transition-colors disabled:opacity-50"
+            >
+              {uploading
+                ? <Loader2 className="w-3.5 h-3.5 text-black/50 dark:text-white/50 animate-spin" />
+                : <ImageIcon className="w-3.5 h-3.5 text-black/50 dark:text-white/50" />}
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept="image/*,.pdf"
+              onChange={handleFilePick}
+              className="hidden"
+            />
 
             <div className="flex items-center gap-0.5 bg-black/10 dark:bg-white/10 rounded-lg p-0.5">
               <button
@@ -664,8 +815,53 @@ function NotePreviewModal({
           </div>
         </div>
 
-        {/* Content — scrollable, fully selectable */}
-        <div className="flex-1 overflow-y-auto px-6 pb-2">
+        {/* Content + attachments — scrollable */}
+        <div className="flex-1 overflow-y-auto px-6 pb-2 space-y-4">
+          {/* Image gallery */}
+          {(note.attachments?.filter(a => a.type === 'image') ?? []).length > 0 && (
+            <div className="space-y-2">
+              {note.attachments!.filter(a => a.type === 'image').map(img => (
+                <div key={img.id} className="relative group/img rounded-xl overflow-hidden">
+                  <img
+                    src={img.url}
+                    alt={img.name}
+                    className="w-full max-h-72 object-cover"
+                  />
+                  <a
+                    href={img.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={e => e.stopPropagation()}
+                    className="absolute top-2 right-2 p-1.5 bg-black/50 rounded-lg opacity-0 group-hover/img:opacity-100 transition-opacity"
+                    title="Abrir em nova aba"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5 text-white" />
+                  </a>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* File attachments (non-image) */}
+          {(note.attachments?.filter(a => a.type === 'file') ?? []).length > 0 && (
+            <div className="space-y-1">
+              {note.attachments!.filter(a => a.type === 'file').map(f => (
+                <a
+                  key={f.id}
+                  href={f.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={e => e.stopPropagation()}
+                  className="flex items-center gap-2 p-2.5 rounded-xl bg-black/5 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15 transition-colors"
+                >
+                  <Paperclip className="w-4 h-4 text-black/50 dark:text-white/60 shrink-0" />
+                  <span className="text-sm text-black/70 dark:text-white/80 truncate flex-1">{f.name}</span>
+                  <Download className="w-3.5 h-3.5 text-black/40 dark:text-white/50 shrink-0" />
+                </a>
+              ))}
+            </div>
+          )}
+
           <p className={cn(
             'text-sm leading-relaxed whitespace-pre-wrap break-words select-text',
             note.title ? 'text-black/70 dark:text-white/85' : cn('font-medium text-[15px]', color.text),
@@ -707,6 +903,8 @@ export default function NotasModule() {
   const [showModal, setShowModal] = useState(false);
   const [editingNote, setEditingNote] = useState<Note | null>(null);
   const [previewNote, setPreviewNote] = useState<Note | null>(null);
+  // Pre-generated Firestore ID for the next note — enables uploads before saving
+  const pendingNoteId = useRef<string>(doc(collection(db, 'notes')).id);
 
   // ── Firestore subscription ─────────────────────────────────────────────────
   // Single query by businessId only — avoids composite index requirement.
@@ -763,7 +961,8 @@ export default function NotasModule() {
   const handleCreate = async (data: NoteFormData) => {
     if (!business?.id || !user?.uid) return;
     const now = new Date().toISOString();
-    await addDoc(collection(db, 'notes'), {
+    const id = pendingNoteId.current;
+    await setDoc(doc(db, 'notes', id), {
       businessId: business.id,
       authorId: user.uid,
       authorName: user.name,
@@ -772,21 +971,31 @@ export default function NotasModule() {
       content: data.content.trim(),
       color: data.color,
       scope: data.scope,
+      attachments: data.attachments,
       isPinned: false,
       createdAt: now,
       updatedAt: now,
     });
-    // If the note was created on the wrong tab, switch to the right one
+    // Reset pending ID for the next note
+    pendingNoteId.current = doc(collection(db, 'notes')).id;
     if (data.scope !== activeTab) setActiveTab(data.scope);
   };
 
   const handleEdit = async (data: NoteFormData) => {
     if (!editingNote) return;
+    // Delete attachments that were removed during edit
+    const removed = (editingNote.attachments ?? []).filter(
+      a => !data.attachments.find(da => da.id === a.id)
+    );
+    for (const att of removed) {
+      try { await deleteObject(storageRef(storage, att.path)); } catch { /* already gone */ }
+    }
     await updateDoc(doc(db, 'notes', editingNote.id), {
       title: data.title.trim(),
       content: data.content.trim(),
       color: data.color,
       scope: data.scope,
+      attachments: data.attachments,
       updatedAt: new Date().toISOString(),
     });
     setEditingNote(null);
@@ -800,6 +1009,10 @@ export default function NotasModule() {
   };
 
   const handleDelete = async (note: Note) => {
+    // Delete Storage attachments first
+    for (const att of note.attachments ?? []) {
+      try { await deleteObject(storageRef(storage, att.path)); } catch { /* ignore */ }
+    }
     await deleteDoc(doc(db, 'notes', note.id));
   };
 
@@ -950,6 +1163,8 @@ export default function NotasModule() {
         {showModal && (
           <NoteModal
             key="create"
+            noteId={pendingNoteId.current}
+            businessId={business?.id ?? ''}
             tab={activeTab}
             onClose={() => setShowModal(false)}
             onSave={handleCreate}
@@ -963,6 +1178,8 @@ export default function NotasModule() {
           <NoteModal
             key="edit"
             initial={editingNote}
+            noteId={editingNote.id}
+            businessId={business?.id ?? ''}
             tab={activeTab}
             onClose={() => setEditingNote(null)}
             onSave={handleEdit}
