@@ -36,6 +36,19 @@ export const DEFAULT_WORKING_HOURS: WorkingHours = {
   6: { enabled: false, start: '09:00', end: '18:00' },
 };
 
+// ---- Sidebar personalisation ----
+export interface SidebarSectionPref {
+  key: string;           // 'principal' | 'gestao' | 'fiscal' | 'sistema' | UUID for custom sections
+  title: string;         // user-editable display name
+  isCollapsed: boolean;  // per-section vertical collapse
+  items: string[];       // ordered MenuPage IDs visible in this section
+}
+
+export interface SidebarPrefs {
+  sections: SidebarSectionPref[];
+  hiddenItems: string[]; // MenuPage IDs globally hidden (Dashboard & Configurações excluded)
+}
+
 export interface User {
   id: string;
   uid: string;
@@ -50,6 +63,7 @@ export interface User {
   serviceIds?: string[];            // Service IDs this professional offers
   workingHours?: WorkingHours;      // Weekly availability schedule
   commissionRate?: number;          // Commission percentage (0–100). e.g. 30 = 30% of appointment price
+  sidebarPrefs?: SidebarPrefs;      // per-user sidebar customisation
   isActive: boolean;
   isOnline?: boolean;
   userStatus?: UserStatus;

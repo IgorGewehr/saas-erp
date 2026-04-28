@@ -1,13 +1,14 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, updateDoc } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
+import type { SidebarPrefs, SidebarSectionPref } from '@/lib/types';
 import {
   LayoutDashboard,
   Calendar,
@@ -74,6 +75,7 @@ interface MenuItemConfig {
 }
 
 interface MenuSection {
+  key: string;
   title: string;
   items: MenuItemConfig[];
 }
@@ -82,6 +84,7 @@ function useMenuSections(): MenuSection[] {
   const { t } = useTranslation();
   return [
     {
+      key: 'principal',
       title: t('sidebar.sections.principal'),
       items: [
         { id: 'Dashboard', label: t('sidebar.dashboard'), icon: LayoutDashboard },
@@ -94,13 +97,12 @@ function useMenuSections(): MenuSection[] {
       ],
     },
     {
+      key: 'gestao',
       title: t('sidebar.sections.gestao'),
       items: [
         { id: 'Pedidos', label: t('sidebar.pedidos', 'Pedidos'), icon: ClipboardCheck, useCases: ['pedidos'] },
         { id: 'Cardápio', label: t('sidebar.cardapio', 'Cardápio'), icon: UtensilsCrossed, useCases: ['pedidos'] },
         { id: 'Vendas', label: t('sidebar.vendas'), icon: ClipboardList, useCases: ['pedidos', 'servicos', 'simples'] },
-        // Kanban está disponível em todos os modos — útil para organizar tarefas
-        // internas independente do tipo de operação.
         { id: 'Kanban', label: t('sidebar.kanban'), icon: Kanban, enterpriseOnly: true },
         { id: 'Financeiro', label: t('sidebar.financeiro'), icon: DollarSign, useCases: ['pedidos', 'servicos', 'simples'] },
         { id: 'Relatórios', label: t('sidebar.relatorios', 'Relatórios'), icon: BarChart3, useCases: ['pedidos', 'servicos', 'simples'] },
@@ -110,6 +112,7 @@ function useMenuSections(): MenuSection[] {
       ],
     },
     {
+      key: 'fiscal',
       title: t('sidebar.sections.fiscal'),
       items: [
         { id: 'NFSe', label: t('sidebar.nfse'), icon: FileCheck2, useCases: ['pedidos', 'servicos', 'simples'], minRole: 'manager' },
@@ -118,6 +121,7 @@ function useMenuSections(): MenuSection[] {
       ],
     },
     {
+      key: 'sistema',
       title: t('sidebar.sections.sistema'),
       items: [
         { id: 'Configurações', label: t('sidebar.configuracoes'), icon: Settings },
@@ -272,11 +276,21 @@ function MenuItem({
   );
 }
 
-function SectionHeader({ title, isCollapsed }: { title: string; isCollapsed: boolean }) {
+function SectionHeader({
+  title,
+  isCollapsed,
+  isSectionCollapsed,
+  onToggle,
+}: {
+  title: string;
+  isCollapsed: boolean;
+  isSectionCollapsed?: boolean;
+  onToggle?: () => void;
+}) {
   return (
     <div className={cn(
       'flex items-center',
-      isCollapsed ? 'mx-3 my-2' : 'gap-2.5 px-3 pt-1 pb-2'
+      isCollapsed ? 'mx-3 my-2' : 'gap-1.5 px-2 pt-1 pb-2'
     )}>
       <AnimatePresence initial={false}>
         {!isCollapsed && (
@@ -300,6 +314,19 @@ function SectionHeader({ title, isCollapsed }: { title: string; isCollapsed: boo
             : 'linear-gradient(to right, rgba(239,68,68,0.38) 0%, rgba(239,68,68,0.1) 45%, transparent 100%)',
         }}
       />
+      {/* Per-section collapse toggle — only in expanded sidebar */}
+      {!isCollapsed && onToggle && (
+        <button
+          onClick={onToggle}
+          className="ml-1 p-0.5 text-red-400/50 hover:text-red-500 dark:hover:text-red-400 transition-colors rounded"
+          title={isSectionCollapsed ? 'Expandir seção' : 'Recolher seção'}
+        >
+          <ChevronRight
+            size={11}
+            className={cn('transition-transform duration-200', !isSectionCollapsed && 'rotate-90')}
+          />
+        </button>
+      )}
     </div>
   );
 }
@@ -343,7 +370,7 @@ function SidebarContent({
     refetchInterval: 10 * 60 * 1000,
   });
 
-  const filterItems = (items: MenuItemConfig[]) =>
+  const filterItems = useCallback((items: MenuItemConfig[]) =>
     items.filter((item) => {
       if (item.enterpriseOnly && !isEnterprise) return false;
       if (item.useCases && !item.useCases.includes(currentUseCase)) return false;
@@ -353,7 +380,74 @@ function SidebarContent({
       item.id === 'Financeiro' && urgentRecurringCount > 0
         ? { ...item, badgeCount: urgentRecurringCount }
         : item
+    ), [isEnterprise, currentUseCase, userRoleValue, urgentRecurringCount]);
+
+  // ── Build effective sections from prefs + hardcoded defaults ─────────────
+  const PROTECTED = useMemo(() => new Set<string>(['Dashboard', 'Configurações']), []);
+
+  const effectiveSections = useMemo(() => {
+    // All items the user can actually see (role/useCase/enterprise filtered)
+    const allVisibleMap = new Map<string, MenuItemConfig>();
+    for (const s of menuSections) {
+      for (const item of filterItems(s.items)) {
+        allVisibleMap.set(item.id, item);
+      }
+    }
+
+    const prefs = user?.sidebarPrefs;
+    if (!prefs?.sections?.length) {
+      // No prefs — use hardcoded defaults
+      return menuSections.map(s => ({
+        key: s.key,
+        title: s.title,
+        isCollapsed: false,
+        items: filterItems(s.items),
+      })).filter(s => s.items.length > 0);
+    }
+
+    const hiddenSet = new Set(prefs.hiddenItems ?? []);
+    const assignedIds = new Set<string>();
+
+    const sections = prefs.sections.map(ps => {
+      const items = ps.items
+        .map(id => allVisibleMap.get(id))
+        .filter((item): item is MenuItemConfig =>
+          item !== undefined && (PROTECTED.has(item.id) || !hiddenSet.has(item.id))
+        );
+      items.forEach(item => assignedIds.add(item.id));
+      return { key: ps.key, title: ps.title, isCollapsed: ps.isCollapsed, items };
+    });
+
+    // Items visible but not assigned to any section (added after prefs were saved)
+    const unassigned = [...allVisibleMap.values()].filter(
+      item => !assignedIds.has(item.id) && !hiddenSet.has(item.id)
     );
+    if (unassigned.length > 0) {
+      const first = sections[0];
+      if (first) first.items.push(...unassigned);
+      else sections.push({ key: '__other__', title: 'Outros', isCollapsed: false, items: unassigned });
+    }
+
+    return sections.filter(s => s.items.length > 0);
+  }, [menuSections, filterItems, user?.sidebarPrefs, PROTECTED]);
+
+  // Toggle per-section collapse and persist to Firestore
+  const handleToggleSectionCollapse = useCallback(async (sectionKey: string) => {
+    if (!user?.uid) return;
+    const prefs = user.sidebarPrefs;
+    if (!prefs?.sections?.length) return;
+    const updatedSections = prefs.sections.map((s: SidebarSectionPref) =>
+      s.key === sectionKey ? { ...s, isCollapsed: !s.isCollapsed } : s
+    );
+    // Optimistic update via updateUserProfile would reload the whole user doc —
+    // use direct updateDoc for this lightweight toggle
+    try {
+      await updateDoc(doc(db, 'users', user.uid), {
+        'sidebarPrefs.sections': updatedSections,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch { /* ignore — UI already reflects default */ }
+  }, [user?.uid, user?.sidebarPrefs]);
 
   return (
     <div
@@ -422,31 +516,45 @@ function SidebarContent({
         )}
         style={{ scrollbarWidth: 'none' }}
       >
-        {menuSections.map((section, sectionIdx) => {
-          const visibleItems = filterItems(section.items);
-          if (visibleItems.length === 0) return null;
-          return (
-          <div key={section.title} className={cn(sectionIdx > 0 && 'mt-1')}>
-            <SectionHeader title={section.title} isCollapsed={collapsed} />
+        {effectiveSections.map((section, sectionIdx) => (
+          <div key={section.key} className={cn(sectionIdx > 0 && 'mt-1')}>
+            <SectionHeader
+              title={section.title}
+              isCollapsed={collapsed}
+              isSectionCollapsed={section.isCollapsed}
+              onToggle={user?.sidebarPrefs?.sections?.length
+                ? () => handleToggleSectionCollapse(section.key)
+                : undefined}
+            />
 
-            <div className="space-y-0.5">
-              {visibleItems
-                .map((item) => (
-                <MenuItem
-                  key={item.id}
-                  item={item}
-                  isActive={activePage === item.id}
-                  isCollapsed={collapsed}
-                  onSelect={() => {
-                    onMenuSelect(item.id);
-                    if (isMobile) onMobileClose();
-                  }}
-                />
-              ))}
-            </div>
+            <AnimatePresence initial={false}>
+              {!section.isCollapsed && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.18 }}
+                  className="overflow-hidden"
+                >
+                  <div className="space-y-0.5">
+                    {section.items.map((item) => (
+                      <MenuItem
+                        key={item.id}
+                        item={item}
+                        isActive={activePage === item.id}
+                        isCollapsed={collapsed}
+                        onSelect={() => {
+                          onMenuSelect(item.id);
+                          if (isMobile) onMobileClose();
+                        }}
+                      />
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
-          );
-        })}
+        ))}
       </nav>
 
       {/* ── Footer ── */}

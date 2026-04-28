@@ -83,9 +83,11 @@ import {
   Sparkles,
   Search,
   Bell,
+  PanelLeft,
 } from 'lucide-react';
 import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector, Service, WorkingHours, DaySchedule, UseCase } from '@/lib/types';
 import { CachedImage } from '@/app/components/ui/CachedImage';
+import SidebarEditorTab from './SidebarEditorTab';
 import {
   DeliveryZonesEditor,
   UpsellRulesEditor,
@@ -110,7 +112,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'setores' | 'enterprise' | 'canais' | 'modo' | 'agente' | 'cofre';
+type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'setores' | 'enterprise' | 'canais' | 'modo' | 'agente' | 'cofre' | 'interface';
 
 interface CertStatus {
   hasCertificate: boolean;
@@ -6608,6 +6610,7 @@ export default function SettingsModule() {
   const allTabs = [
     { id: 'perfil'     as Tab, label: t('settings.tabs.perfil',   'Meu Perfil'), icon: UserCircle },
     { id: 'modo'       as Tab, label: t('settings.tabs.modo',     'Modo do Sistema'), icon: Zap   },
+    { id: 'interface'  as Tab, label: 'Interface',                               icon: PanelLeft  },
     { id: 'agente'     as Tab, label: t('settings.tabs.agente',   'Agente IA'), icon: Sparkles },
     { id: 'cofre'      as Tab, label: t('settings.tabs.cofre',    'Senhas'),     icon: Shield    },
     { id: 'empresa'    as Tab, label: t('settings.tabs.empresa',  'Empresa'),    icon: Building2  },
@@ -6726,6 +6729,7 @@ export default function SettingsModule() {
       <AnimatePresence mode="wait" initial={false}>
         {activeTab === 'perfil'     && <ProfileTab key="perfil" />}
         {activeTab === 'modo'       && <ModoSistemaTab key="modo" />}
+        {activeTab === 'interface'  && <SidebarEditorTab key="interface" />}
         {activeTab === 'agente'     && <AgenteTab key="agente" />}
         {activeTab === 'cofre'      && <VaultTab key="cofre" />}
         {activeTab === 'empresa'    && <EmpresaTab key="empresa" />}
