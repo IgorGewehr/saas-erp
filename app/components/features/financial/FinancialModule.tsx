@@ -49,6 +49,7 @@ import {
   Crown,
   FileSpreadsheet,
   Download,
+  ChevronLeft,
   ChevronRight,
   Repeat,
   Scale,
@@ -221,6 +222,42 @@ export default function FinancialModule() {
   const isEnterprise = !!business?.enterprise?.isEnabled;
 
   const [activeTab, setActiveTab] = useState<FinancialTab>('visao-geral');
+
+  // ── Scrollable tab bar ────────────────────────────────────────────────────
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft,  setCanScrollLeft]  = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  const checkScroll = useCallback(() => {
+    const el = tabsRef.current;
+    if (!el) return;
+    setCanScrollLeft(el.scrollLeft > 1);
+    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+  }, []);
+
+  const scrollTabsBy = useCallback((amount: number) => {
+    tabsRef.current?.scrollBy({ left: amount, behavior: 'smooth' });
+  }, []);
+
+  useEffect(() => {
+    const el = tabsRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY === 0) return;
+      e.preventDefault();
+      el.scrollLeft += e.deltaY;
+      checkScroll();
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [checkScroll]);
+
+  useEffect(() => {
+    checkScroll();
+    window.addEventListener('resize', checkScroll);
+    return () => window.removeEventListener('resize', checkScroll);
+  }, [checkScroll]);
+
   const [showForm, setShowForm] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [showBalances, setShowBalances] = useState(true);
@@ -1147,30 +1184,74 @@ export default function FinancialModule() {
         </div>
 
         {/* ===== TAB NAV ===== */}
-        <div className="flex gap-1 p-1.5 bg-white dark:bg-gray-900/80 border border-slate-200/80 dark:border-gray-800 rounded-2xl mb-6 overflow-x-auto shadow-sm backdrop-blur-sm">
-          {TABS.map((tab) => (
-            <button
-              key={tab.key}
-              onClick={() => setActiveTab(tab.key)}
-              className={cn(
-                'relative flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all duration-200',
-                activeTab === tab.key
-                  ? 'bg-gradient-to-r from-red-600 to-red-500 text-white shadow-md shadow-red-500/20'
-                  : 'text-slate-500 dark:text-gray-400 hover:text-slate-700 dark:hover:text-gray-300 hover:bg-slate-50 dark:hover:bg-white/[0.04]'
-              )}
-            >
-              {tab.icon}
-              {tab.label}
-              {tab.key === 'recorrentes' && urgentRecurringCount > 0 && (
-                <span className={cn(
-                  'min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold flex items-center justify-center leading-none',
-                  activeTab === 'recorrentes' ? 'bg-white/30 text-white' : 'bg-amber-500 text-white'
-                )}>
-                  {urgentRecurringCount}
-                </span>
-              )}
-            </button>
-          ))}
+        <div className="relative mb-6">
+          <AnimatePresence>
+            {canScrollLeft && (
+              <motion.div
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
+                className="absolute left-0 top-0 bottom-0 w-12 z-10 flex items-center justify-start pointer-events-none rounded-l-2xl bg-gradient-to-r from-white dark:from-gray-900 to-transparent"
+              >
+                <button
+                  type="button"
+                  onClick={() => scrollTabsBy(-160)}
+                  className="pointer-events-auto ml-1.5 w-7 h-7 rounded-full bg-white dark:bg-gray-700 shadow-md border border-gray-200 dark:border-gray-600 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <div
+            ref={tabsRef}
+            onScroll={checkScroll}
+            className="overflow-x-auto scrollbar-hide"
+          >
+            <div className="flex gap-1 p-1.5 bg-white dark:bg-gray-900/80 border border-slate-200/80 dark:border-gray-800 rounded-2xl shadow-sm backdrop-blur-sm w-max min-w-full">
+              {TABS.map((tab) => (
+                <button
+                  key={tab.key}
+                  onClick={() => setActiveTab(tab.key)}
+                  className={cn(
+                    'relative flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all duration-200',
+                    activeTab === tab.key
+                      ? 'bg-gradient-to-r from-red-600 to-red-500 text-white shadow-md shadow-red-500/20'
+                      : 'text-slate-500 dark:text-gray-400 hover:text-slate-700 dark:hover:text-gray-300 hover:bg-slate-50 dark:hover:bg-white/[0.04]'
+                  )}
+                >
+                  {tab.icon}
+                  {tab.label}
+                  {tab.key === 'recorrentes' && urgentRecurringCount > 0 && (
+                    <span className={cn(
+                      'min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold flex items-center justify-center leading-none',
+                      activeTab === 'recorrentes' ? 'bg-white/30 text-white' : 'bg-amber-500 text-white'
+                    )}>
+                      {urgentRecurringCount}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <AnimatePresence>
+            {canScrollRight && (
+              <motion.div
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
+                className="absolute right-0 top-0 bottom-0 w-12 z-10 flex items-center justify-end pointer-events-none rounded-r-2xl bg-gradient-to-l from-white dark:from-gray-900 to-transparent"
+              >
+                <button
+                  type="button"
+                  onClick={() => scrollTabsBy(160)}
+                  className="pointer-events-auto mr-1.5 w-7 h-7 rounded-full bg-white dark:bg-gray-700 shadow-md border border-gray-200 dark:border-gray-600 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* ===== TAB CONTENT ===== */}
