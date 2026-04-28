@@ -147,7 +147,7 @@ export default function AgentHeroInput({
   // ─── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="relative">
-      <div className="relative max-w-3xl mx-auto">
+      <div className="relative max-w-4xl mx-auto">
         {/* ── Greeting ───────────────────────────────────────────────────── */}
         <AnimatePresence mode="wait">
           {!hasConversation ? (
