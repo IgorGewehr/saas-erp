@@ -1,82 +1,139 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+/**
+ * Dashboard — command-center home
+ *
+ * Canva/Perplexity-inspired layout: centered hero with the Agente IA input
+ * as the primary action, a row of colorful module circles for fast navigation,
+ * and a small grid of smart cards surfacing only the most actionable data
+ * (today's revenue, next event, alerts, team pulse). Use case (servicos /
+ * pedidos / simples) drives which modules and cards appear.
+ */
+
+import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
 import { useTranslation } from 'react-i18next';
-import type { Appointment, CRMContact, Sale, Transaction, DeliveryOrder, KanbanCard, UseCase } from '@/lib/types';
-import { DELIVERY_ORDER_STATUS_LABELS } from '@/lib/types';
+import type {
+  Appointment,
+  CRMContact,
+  Sale,
+  Transaction,
+  DeliveryOrder,
+  UseCase,
+  User as UserType,
+  UserRole,
+} from '@/lib/types';
+import { ROLE_HIERARCHY } from '@/lib/types';
 import {
   Users,
-  CalendarCheck,
-  CalendarClock,
-  Search,
-  ChevronRight,
-  User as UserIcon,
-  MessageSquare,
+  Calendar,
+  ShoppingCart,
   DollarSign,
+  ClipboardCheck,
+  ClipboardList,
+  BarChart3,
+  FileCheck2,
   TrendingUp,
   TrendingDown,
-  Receipt,
-  UserPlus,
-  CalendarPlus,
-  ShoppingBag,
-  Clock,
-  Wallet,
   AlertTriangle,
-  ClipboardCheck,
-  Kanban as KanbanIcon,
+  CalendarClock,
   Bike,
-  Timer,
+  ArrowRight,
+  Sparkles,
+  Wallet,
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { enUS as enUSLocale } from 'date-fns/locale';
-import { collection, query, where, orderBy, getDocs } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
-import { formatCurrency, formatPhone, getInitials } from '@/lib/utils/format';
-import AgentConsole from './AgentConsole';
-import CompactMetricsStrip, { type Metric } from './CompactMetricsStrip';
+import { formatCurrency, getInitials } from '@/lib/utils/format';
+import type { MenuPage } from '@/app/components/layout/Sidebar';
+import AgentHeroInput from './AgentHeroInput';
 
-// ─── Animation ─────────────────────────────────────────
+// ─── Animation variants ──────────────────────────────────────────────────────
 const stagger = {
   hidden: { opacity: 0 },
-  visible: { opacity: 1, transition: { staggerChildren: 0.07, delayChildren: 0.1 } },
+  visible: { opacity: 1, transition: { staggerChildren: 0.06, delayChildren: 0.05 } },
 };
 const fadeUp = {
-  hidden: { opacity: 0, y: 16, filter: 'blur(4px)' },
-  visible: { opacity: 1, y: 0, filter: 'blur(0px)', transition: { duration: 0.4, ease: [0.25, 0.46, 0.45, 0.94] as [number, number, number, number] } },
+  hidden: { opacity: 0, y: 14, filter: 'blur(4px)' },
+  visible: {
+    opacity: 1,
+    y: 0,
+    filter: 'blur(0px)',
+    transition: { duration: 0.5, ease: [0.22, 1, 0.36, 1] as [number, number, number, number] },
+  },
+};
+const popIn = {
+  hidden: { opacity: 0, scale: 0.9, y: 8 },
+  visible: {
+    opacity: 1,
+    scale: 1,
+    y: 0,
+    transition: { duration: 0.4, ease: [0.22, 1, 0.36, 1] as [number, number, number, number] },
+  },
 };
 
-// ─── Main Component ────────────────────────────────────
+// ─── Module catalog — only the principal modules, minimal style ──────────────
+interface ModuleEntry {
+  id: MenuPage;
+  label: string;
+  icon: React.ElementType;
+  /** Tinted bg (light/dark) — e.g., 'bg-blue-50 dark:bg-blue-500/10'. */
+  bg: string;
+  /** Icon color — e.g., 'text-blue-600 dark:text-blue-400'. */
+  iconColor: string;
+  useCases?: UseCase[];
+  minRole?: UserRole;
+}
+
+// Principais somente: Clientes, Agenda (serviços) / Pedidos (pedidos), PDV,
+// Vendas, Financeiro, Relatórios, Fiscal. Cores alinhadas ao tema vermelho do
+// app — todos os ícones partilham a mesma família red/rose para coerência.
+const MODULES: ModuleEntry[] = [
+  { id: 'Clientes',    label: 'Clientes',    icon: Users,           bg: 'bg-red-50 dark:bg-red-500/10',         iconColor: 'text-red-600 dark:text-red-400' },
+  { id: 'Agenda',      label: 'Agenda',      icon: Calendar,        bg: 'bg-red-50 dark:bg-red-500/10',         iconColor: 'text-red-600 dark:text-red-400',   useCases: ['servicos'] },
+  { id: 'Pedidos',     label: 'Pedidos',     icon: ClipboardCheck,  bg: 'bg-red-50 dark:bg-red-500/10',         iconColor: 'text-red-600 dark:text-red-400',   useCases: ['pedidos'] },
+  { id: 'PDV',         label: 'PDV',         icon: ShoppingCart,    bg: 'bg-red-50 dark:bg-red-500/10',         iconColor: 'text-red-600 dark:text-red-400' },
+  { id: 'Vendas',      label: 'Vendas',      icon: ClipboardList,   bg: 'bg-red-50 dark:bg-red-500/10',         iconColor: 'text-red-600 dark:text-red-400' },
+  { id: 'Financeiro',  label: 'Financeiro',  icon: DollarSign,      bg: 'bg-red-50 dark:bg-red-500/10',         iconColor: 'text-red-600 dark:text-red-400' },
+  { id: 'Relatórios',  label: 'Relatórios',  icon: BarChart3,       bg: 'bg-red-50 dark:bg-red-500/10',         iconColor: 'text-red-600 dark:text-red-400' },
+  { id: 'NFSe',        label: 'Fiscal',      icon: FileCheck2,      bg: 'bg-red-50 dark:bg-red-500/10',         iconColor: 'text-red-600 dark:text-red-400' },
+];
+
+// ─── Presence helper ────────────────────────────────────────────────────────
+function memberDisplayStatus(member: UserType): 'online' | 'busy' | 'offline' {
+  if (member.userStatus === 'invisible') return 'offline';
+  if (!member.isOnline || !member.lastSeenAt) return 'offline';
+  if (Date.now() - new Date(member.lastSeenAt).getTime() >= 3 * 60 * 1000) return 'offline';
+  return member.userStatus === 'busy' ? 'busy' : 'online';
+}
+
+// ─── Main component ─────────────────────────────────────────────────────────
 export default function DashboardModule() {
   const { t, i18n } = useTranslation();
   const { user, business } = useAuth();
   const { setActivePage } = useAppContext();
-  const [clientSearch, setClientSearch] = useState('');
   const dateLocale = i18n.language === 'en-US' ? enUSLocale : ptBR;
 
-  // ── Use case driven visibility ─────────────────────────
   const useCase: UseCase = (business?.settings?.useCase as UseCase) || 'servicos';
   const showAgenda = useCase === 'servicos';
   const showOrders = useCase === 'pedidos';
-  // Kanban ainda aparece na sidebar em todos os modos; o dashboard só destaca o
-  // card de produtividade se o operador já usar o Kanban (tasksOpen > 0).
-  const showTasks = false; // removido o modo 'times' dedicado
-  const showRevenue = true;
-  const showFinancial = true;
+  const isAdmin = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY.admin;
 
-  // ── Firestore queries ──
+  // ── Data queries ─────────────────────────────────────────────────────────
   const { data: clients = [], isLoading: loadingClients } = useQuery({
     queryKey: ['clients', business?.id],
     queryFn: async () => {
       const q = query(collection(db, 'clients'), where('businessId', '==', business!.id));
       const snap = await getDocs(q);
       return snap.docs
-        .map(d => ({ ...d.data(), id: d.id } as CRMContact))
+        .map((d) => ({ ...d.data(), id: d.id } as CRMContact))
         .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'pt-BR'));
     },
     enabled: !!business?.id,
@@ -85,19 +142,27 @@ export default function DashboardModule() {
   const { data: appointments = [], isLoading: loadingAppointments } = useQuery({
     queryKey: ['appointments', business?.id],
     queryFn: async () => {
-      const q = query(collection(db, 'appointments'), where('businessId', '==', business!.id), orderBy('date', 'asc'));
+      const q = query(
+        collection(db, 'appointments'),
+        where('businessId', '==', business!.id),
+        orderBy('date', 'asc'),
+      );
       const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Appointment));
+      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as Appointment));
     },
-    enabled: !!business?.id,
+    enabled: !!business?.id && showAgenda,
   });
 
   const { data: sales = [], isLoading: loadingSales } = useQuery({
     queryKey: ['sales', business?.id],
     queryFn: async () => {
-      const q = query(collection(db, 'sales'), where('businessId', '==', business!.id), orderBy('createdAt', 'desc'));
+      const q = query(
+        collection(db, 'sales'),
+        where('businessId', '==', business!.id),
+        orderBy('createdAt', 'desc'),
+      );
       const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Sale));
+      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as Sale));
     },
     enabled: !!business?.id,
   });
@@ -105,9 +170,13 @@ export default function DashboardModule() {
   const { data: transactions = [], isLoading: loadingTransactions } = useQuery({
     queryKey: ['transactions', business?.id],
     queryFn: async () => {
-      const q = query(collection(db, 'transactions'), where('businessId', '==', business!.id), orderBy('dueDate', 'desc'));
+      const q = query(
+        collection(db, 'transactions'),
+        where('businessId', '==', business!.id),
+        orderBy('dueDate', 'desc'),
+      );
       const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Transaction));
+      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as Transaction));
     },
     enabled: !!business?.id,
   });
@@ -115,1067 +184,631 @@ export default function DashboardModule() {
   const { data: deliveryOrders = [] } = useQuery({
     queryKey: ['delivery-orders-dashboard', business?.id],
     queryFn: async () => {
-      const q = query(collection(db, 'deliveryOrders'), where('businessId', '==', business!.id), orderBy('createdAt', 'desc'));
+      const q = query(
+        collection(db, 'deliveryOrders'),
+        where('businessId', '==', business!.id),
+        orderBy('createdAt', 'desc'),
+      );
       const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as DeliveryOrder));
+      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as DeliveryOrder));
     },
     enabled: !!business?.id && showOrders,
     staleTime: 60 * 1000,
   });
 
-  const { data: kanbanCards = [] } = useQuery({
-    queryKey: ['kanban-cards-dashboard', business?.id],
-    queryFn: async () => {
-      const q = query(collection(db, 'kanbanCards'), where('businessId', '==', business!.id));
-      const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as KanbanCard));
-    },
-    enabled: !!business?.id && showTasks,
-    staleTime: 60 * 1000,
-  });
+  // ── Live team presence (real-time onSnapshot) ─────────────────────────────
+  const [members, setMembers] = useState<UserType[]>([]);
+  useEffect(() => {
+    if (!business?.id) return;
+    const q = query(collection(db, 'users'), where('businessId', '==', business.id));
+    const unsub = onSnapshot(q, (snap) => {
+      setMembers(snap.docs.map((d) => ({ ...d.data(), id: d.id } as UserType)));
+    });
+    return () => unsub();
+  }, [business?.id]);
 
-  // ── Computed data ──
+  // ── Derived metrics ───────────────────────────────────────────────────────
   const todayStr = new Date().toISOString().split('T')[0];
 
-  const todayAppointments = useMemo(
-    () => appointments.filter(a => a.date === todayStr && a.status !== 'cancelado'),
-    [appointments, todayStr]
-  );
-
-  const nextAppointment = useMemo(() => {
-    const nowStr = new Date().toTimeString().slice(0, 5); // "HH:mm"
-    return [...appointments]
-      .filter(a => a.status !== 'cancelado' && a.status !== 'concluido')
-      .filter(a => a.date > todayStr || (a.date === todayStr && a.startTime >= nowStr))
-      .sort((a, b) => a.date === b.date ? (a.startTime || '').localeCompare(b.startTime || '') : a.date.localeCompare(b.date))
-      [0] || null;
-  }, [appointments, todayStr]);
-
-  const upcomingCount = useMemo(
-    () => appointments.filter(a =>
-      a.date >= todayStr && a.status !== 'cancelado' && a.status !== 'concluido'
-    ).length,
-    [appointments, todayStr]
-  );
-
-  const activeClients = useMemo(
-    () => clients.length,
-    [clients]
-  );
-
-  // ── Revenue KPIs ──
   const todaySales = useMemo(
-    () => sales.filter(s => s.status === 'finalizada' && s.createdAt?.startsWith(todayStr)),
-    [sales, todayStr]
+    () => sales.filter((s) => s.status === 'finalizada' && s.createdAt?.startsWith(todayStr)),
+    [sales, todayStr],
   );
-
   const todayRevenue = useMemo(
     () => todaySales.reduce((sum, s) => sum + s.total, 0),
-    [todaySales]
+    [todaySales],
   );
-
   const yesterdayStr = useMemo(() => {
     const d = new Date();
     d.setDate(d.getDate() - 1);
     return d.toISOString().split('T')[0];
   }, []);
-
   const yesterdayRevenue = useMemo(
-    () => sales
-      .filter(s => s.status === 'finalizada' && s.createdAt?.startsWith(yesterdayStr))
-      .reduce((sum, s) => sum + s.total, 0),
-    [sales, yesterdayStr]
+    () =>
+      sales
+        .filter((s) => s.status === 'finalizada' && s.createdAt?.startsWith(yesterdayStr))
+        .reduce((sum, s) => sum + s.total, 0),
+    [sales, yesterdayStr],
   );
-
   const revenueChange = useMemo(() => {
     if (yesterdayRevenue === 0) return todayRevenue > 0 ? 100 : 0;
     return Math.round(((todayRevenue - yesterdayRevenue) / yesterdayRevenue) * 100);
   }, [todayRevenue, yesterdayRevenue]);
 
-  const ticketMedio = useMemo(
-    () => todaySales.length > 0 ? todayRevenue / todaySales.length : 0,
-    [todayRevenue, todaySales]
+  const nextAppointment = useMemo(() => {
+    const nowStr = new Date().toTimeString().slice(0, 5);
+    return (
+      [...appointments]
+        .filter((a) => a.status !== 'cancelado' && a.status !== 'concluido')
+        .filter((a) => a.date > todayStr || (a.date === todayStr && a.startTime >= nowStr))
+        .sort((a, b) =>
+          a.date === b.date
+            ? (a.startTime || '').localeCompare(b.startTime || '')
+            : a.date.localeCompare(b.date),
+        )[0] || null
+    );
+  }, [appointments, todayStr]);
+
+  const ordersActive = useMemo(
+    () => deliveryOrders.filter((o) => o.status !== 'entregue' && o.status !== 'cancelado'),
+    [deliveryOrders],
   );
-
-  const dailyAvg = useMemo(() => {
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    const isoThirty = thirtyDaysAgo.toISOString().split('T')[0];
-    const recentSales = sales.filter(s => s.status === 'finalizada' && s.createdAt && s.createdAt >= isoThirty);
-    if (recentSales.length === 0) return 0;
-    const total = recentSales.reduce((sum, s) => sum + s.total, 0);
-    const uniqueDays = new Set(recentSales.map(s => s.createdAt.split('T')[0])).size;
-    return uniqueDays > 0 ? total / uniqueDays : 0;
-  }, [sales]);
-
-  const goalProgress = useMemo(
-    () => dailyAvg > 0 ? Math.min((todayRevenue / dailyAvg) * 100, 100) : 0,
-    [todayRevenue, dailyAvg]
-  );
-
-  // ── Monthly Revenue ──
-  const currentMonth = useMemo(() => {
-    const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-  }, []);
-
-  const lastMonth = useMemo(() => {
-    const now = new Date();
-    now.setMonth(now.getMonth() - 1);
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-  }, []);
-
-  const monthlySales = useMemo(
-    () => sales.filter(s => s.status === 'finalizada' && s.createdAt?.startsWith(currentMonth)),
-    [sales, currentMonth]
-  );
-
-  const monthlyRevenue = useMemo(
-    () => monthlySales.reduce((sum, s) => sum + s.total, 0),
-    [monthlySales]
-  );
-
-  const lastMonthRevenue = useMemo(
-    () => sales
-      .filter(s => s.status === 'finalizada' && s.createdAt?.startsWith(lastMonth))
-      .reduce((sum, s) => sum + s.total, 0),
-    [sales, lastMonth]
-  );
-
-  const monthlyRevenueChange = useMemo(() => {
-    if (lastMonthRevenue === 0) return monthlyRevenue > 0 ? 100 : 0;
-    return Math.round(((monthlyRevenue - lastMonthRevenue) / lastMonthRevenue) * 100);
-  }, [monthlyRevenue, lastMonthRevenue]);
-
-  // ── Financial Health ──
-  const pendingTransactions = useMemo(
-    () => transactions.filter(t => t.status === 'pendente'),
-    [transactions]
+  const ordersUrgent = useMemo(
+    () =>
+      deliveryOrders.filter((o) => {
+        if (o.status === 'entregue' || o.status === 'cancelado') return false;
+        if (o.estimatedDeliveryAt) {
+          const t = new Date(o.estimatedDeliveryAt).getTime();
+          return !isNaN(t) && t < Date.now();
+        }
+        const created = new Date(o.createdAt).getTime();
+        return !isNaN(created) && (Date.now() - created) / 60000 > 45;
+      }),
+    [deliveryOrders],
   );
 
   const overdueTransactions = useMemo(
-    () => transactions.filter(t => t.status === 'atrasado'),
-    [transactions]
+    () => transactions.filter((t) => t.status === 'atrasado'),
+    [transactions],
   );
-
-  const pendingAmount = useMemo(
-    () => pendingTransactions.reduce((sum, t) => sum + t.amount, 0),
-    [pendingTransactions]
+  const pendingTransactions = useMemo(
+    () => transactions.filter((t) => t.status === 'pendente'),
+    [transactions],
   );
-
   const overdueAmount = useMemo(
     () => overdueTransactions.reduce((sum, t) => sum + t.amount, 0),
-    [overdueTransactions]
+    [overdueTransactions],
+  );
+  const pendingAmount = useMemo(
+    () => pendingTransactions.reduce((sum, t) => sum + t.amount, 0),
+    [pendingTransactions],
   );
 
-  // ── Delivery Orders metrics (pedidos mode) ──
-  const ordersToday = useMemo(
-    () => deliveryOrders.filter(o => o.createdAt?.startsWith(todayStr)),
-    [deliveryOrders, todayStr]
-  );
-  const ordersActive = useMemo(
-    () => deliveryOrders.filter(o => o.status !== 'entregue' && o.status !== 'cancelado'),
-    [deliveryOrders]
-  );
-  const ordersRevenueToday = useMemo(
-    () => ordersToday.filter(o => o.status !== 'cancelado').reduce((s, o) => s + o.total, 0),
-    [ordersToday]
-  );
-  const ordersUrgent = useMemo(
-    () => deliveryOrders.filter(o => {
-      if (o.status === 'entregue' || o.status === 'cancelado') return false;
-      if (o.estimatedDeliveryAt) {
-        const t = new Date(o.estimatedDeliveryAt).getTime();
-        return !isNaN(t) && t < Date.now();
-      }
-      const created = new Date(o.createdAt).getTime();
-      return !isNaN(created) && (Date.now() - created) / 60000 > 45;
-    }),
-    [deliveryOrders]
-  );
-  const ordersAvgTime = useMemo(() => {
-    const delivered = ordersToday.filter(o => o.status === 'entregue' && o.deliveredAt);
-    if (delivered.length === 0) return 0;
-    const total = delivered.reduce((s, o) => {
-      const end = new Date(o.deliveredAt as string).getTime();
-      const start = new Date(o.createdAt).getTime();
-      return isNaN(end) || isNaN(start) ? s : s + (end - start);
-    }, 0);
-    return Math.round(total / delivered.length / 60000);
-  }, [ordersToday]);
-
-  // ── Task metrics (times mode) ──
-  const tasksOpen = useMemo(
-    () => kanbanCards,
-    [kanbanCards]
-  );
-  const tasksAssignedToMe = useMemo(
-    () => tasksOpen.filter(c => (c.assigneeIds || []).includes(user?.uid || '')),
-    [tasksOpen, user?.uid]
-  );
-  const tasksOverdue = useMemo(
-    () => tasksOpen.filter(c => c.dueDate && c.dueDate < todayStr),
-    [tasksOpen, todayStr]
+  // ── Team pulse ────────────────────────────────────────────────────────────
+  const onlineMembers = useMemo(
+    () => members.filter((m) => memberDisplayStatus(m) !== 'offline'),
+    [members],
   );
 
-  // ── Today's Schedule ──
-  const todaySchedule = useMemo(
-    () => appointments
-      .filter(a => a.date === todayStr && a.status !== 'cancelado')
-      .sort((a, b) => a.startTime.localeCompare(b.startTime)),
-    [appointments, todayStr]
+  // ── Visible modules (filtered by use case + role) ────────────────────────
+  const visibleModules = useMemo(
+    () =>
+      MODULES.filter((m) => !m.useCases || m.useCases.includes(useCase)).filter(
+        (m) => !m.minRole || ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY[m.minRole],
+      ),
+    [useCase, user?.role],
   );
 
-  // ── Client search/filter ──
-  const filteredClients = useMemo(() => {
-    const term = clientSearch.toLowerCase().trim();
-    const list = term.length >= 1
-      ? clients.filter(c =>
-          c.name?.toLowerCase().includes(term) ||
-          c.cpfCnpj?.includes(term) ||
-          c.email?.toLowerCase().includes(term) ||
-          c.phone?.includes(term)
-        )
-      : clients;
-    return list.slice(0, 8);
-  }, [clients, clientSearch]);
-
-  const clientNextAppointment = useMemo(() => {
-    const map: Record<string, Appointment> = {};
-    for (const a of appointments) {
-      if (a.date >= todayStr && a.status !== 'cancelado' && a.status !== 'concluido') {
-        if (!map[a.clientId] || a.date < map[a.clientId].date) {
-          map[a.clientId] = a;
-        }
-      }
-    }
-    return map;
-  }, [appointments, todayStr]);
-
-  // ── Header data ──
+  // ── Greeting ─────────────────────────────────────────────────────────────
   const hour = new Date().getHours();
-  const greeting = hour < 12
-    ? t('dashboard.goodMorning', 'Bom dia')
-    : hour < 18
-      ? t('dashboard.goodAfternoon', 'Boa tarde')
-      : t('dashboard.goodEvening', 'Boa noite');
+  const greeting =
+    hour < 12
+      ? t('dashboard.goodMorning', 'Bom dia')
+      : hour < 18
+        ? t('dashboard.goodAfternoon', 'Boa tarde')
+        : t('dashboard.goodEvening', 'Boa noite');
   const firstName = user?.name?.split(' ')[0] || '';
-  const isLoading = loadingClients || loadingAppointments || loadingSales || loadingTransactions;
+  const subtitle = useMemo(() => {
+    const parts = [
+      i18n.language === 'en-US'
+        ? format(new Date(), 'EEEE, MMMM d', { locale: dateLocale })
+        : format(new Date(), "EEEE, d 'de' MMMM", { locale: dateLocale }),
+    ];
+    return parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+  }, [i18n.language, dateLocale]);
 
-  // ── Render ──
+  // ── Render ───────────────────────────────────────────────────────────────
   return (
     <motion.div
       variants={stagger}
       initial="hidden"
       animate="visible"
-      className="space-y-5"
+      className="space-y-8 sm:space-y-10"
     >
-      {/* ━━━ Welcome Header + Quick Actions ━━━ */}
-      <motion.div variants={fadeUp} className="flex items-start justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-gray-900 dark:text-white font-display">
-            {greeting},{' '}
-            <span className="bg-gradient-to-r from-red-600 to-red-500 bg-clip-text text-transparent">
-              {firstName}
-            </span>
-          </h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5 capitalize">
-            {i18n.language === 'en-US'
-              ? format(new Date(), 'EEEE, MMMM d', { locale: dateLocale })
-              : format(new Date(), "EEEE, d 'de' MMMM", { locale: dateLocale })}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {[
-            { label: t('dashboard.newClient', 'Novo Cliente'), icon: UserPlus, page: 'CRM' as const },
-            { label: t('dashboard.schedule', 'Agendar'), icon: CalendarPlus, page: 'Agenda' as const },
-            { label: t('dashboard.newSale', 'Nova Venda'), icon: ShoppingBag, page: 'PDV' as const },
-          ].map((action) => (
-            <motion.button
-              key={action.label}
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.97 }}
-              onClick={() => setActivePage(action.page)}
-              className={cn(
-                'flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-medium',
-                'bg-white dark:bg-gray-800/60',
-                'border border-gray-200 dark:border-gray-700/50',
-                'text-gray-600 dark:text-gray-300',
-                'hover:border-red-300 dark:hover:border-red-500/30',
-                'hover:text-red-600 dark:hover:text-red-400',
-                'shadow-sm hover:shadow',
-                'transition-all duration-200',
-              )}
-            >
-              <action.icon className="w-4 h-4" />
-              <span className="hidden sm:inline">{action.label}</span>
-            </motion.button>
+      {/* ━━━ Hero with AI input ━━━ */}
+      <motion.section variants={fadeUp} className="pt-2 sm:pt-6">
+        <AgentHeroInput greeting={greeting} firstName={firstName} subtitle={subtitle} />
+      </motion.section>
+
+      {/* ━━━ Module circles — centered, no heading ━━━ */}
+      <motion.section variants={fadeUp}>
+        <div className="flex flex-wrap items-start justify-center gap-x-5 sm:gap-x-7 gap-y-4">
+          {visibleModules.map((m, i) => (
+            <ModuleCircle
+              key={m.id}
+              module={m}
+              index={i}
+              onClick={() => setActivePage(m.id)}
+            />
           ))}
         </div>
-      </motion.div>
+      </motion.section>
 
-      {/* ━━━ Agente IA — console unificado operador/analista (colapsável) ━━━ */}
-      <motion.div variants={fadeUp}>
-        <AgentConsole />
-      </motion.div>
+      {/* ━━━ Smart cards — minimal, no heading ━━━ */}
+      <motion.section variants={fadeUp}>
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+          {/* Card 1: Revenue today */}
+          <RevenueCard
+            value={todayRevenue}
+            count={todaySales.length}
+            delta={revenueChange}
+            loading={loadingSales}
+            onClick={() => setActivePage('Financeiro')}
+          />
 
-      {/* ━━━ Compact metrics strip — substitui Revenue Today + Revenue Month cards verbose ━━━ */}
-      {showRevenue && (
-        <motion.div variants={fadeUp}>
-          <CompactMetricsStrip metrics={useMemo<Metric[]>(() => {
-            const base: Metric[] = [
-              {
-                key: 'revenue-today',
-                icon: DollarSign,
-                label: t('dashboard.revenueToday', 'Receita hoje'),
-                value: formatCurrency(todayRevenue),
-                subtext: `${todaySales.length} ${todaySales.length !== 1 ? 'vendas' : 'venda'}`,
-                delta: revenueChange !== 0 ? revenueChange : undefined,
-                tint: 'emerald',
-                loading: loadingSales,
-              },
-              {
-                key: 'revenue-month',
-                icon: Wallet,
-                label: t('dashboard.revenueMonth', 'Receita mês'),
-                value: formatCurrency(monthlyRevenue),
-                subtext: `vs mês anterior`,
-                delta: monthlyRevenueChange !== 0 ? monthlyRevenueChange : undefined,
-                tint: 'blue',
-                loading: loadingSales,
-              },
-              {
-                key: 'ticket',
-                icon: Receipt,
-                label: 'Ticket médio',
-                value: ticketMedio > 0 ? formatCurrency(ticketMedio) : '—',
-                subtext: 'hoje',
-                tint: 'violet',
-                loading: loadingSales,
-              },
-              {
-                key: 'clients',
-                icon: Users,
-                label: t('dashboard.totalClients', 'Clientes'),
-                value: String(activeClients),
-                tint: 'red',
-                loading: loadingClients,
-                onClick: () => setActivePage('Clientes'),
-              },
-              {
-                key: 'financial-pending',
-                icon: overdueTransactions.length > 0 ? AlertTriangle : Wallet,
-                label: overdueTransactions.length > 0 ? 'Contas atrasadas' : 'Contas pendentes',
-                value: String(overdueTransactions.length > 0 ? overdueTransactions.length : pendingTransactions.length),
-                subtext: overdueTransactions.length > 0 ? 'ação urgente' : 'próximas',
-                tint: overdueTransactions.length > 0 ? 'red' : 'amber',
-                loading: loadingTransactions,
-                onClick: () => setActivePage('Financeiro'),
-              },
-            ];
-            return base;
-          }, [todayRevenue, todaySales.length, revenueChange, monthlyRevenue, monthlyRevenueChange, ticketMedio, activeClients, overdueTransactions.length, pendingTransactions.length, loadingSales, loadingClients, loadingTransactions, t, setActivePage])} />
-        </motion.div>
-      )}
-
-      {/* ━━━ Mode-specific actionable card (full-width agora, já que revenue virou strip) ━━━ */}
-      <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-        {/* Next Appointment Card */}
-        {showAgenda && (
-        <motion.div
-          variants={fadeUp}
-          className={cn(
-            'md:col-span-12 rounded-2xl p-5 relative overflow-hidden',
-            'bg-gradient-to-br from-red-600 to-red-500',
-            'shadow-red dark:shadow-none',
-          )}
-        >
-          <div className="relative z-10">
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-medium text-white/80">{t('dashboard.nextAppointment', 'Próximo agendamento')}</p>
-              {nextAppointment && (
-                <span className="text-xs font-medium text-red-900 bg-white/90 px-2.5 py-1 rounded-full">
-                  {nextAppointment.date === todayStr ? t('dashboard.today', 'Hoje') : format(new Date(nextAppointment.date + 'T12:00:00'), "dd/MM", { locale: dateLocale })}, {nextAppointment.startTime}
-                </span>
-              )}
-            </div>
-
-            <div className="flex items-center gap-3.5 mt-4">
-              <div className="w-11 h-11 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center text-white text-sm font-bold border border-white/30">
-                {nextAppointment
-                  ? getInitials(nextAppointment.clientName)
-                  : <UserIcon className="w-5 h-5" />
-                }
-              </div>
-              <div>
-                <p className="text-lg font-bold text-white">
-                  {nextAppointment ? nextAppointment.clientName : t('dashboard.noUpcoming', 'Sem agendamentos próximos')}
-                </p>
-                <p className="text-sm text-white/70">
-                  {nextAppointment
-                    ? [nextAppointment.serviceName, nextAppointment.clientPhone || clients.find(c => c.id === nextAppointment.clientId)?.phone].filter(Boolean).join(' · ') || t('dashboard.noDetails', 'Sem detalhes')
-                    : t('dashboard.calendarFree', 'Sua agenda está livre')}
-                </p>
-              </div>
-            </div>
-
-            {nextAppointment && (
-              <div className="flex justify-end mt-3">
-                <motion.button
-                  whileHover={{ scale: 1.03 }}
-                  whileTap={{ scale: 0.97 }}
-                  onClick={() => setActivePage('Agenda')}
-                  className="text-sm font-medium text-red-700 bg-white hover:bg-white/90 px-4 py-2 rounded-xl transition-colors duration-150"
-                >
-                  {t('dashboard.viewDetails', 'Ver Detalhes')}
-                </motion.button>
-              </div>
-            )}
-          </div>
-
-          <div className="absolute -right-8 -bottom-8 w-40 h-40 rounded-full bg-white/[0.06]" />
-          <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-white/[0.04]" />
-        </motion.div>
-        )}
-
-        {showOrders && (
-          <motion.div
-            variants={fadeUp}
-            className="md:col-span-12 rounded-2xl p-5 relative overflow-hidden bg-gradient-to-br from-orange-600 via-red-500 to-red-600 shadow-red dark:shadow-none text-white"
-          >
-            <div className="relative z-10">
-              <div className="flex items-center justify-between mb-4">
-                <p className="text-sm font-medium text-white/80">Pedidos em andamento</p>
-                {ordersUrgent.length > 0 && (
-                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white text-red-700 text-[11px] font-bold">
-                    <Timer className="w-3 h-3" />
-                    {ordersUrgent.length} atrasado{ordersUrgent.length > 1 ? 's' : ''}
-                  </span>
-                )}
-              </div>
-              <div className="flex items-end gap-6 mb-4">
-                <div>
-                  <p className="text-[11px] uppercase tracking-wider text-white/70">Ativos agora</p>
-                  <p className="text-4xl font-black">{ordersActive.length}</p>
-                </div>
-                {ordersAvgTime > 0 && (
-                  <div>
-                    <p className="text-[11px] uppercase tracking-wider text-white/70">Tempo médio</p>
-                    <p className="text-2xl font-bold">{ordersAvgTime} min</p>
-                  </div>
-                )}
-              </div>
-              <motion.button
-                whileHover={{ scale: 1.03 }}
-                whileTap={{ scale: 0.97 }}
-                onClick={() => setActivePage('Pedidos')}
-                className="inline-flex items-center gap-1.5 text-sm font-bold text-red-700 bg-white hover:bg-white/90 px-4 py-2 rounded-xl transition-colors"
-              >
-                <ClipboardCheck className="w-4 h-4" />
-                Abrir Gerenciador
-              </motion.button>
-            </div>
-            <Bike className="absolute -right-6 -bottom-4 w-40 h-40 text-white/[0.08]" />
-          </motion.div>
-        )}
-
-        {showTasks && (
-          <motion.div
-            variants={fadeUp}
-            className="md:col-span-12 rounded-2xl p-5 relative overflow-hidden bg-gradient-to-br from-violet-600 to-purple-600 shadow-md shadow-violet-500/20 text-white"
-          >
-            <div className="relative z-10">
-              <p className="text-sm font-medium text-white/80 mb-3">Produtividade do time</p>
-              <div className="flex items-end gap-6 mb-4">
-                <div>
-                  <p className="text-[11px] uppercase tracking-wider text-white/70">Tarefas abertas</p>
-                  <p className="text-4xl font-black">{tasksOpen.length}</p>
-                </div>
-                <div>
-                  <p className="text-[11px] uppercase tracking-wider text-white/70">Minhas</p>
-                  <p className="text-2xl font-bold">{tasksAssignedToMe.length}</p>
-                </div>
-                {tasksOverdue.length > 0 && (
-                  <div>
-                    <p className="text-[11px] uppercase tracking-wider text-amber-200">Atrasadas</p>
-                    <p className="text-2xl font-bold text-amber-100">{tasksOverdue.length}</p>
-                  </div>
-                )}
-              </div>
-              <motion.button
-                whileHover={{ scale: 1.03 }}
-                whileTap={{ scale: 0.97 }}
-                onClick={() => setActivePage('Kanban')}
-                className="inline-flex items-center gap-1.5 text-sm font-bold text-violet-700 bg-white hover:bg-white/90 px-4 py-2 rounded-xl transition-colors"
-              >
-                <KanbanIcon className="w-4 h-4" />
-                Abrir Kanban
-              </motion.button>
-            </div>
-            <KanbanIcon className="absolute -right-6 -bottom-4 w-40 h-40 text-white/[0.08]" />
-          </motion.div>
-        )}
-
-        {false && !showAgenda && !showOrders && !showTasks && (
-          <motion.div
-            variants={fadeUp}
-            className="md:col-span-5 rounded-2xl p-6 bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-md"
-          >
-            <p className="text-sm font-medium text-white/80 mb-2">Modo essencial</p>
-            <p className="text-lg font-bold mb-3">Foco no que importa.</p>
-            <p className="text-sm text-white/85">
-              Gerencie seus clientes, conversas e financeiro sem distração. Mude o modo em Configurações a qualquer momento.
-            </p>
-          </motion.div>
-        )}
-      </div>
-
-      {/* ━━━ KPI Cards — mode-specific (métricas gerais vão na CompactMetricsStrip acima) ━━━
-           Sempre renderizamos 2 cards (Agendamentos+Próximos em servicos, Pedidos+Em andamento
-           em pedidos), então o grid fica 2 colunas para preencher horizontalmente sem gap feio. ━━━ */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        {/* Agendamentos Hoje — apenas no modo serviços */}
-        {showAgenda && (
-        <motion.div
-          variants={fadeUp}
-          className={cn(
-            'rounded-2xl p-5',
-            'bg-white dark:bg-gray-800/60',
-            'border border-gray-100 dark:border-gray-700/50',
-            'shadow-sm',
-            'border-l-[3px] border-l-amber-500',
-          )}
-        >
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600 dark:text-gray-400">{t('dashboard.todayAppointments', 'Agendamentos Hoje')}</p>
-              {isLoading ? (
-                <div className="h-9 w-16 rounded-lg shimmer mt-1" />
-              ) : (
-                <p className="text-3xl font-bold text-gray-900 dark:text-white mt-1 tracking-tight">{todayAppointments.length}</p>
-              )}
-            </div>
-            <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center">
-              <CalendarCheck className="w-5 h-5 text-amber-500 dark:text-amber-400" />
-            </div>
-          </div>
-        </motion.div>
-        )}
-
-        {/* Próximos — apenas no modo serviços */}
-        {showAgenda && (
-        <motion.div
-          variants={fadeUp}
-          className={cn(
-            'rounded-2xl p-5',
-            'bg-white dark:bg-gray-800/60',
-            'border border-gray-100 dark:border-gray-700/50',
-            'shadow-sm',
-            'border-l-[3px] border-l-emerald-500',
-          )}
-        >
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600 dark:text-gray-400">{t('dashboard.upcoming', 'Próximos')}</p>
-              {isLoading ? (
-                <div className="h-9 w-16 rounded-lg shimmer mt-1" />
-              ) : (
-                <p className="text-3xl font-bold text-gray-900 dark:text-white mt-1 tracking-tight">{upcomingCount}</p>
-              )}
-            </div>
-            <div className="w-10 h-10 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 flex items-center justify-center">
-              <CalendarClock className="w-5 h-5 text-emerald-500 dark:text-emerald-400" />
-            </div>
-          </div>
-        </motion.div>
-        )}
-
-        {/* Pedidos Hoje — apenas no modo pedidos */}
-        {showOrders && (
-          <motion.div variants={fadeUp}
-            className="rounded-2xl p-5 bg-white dark:bg-gray-800/60 border border-gray-100 dark:border-gray-700/50 shadow-sm border-l-[3px] border-l-orange-500"
-          >
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Pedidos Hoje</p>
-                <p className="text-3xl font-bold text-gray-900 dark:text-white mt-1 tracking-tight">{ordersToday.length}</p>
-                <p className="text-[11px] text-gray-400 mt-0.5">{formatCurrency(ordersRevenueToday)}</p>
-              </div>
-              <div className="w-10 h-10 rounded-xl bg-orange-50 dark:bg-orange-500/10 flex items-center justify-center">
-                <ClipboardCheck className="w-5 h-5 text-orange-500 dark:text-orange-400" />
-              </div>
-            </div>
-          </motion.div>
-        )}
-
-        {showOrders && (
-          <motion.div variants={fadeUp}
-            className="rounded-2xl p-5 bg-white dark:bg-gray-800/60 border border-gray-100 dark:border-gray-700/50 shadow-sm border-l-[3px] border-l-amber-500"
-          >
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Em andamento</p>
-                <p className="text-3xl font-bold text-gray-900 dark:text-white mt-1 tracking-tight">{ordersActive.length}</p>
-                {ordersUrgent.length > 0 && (
-                  <p className="text-[11px] text-red-500 font-semibold mt-0.5">
-                    {ordersUrgent.length} atrasado{ordersUrgent.length > 1 ? 's' : ''}
-                  </p>
-                )}
-              </div>
-              <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center">
-                <Bike className="w-5 h-5 text-amber-500 dark:text-amber-400" />
-              </div>
-            </div>
-          </motion.div>
-        )}
-
-        {/* Tasks — apenas no modo times */}
-        {showTasks && (
-          <motion.div variants={fadeUp}
-            className="rounded-2xl p-5 bg-white dark:bg-gray-800/60 border border-gray-100 dark:border-gray-700/50 shadow-sm border-l-[3px] border-l-violet-500"
-          >
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Tarefas Abertas</p>
-                <p className="text-3xl font-bold text-gray-900 dark:text-white mt-1 tracking-tight">{tasksOpen.length}</p>
-              </div>
-              <div className="w-10 h-10 rounded-xl bg-violet-50 dark:bg-violet-500/10 flex items-center justify-center">
-                <KanbanIcon className="w-5 h-5 text-violet-500 dark:text-violet-400" />
-              </div>
-            </div>
-          </motion.div>
-        )}
-
-        {showTasks && (
-          <motion.div variants={fadeUp}
-            className="rounded-2xl p-5 bg-white dark:bg-gray-800/60 border border-gray-100 dark:border-gray-700/50 shadow-sm border-l-[3px] border-l-amber-500"
-          >
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Minhas Tarefas</p>
-                <p className="text-3xl font-bold text-gray-900 dark:text-white mt-1 tracking-tight">{tasksAssignedToMe.length}</p>
-                {tasksOverdue.length > 0 && (
-                  <p className="text-[11px] text-red-500 font-semibold mt-0.5">
-                    {tasksOverdue.length} atrasada{tasksOverdue.length > 1 ? 's' : ''}
-                  </p>
-                )}
-              </div>
-              <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center">
-                <Clock className="w-5 h-5 text-amber-500 dark:text-amber-400" />
-              </div>
-            </div>
-          </motion.div>
-        )}
-
-        {/* Financeiro — Pendências — REMOVIDO: agora mora na CompactMetricsStrip acima */}
-      </div>
-
-      {/* ━━━ Bottom Section: Client Table + Sidebar ━━━ */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* Client Table (left) */}
-        <motion.div
-          variants={fadeUp}
-          className={cn(
-            'lg:col-span-7 rounded-2xl',
-            'bg-white dark:bg-gray-800/60',
-            'border border-gray-100 dark:border-gray-700/50',
-            'shadow-sm overflow-hidden',
-          )}
-        >
-          {/* Search Bar */}
-          <div className="p-4 border-b border-gray-100 dark:border-gray-700/40">
-            <div className="relative">
-              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500 pointer-events-none" />
-              <input
-                type="text"
-                placeholder={t('dashboard.searchClients', 'Buscar clientes por nome, e-mail ou CPF...')}
-                value={clientSearch}
-                onChange={(e) => setClientSearch(e.target.value)}
-                className={cn(
-                  'w-full pl-10 pr-4 py-2.5 rounded-xl text-sm',
-                  'bg-gray-50/80 dark:bg-gray-900/40',
-                  'border border-gray-200/80 dark:border-gray-700/50',
-                  'text-gray-900 dark:text-gray-100',
-                  'placeholder:text-gray-400 dark:placeholder:text-gray-500',
-                  'focus:outline-none focus:border-red-200 dark:focus:border-red-500/30',
-                  'focus:bg-white dark:focus:bg-gray-900/60',
-                  'focus:shadow-[0_0_0_3px_rgba(220,38,38,0.06)]',
-                  'transition-all duration-200',
-                )}
-              />
-            </div>
-          </div>
-
-          {/* Table */}
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-gray-100 dark:border-gray-700/40">
-                  <th className="text-left text-xs font-semibold text-red-600 dark:text-red-400 px-5 py-3">{t('dashboard.colClient', 'Cliente')}</th>
-                  <th className="text-left text-xs font-semibold text-gray-500 dark:text-gray-400 px-4 py-3 hidden sm:table-cell">{t('dashboard.colType', 'Tipo')}</th>
-                  <th className="text-left text-xs font-semibold text-gray-500 dark:text-gray-400 px-4 py-3 hidden md:table-cell">{t('dashboard.colPhone', 'Telefone')}</th>
-                  <th className="text-left text-xs font-semibold text-gray-500 dark:text-gray-400 px-4 py-3 hidden xl:table-cell">{t('dashboard.colNextAppt', 'Próx. Agend.')}</th>
-                  <th className="text-left text-xs font-semibold text-gray-500 dark:text-gray-400 px-4 py-3">{t('dashboard.colStatus', 'Status')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {isLoading ? (
-                  Array.from({ length: 5 }).map((_, i) => (
-                    <tr key={i} className="border-b border-gray-50 dark:border-gray-700/20">
-                      <td className="px-5 py-3.5">
-                        <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 rounded-full shimmer" />
-                          <div className="h-4 w-28 rounded-md shimmer" />
-                        </div>
-                      </td>
-                      <td className="px-4 py-3.5 hidden sm:table-cell"><div className="h-4 w-8 rounded-md shimmer" /></td>
-                      <td className="px-4 py-3.5 hidden md:table-cell"><div className="h-4 w-24 rounded-md shimmer" /></td>
-                      <td className="px-4 py-3.5 hidden xl:table-cell"><div className="h-4 w-16 rounded-md shimmer" /></td>
-                      <td className="px-4 py-3.5"><div className="h-6 w-20 rounded-full shimmer" /></td>
-                    </tr>
-                  ))
-                ) : filteredClients.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="text-center py-12">
-                      <Users className="w-8 h-8 text-gray-300 dark:text-gray-600 mx-auto mb-2" />
-                      <p className="text-sm text-gray-400 dark:text-gray-500">
-                        {clientSearch ? t('dashboard.noClientFound', 'Nenhum cliente encontrado') : t('dashboard.noClients', 'Nenhum cliente cadastrado')}
-                      </p>
-                    </td>
-                  </tr>
-                ) : (
-                  filteredClients.map((client) => {
-                    const nextAppt = clientNextAppointment[client.id];
-                    return (
-                      <tr
-                        key={client.id}
-                        className="border-b border-gray-50 dark:border-gray-700/20 hover:bg-gray-50/50 dark:hover:bg-white/[0.02] transition-colors group cursor-pointer"
-                      >
-                        <td className="px-5 py-3">
-                          <div className="flex items-center gap-3">
-                            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-700 dark:to-gray-600 flex items-center justify-center text-[11px] font-bold text-gray-500 dark:text-gray-300 flex-shrink-0 overflow-hidden">
-                              {client.avatarUrl
-                                ? <img src={client.avatarUrl} alt={client.name} className="w-full h-full object-cover" />
-                                : getInitials(client.name)
-                              }
-                            </div>
-                            <span className="text-sm font-medium text-gray-800 dark:text-gray-100 truncate max-w-[160px]">
-                              {client.name}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 hidden sm:table-cell">
-                          <span className="text-xs text-gray-500 dark:text-gray-400 uppercase font-medium">
-                            {client.tipo === 'pf' ? 'PF' : 'PJ'}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 hidden md:table-cell">
-                          <span className="text-sm text-gray-500 dark:text-gray-400">
-                            {client.phone ? formatPhone(client.phone) : '—'}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 hidden xl:table-cell">
-                          <span className="text-sm text-gray-500 dark:text-gray-400">
-                            {nextAppt
-                              ? `${format(new Date(nextAppt.date + 'T12:00:00'), 'dd/MM')} ${nextAppt.startTime}`
-                              : '—'
-                            }
-                          </span>
-                        </td>
-                        <td className="px-4 py-3">
-                          {nextAppt ? (
-                            <span className="inline-flex items-center text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-500/20">
-                              {t('dashboard.scheduled', 'Agendado')}
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center text-xs font-medium px-2.5 py-1 rounded-full bg-gray-50 dark:bg-gray-700/40 text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-gray-600/50">
-                              {t('dashboard.noAppointment', 'Sem consulta')}
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Footer */}
-          {!isLoading && clients.length > 8 && (
-            <div className="px-5 py-3 border-t border-gray-100 dark:border-gray-700/40 flex items-center justify-between">
-              <span className="text-xs text-gray-400 dark:text-gray-500">
-                {t('dashboard.showing', 'Mostrando')} {filteredClients.length} {t('dashboard.of', 'de')} {clients.length} {t('dashboard.clients', 'clientes')}
-              </span>
-              <button
-                onClick={() => setActivePage('CRM')}
-                className="flex items-center gap-1 text-xs font-medium text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors"
-              >
-                {t('dashboard.viewAll', 'Ver todos')}
-                <ChevronRight className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          )}
-        </motion.div>
-
-        {/* Right Sidebar */}
-        <div className="lg:col-span-5 space-y-4">
-          {/* Today's Schedule — apenas no modo serviços */}
+          {/* Card 2: Mode-specific focus */}
           {showAgenda && (
-          <motion.div
-            variants={fadeUp}
-            className={cn(
-              'rounded-2xl',
-              'bg-white dark:bg-gray-800/60',
-              'border border-gray-100 dark:border-gray-700/50',
-              'shadow-sm overflow-hidden',
-            )}
-          >
-            <div className="px-5 py-3.5 border-b border-gray-100 dark:border-gray-700/40 flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-                <Clock className="w-4 h-4 text-red-500 dark:text-red-400" />
-                {t('dashboard.todaySchedule', 'Agenda de Hoje')}
-              </h3>
-              <button
-                onClick={() => setActivePage('Agenda')}
-                className="flex items-center gap-1 text-xs font-medium text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors"
-              >
-                {t('dashboard.viewSchedule', 'Ver agenda')}
-                <ChevronRight className="w-3.5 h-3.5" />
-              </button>
-            </div>
-
-            <div className="p-3">
-              {loadingAppointments ? (
-                <div className="space-y-2 p-2">
-                  {[0, 1, 2, 3].map(i => (
-                    <div key={i} className="flex items-center gap-3 py-2">
-                      <div className="h-4 w-11 rounded shimmer" />
-                      <div className="w-0.5 h-8 rounded-full shimmer" />
-                      <div className="flex-1 space-y-1.5">
-                        <div className="h-4 w-24 rounded shimmer" />
-                        <div className="h-3 w-16 rounded shimmer" />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : todaySchedule.length === 0 ? (
-                <div className="text-center py-8">
-                  <CalendarCheck className="w-8 h-8 text-gray-300 dark:text-gray-600 mx-auto mb-2" />
-                  <p className="text-sm text-gray-400 dark:text-gray-500">{t('dashboard.noTodayAppts', 'Nenhum agendamento hoje')}</p>
-                  <motion.button
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.97 }}
-                    onClick={() => setActivePage('Agenda')}
-                    className="mt-3 text-xs font-medium text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors"
-                  >
-                    {t('dashboard.scheduleNow', 'Agendar agora')}
-                  </motion.button>
-                </div>
-              ) : (
-                <div className="space-y-0.5">
-                  {todaySchedule.slice(0, 6).map((appt, idx) => {
-                    const isPast = appt.startTime < format(new Date(), 'HH:mm');
-                    const statusColor = appt.status === 'concluido'
-                      ? 'bg-emerald-400'
-                      : appt.status === 'confirmado'
-                        ? 'bg-blue-400'
-                        : appt.status === 'em_andamento'
-                          ? 'bg-violet-400'
-                          : 'bg-amber-400';
-
-                    return (
-                      <motion.div
-                        key={appt.id}
-                        initial={{ opacity: 0, x: -8 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{ duration: 0.3, delay: idx * 0.05 }}
-                        className={cn(
-                          'flex items-center gap-3 px-3 py-2.5 rounded-xl',
-                          'hover:bg-gray-50 dark:hover:bg-white/[0.03] transition-colors cursor-pointer',
-                          isPast && appt.status !== 'em_andamento' && 'opacity-50',
-                        )}
-                      >
-                        <span className={cn(
-                          'text-xs font-mono font-semibold w-11 flex-shrink-0',
-                          isPast && appt.status !== 'em_andamento'
-                            ? 'text-gray-400 dark:text-gray-500'
-                            : 'text-red-500 dark:text-red-400',
-                        )}>
-                          {appt.startTime}
-                        </span>
-                        <div className={cn('w-0.5 h-8 rounded-full flex-shrink-0', statusColor)} />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-gray-800 dark:text-gray-100 truncate">
-                            {appt.clientName}
-                          </p>
-                          <p className="text-xs text-gray-400 dark:text-gray-500 truncate">
-                            {appt.serviceName}
-                          </p>
-                        </div>
-                        <span className={cn('w-2 h-2 rounded-full flex-shrink-0', statusColor)} />
-                      </motion.div>
-                    );
-                  })}
-                  {todaySchedule.length > 6 && (
-                    <div className="text-center pt-2 pb-1">
-                      <button
-                        onClick={() => setActivePage('Agenda')}
-                        className="text-xs font-medium text-red-500 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300 transition-colors"
-                      >
-                        +{todaySchedule.length - 6} mais
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </motion.div>
+            <FocusCard
+              title="Próximo agendamento"
+              icon={CalendarClock}
+              loading={loadingAppointments}
+              empty={!nextAppointment}
+              emptyText="Agenda livre"
+              emptyAction={{ label: 'Agendar agora', onClick: () => setActivePage('Agenda') }}
+              onClick={() => setActivePage('Agenda')}
+              primaryText={nextAppointment?.clientName}
+              secondaryText={
+                nextAppointment
+                  ? `${nextAppointment.serviceName || '—'} · ${
+                      nextAppointment.date === todayStr
+                        ? `Hoje, ${nextAppointment.startTime}`
+                        : `${format(new Date(nextAppointment.date + 'T12:00:00'), 'dd/MM')} ${nextAppointment.startTime}`
+                    }`
+                  : undefined
+              }
+              avatarText={nextAppointment ? getInitials(nextAppointment.clientName) : undefined}
+            />
           )}
 
-          {/* Pedidos Ativos (substitui Agenda de Hoje no modo pedidos) */}
           {showOrders && (
-            <motion.div variants={fadeUp}
-              className="rounded-2xl bg-white dark:bg-gray-800/60 border border-gray-100 dark:border-gray-700/50 shadow-sm overflow-hidden"
-            >
-              <div className="px-5 py-3.5 border-b border-gray-100 dark:border-gray-700/40 flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-                  <ClipboardCheck className="w-4 h-4 text-red-500" />
-                  Pedidos em tempo real
-                </h3>
-                <button onClick={() => setActivePage('Pedidos')}
-                  className="text-xs font-medium text-red-500 hover:text-red-600 inline-flex items-center gap-1">
-                  Abrir <ChevronRight className="w-3 h-3" />
-                </button>
-              </div>
-              <div className="p-4">
-                {ordersActive.length === 0 ? (
-                  <p className="text-center text-sm text-gray-400 py-6">Nenhum pedido ativo agora</p>
-                ) : (
-                  <div className="space-y-1.5">
-                    {ordersActive.slice(0, 6).map(o => (
-                      <button
-                        key={o.id}
-                        onClick={() => setActivePage('Pedidos')}
-                        className="w-full text-left flex items-center gap-3 p-2.5 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800/40 transition-colors"
-                      >
-                        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
-                          #{o.number}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">{o.clientName}</p>
-                          <p className="text-[11px] text-gray-500 truncate">
-                            {DELIVERY_ORDER_STATUS_LABELS[o.status]} · {o.items.length} {o.items.length === 1 ? 'item' : 'itens'}
-                          </p>
-                        </div>
-                        <p className="text-sm font-bold text-gray-700 dark:text-gray-300">{formatCurrency(o.total)}</p>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </motion.div>
+            <FocusCard
+              title="Pedidos ativos"
+              icon={Bike}
+              loading={false}
+              empty={ordersActive.length === 0}
+              emptyText="Sem pedidos ativos"
+              emptyAction={{ label: 'Abrir gerenciador', onClick: () => setActivePage('Pedidos') }}
+              onClick={() => setActivePage('Pedidos')}
+              primaryText={`${ordersActive.length} ${ordersActive.length === 1 ? 'pedido' : 'pedidos'}`}
+              secondaryText={
+                ordersUrgent.length > 0
+                  ? `${ordersUrgent.length} atrasado${ordersUrgent.length > 1 ? 's' : ''}`
+                  : 'Todos no prazo'
+              }
+              tone={ordersUrgent.length > 0 ? 'alert' : 'default'}
+              bigNumber={ordersActive.length}
+            />
           )}
 
-          {/* Financial Alerts — ocultos em modo times */}
-          {showFinancial && !isLoading && (overdueTransactions.length > 0 || pendingTransactions.length > 0) && (
-            <motion.div
-              variants={fadeUp}
-              className={cn(
-                'rounded-2xl',
-                'bg-white dark:bg-gray-800/60',
-                'border border-gray-100 dark:border-gray-700/50',
-                'shadow-sm overflow-hidden',
-              )}
-            >
-              <div className="px-5 py-3.5 border-b border-gray-100 dark:border-gray-700/40 flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 text-amber-500" />
-                  {t('dashboard.financialAlerts', 'Alertas Financeiros')}
-                </h3>
-                <button
-                  onClick={() => setActivePage('Financeiro')}
-                  className="flex items-center gap-1 text-xs font-medium text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors"
-                >
-                  {t('dashboard.viewAll', 'Ver todos')}
-                  <ChevronRight className="w-3.5 h-3.5" />
-                </button>
-              </div>
-              <div className="p-4 space-y-2.5">
-                {overdueTransactions.length > 0 && (
-                  <div className="flex items-center justify-between p-3 rounded-xl bg-red-50/60 dark:bg-red-500/5 border border-red-100 dark:border-red-500/10">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                      <span className="text-sm font-medium text-red-700 dark:text-red-400">
-                        {overdueTransactions.length} {overdueTransactions.length > 1 ? t('dashboard.overdueMulti', 'atrasadas') : t('dashboard.overdueSingle', 'atrasada')}
-                      </span>
-                    </div>
-                    <span className="text-sm font-bold text-red-700 dark:text-red-400">
-                      {formatCurrency(overdueAmount)}
-                    </span>
-                  </div>
-                )}
-                {pendingTransactions.length > 0 && (
-                  <div className="flex items-center justify-between p-3 rounded-xl bg-amber-50/60 dark:bg-amber-500/5 border border-amber-100 dark:border-amber-500/10">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-2 h-2 rounded-full bg-amber-500" />
-                      <span className="text-sm font-medium text-amber-700 dark:text-amber-400">
-                        {pendingTransactions.length} {pendingTransactions.length > 1 ? t('dashboard.pendingMulti', 'pendentes') : t('dashboard.pendingSingle', 'pendente')}
-                      </span>
-                    </div>
-                    <span className="text-sm font-bold text-amber-700 dark:text-amber-400">
-                      {formatCurrency(pendingAmount)}
-                    </span>
-                  </div>
-                )}
-              </div>
-            </motion.div>
+          {!showAgenda && !showOrders && (
+            <FocusCard
+              title="Clientes ativos"
+              icon={Users}
+              loading={loadingClients}
+              empty={clients.length === 0}
+              emptyText="Nenhum cliente ainda"
+              emptyAction={{ label: 'Adicionar cliente', onClick: () => setActivePage('Clientes') }}
+              onClick={() => setActivePage('Clientes')}
+              primaryText={`${clients.length} ${clients.length === 1 ? 'cliente' : 'clientes'}`}
+              secondaryText="Carteira total"
+              bigNumber={clients.length}
+            />
           )}
 
-          {/* Quick Access */}
-          <motion.div
-            variants={fadeUp}
+          {/* Card 3: Financial alerts */}
+          <AlertsCard
+            overdueCount={overdueTransactions.length}
+            overdueAmount={overdueAmount}
+            pendingCount={pendingTransactions.length}
+            pendingAmount={pendingAmount}
+            loading={loadingTransactions}
+            onClick={() => setActivePage('Financeiro')}
+          />
+
+          {/* Card 4: Team pulse */}
+          <TeamPulseCard
+            members={members}
+            onlineMembers={onlineMembers}
+            onClick={() => setActivePage('Configurações')}
+          />
+        </div>
+      </motion.section>
+    </motion.div>
+  );
+}
+
+// ─── Module circle ──────────────────────────────────────────────────────────
+function ModuleCircle({
+  module,
+  index,
+  onClick,
+}: {
+  module: ModuleEntry;
+  index: number;
+  onClick: () => void;
+}) {
+  const Icon = module.icon;
+  return (
+    <motion.button
+      variants={popIn}
+      whileHover={{ y: -2 }}
+      whileTap={{ scale: 0.95 }}
+      onClick={onClick}
+      transition={{ duration: 0.25, delay: index * 0.025, ease: [0.22, 1, 0.36, 1] }}
+      className="group flex flex-col items-center gap-2 flex-shrink-0 w-[80px] sm:w-auto"
+    >
+      <div
+        className={cn(
+          'w-14 h-14 sm:w-[60px] sm:h-[60px] rounded-2xl flex items-center justify-center',
+          'border border-gray-200/60 dark:border-gray-700/40',
+          'group-hover:border-gray-300 dark:group-hover:border-gray-600/60 transition-colors',
+          module.bg,
+        )}
+      >
+        <Icon className={cn('w-[22px] h-[22px] sm:w-6 sm:h-6', module.iconColor)} strokeWidth={1.9} />
+      </div>
+      <span className="text-[11px] sm:text-xs font-medium text-gray-600 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-gray-200 transition-colors text-center leading-tight">
+        {module.label}
+      </span>
+    </motion.button>
+  );
+}
+
+// ─── Smart cards ────────────────────────────────────────────────────────────
+function CardShell({
+  children,
+  onClick,
+  className,
+}: {
+  children: React.ReactNode;
+  onClick?: () => void;
+  className?: string;
+}) {
+  const Comp = onClick ? motion.button : motion.div;
+  return (
+    <Comp
+      {...(onClick
+        ? { onClick, whileHover: { y: -2 }, whileTap: { scale: 0.99 } }
+        : {})}
+      variants={popIn}
+      className={cn(
+        'group relative w-full text-left rounded-2xl p-4',
+        'bg-white dark:bg-gray-800/40',
+        'border border-gray-200/70 dark:border-gray-700/50',
+        'border-l-2 border-l-red-500/70 dark:border-l-red-500/60',
+        'hover:border-l-red-500 dark:hover:border-l-red-400',
+        'hover:border-gray-300 dark:hover:border-gray-600/60 transition-colors duration-200',
+        onClick && 'cursor-pointer',
+        className,
+      )}
+    >
+      {children}
+    </Comp>
+  );
+}
+
+function RevenueCard({
+  value,
+  count,
+  delta,
+  loading,
+  onClick,
+}: {
+  value: number;
+  count: number;
+  delta: number;
+  loading: boolean;
+  onClick: () => void;
+}) {
+  const positive = delta > 0;
+  const negative = delta < 0;
+  return (
+    <CardShell onClick={onClick}>
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-[11px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+          Receita hoje
+        </p>
+        <DollarSign className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+      </div>
+      {loading ? (
+        <div className="h-8 w-32 rounded-lg shimmer" />
+      ) : (
+        <p className="font-display text-3xl font-semibold tracking-tight text-gray-900 dark:text-white">
+          {formatCurrency(value)}
+        </p>
+      )}
+      <div className="flex items-center justify-between mt-2">
+        <p className="text-xs text-gray-500 dark:text-gray-400">
+          {count} {count === 1 ? 'venda' : 'vendas'}
+        </p>
+        {!loading && delta !== 0 && (
+          <span
             className={cn(
-              'rounded-2xl',
-              'bg-white dark:bg-gray-800/60',
-              'border border-gray-100 dark:border-gray-700/50',
-              'shadow-sm overflow-hidden',
+              'inline-flex items-center gap-0.5 text-[11px] font-medium',
+              positive && 'text-emerald-600 dark:text-emerald-400',
+              negative && 'text-red-600 dark:text-red-400',
             )}
           >
-            <div className="p-5">
-              <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">{t('dashboard.quickAccess', 'Acesso Rápido')}</h3>
-              <div className="grid grid-cols-2 gap-2">
-                {([
-                  { label: t('sidebar.crm', 'CRM'), icon: Users, page: 'CRM' as const, color: 'text-red-500 dark:text-red-400' },
-                  { label: t('sidebar.agenda', 'Agenda'), icon: CalendarCheck, page: 'Agenda' as const, color: 'text-amber-500 dark:text-amber-400' },
-                  { label: t('sidebar.pdv', 'PDV'), icon: ShoppingBag, page: 'PDV' as const, color: 'text-emerald-500 dark:text-emerald-400' },
-                  { label: t('sidebar.financeiro', 'Financeiro'), icon: Wallet, page: 'Financeiro' as const, color: 'text-blue-500 dark:text-blue-400' },
-                  { label: t('sidebar.estoque', 'Estoque'), icon: Receipt, page: 'Estoque' as const, color: 'text-violet-500 dark:text-violet-400' },
-                  { label: t('sidebar.conversas', 'Conversas'), icon: MessageSquare, page: 'Conversas' as const, color: 'text-pink-500 dark:text-pink-400' },
-                ]).map((item) => (
-                  <motion.button
-                    key={item.page}
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.96 }}
-                    onClick={() => setActivePage(item.page)}
-                    className={cn(
-                      'flex items-center gap-2.5 p-3 rounded-xl text-sm font-medium',
-                      'bg-gray-50/80 dark:bg-gray-700/30',
-                      'text-gray-700 dark:text-gray-300',
-                      'hover:bg-gray-100 dark:hover:bg-gray-700/50',
-                      'border border-transparent hover:border-gray-200 dark:hover:border-gray-600/50',
-                      'transition-all duration-200',
-                    )}
-                  >
-                    <item.icon className={cn('w-4 h-4', item.color)} />
-                    {item.label}
-                  </motion.button>
-                ))}
-              </div>
-            </div>
-          </motion.div>
-        </div>
+            {positive ? (
+              <TrendingUp className="w-3 h-3" />
+            ) : (
+              <TrendingDown className="w-3 h-3" />
+            )}
+            {positive ? '+' : ''}
+            {delta}%
+          </span>
+        )}
       </div>
-    </motion.div>
+    </CardShell>
+  );
+}
+
+function FocusCard({
+  title,
+  icon: Icon,
+  loading,
+  empty,
+  emptyText,
+  emptyAction,
+  onClick,
+  primaryText,
+  secondaryText,
+  avatarText,
+  bigNumber,
+  tone = 'default',
+}: {
+  title: string;
+  icon: React.ElementType;
+  loading: boolean;
+  empty: boolean;
+  emptyText: string;
+  emptyAction?: { label: string; onClick: () => void };
+  onClick: () => void;
+  primaryText?: string;
+  secondaryText?: string;
+  avatarText?: string;
+  bigNumber?: number;
+  tone?: 'default' | 'alert';
+}) {
+  if (empty && !loading) {
+    return (
+      <CardShell>
+        <div className="flex flex-col h-full">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-[11px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+              {title}
+            </p>
+            <Icon className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+          </div>
+          <div className="flex-1 flex flex-col items-start gap-2 py-2">
+            <p className="text-sm text-gray-500 dark:text-gray-400">{emptyText}</p>
+            {emptyAction && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  emptyAction.onClick();
+                }}
+                className="inline-flex items-center gap-1 text-xs font-medium text-gray-700 dark:text-gray-200 hover:text-red-600 dark:hover:text-red-400 transition-colors"
+              >
+                {emptyAction.label}
+                <ArrowRight className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+        </div>
+      </CardShell>
+    );
+  }
+
+  return (
+    <CardShell onClick={onClick}>
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-[11px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+          {title}
+        </p>
+        <Icon className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+      </div>
+
+      {loading ? (
+        <>
+          <div className="h-7 w-32 rounded-lg shimmer mb-2" />
+          <div className="h-3.5 w-20 rounded shimmer" />
+        </>
+      ) : (
+        <div className="flex items-end gap-3">
+          {avatarText && (
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-semibold flex-shrink-0 bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300">
+              {avatarText}
+            </div>
+          )}
+          <div className="flex-1 min-w-0">
+            {typeof bigNumber === 'number' ? (
+              <p className="font-display text-3xl font-semibold tracking-tight text-gray-900 dark:text-white leading-none">
+                {bigNumber}
+              </p>
+            ) : (
+              <p className="text-base font-semibold tracking-tight text-gray-900 dark:text-white truncate">
+                {primaryText || '—'}
+              </p>
+            )}
+            {secondaryText && (
+              <p
+                className={cn(
+                  'text-xs truncate mt-1',
+                  tone === 'alert'
+                    ? 'text-red-600 dark:text-red-400 font-medium'
+                    : 'text-gray-500 dark:text-gray-400',
+                )}
+              >
+                {secondaryText}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+    </CardShell>
+  );
+}
+
+function AlertsCard({
+  overdueCount,
+  overdueAmount,
+  pendingCount,
+  pendingAmount,
+  loading,
+  onClick,
+}: {
+  overdueCount: number;
+  overdueAmount: number;
+  pendingCount: number;
+  pendingAmount: number;
+  loading: boolean;
+  onClick: () => void;
+}) {
+  const hasAlerts = overdueCount > 0 || pendingCount > 0;
+  const isUrgent = overdueCount > 0;
+  return (
+    <CardShell onClick={onClick}>
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-[11px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+          Alertas
+        </p>
+        {isUrgent ? (
+          <AlertTriangle className="w-4 h-4 text-red-500 dark:text-red-400" />
+        ) : (
+          <Wallet className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+        )}
+      </div>
+
+      {loading ? (
+        <>
+          <div className="h-7 w-24 rounded-lg shimmer mb-2" />
+          <div className="h-3.5 w-32 rounded shimmer" />
+        </>
+      ) : !hasAlerts ? (
+        <div>
+          <p className="font-display text-3xl font-semibold tracking-tight text-gray-900 dark:text-white leading-none">
+            0
+          </p>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+            Tudo em dia
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          {overdueCount > 0 && (
+            <div className="flex items-center justify-between gap-2">
+              <span className="inline-flex items-center gap-1.5 text-xs text-red-600 dark:text-red-400">
+                <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                {overdueCount} atrasada{overdueCount > 1 ? 's' : ''}
+              </span>
+              <span className="text-xs font-medium text-gray-700 dark:text-gray-200 truncate">
+                {formatCurrency(overdueAmount)}
+              </span>
+            </div>
+          )}
+          {pendingCount > 0 && (
+            <div className="flex items-center justify-between gap-2">
+              <span className="inline-flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                {pendingCount} pendente{pendingCount > 1 ? 's' : ''}
+              </span>
+              <span className="text-xs font-medium text-gray-700 dark:text-gray-200 truncate">
+                {formatCurrency(pendingAmount)}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+    </CardShell>
+  );
+}
+
+function TeamPulseCard({
+  members,
+  onlineMembers,
+  onClick,
+}: {
+  members: UserType[];
+  onlineMembers: UserType[];
+  onClick: () => void;
+}) {
+  const visible = onlineMembers.slice(0, 4);
+  const extra = Math.max(0, onlineMembers.length - visible.length);
+  return (
+    <CardShell onClick={onClick}>
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-[11px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+          Equipe
+        </p>
+        <Sparkles className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+      </div>
+
+      <p className="font-display text-3xl font-semibold tracking-tight text-gray-900 dark:text-white leading-none">
+        {onlineMembers.length}
+        <span className="text-base text-gray-400 dark:text-gray-500 font-normal ml-1">
+          / {members.length}
+        </span>
+      </p>
+
+      <div className="flex items-center justify-between mt-3">
+        <p className="text-xs text-gray-500 dark:text-gray-400">
+          {onlineMembers.length === 0 ? 'Ninguém online' : 'Online agora'}
+        </p>
+        {visible.length > 0 && (
+          <div className="flex -space-x-1.5">
+            {visible.map((m) => {
+              const status = memberDisplayStatus(m);
+              const dot = status === 'busy' ? 'bg-amber-400' : 'bg-emerald-400';
+              return (
+                <div
+                  key={m.id}
+                  title={`${m.name} · ${status}`}
+                  className="relative w-7 h-7 rounded-full ring-2 ring-white dark:ring-gray-800 bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-[10px] font-medium text-gray-600 dark:text-gray-200 overflow-hidden"
+                >
+                  {m.photoURL ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={m.photoURL} alt={m.name} className="w-full h-full object-cover" />
+                  ) : (
+                    getInitials(m.name)
+                  )}
+                  <span
+                    className={cn(
+                      'absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full ring-2 ring-white dark:ring-gray-800',
+                      dot,
+                    )}
+                  />
+                </div>
+              );
+            })}
+            {extra > 0 && (
+              <div className="relative w-7 h-7 rounded-full ring-2 ring-white dark:ring-gray-800 bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-[9px] font-medium text-gray-500 dark:text-gray-300">
+                +{extra}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </CardShell>
   );
 }
