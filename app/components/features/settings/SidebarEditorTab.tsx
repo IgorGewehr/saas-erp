@@ -442,19 +442,16 @@ export default function SidebarEditorTab() {
     if (!activeInfo || !overInfo) return;
     if (activeInfo.type !== 'item') return; // section moves handled in dragEnd
 
-    const fromKey = activeInfo.sectionKey;
     const toKey = overInfo.sectionKey;
-    if (fromKey === toKey) return; // same section — handled by sortable
 
-    // Moving item between sections
+    // Remove item from ALL sections first (idempotent — handles multiple firings
+    // during a single drag gesture without producing duplicates)
     const itemId = activeInfo.itemId!;
     setSections(prev => {
-      const next = prev.map(s => ({ ...s, items: [...s.items] }));
-      const from = next.find(s => s.key === fromKey);
+      const next = prev.map(s => ({ ...s, items: s.items.filter(id => id !== itemId) }));
       const to = next.find(s => s.key === toKey);
-      if (!from || !to) return prev;
-      from.items = from.items.filter(id => id !== itemId);
-      // Insert at the position of the over item, or at end if over is the section itself
+      if (!to) return prev;
+      // Insert at the position of the over item, or at end of section
       const overItemId = overInfo.itemId;
       const insertIdx = overItemId ? to.items.indexOf(overItemId) : to.items.length;
       to.items.splice(insertIdx < 0 ? to.items.length : insertIdx, 0, itemId);
