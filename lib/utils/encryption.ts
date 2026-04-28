@@ -1,51 +1,75 @@
-/**
- * Simple AES-256-GCM encryption for storing sensitive tokens in Firestore.
- * Uses a server-side encryption key from environment variables.
- * For client-side, we use a reversible encoding since the real encryption
- * happens at the Firestore rules level (only business members can read).
- *
- * In production, tokens should ideally be encrypted server-side only.
- * This client-side approach uses AES-GCM via Web Crypto API.
- */
+import crypto from 'crypto';
 
-const ENCRYPTION_KEY = typeof window !== 'undefined'
-  ? (process.env.NEXT_PUBLIC_ENCRYPTION_KEY || 'sp-default-key-change-in-prod-32ch')
-  : (process.env.ENCRYPTION_KEY || process.env.NEXT_PUBLIC_ENCRYPTION_KEY || 'sp-default-key-change-in-prod-32ch');
+const ALGORITHM = 'aes-256-gcm';
+const IV_LENGTH = 12;
+const TAG_LENGTH = 16;
 
-async function getKey(): Promise<CryptoKey> {
-  const keyMaterial = new TextEncoder().encode(ENCRYPTION_KEY.padEnd(32, '0').slice(0, 32));
-  return crypto.subtle.importKey('raw', keyMaterial, 'AES-GCM', false, ['encrypt', 'decrypt']);
+function getEncryptionKey(): Buffer {
+  const key = process.env.ENCRYPTION_KEY;
+  if (!key) {
+    throw new Error(
+      '[Encryption] ENCRYPTION_KEY env var is required. ' +
+      'Set a 32-character random string in your environment.'
+    );
+  }
+  // Ensure key is exactly 32 bytes
+  return Buffer.from(key.padEnd(32, '0').slice(0, 32), 'utf-8');
 }
 
 export async function encryptToken(plaintext: string): Promise<string> {
-  if (!plaintext) return '';
-  try {
-    const key = await getKey();
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const encoded = new TextEncoder().encode(plaintext);
-    const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoded);
-    // Combine IV + ciphertext, encode as base64
-    const combined = new Uint8Array(iv.length + new Uint8Array(ciphertext).length);
-    combined.set(iv);
-    combined.set(new Uint8Array(ciphertext), iv.length);
-    return btoa(String.fromCharCode(...combined));
-  } catch {
-    // Fallback to btoa if Web Crypto not available
-    return btoa(plaintext);
-  }
+  const key = getEncryptionKey();
+  const iv = crypto.randomBytes(IV_LENGTH);
+  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+
+  const encrypted = Buffer.concat([
+    cipher.update(plaintext, 'utf-8'),
+    cipher.final(),
+  ]);
+  const tag = cipher.getAuthTag();
+
+  // Format: base64(iv + encrypted + tag)
+  const combined = Buffer.concat([iv, encrypted, tag]);
+  return combined.toString('base64');
 }
 
-export async function decryptToken(encrypted: string): Promise<string> {
-  if (!encrypted) return '';
+export async function decryptToken(ciphertext: string): Promise<string> {
+  if (!ciphertext) return '';
+
+  const key = getEncryptionKey();
+
   try {
-    const key = await getKey();
-    const combined = Uint8Array.from(atob(encrypted), c => c.charCodeAt(0));
-    const iv = combined.slice(0, 12);
-    const ciphertext = combined.slice(12);
-    const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
-    return new TextDecoder().decode(decrypted);
-  } catch {
-    // Fallback: try plain atob for legacy data
-    try { return atob(encrypted); } catch { return ''; }
+    const combined = Buffer.from(ciphertext, 'base64');
+
+    if (combined.length < IV_LENGTH + TAG_LENGTH) {
+      throw new Error('Ciphertext too short');
+    }
+
+    const iv = combined.subarray(0, IV_LENGTH);
+    const tag = combined.subarray(combined.length - TAG_LENGTH);
+    const encrypted = combined.subarray(IV_LENGTH, combined.length - TAG_LENGTH);
+
+    const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+    decipher.setAuthTag(tag);
+
+    const decrypted = Buffer.concat([
+      decipher.update(encrypted),
+      decipher.final(),
+    ]);
+
+    return decrypted.toString('utf-8');
+  } catch (err) {
+    // If decryption fails, the token may be legacy base64 (pre-encryption migration)
+    // Try base64 decode as a one-time migration path
+    try {
+      const decoded = Buffer.from(ciphertext, 'base64').toString('utf-8');
+      // Validate it looks like a token (not random bytes from failed decryption)
+      if (decoded && /^[a-zA-Z0-9_\-\.]+$/.test(decoded) && decoded.length > 20) {
+        console.warn('[Encryption] Legacy base64 token detected. Re-encrypt this token.');
+        return decoded;
+      }
+    } catch {
+      // Not valid base64 either
+    }
+    throw new Error(`[Encryption] Failed to decrypt token: ${err instanceof Error ? err.message : 'unknown error'}`);
   }
 }

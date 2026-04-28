@@ -27,7 +27,8 @@ import {
   isBefore,
   isAfter,
 } from 'date-fns';
-import { ptBR } from 'date-fns/locale';
+import { ptBR, enUS } from 'date-fns/locale';
+import { useTranslation } from 'react-i18next';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ChevronLeft,
@@ -36,6 +37,7 @@ import {
   Calendar as CalendarIcon,
   Clock,
   User as UserIcon,
+  Users as UsersIcon,
   Phone,
   Mail,
   X,
@@ -54,6 +56,7 @@ import {
   ToggleLeft,
   ToggleRight,
   AlertTriangle,
+  Bell,
 } from 'lucide-react';
 import Dialog from '@mui/material/Dialog';
 import DialogTitle from '@mui/material/DialogTitle';
@@ -66,8 +69,12 @@ import Snackbar from '@mui/material/Snackbar';
 import Alert from '@mui/material/Alert';
 import { cn } from '@/lib/utils';
 import { formatCurrency, getStatusColor, getStatusLabel } from '@/lib/utils/format';
-import type { Appointment, AppointmentStatus, Service, Client, User } from '@/lib/types';
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot } from 'firebase/firestore';
+import type { Appointment, AppointmentStatus, Service, CRMContact, User } from '@/lib/types';
+import { ROLE_HIERARCHY } from '@/lib/types';
+import { maybeCreateCommission, maybeCancelCommission } from '@/lib/services/commission';
+import { calculateEarnedPoints, addLoyaltyPoints } from '@/lib/services/loyalty';
+import { syncToGoogleCalendar } from '@/lib/services/calendarSync';
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot, increment, writeBatch } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -82,7 +89,8 @@ const START_HOUR = 6;
 const END_HOUR = 22;
 const TOTAL_HOURS = END_HOUR - START_HOUR;
 
-const WEEKDAY_LABELS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'];
+const WEEKDAY_LABELS_PT = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'];
+const WEEKDAY_LABELS_EN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 const STATUS_COLORS: Record<AppointmentStatus, string> = {
   agendado: '#3B82F6',
@@ -177,6 +185,45 @@ function addDurationToTime(startTime: string, duration: number): string {
   return minutesToTime(totalMinutes);
 }
 
+// Gera datas para uma série recorrente a partir da data inicial.
+function generateRecurrenceDates(startDateISO: string, frequency: RecurrenceFrequency, occurrences: number): string[] {
+  if (!frequency || frequency === 'none' || occurrences <= 1) return [startDateISO];
+  const start = parseISO(startDateISO);
+  const dates: string[] = [];
+  for (let i = 0; i < occurrences; i++) {
+    let d: Date;
+    switch (frequency) {
+      case 'daily': d = addDays(start, i); break;
+      case 'weekly': d = addWeeks(start, i); break;
+      case 'biweekly': d = addWeeks(start, i * 2); break;
+      case 'monthly': d = addMonths(start, i); break;
+      default: d = start;
+    }
+    dates.push(format(d, 'yyyy-MM-dd'));
+  }
+  return dates;
+}
+
+// Mantém Client.totalSpent / visitCount / lastVisit em sincronia com o ciclo de conclusão do Appointment.
+// Why: esses campos eram puramente manuais, deixando a régua de valor do cliente sempre desatualizada.
+async function syncClientMetrics(params: {
+  clientId: string;
+  visitDelta: number;
+  priceDelta: number;
+  lastVisitDate?: string;
+}) {
+  if (!params.clientId) return;
+  const update: Record<string, unknown> = { updatedAt: new Date().toISOString() };
+  if (params.visitDelta !== 0) update.visitCount = increment(params.visitDelta);
+  if (params.priceDelta !== 0) update.totalSpent = increment(params.priceDelta);
+  if (params.lastVisitDate) update.lastVisit = params.lastVisitDate;
+  try {
+    await updateDoc(doc(db, 'clients', params.clientId), update);
+  } catch (err) {
+    console.warn('[Agenda] syncClientMetrics failed:', err);
+  }
+}
+
 // ==========================================
 // SUB-COMPONENTS
 // ==========================================
@@ -215,6 +262,8 @@ interface MiniCalendarProps {
 }
 
 function MiniCalendar({ selectedDate, onSelect, appointments }: MiniCalendarProps) {
+  const { t, i18n } = useTranslation();
+  const dateLocale = i18n.language === 'en-US' ? enUS : ptBR;
   const [viewMonth, setViewMonth] = useState(startOfMonth(selectedDate));
 
   const monthStart2 = startOfMonth(viewMonth);
@@ -239,7 +288,7 @@ function MiniCalendar({ selectedDate, onSelect, appointments }: MiniCalendarProp
           <ChevronLeft className="w-4 h-4 text-gray-500 dark:text-gray-400" />
         </button>
         <span className="text-sm font-semibold text-gray-900 dark:text-gray-100 capitalize">
-          {format(viewMonth, 'MMMM yyyy', { locale: ptBR })}
+          {format(viewMonth, 'MMMM yyyy', { locale: dateLocale })}
         </span>
         <button
           onClick={() => setViewMonth(addMonths(viewMonth, 1))}
@@ -250,7 +299,10 @@ function MiniCalendar({ selectedDate, onSelect, appointments }: MiniCalendarProp
       </div>
 
       <div className="grid grid-cols-7 mb-1">
-        {['D', 'S', 'T', 'Q', 'Q', 'S', 'S'].map((d, i) => (
+        {(i18n.language === 'en-US'
+          ? ['S', 'M', 'T', 'W', 'T', 'F', 'S']
+          : ['D', 'S', 'T', 'Q', 'Q', 'S', 'S']
+        ).map((d, i) => (
           <div key={i} className="text-center text-[11px] font-medium text-gray-400 dark:text-gray-500 py-1">
             {d}
           </div>
@@ -343,14 +395,19 @@ function AppointmentBlock({ appointment, onClick, compact = false }: Appointment
         }}
       >
         <div className={cn('px-2 h-full flex flex-col justify-center', isShort ? 'py-0.5' : 'py-1.5')}>
-          <div
-            className={cn(
-              'font-semibold truncate leading-tight',
-              compact ? 'text-[10px]' : 'text-[11px]',
+          <div className="flex items-center gap-1">
+            <div
+              className={cn(
+                'font-semibold truncate leading-tight flex-1',
+                compact ? 'text-[10px]' : 'text-[11px]',
+              )}
+              style={{ color }}
+            >
+              {compact ? appointment.clientName.split(' ')[0] : appointment.clientName}
+            </div>
+            {appointment.reminderSentAt && !isShort && (
+              <Bell className="w-2.5 h-2.5 flex-shrink-0 opacity-70" style={{ color }} />
             )}
-            style={{ color }}
-          >
-            {compact ? appointment.clientName.split(' ')[0] : appointment.clientName}
           </div>
           {!isShort && (
             <>
@@ -365,7 +422,7 @@ function AppointmentBlock({ appointment, onClick, compact = false }: Appointment
           {isShort && (
             <div className="text-[10px] text-gray-500 dark:text-gray-400 truncate leading-tight">
               {compact
-                ? `${appointment.startTime} ${appointment.serviceName.split(' ')[0]}`
+                ? `${appointment.startTime}${appointment.serviceName ? ` ${appointment.serviceName.split(' ')[0]}` : ''}`
                 : appointment.startTime}
             </div>
           )}
@@ -384,12 +441,16 @@ interface ServiceFormData {
   category: string;
   color: string;
   isActive: boolean;
+  commissionRate?: number;
 }
 
 interface ServiceManagementDialogProps {
   open: boolean;
   onClose: () => void;
   services: Service[];
+  members: User[];
+  currentUser: User | null;
+  isAdmin: boolean;
   onCreateService: (data: ServiceFormData) => Promise<void>;
   onUpdateService: (id: string, data: ServiceFormData) => Promise<void>;
   onDeleteService: (id: string) => Promise<void>;
@@ -399,15 +460,20 @@ function ServiceManagementDialog({
   open,
   onClose,
   services,
+  members,
+  currentUser,
+  isAdmin,
   onCreateService,
   onUpdateService,
   onDeleteService,
 }: ServiceManagementDialogProps) {
+  const { t } = useTranslation();
   const [view, setView] = useState<'list' | 'form'>('list');
   const [editingService, setEditingService] = useState<Service | null>(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [filterUserId, setFilterUserId] = useState<string>('all');
   const [formData, setFormData] = useState<ServiceFormData>({
     name: '',
     description: '',
@@ -416,7 +482,20 @@ function ServiceManagementDialog({
     category: '',
     color: '#3B82F6',
     isActive: true,
+    commissionRate: undefined,
   });
+
+  const canEditService = useCallback((service: Service) => {
+    if (isAdmin) return true;
+    if (!service.userId) return false; // global/legacy = so admin
+    return service.userId === currentUser?.uid;
+  }, [isAdmin, currentUser?.uid]);
+
+  const filteredServices = useMemo(() => {
+    if (filterUserId === 'all') return services;
+    if (filterUserId === 'global') return services.filter((s) => !s.userId);
+    return services.filter((s) => s.userId === filterUserId);
+  }, [services, filterUserId]);
 
   const resetForm = useCallback(() => {
     setFormData({
@@ -427,6 +506,7 @@ function ServiceManagementDialog({
       category: '',
       color: '#3B82F6',
       isActive: true,
+      commissionRate: undefined,
     });
     setEditingService(null);
   }, []);
@@ -441,6 +521,7 @@ function ServiceManagementDialog({
       category: service.category || '',
       color: service.color,
       isActive: service.isActive,
+      commissionRate: service.commissionRate,
     });
     setView('form');
   }, []);
@@ -496,7 +577,7 @@ function ServiceManagementDialog({
         }}
       >
         <span className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-          {view === 'list' ? 'Gerenciar Servicos' : editingService ? 'Editar Servico' : 'Novo Servico'}
+          {view === 'list' ? t('agenda.manageServices', 'Gerenciar Serviços') : editingService ? t('agenda.editService', 'Editar Serviço') : t('agenda.newService', 'Novo Serviço')}
         </span>
         <button
           onClick={view === 'form' ? () => { resetForm(); setView('list'); } : onClose}
@@ -517,89 +598,144 @@ function ServiceManagementDialog({
               transition={{ duration: 0.2 }}
               className="py-2"
             >
-              {services.length === 0 ? (
+              {/* User filter bar */}
+              {members.length > 1 && (
+                <div className="flex items-center gap-1.5 mb-3 pb-3 border-b border-gray-100 dark:border-gray-800 overflow-x-auto">
+                  <UserIcon className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500 flex-shrink-0" />
+                  <button
+                    onClick={() => setFilterUserId('all')}
+                    className={cn(
+                      'px-2.5 py-1 rounded-lg text-xs font-medium border transition-all duration-200 whitespace-nowrap flex-shrink-0',
+                      filterUserId === 'all'
+                        ? 'bg-red-50 dark:bg-red-500/10 border-red-300 dark:border-red-500/30 text-red-600 dark:text-red-400'
+                        : 'bg-white dark:bg-gray-800 border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:border-slate-300 dark:hover:border-gray-600',
+                    )}
+                  >
+                    {t('agenda.all', 'Todos')}
+                  </button>
+                  {members.map((m) => (
+                    <button
+                      key={m.id}
+                      onClick={() => setFilterUserId(filterUserId === m.id ? 'all' : m.id)}
+                      className={cn(
+                        'px-2.5 py-1 rounded-lg text-xs font-medium border transition-all duration-200 whitespace-nowrap flex-shrink-0',
+                        filterUserId === m.id
+                          ? 'bg-red-50 dark:bg-red-500/10 border-red-300 dark:border-red-500/30 text-red-600 dark:text-red-400'
+                          : 'bg-white dark:bg-gray-800 border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:border-slate-300 dark:hover:border-gray-600',
+                      )}
+                    >
+                      {(m.name || '?').split(' ')[0]}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {filteredServices.length === 0 ? (
                 <div className="text-center py-8">
                   <div className="w-12 h-12 mx-auto mb-3 rounded-xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
                     <Settings2 className="w-6 h-6 text-gray-400 dark:text-gray-500" />
                   </div>
-                  <p className="text-sm text-gray-500 dark:text-gray-400">Nenhum servico cadastrado</p>
-                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">Crie seu primeiro servico para comecar a agendar</p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                    {filterUserId !== 'all' ? t('agenda.noServicesForUser', 'Nenhum serviço para este usuário') : t('agenda.noServicesRegistered', 'Nenhum serviço cadastrado')}
+                  </p>
+                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">{t('agenda.createFirstService', 'Crie seu primeiro serviço para começar a agendar')}</p>
                 </div>
               ) : (
                 <div className="space-y-2 max-h-[400px] overflow-y-auto">
-                  {services.map((service) => (
-                    <motion.div
-                      key={service.id}
-                      initial={{ opacity: 0, y: 4 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className={cn(
-                        'flex items-center gap-3 p-3 rounded-xl border transition-colors',
-                        service.isActive
-                          ? 'border-gray-100 dark:border-gray-800 hover:border-gray-200 dark:hover:border-gray-700'
-                          : 'border-gray-100 dark:border-gray-800 opacity-50',
-                      )}
-                    >
-                      <div
-                        className="w-3 h-8 rounded-full flex-shrink-0"
-                        style={{ backgroundColor: service.color }}
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                            {service.name}
-                          </span>
-                          {!service.isActive && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400">
-                              Inativo
+                  {filteredServices.map((service) => {
+                    const editable = canEditService(service);
+                    return (
+                      <motion.div
+                        key={service.id}
+                        initial={{ opacity: 0, y: 4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className={cn(
+                          'flex items-center gap-3 p-3 rounded-xl border transition-colors',
+                          service.isActive
+                            ? 'border-gray-100 dark:border-gray-800 hover:border-gray-200 dark:hover:border-gray-700'
+                            : 'border-gray-100 dark:border-gray-800 opacity-50',
+                        )}
+                      >
+                        <div
+                          className="w-3 h-8 rounded-full flex-shrink-0"
+                          style={{ backgroundColor: service.color }}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+                              {service.name}
                             </span>
-                          )}
+                            {!service.isActive && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400">
+                                {t('agenda.inactive', 'Inativo')}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <span className="text-xs text-gray-500 dark:text-gray-400">{service.duration} min</span>
+                            <span className="text-xs text-gray-300 dark:text-gray-600">|</span>
+                            <span className="text-xs font-medium text-gray-600 dark:text-gray-300">{formatCurrency(service.price)}</span>
+                            {service.commissionRate != null && service.commissionRate > 0 && (
+                              <>
+                                <span className="text-xs text-gray-300 dark:text-gray-600">|</span>
+                                <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-medium">
+                                  {service.commissionRate}%
+                                </span>
+                              </>
+                            )}
+                            {service.category && (
+                              <>
+                                <span className="text-xs text-gray-300 dark:text-gray-600">|</span>
+                                <span className="text-xs text-gray-400 dark:text-gray-500">{service.category}</span>
+                              </>
+                            )}
+                            {service.userName && (
+                              <>
+                                <span className="text-xs text-gray-300 dark:text-gray-600">|</span>
+                                <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400">
+                                  {service.userName.split(' ')[0]}
+                                </span>
+                              </>
+                            )}
+                          </div>
                         </div>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          <span className="text-xs text-gray-500 dark:text-gray-400">{service.duration} min</span>
-                          <span className="text-xs text-gray-300 dark:text-gray-600">|</span>
-                          <span className="text-xs font-medium text-gray-600 dark:text-gray-300">{formatCurrency(service.price)}</span>
-                          {service.category && (
-                            <>
-                              <span className="text-xs text-gray-300 dark:text-gray-600">|</span>
-                              <span className="text-xs text-gray-400 dark:text-gray-500">{service.category}</span>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-1 flex-shrink-0">
-                        <button
-                          onClick={() => handleEdit(service)}
-                          className="p-1.5 hover:bg-gray-100 dark:hover:bg-white/[0.06] rounded-lg transition-colors"
-                        >
-                          <Edit3 className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
-                        </button>
-                        {confirmDeleteId === service.id ? (
-                          <div className="flex items-center gap-1">
+                        {editable && (
+                          <div className="flex items-center gap-1 flex-shrink-0">
                             <button
-                              onClick={() => handleDelete(service.id)}
-                              disabled={deleting === service.id}
-                              className="p-1.5 bg-red-50 dark:bg-red-500/10 hover:bg-red-100 dark:hover:bg-red-500/20 rounded-lg transition-colors"
-                            >
-                              <Check className="w-3.5 h-3.5 text-red-600 dark:text-red-400" />
-                            </button>
-                            <button
-                              onClick={() => setConfirmDeleteId(null)}
+                              onClick={() => handleEdit(service)}
                               className="p-1.5 hover:bg-gray-100 dark:hover:bg-white/[0.06] rounded-lg transition-colors"
                             >
-                              <X className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
+                              <Edit3 className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
                             </button>
+                            {confirmDeleteId === service.id ? (
+                              <div className="flex items-center gap-1">
+                                <button
+                                  onClick={() => handleDelete(service.id)}
+                                  disabled={deleting === service.id}
+                                  className="p-1.5 bg-red-50 dark:bg-red-500/10 hover:bg-red-100 dark:hover:bg-red-500/20 rounded-lg transition-colors"
+                                >
+                                  <Check className="w-3.5 h-3.5 text-red-600 dark:text-red-400" />
+                                </button>
+                                <button
+                                  onClick={() => setConfirmDeleteId(null)}
+                                  className="p-1.5 hover:bg-gray-100 dark:hover:bg-white/[0.06] rounded-lg transition-colors"
+                                >
+                                  <X className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() => setConfirmDeleteId(service.id)}
+                                className="p-1.5 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-lg transition-colors"
+                              >
+                                <Trash2 className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500 hover:text-red-500" />
+                              </button>
+                            )}
                           </div>
-                        ) : (
-                          <button
-                            onClick={() => setConfirmDeleteId(service.id)}
-                            className="p-1.5 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-lg transition-colors"
-                          >
-                            <Trash2 className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500 hover:text-red-500" />
-                          </button>
                         )}
-                      </div>
-                    </motion.div>
-                  ))}
+                      </motion.div>
+                    );
+                  })}
                 </div>
               )}
             </motion.div>
@@ -615,13 +751,13 @@ function ServiceManagementDialog({
               {/* Name */}
               <div>
                 <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                  Nome do Servico *
+                  {t('agenda.serviceName', 'Nome do Serviço')} *
                 </label>
                 <input
                   type="text"
                   value={formData.name}
                   onChange={(e) => setFormData((p) => ({ ...p, name: e.target.value }))}
-                  placeholder="Ex: Corte Masculino"
+                  placeholder={t('agenda.serviceNamePlaceholder', 'Ex: Corte Masculino')}
                   className={cn(
                     'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
                     'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
@@ -635,13 +771,13 @@ function ServiceManagementDialog({
               {/* Description */}
               <div>
                 <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                  Descricao
+                  {t('agenda.description', 'Descrição')}
                 </label>
                 <textarea
                   value={formData.description}
                   onChange={(e) => setFormData((p) => ({ ...p, description: e.target.value }))}
                   rows={2}
-                  placeholder="Descricao do servico..."
+                  placeholder={t('agenda.descriptionPlaceholder', 'Descrição do serviço...')}
                   className={cn(
                     'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 resize-none',
                     'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
@@ -656,7 +792,7 @@ function ServiceManagementDialog({
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                    Duracao *
+                    {t('agenda.duration', 'Duração')} *
                   </label>
                   <select
                     value={formData.duration}
@@ -675,7 +811,7 @@ function ServiceManagementDialog({
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                    Preco (R$) *
+                    {t('agenda.price', 'Preço (R$)')} *
                   </label>
                   <input
                     type="number"
@@ -695,31 +831,60 @@ function ServiceManagementDialog({
                 </div>
               </div>
 
-              {/* Category */}
-              <div>
-                <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                  Categoria
-                </label>
-                <input
-                  type="text"
-                  value={formData.category}
-                  onChange={(e) => setFormData((p) => ({ ...p, category: e.target.value }))}
-                  placeholder="Ex: Cabelo, Unhas, Barba..."
-                  className={cn(
-                    'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
-                    'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
-                    'bg-white dark:bg-gray-800',
-                    'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
-                    'transition-all duration-200',
-                  )}
-                />
+              {/* Category & Commission Rate */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                    {t('agenda.category', 'Categoria')}
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.category}
+                    onChange={(e) => setFormData((p) => ({ ...p, category: e.target.value }))}
+                    placeholder={t('agenda.categoryPlaceholder', 'Ex: Cabelo, Unhas...')}
+                    className={cn(
+                      'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
+                      'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
+                      'bg-white dark:bg-gray-800',
+                      'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
+                      'transition-all duration-200',
+                    )}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                    {t('agenda.commissionRate', 'Comissão (%)')}
+                  </label>
+                  <input
+                    type="number"
+                    step="0.5"
+                    min="0"
+                    max="100"
+                    value={formData.commissionRate ?? ''}
+                    onChange={(e) => setFormData((p) => ({
+                      ...p,
+                      commissionRate: e.target.value === '' ? undefined : Math.min(100, Math.max(0, Number(e.target.value))),
+                    }))}
+                    placeholder="0"
+                    className={cn(
+                      'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
+                      'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
+                      'bg-white dark:bg-gray-800',
+                      'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
+                      'transition-all duration-200',
+                    )}
+                  />
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">
+                    {t('agenda.commissionRateHint', 'Substitui a taxa padrão do profissional')}
+                  </p>
+                </div>
               </div>
 
               {/* Color */}
               <div>
                 <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
                   <Palette className="w-3.5 h-3.5 inline mr-1" />
-                  Cor
+                  {t('agenda.color', 'Cor')}
                 </label>
                 <div className="flex flex-wrap gap-2">
                   {SERVICE_COLOR_PALETTE.map((c) => (
@@ -741,8 +906,8 @@ function ServiceManagementDialog({
               {/* Active toggle */}
               <div className="flex items-center justify-between py-2">
                 <div>
-                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100">Servico Ativo</div>
-                  <div className="text-xs text-gray-500 dark:text-gray-400">Servicos inativos nao aparecem na agenda</div>
+                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{t('agenda.serviceActive', 'Serviço Ativo')}</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">{t('agenda.serviceActiveDesc', 'Serviços inativos não aparecem na agenda')}</div>
                 </div>
                 <button
                   onClick={() => setFormData((p) => ({ ...p, isActive: !p.isActive }))}
@@ -779,7 +944,7 @@ function ServiceManagementDialog({
             )}
           >
             <Plus className="w-4 h-4" />
-            Novo Servico
+            {t('agenda.newService', 'Novo Serviço')}
           </button>
         ) : (
           <>
@@ -791,7 +956,7 @@ function ServiceManagementDialog({
                 'transition-all duration-200',
               )}
             >
-              Voltar
+              {t('agenda.back', 'Voltar')}
             </button>
             <button
               onClick={handleSave}
@@ -804,7 +969,7 @@ function ServiceManagementDialog({
                 'disabled:opacity-50 disabled:cursor-not-allowed',
               )}
             >
-              {saving ? 'Salvando...' : editingService ? 'Salvar Alteracoes' : 'Criar Servico'}
+              {saving ? t('agenda.saving', 'Salvando...') : editingService ? t('agenda.saveChanges', 'Salvar Alterações') : t('agenda.createService', 'Criar Serviço')}
             </button>
           </>
         )}
@@ -819,11 +984,14 @@ interface DeleteConfirmDialogProps {
   onClose: () => void;
   onCancel: () => void;
   onDelete: () => void;
+  onDeleteSeries?: () => void;
+  hasRecurrence?: boolean;
   loading: boolean;
   appointmentName?: string;
 }
 
-function DeleteConfirmDialog({ open, onClose, onCancel, onDelete, loading, appointmentName }: DeleteConfirmDialogProps) {
+function DeleteConfirmDialog({ open, onClose, onCancel, onDelete, onDeleteSeries, hasRecurrence, loading, appointmentName }: DeleteConfirmDialogProps) {
+  const { t } = useTranslation();
   return (
     <Dialog
       open={open}
@@ -837,13 +1005,13 @@ function DeleteConfirmDialog({ open, onClose, onCancel, onDelete, loading, appoi
           <AlertTriangle className="w-6 h-6 text-red-600 dark:text-red-400" />
         </div>
         <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">
-          Excluir Agendamento
+          {t('agenda.deleteAppointment', 'Excluir Agendamento')}
         </h3>
         <p className="text-sm text-gray-500 dark:text-gray-400 mb-1">
-          {appointmentName ? `Deseja excluir o agendamento de ${appointmentName}?` : 'Deseja excluir este agendamento?'}
+          {appointmentName ? t('agenda.deleteConfirmNamed', `Deseja excluir o agendamento de ${appointmentName}?`, { name: appointmentName }) : t('agenda.deleteConfirm', 'Deseja excluir este agendamento?')}
         </p>
         <p className="text-xs text-gray-400 dark:text-gray-500 mb-6">
-          Voce pode cancelar o agendamento ou exclui-lo permanentemente.
+          {t('agenda.deleteOrCancelHint', 'Você pode cancelar o agendamento ou excluí-lo permanentemente.')}
         </p>
         <div className="flex flex-col gap-2">
           <button
@@ -856,7 +1024,7 @@ function DeleteConfirmDialog({ open, onClose, onCancel, onDelete, loading, appoi
               'disabled:opacity-50',
             )}
           >
-            Cancelar Agendamento (manter registro)
+            {t('agenda.cancelAppointmentKeepRecord', 'Cancelar Agendamento (manter registro)')}
           </button>
           <button
             onClick={onDelete}
@@ -869,8 +1037,23 @@ function DeleteConfirmDialog({ open, onClose, onCancel, onDelete, loading, appoi
               'disabled:opacity-50',
             )}
           >
-            {loading ? 'Excluindo...' : 'Excluir Permanentemente'}
+            {loading ? t('agenda.deleting', 'Excluindo...') : t('agenda.deletePermanently', 'Excluir Permanentemente')}
           </button>
+          {hasRecurrence && onDeleteSeries && (
+            <button
+              onClick={onDeleteSeries}
+              disabled={loading}
+              className={cn(
+                'w-full px-4 py-2.5 rounded-xl text-sm font-semibold',
+                'text-red-700 dark:text-red-400 bg-red-100 dark:bg-red-500/15 hover:bg-red-200 dark:hover:bg-red-500/25',
+                'border border-red-200 dark:border-red-500/30',
+                'transition-all duration-200',
+                'disabled:opacity-50',
+              )}
+            >
+              {loading ? t('agenda.deleting', 'Excluindo...') : t('agenda.deleteSeries', 'Excluir Série Completa')}
+            </button>
+          )}
           <button
             onClick={onClose}
             disabled={loading}
@@ -880,7 +1063,7 @@ function DeleteConfirmDialog({ open, onClose, onCancel, onDelete, loading, appoi
               'transition-all duration-200',
             )}
           >
-            Voltar
+            {t('agenda.back', 'Voltar')}
           </button>
         </div>
       </div>
@@ -889,6 +1072,8 @@ function DeleteConfirmDialog({ open, onClose, onCancel, onDelete, loading, appoi
 }
 
 // ---- New/Edit Appointment Dialog ----
+type RecurrenceFrequency = 'none' | 'daily' | 'weekly' | 'biweekly' | 'monthly';
+
 interface AppointmentFormData {
   clientId: string;
   clientName: string;
@@ -904,6 +1089,8 @@ interface AppointmentFormData {
   status: AppointmentStatus;
   price: number;
   color: string;
+  recurrenceFrequency?: RecurrenceFrequency;
+  recurrenceOccurrences?: number;
 }
 
 interface AppointmentDialogProps {
@@ -914,9 +1101,11 @@ interface AppointmentDialogProps {
   initialData?: Partial<AppointmentFormData>;
   isEditing?: boolean;
   services: Service[];
-  clients: Client[];
+  clients: CRMContact[];
   members: User[];
   saving?: boolean;
+  checkConflicts?: (professionalId: string, date: string, startTime: string, endTime: string, excludeId?: string) => { hasConflict: boolean; message: string };
+  editingAppointmentId?: string;
 }
 
 function AppointmentFormDialog({
@@ -930,7 +1119,10 @@ function AppointmentFormDialog({
   clients,
   members,
   saving = false,
+  checkConflicts,
+  editingAppointmentId,
 }: AppointmentDialogProps) {
+  const { t } = useTranslation();
   const [formData, setFormData] = useState<AppointmentFormData>({
     clientId: '',
     clientName: '',
@@ -946,6 +1138,8 @@ function AppointmentFormDialog({
     status: 'agendado',
     price: 0,
     color: '#3B82F6',
+    recurrenceFrequency: 'none',
+    recurrenceOccurrences: 4,
   });
   const [clientSearch, setClientSearch] = useState('');
   const [showClientDropdown, setShowClientDropdown] = useState(false);
@@ -991,12 +1185,34 @@ function AppointmentFormDialog({
   const filteredClients = useMemo(() => {
     if (!clientSearch) return clients.slice(0, 20);
     return clients.filter((c) =>
-      c.nome.toLowerCase().includes(clientSearch.toLowerCase()) ||
+      (c.name?.toLowerCase() ?? '').includes(clientSearch.toLowerCase()) ||
       (c.phone && c.phone.includes(clientSearch))
     ).slice(0, 20);
   }, [clientSearch, clients]);
 
   const activeServices = useMemo(() => services.filter((s) => s.isActive), [services]);
+
+  // Filter members by selected service (if they have serviceIds configured)
+  const availableMembers = useMemo(() => {
+    if (!formData.serviceId) return members;
+    // Check if any member has serviceIds configured
+    const anyHasServiceIds = members.some((m) => m.serviceIds && m.serviceIds.length > 0);
+    if (!anyHasServiceIds) return members;
+    return members.filter((m) => {
+      // If member has no serviceIds, show them (backwards compatible)
+      if (!m.serviceIds || m.serviceIds.length === 0) return true;
+      return m.serviceIds.includes(formData.serviceId);
+    });
+  }, [members, formData.serviceId]);
+
+  // Conflict detection for the current form state
+  const formConflict = useMemo(() => {
+    if (!checkConflicts || !formData.professionalId || !formData.date || !formData.startTime) {
+      return { hasConflict: false, message: '' };
+    }
+    const endTime = addDurationToTime(formData.startTime, formData.duration);
+    return checkConflicts(formData.professionalId, formData.date, formData.startTime, endTime, editingAppointmentId);
+  }, [checkConflicts, formData.professionalId, formData.date, formData.startTime, formData.duration, editingAppointmentId]);
 
   const handleServiceChange = (serviceId: string) => {
     const service = services.find((s) => s.id === serviceId);
@@ -1012,19 +1228,19 @@ function AppointmentFormDialog({
     }
   };
 
-  const handleClientSelect = (client: Client) => {
+  const handleClientSelect = (client: CRMContact) => {
     setFormData((prev) => ({
       ...prev,
       clientId: client.id,
-      clientName: client.nome,
+      clientName: client.name,
       clientPhone: client.phone || '',
     }));
-    setClientSearch(client.nome);
+    setClientSearch(client.name);
     setShowClientDropdown(false);
   };
 
   const handleSubmit = () => {
-    if (!formData.clientName || !formData.serviceName || !formData.date || !formData.startTime) {
+    if (!formData.clientName || !formData.date || !formData.startTime) {
       return;
     }
     onSave(formData);
@@ -1057,7 +1273,7 @@ function AppointmentFormDialog({
         }}
       >
         <span className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-          {isEditing ? 'Editar Agendamento' : 'Novo Agendamento'}
+          {isEditing ? t('agenda.editAppointment', 'Editar Agendamento') : t('agenda.newAppointment', 'Novo Agendamento')}
         </span>
         <button
           onClick={onClose}
@@ -1072,7 +1288,7 @@ function AppointmentFormDialog({
           {/* Client search */}
           <div ref={clientSearchRef} className="relative">
             <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-              Cliente *
+              {t('agenda.client', 'Cliente')} *
             </label>
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500" />
@@ -1085,7 +1301,7 @@ function AppointmentFormDialog({
                   setFormData((prev) => ({ ...prev, clientName: e.target.value, clientId: '' }));
                 }}
                 onFocus={() => setShowClientDropdown(true)}
-                placeholder="Buscar cliente..."
+                placeholder={t('agenda.searchClient', 'Buscar cliente...')}
                 className={cn(
                   'w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
                   'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
@@ -1110,10 +1326,10 @@ function AppointmentFormDialog({
                       className="w-full px-4 py-2.5 text-left hover:bg-gray-50 dark:hover:bg-white/[0.04] flex items-center gap-3 transition-colors first:rounded-t-xl last:rounded-b-xl"
                     >
                       <div className="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-xs font-semibold text-gray-500 dark:text-gray-400">
-                        {client.nome.split(' ').map((n) => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()}
+                        {(client.name || '?').split(' ').map((n) => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()}
                       </div>
                       <div>
-                        <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{client.nome}</div>
+                        <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{client.name}</div>
                         <div className="text-xs text-gray-500 dark:text-gray-400">{client.phone}</div>
                       </div>
                     </button>
@@ -1126,7 +1342,7 @@ function AppointmentFormDialog({
           {/* Service select */}
           <div>
             <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-              Servico *
+              {t('agenda.service', 'Serviço')} *
             </label>
             <select
               value={formData.serviceId}
@@ -1138,7 +1354,7 @@ function AppointmentFormDialog({
                 'transition-all duration-200',
               )}
             >
-              <option value="">Selecionar servico</option>
+              <option value="">{t('agenda.selectService', 'Selecionar serviço')}</option>
               {activeServices.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name} - {formatCurrency(s.price)} ({s.duration} min)
@@ -1151,7 +1367,7 @@ function AppointmentFormDialog({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                Data *
+                {t('agenda.date', 'Data')} *
               </label>
               <input
                 type="date"
@@ -1168,7 +1384,7 @@ function AppointmentFormDialog({
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                Horario Inicio *
+                {t('agenda.startTime', 'Horário Início')} *
               </label>
               <select
                 value={formData.startTime}
@@ -1191,7 +1407,7 @@ function AppointmentFormDialog({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                Duracao
+                {t('agenda.duration', 'Duração')}
               </label>
               <select
                 value={formData.duration}
@@ -1210,7 +1426,7 @@ function AppointmentFormDialog({
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                Termino
+                {t('agenda.endTime', 'Término')}
               </label>
               <div className="px-4 py-2.5 rounded-xl border border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50 text-sm text-gray-500 dark:text-gray-400">
                 {endTime}
@@ -1221,7 +1437,12 @@ function AppointmentFormDialog({
           {/* Professional */}
           <div>
             <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-              Profissional
+              {t('agenda.professional', 'Profissional')}
+              {formData.serviceId && availableMembers.length < members.length && (
+                <span className="ml-1.5 text-[10px] text-gray-400 dark:text-gray-500 font-normal">
+                  ({availableMembers.length} {t('agenda.availableForService', 'disponíveis para este serviço')})
+                </span>
+              )}
             </label>
             <select
               value={formData.professionalId}
@@ -1234,24 +1455,50 @@ function AppointmentFormDialog({
                 }));
               }}
               className={cn(
-                'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800',
+                'w-full px-4 py-2.5 rounded-xl border bg-white dark:bg-gray-800',
                 'text-sm text-gray-900 dark:text-gray-100 appearance-none',
                 'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
                 'transition-all duration-200',
+                formConflict.hasConflict
+                  ? 'border-amber-300 dark:border-amber-500/40'
+                  : 'border-gray-200 dark:border-gray-700',
               )}
             >
-              <option value="">Selecionar profissional</option>
-              {members.map((m) => (
+              <option value="">{t('agenda.selectProfessional', 'Selecionar profissional')}</option>
+              {availableMembers.map((m) => (
                 <option key={m.id} value={m.id}>{m.name}</option>
               ))}
             </select>
           </div>
 
+          {/* Conflict warning */}
+          <AnimatePresence>
+            {formConflict.hasConflict && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.2 }}
+              >
+                <div className={cn(
+                  'flex items-start gap-2.5 px-3.5 py-2.5 rounded-xl border',
+                  'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30',
+                )}>
+                  <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <div className="text-xs font-semibold text-amber-700 dark:text-amber-300">{t('agenda.scheduleConflict', 'Conflito de Agenda')}</div>
+                    <div className="text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">{formConflict.message}</div>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           {/* Status and Price */}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                Status
+                {t('agenda.status', 'Status')}
               </label>
               <select
                 value={formData.status}
@@ -1266,13 +1513,13 @@ function AppointmentFormDialog({
                 )}
               >
                 {STATUS_OPTIONS.map((s) => (
-                  <option key={s.value} value={s.value}>{s.label}</option>
+                  <option key={s.value} value={s.value}>{t(`agenda.status_${s.value}`, s.label)}</option>
                 ))}
               </select>
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                Valor (R$)
+                {t('agenda.value', 'Valor (R$)')}
               </label>
               <input
                 type="number"
@@ -1294,16 +1541,71 @@ function AppointmentFormDialog({
             </div>
           </div>
 
+          {/* Recurrence (create only) */}
+          {!isEditing && (
+            <div className="pt-1">
+              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                {t('agenda.repeat', 'Repetir')}
+              </label>
+              <div className="flex gap-2 flex-wrap">
+                {([
+                  { value: 'none', label: t('agenda.repeatNone', 'Não') },
+                  { value: 'daily', label: t('agenda.repeatDaily', 'Diário') },
+                  { value: 'weekly', label: t('agenda.repeatWeekly', 'Semanal') },
+                  { value: 'biweekly', label: t('agenda.repeatBiweekly', 'Quinzenal') },
+                  { value: 'monthly', label: t('agenda.repeatMonthly', 'Mensal') },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setFormData((prev) => ({ ...prev, recurrenceFrequency: opt.value }))}
+                    className={cn(
+                      'px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border',
+                      formData.recurrenceFrequency === opt.value
+                        ? 'bg-red-600 text-white border-red-600'
+                        : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:border-red-300',
+                    )}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              {formData.recurrenceFrequency && formData.recurrenceFrequency !== 'none' && (
+                <div className="mt-2.5 flex items-center gap-2">
+                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                    {t('agenda.occurrences', 'Ocorrências')}:
+                  </span>
+                  <input
+                    type="number"
+                    min={2}
+                    max={52}
+                    value={formData.recurrenceOccurrences ?? 4}
+                    onChange={(e) =>
+                      setFormData((prev) => ({
+                        ...prev,
+                        recurrenceOccurrences: Math.max(2, Math.min(52, Number(e.target.value) || 2)),
+                      }))
+                    }
+                    className="w-20 px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
+                  />
+                  <span className="text-[11px] text-gray-400 dark:text-gray-500">
+                    {t('agenda.recurrenceHint', 'agendamentos vinculados (máx. 52)')}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Notes */}
           <div>
             <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-              Observacoes
+              {t('agenda.notes', 'Observações')}
             </label>
             <textarea
               value={formData.notes}
               onChange={(e) => setFormData((prev) => ({ ...prev, notes: e.target.value }))}
               rows={3}
-              placeholder="Observacoes adicionais..."
+              placeholder={t('agenda.notesPlaceholder', 'Observações adicionais...')}
               className={cn(
                 'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 resize-none',
                 'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
@@ -1333,7 +1635,7 @@ function AppointmentFormDialog({
             )}
           >
             <Trash2 className="w-4 h-4 inline mr-1.5" />
-            Excluir
+            {t('agenda.delete', 'Excluir')}
           </button>
         )}
         <div className="flex gap-2">
@@ -1345,11 +1647,11 @@ function AppointmentFormDialog({
               'transition-all duration-200',
             )}
           >
-            Cancelar
+            {t('agenda.cancel', 'Cancelar')}
           </button>
           <button
             onClick={handleSubmit}
-            disabled={!formData.clientName || !formData.serviceName || saving}
+            disabled={!formData.clientName || saving}
             className={cn(
               'px-5 py-2.5 rounded-xl text-sm font-semibold',
               'bg-red-600 text-white hover:bg-red-700',
@@ -1358,7 +1660,7 @@ function AppointmentFormDialog({
               'disabled:opacity-50 disabled:cursor-not-allowed',
             )}
           >
-            {saving ? 'Salvando...' : isEditing ? 'Salvar Alteracoes' : 'Agendar'}
+            {saving ? t('agenda.saving', 'Salvando...') : isEditing ? t('agenda.saveChanges', 'Salvar Alterações') : t('agenda.schedule', 'Agendar')}
           </button>
         </div>
       </DialogActions>
@@ -1371,6 +1673,7 @@ interface ViewAppointmentDialogProps {
   open: boolean;
   onClose: () => void;
   appointment: Appointment | null;
+  canEdit: boolean;
   onEdit: () => void;
   onStatusChange: (status: AppointmentStatus) => void;
   statusChanging: boolean;
@@ -1380,10 +1683,13 @@ function ViewAppointmentDialog({
   open,
   onClose,
   appointment,
+  canEdit,
   onEdit,
   onStatusChange,
   statusChanging,
 }: ViewAppointmentDialogProps) {
+  const { t, i18n } = useTranslation();
+  const dateLocale = i18n.language === 'en-US' ? enUS : ptBR;
   if (!appointment) return null;
 
   const color = STATUS_COLORS[appointment.status];
@@ -1422,7 +1728,7 @@ function ViewAppointmentDialog({
               className="w-12 h-12 rounded-xl flex items-center justify-center text-white text-lg font-bold flex-shrink-0"
               style={{ backgroundColor: color }}
             >
-              {appointment.clientName.split(' ').map((n) => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()}
+              {(appointment.clientName || '?').split(' ').map((n) => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()}
             </div>
             <div className="flex-1 min-w-0">
               <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
@@ -1449,9 +1755,9 @@ function ViewAppointmentDialog({
             <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
               <CalendarIcon className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
               <div>
-                <div className="text-xs text-gray-500 dark:text-gray-400">Data</div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">{t('agenda.date', 'Data')}</div>
                 <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                  {format(parseISO(appointment.date), "EEEE, dd 'de' MMMM 'de' yyyy", { locale: ptBR })}
+                  {format(parseISO(appointment.date), "EEEE, dd 'de' MMMM 'de' yyyy", { locale: dateLocale })}
                 </div>
               </div>
             </div>
@@ -1459,7 +1765,7 @@ function ViewAppointmentDialog({
             <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
               <Clock className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
               <div>
-                <div className="text-xs text-gray-500 dark:text-gray-400">Horario</div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">{t('agenda.time', 'Horário')}</div>
                 <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
                   {appointment.startTime} - {appointment.endTime} ({appointment.duration} min)
                 </div>
@@ -1470,7 +1776,7 @@ function ViewAppointmentDialog({
               <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
                 <Phone className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
                 <div>
-                  <div className="text-xs text-gray-500 dark:text-gray-400">Telefone</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">{t('agenda.phone', 'Telefone')}</div>
                   <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{appointment.clientPhone}</div>
                 </div>
               </div>
@@ -1480,7 +1786,7 @@ function ViewAppointmentDialog({
               <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
                 <UserIcon className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
                 <div>
-                  <div className="text-xs text-gray-500 dark:text-gray-400">Profissional</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">{t('agenda.professional', 'Profissional')}</div>
                   <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{appointment.professionalName}</div>
                 </div>
               </div>
@@ -1489,7 +1795,7 @@ function ViewAppointmentDialog({
             <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
               <DollarSign className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
               <div>
-                <div className="text-xs text-gray-500 dark:text-gray-400">Valor</div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">{t('agenda.value', 'Valor')}</div>
                 <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">{formatCurrency(appointment.price)}</div>
               </div>
             </div>
@@ -1498,8 +1804,35 @@ function ViewAppointmentDialog({
               <div className="flex items-start gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
                 <FileText className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0 mt-0.5" />
                 <div>
-                  <div className="text-xs text-gray-500 dark:text-gray-400">Observacoes</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">{t('agenda.notes', 'Observações')}</div>
                   <div className="text-sm text-gray-700 dark:text-gray-300 mt-0.5">{appointment.notes}</div>
+                </div>
+              </div>
+            )}
+
+            {/* Reminder status row — only shown when at least one was sent */}
+            {(appointment.reminderSentAt || appointment.confirmationRequestedAt || appointment.followUpSentAt) && (
+              <div className="flex items-start gap-3 py-2.5 px-3 bg-emerald-50 dark:bg-emerald-500/10 rounded-xl border border-emerald-100 dark:border-emerald-500/20">
+                <Bell className="w-4 h-4 text-emerald-500 flex-shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <div className="text-xs text-emerald-700 dark:text-emerald-400 font-medium mb-1">Lembretes enviados via WhatsApp</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {appointment.reminderSentAt && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                        <Check className="w-2.5 h-2.5" /> Lembrete
+                      </span>
+                    )}
+                    {appointment.confirmationRequestedAt && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                        <Check className="w-2.5 h-2.5" /> Confirmação
+                      </span>
+                    )}
+                    {appointment.followUpSentAt && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                        <Check className="w-2.5 h-2.5" /> Follow-up
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
@@ -1507,18 +1840,20 @@ function ViewAppointmentDialog({
 
           {/* Action Buttons */}
           <div className="flex flex-wrap gap-2 mt-6 pt-4 border-t border-gray-100 dark:border-gray-800">
-            <button
-              onClick={onEdit}
-              className={cn(
-                'flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium',
-                'text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors',
-              )}
-            >
-              <Edit3 className="w-3.5 h-3.5" />
-              Editar
-            </button>
+            {canEdit && (
+              <button
+                onClick={onEdit}
+                className={cn(
+                  'flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium',
+                  'text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors',
+                )}
+              >
+                <Edit3 className="w-3.5 h-3.5" />
+                {t('agenda.edit', 'Editar')}
+              </button>
+            )}
 
-            {appointment.status === 'agendado' && (
+            {canEdit && appointment.status === 'agendado' && (
               <button
                 onClick={() => onStatusChange('confirmado')}
                 disabled={statusChanging}
@@ -1529,11 +1864,11 @@ function ViewAppointmentDialog({
                 )}
               >
                 <Check className="w-3.5 h-3.5" />
-                Confirmar
+                {t('agenda.confirm', 'Confirmar')}
               </button>
             )}
 
-            {(appointment.status === 'agendado' || appointment.status === 'confirmado') && (
+            {canEdit && (appointment.status === 'agendado' || appointment.status === 'confirmado') && (
               <button
                 onClick={() => onStatusChange('em_andamento')}
                 disabled={statusChanging}
@@ -1544,11 +1879,11 @@ function ViewAppointmentDialog({
                 )}
               >
                 <Clock className="w-3.5 h-3.5" />
-                Iniciar
+                {t('agenda.start', 'Iniciar')}
               </button>
             )}
 
-            {(appointment.status === 'agendado' || appointment.status === 'confirmado') && (
+            {canEdit && (appointment.status === 'agendado' || appointment.status === 'confirmado') && (
               <button
                 onClick={() => onStatusChange('cancelado')}
                 disabled={statusChanging}
@@ -1559,11 +1894,11 @@ function ViewAppointmentDialog({
                 )}
               >
                 <X className="w-3.5 h-3.5" />
-                Cancelar
+                {t('agenda.cancel', 'Cancelar')}
               </button>
             )}
 
-            {(appointment.status === 'confirmado' || appointment.status === 'em_andamento') && (
+            {canEdit && (appointment.status === 'confirmado' || appointment.status === 'em_andamento') && (
               <button
                 onClick={() => onStatusChange('concluido')}
                 disabled={statusChanging}
@@ -1574,11 +1909,11 @@ function ViewAppointmentDialog({
                 )}
               >
                 <Check className="w-3.5 h-3.5" />
-                Concluir
+                {t('agenda.complete', 'Concluir')}
               </button>
             )}
 
-            {(appointment.status === 'agendado' || appointment.status === 'confirmado') && (
+            {canEdit && (appointment.status === 'agendado' || appointment.status === 'confirmado') && (
               <button
                 onClick={() => onStatusChange('nao_compareceu')}
                 disabled={statusChanging}
@@ -1588,7 +1923,7 @@ function ViewAppointmentDialog({
                   'disabled:opacity-50',
                 )}
               >
-                Nao Compareceu
+                {t('agenda.noShow', 'Não Compareceu')}
               </button>
             )}
           </div>
@@ -1653,8 +1988,18 @@ function AgendaSkeleton() {
 // ==========================================
 
 export default function AgendaModule() {
+  const { t, i18n } = useTranslation();
+  const dateLocale = i18n.language === 'en-US' ? enUS : ptBR;
   const { user, business } = useAuth();
   const queryClient = useQueryClient();
+
+  const isAdmin = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['admin'];
+
+  const canEditAppointment = useCallback((appt: Appointment) => {
+    if (isAdmin) return true;
+    if (!appt.professionalId) return false; // global = so admin
+    return appt.professionalId === user?.uid;
+  }, [isAdmin, user?.uid]);
 
   // ---- State ----
   const [viewMode, setViewMode] = useState<ViewMode>('week');
@@ -1673,7 +2018,8 @@ export default function AgendaModule() {
   const [statusChanging, setStatusChanging] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [members, setMembers] = useState<User[]>([]);
-  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' }>({
+  const [selectedProfessional, setSelectedProfessional] = useState<string>('all');
+  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' | 'warning' }>({
     open: false,
     message: '',
     severity: 'success',
@@ -1729,7 +2075,7 @@ export default function AgendaModule() {
     staleTime: 5 * 60 * 1000,
   });
 
-  // Fetch clients
+  // Fetch contacts (CRM)
   const { data: clients = [] } = useQuery({
     queryKey: ['clients', business?.id],
     queryFn: async () => {
@@ -1738,10 +2084,10 @@ export default function AgendaModule() {
         collection(db, 'clients'),
         where('businessId', '==', business.id),
         where('isActive', '==', true),
-        orderBy('nome', 'asc')
+        orderBy('name', 'asc')
       );
       const snap = await getDocs(q);
-      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as Client));
+      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as CRMContact));
     },
     enabled: !!business?.id,
     staleTime: 5 * 60 * 1000,
@@ -1776,13 +2122,70 @@ export default function AgendaModule() {
   }, [isMobile]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ==========================================
+  // PROFESSIONAL FILTERING & CONFLICT DETECTION
+  // ==========================================
+
+  // Filter appointments by selected professional
+  const filteredAppointments = useMemo(() => {
+    if (!appointments) return [];
+    if (selectedProfessional === 'all') return appointments;
+    return appointments.filter((a) => a.professionalId === selectedProfessional);
+  }, [appointments, selectedProfessional]);
+
+  // Group appointments by date (using filtered)
+  const appointmentsByDate = useMemo(() => {
+    const map = new Map<string, Appointment[]>();
+    filteredAppointments.forEach((a) => {
+      const existing = map.get(a.date) || [];
+      existing.push(a);
+      map.set(a.date, existing);
+    });
+    return map;
+  }, [filteredAppointments]);
+
+  // Conflict detection for professional scheduling
+  const checkConflicts = useCallback((professionalId: string, date: string, startTime: string, endTime: string, excludeId?: string) => {
+    if (!professionalId || !appointments) return { hasConflict: false, message: '' };
+
+    // Check 1: Working hours
+    const professional = members.find((m) => m.id === professionalId);
+    if (professional?.workingHours) {
+      const dayOfWeek = new Date(date + 'T12:00:00').getDay();
+      const daySchedule = professional.workingHours[dayOfWeek];
+      if (!daySchedule?.enabled) {
+        return { hasConflict: true, message: t('agenda.doesNotWorkThisDay', `${professional.name} não trabalha neste dia`, { name: professional.name }) };
+      }
+      if (startTime < daySchedule.start || endTime > daySchedule.end) {
+        return { hasConflict: true, message: t('agenda.outsideWorkingHours', `Fora do horário de trabalho (${daySchedule.start} - ${daySchedule.end})`, { start: daySchedule.start, end: daySchedule.end }) };
+      }
+    }
+
+    // Check 2: Overlapping appointments
+    const existing = appointments.filter((a) =>
+      a.professionalId === professionalId &&
+      a.date === date &&
+      a.status !== 'cancelado' &&
+      a.id !== excludeId &&
+      !(endTime <= a.startTime || startTime >= a.endTime)
+    );
+
+    if (existing.length > 0) {
+      return { hasConflict: true, message: t('agenda.conflictWith', `Conflito com ${existing[0].clientName} (${existing[0].startTime} - ${existing[0].endTime})`, { name: existing[0].clientName, start: existing[0].startTime, end: existing[0].endTime }) };
+    }
+
+    return { hasConflict: false, message: '' };
+  }, [appointments, members]);
+
+  // ==========================================
   // SERVICE CRUD HANDLERS
   // ==========================================
 
   const handleCreateService = useCallback(async (data: ServiceFormData) => {
-    if (!business?.id) return;
+    if (!business?.id || !user) return;
     await addDoc(collection(db, 'services'), {
       businessId: business.id,
+      userId: user.uid,
+      userName: user.name,
       name: data.name,
       description: data.description || null,
       duration: data.duration,
@@ -1790,12 +2193,13 @@ export default function AgendaModule() {
       category: data.category || null,
       color: data.color,
       isActive: data.isActive,
+      commissionRate: data.commissionRate ?? null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
     queryClient.invalidateQueries({ queryKey: ['services', business.id] });
-    setSnackbar({ open: true, message: 'Servico criado com sucesso!', severity: 'success' });
-  }, [business?.id, queryClient]);
+    setSnackbar({ open: true, message: t('agenda.serviceCreated', 'Serviço criado com sucesso!'), severity: 'success' });
+  }, [business?.id, user, queryClient, t]);
 
   const handleUpdateService = useCallback(async (id: string, data: ServiceFormData) => {
     if (!business?.id) return;
@@ -1807,18 +2211,19 @@ export default function AgendaModule() {
       category: data.category || null,
       color: data.color,
       isActive: data.isActive,
+      commissionRate: data.commissionRate ?? null,
       updatedAt: new Date().toISOString(),
     });
     queryClient.invalidateQueries({ queryKey: ['services', business.id] });
-    setSnackbar({ open: true, message: 'Servico atualizado com sucesso!', severity: 'success' });
-  }, [business?.id, queryClient]);
+    setSnackbar({ open: true, message: t('agenda.serviceUpdated', 'Serviço atualizado com sucesso!'), severity: 'success' });
+  }, [business?.id, queryClient, t]);
 
   const handleDeleteService = useCallback(async (id: string) => {
     if (!business?.id) return;
     await deleteDoc(doc(db, 'services', id));
     queryClient.invalidateQueries({ queryKey: ['services', business.id] });
-    setSnackbar({ open: true, message: 'Servico excluido.', severity: 'info' });
-  }, [business?.id, queryClient]);
+    setSnackbar({ open: true, message: t('agenda.serviceDeleted', 'Serviço excluído.'), severity: 'info' });
+  }, [business?.id, queryClient, t]);
 
   // ==========================================
   // APPOINTMENT CRUD HANDLERS
@@ -1831,78 +2236,321 @@ export default function AgendaModule() {
       const endTime = addDurationToTime(data.startTime, data.duration);
       const serviceColor = services.find((s) => s.id === data.serviceId)?.color || data.color || '#3B82F6';
 
+      // Soft conflict warning (does not block saving)
+      if (data.professionalId) {
+        const conflictResult = checkConflicts(
+          data.professionalId,
+          data.date,
+          data.startTime,
+          endTime,
+          editingAppointment?.id
+        );
+        if (conflictResult.hasConflict) {
+          setSnackbar({
+            open: true,
+            message: `${t('agenda.warning', 'Aviso')}: ${conflictResult.message}`,
+            severity: 'warning',
+          });
+        }
+      }
+
+      // Soft warning for past appointments (does not block — allows retroactive registration)
+      if (!editingAppointment) {
+        const apptDateTime = new Date(`${data.date}T${data.startTime}`);
+        if (!isNaN(apptDateTime.getTime()) && apptDateTime < new Date()) {
+          setSnackbar({
+            open: true,
+            message: t('agenda.pastDateWarning', 'Atenção: este agendamento está no passado.'),
+            severity: 'warning',
+          });
+        }
+      }
+
+      const payload: Record<string, any> = {
+        clientId: data.clientId || '',
+        clientName: data.clientName,
+        date: data.date,
+        startTime: data.startTime,
+        endTime,
+        duration: data.duration,
+        status: data.status,
+        price: data.price,
+        color: serviceColor,
+        updatedAt: new Date().toISOString(),
+      };
+      if (data.clientPhone) payload.clientPhone = data.clientPhone;
+      if (data.serviceId) payload.serviceId = data.serviceId;
+      if (data.serviceName) payload.serviceName = data.serviceName;
+      if (data.professionalId) payload.professionalId = data.professionalId;
+      if (data.professionalName) payload.professionalName = data.professionalName;
+      if (data.notes) payload.notes = data.notes;
+
       if (editingAppointment) {
-        await updateDoc(doc(db, 'appointments', editingAppointment.id), {
-          clientId: data.clientId,
-          clientName: data.clientName,
-          clientPhone: data.clientPhone || null,
-          serviceId: data.serviceId || null,
-          serviceName: data.serviceName,
-          date: data.date,
-          startTime: data.startTime,
-          endTime,
-          duration: data.duration,
-          professionalId: data.professionalId || null,
-          professionalName: data.professionalName || null,
-          notes: data.notes || null,
-          status: data.status,
-          price: data.price,
-          color: serviceColor,
-          updatedAt: new Date().toISOString(),
-        });
-        setSnackbar({ open: true, message: 'Agendamento atualizado com sucesso!', severity: 'success' });
+        await updateDoc(doc(db, 'appointments', editingAppointment.id), payload);
+
+        // Sync Client metrics for the edit paths that affect "concluído" state/price/clientId.
+        const wasDone = editingAppointment.status === 'concluido';
+        const isDone = data.status === 'concluido';
+        const oldClientId = editingAppointment.clientId || '';
+        const newClientId = data.clientId || '';
+        const oldPrice = editingAppointment.price || 0;
+        const newPrice = data.price || 0;
+
+        if (wasDone && isDone && oldClientId === newClientId) {
+          // same client, same completion state — adjust only price diff
+          if (newPrice !== oldPrice && newClientId) {
+            await syncClientMetrics({ clientId: newClientId, visitDelta: 0, priceDelta: newPrice - oldPrice });
+          }
+        } else {
+          if (wasDone && oldClientId) {
+            await syncClientMetrics({ clientId: oldClientId, visitDelta: -1, priceDelta: -oldPrice });
+          }
+          if (isDone && newClientId) {
+            await syncClientMetrics({ clientId: newClientId, visitDelta: 1, priceDelta: newPrice, lastVisitDate: data.date });
+          }
+        }
+
+        // ── Loyalty points on edit (first time concluido) ────────────────
+        if (!wasDone && isDone && newClientId) {
+          const lc = business.settings?.loyalty;
+          if (lc?.isEnabled && (data.price || 0) > 0) {
+            const earned = calculateEarnedPoints(data.price || 0, lc);
+            if (earned > 0) {
+              addLoyaltyPoints(db, {
+                businessId: business.id,
+                clientId: newClientId,
+                clientName: data.clientName || '',
+                pointsEarned: earned,
+                config: lc,
+                sourceId: editingAppointment.id,
+                sourceType: 'appointment',
+                description: `Atendimento - ${data.serviceName || 'Serviço'}`,
+              }).catch(err => console.warn('[Agenda] loyalty on edit failed:', err));
+            }
+          }
+        }
+
+        // ── Commission handling on edit ──────────────────────────────────
+        if (!wasDone && isDone && data.professionalId) {
+          const professional = members.find(m => m.id === data.professionalId);
+          const service = services.find(s => s.id === data.serviceId);
+          await maybeCreateCommission({
+            appointment: { ...editingAppointment, ...payload, id: editingAppointment.id } as Appointment,
+            professional,
+            service,
+            businessId: business.id,
+          }).catch(err => console.warn('[Agenda] commission creation on edit failed:', err));
+        } else if (wasDone && !isDone) {
+          await maybeCancelCommission(editingAppointment.commissionTransactionId)
+            .catch(err => console.warn('[Agenda] commission cancel on edit failed:', err));
+        }
+
+        setSnackbar({ open: true, message: t('agenda.appointmentUpdated', 'Agendamento atualizado com sucesso!'), severity: 'success' });
       } else {
-        await addDoc(collection(db, 'appointments'), {
-          businessId: business.id,
-          clientId: data.clientId,
-          clientName: data.clientName,
-          clientPhone: data.clientPhone || null,
-          serviceId: data.serviceId || null,
-          serviceName: data.serviceName,
+        payload.businessId = business.id;
+        payload.createdAt = new Date().toISOString();
+
+        const freq: RecurrenceFrequency = data.recurrenceFrequency || 'none';
+        const occurrences = freq === 'none' ? 1 : Math.max(2, Math.min(52, data.recurrenceOccurrences || 2));
+
+        if (occurrences > 1) {
+          // Recurring series — one shared recurrenceId links all instances.
+          const recurrenceId = `rec_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          const dates = generateRecurrenceDates(data.date, freq, occurrences);
+          const batch = writeBatch(db);
+          for (const d of dates) {
+            const ref = doc(collection(db, 'appointments'));
+            batch.set(ref, { ...payload, date: d, recurrenceId });
+          }
+          await batch.commit();
+          if (data.status === 'concluido' && data.clientId) {
+            // Backfill metrics for every occurrence created as 'concluído'.
+            await syncClientMetrics({
+              clientId: data.clientId,
+              visitDelta: dates.length,
+              priceDelta: (data.price || 0) * dates.length,
+              lastVisitDate: dates[dates.length - 1],
+            });
+          }
+          setSnackbar({
+            open: true,
+            message: t('agenda.seriesCreated', `Série criada com ${dates.length} agendamentos`, { count: dates.length }),
+            severity: 'success',
+          });
+        } else {
+          const newDocRef = await addDoc(collection(db, 'appointments'), payload);
+          if (data.status === 'concluido' && data.clientId) {
+            await syncClientMetrics({
+              clientId: data.clientId,
+              visitDelta: 1,
+              priceDelta: data.price || 0,
+              lastVisitDate: data.date,
+            });
+            // Loyalty points accumulation on creation of completed appointment
+            const lc = business.settings?.loyalty;
+            if (lc?.isEnabled && (data.price || 0) > 0) {
+              const earned = calculateEarnedPoints(data.price || 0, lc);
+              if (earned > 0) {
+                addLoyaltyPoints(db, {
+                  businessId: business.id,
+                  clientId: data.clientId,
+                  clientName: data.clientName || '',
+                  pointsEarned: earned,
+                  config: lc,
+                  sourceId: newDocRef.id,
+                  sourceType: 'appointment',
+                  description: `Atendimento - ${data.serviceName || 'Serviço'}`,
+                }).catch(err => console.warn('[Agenda] loyalty on create failed:', err));
+              }
+            }
+          }
+          // Google Calendar sync (fire-and-forget)
+          syncToGoogleCalendar('create', {
+            id: newDocRef.id,
+            title: `${data.serviceName || 'Agendamento'} — ${data.clientName}`,
+            description: data.notes,
+            date: data.date,
+            startTime: data.startTime,
+            endTime,
+          }).then(eventId => {
+            if (eventId) {
+              updateDoc(doc(db, 'appointments', newDocRef.id), { googleCalendarEventId: eventId }).catch(() => {});
+            }
+          });
+
+          setSnackbar({ open: true, message: t('agenda.appointmentCreated', 'Agendamento criado com sucesso!'), severity: 'success' });
+        }
+      }
+
+      // Google Calendar sync for updates
+      if (editingAppointment) {
+        syncToGoogleCalendar('update', {
+          id: editingAppointment.id,
+          title: `${data.serviceName || 'Agendamento'} — ${data.clientName}`,
+          description: data.notes,
           date: data.date,
           startTime: data.startTime,
           endTime,
-          duration: data.duration,
-          professionalId: data.professionalId || null,
-          professionalName: data.professionalName || null,
-          notes: data.notes || null,
-          status: data.status,
-          price: data.price,
-          color: serviceColor,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        });
-        setSnackbar({ open: true, message: 'Agendamento criado com sucesso!', severity: 'success' });
+          googleCalendarEventId: editingAppointment.googleCalendarEventId,
+        }).catch(() => {});
       }
 
       queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
+      queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
       setShowFormDialog(false);
       setEditingAppointment(null);
     } catch (err) {
       console.error('Error saving appointment:', err);
-      setSnackbar({ open: true, message: 'Erro ao salvar agendamento.', severity: 'error' });
+      setSnackbar({ open: true, message: t('agenda.errorSavingAppointment', 'Erro ao salvar agendamento.'), severity: 'error' });
     } finally {
       setSaving(false);
     }
-  }, [business?.id, editingAppointment, services, queryClient]);
+  }, [business?.id, editingAppointment, services, queryClient, checkConflicts, t, members]);
 
   const handleDeleteAppointment = useCallback(async () => {
     if (!editingAppointment || !business?.id) return;
     setDeleteLoading(true);
     try {
       await deleteDoc(doc(db, 'appointments', editingAppointment.id));
+      // Google Calendar sync — remove event
+      if (editingAppointment.googleCalendarEventId) {
+        syncToGoogleCalendar('delete', {
+          id: editingAppointment.id,
+          title: '',
+          date: editingAppointment.date,
+          startTime: editingAppointment.startTime,
+          endTime: editingAppointment.endTime,
+          googleCalendarEventId: editingAppointment.googleCalendarEventId,
+        }).catch(() => {});
+      }
+      if (editingAppointment.status === 'concluido' && editingAppointment.clientId) {
+        await syncClientMetrics({
+          clientId: editingAppointment.clientId,
+          visitDelta: -1,
+          priceDelta: -(editingAppointment.price || 0),
+        });
+      }
+      // Cancel commission if appointment was concluido — prevents orphaned pending transactions
+      if (editingAppointment.status === 'concluido') {
+        await maybeCancelCommission(editingAppointment.commissionTransactionId)
+          .catch(err => console.warn('[Agenda] commission cancel on delete:', err));
+        queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
+      }
       queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
+      queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
       setShowDeleteDialog(false);
       setShowFormDialog(false);
       setEditingAppointment(null);
-      setSnackbar({ open: true, message: 'Agendamento excluido.', severity: 'info' });
+      setSnackbar({ open: true, message: t('agenda.appointmentDeleted', 'Agendamento excluído.'), severity: 'info' });
     } catch (err) {
       console.error('Error deleting appointment:', err);
-      setSnackbar({ open: true, message: 'Erro ao excluir agendamento.', severity: 'error' });
+      setSnackbar({ open: true, message: t('agenda.errorDeletingAppointment', 'Erro ao excluir agendamento.'), severity: 'error' });
     } finally {
       setDeleteLoading(false);
     }
-  }, [editingAppointment, business?.id, queryClient]);
+  }, [editingAppointment, business?.id, queryClient, t]);
+
+  const handleDeleteSeries = useCallback(async () => {
+    if (!editingAppointment?.recurrenceId || !business?.id) return;
+    setDeleteLoading(true);
+    try {
+      // Fetch all appointments with the same recurrenceId + businessId (multi-tenant safety).
+      const seriesQuery = query(
+        collection(db, 'appointments'),
+        where('businessId', '==', business.id),
+        where('recurrenceId', '==', editingAppointment.recurrenceId),
+      );
+      const snap = await getDocs(seriesQuery);
+
+      // Aggregate client metric deltas from any 'concluido' items in the series.
+      const clientDeltas = new Map<string, { visits: number; price: number }>();
+      const commissionIds: (string | undefined)[] = [];
+      const batch = writeBatch(db);
+      for (const docSnap of snap.docs) {
+        const a = docSnap.data() as Appointment;
+        if (a.status === 'concluido') {
+          if (a.clientId) {
+            const d = clientDeltas.get(a.clientId) || { visits: 0, price: 0 };
+            d.visits += 1;
+            d.price += a.price || 0;
+            clientDeltas.set(a.clientId, d);
+          }
+          // Collect commission IDs to cancel after batch delete
+          if (a.commissionTransactionId) commissionIds.push(a.commissionTransactionId);
+        }
+        batch.delete(docSnap.ref);
+      }
+      await batch.commit();
+
+      await Promise.all([
+        ...Array.from(clientDeltas.entries()).map(([clientId, d]) =>
+          syncClientMetrics({ clientId, visitDelta: -d.visits, priceDelta: -d.price }),
+        ),
+        ...commissionIds.map(cid =>
+          maybeCancelCommission(cid).catch(err => console.warn('[Agenda] series commission cancel:', err))
+        ),
+      ]);
+      if (commissionIds.length > 0) {
+        queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
+      }
+
+      queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
+      queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
+      setShowDeleteDialog(false);
+      setShowFormDialog(false);
+      setEditingAppointment(null);
+      setSnackbar({
+        open: true,
+        message: t('agenda.seriesDeleted', `Série excluída (${snap.size} agendamentos)`, { count: snap.size }),
+        severity: 'info',
+      });
+    } catch (err) {
+      console.error('Error deleting series:', err);
+      setSnackbar({ open: true, message: t('agenda.errorDeletingSeries', 'Erro ao excluir série.'), severity: 'error' });
+    } finally {
+      setDeleteLoading(false);
+    }
+  }, [editingAppointment, business?.id, queryClient, t]);
 
   const handleCancelAppointment = useCallback(async () => {
     if (!editingAppointment || !business?.id) return;
@@ -1912,18 +2560,32 @@ export default function AgendaModule() {
         status: 'cancelado',
         updatedAt: new Date().toISOString(),
       });
+      if (editingAppointment.status === 'concluido' && editingAppointment.clientId) {
+        await syncClientMetrics({
+          clientId: editingAppointment.clientId,
+          visitDelta: -1,
+          priceDelta: -(editingAppointment.price || 0),
+        });
+      }
+      // Cancel commission if appointment was concluido — prevents orphaned pending transactions
+      if (editingAppointment.status === 'concluido') {
+        await maybeCancelCommission(editingAppointment.commissionTransactionId)
+          .catch(err => console.warn('[Agenda] commission cancel on cancel:', err));
+        queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
+      }
       queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
+      queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
       setShowDeleteDialog(false);
       setShowFormDialog(false);
       setEditingAppointment(null);
-      setSnackbar({ open: true, message: 'Agendamento cancelado.', severity: 'info' });
+      setSnackbar({ open: true, message: t('agenda.appointmentCancelled', 'Agendamento cancelado.'), severity: 'info' });
     } catch (err) {
       console.error('Error cancelling appointment:', err);
-      setSnackbar({ open: true, message: 'Erro ao cancelar agendamento.', severity: 'error' });
+      setSnackbar({ open: true, message: t('agenda.errorCancellingAppointment', 'Erro ao cancelar agendamento.'), severity: 'error' });
     } finally {
       setDeleteLoading(false);
     }
-  }, [editingAppointment, business?.id, queryClient]);
+  }, [editingAppointment, business?.id, queryClient, t]);
 
   const handleStatusChange = useCallback(async (status: AppointmentStatus) => {
     if (!selectedAppointment || !business?.id) return;
@@ -1933,20 +2595,85 @@ export default function AgendaModule() {
         status,
         updatedAt: new Date().toISOString(),
       });
+
+      // Auto-notify customer if agent enabled (appointment notifications always on when agent is on)
+      if (business.settings?.aiAgent?.enabled) {
+        void (async () => {
+          try {
+            const { getAuth } = await import('firebase/auth');
+            const token = await getAuth().currentUser?.getIdToken();
+            if (!token) return;
+            await fetch('/api/conversations/status-notify', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+              body: JSON.stringify({ businessId: business.id, kind: 'appointment', id: selectedAppointment.id, newStatus: status }),
+            });
+          } catch (err) {
+            console.warn('[Agenda] status-notify failed:', err);
+          }
+        })();
+      }
+      const prevStatus = selectedAppointment.status;
+      const clientId = selectedAppointment.clientId;
+      const wasDone = prevStatus === 'concluido';
+      const isDone = status === 'concluido';
+
+      if (clientId) {
+        if (!wasDone && isDone) {
+          await syncClientMetrics({
+            clientId,
+            visitDelta: 1,
+            priceDelta: selectedAppointment.price || 0,
+            lastVisitDate: selectedAppointment.date,
+          });
+        } else if (wasDone && !isDone) {
+          await syncClientMetrics({
+            clientId,
+            visitDelta: -1,
+            priceDelta: -(selectedAppointment.price || 0),
+          });
+        }
+      }
+
+      // ── Automatic commission handling ────────────────────────────────────
+      if (!wasDone && isDone && selectedAppointment.professionalId) {
+        const professional = members.find(m => m.id === selectedAppointment.professionalId);
+        const service = services.find(s => s.id === selectedAppointment.serviceId);
+        const commissionTxId = await maybeCreateCommission({
+          appointment: selectedAppointment,
+          professional,
+          service,
+          businessId: business.id,
+        }).catch(err => { console.warn('[Agenda] commission creation failed:', err); return null; });
+        if (commissionTxId) {
+          setSelectedAppointment(prev => prev ? { ...prev, status, commissionTransactionId: commissionTxId } : null);
+          queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
+        } else {
+          setSelectedAppointment(prev => prev ? { ...prev, status } : null);
+        }
+      } else if (wasDone && !isDone) {
+        await maybeCancelCommission(selectedAppointment.commissionTransactionId)
+          .catch(err => console.warn('[Agenda] commission cancellation failed:', err));
+        setSelectedAppointment(prev => prev ? { ...prev, status } : null);
+        queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
+      } else {
+        setSelectedAppointment(prev => prev ? { ...prev, status } : null);
+      }
+
       queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
-      setSelectedAppointment((prev) => (prev ? { ...prev, status } : null));
+      queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
       setSnackbar({
         open: true,
-        message: `Status alterado para "${getStatusLabel(status)}"`,
+        message: t('agenda.statusChanged', `Status alterado para "${getStatusLabel(status)}"`, { status: getStatusLabel(status) }),
         severity: 'success',
       });
     } catch (err) {
       console.error('Error changing status:', err);
-      setSnackbar({ open: true, message: 'Erro ao alterar status.', severity: 'error' });
+      setSnackbar({ open: true, message: t('agenda.errorChangingStatus', 'Erro ao alterar status.'), severity: 'error' });
     } finally {
       setStatusChanging(false);
     }
-  }, [selectedAppointment, business?.id, queryClient]);
+  }, [selectedAppointment, business?.id, queryClient, t, members, services]);
 
   // ---- Computed values ----
   const weekStart = useMemo(() => startOfWeek(currentDate, { weekStartsOn: 0 }), [currentDate]);
@@ -1961,38 +2688,27 @@ export default function AgendaModule() {
     return eachDayOfInterval({ start, end });
   }, [monthStartVal, monthEndVal]);
 
-  // Appointments for current view
+  // Appointments for current view (using filtered)
   const visibleAppointments = useMemo(() => {
     switch (viewMode) {
       case 'day':
-        return appointments.filter((a) =>
+        return filteredAppointments.filter((a) =>
           isSameDay(parseISO(a.date), currentDate)
         );
       case 'week':
-        return appointments.filter((a) => {
+        return filteredAppointments.filter((a) => {
           const d = parseISO(a.date);
           return !isBefore(d, weekStart) && !isAfter(d, weekEnd);
         });
       case 'month':
-        return appointments.filter((a) => {
+        return filteredAppointments.filter((a) => {
           const d = parseISO(a.date);
           return isSameMonth(d, currentDate);
         });
       default:
         return [];
     }
-  }, [appointments, viewMode, currentDate, weekStart, weekEnd]);
-
-  // Group appointments by date
-  const appointmentsByDate = useMemo(() => {
-    const map = new Map<string, Appointment[]>();
-    appointments.forEach((a) => {
-      const existing = map.get(a.date) || [];
-      existing.push(a);
-      map.set(a.date, existing);
-    });
-    return map;
-  }, [appointments]);
+  }, [filteredAppointments, viewMode, currentDate, weekStart, weekEnd]);
 
   // ---- Navigation ----
   const navigatePrev = useCallback(() => {
@@ -2040,19 +2756,27 @@ export default function AgendaModule() {
   const periodText = useMemo(() => {
     switch (viewMode) {
       case 'day':
-        return format(currentDate, "EEEE, dd 'de' MMMM", { locale: ptBR });
+        return i18n.language === 'en-US'
+          ? format(currentDate, 'EEEE, MMMM dd', { locale: dateLocale })
+          : format(currentDate, "EEEE, dd 'de' MMMM", { locale: dateLocale });
       case 'week': {
         const wStart = weekStart;
         const wEnd = weekEnd;
         if (isSameMonth(wStart, wEnd)) {
-          return `${format(wStart, 'dd', { locale: ptBR })} - ${format(wEnd, "dd 'de' MMMM yyyy", { locale: ptBR })}`;
+          return i18n.language === 'en-US'
+            ? `${format(wStart, 'MMM dd', { locale: dateLocale })} - ${format(wEnd, 'dd, yyyy', { locale: dateLocale })}`
+            : `${format(wStart, 'dd', { locale: dateLocale })} - ${format(wEnd, "dd 'de' MMMM yyyy", { locale: dateLocale })}`;
         }
-        return `${format(wStart, "dd 'de' MMM", { locale: ptBR })} - ${format(wEnd, "dd 'de' MMM yyyy", { locale: ptBR })}`;
+        return i18n.language === 'en-US'
+          ? `${format(wStart, 'MMM dd', { locale: dateLocale })} - ${format(wEnd, 'MMM dd, yyyy', { locale: dateLocale })}`
+          : `${format(wStart, "dd 'de' MMM", { locale: dateLocale })} - ${format(wEnd, "dd 'de' MMM yyyy", { locale: dateLocale })}`;
       }
       case 'month':
-        return format(currentDate, "MMMM 'de' yyyy", { locale: ptBR });
+        return i18n.language === 'en-US'
+          ? format(currentDate, 'MMMM yyyy', { locale: dateLocale })
+          : format(currentDate, "MMMM 'de' yyyy", { locale: dateLocale });
     }
-  }, [viewMode, currentDate, weekStart, weekEnd]);
+  }, [viewMode, currentDate, weekStart, weekEnd, dateLocale, i18n.language]);
 
   // ---- Appointment Actions ----
   const handleAppointmentClick = useCallback((appt: Appointment) => {
@@ -2062,12 +2786,18 @@ export default function AgendaModule() {
 
   const handleNewAppointment = useCallback((date?: string, time?: string) => {
     setEditingAppointment(null);
-    setFormInitialData({
+    const initial: Partial<AppointmentFormData> = {
       date: date || format(currentDate, 'yyyy-MM-dd'),
       startTime: time || '09:00',
-    });
+    };
+    // Auto-populate profissional para usuarios nao-admin
+    if (!isAdmin && user) {
+      initial.professionalId = user.uid;
+      initial.professionalName = user.name;
+    }
+    setFormInitialData(initial);
     setShowFormDialog(true);
-  }, [currentDate]);
+  }, [currentDate, isAdmin, user]);
 
   const handleEditAppointment = useCallback(() => {
     if (!selectedAppointment) return;
@@ -2153,7 +2883,7 @@ export default function AgendaModule() {
   // RENDER: DAY VIEW
   // ==========================================
   const renderDayView = () => {
-    const dayAppointments = appointments.filter((a) =>
+    const dayAppointments = filteredAppointments.filter((a) =>
       isSameDay(parseISO(a.date), currentDate)
     );
 
@@ -2174,7 +2904,7 @@ export default function AgendaModule() {
               'text-xs font-medium uppercase tracking-wider',
               isToday(currentDate) ? 'text-red-600' : 'text-gray-500 dark:text-gray-400',
             )}>
-              {format(currentDate, 'EEEE', { locale: ptBR })}
+              {format(currentDate, 'EEEE', { locale: dateLocale })}
             </div>
             <div className={cn(
               'inline-flex items-center justify-center w-10 h-10 rounded-full text-lg font-semibold mt-1',
@@ -2231,8 +2961,8 @@ export default function AgendaModule() {
                 <div className="absolute inset-0 flex items-center justify-center z-0 pointer-events-none">
                   <div className="text-center">
                     <CalendarIcon className="w-10 h-10 mx-auto text-gray-200 dark:text-gray-700 mb-2" />
-                    <p className="text-sm text-gray-400 dark:text-gray-500">Nenhum agendamento neste dia</p>
-                    <p className="text-xs text-gray-300 dark:text-gray-600 mt-1">Clique em um horario para agendar</p>
+                    <p className="text-sm text-gray-400 dark:text-gray-500">{t('agenda.noAppointmentsThisDay', 'Nenhum agendamento neste dia')}</p>
+                    <p className="text-xs text-gray-300 dark:text-gray-600 mt-1">{t('agenda.clickSlotToSchedule', 'Clique em um horário para agendar')}</p>
                   </div>
                 </div>
               )}
@@ -2261,6 +2991,7 @@ export default function AgendaModule() {
         {weekDays.map((day, i) => {
           const isTodayCol = isToday(day);
           const dayAppointmentsCount = appointmentsByDate.get(format(day, 'yyyy-MM-dd'))?.length || 0;
+          const weekdayLabels = i18n.language === 'en-US' ? WEEKDAY_LABELS_EN : WEEKDAY_LABELS_PT;
           return (
             <div
               key={i}
@@ -2273,7 +3004,7 @@ export default function AgendaModule() {
                 'text-[11px] font-medium uppercase tracking-wider',
                 isTodayCol ? 'text-red-600' : 'text-gray-400 dark:text-gray-500',
               )}>
-                {WEEKDAY_LABELS[i]}
+                {weekdayLabels[i]}
               </div>
               <div
                 className={cn(
@@ -2291,7 +3022,7 @@ export default function AgendaModule() {
               </div>
               {dayAppointmentsCount > 0 && (
                 <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">
-                  {dayAppointmentsCount} agend.
+                  {dayAppointmentsCount} {t('agenda.apptAbbr', 'agend.')}
                 </div>
               )}
             </div>
@@ -2372,7 +3103,7 @@ export default function AgendaModule() {
     >
       {/* Weekday headers */}
       <div className="grid grid-cols-7 border-b border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900">
-        {WEEKDAY_LABELS.map((label, i) => (
+        {(i18n.language === 'en-US' ? WEEKDAY_LABELS_EN : WEEKDAY_LABELS_PT).map((label, i) => (
           <div key={i} className="text-center py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500 border-r border-gray-100 dark:border-gray-800 last:border-r-0">
             {label}
           </div>
@@ -2441,12 +3172,12 @@ export default function AgendaModule() {
                       }}
                     >
                       <span className="font-semibold">{appt.startTime}</span>{' '}
-                      {appt.clientName.split(' ')[0]}
+                      {(appt.clientName || '?').split(' ')[0]}
                     </motion.div>
                   ))}
                   {overflow > 0 && (
                     <div className="text-[10px] text-gray-500 dark:text-gray-400 font-medium text-center py-0.5">
-                      +{overflow} mais
+                      +{overflow} {t('agenda.more', 'mais')}
                     </div>
                   )}
                 </div>
@@ -2490,7 +3221,7 @@ export default function AgendaModule() {
             <button
               onClick={navigatePrev}
               className="p-2 hover:bg-white dark:hover:bg-gray-700 rounded-lg transition-all duration-200 hover:shadow-sm"
-              title="Anterior"
+              title={t('agenda.previous', 'Anterior')}
             >
               <ChevronLeft className="w-4 h-4 text-gray-600 dark:text-gray-400" />
             </button>
@@ -2503,12 +3234,12 @@ export default function AgendaModule() {
                   : 'text-gray-600 dark:text-gray-400 hover:bg-white dark:hover:bg-gray-700 hover:shadow-sm',
               )}
             >
-              Hoje
+              {t('agenda.today', 'Hoje')}
             </button>
             <button
               onClick={navigateNext}
               className="p-2 hover:bg-white dark:hover:bg-gray-700 rounded-lg transition-all duration-200 hover:shadow-sm"
-              title="Proximo"
+              title={t('agenda.next', 'Próximo')}
             >
               <ChevronRight className="w-4 h-4 text-gray-600 dark:text-gray-400" />
             </button>
@@ -2554,9 +3285,9 @@ export default function AgendaModule() {
           {/* View mode toggle */}
           <div className="flex items-center bg-gray-50 dark:bg-gray-800 rounded-xl p-0.5">
             {([
-              { mode: 'day' as ViewMode, icon: CalendarDays, label: 'Dia' },
-              { mode: 'week' as ViewMode, icon: Columns3, label: 'Semana' },
-              { mode: 'month' as ViewMode, icon: LayoutGrid, label: 'Mes' },
+              { mode: 'day' as ViewMode, icon: CalendarDays, label: t('agenda.day', 'Dia') },
+              { mode: 'week' as ViewMode, icon: Columns3, label: t('agenda.week', 'Semana') },
+              { mode: 'month' as ViewMode, icon: LayoutGrid, label: t('agenda.month', 'Mês') },
             ]).map(({ mode, icon: Icon, label }) => (
               <button
                 key={mode}
@@ -2584,7 +3315,7 @@ export default function AgendaModule() {
             )}
           >
             <Settings2 className="w-4 h-4" />
-            <span className="hidden sm:inline">Servicos</span>
+            <span className="hidden sm:inline">{t('agenda.services', 'Serviços')}</span>
           </button>
 
           {/* New appointment button */}
@@ -2599,8 +3330,8 @@ export default function AgendaModule() {
             )}
           >
             <Plus className="w-4 h-4" />
-            <span className="hidden sm:inline">Novo Agendamento</span>
-            <span className="sm:hidden">Novo</span>
+            <span className="hidden sm:inline">{t('agenda.newAppointment', 'Novo Agendamento')}</span>
+            <span className="sm:hidden">{t('agenda.new', 'Novo')}</span>
           </button>
         </div>
       </div>
@@ -2608,7 +3339,7 @@ export default function AgendaModule() {
       {/* ========== STATUS SUMMARY ========== */}
       <div className="flex items-center gap-1.5 px-4 sm:px-6 py-2 bg-gray-50/50 dark:bg-gray-800/50 border-b border-gray-100 dark:border-gray-800 overflow-x-auto">
         <span className="text-xs text-gray-400 dark:text-gray-500 mr-1 whitespace-nowrap">
-          {visibleAppointments.length} agendamento{visibleAppointments.length !== 1 ? 's' : ''}
+          {visibleAppointments.length} {visibleAppointments.length !== 1 ? t('agenda.appointments', 'agendamentos') : t('agenda.appointment', 'agendamento')}
         </span>
         <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-1" />
         {STATUS_OPTIONS.filter((s) => statusSummary[s.value] > 0).map((s) => (
@@ -2624,10 +3355,62 @@ export default function AgendaModule() {
               className="w-1.5 h-1.5 rounded-full"
               style={{ backgroundColor: STATUS_COLORS[s.value] }}
             />
-            {statusSummary[s.value]} {s.label}
+            {statusSummary[s.value]} {t(`agenda.status_${s.value}`, s.label)}
           </span>
         ))}
       </div>
+
+      {/* ========== PROFESSIONAL FILTER BAR ========== */}
+      {members.length > 1 && (
+        <div className="flex items-center gap-2 px-4 sm:px-6 py-2 bg-white dark:bg-gray-900 border-b border-gray-100 dark:border-gray-800 overflow-x-auto">
+          <UsersIcon className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500 flex-shrink-0" />
+          <button
+            onClick={() => setSelectedProfessional('all')}
+            className={cn(
+              'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all duration-200 whitespace-nowrap flex-shrink-0',
+              selectedProfessional === 'all'
+                ? 'bg-red-50 dark:bg-red-500/10 border-red-300 dark:border-red-500/30 text-red-600 dark:text-red-400'
+                : 'bg-white dark:bg-gray-800 border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:border-slate-300 dark:hover:border-gray-600',
+            )}
+          >
+            {t('agenda.all', 'Todos')}
+          </button>
+          {members.map((member) => {
+            const initials = (member.name || '?')
+              .split(' ')
+              .map((n) => n[0])
+              .filter(Boolean)
+              .slice(0, 2)
+              .join('')
+              .toUpperCase();
+            const isActive = selectedProfessional === member.id;
+            return (
+              <button
+                key={member.id}
+                onClick={() => setSelectedProfessional(isActive ? 'all' : member.id)}
+                className={cn(
+                  'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all duration-200 whitespace-nowrap flex-shrink-0',
+                  isActive
+                    ? 'bg-red-50 dark:bg-red-500/10 border-red-300 dark:border-red-500/30 text-red-600 dark:text-red-400'
+                    : 'bg-white dark:bg-gray-800 border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:border-slate-300 dark:hover:border-gray-600',
+                )}
+              >
+                <span
+                  className={cn(
+                    'w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0',
+                    isActive
+                      ? 'bg-red-600 text-white'
+                      : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
+                  )}
+                >
+                  {initials}
+                </span>
+                <span className="hidden sm:inline">{(member.name || '?').split(' ')[0]}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* ========== CALENDAR VIEW AREA ========== */}
       <div className="flex-1 overflow-hidden">
@@ -2646,6 +3429,7 @@ export default function AgendaModule() {
           setSelectedAppointment(null);
         }}
         appointment={selectedAppointment}
+        canEdit={selectedAppointment ? canEditAppointment(selectedAppointment) : false}
         onEdit={handleEditAppointment}
         onStatusChange={handleStatusChange}
         statusChanging={statusChanging}
@@ -2665,12 +3449,17 @@ export default function AgendaModule() {
         clients={clients}
         members={members}
         saving={saving}
+        checkConflicts={checkConflicts}
+        editingAppointmentId={editingAppointment?.id}
       />
 
       <ServiceManagementDialog
         open={showServiceDialog}
         onClose={() => setShowServiceDialog(false)}
         services={services}
+        members={members}
+        currentUser={user}
+        isAdmin={isAdmin}
         onCreateService={handleCreateService}
         onUpdateService={handleUpdateService}
         onDeleteService={handleDeleteService}
@@ -2681,6 +3470,8 @@ export default function AgendaModule() {
         onClose={() => setShowDeleteDialog(false)}
         onCancel={handleCancelAppointment}
         onDelete={handleDeleteAppointment}
+        onDeleteSeries={editingAppointment?.recurrenceId ? handleDeleteSeries : undefined}
+        hasRecurrence={!!editingAppointment?.recurrenceId}
         loading={deleteLoading}
         appointmentName={editingAppointment?.clientName}
       />

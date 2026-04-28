@@ -8,19 +8,14 @@ import { sendPasswordResetEmail } from 'firebase/auth';
 import { auth } from '@/lib/config/firebase';
 import { Mail, Lock, User, Eye, EyeOff, ArrowRight, Loader2, CheckCircle2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useTranslation } from 'react-i18next';
 
 type AuthMode = 'login' | 'signup';
 
-const features = [
-  'Agenda inteligente com múltiplas visões',
-  'PDV completo com múltiplos pagamentos',
-  'Emissão de NF-e, NFC-e e NFS-e',
-  'Financeiro, estoque e clientes integrados',
-];
-
 export default function LoginPage() {
+  const { t } = useTranslation();
   const router = useRouter();
-  const { signIn, signUp, signInWithGoogle, isAuthenticated, isLoading } = useAuth();
+  const { signIn, signUp, isAuthenticated, isLoading } = useAuth();
 
   const [mode, setMode] = useState<AuthMode>('login');
   const [email, setEmail] = useState('');
@@ -46,12 +41,12 @@ export default function LoginPage() {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError('');
-    if (!email || !password) { setError('Preencha todos os campos.'); return; }
-    if (mode === 'signup' && !name) { setError('Informe seu nome.'); return; }
-    if (password.length < 6) { setError('A senha deve ter pelo menos 6 caracteres.'); return; }
+    if (!email || !password) { setError(t('login.fillAllFields')); return; }
+    if (mode === 'signup' && !name) { setError(t('login.enterName')); return; }
+    if (password.length < 6) { setError(t('login.passwordMinLength')); return; }
 
     if (mode === 'signup' && useInviteCode && inviteCode.trim().length !== 6) {
-      setError('O código de convite deve ter 6 caracteres.');
+      setError(t('login.inviteCodeLength'));
       return;
     }
     setIsSubmitting(true);
@@ -61,38 +56,25 @@ export default function LoginPage() {
       } else {
         await signUp(email, password, name, useInviteCode ? inviteCode.trim().toUpperCase() : undefined);
       }
-      router.push('/app');
+      // redirect is handled by the useEffect watching isAuthenticated
     } catch (err: unknown) {
       const fe = err as { code?: string; message?: string };
       const msgs: Record<string, string> = {
-        'auth/user-not-found': 'Usuário não encontrado.',
-        'auth/wrong-password': 'Senha incorreta.',
-        'auth/invalid-credential': 'Credenciais inválidas. Verifique e-mail e senha.',
-        'auth/invalid-login-credentials': 'Credenciais inválidas. Verifique e-mail e senha.',
-        'auth/email-already-in-use': 'Este e-mail já está em uso.',
-        'auth/weak-password': 'A senha é muito fraca.',
-        'auth/invalid-email': 'E-mail inválido.',
-        'auth/too-many-requests': 'Muitas tentativas. Aguarde e tente novamente.',
-        'auth/network-request-failed': 'Erro de rede. Verifique sua conexão.',
-        'auth/operation-not-allowed': 'Login com e-mail/senha não está habilitado.',
-        'invite/invalid-code': 'Código de convite inválido ou não encontrado.',
-        'invite/code-expired': 'Este código de convite expirou.',
+        'auth/user-not-found': t('login.errors.userNotFound'),
+        'auth/wrong-password': t('login.errors.wrongPassword'),
+        'auth/invalid-credential': t('login.errors.invalidCredential'),
+        'auth/invalid-login-credentials': t('login.errors.invalidCredential'),
+        'auth/email-already-in-use': t('login.errors.emailInUse'),
+        'auth/weak-password': t('login.errors.weakPassword'),
+        'auth/invalid-email': t('login.errors.invalidEmail'),
+        'auth/too-many-requests': t('login.errors.tooManyRequests'),
+        'auth/network-request-failed': t('login.errors.networkFailed'),
+        'auth/operation-not-allowed': t('login.errors.operationNotAllowed'),
+        'permission-denied': t('login.errors.permissionDenied'),
+        'invite/invalid-code': t('login.errors.invalidInviteCode'),
+        'invite/code-expired': t('login.errors.inviteCodeExpired'),
       };
-      setError(msgs[fe.code || ''] || fe.message || 'Ocorreu um erro. Tente novamente.');
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handleGoogleSignIn = async () => {
-    setError('');
-    setIsSubmitting(true);
-    try {
-      await signInWithGoogle();
-      router.push('/app');
-    } catch (err: unknown) {
-      const fe = err as { message?: string };
-      setError(fe.message || 'Erro ao entrar com Google.');
+      setError(msgs[fe.code || ''] || fe.message || t('login.errors.generic'));
     } finally {
       setIsSubmitting(false);
     }
@@ -150,13 +132,7 @@ export default function LoginPage() {
           transition={{ duration: 0.6, delay: 0.1 }}
           className="relative z-10 flex items-center gap-3"
         >
-          <div className="w-10 h-10 rounded-2xl bg-white/15 backdrop-blur-sm border border-white/20 flex items-center justify-center shadow-lg">
-            <span className="text-white font-bold text-lg font-display">S</span>
-          </div>
-          <div>
-            <p className="text-white font-bold text-lg font-display tracking-tight">ServicePro</p>
-            <p className="text-white/60 text-xs">Gestão Inteligente</p>
-          </div>
+          <img src="/logo-completa.png" alt="Aevo" className="h-12 object-contain" />
         </motion.div>
 
         {/* Hero text */}
@@ -167,15 +143,15 @@ export default function LoginPage() {
           className="relative z-10"
         >
           <h2 className="text-4xl xl:text-5xl font-bold text-white font-display leading-[1.15] tracking-tight mb-5">
-            Seu negócio<br />
-            <span className="text-white/75">em um só lugar</span>
+            {t('login.tagline')}<br />
+            <span className="text-white/75">{t('login.taglineSub')}</span>
           </h2>
           <p className="text-white/65 text-base leading-relaxed max-w-sm mb-8">
-            Gerencie clientes, agenda, vendas, estoque e notas fiscais com uma ferramenta moderna e elegante.
+            {t('login.taglineDesc')}
           </p>
 
           <div className="space-y-3">
-            {features.map((feature, i) => (
+            {(t('login.features', { returnObjects: true }) as string[]).map((feature, i) => (
               <motion.div
                 key={feature}
                 initial={{ opacity: 0, x: -16 }}
@@ -205,9 +181,9 @@ export default function LoginPage() {
             </div>
             <div>
               <p className="text-white/90 text-sm leading-relaxed italic">
-                "Reduzi 3 horas de trabalho administrativo por dia. O módulo de agenda é incrível."
+                &quot;{t('login.testimonialText')}&quot;
               </p>
-              <p className="text-white/50 text-xs mt-1.5 font-medium">Maria S. — Salão de Beleza, SP</p>
+              <p className="text-white/50 text-xs mt-1.5 font-medium">{t('login.testimonialAuthor')}</p>
             </div>
           </div>
         </motion.div>
@@ -232,11 +208,8 @@ export default function LoginPage() {
           className="relative z-10 w-full max-w-[400px]"
         >
           {/* Mobile logo */}
-          <div className="lg:hidden flex items-center gap-2.5 mb-8">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-500 to-red-700 flex items-center justify-center shadow-lg shadow-red-500/25">
-              <span className="text-white font-bold font-display">S</span>
-            </div>
-            <span className="font-bold text-gray-900 dark:text-gray-100 font-display text-lg">ServicePro</span>
+          <div className="lg:hidden flex items-center justify-center mb-8">
+            <img src="/logo-completa.png" alt="Aevo" className="h-14 object-contain" />
           </div>
 
           {/* Heading */}
@@ -250,47 +223,13 @@ export default function LoginPage() {
               className="mb-7"
             >
               <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 font-display tracking-tight">
-                {mode === 'login' ? 'Bem-vindo de volta' : 'Criar conta gratuita'}
+                {mode === 'login' ? t('login.welcomeBack') : t('login.createFreeAccount')}
               </h1>
               <p className="text-gray-500 dark:text-gray-400 mt-1.5 text-[14px]">
-                {mode === 'login'
-                  ? 'Entre para gerenciar seu negócio'
-                  : 'Comece em segundos, sem cartão de crédito'}
+                {mode === 'login' ? t('login.loginSubtitle') : t('login.signupSubtitle')}
               </p>
             </motion.div>
           </AnimatePresence>
-
-          {/* Google button */}
-          <button
-            type="button"
-            onClick={handleGoogleSignIn}
-            disabled={busy}
-            className={cn(
-              'w-full flex items-center justify-center gap-3 px-4 py-[11px]',
-              'rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-white/[0.04]',
-              'text-[14px] font-medium text-gray-700 dark:text-gray-300',
-              'hover:bg-gray-50/80 dark:hover:bg-white/[0.06] hover:border-gray-300 dark:hover:border-gray-600',
-              'active:scale-[0.99] transition-all duration-150',
-              'shadow-sm shadow-gray-100 dark:shadow-none',
-              'disabled:opacity-50 disabled:cursor-not-allowed',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/30'
-            )}
-          >
-            <svg width="18" height="18" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg">
-              <path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844a4.14 4.14 0 01-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.875 2.684-6.615z" fill="#4285F4"/>
-              <path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 009 18z" fill="#34A853"/>
-              <path d="M3.964 10.71A5.41 5.41 0 013.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 000 9c0 1.452.348 2.827.957 4.042l3.007-2.332z" fill="#FBBC05"/>
-              <path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 00.957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z" fill="#EA4335"/>
-            </svg>
-            Continuar com Google
-          </button>
-
-          {/* Divider */}
-          <div className="flex items-center gap-3 my-5">
-            <div className="flex-1 h-px bg-gray-100 dark:bg-gray-800" />
-            <span className="text-[11px] font-medium text-gray-400 dark:text-gray-500 tracking-wider uppercase">ou</span>
-            <div className="flex-1 h-px bg-gray-100 dark:bg-gray-800" />
-          </div>
 
           {/* Form */}
           <form onSubmit={handleSubmit} className="space-y-3.5">
@@ -323,12 +262,12 @@ export default function LoginPage() {
                 >
                   <div className="space-y-3.5">
                     <FormField
-                      label="Nome completo"
+                      label={t('login.fullName')}
                       icon={User}
                       type="text"
                       value={name}
                       onChange={setName}
-                      placeholder="João Silva"
+                      placeholder={t('login.fullNamePlaceholder')}
                       autoComplete="name"
                     />
 
@@ -352,7 +291,7 @@ export default function LoginPage() {
                         )}>
                           {useInviteCode && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
                         </div>
-                        Tenho um código de convite
+                        {t('login.hasInviteCode')}
                       </button>
 
                       <AnimatePresence>
@@ -366,7 +305,7 @@ export default function LoginPage() {
                           >
                             <div>
                               <label className="block text-[13px] font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                                Código de convite
+                                {t('login.inviteCode')}
                               </label>
                               <input
                                 type="text"
@@ -389,7 +328,7 @@ export default function LoginPage() {
                                   <span className="w-3 h-3 rounded-full bg-green-500 inline-flex items-center justify-center">
                                     <svg width="7" height="5" viewBox="0 0 7 5" fill="none"><path d="M1 2.5L2.8 4L6 1" stroke="white" strokeWidth="1.2" strokeLinecap="round"/></svg>
                                   </span>
-                                  Código completo — você entrará na empresa do convite
+                                  {t('login.inviteCodeComplete')}
                                 </p>
                               )}
                             </div>
@@ -403,7 +342,7 @@ export default function LoginPage() {
             </AnimatePresence>
 
             <FormField
-              label="E-mail"
+              label={t('login.email')}
               icon={Mail}
               type="email"
               value={email}
@@ -414,14 +353,14 @@ export default function LoginPage() {
 
             {/* Password with show/hide */}
             <div>
-              <label className="block text-[13px] font-medium text-gray-700 dark:text-gray-300 mb-1.5">Senha</label>
+              <label className="block text-[13px] font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t('login.password')}</label>
               <div className="relative">
                 <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-[15px] h-[15px] text-gray-400 dark:text-gray-500 pointer-events-none" />
                 <input
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder={mode === 'login' ? 'Sua senha' : 'Mínimo 6 caracteres'}
+                  placeholder={mode === 'login' ? t('login.passwordPlaceholder') : t('login.passwordMinPlaceholder')}
                   autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
                   className={cn(
                     'w-full pl-10 pr-11 py-[10px] rounded-xl border border-gray-200 dark:border-gray-700',
@@ -445,7 +384,7 @@ export default function LoginPage() {
             {mode === 'login' && (
               <div className="flex justify-end">
                 <button type="button" onClick={() => { setShowResetPassword(true); setResetEmail(email); setResetError(''); setResetSent(false); }} className="text-[12px] text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 font-medium transition-colors">
-                  Esqueceu a senha?
+                  {t('login.forgotPassword')}
                 </button>
               </div>
             )}
@@ -472,7 +411,7 @@ export default function LoginPage() {
                 <Loader2 className="w-4 h-4 animate-spin" />
               ) : (
                 <>
-                  {mode === 'login' ? 'Entrar na conta' : 'Criar conta grátis'}
+                  {mode === 'login' ? t('login.signIn') : t('login.createFree')}
                   <ArrowRight className="w-4 h-4" />
                 </>
               )}
@@ -481,22 +420,22 @@ export default function LoginPage() {
 
           {/* Toggle mode */}
           <p className="text-center text-[13px] text-gray-500 dark:text-gray-400 mt-5">
-            {mode === 'login' ? 'Não tem conta?' : 'Já possui conta?'}{' '}
+            {mode === 'login' ? t('login.noAccount') : t('login.haveAccount')}{' '}
             <button
               type="button"
               onClick={() => { setMode(mode === 'login' ? 'signup' : 'login'); setError(''); }}
               className="text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 font-semibold transition-colors"
             >
-              {mode === 'login' ? 'Criar agora' : 'Fazer login'}
+              {mode === 'login' ? t('login.createNow') : t('login.signInNow')}
             </button>
           </p>
 
           {/* Footer */}
           <p className="text-center text-[11px] text-gray-400 dark:text-gray-500 mt-8">
-            Ao continuar você concorda com nossos{' '}
-            <span className="text-gray-500 dark:text-gray-400 cursor-pointer hover:text-red-600 dark:hover:text-red-400 transition-colors">Termos de Uso</span>
-            {' '}e{' '}
-            <span className="text-gray-500 dark:text-gray-400 cursor-pointer hover:text-red-600 dark:hover:text-red-400 transition-colors">Política de Privacidade</span>
+            {t('login.terms')}{' '}
+            <span className="text-gray-500 dark:text-gray-400 cursor-pointer hover:text-red-600 dark:hover:text-red-400 transition-colors">{t('login.termsLink')}</span>
+            {' '}{t('login.and')}{' '}
+            <span className="text-gray-500 dark:text-gray-400 cursor-pointer hover:text-red-600 dark:hover:text-red-400 transition-colors">{t('login.privacyLink')}</span>
           </p>
         </motion.div>
       </div>
@@ -524,23 +463,23 @@ export default function LoginPage() {
                   <div className="w-12 h-12 rounded-full bg-green-50 dark:bg-green-500/10 flex items-center justify-center mx-auto mb-3">
                     <CheckCircle2 className="w-6 h-6 text-green-500 dark:text-green-400" />
                   </div>
-                  <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">E-mail enviado!</h3>
+                  <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">{t('login.reset.emailSent')}</h3>
                   <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
-                    Verifique sua caixa de entrada e siga as instruções para redefinir sua senha.
+                    {t('login.reset.emailSentDesc')}
                   </p>
                   <button
                     type="button"
                     onClick={() => setShowResetPassword(false)}
                     className="mt-5 w-full py-2.5 rounded-xl bg-gray-100 dark:bg-gray-800 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
                   >
-                    Voltar ao login
+                    {t('login.reset.backToLogin')}
                   </button>
                 </div>
               ) : (
                 <>
-                  <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">Redefinir senha</h3>
+                  <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">{t('login.reset.title')}</h3>
                   <p className="text-sm text-gray-500 dark:text-gray-400 mt-1 mb-4">
-                    Informe seu e-mail para receber o link de redefinição.
+                    {t('login.reset.subtitle')}
                   </p>
                   {resetError && (
                     <div className="flex items-start gap-2 rounded-xl bg-red-50 dark:bg-red-500/10 border border-red-100 dark:border-red-500/20 px-3 py-2.5 text-[13px] text-red-600 dark:text-red-400 mb-3">
@@ -570,28 +509,28 @@ export default function LoginPage() {
                       onClick={() => setShowResetPassword(false)}
                       className="flex-1 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors"
                     >
-                      Cancelar
+                      {t('login.reset.cancel')}
                     </button>
                     <button
                       type="button"
                       onClick={async () => {
-                        if (!resetEmail) { setResetError('Informe o e-mail.'); return; }
+                        if (!resetEmail) { setResetError(t('login.reset.enterEmail')); return; }
                         try {
                           await sendPasswordResetEmail(auth, resetEmail);
                           setResetSent(true);
                         } catch (err: unknown) {
                           const fe = err as { code?: string };
                           const msgs: Record<string, string> = {
-                            'auth/user-not-found': 'E-mail não encontrado.',
-                            'auth/invalid-email': 'E-mail inválido.',
-                            'auth/too-many-requests': 'Muitas tentativas. Aguarde.',
+                            'auth/user-not-found': t('login.reset.errors.userNotFound'),
+                            'auth/invalid-email': t('login.reset.errors.invalidEmail'),
+                            'auth/too-many-requests': t('login.reset.errors.tooManyRequests'),
                           };
-                          setResetError(msgs[fe.code || ''] || 'Erro ao enviar. Tente novamente.');
+                          setResetError(msgs[fe.code || ''] || t('login.reset.errors.generic'));
                         }
                       }}
                       className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-red-500 text-sm font-semibold text-white hover:from-red-700 hover:to-red-600 shadow-lg shadow-red-500/25 transition-all duration-200"
                     >
-                      Enviar link
+                      {t('login.reset.sendLink')}
                     </button>
                   </div>
                 </>

@@ -44,16 +44,26 @@ import {
   AlertCircle,
   Loader2,
   History,
+  Gift,
+  TicketPercent,
+  CalendarPlus,
+  Coffee,
+  Ban,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatDate, formatDateTime, generateId } from '@/lib/utils/format';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
+import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, doc } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch, increment } from 'firebase/firestore';
+import { toast } from 'react-toastify';
+import { deductStock, restoreStock, checkStockAvailability } from '@/lib/services/stock';
+import { calculateEarnedPoints, addLoyaltyPoints, redeemLoyaltyPoints, pointsToReais, reaisToPoints } from '@/lib/services/loyalty';
+import { findGiftCard, redeemGiftCard } from '@/lib/services/giftCard';
 import { db } from '@/lib/config/firebase';
-import type { Product, Service, Client, Sale, SaleItem, Payment, PaymentMethod } from '@/lib/types';
+import type { Product, Service, CRMContact, Sale, SaleItem, Payment, PaymentMethod } from '@/lib/types';
 
 // ==========================================
 // TYPES & CONSTANTS
@@ -78,6 +88,10 @@ const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   credito: 'Credito',
   debito: 'Debito',
   boleto: 'Boleto',
+  creditoLoja: 'Crédito em Loja',
+  semPagamento: 'Sem Pagamento',
+  pontos: 'Pontos',
+  gift_card: 'Gift Card',
   outros: 'Outros',
 };
 
@@ -117,9 +131,37 @@ interface CartItem extends SaleItem {
 }
 
 export default function PDVModule() {
+  const { t } = useTranslation();
   const { isDark } = useTheme();
   const { user, business } = useAuth();
   const queryClient = useQueryClient();
+
+  const loyaltyConfig = business?.settings?.loyalty;
+  const loyaltyEnabled = loyaltyConfig?.isEnabled ?? false;
+
+  const PAYMENT_METHODS: { value: PaymentMethod; label: string; icon: React.ReactNode }[] = useMemo(() => [
+    { value: 'dinheiro', label: t('pdv.payment.cash', 'Dinheiro'), icon: <Banknote size={18} /> },
+    { value: 'pix', label: t('pdv.payment.pix', 'PIX'), icon: <QrCode size={18} /> },
+    { value: 'credito', label: t('pdv.payment.credit', 'Crédito'), icon: <CreditCard size={18} /> },
+    { value: 'debito', label: t('pdv.payment.debit', 'Débito'), icon: <Wallet size={18} /> },
+    { value: 'boleto', label: t('pdv.payment.boleto', 'Boleto'), icon: <FileText size={18} /> },
+    { value: 'outros', label: t('pdv.payment.other', 'Outros'), icon: <MoreHorizontal size={18} /> },
+    ...(loyaltyEnabled ? [{ value: 'pontos' as PaymentMethod, label: 'Pontos', icon: <Gift size={18} /> }] : []),
+    { value: 'gift_card' as PaymentMethod, label: 'Gift Card', icon: <TicketPercent size={18} /> },
+  ], [t, loyaltyEnabled]);
+
+  const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = useMemo(() => ({
+    dinheiro: t('pdv.payment.cash', 'Dinheiro'),
+    pix: t('pdv.payment.pix', 'PIX'),
+    credito: t('pdv.payment.credit', 'Crédito'),
+    debito: t('pdv.payment.debit', 'Débito'),
+    boleto: t('pdv.payment.boleto', 'Boleto'),
+    creditoLoja: t('pdv.payment.creditoLoja', 'Crédito em Loja'),
+    semPagamento: t('pdv.payment.semPagamento', 'Sem Pagamento'),
+    pontos: 'Pontos',
+    gift_card: 'Gift Card',
+    outros: t('pdv.payment.other', 'Outros'),
+  }), [t]);
 
   // --- Main view ---
   const [mainView, setMainView] = useState<MainView>('pdv');
@@ -127,9 +169,9 @@ export default function PDVModule() {
   // --- State ---
   const [activeTab, setActiveTab] = useState<'produtos' | 'servicos'>('produtos');
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeCategory, setActiveCategory] = useState('Todos');
+  const [activeCategory, setActiveCategory] = useState(t('pdv.catalog.all', 'Todos'));
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [selectedClient, setSelectedClient] = useState<Client | null>(null);
+  const [selectedClient, setSelectedClient] = useState<CRMContact | null>(null);
   const [discountValue, setDiscountValue] = useState('');
   const [discountType, setDiscountType] = useState<'reais' | 'percent'>('reais');
   const [payments, setPayments] = useState<Payment[]>([]);
@@ -142,9 +184,51 @@ export default function PDVModule() {
   const [saleError, setSaleError] = useState<string | null>(null);
   const [lastSaleId, setLastSaleId] = useState<string | null>(null);
 
+  // NFC-e state
+  const [emitirNfce, setEmitirNfce] = useState(false);
+  const [cpfConsumidor, setCpfConsumidor] = useState('');
+  const [nfceModalState, setNfceModalState] = useState<'idle' | 'emitting' | 'authorized' | 'error'>('idle');
+  const [nfceResult, setNfceResult] = useState<{ accessKey?: string; danfeUrl?: string; error?: string } | null>(null);
+  const pendingNfceRef = useRef<{
+    saleId: string;
+    cart: CartItem[];
+    total: number;
+    payments: Payment[];
+    clientName: string;
+    cpf: string;
+  } | null>(null);
+
+  // Gift card state
+  const [giftCardCode, setGiftCardCode] = useState('');
+  const [giftCardLookup, setGiftCardLookup] = useState<import('@/lib/types').GiftCard | null>(null);
+  const [giftCardError, setGiftCardError] = useState<string | null>(null);
+  const [isLookingUpGiftCard, setIsLookingUpGiftCard] = useState(false);
+  // Tracks gift card ids to redeem at sale confirmation: Map<giftCardId, amountToRedeem>
+  const giftCardRedemptions = useRef<Map<string, number>>(new Map());
+  // Sell gift card modal
+  const [showSellGiftCard, setShowSellGiftCard] = useState(false);
+  const [gcSellValue, setGcSellValue] = useState('');
+  const [gcSellRecipient, setGcSellRecipient] = useState('');
+  const [gcSellPhone, setGcSellPhone] = useState('');
+  const [gcSellExpiry, setGcSellExpiry] = useState('');
+  const [isSavingGiftCard, setIsSavingGiftCard] = useState(false);
+
+  // Tip state
+  const [tipValue, setTipValue] = useState('');
+  const [tipType, setTipType] = useState<'reais' | 'percent'>('reais');
+
+  // Pre-booking state (post-sale)
+  const [pbStep, setPbStep] = useState<'success' | 'form'>('success');
+  const [pbDate, setPbDate] = useState('');
+  const [pbServiceId, setPbServiceId] = useState('');
+  const [pbTime, setPbTime] = useState('');
+  const [isSavingPreBooking, setIsSavingPreBooking] = useState(false);
+
   // History view state
   const [historySearch, setHistorySearch] = useState('');
   const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
+  const [isCancellingSale, setIsCancellingSale] = useState(false);
+  const [cancelConfirmSaleId, setCancelConfirmSaleId] = useState<string | null>(null);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -193,10 +277,15 @@ export default function PDVModule() {
         collection(db, 'clients'),
         where('businessId', '==', business!.id),
         where('isActive', '==', true),
-        orderBy('nome', 'asc'),
+        orderBy('name', 'asc'),
       );
       const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Client));
+      return snap.docs.map(d => {
+        const data = d.data();
+        // Normalize legacy `nome` field to `name` (migration from old CRM schema)
+        if (!data.name && data.nome) data.name = data.nome;
+        return { ...data, id: d.id } as CRMContact;
+      });
     },
     enabled: !!business?.id,
   });
@@ -219,13 +308,14 @@ export default function PDVModule() {
 
   // --- Derived Data ---
   const categories = useMemo(() => {
+    const todosLabel = t('pdv.catalog.all', 'Todos');
     const cats = new Set<string>();
     if (activeTab === 'produtos') {
       products.forEach(p => { if (p.category) cats.add(p.category); });
     } else {
       services.forEach(s => { if (s.category) cats.add(s.category); });
     }
-    return ['Todos', ...Array.from(cats).sort()];
+    return [todosLabel, ...Array.from(cats).sort()];
   }, [activeTab, products, services]);
 
   const catalogItems: CatalogItem[] = useMemo(() => {
@@ -234,7 +324,7 @@ export default function PDVModule() {
       : services.map(s => ({ ...s, type: 'service' as const }));
     return items.filter((item) => {
       const matchesSearch = item.name.toLowerCase().includes(searchQuery.toLowerCase());
-      const matchesCategory = activeCategory === 'Todos' || item.category === activeCategory;
+      const matchesCategory = activeCategory === t('pdv.catalog.all', 'Todos') || item.category === activeCategory;
       return matchesSearch && matchesCategory;
     });
   }, [activeTab, searchQuery, activeCategory, products, services]);
@@ -251,9 +341,15 @@ export default function PDVModule() {
     return val;
   }, [discountValue, discountType, subtotal]);
 
+  const tipAmount = useMemo(() => {
+    const val = parseFloat(tipValue) || 0;
+    if (tipType === 'percent') return (subtotal * val) / 100;
+    return val;
+  }, [tipValue, tipType, subtotal]);
+
   const total = useMemo(() => {
-    return Math.max(0, subtotal - discountAmount);
-  }, [subtotal, discountAmount]);
+    return Math.max(0, subtotal - discountAmount + tipAmount);
+  }, [subtotal, discountAmount, tipAmount]);
 
   const totalPaid = useMemo(() => {
     return payments.reduce((sum, p) => sum + p.amount, 0);
@@ -326,16 +422,30 @@ export default function PDVModule() {
   }, []);
 
   const updateQuantity = useCallback((cartItemId: string, delta: number) => {
-    setCart((prev) => {
-      return prev
+    setCart((prev) =>
+      prev
         .map((c) => {
           if (c.id !== cartItemId) return c;
           const newQty = c.quantity + delta;
           if (newQty <= 0) return null;
           return { ...c, quantity: newQty, total: newQty * c.unitPrice };
         })
-        .filter(Boolean) as CartItem[];
-    });
+        .filter(Boolean) as CartItem[],
+    );
+  }, []);
+
+  // Used by product-grid cards: item.id is productId/serviceId, not the cart-item's own id
+  const updateQuantityByItemId = useCallback((itemId: string, delta: number) => {
+    setCart((prev) =>
+      prev
+        .map((c) => {
+          if (c.productId !== itemId && c.serviceId !== itemId) return c;
+          const newQty = c.quantity + delta;
+          if (newQty <= 0) return null;
+          return { ...c, quantity: newQty, total: newQty * c.unitPrice };
+        })
+        .filter(Boolean) as CartItem[],
+    );
   }, []);
 
   const removeFromCart = useCallback((cartItemId: string) => {
@@ -346,6 +456,8 @@ export default function PDVModule() {
     if (!activePaymentMethod || !paymentAmount) return;
     const amount = parseFloat(paymentAmount);
     if (isNaN(amount) || amount <= 0) return;
+    // Gift card requires a validated lookup before adding
+    if (activePaymentMethod === 'gift_card' && !giftCardLookup) return;
     const payment: Payment = {
       method: activePaymentMethod,
       amount,
@@ -354,13 +466,112 @@ export default function PDVModule() {
       payment.installments = installments;
     }
     setPayments((prev) => [...prev, payment]);
+    // Track gift card redemption for later
+    if (activePaymentMethod === 'gift_card' && giftCardLookup) {
+      giftCardRedemptions.current.set(giftCardLookup.id, amount);
+      setGiftCardLookup(null);
+      setGiftCardCode('');
+    }
     setPaymentAmount('');
     setActivePaymentMethod(null);
     setInstallments(1);
-  }, [activePaymentMethod, paymentAmount, installments]);
+  }, [activePaymentMethod, paymentAmount, installments, giftCardLookup]);
 
   const removePayment = useCallback((index: number) => {
-    setPayments((prev) => prev.filter((_, i) => i !== index));
+    setPayments((prev) => {
+      const removed = prev[index];
+      // If removing a gift card payment, clear its redemption tracking
+      if (removed?.method === 'gift_card') {
+        // Find and remove the matching entry from the map by amount (best effort)
+        for (const [gcId, amt] of giftCardRedemptions.current.entries()) {
+          if (Math.abs(amt - removed.amount) < 0.01) {
+            giftCardRedemptions.current.delete(gcId);
+            break;
+          }
+        }
+      }
+      return prev.filter((_, i) => i !== index);
+    });
+  }, []);
+
+  const handleGiftCardLookup = useCallback(async () => {
+    if (!business?.id || !giftCardCode.trim()) return;
+    setIsLookingUpGiftCard(true);
+    setGiftCardError(null);
+    setGiftCardLookup(null);
+    try {
+      const gc = await findGiftCard(db, business.id, giftCardCode.trim());
+      if (!gc) { setGiftCardError('Gift card não encontrado.'); return; }
+      if (gc.status !== 'active') { setGiftCardError(`Gift card ${gc.status === 'used' ? 'já utilizado' : gc.status === 'expired' ? 'expirado' : 'inativo'}.`); return; }
+      if (gc.expiresAt && gc.expiresAt < new Date().toISOString()) { setGiftCardError('Gift card expirado.'); return; }
+      setGiftCardLookup(gc);
+      setPaymentAmount(Math.min(gc.remainingValue, remaining).toFixed(2));
+    } catch {
+      setGiftCardError('Erro ao buscar gift card.');
+    } finally {
+      setIsLookingUpGiftCard(false);
+    }
+  }, [business?.id, giftCardCode, remaining]);
+
+  const handleSellGiftCard = useCallback(async () => {
+    if (!business?.id || !user) return;
+    const value = parseFloat(gcSellValue);
+    if (isNaN(value) || value <= 0) { toast.error('Informe um valor válido para o gift card.'); return; }
+    setIsSavingGiftCard(true);
+    try {
+      const { createGiftCard } = await import('@/lib/services/giftCard');
+      const gc = await createGiftCard(db, {
+        businessId: business.id,
+        originalValue: value,
+        recipientName: gcSellRecipient || undefined,
+        recipientPhone: gcSellPhone || undefined,
+        expiresAt: gcSellExpiry ? new Date(gcSellExpiry + 'T23:59:59').toISOString() : undefined,
+      });
+      // Add to cart as a gift card product line
+      const cartItem: CartItem = {
+        id: generateId(),
+        description: `Gift Card ${gc.code}${gcSellRecipient ? ` – ${gcSellRecipient}` : ''}`,
+        quantity: 1,
+        unitPrice: value,
+        discount: 0,
+        total: value,
+        itemType: 'product',
+      };
+      setCart(prev => [...prev, cartItem]);
+      toast.success(`Gift card criado! Código: ${gc.code}`);
+      setShowSellGiftCard(false);
+      setGcSellValue(''); setGcSellRecipient(''); setGcSellPhone(''); setGcSellExpiry('');
+    } catch (err) {
+      toast.error('Erro ao criar gift card.');
+      console.error(err);
+    } finally {
+      setIsSavingGiftCard(false);
+    }
+  }, [business?.id, user, gcSellValue, gcSellRecipient, gcSellPhone, gcSellExpiry]);
+
+  const resetSale = useCallback(() => {
+    setSaleComplete(false);
+    setShowConfirmation(false);
+    setCart([]);
+    setPayments([]);
+    giftCardRedemptions.current.clear();
+    setSelectedClient(null);
+    setDiscountValue('');
+    setTipValue('');
+    setTipType('reais');
+    setActivePaymentMethod(null);
+    setPaymentAmount('');
+    setInstallments(1);
+    setEmitirNfce(false);
+    setCpfConsumidor('');
+    setGiftCardCode('');
+    setGiftCardLookup(null);
+    setGiftCardError(null);
+    setLastSaleId(null);
+    setPbStep('success');
+    setPbDate('');
+    setPbServiceId('');
+    setPbTime('');
   }, []);
 
   const openConfirmation = useCallback(() => {
@@ -369,8 +580,100 @@ export default function PDVModule() {
     setShowConfirmation(true);
   }, [cart.length, remaining]);
 
+  // ==========================================
+  // NFC-e EMISSION
+  // ==========================================
+
+  const emitNfce = useCallback(async (
+    saleId: string,
+    cartSnapshot: CartItem[],
+    saleTotal: number,
+    salePayments: Payment[],
+    clientName: string,
+    cpf: string,
+  ) => {
+    if (!business) return { success: false };
+
+    setNfceModalState('emitting');
+    setNfceResult(null);
+
+    try {
+      // Build items with fiscal data from products
+      const nfceItems = cartSnapshot.map((item) => {
+        const prod = item.productId ? products.find(p => p.id === item.productId) : null;
+        return {
+          description: item.description,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          discount: (item.discount || 0) > 0 ? item.discount : undefined,
+          ncm: prod?.ncm || undefined,
+          cfop: prod?.cfop ? Number(prod.cfop) : undefined,
+          barcode: prod?.barcode || undefined,
+          code: prod?.sku || item.productId || item.serviceId || undefined,
+          unit: 'UN',
+        };
+      });
+
+      // Map primary payment method
+      const primaryPayment = salePayments[0];
+      const paymentMethod = primaryPayment?.method || 'dinheiro';
+
+      const nfcePayload = {
+        type: 'nfce' as const,
+        businessId: business.id,
+        items: nfceItems,
+        paymentMethod,
+        paymentValue: saleTotal,
+        cpfConsumidor: cpf.replace(/\D/g, '') || undefined,
+        nomeConsumidor: clientName.trim() || undefined,
+        presencaComprador: 1,
+        naturezaOperacao: 'VENDA AO CONSUMIDOR FINAL',
+      };
+
+      const res = await fetch('/api/fiscal/emit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(nfcePayload),
+      });
+
+      const json = await res.json();
+
+      if (res.ok && json.success && json.data?.status === 'autorizado') {
+        setNfceResult({
+          accessKey: json.data.chaveAcesso,
+        });
+        setNfceModalState('authorized');
+
+        // Invalidate fiscal documents cache
+        queryClient.invalidateQueries({ queryKey: ['fiscalDocuments'] });
+
+        return { success: true, accessKey: json.data.chaveAcesso };
+      } else {
+        const errorMsg = json.error || json.data?.mensagem || 'Erro desconhecido na emissão da NFC-e';
+        setNfceResult({ error: errorMsg });
+        setNfceModalState('error');
+        return { success: false };
+      }
+    } catch (err) {
+      console.error('NFC-e emission error:', err);
+      setNfceResult({ error: err instanceof Error ? err.message : 'Erro de conexão ao emitir NFC-e' });
+      setNfceModalState('error');
+      return { success: false };
+    }
+  }, [business, products, queryClient]);
+
   const confirmSale = useCallback(async () => {
     if (!user || !business) return;
+
+    // Validate CPF if NFC-e enabled and partially filled
+    if (emitirNfce && cpfConsumidor) {
+      const cpfDigits = cpfConsumidor.replace(/\D/g, '');
+      if (cpfDigits.length > 0 && cpfDigits.length < 11) {
+        setSaleError('CPF incompleto. Preencha os 11 dígitos ou deixe em branco.');
+        return;
+      }
+    }
+
     setIsSaving(true);
     setSaleError(null);
 
@@ -380,7 +683,7 @@ export default function PDVModule() {
       const saleData = {
         businessId: business.id,
         clientId: selectedClient?.id || null,
-        clientName: selectedClient?.nome || null,
+        clientName: selectedClient?.name || null,
         items: cart.map(item => ({
           id: generateId(),
           productId: item.productId || null,
@@ -394,6 +697,7 @@ export default function PDVModule() {
         payments: payments,
         subtotal,
         discount: discountAmount,
+        ...(tipAmount > 0 ? { tip: tipAmount } : {}),
         total,
         status: 'finalizada' as const,
         operatorId: user.uid,
@@ -402,62 +706,157 @@ export default function PDVModule() {
         updatedAt: now,
       };
 
-      const docRef = await addDoc(collection(db, 'sales'), saleData);
+      // ── Atomic batch: sale + stock + transaction + client stats ──
+      const batch = writeBatch(db);
+      const saleRef = doc(collection(db, 'sales'));
+      batch.set(saleRef, saleData);
 
-      // Update stock for product items
-      for (const item of cart) {
-        if (item.productId) {
-          const product = products.find(p => p.id === item.productId);
-          if (product) {
-            await updateDoc(doc(db, 'products', item.productId), {
-              currentStock: product.currentStock - item.quantity,
-              updatedAt: now,
-            });
-            await addDoc(collection(db, 'stockMovements'), {
-              businessId: business.id,
-              productId: item.productId,
-              productName: item.description,
-              type: 'saida',
-              quantity: item.quantity,
-              previousStock: product.currentStock,
-              newStock: product.currentStock - item.quantity,
-              reason: `Venda #${docRef.id.substring(0, 6)}`,
-              saleId: docRef.id,
-              operatorId: user.uid,
-              operatorName: user.name,
-              createdAt: now,
-            });
-          }
+      // Deduct stock into the same batch (supports composite products/BOM).
+      const productIndex = new Map(products.map(p => [p.id, p]));
+      const stockLines = cart
+        .filter(item => item.productId)
+        .map(item => ({ productId: item.productId!, quantity: item.quantity }));
+
+      // Validate stock availability before committing
+      if (stockLines.length > 0) {
+        const shortages = checkStockAvailability(stockLines, productIndex);
+        if (shortages.length > 0) {
+          const names = shortages.map(s => `${s.productName} (disponível: ${s.available}, pedido: ${s.requested})`).join(', ');
+          setSaleError(`Estoque insuficiente: ${names}`);
+          setIsSaving(false);
+          return;
         }
       }
 
-      // Create financial transaction for the sale
-      await addDoc(collection(db, 'transactions'), {
+      if (stockLines.length > 0) {
+        await deductStock(db, stockLines, {
+          businessId: business.id,
+          operatorId: user.uid,
+          operatorName: user.name,
+          sourceId: saleRef.id,
+          reason: `Venda #${saleRef.id.substring(0, 6)}`,
+          productIndex,
+        }, batch);
+      }
+
+      // Financial transaction in the same batch
+      const txRef = doc(collection(db, 'transactions'));
+      batch.set(txRef, {
         businessId: business.id,
         type: 'receita',
         category: 'Vendas',
-        description: `Venda ${selectedClient?.nome ? `- ${selectedClient.nome}` : ''}`,
+        description: `Venda ${selectedClient?.name ? `- ${selectedClient.name}` : ''}`,
         amount: total,
         dueDate: now.split('T')[0],
         paymentDate: now.split('T')[0],
         status: 'pago',
         clientId: selectedClient?.id || null,
-        clientName: selectedClient?.nome || null,
-        saleId: docRef.id,
+        clientName: selectedClient?.name || null,
+        saleId: saleRef.id,
         paymentMethod: payments[0]?.method || 'dinheiro',
         createdAt: now,
         updatedAt: now,
       });
 
-      // Update client stats
+      // Client stats in the same batch (uses increment to prevent race conditions)
       if (selectedClient) {
-        await updateDoc(doc(db, 'clients', selectedClient.id), {
-          totalSpent: (selectedClient.totalSpent || 0) + total,
-          visitCount: (selectedClient.visitCount || 0) + 1,
+        batch.update(doc(db, 'clients', selectedClient.id), {
+          totalSpent: increment(total),
+          visitCount: increment(1),
           lastVisit: now,
           updatedAt: now,
         });
       }
+
+      // Commit all core operations atomically
+      await batch.commit();
+
+      // Use saleRef.id for downstream operations
+      const docRef = saleRef;
+
+      // ── Commission transaction (non-critical — fires if operator has commissionRate > 0) ──
+      const commissionRate = user.commissionRate ?? 0;
+      if (commissionRate > 0 && total > 0) {
+        const commissionAmount = Math.round(total * commissionRate) / 100;
+        try {
+          await addDoc(collection(db, 'transactions'), {
+            businessId: business.id,
+            type: 'despesa',
+            category: 'Comissoes',
+            description: `Comissão ${user.name} — Venda #${saleRef.id.slice(0, 6)} (${commissionRate}%)`,
+            amount: commissionAmount,
+            dueDate: now.split('T')[0],
+            paymentDate: null,
+            status: 'pendente',
+            clientId: user.uid,
+            clientName: user.name,
+            saleId: saleRef.id,
+            operatorId: user.uid,
+            operatorName: user.name,
+            createdAt: now,
+            updatedAt: now,
+          });
+        } catch (err) {
+          console.warn('[pdv] commission transaction failed:', err);
+        }
+      }
+
+      // ── Non-critical operations (loyalty/gift card — already use runTransaction internally) ──
+      if (selectedClient) {
+
+        const loyaltyConfig = business?.settings?.loyalty;
+        const pointsPayment = payments.find(p => p.method === 'pontos');
+
+        // Redeem loyalty points (if client paid with pontos)
+        if (loyaltyConfig?.isEnabled && pointsPayment && pointsPayment.amount > 0) {
+          const pointsToRedeem = reaisToPoints(pointsPayment.amount, loyaltyConfig);
+          try {
+            await redeemLoyaltyPoints(db, {
+              businessId: business!.id,
+              clientId: selectedClient.id,
+              clientName: selectedClient.name,
+              pointsToRedeem,
+              config: loyaltyConfig,
+              sourceId: docRef.id,
+              description: `Resgate - Venda #${docRef.id.substring(0, 6)}`,
+            });
+          } catch (err) {
+            console.warn('Loyalty points redemption failed:', err);
+          }
+        }
+
+        // Accumulate loyalty points (on the cash portion of the sale)
+        const cashTotal = total - (pointsPayment?.amount || 0);
+        if (loyaltyConfig?.isEnabled && cashTotal > 0) {
+          const earned = calculateEarnedPoints(cashTotal, loyaltyConfig);
+          if (earned > 0) {
+            try {
+              await addLoyaltyPoints(db, {
+                businessId: business!.id,
+                clientId: selectedClient.id,
+                clientName: selectedClient.name,
+                pointsEarned: earned,
+                config: loyaltyConfig,
+                sourceId: docRef.id,
+                sourceType: 'sale',
+                description: `Venda #${docRef.id.substring(0, 6)}`,
+              });
+            } catch (err) {
+              console.warn('Loyalty points accumulation failed:', err);
+            }
+          }
+        }
+      }
+
+      // Redeem gift cards
+      for (const [gcId, amountToRedeem] of giftCardRedemptions.current.entries()) {
+        try {
+          await redeemGiftCard(db, { giftCardId: gcId, amountToRedeem, saleId: docRef.id });
+        } catch (err) {
+          console.warn('Gift card redemption failed:', err);
+        }
+      }
+      giftCardRedemptions.current.clear();
 
       // Invalidate caches
       queryClient.invalidateQueries({ queryKey: ['sales'] });
@@ -466,36 +865,264 @@ export default function PDVModule() {
       queryClient.invalidateQueries({ queryKey: ['clients'] });
 
       setLastSaleId(docRef.id);
+
+      // NFC-e emission (if toggled on)
+      if (emitirNfce) {
+        // Save context for retry capability
+        pendingNfceRef.current = {
+          saleId: docRef.id,
+          cart: [...cart],
+          total,
+          payments: [...payments],
+          clientName: selectedClient?.name || '',
+          cpf: cpfConsumidor,
+        };
+
+        // Close confirmation, show NFC-e modal
+        setShowConfirmation(false);
+        setIsSaving(false);
+
+        await emitNfce(
+          docRef.id,
+          cart,
+          total,
+          payments,
+          selectedClient?.name || '',
+          cpfConsumidor,
+        );
+
+        // Don't auto-reset — user will close NFC-e modal manually
+        return;
+      }
+
       setSaleComplete(true);
 
-      setTimeout(() => {
-        setSaleComplete(false);
-        setShowConfirmation(false);
-        setCart([]);
-        setPayments([]);
-        setSelectedClient(null);
-        setDiscountValue('');
-        setActivePaymentMethod(null);
-        setPaymentAmount('');
-        setInstallments(1);
-        setLastSaleId(null);
-      }, 2500);
+      // If there's a client, keep dialog open for pre-booking offer; otherwise auto-close
+      if (!selectedClient) {
+        setTimeout(resetSale, 2500);
+      }
     } catch (error) {
       console.error('Error finalizing sale:', error);
       setSaleError('Erro ao finalizar venda. Tente novamente.');
     } finally {
       setIsSaving(false);
     }
-  }, [user, business, cart, selectedClient, payments, subtotal, discountAmount, total, products, queryClient]);
+  }, [user, business, cart, selectedClient, payments, subtotal, discountAmount, tipAmount, total, products, queryClient, emitirNfce, cpfConsumidor, emitNfce, resetSale]);
 
   const cancelSale = useCallback(() => {
     setCart([]);
     setPayments([]);
+    giftCardRedemptions.current.clear();
     setSelectedClient(null);
     setDiscountValue('');
+    setTipValue('');
+    setTipType('reais');
     setActivePaymentMethod(null);
     setPaymentAmount('');
     setInstallments(1);
+    setEmitirNfce(false);
+    setCpfConsumidor('');
+    setGiftCardCode('');
+    setGiftCardLookup(null);
+    setGiftCardError(null);
+  }, []);
+
+  const handleCancelSale = useCallback(async (sale: Sale) => {
+    if (!user || !business) return;
+    setIsCancellingSale(true);
+    try {
+      const now = new Date().toISOString();
+
+      // 1. Mark sale as cancelled
+      await updateDoc(doc(db, 'sales', sale.id), {
+        status: 'cancelada',
+        cancelledAt: now,
+        cancelledBy: user.uid,
+        cancelledByName: user.name,
+        updatedAt: now,
+      });
+
+      // 2. Restore stock for product items
+      const productLines = sale.items
+        .filter(item => item.productId)
+        .map(item => ({ productId: item.productId!, quantity: item.quantity }));
+      if (productLines.length > 0) {
+        const productIndex = new Map(products.map(p => [p.id, p]));
+        await restoreStock(db, productLines, {
+          businessId: business.id,
+          operatorId: user.uid,
+          operatorName: user.name,
+          sourceId: sale.id,
+          reason: `Cancelamento venda #${sale.id.substring(0, 6)}`,
+          productIndex,
+        });
+      }
+
+      // 3. Cancel the linked financial transaction
+      const txSnap = await getDocs(
+        query(
+          collection(db, 'transactions'),
+          where('businessId', '==', business.id),
+          where('saleId', '==', sale.id),
+        ),
+      );
+      for (const txDoc of txSnap.docs) {
+        await updateDoc(doc(db, 'transactions', txDoc.id), {
+          status: 'cancelado',
+          updatedAt: now,
+        });
+      }
+
+      // 4. Reverse client stats
+      if (sale.clientId) {
+        try {
+          const clientDoc = await getDocs(
+            query(collection(db, 'clients'), where('businessId', '==', business.id)),
+          );
+          const client = clientDoc.docs.find(d => d.id === sale.clientId);
+          if (client) {
+            const data = client.data();
+            await updateDoc(doc(db, 'clients', client.id), {
+              totalSpent: Math.max(0, (data.totalSpent || 0) - sale.total),
+              visitCount: Math.max(0, (data.visitCount || 0) - 1),
+              updatedAt: now,
+            });
+          }
+        } catch (err) {
+          console.warn('Failed to reverse client stats:', err);
+        }
+      }
+
+      // Invalidate caches
+      queryClient.invalidateQueries({ queryKey: ['sales'] });
+      queryClient.invalidateQueries({ queryKey: ['products'] });
+      queryClient.invalidateQueries({ queryKey: ['transactions'] });
+      queryClient.invalidateQueries({ queryKey: ['clients'] });
+
+      setSelectedSale(null);
+      setCancelConfirmSaleId(null);
+      toast.success(t('pdv.cancel.success', 'Venda cancelada e estoque restaurado com sucesso'));
+    } catch (error) {
+      console.error('Error cancelling sale:', error);
+      toast.error(t('pdv.cancel.error', 'Erro ao cancelar venda'));
+    } finally {
+      setIsCancellingSale(false);
+    }
+  }, [user, business, products, queryClient, t]);
+
+  const handlePreBooking = useCallback(async () => {
+    if (!user || !business || !selectedClient || !pbDate || !pbServiceId || !pbTime) return;
+    setIsSavingPreBooking(true);
+    try {
+      const service = services.find(s => s.id === pbServiceId);
+      if (!service) return;
+      const now = new Date().toISOString();
+      const duration = service.duration || 60;
+      const [h, m] = pbTime.split(':').map(Number);
+      const endMin = h * 60 + m + duration;
+      const endTime = `${String(Math.floor(endMin / 60)).padStart(2, '0')}:${String(endMin % 60).padStart(2, '0')}`;
+      await addDoc(collection(db, 'appointments'), {
+        businessId: business.id,
+        clientId: selectedClient.id,
+        clientName: selectedClient.name,
+        clientPhone: selectedClient.phone || null,
+        serviceId: service.id,
+        serviceName: service.name,
+        date: pbDate,
+        startTime: pbTime,
+        endTime,
+        duration,
+        status: 'agendado',
+        price: service.price,
+        color: service.color || '#DC2626',
+        createdAt: now,
+        updatedAt: now,
+      });
+      queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
+      toast.success(`Retorno agendado para ${new Date(pbDate + 'T12:00:00').toLocaleDateString('pt-BR')} às ${pbTime}`);
+      resetSale();
+    } catch (err) {
+      toast.error('Erro ao criar agendamento.');
+      console.error(err);
+    } finally {
+      setIsSavingPreBooking(false);
+    }
+  }, [user, business, selectedClient, pbDate, pbServiceId, pbTime, services, queryClient, resetSale]);
+
+  const handleNfceRetry = useCallback(async () => {
+    const ctx = pendingNfceRef.current;
+    if (!ctx) return;
+    await emitNfce(ctx.saleId, ctx.cart, ctx.total, ctx.payments, ctx.clientName, ctx.cpf);
+  }, [emitNfce]);
+
+  const handlePrintReceipt = useCallback(() => {
+    // Build a printable receipt in a new window
+    const receiptWindow = window.open('', '_blank', 'width=350,height=600');
+    if (!receiptWindow) return;
+
+    const itemsHtml = cart.map(item =>
+      `<tr>
+        <td style="text-align:left;padding:2px 0">${item.description}</td>
+        <td style="text-align:center;padding:2px 4px">${item.quantity}</td>
+        <td style="text-align:right;padding:2px 0">R$ ${(item.unitPrice * item.quantity).toFixed(2)}</td>
+      </tr>`
+    ).join('');
+
+    const paymentsHtml = payments.map(p =>
+      `<div style="display:flex;justify-content:space-between;font-size:12px">
+        <span>${PAYMENT_METHOD_LABELS[p.method]}${p.installments && p.installments > 1 ? ` (${p.installments}x)` : ''}</span>
+        <span>R$ ${p.amount.toFixed(2)}</span>
+      </div>`
+    ).join('');
+
+    const businessName = business?.nomeFantasia || business?.razaoSocial || 'ServicePro';
+    const businessCnpj = business?.cnpj || '';
+
+    receiptWindow.document.write(`<!DOCTYPE html>
+<html><head><title>Recibo</title>
+<style>
+  body{font-family:'Courier New',monospace;width:280px;margin:0 auto;padding:10px;font-size:12px}
+  h2{text-align:center;margin:0 0 4px;font-size:14px}
+  .center{text-align:center}
+  .divider{border-top:1px dashed #000;margin:8px 0}
+  table{width:100%;border-collapse:collapse}
+  th{text-align:left;border-bottom:1px solid #000;padding:2px 0;font-size:11px}
+  .total-row{font-weight:bold;font-size:14px}
+  @media print{body{width:72mm}}
+</style></head><body>
+  <h2>${businessName}</h2>
+  ${businessCnpj ? `<p class="center" style="margin:0;font-size:10px">CNPJ: ${businessCnpj}</p>` : ''}
+  <p class="center" style="margin:4px 0;font-size:10px">${new Date().toLocaleString('pt-BR')}</p>
+  ${selectedClient ? `<p style="margin:4px 0;font-size:11px">Cliente: ${selectedClient.name}</p>` : ''}
+  <div class="divider"></div>
+  <table>
+    <thead><tr><th>Item</th><th style="text-align:center">Qtd</th><th style="text-align:right">Valor</th></tr></thead>
+    <tbody>${itemsHtml}</tbody>
+  </table>
+  <div class="divider"></div>
+  <div style="display:flex;justify-content:space-between"><span>Subtotal</span><span>R$ ${subtotal.toFixed(2)}</span></div>
+  ${discountAmount > 0 ? `<div style="display:flex;justify-content:space-between"><span>Desconto</span><span>-R$ ${discountAmount.toFixed(2)}</span></div>` : ''}
+  ${tipAmount > 0 ? `<div style="display:flex;justify-content:space-between"><span>Gorjeta</span><span>+R$ ${tipAmount.toFixed(2)}</span></div>` : ''}
+  <div class="divider"></div>
+  <div class="total-row" style="display:flex;justify-content:space-between"><span>TOTAL</span><span>R$ ${total.toFixed(2)}</span></div>
+  <div class="divider"></div>
+  <p style="font-size:11px;font-weight:bold;margin:4px 0">Pagamento:</p>
+  ${paymentsHtml}
+  ${change > 0 ? `<div style="display:flex;justify-content:space-between;font-size:12px;margin-top:4px"><span>Troco</span><span>R$ ${change.toFixed(2)}</span></div>` : ''}
+  ${nfceResult?.accessKey ? `<div class="divider"></div><p class="center" style="font-size:9px;word-break:break-all">Chave NFC-e: ${nfceResult.accessKey}</p>` : ''}
+  <div class="divider"></div>
+  <p class="center" style="font-size:10px;margin-top:8px">Obrigado pela preferência!</p>
+<script>window.onload=function(){window.print()}</script>
+</body></html>`);
+    receiptWindow.document.close();
+  }, [cart, payments, PAYMENT_METHOD_LABELS, business, selectedClient, subtotal, discountAmount, tipAmount, total, change, nfceResult]);
+
+  const formatCpfInput = useCallback((value: string) => {
+    const digits = value.replace(/\D/g, '').slice(0, 11);
+    if (digits.length <= 3) return digits;
+    if (digits.length <= 6) return `${digits.slice(0, 3)}.${digits.slice(3)}`;
+    if (digits.length <= 9) return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6)}`;
+    return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9)}`;
   }, []);
 
   // ==========================================
@@ -503,7 +1130,7 @@ export default function PDVModule() {
   // ==========================================
   if (isLoading) {
     return (
-      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full flex flex-col lg:flex-row gap-0 bg-slate-50 dark:bg-[#0B0F19]">
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-[calc(100vh-60px)] flex flex-col lg:flex-row gap-0 bg-slate-50 dark:bg-[#0B0F19]">
         <div className="w-full lg:w-[60%] flex flex-col border-r border-slate-200 dark:border-gray-800 bg-white dark:bg-[#0d1117] p-6 space-y-4">
           <div className="h-8 w-48 rounded-xl shimmer" />
           <div className="h-10 w-full rounded-xl shimmer" />
@@ -538,7 +1165,7 @@ export default function PDVModule() {
   // ==========================================
   if (mainView === 'historico') {
     return (
-      <div className="h-full flex flex-col bg-slate-50 dark:bg-[#0B0F19]">
+      <div className="h-[calc(100vh-60px)] flex flex-col bg-slate-50 dark:bg-[#0B0F19]">
         {/* Header */}
         <div className="px-6 pt-6 pb-4 border-b border-slate-200 dark:border-gray-800 bg-white dark:bg-[#0d1117]">
           <div className="flex items-center justify-between mb-4">
@@ -550,9 +1177,9 @@ export default function PDVModule() {
                 <ChevronRight size={18} className="rotate-180" />
               </button>
               <div>
-                <h1 className="text-2xl font-display font-bold text-slate-900 dark:text-gray-100">Historico de Vendas</h1>
+                <h1 className="text-2xl font-display font-bold text-slate-900 dark:text-gray-100">{t('pdv.history.title', 'Histórico de Vendas')}</h1>
                 <p className="text-sm text-slate-500 dark:text-gray-400 mt-0.5">
-                  {salesHistory.length} {salesHistory.length === 1 ? 'venda registrada' : 'vendas registradas'}
+                  {salesHistory.length} {salesHistory.length === 1 ? t('pdv.history.saleRegistered', 'venda registrada') : t('pdv.history.salesRegistered', 'vendas registradas')}
                 </p>
               </div>
             </div>
@@ -561,7 +1188,7 @@ export default function PDVModule() {
             <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-gray-500" />
             <input
               type="text"
-              placeholder="Buscar por cliente, produto ou ID da venda..."
+              placeholder={t('pdv.history.searchPlaceholder', 'Buscar por cliente, produto ou ID da venda...')}
               value={historySearch}
               onChange={(e) => setHistorySearch(e.target.value)}
               className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-gray-800/50 border border-slate-200 dark:border-gray-700 rounded-xl text-sm text-slate-900 dark:text-gray-100 placeholder:text-slate-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 transition-all"
@@ -580,7 +1207,7 @@ export default function PDVModule() {
           ) : filteredSales.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
               <Receipt size={40} strokeWidth={1.5} />
-              <p className="mt-3 text-sm">{historySearch ? 'Nenhuma venda encontrada' : 'Nenhuma venda registrada ainda'}</p>
+              <p className="mt-3 text-sm">{historySearch ? t('pdv.history.emptySearch', 'Nenhuma venda encontrada') : t('pdv.history.empty', 'Nenhuma venda registrada ainda')}</p>
             </div>
           ) : (
             <div className="space-y-2">
@@ -615,7 +1242,7 @@ export default function PDVModule() {
                         #{sale.id.substring(0, 6).toUpperCase()}
                       </p>
                       <Chip
-                        label={sale.status === 'finalizada' ? 'Finalizada' : sale.status === 'cancelada' ? 'Cancelada' : 'Aberta'}
+                        label={sale.status === 'finalizada' ? t('pdv.status.finalized', 'Finalizada') : sale.status === 'cancelada' ? t('pdv.status.canceled', 'Cancelada') : t('pdv.status.open', 'Aberta')}
                         size="small"
                         sx={{
                           height: 20,
@@ -635,7 +1262,7 @@ export default function PDVModule() {
                       />
                     </div>
                     <p className="text-xs text-slate-500 dark:text-gray-400 mt-0.5 truncate">
-                      {sale.clientName || 'Cliente avulso'} - {sale.items.length} {sale.items.length === 1 ? 'item' : 'itens'}
+                      {sale.clientName || t('pdv.history.guestClient', 'Cliente avulso')} - {sale.items.length} {sale.items.length === 1 ? t('pdv.history.item', 'item') : t('pdv.history.items', 'itens')}
                     </p>
                   </div>
                   <div className="text-right shrink-0">
@@ -677,7 +1304,7 @@ export default function PDVModule() {
               >
                 <div className="flex items-center gap-3">
                   <Receipt size={20} className="text-red-600 dark:text-red-400" />
-                  <span>Venda #{selectedSale.id.substring(0, 6).toUpperCase()}</span>
+                  <span>{t('pdv.modal.sale', 'Venda')} #{selectedSale.id.substring(0, 6).toUpperCase()}</span>
                 </div>
                 <IconButton onClick={() => setSelectedSale(null)} size="small">
                   <X size={18} className={isDark ? 'text-gray-400' : ''} />
@@ -689,23 +1316,23 @@ export default function PDVModule() {
                   <div className="bg-slate-50 dark:bg-gray-800/50 rounded-xl p-4 border border-slate-100 dark:border-gray-700/50">
                     {/* Sale info */}
                     <div className="flex items-center justify-between text-sm mb-3">
-                      <span className="text-slate-500 dark:text-gray-400">Data</span>
+                      <span className="text-slate-500 dark:text-gray-400">{t('pdv.modal.date', 'Data')}</span>
                       <span className="font-medium text-slate-900 dark:text-gray-100">{formatDateTime(selectedSale.createdAt)}</span>
                     </div>
                     {selectedSale.clientName && (
                       <div className="flex items-center justify-between text-sm mb-3">
-                        <span className="text-slate-500 dark:text-gray-400">Cliente</span>
+                        <span className="text-slate-500 dark:text-gray-400">{t('pdv.modal.client', 'Cliente')}</span>
                         <span className="font-medium text-slate-900 dark:text-gray-100">{selectedSale.clientName}</span>
                       </div>
                     )}
                     <div className="flex items-center justify-between text-sm mb-3">
-                      <span className="text-slate-500 dark:text-gray-400">Operador</span>
+                      <span className="text-slate-500 dark:text-gray-400">{t('pdv.modal.operator', 'Operador')}</span>
                       <span className="font-medium text-slate-900 dark:text-gray-100">{selectedSale.operatorName}</span>
                     </div>
                     <Divider sx={{ my: 1.5, borderStyle: 'dashed', borderColor: isDark ? '#374151' : undefined }} />
 
                     {/* Items */}
-                    <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase tracking-wider mb-2">Itens</p>
+                    <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase tracking-wider mb-2">{t('pdv.modal.items', 'Itens')}</p>
                     <div className="space-y-2">
                       {selectedSale.items.map((item, idx) => (
                         <div key={idx} className="flex justify-between text-sm">
@@ -725,17 +1352,17 @@ export default function PDVModule() {
                     {/* Totals */}
                     <div className="space-y-1">
                       <div className="flex justify-between text-sm text-slate-600 dark:text-gray-400">
-                        <span>Subtotal</span>
+                        <span>{t('pdv.modal.subtotal', 'Subtotal')}</span>
                         <span>{formatCurrency(selectedSale.subtotal)}</span>
                       </div>
                       {selectedSale.discount > 0 && (
                         <div className="flex justify-between text-sm text-red-600 dark:text-red-400">
-                          <span>Desconto</span>
+                          <span>{t('pdv.modal.discount', 'Desconto')}</span>
                           <span>-{formatCurrency(selectedSale.discount)}</span>
                         </div>
                       )}
                       <div className="flex justify-between text-base font-bold text-slate-900 dark:text-gray-100 pt-1">
-                        <span>Total</span>
+                        <span>{t('pdv.modal.total', 'Total')}</span>
                         <span>{formatCurrency(selectedSale.total)}</span>
                       </div>
                     </div>
@@ -743,7 +1370,7 @@ export default function PDVModule() {
                     <Divider sx={{ my: 1.5, borderStyle: 'dashed', borderColor: isDark ? '#374151' : undefined }} />
 
                     {/* Payments */}
-                    <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase tracking-wider mb-2">Pagamento</p>
+                    <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase tracking-wider mb-2">{t('pdv.modal.payment', 'Pagamento')}</p>
                     <div className="space-y-1">
                       {selectedSale.payments.map((p, idx) => (
                         <div key={idx} className="flex justify-between text-sm text-slate-700 dark:text-gray-300">
@@ -758,6 +1385,41 @@ export default function PDVModule() {
                   </div>
                 </div>
               </DialogContent>
+              {selectedSale.status === 'finalizada' && (
+                <DialogActions sx={{ px: 3, pb: 2.5, pt: 0, backgroundColor: isDark ? '#1f2937' : undefined }}>
+                  {cancelConfirmSaleId === selectedSale.id ? (
+                    <div className="w-full flex items-center gap-2 p-3 rounded-xl bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20">
+                      <AlertCircle size={16} className="text-red-500 shrink-0" />
+                      <span className="text-sm text-red-700 dark:text-red-400 flex-1">
+                        {t('pdv.cancel.confirmText', 'Isso vai reverter o estoque e cancelar a transação financeira. Confirma?')}
+                      </span>
+                      <button
+                        onClick={() => setCancelConfirmSaleId(null)}
+                        disabled={isCancellingSale}
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg bg-white dark:bg-gray-700 border border-slate-200 dark:border-gray-600 text-slate-600 dark:text-gray-300 hover:bg-slate-50 dark:hover:bg-gray-600 transition-colors"
+                      >
+                        {t('pdv.cancel.no', 'Não')}
+                      </button>
+                      <button
+                        onClick={() => handleCancelSale(selectedSale)}
+                        disabled={isCancellingSale}
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors flex items-center gap-1.5"
+                      >
+                        {isCancellingSale ? <Loader2 size={14} className="animate-spin" /> : <Ban size={14} />}
+                        {isCancellingSale ? t('pdv.cancel.cancelling', 'Cancelando...') : t('pdv.cancel.yes', 'Sim, cancelar')}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setCancelConfirmSaleId(selectedSale.id)}
+                      className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 border border-red-200 dark:border-red-500/20 transition-colors"
+                    >
+                      <Ban size={16} />
+                      {t('pdv.cancel.button', 'Cancelar venda')}
+                    </button>
+                  )}
+                </DialogActions>
+              )}
             </>
           )}
         </Dialog>
@@ -769,30 +1431,30 @@ export default function PDVModule() {
   // PDV MAIN VIEW
   // ==========================================
   return (
-    <div className="h-full flex flex-col lg:flex-row gap-0 bg-slate-50 dark:bg-[#0B0F19]">
+    <div className="h-[calc(100vh-60px)] flex flex-col lg:flex-row gap-0 bg-slate-50 dark:bg-[#0B0F19]">
       {/* ========== LEFT PANEL - Catalog ========== */}
       <div className="w-full lg:w-[60%] flex flex-col border-r border-slate-200 dark:border-gray-800 bg-white dark:bg-[#0d1117]">
         {/* Header */}
         <div className="px-6 pt-6 pb-4 border-b border-slate-100 dark:border-gray-800">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h1 className="text-2xl font-display font-bold text-slate-900 dark:text-gray-100">PDV</h1>
-              <p className="text-sm text-slate-500 dark:text-gray-400 mt-0.5">Ponto de Venda</p>
+              <h1 className="text-2xl font-display font-bold text-slate-900 dark:text-gray-100">{t('pdv.main.title', 'PDV')}</h1>
+              <p className="text-sm text-slate-500 dark:text-gray-400 mt-0.5">{t('pdv.main.subtitle', 'Ponto de Venda')}</p>
             </div>
             <div className="flex items-center gap-2">
-              <Tooltip title="Historico de vendas">
+              <Tooltip title={t('pdv.main.historyTooltip', 'Histórico de vendas')}>
                 <button
                   onClick={() => setMainView('historico')}
                   className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-gray-400 bg-slate-50 dark:bg-gray-800/50 px-3 py-2 rounded-lg border border-slate-200 dark:border-gray-700 hover:border-slate-300 dark:hover:border-gray-600 hover:text-slate-700 dark:hover:text-gray-300 transition-all"
                 >
                   <History size={14} />
-                  <span>Historico</span>
+                  <span>{t('pdv.main.historyBtn', 'Histórico')}</span>
                 </button>
               </Tooltip>
-              <Tooltip title="Atalhos: Enter para buscar, Esc para limpar">
+              <Tooltip title={t('pdv.main.shortcutsTooltip', 'Atalhos: Enter para buscar, Esc para limpar')}>
                 <div className="flex items-center gap-1.5 text-xs text-slate-400 dark:text-gray-500 bg-slate-50 dark:bg-gray-800/50 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-gray-700">
                   <Keyboard size={14} />
-                  <span>Atalhos</span>
+                  <span>{t('pdv.main.shortcutsBtn', 'Atalhos')}</span>
                 </div>
               </Tooltip>
             </div>
@@ -804,7 +1466,7 @@ export default function PDVModule() {
             <input
               ref={searchInputRef}
               type="text"
-              placeholder="Buscar produto ou servico..."
+              placeholder={t('pdv.catalog.searchPlaceholder', 'Buscar produto ou serviço...')}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-gray-800/50 border border-slate-200 dark:border-gray-700 rounded-xl text-sm text-slate-900 dark:text-gray-100 placeholder:text-slate-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 transition-all"
@@ -825,7 +1487,7 @@ export default function PDVModule() {
               )}
             >
               <Package size={16} />
-              Produtos
+              {t('pdv.catalog.productsBtn', 'Produtos')}
               {products.length > 0 && (
                 <span className="text-xs text-slate-400 dark:text-gray-500">({products.length})</span>
               )}
@@ -840,7 +1502,7 @@ export default function PDVModule() {
               )}
             >
               <Scissors size={16} />
-              Servicos
+              {t('pdv.catalog.servicesBtn', 'Serviços')}
               {services.length > 0 && (
                 <span className="text-xs text-slate-400 dark:text-gray-500">({services.length})</span>
               )}
@@ -870,7 +1532,7 @@ export default function PDVModule() {
         </div>
 
         {/* Product/Service Grid */}
-        <div className="flex-1 overflow-y-auto px-6 pb-6">
+        <div className="flex-1 overflow-y-auto px-6 pt-3 pb-6">
           <div className="grid grid-cols-2 xl:grid-cols-3 gap-3">
             <AnimatePresence mode="popLayout">
               {catalogItems.map((item, index) => {
@@ -941,7 +1603,14 @@ export default function PDVModule() {
                       )}>
                         {formatCurrency(price)}
                       </span>
-                      {item.type === 'product' && (
+                      {inCartQty > 0 ? (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); updateQuantityByItemId(item.id, -1); }}
+                          className="w-7 h-7 rounded-lg bg-white dark:bg-gray-700 border border-red-200 dark:border-red-500/30 flex items-center justify-center text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors shadow-sm"
+                        >
+                          <Minus size={13} />
+                        </button>
+                      ) : item.type === 'product' ? (
                         <span className={cn(
                           'text-[10px] font-medium rounded-md px-1.5 py-0.5',
                           (item as Product).currentStock <= (item as Product).minStock
@@ -950,7 +1619,7 @@ export default function PDVModule() {
                         )}>
                           {(item as Product).currentStock} un
                         </span>
-                      )}
+                      ) : null}
                     </div>
                   </motion.button>
                 );
@@ -961,9 +1630,9 @@ export default function PDVModule() {
           {catalogItems.length === 0 && (
             <div className="flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
               <Search size={40} strokeWidth={1.5} />
-              <p className="mt-3 text-sm">Nenhum item encontrado</p>
+              <p className="mt-3 text-sm">{t('pdv.catalog.emptyTitle', 'Nenhum item encontrado')}</p>
               <p className="text-xs text-slate-300 dark:text-gray-600 mt-1">
-                {activeTab === 'produtos' ? 'Cadastre produtos no modulo de Estoque' : 'Cadastre servicos no modulo de Agenda'}
+                {activeTab === 'produtos' ? t('pdv.catalog.emptyProductsDesc', 'Cadastre produtos no módulo de Estoque') : t('pdv.catalog.emptyServicesDesc', 'Cadastre serviços no módulo de Agenda')}
               </p>
             </div>
           )}
@@ -981,12 +1650,12 @@ export default function PDVModule() {
               </div>
               <div>
                 <h2 className="text-lg font-display font-bold text-slate-900 dark:text-gray-100">
-                  Nova Venda
+                  {t('pdv.cart.newSale', 'Nova Venda')}
                 </h2>
               </div>
             </div>
             <Chip
-              label={`${cart.length} ${cart.length === 1 ? 'item' : 'itens'}`}
+              label={`${cart.length} ${cart.length === 1 ? t('pdv.history.item', 'item') : t('pdv.history.items', 'itens')}`}
               size="small"
               sx={{
                 backgroundColor: cart.length > 0
@@ -1004,16 +1673,16 @@ export default function PDVModule() {
           {/* Client Selector */}
           <Autocomplete
             options={clients}
-            getOptionLabel={(option) => option.nome}
+            getOptionLabel={(option) => option.name}
             value={selectedClient}
             onChange={(_, value) => setSelectedClient(value)}
             size="small"
             loading={loadingClients}
-            loadingText="Carregando clientes..."
+            loadingText={t('pdv.cart.loadingClients', 'Carregando clientes...')}
             renderInput={(params) => (
               <TextField
                 {...params}
-                placeholder="Selecionar cliente (opcional)"
+                placeholder={t('pdv.cart.selectClient', 'Selecionar cliente (opcional)')}
                 InputProps={{
                   ...params.InputProps,
                   startAdornment: (
@@ -1042,93 +1711,45 @@ export default function PDVModule() {
               <li {...props} key={option.id}>
                 <div className="flex items-center gap-3 py-1">
                   <div className="w-8 h-8 rounded-full bg-red-50 dark:bg-red-500/10 flex items-center justify-center text-xs font-bold text-red-600 dark:text-red-400">
-                    {option.nome.split(' ').map(n => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()}
+                    {option.name.split(' ').map(n => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()}
                   </div>
                   <div>
-                    <p className="text-sm font-medium text-slate-900 dark:text-gray-100">{option.nome}</p>
-                    <p className="text-xs text-slate-400 dark:text-gray-500">{option.visitCount} visitas</p>
+                    <p className="text-sm font-medium text-slate-900 dark:text-gray-100">{option.name}</p>
+                    <p className="text-xs text-slate-400 dark:text-gray-500">{option.visitCount} {t('pdv.cart.visits', 'visitas')}</p>
                   </div>
                 </div>
               </li>
             )}
-            noOptionsText="Nenhum cliente encontrado"
+            noOptionsText={t('pdv.catalog.emptyTitle', 'Nenhum cliente encontrado')}
           />
+
+          {/* Loyalty Points Badge */}
+          {loyaltyEnabled && selectedClient && (
+            <div className="mt-2 flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800/30 rounded-xl">
+              <Gift size={13} className="text-amber-600 dark:text-amber-400" />
+              <span className="text-xs text-amber-700 dark:text-amber-400 font-medium">
+                {selectedClient.loyaltyPoints ?? 0} pts · {formatCurrency(pointsToReais(selectedClient.loyaltyPoints ?? 0, loyaltyConfig!))}
+              </span>
+            </div>
+          )}
         </div>
 
-        {/* Cart Items */}
-        <div className="flex-1 overflow-y-auto px-6 py-4">
-          <AnimatePresence mode="popLayout">
-            {cart.length === 0 ? (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="flex flex-col items-center justify-center py-16 text-slate-300 dark:text-gray-600"
-              >
-                <ShoppingCart size={48} strokeWidth={1.2} />
-                <p className="mt-3 text-sm text-slate-400 dark:text-gray-500">Carrinho vazio</p>
-                <p className="text-xs text-slate-300 dark:text-gray-600 mt-1">Clique em um produto ou servico para adicionar</p>
-              </motion.div>
-            ) : (
-              <div className="space-y-2">
-                {cart.map((item) => (
-                  <motion.div
-                    key={item.id}
-                    layout
-                    initial={{ opacity: 0, x: 20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -20 }}
-                    className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 dark:bg-gray-800/50 border border-slate-100 dark:border-gray-700/50 group"
-                  >
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-slate-900 dark:text-gray-100 truncate">{item.description}</p>
-                      <p className="text-xs text-slate-400 dark:text-gray-500 mt-0.5">
-                        {formatCurrency(item.unitPrice)} cada
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        onClick={() => updateQuantity(item.id, -1)}
-                        className="w-7 h-7 rounded-lg bg-white dark:bg-gray-700 border border-slate-200 dark:border-gray-600 flex items-center justify-center text-slate-500 dark:text-gray-400 hover:border-red-300 hover:text-red-600 dark:hover:text-red-400 transition-colors"
-                      >
-                        <Minus size={14} />
-                      </button>
-                      <span className="w-8 text-center text-sm font-semibold text-slate-900 dark:text-gray-100">
-                        {item.quantity}
-                      </span>
-                      <button
-                        onClick={() => updateQuantity(item.id, 1)}
-                        className="w-7 h-7 rounded-lg bg-white dark:bg-gray-700 border border-slate-200 dark:border-gray-600 flex items-center justify-center text-slate-500 dark:text-gray-400 hover:border-red-300 hover:text-red-600 dark:hover:text-red-400 transition-colors"
-                      >
-                        <Plus size={14} />
-                      </button>
-                    </div>
-                    <p className="text-sm font-bold text-slate-900 dark:text-gray-100 w-20 text-right">
-                      {formatCurrency(item.unitPrice * item.quantity)}
-                    </p>
-                    <button
-                      onClick={() => removeFromCart(item.id)}
-                      className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-300 dark:text-gray-600 hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-500 dark:hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
-                    >
-                      <X size={14} />
-                    </button>
-                  </motion.div>
-                ))}
-              </div>
-            )}
-          </AnimatePresence>
-        </div>
-
-        {/* Checkout Section */}
-        {cart.length > 0 && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="border-t border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-800/50 px-6 py-4"
+        {/* Checkout (scrollable) */}
+        <div className="flex-1 overflow-y-auto min-h-0">
+          {cart.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 px-6 text-slate-300 dark:text-gray-600">
+              <ShoppingCart size={48} strokeWidth={1.2} />
+              <p className="mt-3 text-sm text-slate-400 dark:text-gray-500">{t('pdv.cart.emptyTitle', 'Carrinho vazio')}</p>
+              <p className="text-xs text-slate-300 dark:text-gray-600 mt-1">{t('pdv.cart.emptyDesc', 'Clique em um produto ou serviço para adicionar')}</p>
+            </div>
+          ) : (
+          <div
+            className="px-6 py-4"
           >
             {/* Subtotal & Discount */}
             <div className="space-y-2 mb-4">
               <div className="flex justify-between text-sm text-slate-600 dark:text-gray-400">
-                <span>Subtotal</span>
+                <span>{t('pdv.modal.subtotal', 'Subtotal')}</span>
                 <span className="font-medium">{formatCurrency(subtotal)}</span>
               </div>
               <div className="flex items-center gap-2">
@@ -1175,6 +1796,60 @@ export default function PDVModule() {
                   </span>
                 )}
               </div>
+
+              {/* Tip / Gorjeta */}
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1 shrink-0">
+                  <Coffee size={14} className="text-emerald-500" />
+                  <span className="text-sm text-slate-600 dark:text-gray-400 whitespace-nowrap">Gorjeta</span>
+                </div>
+                <div className="flex gap-1">
+                  {['10', '15', '20'].map((pct) => (
+                    <button
+                      key={pct}
+                      onClick={() => {
+                        if (tipType === 'percent' && tipValue === pct) { setTipValue(''); }
+                        else { setTipType('percent'); setTipValue(pct); }
+                      }}
+                      className={cn(
+                        'px-1.5 py-1 rounded-md text-xs font-medium border transition-colors',
+                        tipType === 'percent' && tipValue === pct
+                          ? 'bg-emerald-600 text-white border-emerald-600'
+                          : 'bg-white dark:bg-gray-800 border-slate-200 dark:border-gray-700 text-slate-500 dark:text-gray-400 hover:border-emerald-300 dark:hover:border-emerald-600',
+                      )}
+                    >
+                      {pct}%
+                    </button>
+                  ))}
+                </div>
+                <div className="relative flex-1">
+                  <input
+                    type="number"
+                    value={tipValue}
+                    onChange={(e) => { setTipValue(e.target.value); }}
+                    onFocus={() => { if (tipType === 'percent' && !['10','15','20'].includes(tipValue)) setTipType('reais'); }}
+                    placeholder="0"
+                    min="0"
+                    className="w-full pl-3 pr-2 py-1.5 bg-white dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-lg text-sm text-slate-900 dark:text-gray-100 text-right focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                  />
+                </div>
+                <div className="flex p-0.5 bg-white dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-lg">
+                  <button
+                    onClick={() => setTipType('reais')}
+                    className={cn('px-2 py-1 rounded-md text-xs font-medium transition-colors', tipType === 'reais' ? 'bg-emerald-600 text-white' : 'text-slate-500 dark:text-gray-400')}
+                  >R$</button>
+                  <button
+                    onClick={() => setTipType('percent')}
+                    className={cn('px-2 py-1 rounded-md text-xs font-medium transition-colors', tipType === 'percent' ? 'bg-emerald-600 text-white' : 'text-slate-500 dark:text-gray-400')}
+                  >%</button>
+                </div>
+                {tipAmount > 0 && (
+                  <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
+                    +{formatCurrency(tipAmount)}
+                  </span>
+                )}
+              </div>
+
               <Divider sx={{ my: 1, borderColor: isDark ? '#374151' : undefined }} />
               <div className="flex justify-between items-center">
                 <span className="text-lg font-bold text-slate-900 dark:text-gray-100">Total</span>
@@ -1263,10 +1938,88 @@ export default function PDVModule() {
                       >
                         {Array.from({ length: 12 }, (_, i) => i + 1).map((n) => (
                           <option key={n} value={n}>
-                            {n}x {n === 1 ? 'a vista' : `de ${formatCurrency((parseFloat(paymentAmount) || 0) / n)}`}
+                            {n}x {n === 1 ? t('pdv.checkout.cash', 'à vista') : `${t('pdv.checkout.of', 'de')} ${formatCurrency((parseFloat(paymentAmount) || 0) / n)}`}
                           </option>
                         ))}
                       </select>
+                    </div>
+                  )}
+
+                  {/* Gift card lookup */}
+                  {activePaymentMethod === 'gift_card' && (
+                    <div className="rounded-xl bg-violet-50 dark:bg-violet-900/20 border border-violet-100 dark:border-violet-800/30 px-3 py-2.5 space-y-2">
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={giftCardCode}
+                          onChange={e => { setGiftCardCode(e.target.value.toUpperCase()); setGiftCardLookup(null); setGiftCardError(null); }}
+                          onKeyDown={e => e.key === 'Enter' && handleGiftCardLookup()}
+                          placeholder="Código do gift card"
+                          maxLength={8}
+                          className="flex-1 px-3 py-2 text-sm rounded-xl border border-violet-200 dark:border-violet-700 bg-white dark:bg-gray-800 text-slate-900 dark:text-gray-100 uppercase tracking-widest font-mono focus:outline-none focus:ring-2 focus:ring-violet-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleGiftCardLookup}
+                          disabled={isLookingUpGiftCard || !giftCardCode.trim()}
+                          className="px-3 py-2 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white text-xs font-semibold rounded-xl transition-colors"
+                        >
+                          {isLookingUpGiftCard ? <Loader2 size={14} className="animate-spin" /> : 'Buscar'}
+                        </button>
+                      </div>
+                      {giftCardError && <p className="text-xs text-red-600 dark:text-red-400">{giftCardError}</p>}
+                      {giftCardLookup && (
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5">
+                            <TicketPercent size={14} className="text-violet-600 dark:text-violet-400" />
+                            <span className="text-xs font-semibold text-violet-800 dark:text-violet-300">
+                              Saldo: {formatCurrency(giftCardLookup.remainingValue)}
+                            </span>
+                          </div>
+                          {giftCardLookup.recipientName && (
+                            <span className="text-[11px] text-violet-600 dark:text-violet-400">{giftCardLookup.recipientName}</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Loyalty points info */}
+                  {activePaymentMethod === 'pontos' && loyaltyConfig && (
+                    <div className="rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800/30 px-3 py-2.5 space-y-1.5">
+                      {selectedClient ? (
+                        <>
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1.5">
+                              <Gift size={14} className="text-amber-600 dark:text-amber-400" />
+                              <span className="text-xs font-semibold text-amber-800 dark:text-amber-300">
+                                Saldo: {selectedClient.loyaltyPoints ?? 0} pts
+                              </span>
+                            </div>
+                            <span className="text-xs text-amber-700 dark:text-amber-400">
+                              = {formatCurrency(pointsToReais(selectedClient.loyaltyPoints ?? 0, loyaltyConfig))}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-amber-600 dark:text-amber-500">
+                            Mín. {loyaltyConfig.minPointsToRedeem} pts para resgatar • 1 pt = R${(loyaltyConfig.pointValueInCentavos / 100).toFixed(2)}
+                          </p>
+                          {(selectedClient.loyaltyPoints ?? 0) >= loyaltyConfig.minPointsToRedeem && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const maxReais = pointsToReais(selectedClient.loyaltyPoints ?? 0, loyaltyConfig);
+                                const useReais = Math.min(maxReais, remaining);
+                                setPaymentAmount(useReais.toFixed(2));
+                              }}
+                              className="text-[11px] text-amber-700 dark:text-amber-300 font-medium underline"
+                            >
+                              Usar tudo ({formatCurrency(Math.min(pointsToReais(selectedClient.loyaltyPoints ?? 0, loyaltyConfig), remaining))})
+                            </button>
+                          )}
+                        </>
+                      ) : (
+                        <p className="text-xs text-amber-700 dark:text-amber-400">Selecione um cliente para usar pontos de fidelidade.</p>
+                      )}
                     </div>
                   )}
                 </motion.div>
@@ -1305,22 +2058,90 @@ export default function PDVModule() {
                 <div className="flex justify-between text-sm py-2 px-3 bg-slate-100 dark:bg-gray-800 rounded-lg">
                   {remaining > 0.01 ? (
                     <>
-                      <span className="text-slate-600 dark:text-gray-400">Falta</span>
+                      <span className="text-slate-600 dark:text-gray-400">{t('pdv.checkout.missing', 'Falta')}</span>
                       <span className="font-bold text-amber-600">{formatCurrency(remaining)}</span>
                     </>
                   ) : change > 0 ? (
                     <>
-                      <span className="text-slate-600 dark:text-gray-400">Troco</span>
+                      <span className="text-slate-600 dark:text-gray-400">{t('pdv.checkout.change', 'Troco')}</span>
                       <span className="font-bold text-emerald-600">{formatCurrency(change)}</span>
                     </>
                   ) : (
                     <>
                       <span className="text-slate-600 dark:text-gray-400">Pagamento</span>
-                      <span className="font-bold text-emerald-600">Completo</span>
+                      <span className="font-bold text-emerald-600">{t('pdv.checkout.complete', 'Completo')}</span>
                     </>
                   )}
                 </div>
               )}
+            </div>
+
+            {/* Gift Card Sale Button */}
+            <div className="mb-2">
+              <button
+                type="button"
+                onClick={() => setShowSellGiftCard(true)}
+                className="flex items-center gap-2 w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-800/50 hover:border-violet-300 dark:hover:border-violet-500/40 hover:bg-violet-50 dark:hover:bg-violet-500/10 transition-all"
+              >
+                <TicketPercent size={16} className="text-violet-500" />
+                <span className="text-sm font-medium text-slate-600 dark:text-gray-400">Vender Gift Card</span>
+              </button>
+            </div>
+
+            {/* NFC-e Toggle + CPF */}
+            <div className="mb-3">
+              <button
+                type="button"
+                onClick={() => setEmitirNfce(p => !p)}
+                className={cn(
+                  'flex items-center justify-between w-full px-3 py-2.5 rounded-xl border transition-all',
+                  emitirNfce
+                    ? 'border-red-300 dark:border-red-500/40 bg-red-50 dark:bg-red-500/10'
+                    : 'border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-800/50 hover:border-slate-300 dark:hover:border-gray-600',
+                )}
+              >
+                <div className="flex items-center gap-2">
+                  <FileText size={16} className={emitirNfce ? 'text-red-500 dark:text-red-400' : 'text-slate-400 dark:text-gray-500'} />
+                  <span className={cn('text-sm font-medium', emitirNfce ? 'text-red-700 dark:text-red-300' : 'text-slate-600 dark:text-gray-400')}>
+                    {t('pdv.checkout.emitNfce', 'Emitir NFC-e')}
+                  </span>
+                </div>
+                <div className={cn(
+                  'w-9 h-5 rounded-full transition-colors relative',
+                  emitirNfce ? 'bg-red-500' : 'bg-slate-300 dark:bg-gray-600',
+                )}>
+                  <motion.div
+                    className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm"
+                    animate={{ left: emitirNfce ? 18 : 2 }}
+                    transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                  />
+                </div>
+              </button>
+
+              <AnimatePresence>
+                {emitirNfce && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="mt-2 px-1">
+                      <label className="text-xs text-slate-500 dark:text-gray-400 mb-1 block">
+                        {t('pdv.checkout.cpfOnInvoice', 'CPF na nota (opcional)')}
+                      </label>
+                      <input
+                        type="text"
+                        value={cpfConsumidor}
+                        onChange={(e) => setCpfConsumidor(formatCpfInput(e.target.value))}
+                        placeholder="000.000.000-00"
+                        className="w-full px-3 py-2 bg-white dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-lg text-sm text-slate-900 dark:text-gray-100 placeholder:text-slate-300 dark:placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
+                      />
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
 
             {/* Actions */}
@@ -1340,18 +2161,6 @@ export default function PDVModule() {
               >
                 Cancelar
               </Button>
-              <Tooltip title="Emitir Nota Fiscal">
-                <IconButton
-                  sx={{
-                    border: `1px solid ${isDark ? '#374151' : '#CBD5E1'}`,
-                    borderRadius: '12px',
-                    color: isDark ? '#9ca3af' : '#64748B',
-                    '&:hover': { borderColor: isDark ? '#4b5563' : '#94A3B8', backgroundColor: isDark ? '#1f2937' : '#F8FAFC' },
-                  }}
-                >
-                  <FileText size={18} />
-                </IconButton>
-              </Tooltip>
               <Button
                 onClick={openConfirmation}
                 variant="contained"
@@ -1371,8 +2180,9 @@ export default function PDVModule() {
                 Finalizar Venda
               </Button>
             </div>
-          </motion.div>
-        )}
+          </div>
+          )}
+        </div>
       </div>
 
       {/* ========== CONFIRMATION DIALOG ========== */}
@@ -1395,35 +2205,151 @@ export default function PDVModule() {
               key="success"
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
-              className="flex flex-col items-center justify-center py-16 px-8"
+              className="flex flex-col items-center py-8 px-8"
             >
               <motion.div
                 initial={{ scale: 0 }}
                 animate={{ scale: 1 }}
                 transition={{ type: 'spring', stiffness: 200, damping: 15, delay: 0.1 }}
               >
-                <div className="w-20 h-20 rounded-full bg-emerald-100 dark:bg-emerald-500/10 flex items-center justify-center mb-6">
-                  <CheckCircle2 size={40} className="text-emerald-500 dark:text-emerald-400" />
+                <div className="w-16 h-16 rounded-full bg-emerald-100 dark:bg-emerald-500/10 flex items-center justify-center mb-4">
+                  <CheckCircle2 size={32} className="text-emerald-500 dark:text-emerald-400" />
                 </div>
               </motion.div>
               <motion.h3
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.3 }}
-                className="text-xl font-display font-bold text-slate-900 dark:text-gray-100 mb-2"
+                className="text-xl font-display font-bold text-slate-900 dark:text-gray-100 mb-1"
               >
-                Venda Finalizada!
+                {t('pdv.modal.saleFinishedTitle', 'Venda Finalizada!')}
               </motion.h3>
               <motion.p
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.4 }}
-                className="text-sm text-slate-500 dark:text-gray-400"
+                className="text-sm text-slate-500 dark:text-gray-400 mb-6"
               >
                 {lastSaleId
-                  ? `Venda #${lastSaleId.substring(0, 6).toUpperCase()} registrada com sucesso`
+                  ? `Venda #${lastSaleId.substring(0, 6).toUpperCase()} · ${formatCurrency(total)}`
                   : 'Venda registrada com sucesso'}
               </motion.p>
+
+              {/* Pre-booking offer — only when there's a selected client */}
+              {selectedClient && (
+                <motion.div
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.5 }}
+                  className="w-full"
+                >
+                  <AnimatePresence mode="wait">
+                    {pbStep === 'success' ? (
+                      <motion.div
+                        key="offer"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="flex flex-col items-center gap-3"
+                      >
+                        <p className="text-sm text-slate-500 dark:text-gray-400 text-center">
+                          Deseja agendar o retorno de <span className="font-semibold text-slate-700 dark:text-gray-200">{selectedClient.name}</span>?
+                        </p>
+                        <div className="flex gap-2 w-full">
+                          <button
+                            onClick={resetSale}
+                            className="flex-1 py-2 rounded-xl border border-slate-200 dark:border-gray-700 text-sm text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800 transition-colors"
+                          >
+                            Não, fechar
+                          </button>
+                          <button
+                            onClick={() => setPbStep('form')}
+                            className="flex-1 flex items-center justify-center gap-2 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors"
+                          >
+                            <CalendarPlus size={15} />
+                            Agendar retorno
+                          </button>
+                        </div>
+                      </motion.div>
+                    ) : (
+                      <motion.div
+                        key="form"
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0 }}
+                        className="w-full space-y-3"
+                      >
+                        <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase tracking-wider">
+                          Novo agendamento — {selectedClient.name}
+                        </p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-xs text-slate-500 dark:text-gray-400 mb-1 block">Data</label>
+                            <input
+                              type="date"
+                              value={pbDate}
+                              onChange={e => setPbDate(e.target.value)}
+                              min={new Date().toISOString().split('T')[0]}
+                              className="w-full px-3 py-2 bg-white dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-xl text-sm text-slate-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs text-slate-500 dark:text-gray-400 mb-1 block">Horário</label>
+                            <input
+                              type="time"
+                              value={pbTime}
+                              onChange={e => setPbTime(e.target.value)}
+                              className="w-full px-3 py-2 bg-white dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-xl text-sm text-slate-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="text-xs text-slate-500 dark:text-gray-400 mb-1 block">Serviço</label>
+                          <select
+                            value={pbServiceId}
+                            onChange={e => setPbServiceId(e.target.value)}
+                            className="w-full px-3 py-2 bg-white dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-xl text-sm text-slate-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
+                          >
+                            <option value="">Selecionar serviço...</option>
+                            {services.map(s => (
+                              <option key={s.id} value={s.id}>{s.name} — {formatCurrency(s.price)}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => setPbStep('success')}
+                            className="flex-1 py-2 rounded-xl border border-slate-200 dark:border-gray-700 text-sm text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800 transition-colors"
+                          >
+                            Voltar
+                          </button>
+                          <button
+                            onClick={handlePreBooking}
+                            disabled={!pbDate || !pbServiceId || !pbTime || isSavingPreBooking}
+                            className="flex-1 flex items-center justify-center gap-2 py-2 rounded-xl bg-red-600 hover:bg-red-700 disabled:bg-red-300 dark:disabled:bg-red-900 text-white text-sm font-semibold transition-colors"
+                          >
+                            {isSavingPreBooking ? <Loader2 size={14} className="animate-spin" /> : <CalendarPlus size={14} />}
+                            Confirmar agendamento
+                          </button>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </motion.div>
+              )}
+
+              {/* No client — auto-closes, just show close button */}
+              {!selectedClient && (
+                <motion.button
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ delay: 0.6 }}
+                  onClick={resetSale}
+                  className="mt-2 text-sm text-slate-400 dark:text-gray-500 hover:text-slate-600 dark:hover:text-gray-300 transition-colors"
+                >
+                  Fechar
+                </motion.button>
+              )}
             </motion.div>
           ) : (
             <motion.div
@@ -1467,10 +2393,10 @@ export default function PDVModule() {
                   {/* Receipt Preview */}
                   <div className="bg-slate-50 dark:bg-gray-800/50 rounded-xl p-4 border border-slate-100 dark:border-gray-700/50">
                     <div className="text-center mb-4">
-                      <p className="text-xs text-slate-400 dark:text-gray-500 uppercase tracking-widest">Resumo da Venda</p>
+                      <p className="text-xs text-slate-400 dark:text-gray-500 uppercase tracking-widest">{t('pdv.modal.receiptSummary', 'Resumo da Venda')}</p>
                       {selectedClient && (
                         <p className="text-xs text-slate-500 dark:text-gray-400 mt-1">
-                          Cliente: {selectedClient.nome}
+                          Cliente: {selectedClient.name}
                         </p>
                       )}
                     </div>
@@ -1491,17 +2417,23 @@ export default function PDVModule() {
                     <Divider sx={{ my: 1.5, borderStyle: 'dashed', borderColor: isDark ? '#374151' : undefined }} />
                     <div className="space-y-1">
                       <div className="flex justify-between text-sm text-slate-600 dark:text-gray-400">
-                        <span>Subtotal</span>
+                        <span>{t('pdv.modal.subtotal', 'Subtotal')}</span>
                         <span>{formatCurrency(subtotal)}</span>
                       </div>
                       {discountAmount > 0 && (
                         <div className="flex justify-between text-sm text-red-600 dark:text-red-400">
-                          <span>Desconto</span>
+                          <span>{t('pdv.modal.discount', 'Desconto')}</span>
                           <span>-{formatCurrency(discountAmount)}</span>
                         </div>
                       )}
+                      {tipAmount > 0 && (
+                        <div className="flex justify-between text-sm text-emerald-600 dark:text-emerald-400">
+                          <span>Gorjeta</span>
+                          <span>+{formatCurrency(tipAmount)}</span>
+                        </div>
+                      )}
                       <div className="flex justify-between text-base font-bold text-slate-900 dark:text-gray-100 pt-1">
-                        <span>Total</span>
+                        <span>{t('pdv.modal.total', 'Total')}</span>
                         <span>{formatCurrency(total)}</span>
                       </div>
                     </div>
@@ -1528,8 +2460,9 @@ export default function PDVModule() {
                 </div>
               </DialogContent>
               <DialogActions sx={{ px: 3, py: 2, gap: 1, backgroundColor: isDark ? '#1f2937' : undefined }}>
-                <Tooltip title="Imprimir recibo">
+                <Tooltip title={t('pdv.modal.printTooltip', 'Imprimir recibo')}>
                   <IconButton
+                    onClick={handlePrintReceipt}
                     sx={{
                       border: `1px solid ${isDark ? '#374151' : '#E2E8F0'}`,
                       borderRadius: '12px',
@@ -1564,16 +2497,337 @@ export default function PDVModule() {
                   {isSaving ? (
                     <div className="flex items-center gap-2">
                       <Loader2 size={16} className="animate-spin" />
-                      Salvando...
+                      {t('pdv.modal.savingBtn', 'Salvando...')}
                     </div>
                   ) : (
-                    'Confirmar Venda'
+                    t('pdv.modal.confirmBtn', 'Confirmar Venda')
                   )}
                 </Button>
               </DialogActions>
             </motion.div>
           )}
         </AnimatePresence>
+      </Dialog>
+
+      {/* ========== NFC-e EMISSION MODAL ========== */}
+      <Dialog
+        open={nfceModalState !== 'idle'}
+        onClose={() => {
+          if (nfceModalState === 'emitting') return;
+          setNfceModalState('idle');
+          setNfceResult(null);
+          pendingNfceRef.current = null;
+          resetSale();
+        }}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: '20px',
+            overflow: 'hidden',
+            backgroundColor: isDark ? '#1f2937' : '#fff',
+          },
+        }}
+      >
+        <AnimatePresence mode="wait">
+          {/* Emitting State */}
+          {nfceModalState === 'emitting' && (
+            <motion.div
+              key="nfce-emitting"
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="flex flex-col items-center justify-center py-16 px-8"
+            >
+              <motion.div
+                animate={{ rotate: 360 }}
+                transition={{ duration: 1.5, repeat: Infinity, ease: 'linear' }}
+                className="w-16 h-16 rounded-full border-4 border-red-100 dark:border-red-500/20 border-t-red-500 dark:border-t-red-400 mb-6"
+              />
+              <h3 className="text-lg font-display font-bold text-slate-900 dark:text-gray-100 mb-2">
+                {t('pdv.nfce.emittingTitle', 'Emitindo NFC-e...')}
+              </h3>
+              <p className="text-sm text-slate-500 dark:text-gray-400">
+                {t('pdv.nfce.emittingDesc', 'Comunicando com a SEFAZ...')}
+              </p>
+            </motion.div>
+          )}
+
+          {/* Authorized State */}
+          {nfceModalState === 'authorized' && (
+            <motion.div
+              key="nfce-authorized"
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex flex-col items-center justify-center py-12 px-8"
+            >
+              <motion.div
+                initial={{ scale: 0 }}
+                animate={{ scale: 1 }}
+                transition={{ type: 'spring', stiffness: 200, damping: 15, delay: 0.1 }}
+              >
+                <div className="w-20 h-20 rounded-full bg-emerald-100 dark:bg-emerald-500/10 flex items-center justify-center mb-6">
+                  <CheckCircle2 size={40} className="text-emerald-500 dark:text-emerald-400" />
+                </div>
+              </motion.div>
+              <motion.h3
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.3 }}
+                className="text-xl font-display font-bold text-slate-900 dark:text-gray-100 mb-2"
+              >
+                {t('pdv.nfce.authorizedTitle', 'NFC-e Autorizada!')}
+              </motion.h3>
+              <motion.p
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.4 }}
+                className="text-sm text-slate-500 dark:text-gray-400 mb-4"
+              >
+                {t('pdv.nfce.authorizedDesc', 'Nota fiscal emitida com sucesso')}
+              </motion.p>
+              {nfceResult?.accessKey && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.5 }}
+                  className="w-full bg-slate-50 dark:bg-gray-800/50 rounded-xl p-3 border border-slate-100 dark:border-gray-700/50 mb-6"
+                >
+                  <p className="text-xs text-slate-400 dark:text-gray-500 mb-1">{t('pdv.nfce.accessKey', 'Chave de Acesso')}</p>
+                  <p className="text-xs font-mono text-slate-700 dark:text-gray-300 break-all leading-relaxed">
+                    {nfceResult.accessKey}
+                  </p>
+                </motion.div>
+              )}
+              <div className="flex gap-3 w-full">
+                <Button
+                  onClick={handlePrintReceipt}
+                  variant="outlined"
+                  startIcon={<Printer size={16} />}
+                  sx={{
+                    flex: 1,
+                    color: isDark ? '#9ca3af' : '#64748B',
+                    borderColor: isDark ? '#374151' : '#CBD5E1',
+                    '&:hover': { borderColor: isDark ? '#4b5563' : '#94A3B8', backgroundColor: isDark ? '#1f2937' : '#F8FAFC' },
+                    borderRadius: '12px',
+                    textTransform: 'none',
+                    fontWeight: 600,
+                  }}
+                >
+                  {t('pdv.nfce.printReceipt', 'Imprimir Cupom')}
+                </Button>
+                <Button
+                  onClick={() => {
+                    setNfceModalState('idle');
+                    setNfceResult(null);
+                    pendingNfceRef.current = null;
+                    setCart([]);
+                    setPayments([]);
+                    setSelectedClient(null);
+                    setDiscountValue('');
+                    setActivePaymentMethod(null);
+                    setPaymentAmount('');
+                    setInstallments(1);
+                    setEmitirNfce(false);
+                    setCpfConsumidor('');
+                    setLastSaleId(null);
+                  }}
+                  variant="contained"
+                  sx={{
+                    flex: 1,
+                    backgroundColor: '#DC2626',
+                    '&:hover': { backgroundColor: '#B91C1C' },
+                    borderRadius: '12px',
+                    textTransform: 'none',
+                    fontWeight: 700,
+                  }}
+                >
+                  {t('pdv.nfce.close', 'Fechar')}
+                </Button>
+              </div>
+            </motion.div>
+          )}
+
+          {/* Error State */}
+          {nfceModalState === 'error' && (
+            <motion.div
+              key="nfce-error"
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex flex-col items-center justify-center py-12 px-8"
+            >
+              <motion.div
+                initial={{ scale: 0 }}
+                animate={{ scale: 1 }}
+                transition={{ type: 'spring', stiffness: 200, damping: 15, delay: 0.1 }}
+              >
+                <div className="w-20 h-20 rounded-full bg-red-100 dark:bg-red-500/10 flex items-center justify-center mb-6">
+                  <X size={40} className="text-red-500 dark:text-red-400" />
+                </div>
+              </motion.div>
+              <motion.h3
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.3 }}
+                className="text-xl font-display font-bold text-slate-900 dark:text-gray-100 mb-2"
+              >
+                {t('pdv.nfce.errorTitle', 'Falha na Emissão')}
+              </motion.h3>
+              {nfceResult?.error && (
+                <motion.p
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.4 }}
+                  className="text-sm text-slate-500 dark:text-gray-400 mb-2 text-center max-w-sm"
+                >
+                  {nfceResult.error}
+                </motion.p>
+              )}
+              <motion.p
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.45 }}
+                className="text-xs text-slate-400 dark:text-gray-500 mb-6 text-center"
+              >
+                {t('pdv.nfce.saleRegistered', 'A venda foi registrada com sucesso. Apenas a emissão fiscal falhou.')}
+              </motion.p>
+              <div className="flex gap-3 w-full">
+                <Button
+                  onClick={handleNfceRetry}
+                  variant="contained"
+                  startIcon={<Loader2 size={16} />}
+                  sx={{
+                    flex: 1,
+                    backgroundColor: '#DC2626',
+                    '&:hover': { backgroundColor: '#B91C1C' },
+                    borderRadius: '12px',
+                    textTransform: 'none',
+                    fontWeight: 700,
+                  }}
+                >
+                  {t('pdv.nfce.retry', 'Tentar Novamente')}
+                </Button>
+                <Button
+                  onClick={() => {
+                    setNfceModalState('idle');
+                    setNfceResult(null);
+                    pendingNfceRef.current = null;
+                    setCart([]);
+                    setPayments([]);
+                    setSelectedClient(null);
+                    setDiscountValue('');
+                    setActivePaymentMethod(null);
+                    setPaymentAmount('');
+                    setInstallments(1);
+                    setEmitirNfce(false);
+                    setCpfConsumidor('');
+                    setLastSaleId(null);
+                  }}
+                  variant="outlined"
+                  sx={{
+                    flex: 1,
+                    color: isDark ? '#9ca3af' : '#64748B',
+                    borderColor: isDark ? '#374151' : '#CBD5E1',
+                    '&:hover': { borderColor: isDark ? '#4b5563' : '#94A3B8', backgroundColor: isDark ? '#1f2937' : '#F8FAFC' },
+                    borderRadius: '12px',
+                    textTransform: 'none',
+                    fontWeight: 600,
+                  }}
+                >
+                  {t('pdv.nfce.closeWithoutEmit', 'Fechar sem emitir')}
+                </Button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </Dialog>
+
+      {/* ===== SELL GIFT CARD MODAL ===== */}
+      <Dialog
+        open={showSellGiftCard}
+        onClose={() => setShowSellGiftCard(false)}
+        maxWidth="xs"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: '20px', backgroundColor: isDark ? '#111827' : undefined } }}
+      >
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', pb: 1, fontFamily: '"Plus Jakarta Sans", sans-serif', fontWeight: 700, color: isDark ? '#F1F5F9' : undefined }}>
+          <div className="flex items-center gap-2">
+            <TicketPercent size={20} className="text-violet-500" />
+            <span>Vender Gift Card</span>
+          </div>
+          <IconButton onClick={() => setShowSellGiftCard(false)} size="small"><X size={18} className={isDark ? 'text-gray-400' : ''} /></IconButton>
+        </DialogTitle>
+        <Divider />
+        <DialogContent sx={{ pt: 3, backgroundColor: isDark ? '#111827' : undefined }}>
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs font-medium text-slate-600 dark:text-gray-400 block mb-1">Valor do Gift Card *</label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">R$</span>
+                <input
+                  type="number"
+                  min="1"
+                  step="0.01"
+                  value={gcSellValue}
+                  onChange={e => setGcSellValue(e.target.value)}
+                  placeholder="0,00"
+                  className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-600 dark:text-gray-400 block mb-1">Presenteado (opcional)</label>
+              <input
+                type="text"
+                value={gcSellRecipient}
+                onChange={e => setGcSellRecipient(e.target.value)}
+                placeholder="Nome do presenteado"
+                className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-600 dark:text-gray-400 block mb-1">WhatsApp (para envio)</label>
+              <input
+                type="tel"
+                value={gcSellPhone}
+                onChange={e => setGcSellPhone(e.target.value)}
+                placeholder="(11) 99999-9999"
+                className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-600 dark:text-gray-400 block mb-1">Validade (opcional)</label>
+              <input
+                type="date"
+                value={gcSellExpiry}
+                onChange={e => setGcSellExpiry(e.target.value)}
+                min={new Date().toISOString().split('T')[0]}
+                className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+              />
+            </div>
+            <div className="rounded-xl bg-violet-50 dark:bg-violet-900/20 border border-violet-100 dark:border-violet-800/30 px-3 py-2.5">
+              <p className="text-xs text-violet-700 dark:text-violet-400">
+                Um código único será gerado automaticamente. O gift card é adicionado ao carrinho como produto para finalizar a venda.
+              </p>
+            </div>
+          </div>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, py: 2, gap: 1, backgroundColor: isDark ? '#111827' : undefined }}>
+          <Button onClick={() => setShowSellGiftCard(false)} disabled={isSavingGiftCard} sx={{ color: isDark ? '#9ca3af' : '#64748B', textTransform: 'none', fontWeight: 600, borderRadius: '12px' }}>
+            Cancelar
+          </Button>
+          <Button
+            onClick={handleSellGiftCard}
+            variant="contained"
+            disabled={isSavingGiftCard || !gcSellValue}
+            startIcon={isSavingGiftCard ? <Loader2 size={16} className="animate-spin" /> : <TicketPercent size={16} />}
+            sx={{ backgroundColor: '#7C3AED', '&:hover': { backgroundColor: '#6D28D9' }, borderRadius: '12px', textTransform: 'none', fontWeight: 600 }}
+          >
+            Gerar Gift Card
+          </Button>
+        </DialogActions>
       </Dialog>
     </div>
   );

@@ -19,6 +19,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import type { ConversationChannel, ChannelCredentials } from '@/lib/types';
+import { decryptToken } from '@/lib/utils/encryption';
+import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
+import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 
 // ─── Firebase init (server-side, client SDK) ─────────────────────────────────
 
@@ -51,9 +54,18 @@ interface ReadReceiptBody {
 // ─── POST Handler ────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
+  const clientIp = getClientIp(req);
+  const { allowed } = checkRateLimit(`read-receipt:${clientIp}`, 60, 60_000);
+  if (!allowed) {
+    return NextResponse.json({ success: true, warning: 'Rate limited' });
+  }
+
   try {
     const body: ReadReceiptBody = await req.json();
     const { businessId, channel, messageId, recipientId } = body;
+
+    const authResult = await verifyAuth(req, businessId);
+    if (isAuthError(authResult)) return authResult;
 
     if (!businessId || !channel || !messageId) {
       return NextResponse.json(
@@ -85,7 +97,7 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ error: 'Canal WhatsApp nao conectado' }, { status: 400 });
         }
 
-        const accessToken = atob(whatsapp.accessToken);
+        const accessToken = await decryptToken(whatsapp.accessToken);
         await fetch(`${META_BASE_URL}/${whatsapp.phoneNumberId}/messages`, {
           method: 'POST',
           headers: {
@@ -110,7 +122,7 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ error: 'recipientId obrigatorio para Facebook' }, { status: 400 });
         }
 
-        const pageAccessToken = atob(facebook.pageAccessToken);
+        const pageAccessToken = await decryptToken(facebook.pageAccessToken);
         await fetch(`${META_BASE_URL}/me/messages`, {
           method: 'POST',
           headers: {
@@ -134,7 +146,7 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ error: 'recipientId obrigatorio para Instagram' }, { status: 400 });
         }
 
-        const pageAccessToken = atob(facebook.pageAccessToken);
+        const pageAccessToken = await decryptToken(facebook.pageAccessToken);
         await fetch(`${META_BASE_URL}/me/messages`, {
           method: 'POST',
           headers: {

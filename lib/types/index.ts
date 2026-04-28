@@ -15,6 +15,40 @@ export const USER_STATUS_LABELS: Record<UserStatus, string> = {
   offline: 'Offline',
 };
 
+// ---- Working Hours (professional scheduling) ----
+export interface DaySchedule {
+  enabled: boolean;
+  start: string;  // "08:00"
+  end: string;    // "18:00"
+}
+
+export type WorkingHours = {
+  [day: number]: DaySchedule;  // 0=Dom, 1=Seg, ..., 6=Sáb
+};
+
+export const DEFAULT_WORKING_HOURS: WorkingHours = {
+  0: { enabled: false, start: '09:00', end: '18:00' },
+  1: { enabled: true,  start: '09:00', end: '18:00' },
+  2: { enabled: true,  start: '09:00', end: '18:00' },
+  3: { enabled: true,  start: '09:00', end: '18:00' },
+  4: { enabled: true,  start: '09:00', end: '18:00' },
+  5: { enabled: true,  start: '09:00', end: '18:00' },
+  6: { enabled: false, start: '09:00', end: '18:00' },
+};
+
+// ---- Sidebar personalisation ----
+export interface SidebarSectionPref {
+  key: string;           // 'principal' | 'gestao' | 'fiscal' | 'sistema' | UUID for custom sections
+  title: string;         // user-editable display name
+  isCollapsed: boolean;  // per-section vertical collapse
+  items: string[];       // ordered MenuPage IDs visible in this section
+}
+
+export interface SidebarPrefs {
+  sections: SidebarSectionPref[];
+  hiddenItems: string[]; // MenuPage IDs globally hidden (Dashboard & Configurações excluded)
+}
+
 export interface User {
   id: string;
   uid: string;
@@ -24,9 +58,16 @@ export interface User {
   photoURL?: string;
   role: UserRole;
   businessId: string;
+  sectorIds?: string[];
+  isProfessional?: boolean;         // true = bookable service provider; false = staff only (hidden from scheduling)
+  serviceIds?: string[];            // Service IDs this professional offers
+  workingHours?: WorkingHours;      // Weekly availability schedule
+  commissionRate?: number;          // Commission percentage (0–100). e.g. 30 = 30% of appointment price
+  sidebarPrefs?: SidebarPrefs;      // per-user sidebar customisation
   isActive: boolean;
   isOnline?: boolean;
   userStatus?: UserStatus;
+  language?: string;           // i18n preference, e.g. 'pt-BR' | 'en-US'
   lastLoginAt?: string;
   lastSeenAt?: string;
   invitedBy?: string;
@@ -74,6 +115,7 @@ export interface Business {
   // Basic Info
   razaoSocial: string;
   nomeFantasia: string;
+  slug?: string;           // URL-safe identifier for public booking page (e.g. "salao-da-ana")
   cnpj: string;
   cpf?: string;
   inscricaoEstadual?: string;
@@ -95,6 +137,10 @@ export interface Business {
   settings?: BusinessSettings;
   // Enterprise
   enterprise?: EnterpriseSettings;
+  // Financial settings (notifications, etc.)
+  financial?: {
+    notificationSettings?: FinancialNotificationSettings;
+  };
   // Omnichannel (WhatsApp, Facebook, Instagram)
   channels?: ChannelCredentials;
   // Status
@@ -109,18 +155,31 @@ export interface WhatsAppChannelConfig {
   businessAccountId: string;
   accessToken: string; // btoa encrypted
   isConnected: boolean;
+  wabaId?: string;
+  displayName?: string;
+  displayPhoneNumber?: string;
+  phoneNumber?: string;
+  tokenExpiresAt?: string;
+  connectedAt?: string;
+  disconnectedAt?: string;
 }
 
 export interface FacebookChannelConfig {
   pageId: string;
   pageAccessToken: string; // btoa encrypted
   isConnected: boolean;
+  pageName?: string;
+  connectedAt?: string;
+  disconnectedAt?: string;
 }
 
 export interface InstagramChannelConfig {
   accountId: string;
   isConnected: boolean;
-  // Uses Facebook pageAccessToken
+  accountName?: string;
+  accessToken?: string; // encrypted — set when connected via instagram_business_manage_messages scope directly
+  connectedAt?: string;
+  disconnectedAt?: string;
 }
 
 export interface MetaAppConfig {
@@ -134,6 +193,7 @@ export interface ChannelCredentials {
   facebook?: FacebookChannelConfig;
   instagram?: InstagramChannelConfig;
   meta?: MetaAppConfig;
+  connectedVia?: 'embedded_signup' | 'manual';
 }
 
 export const COMPANY_TYPE_LABELS: Record<string, string> = {
@@ -146,57 +206,235 @@ export const COMPANY_TYPE_LABELS: Record<string, string> = {
   individual: 'Empresário Individual',
 };
 
+export type UseCase = 'pedidos' | 'servicos' | 'simples';
+
+export const USE_CASE_LABELS: Record<UseCase, string> = {
+  pedidos: 'Pedidos & Entregas',
+  servicos: 'Prestador de Serviços',
+  simples: 'Essencial',
+};
+
+export const USE_CASE_DESCRIPTIONS: Record<UseCase, string> = {
+  pedidos: 'Para restaurantes, confeitarias e comércios que recebem pedidos para entrega. Inclui gerenciador de pedidos, cardápio e estoque com composições.',
+  servicos: 'Para profissionais e clínicas com agendamentos. Inclui agenda com recorrência, controle de serviços e sincronização de métricas de clientes.',
+  simples: 'Apenas o essencial: clientes, conversas, CRM e financeiro. Sem módulos operacionais.',
+};
+
+export interface BusinessHoursDay {
+  isOpen: boolean;
+  openTime: string;       // 'HH:mm'
+  closeTime: string;      // 'HH:mm'
+}
+
+export type DeliveryFeeRule = { maxKm: number; fee: number };
+
+export interface DeliveryConfig {
+  radiusKm?: number;
+  feeRules?: DeliveryFeeRule[];    // múltiplas faixas (0-3km = R$ 8, 3-7km = R$ 12)
+  freeDeliveryMinValue?: number;    // acima desse valor, entrega grátis
+  estimatedMinutes?: number;
+  acceptOffHours?: boolean;         // espelha aiAgent.pedidos.acceptOrdersOffHours
+}
+
+export interface BusinessPromotion {
+  id: string;
+  code?: string;
+  name: string;
+  description?: string;
+  type: 'percentage' | 'fixed' | 'free_shipping';
+  value: number;
+  minOrderValue?: number;
+  validUntil?: string;
+  isActive: boolean;
+}
+
+export interface LoyaltyConfig {
+  isEnabled: boolean;
+  /** Quantos pontos o cliente ganha por R$1,00 gasto (ex: 1) */
+  pointsPerReal: number;
+  /** Valor em centavos de cada ponto no resgate (ex: 1 = R$0,01/ponto) */
+  pointValueInCentavos: number;
+  /** Mínimo de pontos para resgatar */
+  minPointsToRedeem: number;
+  /** Dias até expirar (null = não expira) */
+  expirationDays?: number | null;
+}
+
 export interface BusinessSettings {
   timezone?: string;
   currency?: string;
   language?: string;
+  useCase?: UseCase;
+  aiAgent?: AiAgentSettings;
+  /** Horário de funcionamento — 7 posições (0=Domingo, 6=Sábado) */
+  openingHours?: BusinessHoursDay[];
+  /** Configuração de entrega (usada no modo pedidos e em prompts do agente) */
+  delivery?: DeliveryConfig;
+  /** Programa de fidelidade */
+  loyalty?: LoyaltyConfig;
+  /** Promoções ativas */
+  promotions?: BusinessPromotion[];
+  /** URL do Google Reviews para redirect pós-avaliação */
+  googleReviewUrl?: string;
+  /** TEF — Transferência Eletrônica de Fundos */
+  tef?: TEFConfig;
+  /** Gateway de pagamento (PIX, link, boleto) */
+  paymentGateway?: PaymentGatewayConfig;
+  /** Política de no-show */
+  noShowPolicy?: NoShowPolicy;
+}
+
+export interface AiAgentSettings {
+  enabled: boolean;
+  /** Contexto de negócio inserido no prompt do agente */
+  businessDescription?: string;
+  tone?: 'formal' | 'casual' | 'friendly';
+  enabledAt?: string;
+
+  /** === Modo: pedidos === */
+  pedidos?: {
+    /** Notificar cliente automaticamente em cada mudança de status do pedido */
+    notifyOnStatusChange?: boolean;
+    /** Aceitar novos pedidos fora do horário (ou mostrar mensagem de fechado) */
+    acceptOrdersOffHours?: boolean;
+    /** Tempo máximo de espera antes do agente sugerir alternativas (min) */
+    maxWaitMinutes?: number;
+    /** Taxa de entrega padrão (R$) — usada pelo agente ao criar pedido do tipo entrega */
+    deliveryFee?: number;
+  };
+
+  /** === Modo: serviços (agenda) === */
+  agenda?: {
+    /** Enviar lembrete algumas horas antes da consulta */
+    sendReminder?: boolean;
+    reminderHoursBefore?: number; // ex: 24
+    /** Pedir confirmação de presença via IA 1 dia antes */
+    confirmationBeforeAppointment?: boolean;
+    /** Follow-up depois da consulta (pesquisa de satisfação leve) */
+    followUpAfter?: boolean;
+  };
+
+  /** === Modo: operador (dashboard chat) === */
+  operator?: {
+    /**
+     * When true, the agent executes destructive actions (create/update/delete)
+     * without asking for confirmation in the chat. Always shows a preview
+     * before, and the result after. Reserved for admin/founder who want
+     * hands-free control. Default false (confirm required).
+     */
+    autonomousMode?: boolean;
+    /** Daily spend cap for the operator chat specifically (USD). */
+    dailyBudgetUsd?: number;
+  };
+
+  /** === Policies — agent cites these verbatim on relevant questions. === */
+  policies?: {
+    /** Cancellation terms (e.g., "sem multa até 2h antes"). */
+    cancellation?: string;
+    /** Refund policy text. */
+    refund?: string;
+    /** Privacy / LGPD summary the agent can quote. */
+    privacy?: string;
+  };
+
+  /** === SLAs — target durations used by the agent to set expectations. === */
+  sla?: {
+    /** Max preparation time before order is ready (pedidos mode). Minutes. */
+    prepMaxMinutes?: number;
+    /** Max total delivery time (order → doorstep). Minutes. */
+    deliveryMaxMinutes?: number;
+    /** First-response SLA on customer messages. Minutes. */
+    firstResponseMinutes?: number;
+  };
+
+  /** === Calendar exceptions — holidays + seasonal hour overrides. === */
+  calendar?: {
+    /** Dates when the business is closed (ISO YYYY-MM-DD). Overrides openingHours. */
+    holidays?: string[];
+    /** Date-range overrides with specific opening hours. */
+    seasonalHours?: Array<{
+      fromDate: string;
+      toDate: string;
+      label?: string;
+      hours: BusinessHoursDay[];
+    }>;
+  };
+
+  /** === Delivery zones + payment method whitelist (pedidos mode). === */
+  deliveryZones?: Array<{
+    name: string;
+    type: 'radius' | 'neighborhood' | 'polygon';
+    value: string;
+    fee?: number;
+    estimatedMinutes?: number;
+  }>;
+
+  /** Payment methods the business accepts — agent never offers one outside this list. */
+  acceptedPaymentMethods?: Array<'dinheiro' | 'pix' | 'credito' | 'debito' | 'boleto' | 'pontos' | 'gift_card' | 'voucher' | 'outros'>;
+
+  /** === Team capacity — upper bound the agent won't exceed. === */
+  teamCapacity?: {
+    maxConcurrentOrders?: number;
+    maxDailyAppointments?: number;
+  };
+
+  /** === Upsell rules — agent suggests X when Y matches. === */
+  upsellRules?: Array<{
+    id: string;
+    trigger: string;
+    suggestion: string;
+    isActive: boolean;
+  }>;
 }
 
 // ---- Fiscal Configuration ----
-export interface FiscalConfig {
-  // Certificate
-  certificate?: CertificateConfig;
-  certPasswordEncrypted?: string;
-  // Environment
-  environment?: 'homologation' | 'production';
-  // Tax Regime
-  taxRegime?: 'simples_nacional' | 'simples_nacional_excesso' | 'lucro_presumido' | 'lucro_real';
-  operationType?: 'saida' | 'entrada';
-  sellsInterstate?: boolean;
-  ibgeCodigoMunicipio?: string;
-  inscricaoEstadual?: string;
-  // NF-e Config
-  nfeConfig?: {
-    series: string;
-    nextNumber: number;
-    environment?: 'homologation' | 'production';
-  };
-  // NFC-e Config
-  nfceConfig?: {
-    series: string;
-    nextNumber: number;
-    cscId?: string;
-    cscToken?: string;
-    environment?: 'homologation' | 'production';
-  };
-  // NFSe Config
-  nfseConfig?: {
-    series: string;
-    nextNumber: number;
-  };
-  // Default Taxation
-  taxation?: {
-    icms: { cstCsosn: string; rate: number };
-    pis: { cst: string; rate: number };
-    cofins: { cst: string; rate: number };
-  };
-  // Default CFOPs
-  cfops?: {
-    defaultSales: string;
-    defaultPurchases: string;
-  };
+export type TaxRegime = 'simples_nacional' | 'simples_nacional_excesso' | 'lucro_presumido' | 'lucro_real';
+
+export interface FiscalCertificate {
+  serialNumber: string;
+  subject: string;
+  issuer?: string;
+  thumbprint?: string;
+  validFrom: string;
+  expiresAt: string;
+  storagePath: string;
+  uploadedAt: string;
 }
 
+export interface NFeConfig {
+  series: string;
+  nextNumber: number;
+  environment: 'producao' | 'homologacao';
+}
+
+export interface NFCeConfig {
+  series: string;
+  nextNumber: number;
+  cscId: string;
+  cscToken: string;
+  environment: 'producao' | 'homologacao';
+}
+
+export interface NFSeConfig {
+  series: string;
+  nextNumber: number;
+  environment: 'producao' | 'homologacao';
+}
+
+export interface FiscalConfig {
+  certificate?: FiscalCertificate;
+  certPasswordEncrypted?: string;
+  nfeConfig?: NFeConfig;
+  nfceConfig?: NFCeConfig;
+  nfseConfig?: NFSeConfig;
+  inscricaoEstadual?: string;
+  inscricaoMunicipal?: string;
+  ibgeCodigoMunicipio?: string;
+  taxRegime?: TaxRegime;
+  accountingEmail?: string;
+}
+
+/** @deprecated Use FiscalCertificate instead */
 export interface CertificateConfig {
   serialNumber: string;
   expiresAt: string;
@@ -212,6 +450,7 @@ export interface InviteCode {
   businessId: string;
   code: string;
   role: UserRole;
+  sectorId?: string;
   createdBy: string;       // uid
   createdByName: string;
   usedBy?: string;
@@ -254,29 +493,8 @@ export interface Address {
 }
 
 // ---- Clients ----
-export interface Client {
-  id: string;
-  businessId: string;
-  tipo: 'pf' | 'pj';
-  nome: string;
-  cpfCnpj: string;
-  email?: string;
-  phone: string;
-  phone2?: string;
-  birthDate?: string;
-  gender?: 'M' | 'F' | 'O';
-  endereco?: Address;
-  inscricaoEstadual?: string;  // IE - required for B2B NF-e
-  indicadorIE?: '1' | '2' | '9'; // 1=Contribuinte, 2=Isento, 9=Nao Contribuinte
-  notes?: string;
-  tags?: string[];
-  isActive: boolean;
-  totalSpent: number;
-  visitCount: number;
-  lastVisit?: string;
-  createdAt: string;
-  updatedAt: string;
-}
+// Client interface removed — unified into CRMContact
+// The `Client` type alias above provides backward compatibility
 
 // ---- Appointments / Agenda ----
 export type AppointmentStatus =
@@ -306,6 +524,13 @@ export interface Appointment {
   notes?: string;
   color?: string;
   recurrenceId?: string;
+  // Agent-driven automation tracking (idempotência)
+  reminderSentAt?: string;
+  confirmationRequestedAt?: string;
+  followUpSentAt?: string;
+  // Commission tracking — set when appointment is marked concluido
+  commissionTransactionId?: string; // Firestore ID of the linked Transaction (category: 'Comissoes')
+  googleCalendarEventId?: string;   // Google Calendar event ID for sync
   createdAt: string;
   updatedAt: string;
 }
@@ -313,12 +538,16 @@ export interface Appointment {
 export interface Service {
   id: string;
   businessId: string;
+  userId?: string;      // uid do usuario dono (opcional — sem userId = servico global do tenant)
+  userName?: string;     // nome do dono
   name: string;
   description?: string;
   duration: number; // minutes
   price: number;
   category?: string;
   color: string;
+  commissionRate?: number; // Commission % override for this service (0–100). Takes precedence over professional's commissionRate
+  formTemplateId?: string; // Intake form auto-requested when this service is booked
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
@@ -351,6 +580,10 @@ export type PaymentMethod =
   | 'credito'
   | 'debito'
   | 'boleto'
+  | 'creditoLoja'
+  | 'semPagamento'
+  | 'pontos'
+  | 'gift_card'
   | 'outros';
 
 export interface Payment {
@@ -369,12 +602,16 @@ export interface Sale {
   payments: Payment[];
   subtotal: number;
   discount: number;
+  tip?: number;
   total: number;
   status: 'aberta' | 'finalizada' | 'cancelada';
   fiscalDocId?: string;
   notes?: string;
   operatorId: string;
   operatorName: string;
+  channelType?: ConversationChannel;
+  conversationId?: string;
+  sectorId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -383,14 +620,37 @@ export interface Sale {
 export type TransactionType = 'receita' | 'despesa';
 export type TransactionStatus = 'pendente' | 'pago' | 'atrasado' | 'cancelado';
 
+export type RecurrenceFrequency = 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'yearly';
+
+export interface TransactionRecurrence {
+  frequency: RecurrenceFrequency;
+  nextDueDate: string;       // ISO date — when the next copy should be generated
+  endDate?: string;          // optional end date — stops generating after this
+  isActive: boolean;
+  parentTransactionId?: string; // original transaction that spawned this
+  dayOfMonth?: number;       // fixed day of month for next occurrences (1-28)
+  label?: string;            // user-friendly name (e.g. "Aluguel")
+}
+
+export interface TransactionAttachment {
+  id: string;
+  name: string;
+  url: string;
+  /** Firebase Storage path (e.g. businesses/{id}/financial_attachments/{file}) — used for deletion */
+  path: string;
+  size: number;
+  type: string;
+  createdAt: string;
+}
+
 export interface Transaction {
   id: string;
   businessId: string;
   type: TransactionType;
-  category: string;
+  category?: string;
   description: string;
   amount: number;
-  dueDate: string;
+  dueDate?: string;
   paymentDate?: string;
   status: TransactionStatus;
   clientId?: string;
@@ -402,8 +662,154 @@ export interface Transaction {
   businessUnitId?: string;
   costCenter?: string;
   notes?: string;
+  channelType?: ConversationChannel;
+  conversationId?: string;
+  contactId?: string;
+  campaignId?: string;
+  sectorId?: string;
+  appointmentId?: string; // Link back to the originating appointment (for commission transactions)
+  /** Parcelamento: grupo compartilhado entre todas as parcelas */
+  installmentGroupId?: string;
+  installmentNumber?: number;   // ex: 1 de 3
+  installmentTotal?: number;
+  /** Recorrência automática */
+  recurrence?: TransactionRecurrence;
+  /** Anexos (recibos, NFs, etc) */
+  attachments?: TransactionAttachment[];
+  /** Lock fiscal: true quando existe NF-e/NFC-e/NFSe autorizada vinculada via saleId */
+  isLocked?: boolean;
+  lockedReason?: string;
+  /** Auditoria: identidade de quem criou/modificou. Preenchido nas mutações. */
+  createdBy?: string;
+  createdByName?: string;
+  updatedBy?: string;
+  updatedByName?: string;
+  /** Idempotência de notificações — preenchido pelo cron ao enviar alerta */
+  dueSoonNotifiedAt?: string;
+  overdueNotifiedAt?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+// ---- Reconciliation Rules (2.5) ----
+export interface ReconciliationRule {
+  id: string;
+  businessId: string;
+  /** Case-insensitive substring matched against bank statement description */
+  pattern: string;
+  category: string;
+  type?: 'receita' | 'despesa';
+  /** If set, rule only applies when this bank account is selected */
+  bankAccountId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ---- Payment Provider Config (3.5/3.6/3.8) ----
+export type PaymentProvider = 'asaas' | 'gerencianet' | 'pagseguro' | 'iugu' | 'mercadopago';
+export type OpenBankingProvider = 'pluggy' | 'belvo' | 'quanto';
+
+export interface PixConfig {
+  provider: PaymentProvider;
+  apiKey: string;     // stored encrypted
+  pixKey: string;     // chave PIX da empresa (CPF/CNPJ/email/phone/random)
+  pixKeyType: 'cpf' | 'cnpj' | 'email' | 'phone' | 'random';
+  isEnabled: boolean;
+  sandboxMode: boolean;
+  connectedAt?: string;
+}
+
+export interface BoletoConfig {
+  provider: PaymentProvider;
+  apiKey: string;     // stored encrypted
+  walletNumber?: string;
+  cedente?: string;   // nome do cedente
+  isEnabled: boolean;
+  sandboxMode: boolean;
+  connectedAt?: string;
+}
+
+export interface OpenBankingConfig {
+  provider: OpenBankingProvider;
+  clientId: string;
+  clientSecret: string; // stored encrypted
+  isEnabled: boolean;
+  connectedBankIds: string[]; // external bank connection IDs
+  lastSyncAt?: string;
+  connectedAt?: string;
+}
+
+// Add to Business.financial when these are configured:
+// financial.pixConfig, financial.boletoConfig, financial.openBankingConfig
+
+// ---- Financial Notification Settings ----
+export interface FinancialNotificationSettings {
+  enabled: boolean;
+  /** Days before due date to send reminder (1, 2, 3, or 7) */
+  dueSoonDays: number;
+  sendEmail: boolean;
+  sendWhatsApp: boolean;
+  notifyPayable: boolean;    // contas a pagar
+  notifyReceivable: boolean; // contas a receber (cobrança)
+}
+
+// ---- Budget (Orçamento por categoria/mês) ----
+export interface Budget {
+  id: string;
+  businessId: string;
+  year: number;
+  month: number;      // 1-12
+  category: string;
+  type: 'receita' | 'despesa';
+  amount: number;     // meta orçada
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ---- DAS / Simples Nacional ----
+export type DasStatus = 'pendente' | 'pago' | 'atrasado';
+export type SimplesAnexo = 'I' | 'II' | 'III' | 'IV' | 'V';
+
+export interface DasRecord {
+  id: string;
+  businessId: string;
+  /** Referência no formato AAAAMM, ex: "202604" */
+  competencia: string;
+  receitaBruta: number;   // receita bruta do mês de competência
+  rbt12: number;          // receita bruta acumulada nos últimos 12 meses
+  anexo: SimplesAnexo;
+  aliquotaEfetiva: number;  // % calculada
+  valorDas: number;
+  /** Vencimento: sempre dia 20 do mês seguinte à competência */
+  vencimento: string;
+  status: DasStatus;
+  pagoEm?: string;
+  recibo?: string;      // Storage download URL
+  reciboPath?: string;  // Storage path (for deletion)
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ---- Audit log (alterações em entidades financeiras) ----
+export type AuditAction = 'create' | 'update' | 'delete' | 'pay' | 'cancel' | 'restore';
+
+export interface FinancialAuditLog {
+  id: string;
+  businessId: string;
+  entity: 'transaction' | 'bankAccount';
+  entityId: string;
+  action: AuditAction;
+  actorUid: string;
+  actorName: string;
+  /** Snapshot de campos relevantes antes da mudança (para update/delete) */
+  before?: Record<string, unknown>;
+  /** Snapshot depois (para create/update) */
+  after?: Record<string, unknown>;
+  /** Diff resumido: lista de campos que mudaram */
+  changedFields?: string[];
+  amount?: number;               // denormalizado para facilitar filtros/relatórios
+  description?: string;          // snapshot do texto da transação para exibição histórica
+  createdAt: string;
 }
 
 export interface FinancialCategory {
@@ -457,6 +863,51 @@ export interface BankAccount {
   updatedAt: string;
 }
 
+// ---- Bank Reconciliation ----
+
+export type ReconciliationStatus = 'matched' | 'pending' | 'divergent' | 'ignored';
+
+export interface BankStatementEntry {
+  date: string;           // YYYY-MM-DD
+  description: string;
+  amount: number;         // positive = credit, negative = debit
+  balance?: number;
+  reference?: string;     // bank reference / doc number
+}
+
+export interface ReconciliationItem {
+  id: string;
+  businessId: string;
+  bankAccountId: string;
+  importId: string;           // groups items from same upload
+  // Statement side
+  statementDate: string;
+  statementDescription: string;
+  statementAmount: number;
+  statementReference?: string;
+  // Match side
+  transactionId?: string;     // linked transaction ID when matched
+  status: ReconciliationStatus;
+  matchConfidence?: number;   // 0-100 auto-match score
+  reconciledBy?: string;
+  reconciledAt?: string;
+  createdAt: string;
+}
+
+export interface BankStatementImport {
+  id: string;
+  businessId: string;
+  bankAccountId: string;
+  fileName: string;
+  format: 'csv' | 'ofx';
+  totalEntries: number;
+  matched: number;
+  pending: number;
+  divergent: number;
+  importedAt: string;
+  importedBy: string;
+}
+
 // ---- Financial: Employees ----
 export interface Employee {
   id: string;
@@ -503,10 +954,117 @@ export interface Product {
   maxStock?: number;
   ncm?: string;
   cfop?: string;
+  cest?: string;              // Código Especificador da Substituição Tributária
+  icmsOrigem?: '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7'; // Origem da mercadoria
+  gtin?: string;              // GTIN/EAN barcode
+  gtinTrib?: string;          // GTIN tributável
+  unidadeTrib?: string;       // Unidade tributável
+  // Per-product tax overrides (when different from business defaults)
+  fiscalTax?: {
+    icms?: { cst?: string; csosn?: string; rate?: number };
+    pis?: { cst?: string; rate?: number };
+    cofins?: { cst?: string; rate?: number };
+    ipi?: { cst?: string; rate?: number; cEnq?: string };
+  };
   isActive: boolean;
   imageUrl?: string;
+  // Delivery / Cardápio (used when business.settings.useCase === 'pedidos')
+  isDeliverable?: boolean;
+  menuCategory?: string;        // Ex: "Pizzas" — legado (string livre) | continua suportado
+  menuCategoryId?: string;      // Referência formal para MenuCategory (prioridade sobre menuCategory)
+  menuDescription?: string;     // Short description for the menu card
+  preparationTime?: number;     // Minutes — for delivery ETA
+  /** Dietary markers — usados no cardápio e pelo agente para filtrar */
+  dietary?: Array<'vegan' | 'vegetarian' | 'glutenfree' | 'lactosefree' | 'organic' | 'picante' | 'alcool' | 'kids'>;
+  /** Personalização / modificadores — quando presente, catálogo abre wizard de montagem */
+  modifierGroups?: ProductModifierGroup[];
+  hasModifiers?: boolean;       // atalho p/ queries
+  // Composite / BOM — when set, parent product deducts each component on sale,
+  // and parent itself carries no stock of its own.
+  components?: ProductComponent[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ProductComponent {
+  productId: string;
+  productName: string;  // denormalized for display
+  quantity: number;
+}
+
+// ---- Menu Categories (cardápio online — pedidos mode) ----
+export interface MenuCategory {
+  id: string;
+  businessId: string;
+  name: string;                 // "Pizzas", "Bebidas", "Sobremesas"
+  description?: string;
+  imageUrl?: string;
+  color?: string;               // hex for category accent
+  icon?: string;                // lucide icon name (optional)
+  sortOrder: number;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ---- Product Modifiers (personalização no cardápio) ----
+/**
+ * Selection types:
+ *  - single:   radio (maxSelections = 1)
+ *  - multiple: checkbox (each option selected 0 or 1 time)
+ *  - quantity: each option has a +/- counter (extras com quantidade)
+ */
+export type ModifierSelectionType = 'single' | 'multiple' | 'quantity';
+
+/**
+ * How the final price is computed from the selected options:
+ *  - sum:  total = base + sum(selectedOptions.additionalPrice * qty)
+ *  - max:  total = base + max(selectedOptions.additionalPrice)  (p.ex. pizza c/ 2 sabores usa o mais caro)
+ *  - avg:  total = base + avg(selectedOptions.additionalPrice)
+ */
+export type ModifierPriceStrategy = 'sum' | 'max' | 'avg';
+
+export interface ProductModifierOption {
+  id: string;                   // uuid curto
+  name: string;                 // "Pequena", "Calabresa"
+  description?: string;
+  additionalPrice: number;      // 0 se incluso
+  imageUrl?: string;
+  isDefault?: boolean;          // pré-selecionado
+  maxQuantity?: number;         // for 'quantity' type; default 1
+  available: boolean;
+  sortOrder: number;
+}
+
+export interface ProductModifierGroup {
+  id: string;                   // uuid curto
+  name: string;                 // "Tamanho", "Sabores", "Borda", "Extras"
+  description?: string;
+  required: boolean;
+  minSelections: number;        // 0 = opcional
+  maxSelections: number;        // 1 para radio, N para checkbox, 99 para livre
+  selectionType: ModifierSelectionType;
+  priceStrategy: ModifierPriceStrategy;
+  options: ProductModifierOption[];
+  sortOrder: number;
+}
+
+/**
+ * Seleção escolhida pelo cliente — vai no CartItem e no DeliveryOrderItem.
+ * Fica denormalizado (nomes + preços) para sobreviver a edições futuras.
+ */
+export interface SelectedModifierOption {
+  optionId: string;
+  optionName: string;
+  additionalPrice: number;
+  quantity: number;             // sempre ≥ 1; relevante p/ 'quantity'
+}
+
+export interface SelectedModifier {
+  groupId: string;
+  groupName: string;
+  priceStrategy: ModifierPriceStrategy;
+  selectedOptions: SelectedModifierOption[];
 }
 
 export interface StockMovement {
@@ -525,6 +1083,194 @@ export interface StockMovement {
   operatorName: string;
   createdAt: string;
 }
+
+// ---- Password Vault (cofre de senhas compartilhado com admins) ----
+export type VaultAccessScope = 'admins' | 'specific';
+
+export interface VaultAccessLogEntry {
+  uid: string;
+  userName: string;
+  action: 'revealed' | 'copied' | 'created' | 'updated' | 'deleted';
+  at: string;
+}
+
+export interface VaultEntry {
+  id: string;
+  businessId: string;
+  title: string;
+  username?: string;
+  /** Ciphertext (AES-256-GCM, base64). Never sent to client as plaintext. */
+  encryptedPassword: string;
+  url?: string;
+  notes?: string;
+  category?: string;
+  tags?: string[];
+  /**
+   * Access scope — default 'admins' means every admin/founder of the business
+   * can view/edit. 'specific' restricts to a curated list of uids.
+   */
+  accessScope: VaultAccessScope;
+  sharedWith?: string[]; // uids when accessScope === 'specific'
+  createdBy: string;
+  createdByName: string;
+  updatedBy?: string;
+  updatedByName?: string;
+  createdAt: string;
+  updatedAt: string;
+  lastAccessedAt?: string;
+  lastAccessedBy?: string;
+  accessCount?: number;
+}
+
+// ---- AI Agent (LangGraph orchestration) ----
+export type AgentRunStatus = 'running' | 'success' | 'error' | 'skipped';
+
+export interface AgentToolCall {
+  name: string;
+  arguments: Record<string, unknown>;
+  result?: unknown;
+  error?: string;
+  latencyMs: number;
+  startedAt: string;
+}
+
+export interface AgentNodeTrace {
+  node: string;                  // 'router' | 'planner' | 'executor' | 'evaluator' | 'responder'
+  input?: unknown;
+  output?: unknown;
+  tokensIn?: number;
+  tokensOut?: number;
+  latencyMs: number;
+  startedAt: string;
+}
+
+export interface AgentRun {
+  id: string;
+  businessId: string;
+  conversationId: string;
+  messageId: string;            // id da mensagem inbound que disparou a run
+  userMessage: string;
+  status: AgentRunStatus;
+  finalResponse?: string;        // mensagem efetivamente enviada ao contato
+  intent?: string;               // pedido | agenda | info | outro
+  nodes: AgentNodeTrace[];
+  tools: AgentToolCall[];
+  iterations: number;
+  totalLatencyMs: number;
+  totalTokensIn: number;
+  totalTokensOut: number;
+  costUsd: number;
+  model: string;
+  errorMessage?: string;
+  createdAt: string;
+  completedAt?: string;
+}
+
+// ---- Delivery Orders (Pedidos — modo "pedidos", distinto do Order de Vendas B2B) ----
+export type DeliveryOrderStatus =
+  | 'recebido'
+  | 'preparando'
+  | 'pronto'
+  | 'saiu_entrega'
+  | 'entregue'
+  | 'cancelado';
+
+export type DeliveryOrderPaymentStatus = 'pendente' | 'pago' | 'estornado';
+
+export type DeliveryOrderChannel = 'whatsapp' | 'facebook' | 'instagram' | 'manual' | 'site';
+
+export type DeliveryType = 'entrega' | 'retirada';
+
+export type DeliveryOrderPaymentMethod =
+  | 'dinheiro'
+  | 'cartao_credito'
+  | 'cartao_debito'
+  | 'pix'
+  | 'voucher'
+  | 'outro';
+
+export interface DeliveryOrderItem {
+  productId: string;
+  productName: string;
+  quantity: number;
+  unitPrice: number;            // preço unitário final (base + modificadores calculados)
+  total: number;                // unitPrice * quantity
+  notes?: string;
+  imageUrl?: string;
+  /** Modificadores selecionados (pizza c/ sabores, borda, extras). */
+  selectedModifiers?: SelectedModifier[];
+  basePrice?: number;           // preço base do produto antes dos modificadores
+}
+
+export interface DeliveryOrderAddress {
+  cep?: string;
+  logradouro?: string;
+  numero?: string;
+  complemento?: string;
+  bairro?: string;
+  municipio?: string;
+  uf?: string;
+  reference?: string;
+}
+
+export interface DeliveryOrder {
+  id: string;
+  businessId: string;
+  number: number;
+  status: DeliveryOrderStatus;
+
+  clientId?: string;
+  clientName: string;
+  clientPhone?: string;
+
+  channel?: DeliveryOrderChannel;
+  conversationId?: string;
+  contactExternalId?: string;
+
+  items: DeliveryOrderItem[];
+  subtotal: number;
+  deliveryFee?: number;
+  discount?: number;
+  total: number;
+
+  deliveryType: DeliveryType;
+  deliveryAddress?: DeliveryOrderAddress;
+  deliveryPersonId?: string;
+  deliveryPersonName?: string;
+  estimatedDeliveryAt?: string;
+  deliveredAt?: string;
+
+  paymentMethod?: DeliveryOrderPaymentMethod;
+  paymentStatus: DeliveryOrderPaymentStatus;
+  changeFor?: number;
+
+  customerNotes?: string;
+  internalNotes?: string;
+
+  // Tracks when stock was deducted so transitions stay idempotent.
+  stockDeductedAt?: string;
+
+  createdAt: string;
+  updatedAt: string;
+  sectorId?: string;
+}
+
+export const DELIVERY_ORDER_STATUS_FLOW: DeliveryOrderStatus[] = [
+  'recebido',
+  'preparando',
+  'pronto',
+  'saiu_entrega',
+  'entregue',
+];
+
+export const DELIVERY_ORDER_STATUS_LABELS: Record<DeliveryOrderStatus, string> = {
+  recebido: 'Recebido',
+  preparando: 'Preparando',
+  pronto: 'Pronto',
+  saiu_entrega: 'Saiu para Entrega',
+  entregue: 'Entregue',
+  cancelado: 'Cancelado',
+};
 
 // ---- Fiscal ----
 export type FiscalDocType = 'nfse' | 'nfce' | 'nfe';
@@ -557,6 +1303,15 @@ export interface FiscalDocument {
   pdfUrl?: string;
   canceledAt?: string;
   cancelReason?: string;
+  naturezaOperacao?: string;  // Natureza da operação
+  informacoesAdicionais?: string; // Additional info
+  xml?: string;               // Signed XML content
+  cartaCorrecao?: {           // Correction letter history
+    sequencia: number;
+    texto: string;
+    protocolo?: string;
+    dataEvento: string;
+  }[];
   createdAt: string;
   updatedAt: string;
 }
@@ -569,6 +1324,10 @@ export interface FiscalItem {
   ncm?: string;
   cfop?: string;
   unit: string;
+  codigo?: string;            // Product code
+  cest?: string;              // CEST
+  gtin?: string;              // GTIN/EAN
+  icmsOrigem?: string;        // Origin code
   taxes?: {
     icms?: { cst?: string; csosn?: string; aliquota?: number; valor?: number };
     pis?: { cst?: string; aliquota?: number; valor?: number };
@@ -605,6 +1364,8 @@ export interface DashboardMetrics {
 // ---- Kanban ----
 export type KanbanPriority = 'urgent' | 'high' | 'medium' | 'low';
 
+export type KanbanVisibility = 'all' | 'members' | 'sectors';
+
 export interface KanbanBoard {
   id: string;
   businessId: string;
@@ -613,8 +1374,11 @@ export interface KanbanBoard {
   color: string;
   columns: KanbanColumn[];
   memberIds: string[];
+  sectorIds?: string[];
+  visibility: KanbanVisibility;
   createdBy: string;
   isArchived: boolean;
+  automations?: KanbanAutomation[];
   createdAt: string;
   updatedAt: string;
 }
@@ -625,6 +1389,28 @@ export interface KanbanColumn {
   color: string;
   cardLimit?: number;
   order: number;
+}
+
+export interface KanbanComment {
+  id: string;
+  text: string;
+  authorId: string;
+  authorName: string;
+  createdAt: string;
+}
+
+export type KanbanRecurrence = 'daily' | 'weekly' | 'monthly';
+
+export interface KanbanAttachment {
+  id: string;
+  name: string;
+  url: string;
+  storagePath: string;
+  type: string;
+  size: number;
+  uploadedBy: string;
+  uploadedByName: string;
+  uploadedAt: string;
 }
 
 export interface KanbanCard {
@@ -640,6 +1426,9 @@ export interface KanbanCard {
   assigneeNames: string[];
   dueDate?: string;
   checklist?: KanbanChecklistItem[];
+  comments?: KanbanComment[];
+  attachments?: KanbanAttachment[];
+  recurrence?: KanbanRecurrence;
   commentsCount: number;
   attachmentsCount: number;
   coverColor?: string;
@@ -661,6 +1450,35 @@ export interface KanbanChecklistItem {
   completed: boolean;
 }
 
+export interface KanbanCardTemplate {
+  id: string;
+  businessId: string;
+  name: string;
+  title: string;
+  description?: string;
+  priority: KanbanPriority;
+  labels: KanbanLabel[];
+  checklist?: KanbanChecklistItem[];
+  createdBy: string;
+  createdAt: string;
+}
+
+export type KanbanAutomationTrigger = 'move_to_column' | 'due_date_passed';
+export type KanbanAutomationActionType = 'set_priority' | 'add_label' | 'assign_user';
+
+export interface KanbanAutomationAction {
+  type: KanbanAutomationActionType;
+  value: string;
+}
+
+export interface KanbanAutomation {
+  id: string;
+  trigger: KanbanAutomationTrigger;
+  triggerColumnId?: string;
+  actions: KanbanAutomationAction[];
+  isEnabled: boolean;
+}
+
 // ---- CRM ----
 export type LeadStatus = 'novo' | 'contatado' | 'qualificado' | 'proposta' | 'negociacao' | 'ganho' | 'perdido';
 export type LeadSource = 'site' | 'indicacao' | 'whatsapp' | 'instagram' | 'facebook' | 'google_ads' | 'linkedin' | 'evento' | 'email' | 'telefone' | 'outro';
@@ -668,7 +1486,64 @@ export type CRMActivityType = 'ligacao' | 'email' | 'reuniao' | 'whatsapp' | 'ta
 export type IntegrationStatus = 'connected' | 'disconnected' | 'error' | 'pending';
 export type IntegrationCategory = 'messaging' | 'social' | 'payment' | 'email' | 'analytics' | 'automation' | 'calendar';
 
-export interface CRMContact {
+export type LifecycleStage = 'new_lead' | 'contacted' | 'qualified' | 'proposal' | 'negotiation' | 'customer' | 'churned';
+export type ContactProfile = 'vip' | 'regular' | 'sporadic' | 'new' | 'at_risk' | 'churned';
+export type ConversationTone = 'satisfied' | 'neutral' | 'irritated';
+export type PriceSensitivity = 'low' | 'medium' | 'high';
+
+export interface RelationshipHistory {
+  firstContactDate?: string;
+  totalAppointments?: number;
+  completedAppointments?: number;
+  cancelledAppointments?: number;
+  noShowCount?: number;
+  attendanceRate?: number;
+  avgDaysBetweenVisits?: number;
+  lastVisitDate?: string;
+  lastServiceName?: string;
+  totalSpent?: number;
+  servicesContracted?: string[];
+  avgTicket?: number;
+}
+
+export interface BehavioralInsights {
+  cancellationReasons?: string[];
+  recurringObjections?: string[];
+  priceSensitivity?: PriceSensitivity;
+  preferredTimes?: string[];
+  preferredProfessional?: string;
+  uncontractedServices?: string[];
+  conversationTone?: ConversationTone;
+  preferences?: string[];
+  inquiredButNotBooked?: string[];
+  lastToneDate?: string;
+}
+
+export interface ContactScores {
+  loyalty: number;
+  value: number;
+  churnRisk: number;
+  engagement: number;
+  overall: number;
+  lastCalculatedAt?: string;
+}
+
+// Flexible address for client profiles (all fields optional, vs. the strict fiscal Address)
+export interface ClientAddress {
+  logradouro?: string;
+  numero?: string;
+  complemento?: string;
+  bairro?: string;
+  municipio?: string;
+  uf?: string;
+  cep?: string;
+  codigoMunicipio?: string;
+  pais?: string;
+  codigoPais?: string;
+}
+
+// ---- Client (primary entity — replaces CRMContact) ----
+export interface Client {
   id: string;
   businessId: string;
   name: string;
@@ -677,6 +1552,8 @@ export interface CRMContact {
   whatsapp?: string;
   company?: string;
   role?: string;
+
+  // ── CRM / Pipeline ─────────────────────────────────
   source: LeadSource;
   status: LeadStatus;
   score: number;
@@ -690,10 +1567,54 @@ export interface CRMContact {
   };
   notes?: string;
   lastContactDate?: string;
-  clientId?: string;
+  lifecycleStage?: LifecycleStage;
+  channelIdentities?: {
+    whatsapp?: string;
+    facebook?: string;
+    instagram?: string;
+  };
+  preferredChannel?: ConversationChannel;
+  lastConversationId?: string;
+  lastConversationAt?: string;
+  customFields?: Record<string, string | number | boolean>;
+  sectorId?: string;
+  optInMarketing?: boolean;
+  optInAt?: string;
+
+  // ── Dados Cadastrais / Fiscal ───────────────────────
+  tipo?: 'pf' | 'pj';
+  cpfCnpj?: string;
+  phone2?: string;
+  birthDate?: string;
+  gender?: 'M' | 'F' | 'O';
+  endereco?: ClientAddress;
+  inscricaoEstadual?: string;
+  indicadorIE?: '1' | '2' | '9';
+  inscricaoMunicipal?: string;
+  suframa?: string;
+  nomeFantasia?: string;
+  isActive?: boolean;
+  avatarUrl?: string;
+  totalSpent?: number;
+  visitCount?: number;
+  lastVisit?: string;
+  /** Saldo de pontos de fidelidade */
+  loyaltyPoints?: number;
+
+  // ── Inteligência & AI Agent ────────────────────────
+  profile?: ContactProfile;
+  relationshipHistory?: RelationshipHistory;
+  behavioralInsights?: BehavioralInsights;
+  scores?: ContactScores;
+  suggestedAction?: string;
+  aiSummary?: string;
+
   createdAt: string;
   updatedAt: string;
 }
+
+/** @deprecated Use Client instead — unified client model */
+export type CRMContact = Client;
 
 export interface CRMDeal {
   id: string;
@@ -771,20 +1692,37 @@ export interface Conversation {
   id: string;
   businessId: string;
   channel: ConversationChannel;
+  /**
+   * Para canal 'whatsapp', subdivide em dois transportes com labels distintos na UI:
+   *   'embedded_signup' → WhatsApp Business (Meta Cloud API, oficial)
+   *   'baileys'         → WhatsApp Web (conexão via app do celular)
+   * Outros canais (facebook/instagram) ignoram este campo.
+   */
+  connectedVia?: 'embedded_signup' | 'baileys';
   status: ConversationStatus;
   contactName: string;
   contactPhone?: string;
   contactExternalId?: string;
   contactAvatarUrl?: string;
+  crmContactId?: string;
+  aiEnabled?: boolean;            // toggle do agente IA — default: herda de business.settings.aiAgent.enabled
   lastMessage: string;
   lastMessageAt: string;
   lastMessageDirection: MessageDirection;
   unreadCount: number;
   assignedTo?: string;
   assignedToName?: string;
+  sectorIds?: string[];
+  assignedToSectorId?: string;
+  isPrivate?: boolean;
+  priority?: 'low' | 'medium' | 'high' | 'urgent';
+  labels?: string[];
+  internalNotes?: number;
   tags?: string[];
   createdAt: string;
   updatedAt: string;
+  isDeleted?: boolean;
+  deletedAt?: string;
 }
 
 export interface ConversationMessage {
@@ -797,8 +1735,11 @@ export interface ConversationMessage {
   status: MessageStatus;
   externalMessageId?: string; // Meta API message ID (wamid, mid)
   senderName?: string;
+  senderAvatarUrl?: string;
   mediaUrl?: string;
   mediaType?: 'image' | 'audio' | 'video' | 'document';
+  isInternal?: boolean;
+  mentionedUserIds?: string[];
   sentAt: string;
   deliveredAt?: string;
   readAt?: string;
@@ -875,6 +1816,8 @@ export type ApiKeyScope =
   | 'write:clients'
   | 'read:appointments'
   | 'write:appointments'
+  | 'read:services'
+  | 'write:services'
   | 'read:financial'
   | 'write:financial'
   | 'read:products'
@@ -885,7 +1828,74 @@ export type ApiKeyScope =
   | 'write:crm'
   | 'read:sales'
   | 'write:sales'
+  | 'read:conversations'
+  | 'write:conversations'
+  | 'read:fiscal'
+  | 'write:fiscal'
+  | 'read:broadcasts'
+  | 'write:broadcasts'
+  | 'read:segments'
+  | 'write:segments'
+  | 'read:snippets'
+  | 'write:snippets'
+  | 'read:sectors'
+  | 'write:sectors'
+  | 'read:users'
+  | 'write:users'
   | 'admin:all';
+
+export const API_KEY_SCOPE_LABELS: Record<ApiKeyScope, string> = {
+  'read:clients': 'Ler clientes',
+  'write:clients': 'Criar/editar clientes',
+  'read:appointments': 'Ler agendamentos',
+  'write:appointments': 'Criar/editar agendamentos',
+  'read:services': 'Ler serviços',
+  'write:services': 'Criar/editar serviços',
+  'read:financial': 'Ler transações financeiras',
+  'write:financial': 'Criar/editar transações',
+  'read:products': 'Ler produtos/estoque',
+  'write:products': 'Criar/editar produtos',
+  'read:kanban': 'Ler boards e cards',
+  'write:kanban': 'Criar/editar boards e cards',
+  'read:crm': 'Ler contatos, deals e atividades CRM',
+  'write:crm': 'Criar/editar contatos, deals e atividades',
+  'read:sales': 'Ler vendas',
+  'write:sales': 'Criar vendas',
+  'read:conversations': 'Ler conversas e mensagens',
+  'write:conversations': 'Enviar mensagens',
+  'read:fiscal': 'Ler documentos fiscais',
+  'write:fiscal': 'Emitir/cancelar documentos fiscais',
+  'read:broadcasts': 'Ler campanhas',
+  'write:broadcasts': 'Criar/enviar campanhas',
+  'read:segments': 'Ler segmentos',
+  'write:segments': 'Criar/editar segmentos',
+  'read:snippets': 'Ler respostas rápidas',
+  'write:snippets': 'Criar/editar respostas rápidas',
+  'read:sectors': 'Ler setores',
+  'write:sectors': 'Criar/editar setores',
+  'read:users': 'Ler membros da equipe',
+  'write:users': 'Editar membros da equipe',
+  'admin:all': 'Acesso total a todos os recursos',
+};
+
+export const API_KEY_SCOPE_GROUPS: { label: string; scopes: ApiKeyScope[] }[] = [
+  { label: 'Clientes', scopes: ['read:clients', 'write:clients'] },
+  { label: 'Agenda', scopes: ['read:appointments', 'write:appointments'] },
+  { label: 'Serviços', scopes: ['read:services', 'write:services'] },
+  { label: 'Financeiro', scopes: ['read:financial', 'write:financial'] },
+  { label: 'Produtos & Estoque', scopes: ['read:products', 'write:products'] },
+  { label: 'Vendas (PDV)', scopes: ['read:sales', 'write:sales'] },
+  { label: 'Kanban', scopes: ['read:kanban', 'write:kanban'] },
+  { label: 'CRM', scopes: ['read:crm', 'write:crm'] },
+  { label: 'Conversas', scopes: ['read:conversations', 'write:conversations'] },
+  { label: 'Fiscal', scopes: ['read:fiscal', 'write:fiscal'] },
+  { label: 'Campanhas', scopes: ['read:broadcasts', 'write:broadcasts'] },
+  { label: 'Segmentos', scopes: ['read:segments', 'write:segments'] },
+  { label: 'Respostas Rápidas', scopes: ['read:snippets', 'write:snippets'] },
+  { label: 'Setores', scopes: ['read:sectors', 'write:sectors'] },
+  { label: 'Usuários', scopes: ['read:users', 'write:users'] },
+  { label: 'Admin Total', scopes: ['admin:all'] },
+];
 
 export const INTEGRATION_PROVIDERS: Record<IntegrationProvider, {
   name: string;
@@ -994,15 +2004,659 @@ export const API_KEY_SCOPES: Record<ApiKeyScope, { label: string; description: s
   'write:clients': { label: 'Escrever Clientes', description: 'Criar e editar clientes' },
   'read:appointments': { label: 'Ler Agenda', description: 'Acessar agendamentos' },
   'write:appointments': { label: 'Escrever Agenda', description: 'Criar e editar agendamentos' },
-  'read:financial': { label: 'Ler Financeiro', description: 'Acessar transações financeiras' },
-  'write:financial': { label: 'Escrever Financeiro', description: 'Criar e editar transações' },
-  'read:products': { label: 'Ler Produtos', description: 'Acessar catálogo de produtos' },
-  'write:products': { label: 'Escrever Produtos', description: 'Criar e editar produtos' },
+  'read:services': { label: 'Ler Serviços', description: 'Acessar serviços cadastrados' },
+  'write:services': { label: 'Escrever Serviços', description: 'Criar e editar serviços' },
+  'read:financial': { label: 'Ler Financeiro', description: 'Acessar transações e contas bancárias' },
+  'write:financial': { label: 'Escrever Financeiro', description: 'Criar e editar transações e contas' },
+  'read:products': { label: 'Ler Produtos', description: 'Acessar catálogo e estoque' },
+  'write:products': { label: 'Escrever Produtos', description: 'Criar/editar produtos e movimentar estoque' },
   'read:kanban': { label: 'Ler Kanban', description: 'Acessar boards e cards' },
   'write:kanban': { label: 'Escrever Kanban', description: 'Criar e editar boards e cards' },
-  'read:crm': { label: 'Ler CRM', description: 'Acessar contatos e deals' },
-  'write:crm': { label: 'Escrever CRM', description: 'Criar e editar contatos e deals' },
+  'read:crm': { label: 'Ler CRM', description: 'Acessar contatos, deals e atividades' },
+  'write:crm': { label: 'Escrever CRM', description: 'Criar/editar contatos, deals e atividades' },
   'read:sales': { label: 'Ler Vendas', description: 'Acessar histórico de vendas' },
-  'write:sales': { label: 'Escrever Vendas', description: 'Criar e editar vendas' },
-  'admin:all': { label: 'Administrador', description: 'Acesso total a todos os recursos' },
+  'write:sales': { label: 'Escrever Vendas', description: 'Criar vendas (PDV)' },
+  'read:conversations': { label: 'Ler Conversas', description: 'Acessar conversas e mensagens omnichannel' },
+  'write:conversations': { label: 'Enviar Mensagens', description: 'Enviar mensagens via WhatsApp/FB/IG' },
+  'read:fiscal': { label: 'Ler Fiscal', description: 'Acessar NF-e, NFC-e e NFSe' },
+  'write:fiscal': { label: 'Escrever Fiscal', description: 'Emitir e cancelar documentos fiscais' },
+  'read:broadcasts': { label: 'Ler Campanhas', description: 'Acessar broadcasts e campanhas' },
+  'write:broadcasts': { label: 'Escrever Campanhas', description: 'Criar e enviar campanhas em massa' },
+  'read:segments': { label: 'Ler Segmentos', description: 'Acessar segmentos de audiência' },
+  'write:segments': { label: 'Escrever Segmentos', description: 'Criar e editar segmentos' },
+  'read:snippets': { label: 'Ler Respostas Rápidas', description: 'Acessar snippets/respostas rápidas' },
+  'write:snippets': { label: 'Escrever Respostas', description: 'Criar e editar respostas rápidas' },
+  'read:sectors': { label: 'Ler Setores', description: 'Acessar setores/departamentos' },
+  'write:sectors': { label: 'Escrever Setores', description: 'Criar e editar setores' },
+  'read:users': { label: 'Ler Usuários', description: 'Acessar membros da equipe' },
+  'write:users': { label: 'Escrever Usuários', description: 'Editar membros da equipe' },
+  'admin:all': { label: 'Admin Total', description: 'Acesso total a todos os recursos' },
 };
+
+// ============================================
+// Sectors / Departments
+// ============================================
+
+export interface Sector {
+  id: string;
+  businessId: string;
+  name: string;
+  description?: string;
+  color: string;
+  icon?: string;
+  leaderId?: string;
+  leaderName?: string;
+  memberIds: string[];
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const SECTOR_COLORS = [
+  '#DC2626', '#EA580C', '#D97706', '#CA8A04',
+  '#65A30D', '#16A34A', '#0D9488', '#0891B2',
+  '#2563EB', '#4F46E5', '#7C3AED', '#9333EA',
+  '#C026D3', '#DB2777', '#E11D48', '#64748B',
+] as const;
+
+export const SECTOR_ICONS = [
+  'Briefcase', 'HeadphonesIcon', 'Megaphone', 'Code',
+  'DollarSign', 'Heart', 'Truck', 'ShoppingCart',
+  'Users', 'Settings', 'Shield', 'Zap',
+] as const;
+
+// ============================================
+// Quick Replies / Snippets
+// ============================================
+
+export interface Snippet {
+  id: string;
+  businessId: string;
+  shortcode: string;
+  content: string;
+  category?: string;
+  sectorId?: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ============================================
+// CRM Segments
+// ============================================
+
+export type SegmentFilterOperator = 'eq' | 'neq' | 'contains' | 'not_contains' | 'gt' | 'lt' | 'in' | 'not_in';
+
+export interface SegmentFilter {
+  field: string;
+  operator: SegmentFilterOperator;
+  value: string | string[] | number | boolean;
+}
+
+export interface Segment {
+  id: string;
+  businessId: string;
+  name: string;
+  description?: string;
+  filters: SegmentFilter[];
+  contactCount?: number;
+  lastCalculatedAt?: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ============================================
+// Broadcasts / Campaigns
+// ============================================
+
+export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent' | 'paused' | 'failed';
+export type BroadcastAudienceType = 'segment' | 'tags' | 'all_contacts' | 'manual';
+
+export interface BroadcastStats {
+  total: number;
+  sent: number;
+  delivered: number;
+  read: number;
+  failed: number;
+  replied: number;
+}
+
+export interface Broadcast {
+  id: string;
+  businessId: string;
+  name: string;
+  channel: ConversationChannel;
+  audienceType: BroadcastAudienceType;
+  audienceSegmentId?: string;
+  audienceTags?: string[];
+  audienceContactIds?: string[];
+  messageType: 'template' | 'text';
+  templateName?: string;
+  templateLanguage?: string;
+  templateParams?: unknown[];
+  messageContent?: string;
+  scheduledAt?: string;
+  sendRate?: number;
+  status: BroadcastStatus;
+  stats: BroadcastStats;
+  createdBy: string;
+  createdByName: string;
+  startedAt?: string;
+  completedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type BroadcastMessageStatus = 'pending' | 'sent' | 'delivered' | 'read' | 'failed';
+
+export interface BroadcastMessage {
+  id: string;
+  broadcastId: string;
+  businessId: string;
+  contactId: string;
+  contactName: string;
+  recipientId: string;
+  status: BroadcastMessageStatus;
+  externalMessageId?: string;
+  errorMessage?: string;
+  sentAt?: string;
+  deliveredAt?: string;
+  readAt?: string;
+  createdAt: string;
+}
+
+export const LIFECYCLE_STAGE_LABELS: Record<LifecycleStage, string> = {
+  new_lead: 'Novo Lead',
+  contacted: 'Contatado',
+  qualified: 'Qualificado',
+  proposal: 'Proposta',
+  negotiation: 'Negociação',
+  customer: 'Cliente',
+  churned: 'Perdido',
+};
+
+export const LIFECYCLE_STAGE_COLORS: Record<LifecycleStage, string> = {
+  new_lead: '#3B82F6',
+  contacted: '#8B5CF6',
+  qualified: '#F59E0B',
+  proposal: '#EC4899',
+  negotiation: '#F97316',
+  customer: '#10B981',
+  churned: '#EF4444',
+};
+
+// ============================================
+// Vendas (B2B Orders)
+// ============================================
+
+export type OrderStatus =
+  | 'pendente'
+  | 'confirmado'
+  | 'condicional'
+  | 'faturado'
+  | 'enviado'
+  | 'entregue'
+  | 'cancelado';
+
+export type OrderType = 'pdv' | 'b2b' | 'condicional';
+
+export const ORDER_STATUS_LABELS: Record<OrderStatus, string> = {
+  pendente:    'Pendente',
+  confirmado:  'Confirmado',
+  condicional: 'Condicional',
+  faturado:    'Faturado',
+  enviado:     'Enviado',
+  entregue:    'Entregue',
+  cancelado:   'Cancelado',
+};
+
+export const ORDER_STATUS_COLORS: Record<OrderStatus, string> = {
+  pendente:    'bg-gray-100 text-gray-700 dark:bg-gray-700/40 dark:text-gray-300',
+  confirmado:  'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300',
+  condicional: 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300',
+  faturado:    'bg-purple-100 text-purple-700 dark:bg-purple-500/20 dark:text-purple-300',
+  enviado:     'bg-cyan-100 text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-300',
+  entregue:    'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300',
+  cancelado:   'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300',
+};
+
+export interface OrderItem {
+  productId?: string;
+  productName: string;
+  sku?: string;
+  quantity: number;
+  unitPrice: number;
+  discount?: number;
+  total: number;
+  unit?: string;
+  ncm?: string;
+  cfop?: string;
+}
+
+export interface OrderStatusHistoryEntry {
+  status: OrderStatus;
+  timestamp: string;
+  note?: string;
+  userId: string;
+  userName: string;
+}
+
+export interface Order {
+  id: string;
+  businessId: string;
+  type: OrderType;
+  status: OrderStatus;
+  // Client
+  clientId?: string;
+  clientName?: string;
+  clientCpfCnpj?: string;
+  // Items & pricing
+  items: OrderItem[];
+  subtotal: number;
+  discount: number;
+  total: number;
+  // Payment
+  payments?: Payment[];
+  paymentTerms?: string;        // ex: "30/60/90 dias"
+  paymentMethod?: PaymentMethod;
+  // Delivery
+  deliveryDate?: string;
+  deliveryAddress?: Address;
+  // Fiscal
+  fiscalDocId?: string;
+  naturezaOperacao?: string;
+  // Conditional sale
+  conditionalExpiresAt?: string; // data limite para o cliente confirmar
+  conditionalReturnDate?: string; // data de retorno do produto se não confirmar
+  // Notes
+  notes?: string;
+  internalNotes?: string;
+  // Tracking
+  statusHistory?: OrderStatusHistoryEntry[];
+  operatorId: string;
+  operatorName: string;
+  sectorId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ============================================
+// Compras / Purchase Notes
+// ============================================
+
+export type PurchaseNoteStatus = 'pendente' | 'importada' | 'cancelada';
+
+export type PurchaseNoteItemAction = 'match' | 'create' | 'skip';
+
+export interface PurchaseNoteItem {
+  productId?: string;          // matched product in our catalog
+  productName: string;
+  cProd?: string;              // supplier product code
+  ncm?: string;
+  cfop?: string;
+  unit: string;
+  quantity: number;
+  unitPrice: number;
+  total: number;
+  // Taxes
+  icms?: number;
+  ipi?: number;
+  pis?: number;
+  cofins?: number;
+  // Import action
+  importAction?: PurchaseNoteItemAction;
+}
+
+export interface PurchaseNote {
+  id: string;
+  businessId: string;
+  accessKey: string;            // chave de acesso 44 digits
+  numero: string;
+  serie: string;
+  issueDate: string;
+  // Supplier
+  supplierName: string;
+  supplierCnpj: string;
+  supplierId?: string;
+  // Items & totals
+  items: PurchaseNoteItem[];
+  totalProducts: number;
+  totalTaxes: number;
+  totalValue: number;
+  // Status
+  status: PurchaseNoteStatus;
+  // Files
+  xmlUrl?: string;
+  xml?: string;
+  // Notes
+  notes?: string;
+  importedAt?: string;
+  // Stock import tracking — set when items are pushed to inventory as stockMovements.
+  // Once present, re-importing is blocked (idempotency).
+  stockImportedAt?: string;
+  stockMovementIds?: string[];          // ids of stockMovements created for this note
+  unmatchedItems?: Array<{ productName: string; quantity: number; cProd?: string }>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ============================================
+// Suppliers
+// ============================================
+
+export interface Supplier {
+  id: string;
+  businessId: string;
+  razaoSocial: string;
+  nomeFantasia?: string;
+  cnpj: string;
+  inscricaoEstadual?: string;
+  phone?: string;
+  email?: string;
+  endereco?: Address;
+  notes?: string;
+  isActive: boolean;
+  totalPurchases?: number;
+  lastPurchaseAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ============================================
+// Loyalty Program
+// ============================================
+
+export type LoyaltyTransactionType = 'acumulo' | 'resgate' | 'expiracao' | 'ajuste';
+
+export interface LoyaltyTransaction {
+  id: string;
+  businessId: string;
+  clientId: string;
+  clientName: string;
+  type: LoyaltyTransactionType;
+  /** Positivo = ganho, negativo = resgate/expiração */
+  points: number;
+  balanceAfter: number;
+  description: string;
+  /** ID da venda ou agendamento que originou o movimento */
+  sourceId?: string;
+  sourceType?: 'sale' | 'appointment';
+  expiresAt?: string;
+  createdAt: string;
+}
+
+// ============================================
+// Gift Cards
+// ============================================
+
+export type GiftCardStatus = 'active' | 'used' | 'expired' | 'cancelled';
+
+export interface GiftCard {
+  id: string;
+  businessId: string;
+  /** Código único de 8 caracteres (uppercase, sem caracteres ambíguos) */
+  code: string;
+  originalValue: number;
+  remainingValue: number;
+  status: GiftCardStatus;
+  /** Nome ou email do presenteado (opcional) */
+  recipientName?: string;
+  recipientPhone?: string;
+  /** ID da venda de compra do gift card */
+  purchasedBySaleId?: string;
+  /** ID da venda de resgate */
+  usedBySaleId?: string;
+  expiresAt?: string;
+  purchasedAt: string;
+  usedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ---- Notifications ----
+
+export type NotificationType =
+  | 'task_assigned'
+  | 'task_due_soon'
+  | 'task_overdue'
+  | 'task_mentioned'
+  | 'appointment_reminder'
+  | 'review_received';
+
+export interface AppNotification {
+  id: string;
+  businessId: string;
+  userId: string;           // recipient
+  type: NotificationType;
+  title: string;
+  body: string;
+  isRead: boolean;
+  link?: string;            // e.g. 'Kanban' to navigate to module
+  relatedId?: string;       // card id, appointment id, etc.
+  actorId?: string;         // who triggered (for assigned/mentioned)
+  actorName?: string;
+  createdAt: string;
+}
+
+// ---- CRM Automations ----
+
+export type CRMAutomationTrigger =
+  | 'client_inactive'       // no visit/contact in X days
+  | 'client_birthday'       // birthday today
+  | 'post_appointment'      // X hours after a completed appointment
+  | 'lifecycle_change'      // lifecycle stage changed to X
+  | 'high_churn_risk'       // churn risk score > threshold
+  | 'new_lead';             // new contact created
+
+export type CRMAutomationActionType =
+  | 'send_whatsapp'         // send WhatsApp message
+  | 'create_task'           // create Kanban card
+  | 'add_tag'               // add tag to contact
+  | 'change_lifecycle'      // change lifecycle stage
+  | 'notify_team';          // send in-app notification to team
+
+export interface CRMAutomationCondition {
+  field: string;            // e.g. 'totalSpent', 'visitCount', 'tags', 'lifecycleStage'
+  operator: 'gt' | 'lt' | 'eq' | 'contains' | 'not_contains';
+  value: string | number;
+}
+
+export interface CRMAutomationAction {
+  type: CRMAutomationActionType;
+  value: string;            // message template, tag name, stage, task title, etc.
+  metadata?: Record<string, unknown>;  // e.g. { boardId, columnId } for create_task
+}
+
+export interface CRMAutomationRule {
+  id: string;
+  businessId: string;
+  name: string;
+  trigger: CRMAutomationTrigger;
+  triggerConfig: Record<string, unknown>;  // e.g. { inactiveDays: 30 }, { hoursAfter: 24 }, { stage: 'customer' }
+  conditions: CRMAutomationCondition[];    // AND conditions — all must match
+  actions: CRMAutomationAction[];
+  isActive: boolean;
+  lastRunAt?: string;
+  totalExecutions: number;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ---- Intake / Anamnese Forms ----
+
+export type FormFieldType = 'text' | 'textarea' | 'number' | 'date' | 'select' | 'radio' | 'checkbox' | 'file';
+
+export interface FormField {
+  id: string;
+  type: FormFieldType;
+  label: string;
+  placeholder?: string;
+  required: boolean;
+  options?: string[];         // for select, radio, checkbox
+  helperText?: string;
+}
+
+export interface FormTemplate {
+  id: string;
+  businessId: string;
+  name: string;               // "Anamnese Facial", "Ficha Capilar"
+  description?: string;
+  serviceId?: string;         // optional — auto-trigger when this service is booked
+  fields: FormField[];
+  isActive: boolean;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FormResponse {
+  id: string;
+  businessId: string;
+  templateId: string;
+  templateName: string;       // denormalized for display
+  clientId: string;
+  clientName: string;         // denormalized
+  appointmentId?: string;     // optional link to appointment
+  responses: Record<string, unknown>;  // fieldId → value
+  submittedAt: string;
+  submittedVia: 'link' | 'operator' | 'booking';
+}
+
+// ---- Reviews & NPS ----
+
+export type ReviewSource = 'internal' | 'google' | 'whatsapp';
+
+export interface Review {
+  id: string;
+  businessId: string;
+  clientId?: string;
+  clientName?: string;
+  professionalId?: string;
+  professionalName?: string;
+  serviceId?: string;
+  serviceName?: string;
+  appointmentId?: string;
+  rating: number;             // 1-5 stars
+  comment?: string;
+  source: ReviewSource;
+  createdAt: string;
+}
+
+// ---- TEF (Transferência Eletrônica de Fundos) ----
+
+export type TEFProvider = 'stone' | 'cielo' | 'rede' | 'getnet' | 'safrapay' | 'pagseguro';
+export type TEFTransactionStatus = 'pending' | 'approved' | 'declined' | 'cancelled' | 'error';
+
+export interface TEFConfig {
+  provider: TEFProvider;
+  terminalId: string;
+  merchantId: string;
+  isActive: boolean;
+  connectedAt?: string;
+}
+
+export interface TEFTransaction {
+  id: string;
+  businessId: string;
+  saleId: string;
+  amount: number;
+  installments: number;
+  cardBrand?: string;
+  authCode?: string;
+  nsu?: string;
+  status: TEFTransactionStatus;
+  receipt?: string;       // comprovante text
+  createdAt: string;
+}
+
+// ---- Payment Gateway (PIX QR + Link) ----
+
+export type PaymentGatewayProvider = 'asaas' | 'pagarme' | 'mercadopago' | 'stripe';
+export type PaymentIntentStatus = 'pending' | 'processing' | 'paid' | 'failed' | 'cancelled' | 'expired';
+
+export interface PaymentGatewayConfig {
+  provider: PaymentGatewayProvider;
+  apiKey: string;          // encrypted
+  webhookSecret?: string;  // encrypted
+  isActive: boolean;
+  sandbox: boolean;
+  connectedAt?: string;
+}
+
+export interface PaymentIntent {
+  id: string;
+  businessId: string;
+  saleId?: string;
+  amount: number;
+  method: 'pix' | 'credit' | 'debit' | 'boleto';
+  status: PaymentIntentStatus;
+  qrCode?: string;         // PIX QR code (base64 or copia-e-cola)
+  paymentUrl?: string;      // link de pagamento
+  gatewayId?: string;       // ID no gateway
+  paidAt?: string;
+  expiresAt?: string;
+  createdAt: string;
+}
+
+// ---- Memberships / Assinaturas ----
+
+export type MembershipBillingCycle = 'monthly' | 'quarterly' | 'yearly';
+export type MembershipStatus = 'active' | 'paused' | 'cancelled' | 'expired';
+
+export interface Membership {
+  id: string;
+  businessId: string;
+  name: string;
+  description?: string;
+  serviceIds: string[];     // services included in the plan
+  price: number;
+  billingCycle: MembershipBillingCycle;
+  maxUsesPerCycle?: number; // null = unlimited
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ClientMembership {
+  id: string;
+  businessId: string;
+  clientId: string;
+  clientName: string;
+  membershipId: string;
+  membershipName: string;   // denormalized
+  status: MembershipStatus;
+  startDate: string;
+  nextBillingDate?: string;
+  usesThisCycle: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ---- No-show Protection ----
+
+export interface NoShowPolicy {
+  isEnabled: boolean;
+  requireDeposit: boolean;
+  depositPercentage?: number;      // % of service price
+  depositFixedAmount?: number;     // fixed amount in BRL
+  cancellationDeadlineHours: number; // hours before appointment
+  noShowFeePercentage?: number;    // % charged on no-show
+}
+
+// ---- Google Calendar Sync ----
+
+export interface CalendarSyncToken {
+  id: string;
+  uid: string;              // Firebase Auth uid
+  businessId: string;
+  provider: 'google';
+  accessToken: string;      // encrypted
+  refreshToken: string;     // encrypted
+  expiresAt: string;        // ISO — when accessToken expires
+  calendarId: string;       // usually 'primary'
+  isActive: boolean;
+  connectedAt: string;
+  lastSyncAt?: string;
+}

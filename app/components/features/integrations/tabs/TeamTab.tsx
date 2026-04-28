@@ -7,11 +7,13 @@ import {
   Triangle, Mail, Cloud, Shield, CreditCard,
   ChevronDown, Crown, Star,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import type { IntegrationConfig } from '@/lib/types';
 import KPICard from '../shared/KPICard';
 import DemoDataBanner from '../shared/DemoDataBanner';
 import IntegrationSkeleton from '../shared/IntegrationSkeleton';
 import { formatUSD, formatNumber, timeAgo, timeAgoShort } from '../shared/utils';
+import { CachedImage } from '@/app/components/ui/CachedImage';
 
 // ============================================
 // TYPES
@@ -63,12 +65,13 @@ const ROLE_BADGE_CONFIG: Record<string, { color: string; bg: string; icon: React
   viewer: { color: 'text-gray-600 dark:text-gray-400', bg: 'bg-gray-50 dark:bg-gray-800', icon: null },
 };
 
-const ROLE_LABELS: Record<string, string> = {
-  founder: 'Fundador',
-  admin: 'Admin',
-  manager: 'Gerente',
-  operator: 'Operador',
-  viewer: 'Viewer',
+// ROLE_LABELS is built dynamically at render using t() — see getRoleLabel() call sites
+const ROLE_LABEL_KEYS: Record<string, string> = {
+  founder: 'integrations.team.founder',
+  admin: 'integrations.team.admin',
+  manager: 'integrations.team.manager',
+  operator: 'integrations.team.operator',
+  viewer: 'integrations.team.viewer',
 };
 
 const INTEGRATION_COLORS: Record<string, { dot: string; text: string; bg: string; icon: React.ReactNode }> = {
@@ -123,6 +126,7 @@ const DEMO_COSTS: CostRow[] = [
 // COMPONENT
 // ============================================
 export default function TeamTab({ integrations, members }: TeamTabProps) {
+  const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [memberCards, setMemberCards] = useState<MemberCardData[]>([]);
@@ -143,7 +147,7 @@ export default function TeamTab({ integrations, members }: TeamTabProps) {
     const hasRealMembers = members && members.length > 0;
 
     if (!hasRealMembers && integrations.length === 0) {
-      setError('Usando dados de demonstração. Adicione membros à equipe e configure integrações para dados reais.');
+      setError(t('integrations.team.demoMessage', 'Usando dados de demonstração. Adicione membros à equipe e configure integrações para dados reais.'));
     }
 
     // Build member cards from real members or demo
@@ -226,9 +230,9 @@ export default function TeamTab({ integrations, members }: TeamTabProps) {
   };
 
   const statusLabel: Record<string, string> = {
-    online: 'Online',
-    busy: 'Ocupado',
-    offline: 'Offline',
+    online: t('integrations.team.online', 'Online'),
+    busy: t('integrations.team.busy', 'Ocupado'),
+    offline: t('integrations.team.offline', 'Offline'),
   };
 
   const visibleActivities = showAllActivities ? activities : activities.slice(0, VISIBLE_ACTIVITIES);
@@ -241,33 +245,33 @@ export default function TeamTab({ integrations, members }: TeamTabProps) {
       {/* Team Health KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <KPICard
-          title="Membros Ativos"
+          title={t('integrations.kpi.activeMembers', 'Membros Ativos')}
           value={kpis.activeMembers.toString()}
-          subtitle={`de ${memberCards.length} total`}
+          subtitle={t('integrations.kpi.ofTotal', 'de {{count}} total', { count: memberCards.length })}
           icon={<Users className="w-4 h-4" />}
           color="emerald"
           delay={0}
         />
         <KPICard
-          title="Deploys (Semana)"
+          title={t('integrations.kpi.deploysWeek', 'Deploys (Semana)')}
           value={kpis.totalDeploys.toString()}
-          subtitle="via Vercel"
+          subtitle={t('integrations.kpi.viaVercel', 'via Vercel')}
           icon={<Rocket className="w-4 h-4" />}
           color="blue"
           delay={0.05}
         />
         <KPICard
-          title="Erros Resolvidos"
+          title={t('integrations.kpi.errorsResolved', 'Erros Resolvidos')}
           value={kpis.totalErrorsResolved.toString()}
-          subtitle="via Sentry"
+          subtitle={t('integrations.kpi.viaSentry', 'via Sentry')}
           icon={<Bug className="w-4 h-4" />}
           color="violet"
           delay={0.1}
         />
         <KPICard
-          title="Tempo de Resposta"
+          title={t('integrations.kpi.responseTime', 'Tempo de Resposta')}
           value={kpis.avgResponseTime}
-          subtitle="média suporte"
+          subtitle={t('integrations.kpi.avgSupport', 'média suporte')}
           icon={<Clock className="w-4 h-4" />}
           color="amber"
           delay={0.15}
@@ -278,12 +282,12 @@ export default function TeamTab({ integrations, members }: TeamTabProps) {
       <div>
         <h3 className="text-sm font-semibold font-display text-gray-900 dark:text-white mb-4 flex items-center gap-2">
           <Users className="w-4 h-4 text-blue-500" />
-          Equipe
+          {t('integrations.team.teamSection', 'Equipe')}
         </h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {memberCards.map((member, i) => {
             const roleCfg = ROLE_BADGE_CONFIG[member.role] || ROLE_BADGE_CONFIG.viewer;
-            const initials = member.name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
+            const initials = (member.name || '?').split(' ').map(n => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase();
 
             return (
               <motion.div
@@ -319,7 +323,7 @@ export default function TeamTab({ integrations, members }: TeamTabProps) {
                       <div className="flex items-center gap-1.5 mt-0.5">
                         <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md flex items-center gap-1 ${roleCfg.bg} ${roleCfg.color}`}>
                           {roleCfg.icon}
-                          {ROLE_LABELS[member.role] || member.role}
+                          {ROLE_LABEL_KEYS[member.role] ? t(ROLE_LABEL_KEYS[member.role], member.role) : member.role}
                         </span>
                       </div>
                     </div>
@@ -328,15 +332,15 @@ export default function TeamTab({ integrations, members }: TeamTabProps) {
 
                 {/* Stats */}
                 <div className="px-4 py-3 border-t border-gray-100 dark:border-gray-800">
-                  <p className="text-[11px] text-gray-400 mb-2 font-medium">Esta Semana</p>
+                  <p className="text-[11px] text-gray-400 mb-2 font-medium">{t('integrations.team.thisWeek', 'Esta Semana')}</p>
                   <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
                     <div className="flex items-center gap-1.5">
                       <Rocket className="w-3 h-3 text-amber-400" />
-                      <span className="text-xs text-gray-600 dark:text-gray-400">{member.deploys} deploys</span>
+                      <span className="text-xs text-gray-600 dark:text-gray-400">{t('integrations.team.deploys', '{{count}} deploys', { count: member.deploys })}</span>
                     </div>
                     <div className="flex items-center gap-1.5">
                       <Bug className="w-3 h-3 text-violet-400" />
-                      <span className="text-xs text-gray-600 dark:text-gray-400">{member.errorsResolved} erros fix</span>
+                      <span className="text-xs text-gray-600 dark:text-gray-400">{t('integrations.team.errorsFixed', '{{count}} erros fix', { count: member.errorsResolved })}</span>
                     </div>
                   </div>
                 </div>
@@ -360,7 +364,7 @@ export default function TeamTab({ integrations, members }: TeamTabProps) {
       <div className="surface rounded-2xl p-5">
         <h3 className="text-sm font-semibold font-display text-gray-900 dark:text-white mb-4 flex items-center gap-2">
           <Activity className="w-4 h-4 text-blue-500" />
-          Timeline de Atividades
+          {t('integrations.team.activityTimeline', 'Timeline de Atividades')}
         </h3>
         <div className="relative">
           {/* Vertical line */}
@@ -407,7 +411,7 @@ export default function TeamTab({ integrations, members }: TeamTabProps) {
             whileTap={{ scale: 0.98 }}
           >
             <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showAllActivities ? 'rotate-180' : ''}`} />
-            {showAllActivities ? 'Mostrar menos' : `Carregar mais (${activities.length - VISIBLE_ACTIVITIES})`}
+            {showAllActivities ? t('integrations.team.showLess', 'Mostrar menos') : t('integrations.team.loadMore', 'Carregar mais ({{count}})', { count: activities.length - VISIBLE_ACTIVITIES })}
           </motion.button>
         )}
       </div>
@@ -416,15 +420,15 @@ export default function TeamTab({ integrations, members }: TeamTabProps) {
       <div className="surface rounded-2xl p-5">
         <h3 className="text-sm font-semibold font-display text-gray-900 dark:text-white mb-4 flex items-center gap-2">
           <DollarSign className="w-4 h-4 text-emerald-500" />
-          Atribuição de Custos
-          <span className="text-[11px] font-normal text-gray-400 ml-auto">este mês</span>
+          {t('integrations.team.costAttribution', 'Atribuição de Custos')}
+          <span className="text-[11px] font-normal text-gray-400 ml-auto">{t('integrations.team.thisMonth', 'este mês')}</span>
         </h3>
 
         <div className="overflow-x-auto -mx-5 px-5">
           <table className="w-full min-w-[500px]">
             <thead>
               <tr className="border-b border-gray-100 dark:border-gray-800">
-                <th className="text-left text-[11px] font-semibold text-gray-500 dark:text-gray-400 pb-3 pr-4">Membro</th>
+                <th className="text-left text-[11px] font-semibold text-gray-500 dark:text-gray-400 pb-3 pr-4">{t('integrations.team.memberColumn', 'Membro')}</th>
                 <th className="text-right text-[11px] font-semibold text-gray-500 dark:text-gray-400 pb-3 px-3">
                   <span className="flex items-center justify-end gap-1">
                     <Cloud className="w-3 h-3 text-[#FF9900]" />
@@ -442,7 +446,7 @@ export default function TeamTab({ integrations, members }: TeamTabProps) {
             </thead>
             <tbody>
               {costs.map((row, i) => {
-                const initials = row.name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
+                const initials = (row.name || '?').split(' ').map(n => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase();
                 return (
                   <motion.tr
                     key={row.memberId}
@@ -454,7 +458,7 @@ export default function TeamTab({ integrations, members }: TeamTabProps) {
                     <td className="py-3 pr-4">
                       <div className="flex items-center gap-2.5">
                         {row.photoURL ? (
-                          <img src={row.photoURL} alt={row.name} className="w-7 h-7 rounded-full object-cover" />
+                          <CachedImage src={row.photoURL} alt={row.name} className="w-7 h-7 rounded-full object-cover" />
                         ) : (
                           <div className="w-7 h-7 rounded-full bg-gradient-to-br from-gray-300 to-gray-400 dark:from-gray-600 dark:to-gray-700 flex items-center justify-center text-white text-[10px] font-bold">
                             {initials}
@@ -473,7 +477,7 @@ export default function TeamTab({ integrations, members }: TeamTabProps) {
             <tfoot>
               <tr className="border-t-2 border-gray-200 dark:border-gray-700">
                 <td className="py-3 pr-4">
-                  <span className="text-sm font-bold text-gray-900 dark:text-white">Total</span>
+                  <span className="text-sm font-bold text-gray-900 dark:text-white">{t('integrations.team.total', 'Total')}</span>
                 </td>
                 <td className="text-right text-xs font-semibold text-gray-700 dark:text-gray-300 py-3 px-3">
                   {formatUSD(costs.reduce((s, c) => s + c.awsCost, 0))}

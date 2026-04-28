@@ -6,6 +6,7 @@ import {
   LayoutDashboard, DollarSign, Cloud, Shield, Bug, Database,
   MessageSquare, Users, Settings, Plug, ChevronRight,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
 import { doc, onSnapshot, collection, query, where } from 'firebase/firestore';
@@ -13,29 +14,30 @@ import { db } from '@/lib/config/firebase';
 import type { EnterpriseSettings, IntegrationConfig, IntegrationProvider } from '@/lib/types';
 import type { User } from '@/lib/types';
 
-// Lazy load tabs for code splitting
-import OverviewTab from './tabs/OverviewTab';
-import RevenueTab from './tabs/RevenueTab';
-import CostsTab from './tabs/CostsTab';
-import InfrastructureTab from './tabs/InfrastructureTab';
-import MonitoringTab from './tabs/MonitoringTab';
-import PlatformTab from './tabs/PlatformTab';
-import CommunicationTab from './tabs/CommunicationTab';
-import TeamTab from './tabs/TeamTab';
+import { lazy, Suspense } from 'react';
+
+const OverviewTab      = lazy(() => import('./tabs/OverviewTab'));
+const RevenueTab       = lazy(() => import('./tabs/RevenueTab'));
+const CostsTab         = lazy(() => import('./tabs/CostsTab'));
+const InfrastructureTab = lazy(() => import('./tabs/InfrastructureTab'));
+const MonitoringTab    = lazy(() => import('./tabs/MonitoringTab'));
+const PlatformTab      = lazy(() => import('./tabs/PlatformTab'));
+const CommunicationTab = lazy(() => import('./tabs/CommunicationTab'));
+const TeamTab          = lazy(() => import('./tabs/TeamTab'));
 
 // ─── Tab Configuration ──────────────────────────────────────────────────────────
 
 type EnterpriseTab = 'overview' | 'receita' | 'custos' | 'infra' | 'monitoramento' | 'plataforma' | 'comunicacao' | 'equipe';
 
-const TABS: { id: EnterpriseTab; label: string; icon: React.ElementType; description: string }[] = [
-  { id: 'overview',       label: 'Visão Geral',    icon: LayoutDashboard, description: 'Dashboard consolidado' },
-  { id: 'receita',        label: 'Receita',         icon: DollarSign,      description: 'Stripe & financeiro' },
-  { id: 'custos',         label: 'Custos Cloud',    icon: Cloud,           description: 'AWS Cost Explorer' },
-  { id: 'infra',          label: 'Infraestrutura',  icon: Shield,          description: 'Cloudflare + Vercel' },
-  { id: 'monitoramento',  label: 'Monitoramento',   icon: Bug,             description: 'Sentry errors' },
-  { id: 'plataforma',     label: 'Plataforma',      icon: Database,        description: 'Supabase + GoDaddy' },
-  { id: 'comunicacao',    label: 'Comunicação',      icon: MessageSquare,   description: 'Resend e-mails' },
-  { id: 'equipe',         label: 'Equipe',           icon: Users,           description: 'Métricas por membro' },
+const TAB_ICONS: { id: EnterpriseTab; icon: React.ElementType }[] = [
+  { id: 'overview',       icon: LayoutDashboard },
+  { id: 'receita',        icon: DollarSign      },
+  { id: 'custos',         icon: Cloud           },
+  { id: 'infra',          icon: Shield          },
+  { id: 'monitoramento',  icon: Bug             },
+  { id: 'plataforma',     icon: Database        },
+  { id: 'comunicacao',    icon: MessageSquare   },
+  { id: 'equipe',         icon: Users           },
 ];
 
 // ─── Helper ──────────────────────────────────────────────────────────────────────
@@ -47,6 +49,7 @@ function getConfig(integrations: IntegrationConfig[], provider: IntegrationProvi
 // ─── Main Module ─────────────────────────────────────────────────────────────────
 
 export default function IntegrationsModule() {
+  const { t } = useTranslation();
   const { user, business } = useAuth();
   const { setActivePage } = useAppContext();
   const [enterprise, setEnterprise] = useState<EnterpriseSettings | null>(null);
@@ -117,11 +120,10 @@ export default function IntegrationsModule() {
           <Plug className="w-12 h-12 text-white" />
         </motion.div>
         <h2 className="text-3xl font-bold font-display text-gray-900 dark:text-white mb-3">
-          Modo Enterprise
+          {t('integrations.enterpriseMode.title', 'Modo Enterprise')}
         </h2>
         <p className="text-gray-500 dark:text-gray-400 text-center max-w-lg mb-8 leading-relaxed">
-          Gerencie receita, custos cloud, infraestrutura, monitoramento e equipe em um único lugar.
-          Integre Stripe, AWS, Cloudflare, Sentry, Supabase, Vercel e mais.
+          {t('integrations.enterpriseMode.description', 'Gerencie receita, custos cloud, infraestrutura, monitoramento e equipe em um único lugar. Integre Stripe, AWS, Cloudflare, Sentry, Supabase, Vercel e mais.')}
         </p>
         <motion.button
           whileHover={{ scale: 1.02 }}
@@ -130,7 +132,7 @@ export default function IntegrationsModule() {
           className="px-8 py-3.5 rounded-2xl bg-gradient-to-r from-violet-500 to-purple-500 text-white font-semibold hover:from-violet-600 hover:to-purple-600 transition-all shadow-lg shadow-violet-500/25 flex items-center gap-2.5"
         >
           <Settings className="w-4.5 h-4.5" />
-          Ativar nas Configurações
+          {t('integrations.enterpriseMode.activateButton', 'Ativar nas Configurações')}
           <ChevronRight className="w-4 h-4 opacity-60" />
         </motion.button>
       </motion.div>
@@ -150,11 +152,10 @@ export default function IntegrationsModule() {
           <Plug className="w-10 h-10 text-gray-400 dark:text-gray-500" />
         </div>
         <h2 className="text-2xl font-bold font-display text-gray-900 dark:text-white mb-2">
-          Nenhuma Integração Ativa
+          {t('integrations.noIntegrations.title', 'Nenhuma Integração Ativa')}
         </h2>
         <p className="text-gray-500 dark:text-gray-400 text-center max-w-md mb-6">
-          Configure suas API keys para começar a visualizar dados de receita, custos com IA,
-          deploys e atividade da equipe.
+          {t('integrations.noIntegrations.description', 'Configure suas API keys para começar a visualizar dados de receita, custos com IA, deploys e atividade da equipe.')}
         </p>
         <motion.button
           whileHover={{ scale: 1.02 }}
@@ -163,7 +164,7 @@ export default function IntegrationsModule() {
           className="px-6 py-3 rounded-xl bg-gradient-to-r from-violet-500 to-purple-500 text-white font-semibold hover:from-violet-600 hover:to-purple-600 transition-all shadow-lg shadow-violet-500/25 flex items-center gap-2"
         >
           <Settings className="w-4 h-4" />
-          Configurar Integrações
+          {t('integrations.noIntegrations.configureButton', 'Configurar Integrações')}
         </motion.button>
       </motion.div>
     );
@@ -211,13 +212,18 @@ export default function IntegrationsModule() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold font-display text-gray-900 dark:text-white flex items-center gap-2.5">
-            Integrações
+            {t('integrations.header.title', 'Integrações')}
             <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-gradient-to-r from-violet-500 to-purple-500 text-white uppercase tracking-wider">
-              Enterprise
+              {t('integrations.header.badge', 'Enterprise')}
             </span>
           </h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-            {connectedCount} integraç{connectedCount !== 1 ? 'ões' : 'ão'} ativa{connectedCount !== 1 ? 's' : ''} · {members.filter(m => m.isOnline).length} membros online
+            {t('integrations.header.subtitle', '{{count}} integraç{{suffix}} ativa{{plural}} · {{online}} membros online', {
+              count: connectedCount,
+              suffix: connectedCount !== 1 ? 'ões' : 'ão',
+              plural: connectedCount !== 1 ? 's' : '',
+              online: members.filter(m => m.isOnline).length,
+            })}
           </p>
         </div>
         <motion.button
@@ -227,14 +233,14 @@ export default function IntegrationsModule() {
           className="px-4 py-2 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors flex items-center gap-2 border border-gray-200 dark:border-gray-700"
         >
           <Settings className="w-4 h-4" />
-          <span className="hidden sm:inline">Configurar</span>
+          <span className="hidden sm:inline">{t('integrations.header.configure', 'Configurar')}</span>
         </motion.button>
       </div>
 
       {/* ─── Category Tabs ───────────────────────────────────────────────── */}
       <div className="relative">
         <div className="flex gap-1 p-1 bg-gray-100/80 dark:bg-gray-800/80 rounded-2xl overflow-x-auto no-scrollbar">
-          {TABS.map((tab) => {
+          {TAB_ICONS.map((tab) => {
             const Icon = tab.icon;
             const isActive = activeTab === tab.id;
 
@@ -257,7 +263,7 @@ export default function IntegrationsModule() {
                     : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
                 }`}>
                   <Icon className="w-4 h-4" />
-                  <span className="hidden md:inline">{tab.label}</span>
+                  <span className="hidden md:inline">{t(`integrations.tabs.${tab.id}`, tab.id)}</span>
                 </span>
               </button>
             );
@@ -266,17 +272,23 @@ export default function IntegrationsModule() {
       </div>
 
       {/* ─── Tab Content ─────────────────────────────────────────────────── */}
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={activeTab}
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -4 }}
-          transition={{ duration: 0.2 }}
-        >
-          {renderTab()}
-        </motion.div>
-      </AnimatePresence>
+      <Suspense fallback={
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 pt-2">
+          {[0,1,2,3].map(i => <div key={i} className="h-[110px] rounded-2xl shimmer" />)}
+        </div>
+      }>
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={activeTab}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.2 }}
+          >
+            {renderTab()}
+          </motion.div>
+        </AnimatePresence>
+      </Suspense>
     </motion.div>
   );
 }

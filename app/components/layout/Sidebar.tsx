@@ -1,12 +1,16 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
+import { useTranslation } from 'react-i18next';
+import { useQuery } from '@tanstack/react-query';
+import { collection, query, where, getDocs, doc, updateDoc } from 'firebase/firestore';
+import { db } from '@/lib/config/firebase';
+import type { SidebarPrefs, SidebarSectionPref } from '@/lib/types';
 import {
   LayoutDashboard,
-  Users,
   Calendar,
   ShoppingCart,
   DollarSign,
@@ -22,8 +26,17 @@ import {
   Kanban,
   Target,
   MessageSquare,
-  Plug,
+  Users,
+  ClipboardList,
+  ShoppingBag,
+  ClipboardCheck,
+  UtensilsCrossed,
+  BarChart3,
+  KeyRound,
+  StickyNote,
 } from 'lucide-react';
+import type { UseCase, UserRole } from '@/lib/types';
+import { ROLE_HIERARCHY } from '@/lib/types';
 
 export type MenuPage =
   | 'Dashboard'
@@ -32,14 +45,23 @@ export type MenuPage =
   | 'Agenda'
   | 'Conversas'
   | 'Kanban'
-  | 'Integrações'
+  | 'Notas'
   | 'PDV'
+  | 'Vendas'
+  | 'Compras'
   | 'Financeiro'
   | 'Estoque'
+  | 'Pedidos'
+  | 'Cardápio'
   | 'NFSe'
   | 'NFCe'
   | 'NFe'
+  | 'Relatórios'
+  | 'Senhas'
   | 'Configurações';
+
+// Which use cases each module appears under. `undefined` means "always visible".
+const ALL_USE_CASES: UseCase[] = ['pedidos', 'servicos', 'simples'];
 
 interface MenuItemConfig {
   id: MenuPage;
@@ -47,49 +69,66 @@ interface MenuItemConfig {
   icon: React.ElementType;
   comingSoon?: boolean;
   enterpriseOnly?: boolean;
+  useCases?: UseCase[];
+  minRole?: UserRole;
+  badgeCount?: number;
 }
 
 interface MenuSection {
+  key: string;
   title: string;
   items: MenuItemConfig[];
 }
 
-const menuSections: MenuSection[] = [
-  {
-    title: 'Principal',
-    items: [
-      { id: 'Dashboard', label: 'Dashboard', icon: LayoutDashboard },
-      { id: 'Clientes', label: 'Clientes', icon: Users },
-      { id: 'CRM', label: 'CRM', icon: Target, enterpriseOnly: true },
-      { id: 'Agenda', label: 'Agenda', icon: Calendar },
-      { id: 'Conversas', label: 'Conversas', icon: MessageSquare },
-      { id: 'PDV', label: 'Ponto de Venda', icon: ShoppingCart },
-    ],
-  },
-  {
-    title: 'Gestão',
-    items: [
-      { id: 'Kanban', label: 'Kanban', icon: Kanban, enterpriseOnly: true },
-      { id: 'Integrações', label: 'Integrações', icon: Plug, enterpriseOnly: true },
-      { id: 'Financeiro', label: 'Financeiro', icon: DollarSign },
-      { id: 'Estoque', label: 'Estoque', icon: Package },
-    ],
-  },
-  {
-    title: 'Fiscal',
-    items: [
-      { id: 'NFSe', label: 'NFSe', icon: FileCheck2 },
-      { id: 'NFCe', label: 'NFCe', icon: Receipt },
-      { id: 'NFe', label: 'NFe', icon: FileText },
-    ],
-  },
-  {
-    title: 'Sistema',
-    items: [
-      { id: 'Configurações', label: 'Configurações', icon: Settings },
-    ],
-  },
-];
+function useMenuSections(): MenuSection[] {
+  const { t } = useTranslation();
+  return [
+    {
+      key: 'principal',
+      title: t('sidebar.sections.principal'),
+      items: [
+        { id: 'Dashboard', label: t('sidebar.dashboard'), icon: LayoutDashboard },
+        { id: 'Clientes', label: t('sidebar.clientes'), icon: Users },
+        { id: 'CRM', label: t('sidebar.crm'), icon: Target, enterpriseOnly: true, useCases: ['pedidos', 'servicos', 'simples'] },
+        { id: 'Agenda', label: t('sidebar.agenda'), icon: Calendar, useCases: ['servicos'] },
+        { id: 'Conversas', label: t('sidebar.conversas'), icon: MessageSquare },
+        { id: 'Notas', label: 'Notas', icon: StickyNote },
+        { id: 'PDV', label: t('sidebar.pdv'), icon: ShoppingCart, useCases: ['pedidos', 'servicos', 'simples'] },
+      ],
+    },
+    {
+      key: 'gestao',
+      title: t('sidebar.sections.gestao'),
+      items: [
+        { id: 'Pedidos', label: t('sidebar.pedidos', 'Pedidos'), icon: ClipboardCheck, useCases: ['pedidos'] },
+        { id: 'Cardápio', label: t('sidebar.cardapio', 'Cardápio'), icon: UtensilsCrossed, useCases: ['pedidos'] },
+        { id: 'Vendas', label: t('sidebar.vendas'), icon: ClipboardList, useCases: ['pedidos', 'servicos', 'simples'] },
+        { id: 'Kanban', label: t('sidebar.kanban'), icon: Kanban, enterpriseOnly: true },
+        { id: 'Financeiro', label: t('sidebar.financeiro'), icon: DollarSign, useCases: ['pedidos', 'servicos', 'simples'] },
+        { id: 'Relatórios', label: t('sidebar.relatorios', 'Relatórios'), icon: BarChart3, useCases: ['pedidos', 'servicos', 'simples'] },
+        { id: 'Estoque', label: t('sidebar.estoque'), icon: Package, useCases: ['pedidos', 'servicos', 'simples'] },
+        { id: 'Compras', label: t('sidebar.compras'), icon: ShoppingBag, useCases: ['pedidos', 'servicos', 'simples'] },
+        { id: 'Senhas', label: 'Senhas', icon: KeyRound, minRole: 'admin' as UserRole },
+      ],
+    },
+    {
+      key: 'fiscal',
+      title: t('sidebar.sections.fiscal'),
+      items: [
+        { id: 'NFSe', label: t('sidebar.nfse'), icon: FileCheck2, useCases: ['pedidos', 'servicos', 'simples'], minRole: 'manager' },
+        { id: 'NFCe', label: t('sidebar.nfce'), icon: Receipt, useCases: ['pedidos', 'servicos', 'simples'], minRole: 'manager' },
+        { id: 'NFe', label: t('sidebar.nfe'), icon: FileText, useCases: ['pedidos', 'servicos', 'simples'], minRole: 'manager' },
+      ],
+    },
+    {
+      key: 'sistema',
+      title: t('sidebar.sections.sistema'),
+      items: [
+        { id: 'Configurações', label: t('sidebar.configuracoes'), icon: Settings },
+      ],
+    },
+  ];
+}
 
 interface SidebarProps {
   activePage: MenuPage;
@@ -206,6 +245,25 @@ function MenuItem({
           )}
         </AnimatePresence>
 
+        <AnimatePresence initial={false}>
+          {(item.badgeCount ?? 0) > 0 && (
+            <motion.span
+              key="count-badge"
+              initial={{ opacity: 0, scale: 0.6 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.6 }}
+              transition={{ duration: 0.18, ease: 'easeOut' }}
+              className={cn(
+                'relative z-10 min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold flex items-center justify-center leading-none',
+                isCollapsed ? 'absolute -top-1 -right-1' : '',
+                isActive ? 'bg-white/30 text-white' : 'bg-amber-500 text-white'
+              )}
+            >
+              {item.badgeCount}
+            </motion.span>
+          )}
+        </AnimatePresence>
+
         {/* Tooltip for collapsed state */}
         {isCollapsed && (
           <div className="absolute left-full ml-3 px-2.5 py-1.5 rounded-lg bg-gray-900 dark:bg-gray-700 text-white text-[13px] font-medium whitespace-nowrap opacity-0 pointer-events-none group-hover:opacity-100 transition-all duration-150 z-50 shadow-xl translate-x-1 group-hover:translate-x-0">
@@ -218,11 +276,21 @@ function MenuItem({
   );
 }
 
-function SectionHeader({ title, isCollapsed }: { title: string; isCollapsed: boolean }) {
+function SectionHeader({
+  title,
+  isCollapsed,
+  isSectionCollapsed,
+  onToggle,
+}: {
+  title: string;
+  isCollapsed: boolean;
+  isSectionCollapsed?: boolean;
+  onToggle?: () => void;
+}) {
   return (
     <div className={cn(
       'flex items-center',
-      isCollapsed ? 'mx-3 my-2' : 'gap-2.5 px-3 pt-1 pb-2'
+      isCollapsed ? 'mx-3 my-2' : 'gap-1.5 px-2 pt-1 pb-2'
     )}>
       <AnimatePresence initial={false}>
         {!isCollapsed && (
@@ -246,6 +314,19 @@ function SectionHeader({ title, isCollapsed }: { title: string; isCollapsed: boo
             : 'linear-gradient(to right, rgba(239,68,68,0.38) 0%, rgba(239,68,68,0.1) 45%, transparent 100%)',
         }}
       />
+      {/* Per-section collapse toggle — only in expanded sidebar */}
+      {!isCollapsed && onToggle && (
+        <button
+          onClick={onToggle}
+          className="ml-1 p-0.5 text-red-400/50 hover:text-red-500 dark:hover:text-red-400 transition-colors rounded"
+          title={isSectionCollapsed ? 'Expandir seção' : 'Recolher seção'}
+        >
+          <ChevronRight
+            size={11}
+            className={cn('transition-transform duration-200', !isSectionCollapsed && 'rotate-90')}
+          />
+        </button>
+      )}
     </div>
   );
 }
@@ -258,9 +339,139 @@ function SidebarContent({
   isMobile,
   onMobileClose,
 }: SidebarProps & { isMobile?: boolean }) {
-  const { signOut, business } = useAuth();
+  const { signOut, business, user } = useAuth();
+  const { t } = useTranslation();
+  const menuSections = useMenuSections();
   const collapsed = isCollapsed && !isMobile;
   const isEnterprise = !!business?.enterprise?.isEnabled;
+  const currentUseCase: UseCase = (business?.settings?.useCase as UseCase) || 'servicos';
+  const userRoleValue = ROLE_HIERARCHY[user?.role ?? 'viewer'];
+
+  // Urgent recurring transactions count for Financial badge.
+  // Only filters on (businessId, recurrence.nextDueDate) to avoid requiring a 3-field
+  // composite index on nested fields — isActive is filtered client-side.
+  const { data: urgentRecurringCount = 0 } = useQuery({
+    queryKey: ['sidebar-urgent-recurring', business?.id],
+    queryFn: async () => {
+      if (!business?.id) return 0;
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const in3d = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
+      const snap = await getDocs(query(
+        collection(db, 'transactions'),
+        where('businessId', '==', business.id),
+        where('recurrence.nextDueDate', '>=', todayStr),
+        where('recurrence.nextDueDate', '<=', in3d),
+      ));
+      // Filter isActive in-memory to avoid 3-field compound index on nested fields
+      return snap.docs.filter(d => d.data().recurrence?.isActive === true).length;
+    },
+    enabled: !!business?.id,
+    staleTime: 5 * 60 * 1000,
+    refetchInterval: 10 * 60 * 1000,
+  });
+
+  const filterItems = useCallback((items: MenuItemConfig[]) =>
+    items.filter((item) => {
+      if (item.enterpriseOnly && !isEnterprise) return false;
+      if (item.useCases && !item.useCases.includes(currentUseCase)) return false;
+      if (item.minRole && userRoleValue < ROLE_HIERARCHY[item.minRole]) return false;
+      return true;
+    }).map(item =>
+      item.id === 'Financeiro' && urgentRecurringCount > 0
+        ? { ...item, badgeCount: urgentRecurringCount }
+        : item
+    ), [isEnterprise, currentUseCase, userRoleValue, urgentRecurringCount]);
+
+  // ── Build effective sections from prefs + hardcoded defaults ─────────────
+  const PROTECTED = useMemo(() => new Set<string>(['Dashboard', 'Configurações']), []);
+
+  const effectiveSections = useMemo(() => {
+    // All items the user can actually see (role/useCase/enterprise filtered)
+    const allVisibleMap = new Map<string, MenuItemConfig>();
+    for (const s of menuSections) {
+      for (const item of filterItems(s.items)) {
+        allVisibleMap.set(item.id, item);
+      }
+    }
+
+    const prefs = user?.sidebarPrefs;
+
+    // No prefs saved at all — use hardcoded defaults
+    if (!prefs) {
+      return menuSections.map(s => ({
+        key: s.key,
+        title: s.title,
+        isCollapsed: false,
+        items: filterItems(s.items),
+      })).filter(s => s.items.length > 0);
+    }
+
+    const hiddenSet = new Set(prefs.hiddenItems ?? []);
+
+    // Prefs exist but sections not set yet — use defaults with hidden filter applied
+    if (!prefs.sections?.length) {
+      return menuSections.map(s => ({
+        key: s.key,
+        title: s.title,
+        isCollapsed: false,
+        items: filterItems(s.items).filter(item => PROTECTED.has(item.id) || !hiddenSet.has(item.id)),
+      })).filter(s => s.items.length > 0);
+    }
+
+    const assignedIds = new Set<string>();
+
+    const sections = prefs.sections.map(ps => {
+      const items = ps.items
+        .map(id => allVisibleMap.get(id))
+        .filter((item): item is MenuItemConfig =>
+          item !== undefined && (PROTECTED.has(item.id) || !hiddenSet.has(item.id))
+        );
+      items.forEach(item => assignedIds.add(item.id));
+      return { key: ps.key, title: ps.title, isCollapsed: ps.isCollapsed, items };
+    });
+
+    // Items visible but not assigned to any section (added after prefs were saved)
+    const unassigned = [...allVisibleMap.values()].filter(
+      item => !assignedIds.has(item.id) && !hiddenSet.has(item.id)
+    );
+    if (unassigned.length > 0) {
+      const first = sections[0];
+      if (first) first.items.push(...unassigned);
+      else sections.push({ key: '__other__', title: 'Outros', isCollapsed: false, items: unassigned });
+    }
+
+    return sections.filter(s => s.items.length > 0);
+  }, [menuSections, filterItems, user?.sidebarPrefs, PROTECTED]);
+
+  // Toggle per-section collapse and persist to Firestore
+  const handleToggleSectionCollapse = useCallback(async (sectionKey: string) => {
+    if (!user?.uid) return;
+    const prefs = user.sidebarPrefs;
+
+    let updatedSections: SidebarSectionPref[];
+    if (!prefs?.sections?.length) {
+      // Bootstrap prefs from defaults, toggling the target section
+      updatedSections = menuSections
+        .map(s => ({
+          key: s.key,
+          title: s.title,
+          isCollapsed: s.key === sectionKey,
+          items: filterItems(s.items).map(item => item.id),
+        }))
+        .filter(s => s.items.length > 0);
+    } else {
+      updatedSections = prefs.sections.map((s: SidebarSectionPref) =>
+        s.key === sectionKey ? { ...s, isCollapsed: !s.isCollapsed } : s
+      );
+    }
+
+    try {
+      await updateDoc(doc(db, 'users', user.uid), {
+        'sidebarPrefs.sections': updatedSections,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch { /* ignore */ }
+  }, [user?.uid, user?.sidebarPrefs, menuSections, filterItems]);
 
   return (
     <div
@@ -279,7 +490,7 @@ function SidebarContent({
           whileTap={{ scale: 0.88 }}
           onClick={onToggleCollapse}
           className="group flex items-center justify-center h-[60px] w-full border-b border-gray-100 dark:border-gray-800/80 flex-shrink-0 hover:bg-red-50/60 dark:hover:bg-red-500/[0.07] transition-all duration-200"
-          title="Expandir menu"
+          title={t('sidebar.expandMenu')}
         >
           <ChevronRight className="w-5 h-5 text-red-500 dark:text-red-400 group-hover:translate-x-0.5 transition-transform duration-200" />
         </motion.button>
@@ -287,18 +498,15 @@ function SidebarContent({
         /* Expanded: logo + collapse button */
         <div className="flex items-center justify-between h-[60px] px-4 border-b border-gray-100 dark:border-gray-800/80 flex-shrink-0">
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="relative w-8 h-8 rounded-xl bg-gradient-to-br from-red-500 to-red-700 flex items-center justify-center flex-shrink-0 shadow-md shadow-red-500/30">
-              <span className="text-white font-bold text-sm font-display leading-none">S</span>
-              <div className="absolute inset-0 rounded-xl bg-gradient-to-b from-white/20 to-transparent" />
-            </div>
+            <img src="/icon.png" alt="Aevo" className="w-8 h-8 rounded-xl object-contain flex-shrink-0" />
             <motion.div
               initial={{ opacity: 0, x: -6 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.18 }}
               className="min-w-0"
             >
-              <p className="text-[14px] font-bold text-gray-900 dark:text-gray-100 font-display tracking-tight leading-tight">ServicePro</p>
-              <p className="text-[10.5px] text-gray-400 dark:text-gray-500 font-medium leading-tight">Gestão Inteligente</p>
+              <p className="text-[14px] font-bold text-gray-900 dark:text-gray-100 font-display tracking-tight leading-tight">Aevo</p>
+              <p className="text-[10.5px] text-gray-400 dark:text-gray-500 font-medium leading-tight">{t('sidebar.smartManagement')}</p>
             </motion.div>
           </div>
 
@@ -315,7 +523,7 @@ function SidebarContent({
                 whileTap={{ scale: 0.85 }}
                 onClick={onToggleCollapse}
                 className="group p-1.5 rounded-lg hover:bg-red-50/60 dark:hover:bg-red-500/[0.07] transition-all duration-150"
-                title="Recolher menu"
+                title={t('sidebar.collapseMenu')}
               >
                 <ChevronLeft className="w-4 h-4 text-red-500 dark:text-red-400 group-hover:-translate-x-0.5 transition-transform duration-200" />
               </motion.button>
@@ -332,26 +540,41 @@ function SidebarContent({
         )}
         style={{ scrollbarWidth: 'none' }}
       >
-        {menuSections.map((section, sectionIdx) => (
-          <div key={section.title} className={cn(sectionIdx > 0 && 'mt-1')}>
-            <SectionHeader title={section.title} isCollapsed={collapsed} />
+        {effectiveSections.map((section, sectionIdx) => (
+          <div key={section.key} className={cn(sectionIdx > 0 && 'mt-1')}>
+            <SectionHeader
+              title={section.title}
+              isCollapsed={collapsed}
+              isSectionCollapsed={section.isCollapsed}
+              onToggle={() => handleToggleSectionCollapse(section.key)}
+            />
 
-            <div className="space-y-0.5">
-              {section.items
-                .filter((item) => !item.enterpriseOnly || isEnterprise)
-                .map((item) => (
-                <MenuItem
-                  key={item.id}
-                  item={item}
-                  isActive={activePage === item.id}
-                  isCollapsed={collapsed}
-                  onSelect={() => {
-                    onMenuSelect(item.id);
-                    if (isMobile) onMobileClose();
-                  }}
-                />
-              ))}
-            </div>
+            <AnimatePresence initial={false}>
+              {!section.isCollapsed && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.18 }}
+                  className="overflow-hidden"
+                >
+                  <div className="space-y-0.5">
+                    {section.items.map((item) => (
+                      <MenuItem
+                        key={item.id}
+                        item={item}
+                        isActive={activePage === item.id}
+                        isCollapsed={collapsed}
+                        onSelect={() => {
+                          onMenuSelect(item.id);
+                          if (isMobile) onMobileClose();
+                        }}
+                      />
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         ))}
       </nav>
@@ -368,7 +591,7 @@ function SidebarContent({
             'transition-all duration-200',
             collapsed ? 'justify-center' : 'gap-3'
           )}
-          title={collapsed ? 'Sair' : undefined}
+          title={collapsed ? t('sidebar.logout') : undefined}
         >
           <LogOut className="w-[17px] h-[17px] group-hover:translate-x-0.5 transition-transform duration-150 flex-shrink-0" />
           <AnimatePresence initial={false}>
@@ -381,7 +604,7 @@ function SidebarContent({
                 transition={{ duration: 0.14 }}
                 className="text-[15px] font-medium"
               >
-                Sair
+                {t('sidebar.logout')}
               </motion.span>
             )}
           </AnimatePresence>

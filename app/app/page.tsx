@@ -3,7 +3,6 @@
 import { Suspense, lazy } from 'react';
 import { motion } from 'framer-motion';
 import { useAppContext } from './AppContext';
-import { cn } from '@/lib/utils';
 
 // Lazy-loaded modules
 const DashboardModule  = lazy(() => import('@/app/components/features/dashboard/DashboardModule'));
@@ -17,7 +16,14 @@ const KanbanModule     = lazy(() => import('@/app/components/features/kanban/Kan
 const CRMModule        = lazy(() => import('@/app/components/features/crm/CRMModule'));
 const SettingsModule   = lazy(() => import('@/app/components/features/settings/SettingsModule'));
 const ConversasModule  = lazy(() => import('@/app/components/features/conversations/ConversasModule'));
-const IntegrationsModule = lazy(() => import('@/app/components/features/integrations/IntegrationsModule'));
+const VendasModule     = lazy(() => import('@/app/components/features/sales/VendasModule'));
+const ComprasModule    = lazy(() => import('@/app/components/features/purchases/ComprasModule'));
+const OrdersModule     = lazy(() => import('@/app/components/features/orders/OrdersModule'));
+const CardapioModule   = lazy(() => import('@/app/components/features/cardapio/CardapioModule'));
+const ReportsModule    = lazy(() => import('@/app/components/features/reports/ReportsModule'));
+const SenhasModule     = lazy(() => import('@/app/components/features/senhas/SenhasModule'));
+const NotasModule      = lazy(() => import('@/app/components/features/notas/NotasModule'));
+
 
 // ─── Full-height page loading fallback (Agenda, PDV, Kanban, Conversas) ───────
 function FullHeightFallback() {
@@ -113,7 +119,7 @@ function ModuleLoadingFallback() {
 }
 
 // ─── Full-height pages (use all vertical space, no padding wrapper) ───────────
-const FULL_HEIGHT_PAGES = new Set(['Agenda', 'PDV', 'Kanban', 'Conversas']);
+const FULL_HEIGHT_PAGES = new Set(['Agenda', 'PDV', 'Kanban', 'Conversas', 'CRM', 'Pedidos']);
 
 export default function AppPage() {
   const { activePage, sidebarCollapsed } = useAppContext();
@@ -130,13 +136,19 @@ export default function AppPage() {
       case 'Agenda':       return <Suspense fallback={fallback}><AgendaModule /></Suspense>;
       case 'Conversas':    return <Suspense fallback={fallback}><ConversasModule /></Suspense>;
       case 'PDV':          return <Suspense fallback={fallback}><PDVModule /></Suspense>;
+      case 'Vendas':       return <Suspense fallback={fallback}><VendasModule /></Suspense>;
+      case 'Compras':      return <Suspense fallback={fallback}><ComprasModule /></Suspense>;
       case 'Kanban':       return <Suspense fallback={fallback}><KanbanModule /></Suspense>;
       case 'Financeiro':   return <Suspense fallback={fallback}><FinancialModule /></Suspense>;
       case 'Estoque':      return <Suspense fallback={fallback}><InventoryModule /></Suspense>;
+      case 'Pedidos':      return <Suspense fallback={fallback}><OrdersModule /></Suspense>;
+      case 'Cardápio':     return <Suspense fallback={fallback}><CardapioModule /></Suspense>;
       case 'NFSe':         return <Suspense fallback={fallback}><FiscalModule type="nfse" /></Suspense>;
       case 'NFCe':         return <Suspense fallback={fallback}><FiscalModule type="nfce" /></Suspense>;
       case 'NFe':          return <Suspense fallback={fallback}><FiscalModule type="nfe" /></Suspense>;
-      case 'Integrações':   return <Suspense fallback={fallback}><IntegrationsModule /></Suspense>;
+      case 'Relatórios':    return <Suspense fallback={fallback}><ReportsModule /></Suspense>;
+      case 'Senhas':        return <Suspense fallback={fallback}><SenhasModule /></Suspense>;
+      case 'Notas':         return <Suspense fallback={fallback}><NotasModule /></Suspense>;
       case 'Configurações': return <Suspense fallback={fallback}><SettingsModule /></Suspense>;
       default:             return <Suspense fallback={fallback}><DashboardModule /></Suspense>;
     }

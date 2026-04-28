@@ -4,16 +4,22 @@ import {
   GetCostAndUsageCommand,
   GetCostForecastCommand,
 } from '@aws-sdk/client-cost-explorer';
+import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
+import { getIntegrationKeys } from '@/lib/utils/integrationKeys';
 
 export async function GET(request: NextRequest) {
-  const accessKeyId = request.headers.get('x-api-key');
+  const auth = await verifyAuth(request);
+  if (isAuthError(auth)) return auth;
+
+  const keys = await getIntegrationKeys(auth.businessId, 'aws');
+  const accessKeyId = keys?.apiKey || request.headers.get('x-api-key');
   if (!accessKeyId) {
-    return NextResponse.json({ error: 'API key required' }, { status: 401 });
+    return NextResponse.json({ error: 'AWS integration not configured' }, { status: 400 });
   }
 
-  const secretAccessKey = request.headers.get('x-secret-key');
+  const secretAccessKey = (keys?.metadata?.secretKey as string) || request.headers.get('x-secret-key');
   if (!secretAccessKey) {
-    return NextResponse.json({ error: 'Secret access key required (x-secret-key header)' }, { status: 400 });
+    return NextResponse.json({ error: 'AWS secret access key not configured' }, { status: 400 });
   }
 
   try {

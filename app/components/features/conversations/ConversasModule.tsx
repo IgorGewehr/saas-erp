@@ -1,9 +1,13 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useTranslation } from 'react-i18next';
+import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
+import { useAppContext } from '@/app/app/AppContext';
 import { getInitials } from '@/lib/utils/format';
 import {
   collection,
@@ -14,6 +18,8 @@ import {
   updateDoc,
   doc,
   onSnapshot,
+  limit,
+  startAfter,
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { getAuth } from 'firebase/auth';
@@ -24,8 +30,9 @@ import {
   Search,
   Send,
   Phone,
-  Info,
   MoreVertical,
+  Trash2,
+  User as UserIcon,
   Check,
   CheckCheck,
   Smile,
@@ -38,23 +45,50 @@ import {
   AlertCircle,
   AlertTriangle,
   ChevronDown,
+  ChevronRight,
+  Plus,
+  UserPlus,
   FileText,
   Headphones,
   Video,
   RotateCcw,
+  Lock,
+  StickyNote,
+  Hash,
+  Tag,
+  Layers,
+  ArrowRightLeft,
+  Flag,
+  Slash,
+  ChevronUp,
+  Loader2,
+  ClipboardCheck,
+  Sparkles,
+  SparklesIcon,
+  Activity,
+  Bot,
+  BotOff,
 } from 'lucide-react';
+import { getDocs } from 'firebase/firestore';
 import type {
   Conversation,
   ConversationMessage,
   ConversationChannel,
   ConversationStatus,
+  Sector,
+  Snippet,
+  User,
+  AgentRun,
+  Client,
 } from '@/lib/types';
+import { ROLE_HIERARCHY } from '@/lib/types';
+import { CachedImage } from '@/app/components/ui/CachedImage';
 
 // ─── Timestamp helpers ───────────────────────────────────────────────────────
 
-function relativeTime(isoStr: string): string {
+function relativeTime(isoStr: string, t?: (key: string, fallback: string) => string): string {
   const diff = Date.now() - new Date(isoStr).getTime();
-  if (diff < 60_000) return 'agora';
+  if (diff < 60_000) return t ? t('conversations.timeNow', 'agora') : 'agora';
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}min`;
   const now = new Date();
   const date = new Date(isoStr);
@@ -71,7 +105,7 @@ function relativeTime(isoStr: string): string {
     date.getDate() === yesterday.getDate() &&
     date.getMonth() === yesterday.getMonth() &&
     date.getFullYear() === yesterday.getFullYear();
-  if (isYesterday) return 'Ontem';
+  if (isYesterday) return t ? t('conversations.timeYesterday', 'Ontem') : 'Ontem';
   return date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
 }
 
@@ -80,21 +114,21 @@ function fullTime(isoStr: string): string {
   return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 }
 
-function dateSeparatorLabel(isoStr: string): string {
+function dateSeparatorLabel(isoStr: string, t?: (key: string, fallback: string) => string): string {
   const now = new Date();
   const date = new Date(isoStr);
   const isToday =
     date.getDate() === now.getDate() &&
     date.getMonth() === now.getMonth() &&
     date.getFullYear() === now.getFullYear();
-  if (isToday) return 'Hoje';
+  if (isToday) return t ? t('conversations.timeToday', 'Hoje') : 'Hoje';
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);
   const isYesterday =
     date.getDate() === yesterday.getDate() &&
     date.getMonth() === yesterday.getMonth() &&
     date.getFullYear() === yesterday.getFullYear();
-  if (isYesterday) return 'Ontem';
+  if (isYesterday) return t ? t('conversations.timeYesterday', 'Ontem') : 'Ontem';
   return date.toLocaleDateString('pt-BR', { day: 'numeric', month: 'long' });
 }
 
@@ -120,9 +154,10 @@ interface ChannelConfig {
   avatarBg: string;
 }
 
+// Default config per canonical channel — WhatsApp oficial (Cloud API / Embedded Signup)
 const CHANNEL_CONFIG: Record<ConversationChannel, ChannelConfig> = {
   whatsapp: {
-    label: 'WhatsApp',
+    label: 'WhatsApp Business',
     color: '#25D366',
     bgColor: 'bg-[#25D366]/10',
     borderColor: 'border-[#25D366]/30',
@@ -149,6 +184,32 @@ const CHANNEL_CONFIG: Record<ConversationChannel, ChannelConfig> = {
     avatarBg: 'bg-[#E1306C]/20',
   },
 };
+
+/**
+ * Variação do WhatsApp quando a conexão é via celular do dono (Baileys).
+ * Tem verde mais escuro + label distinto — para o operador entender que essa
+ * conversa tem limitações (status de entrega parcial, templates não aplicam, etc.)
+ */
+const WHATSAPP_WEB_CONFIG: ChannelConfig = {
+  label: 'WhatsApp Web',
+  color: '#128C7E',
+  bgColor: 'bg-[#128C7E]/10',
+  borderColor: 'border-[#128C7E]/30',
+  textColor: 'text-[#128C7E]',
+  dotColor: 'bg-[#128C7E]',
+  avatarBg: 'bg-[#128C7E]/20',
+};
+
+/**
+ * Resolve a configuração visual de uma conversa considerando a variante do WhatsApp.
+ * Usar este helper em qualquer lugar que acesse `CHANNEL_CONFIG[conv.channel]`.
+ */
+function getConvConfig(conv: Pick<Conversation, 'channel' | 'connectedVia'>): ChannelConfig {
+  if (conv.channel === 'whatsapp' && conv.connectedVia === 'baileys') {
+    return WHATSAPP_WEB_CONFIG;
+  }
+  return CHANNEL_CONFIG[conv.channel];
+}
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -215,7 +276,8 @@ interface ConversationItemProps {
 }
 
 function ConversationItem({ conversation, isSelected, onClick }: ConversationItemProps) {
-  const cfg = CHANNEL_CONFIG[conversation.channel];
+  const { t } = useTranslation();
+  const cfg = getConvConfig(conversation);
   const initials = getInitials(conversation.contactName);
 
   return (
@@ -232,23 +294,27 @@ function ConversationItem({ conversation, isSelected, onClick }: ConversationIte
     >
       {/* Avatar */}
       <div className="relative flex-shrink-0">
-        {conversation.contactAvatarUrl ? (
-          <img
-            src={conversation.contactAvatarUrl}
-            alt={conversation.contactName}
-            className="w-10 h-10 rounded-full object-cover"
-          />
-        ) : (
+        <div className="relative w-10 h-10">
+          {/* Fallback iniciais — sempre renderizado embaixo */}
           <div
             className={cn(
-              'w-10 h-10 rounded-full flex items-center justify-center font-semibold text-sm',
+              'w-10 h-10 rounded-full flex items-center justify-center font-semibold text-sm absolute inset-0',
               cfg.avatarBg,
               cfg.textColor,
             )}
           >
             {initials}
           </div>
-        )}
+          {/* Foto do contato — sobreposta; some no erro sem precisar de state */}
+          {conversation.contactAvatarUrl && (
+            <CachedImage
+              src={conversation.contactAvatarUrl}
+              alt={conversation.contactName}
+              className="w-10 h-10 rounded-full object-cover absolute inset-0"
+              onError={(e) => { e.currentTarget.style.display = 'none'; }}
+            />
+          )}
+        </div>
         {/* Channel badge */}
         <div
           className={cn(
@@ -277,13 +343,13 @@ function ConversationItem({ conversation, isSelected, onClick }: ConversationIte
             </span>
           </div>
           <span className="text-[10px] text-gray-400 dark:text-gray-500 flex-shrink-0 whitespace-nowrap">
-            {relativeTime(conversation.lastMessageAt)}
+            {relativeTime(conversation.lastMessageAt, t)}
           </span>
         </div>
         <div className="flex items-center justify-between gap-1">
           <p className="text-xs text-gray-500 dark:text-gray-400 truncate leading-relaxed">
             {conversation.lastMessageDirection === 'outbound' && (
-              <span className="text-gray-400 dark:text-gray-500 mr-1">Voce:</span>
+              <span className="text-gray-400 dark:text-gray-500 mr-1">{t('conversations.you', 'Você:')}</span>
             )}
             {conversation.lastMessage}
           </p>
@@ -301,24 +367,35 @@ function ConversationItem({ conversation, isSelected, onClick }: ConversationIte
 // ─── Settings Dialog ─────────────────────────────────────────────────────────
 
 function IntegrationSettingsDialog({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation();
+  const { business } = useAuth();
+  const { setActivePage } = useAppContext();
+
+  const channels = business?.channels;
   const integrations = [
     {
       channel: 'whatsapp' as ConversationChannel,
       name: 'WhatsApp Business',
-      description: 'Receba e envie mensagens via API oficial do WhatsApp Business',
-      isConnected: false,
+      description: channels?.whatsapp?.isConnected
+        ? `Conectado: ${channels.whatsapp.displayPhoneNumber || channels.whatsapp.phoneNumberId || ''}`
+        : 'Receba e envie mensagens via API oficial do WhatsApp Business',
+      isConnected: channels?.whatsapp?.isConnected || false,
     },
     {
       channel: 'facebook' as ConversationChannel,
       name: 'Facebook Page',
-      description: 'Integre com sua Pagina do Facebook para gerenciar mensagens',
-      isConnected: false,
+      description: channels?.facebook?.isConnected
+        ? `Conectado: ${channels.facebook.pageName || channels.facebook.pageId || ''}`
+        : 'Integre com sua Página do Facebook para gerenciar mensagens',
+      isConnected: channels?.facebook?.isConnected || false,
     },
     {
       channel: 'instagram' as ConversationChannel,
       name: 'Instagram Business',
-      description: 'Responda DMs do Instagram direto pelo ServicePro',
-      isConnected: false,
+      description: channels?.instagram?.isConnected
+        ? `Conectado: ${channels.instagram.accountName || channels.instagram.accountId || ''}`
+        : 'Responda DMs do Instagram direto pelo Aevo',
+      isConnected: channels?.instagram?.isConnected || false,
     },
   ];
 
@@ -345,10 +422,10 @@ function IntegrationSettingsDialog({ onClose }: { onClose: () => void }) {
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-white/[0.06]">
           <div>
             <h2 className="font-display font-bold text-gray-900 dark:text-white text-lg">
-              Integracoes de Mensagens
+              {t('conversations.integrationsTitle', 'Integrações de Mensagens')}
             </h2>
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-              Configure os canais de comunicacao
+              {t('conversations.integrationsDesc', 'Configure os canais de comunicação')}
             </p>
           </div>
           <button
@@ -362,7 +439,7 @@ function IntegrationSettingsDialog({ onClose }: { onClose: () => void }) {
         {/* Integrations list */}
         <div className="p-4 space-y-3">
           {integrations.map((item) => {
-            const cfg = CHANNEL_CONFIG[item.channel];
+            const cfg = getConvConfig(item);
             return (
               <div
                 key={item.channel}
@@ -389,13 +466,14 @@ function IntegrationSettingsDialog({ onClose }: { onClose: () => void }) {
                           : 'bg-gray-100 dark:bg-white/[0.06] text-gray-500 dark:text-gray-400',
                       )}
                     >
-                      {item.isConnected ? 'Conectado' : 'Nao configurado'}
+                      {item.isConnected ? t('conversations.connected', 'Conectado') : t('conversations.notConfigured', 'Não configurado')}
                     </span>
                   </div>
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 leading-relaxed">
                     {item.description}
                   </p>
                   <button
+                    onClick={() => { onClose(); setActivePage('Configurações'); }}
                     className={cn(
                       'mt-2 text-xs font-semibold px-3 py-1 rounded-lg transition-colors',
                       cfg.bgColor,
@@ -403,7 +481,7 @@ function IntegrationSettingsDialog({ onClose }: { onClose: () => void }) {
                       'hover:opacity-80',
                     )}
                   >
-                    {item.isConnected ? 'Gerenciar' : 'Configurar'}
+                    {item.isConnected ? t('conversations.manage', 'Gerenciar') : t('conversations.configure', 'Configurar')}
                   </button>
                 </div>
               </div>
@@ -411,15 +489,16 @@ function IntegrationSettingsDialog({ onClose }: { onClose: () => void }) {
           })}
         </div>
 
-        <div className="px-6 pb-5">
-          <div className="flex items-start gap-2 p-3 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-100 dark:border-amber-500/20">
-            <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
-            <p className="text-xs text-amber-700 dark:text-amber-400 leading-relaxed">
-              Para conectar os canais voce precisara de uma conta Meta Business Suite e
-              configurar as credenciais da API no painel de Configuracoes.
-            </p>
+        {integrations.some((i) => !i.isConnected) && (
+          <div className="px-6 pb-5">
+            <div className="flex items-start gap-2 p-3 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-100 dark:border-amber-500/20">
+              <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-amber-700 dark:text-amber-400 leading-relaxed">
+                {t('conversations.metaWarning', 'Para conectar os canais você precisará de uma conta Meta Business Suite e configurar as credenciais da API no painel de Configurações.')}
+              </p>
+            </div>
           </div>
-        </div>
+        )}
       </motion.div>
     </motion.div>
   );
@@ -431,19 +510,61 @@ function ThreadHeader({
   conversation,
   onBack,
   onStatusChange,
+  onSectorAssign,
+  onCreateOrder,
+  onToggleAi,
+  onGoToAgentSettings,
+  onOpenAgentDebug,
+  onOpenContact,
+  onLinkClient,
+  linkedClientName,
+  onDeleteConversation,
+  onMarkUnread,
+  onTogglePrivate,
+  onExport,
+  aiEnabledBusinessWide,
+  sectors: sectorsList,
 }: {
   conversation: Conversation;
   onBack: () => void;
   onStatusChange: (status: ConversationStatus) => void;
+  onSectorAssign?: () => void;
+  onCreateOrder?: () => void;
+  onToggleAi?: () => void;
+  onGoToAgentSettings?: () => void;
+  onOpenAgentDebug?: () => void;
+  onOpenContact?: () => void;
+  onLinkClient?: () => void;
+  linkedClientName?: string;
+  onDeleteConversation?: () => void;
+  onMarkUnread?: () => void;
+  onTogglePrivate?: () => void;
+  onExport?: () => void;
+  aiEnabledBusinessWide?: boolean;
+  sectors?: Sector[];
 }) {
-  const cfg = CHANNEL_CONFIG[conversation.channel];
+  const { t } = useTranslation();
+  const cfg = getConvConfig(conversation);
   const initials = getInitials(conversation.contactName);
   const [showStatusMenu, setShowStatusMenu] = useState(false);
+  const [showOverflowMenu, setShowOverflowMenu] = useState(false);
+  const overflowRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!showOverflowMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (overflowRef.current && !overflowRef.current.contains(e.target as Node)) {
+        setShowOverflowMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showOverflowMenu]);
 
   const statusOptions: { value: ConversationStatus; label: string; color: string }[] = [
-    { value: 'open', label: 'Aberta', color: 'text-emerald-600 dark:text-emerald-400' },
-    { value: 'waiting', label: 'Aguardando', color: 'text-amber-600 dark:text-amber-400' },
-    { value: 'resolved', label: 'Resolvida', color: 'text-gray-500 dark:text-gray-400' },
+    { value: 'open', label: t('conversations.statusOpen', 'Aberta'), color: 'text-emerald-600 dark:text-emerald-400' },
+    { value: 'waiting', label: t('conversations.statusWaiting2', 'Aguardando'), color: 'text-amber-600 dark:text-amber-400' },
+    { value: 'resolved', label: t('conversations.statusResolved2', 'Resolvida'), color: 'text-gray-500 dark:text-gray-400' },
   ];
 
   return (
@@ -459,23 +580,27 @@ function ThreadHeader({
 
         {/* Avatar */}
         <div className="relative flex-shrink-0">
-          {conversation.contactAvatarUrl ? (
-            <img
-              src={conversation.contactAvatarUrl}
-              alt={conversation.contactName}
-              className="w-9 h-9 rounded-full object-cover"
-            />
-          ) : (
+          <div className="relative w-9 h-9">
+            {/* Fallback iniciais — sempre renderizado embaixo */}
             <div
               className={cn(
-                'w-9 h-9 rounded-full flex items-center justify-center font-semibold text-sm',
+                'w-9 h-9 rounded-full flex items-center justify-center font-semibold text-sm absolute inset-0',
                 cfg.avatarBg,
                 cfg.textColor,
               )}
             >
               {initials}
             </div>
-          )}
+            {/* Foto do contato — sobreposta; some no erro sem precisar de state */}
+            {conversation.contactAvatarUrl && (
+              <CachedImage
+                src={conversation.contactAvatarUrl}
+                alt={conversation.contactName}
+                className="w-9 h-9 rounded-full object-cover absolute inset-0"
+                onError={(e) => { e.currentTarget.style.display = 'none'; }}
+              />
+            )}
+          </div>
           <div
             className={cn(
               'absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full flex items-center justify-center',
@@ -487,7 +612,7 @@ function ThreadHeader({
         </div>
 
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="font-semibold text-sm text-gray-900 dark:text-white truncate">
               {conversation.contactName}
             </span>
@@ -501,13 +626,31 @@ function ThreadHeader({
               <ChannelIcon channel={conversation.channel} size="sm" />
               {cfg.label}
             </span>
+            {onLinkClient && (
+              <button
+                type="button"
+                onClick={onLinkClient}
+                className={cn(
+                  'inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full border transition-colors',
+                  linkedClientName
+                    ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-500/30 hover:bg-emerald-100 dark:hover:bg-emerald-500/20'
+                    : 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-500/30 hover:bg-amber-100 dark:hover:bg-amber-500/20',
+                )}
+                title={linkedClientName ? `Cliente: ${linkedClientName}` : 'Contato não vinculado a cliente'}
+              >
+                {linkedClientName ? <UserIcon className="w-2.5 h-2.5" /> : <UserPlus className="w-2.5 h-2.5" />}
+                <span className="max-w-[12ch] truncate">
+                  {linkedClientName || 'Vincular cliente'}
+                </span>
+              </button>
+            )}
           </div>
           <div className="flex items-center gap-1.5 mt-0.5">
             <StatusDot status={conversation.status} />
             <span className="text-[11px] text-gray-400 dark:text-gray-500">
-              {conversation.status === 'open' && 'Em atendimento'}
-              {conversation.status === 'waiting' && 'Aguardando'}
-              {conversation.status === 'resolved' && 'Resolvida'}
+              {conversation.status === 'open' && t('conversations.inAttendance', 'Em atendimento')}
+              {conversation.status === 'waiting' && t('conversations.waiting', 'Aguardando')}
+              {conversation.status === 'resolved' && t('conversations.resolved', 'Resolvida')}
             </span>
             {conversation.contactPhone && (
               <>
@@ -517,29 +660,123 @@ function ThreadHeader({
                 </span>
               </>
             )}
+            {/* Sector badge */}
+            {conversation.assignedToSectorId && sectorsList && (() => {
+              const sector = sectorsList.find(s => s.id === conversation.assignedToSectorId);
+              return sector ? (
+                <>
+                  <span className="text-gray-300 dark:text-gray-600">·</span>
+                  <span
+                    className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full text-white"
+                    style={{ backgroundColor: sector.color }}
+                  >
+                    {sector.name}
+                  </span>
+                </>
+              ) : null;
+            })()}
+            {/* Priority badge */}
+            {conversation.priority && conversation.priority !== 'medium' && (
+              <>
+                <span className="text-gray-300 dark:text-gray-600">·</span>
+                <span className={cn(
+                  'text-[10px] font-semibold px-1.5 py-0.5 rounded-full',
+                  conversation.priority === 'urgent' && 'bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-400',
+                  conversation.priority === 'high' && 'bg-orange-100 dark:bg-orange-500/20 text-orange-600 dark:text-orange-400',
+                  conversation.priority === 'low' && 'bg-blue-100 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400',
+                )}>
+                  {conversation.priority === 'urgent' ? t('kanban.priority.urgent', 'Urgente') : conversation.priority === 'high' ? t('kanban.priority.high', 'Alta') : t('kanban.priority.low', 'Baixa')}
+                </span>
+              </>
+            )}
+            {conversation.isPrivate && (
+              <>
+                <span className="text-gray-300 dark:text-gray-600">·</span>
+                <Lock className="w-3 h-3 text-amber-500" />
+              </>
+            )}
           </div>
         </div>
       </div>
 
       {/* Actions */}
       <div className="flex items-center gap-1.5 flex-shrink-0">
-        {conversation.channel === 'whatsapp' && (
+        {/* AI toggle — sempre visível; estado reflete business-wide + conversation-level */}
+        {onToggleAi && (() => {
+          const aiOn = aiEnabledBusinessWide && conversation.aiEnabled !== false;
+          const disabled = !aiEnabledBusinessWide;
+          return (
+            <motion.button
+              whileHover={!disabled ? { scale: 1.05 } : {}}
+              whileTap={!disabled ? { scale: 0.95 } : {}}
+              onClick={disabled ? onGoToAgentSettings : onToggleAi}
+              className={cn(
+                'relative inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] font-bold transition-colors border',
+                aiOn
+                  ? 'bg-gradient-to-r from-violet-500 to-purple-500 text-white border-violet-500 shadow-sm shadow-violet-500/20'
+                  : disabled
+                    ? 'bg-gray-50 dark:bg-white/[0.03] text-gray-400 border-dashed border-gray-300 dark:border-gray-700 cursor-help'
+                    : 'bg-gray-100 dark:bg-white/[0.06] text-gray-400 border-gray-200 dark:border-gray-700',
+              )}
+              title={
+                disabled
+                  ? 'Agente IA desativado em nível de empresa. Clique para ir para Configurações.'
+                  : aiOn
+                    ? 'Agente IA ativo nesta conversa — clique para desligar só aqui'
+                    : 'Agente IA desligado nesta conversa — clique para ligar'
+              }
+            >
+              {aiOn ? <Bot className="w-3.5 h-3.5" /> : <BotOff className="w-3.5 h-3.5" />}
+              <span className="hidden md:inline">
+                {disabled ? 'IA —' : aiOn ? 'IA ON' : 'IA OFF'}
+              </span>
+              {aiOn && (
+                <motion.span
+                  className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-emerald-400 rounded-full"
+                  animate={{ scale: [1, 1.3, 1], opacity: [0.8, 1, 0.8] }}
+                  transition={{ duration: 1.5, repeat: Infinity }}
+                />
+              )}
+            </motion.button>
+          );
+        })()}
+        {/* Debug agente */}
+        {aiEnabledBusinessWide && onOpenAgentDebug && (
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
-            className="w-8 h-8 rounded-xl bg-gray-100 dark:bg-white/[0.06] flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+            onClick={onOpenAgentDebug}
+            className="w-8 h-8 rounded-xl bg-gray-100 dark:bg-white/[0.06] flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-violet-500 transition-colors"
+            title="Inspecionar runs do agente"
           >
-            <Phone className="w-4 h-4" />
+            <Activity className="w-4 h-4" />
           </motion.button>
         )}
-        <motion.button
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-          className="w-8 h-8 rounded-xl bg-gray-100 dark:bg-white/[0.06] flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
-        >
-          <Info className="w-4 h-4" />
-        </motion.button>
-
+        {/* Criar pedido — modo pedidos */}
+        {onCreateOrder && (
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={onCreateOrder}
+            className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-sm shadow-red-600/20 transition-colors"
+            title="Criar pedido a partir desta conversa"
+          >
+            <ClipboardCheck className="w-3.5 h-3.5" />
+            Criar Pedido
+          </motion.button>
+        )}
+        {/* Sector assign button */}
+        {onSectorAssign && sectorsList && sectorsList.length > 0 && (
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={onSectorAssign}
+            className="w-8 h-8 rounded-xl bg-gray-100 dark:bg-white/[0.06] flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+            title={t('conversations.assignSector', 'Atribuir setor')}
+          >
+            <Layers className="w-4 h-4" />
+          </motion.button>
+        )}
         {/* Status change */}
         <div className="relative">
           <motion.button
@@ -593,13 +830,79 @@ function ThreadHeader({
           </AnimatePresence>
         </div>
 
-        <motion.button
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-          className="w-8 h-8 rounded-xl bg-gray-100 dark:bg-white/[0.06] flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
-        >
-          <MoreVertical className="w-4 h-4" />
-        </motion.button>
+        {/* Overflow menu */}
+        <div className="relative" ref={overflowRef}>
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={() => setShowOverflowMenu(v => !v)}
+            className="w-8 h-8 rounded-xl bg-gray-100 dark:bg-white/[0.06] flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+            title="Mais opções"
+          >
+            <MoreVertical className="w-4 h-4" />
+          </motion.button>
+
+          <AnimatePresence>
+            {showOverflowMenu && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: -5 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: -5 }}
+                transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+                className="absolute right-0 top-full mt-1 w-52 bg-white dark:bg-[#1e293b] rounded-xl shadow-xl border border-gray-100 dark:border-white/[0.08] overflow-hidden z-30 py-1"
+              >
+                {onOpenContact && (
+                  <button
+                    onClick={() => { onOpenContact(); setShowOverflowMenu(false); }}
+                    className="w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs text-gray-700 dark:text-gray-300"
+                  >
+                    <UserIcon className="w-3.5 h-3.5 text-gray-400" />
+                    Ver/editar contato
+                  </button>
+                )}
+                {onMarkUnread && (
+                  <button
+                    onClick={() => { onMarkUnread(); setShowOverflowMenu(false); }}
+                    className="w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs text-gray-700 dark:text-gray-300"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5 text-gray-400" />
+                    Marcar como não lida
+                  </button>
+                )}
+                {onTogglePrivate && (
+                  <button
+                    onClick={() => { onTogglePrivate(); setShowOverflowMenu(false); }}
+                    className="w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs text-gray-700 dark:text-gray-300"
+                  >
+                    <Lock className="w-3.5 h-3.5 text-gray-400" />
+                    {conversation.isPrivate ? 'Tornar pública' : 'Tornar privada'}
+                  </button>
+                )}
+                {onExport && (
+                  <button
+                    onClick={() => { onExport(); setShowOverflowMenu(false); }}
+                    className="w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs text-gray-700 dark:text-gray-300"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-gray-400" />
+                    Exportar histórico (.txt)
+                  </button>
+                )}
+                {onDeleteConversation && (
+                  <>
+                    <div className="border-t border-gray-100 dark:border-white/[0.06] my-1" />
+                    <button
+                      onClick={() => { onDeleteConversation(); setShowOverflowMenu(false); }}
+                      className="w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-red-50 dark:hover:bg-red-500/10 text-xs text-red-600 dark:text-red-400"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      Excluir conversa
+                    </button>
+                  </>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
       </div>
     </div>
   );
@@ -614,12 +917,14 @@ function MediaAttachment({
   mediaUrl: string;
   mediaType?: ConversationMessage['mediaType'];
 }) {
+  const { t } = useTranslation();
+
   if (mediaType === 'image') {
     return (
       <div className="mb-1.5 rounded-xl overflow-hidden max-w-[240px]">
         <img
           src={mediaUrl}
-          alt="Imagem"
+          alt={t('conversations.mediaImage', 'Imagem')}
           className="w-full h-auto object-cover rounded-xl"
           loading="lazy"
         />
@@ -629,19 +934,26 @@ function MediaAttachment({
 
   if (mediaType === 'video') {
     return (
-      <div className="mb-1.5 rounded-xl overflow-hidden max-w-[240px] bg-black/10 dark:bg-white/5 flex items-center justify-center p-4 gap-2">
-        <Video className="w-5 h-5 text-gray-400" />
-        <span className="text-xs text-gray-500 dark:text-gray-400">Video</span>
+      <div className="mb-1.5 rounded-xl overflow-hidden max-w-[280px]">
+        <video
+          controls
+          preload="metadata"
+          className="w-full rounded-xl bg-black"
+          style={{ maxHeight: '200px' }}
+        >
+          <source src={mediaUrl} />
+        </video>
       </div>
     );
   }
 
   if (mediaType === 'audio') {
     return (
-      <div className="mb-1.5 flex items-center gap-2 px-3 py-2 rounded-xl bg-black/5 dark:bg-white/5 min-w-[180px]">
-        <Headphones className="w-4 h-4 text-gray-400 flex-shrink-0" />
-        <div className="flex-1 h-1 rounded-full bg-gray-300 dark:bg-gray-600" />
-        <span className="text-[10px] text-gray-400">Audio</span>
+      <div className="mb-1.5 min-w-[240px] max-w-[300px]">
+        {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+        <audio controls preload="metadata" className="w-full block">
+          <source src={mediaUrl} />
+        </audio>
       </div>
     );
   }
@@ -655,7 +967,7 @@ function MediaAttachment({
         className="mb-1.5 flex items-center gap-2 px-3 py-2 rounded-xl bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 transition-colors min-w-[160px]"
       >
         <FileText className="w-4 h-4 text-gray-400 flex-shrink-0" />
-        <span className="text-xs text-gray-500 dark:text-gray-400 truncate">Documento</span>
+        <span className="text-xs text-gray-500 dark:text-gray-400 truncate">{t('conversations.mediaDocument', 'Documento')}</span>
       </a>
     );
   }
@@ -676,6 +988,7 @@ function MessageBubble({
   channel: ConversationChannel;
   onRetry?: (msg: ConversationMessage) => void;
 }) {
+  const { t } = useTranslation();
   const isOut = message.direction === 'outbound';
 
   return (
@@ -700,11 +1013,22 @@ function MessageBubble({
           <div
             className={cn(
               'relative px-3.5 py-2.5 text-sm leading-relaxed shadow-sm',
-              isOut
-                ? 'bg-gradient-to-br from-red-600 to-red-500 text-white rounded-2xl rounded-tr-sm'
-                : 'bg-white dark:bg-[#1e293b] border border-gray-100 dark:border-gray-700/50 text-gray-800 dark:text-gray-100 rounded-2xl rounded-tl-sm',
+              message.isInternal
+                ? 'bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-500/30 text-amber-900 dark:text-amber-100 rounded-2xl'
+                : isOut
+                  ? 'bg-gradient-to-br from-red-600 to-red-500 text-white rounded-2xl rounded-tr-sm'
+                  : 'bg-white dark:bg-[#1e293b] border border-gray-100 dark:border-gray-700/50 text-gray-800 dark:text-gray-100 rounded-2xl rounded-tl-sm',
             )}
           >
+            {message.isInternal && (
+              <div className="flex items-center gap-1 mb-1">
+                <Lock className="w-3 h-3 text-amber-500" />
+                <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400">{t('conversations.internalNote', 'Nota interna')}</span>
+                {message.senderName && (
+                  <span className="text-[10px] text-amber-500 dark:text-amber-400/70">· {message.senderName}</span>
+                )}
+              </div>
+            )}
             {message.content}
           </div>
         )}
@@ -729,7 +1053,7 @@ function MessageBubble({
             className="flex items-center gap-1 text-xs text-red-500 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300 mt-1 px-1 transition-colors"
           >
             <RotateCcw className="w-3 h-3" />
-            Tentar novamente
+            {t('conversations.tryAgain', 'Tentar novamente')}
           </button>
         )}
       </div>
@@ -744,12 +1068,19 @@ function MessageList({
   conversation,
   messagesEndRef,
   onRetry,
+  hasMoreMessages,
+  loadingMoreMessages,
+  onLoadMore,
 }: {
   messages: ConversationMessage[];
   conversation: Conversation;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
   onRetry?: (msg: ConversationMessage) => void;
+  hasMoreMessages?: boolean;
+  loadingMoreMessages?: boolean;
+  onLoadMore?: () => void;
 }) {
+  const { t } = useTranslation();
   const items: Array<
     | { type: 'separator'; label: string }
     | { type: 'message'; msg: ConversationMessage; isGrouped: boolean }
@@ -759,7 +1090,7 @@ function MessageList({
     // Date separator
     const prev = messages[idx - 1];
     if (!prev || !isSameDay(prev.sentAt, msg.sentAt)) {
-      items.push({ type: 'separator', label: dateSeparatorLabel(msg.sentAt) });
+      items.push({ type: 'separator', label: dateSeparatorLabel(msg.sentAt, t) });
     }
     // Group with previous?
     const isGrouped =
@@ -772,6 +1103,21 @@ function MessageList({
 
   return (
     <>
+      {hasMoreMessages && (
+        <div className="flex justify-center py-3">
+          <button
+            onClick={onLoadMore}
+            disabled={loadingMoreMessages}
+            className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors disabled:opacity-50"
+          >
+            {loadingMoreMessages ? (
+              <><Loader2 className="w-3 h-3 animate-spin" /> {t('conversations.loadingMore', 'Carregando...')}</>
+            ) : (
+              <><ChevronUp className="w-3 h-3" /> {t('conversations.loadMoreMessages', 'Carregar mensagens anteriores')}</>
+            )}
+          </button>
+        </div>
+      )}
       {items.map((item, idx) => {
         if (item.type === 'separator') {
           return (
@@ -817,6 +1163,9 @@ function Composer({
   onAttachmentRemove,
   disabled,
   onTemplateClick,
+  isInternalNote,
+  onToggleInternalNote,
+  onSnippetClick,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -830,7 +1179,11 @@ function Composer({
   onAttachmentRemove: () => void;
   disabled?: boolean;
   onTemplateClick?: () => void;
+  isInternalNote?: boolean;
+  onToggleInternalNote?: () => void;
+  onSnippetClick?: () => void;
 }) {
+  const { t } = useTranslation();
   const cfg = CHANNEL_CONFIG[channel];
   const hasContent = value.trim().length > 0 || !!attachment;
   const isDisabled = disabled || false;
@@ -854,12 +1207,32 @@ function Composer({
   };
 
   return (
-    <div className="flex-shrink-0 px-4 py-3 bg-white dark:bg-[#111827] border-t border-gray-100 dark:border-white/[0.06]">
+    <div className={cn(
+      'flex-shrink-0 px-4 py-3 border-t transition-colors',
+      isInternalNote
+        ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-500/20'
+        : 'bg-white dark:bg-[#111827] border-gray-100 dark:border-white/[0.06]'
+    )}>
+      {/* Internal Note Banner */}
+      {isInternalNote && (
+        <div className="flex items-center gap-2 mb-2 px-2">
+          <Lock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+          <span className="text-xs font-medium text-amber-700 dark:text-amber-300">
+            {t('conversations.internalNoteHint', 'Nota interna — não será enviada ao contato')}
+          </span>
+          <button
+            onClick={onToggleInternalNote}
+            className="ml-auto text-xs text-amber-600 dark:text-amber-400 hover:text-amber-800 dark:hover:text-amber-200 font-medium"
+          >
+            {t('conversations.backToMessage', 'Voltar para mensagem')}
+          </button>
+        </div>
+      )}
       {isDisabled ? (
         /* Template-only mode (24h window expired) */
         <div className="flex items-center gap-3">
           <div className="flex-1 px-4 py-2.5 rounded-2xl bg-gray-100 dark:bg-white/[0.04] border border-transparent dark:border-white/[0.06] text-sm text-gray-400 dark:text-gray-500">
-            Janela de 24h expirada. Use um template para retomar a conversa.
+            {t('conversations.windowExpiredInline', 'Janela de 24h expirada. Use um template para retomar a conversa.')}
           </div>
           <motion.button
             onClick={onTemplateClick}
@@ -868,7 +1241,7 @@ function Composer({
             className="flex-shrink-0 flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-gradient-to-br from-[#25D366] to-[#128C7E] text-white text-sm font-semibold shadow-sm shadow-[#25D366]/30 hover:shadow-md transition-all"
           >
             <FileText className="w-4 h-4" />
-            Enviar Template
+            {t('conversations.sendTemplate', 'Enviar Template')}
           </motion.button>
         </div>
       ) : (
@@ -922,10 +1295,37 @@ function Composer({
             whileTap={{ scale: 0.9 }}
             onClick={() => fileInputRef.current?.click()}
             className="w-8 h-8 rounded-xl flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
-            title="Anexar arquivo"
+            title={t('conversations.attachFile', 'Anexar arquivo')}
           >
             <Paperclip className="w-4 h-4" />
           </motion.button>
+          {onToggleInternalNote && (
+            <motion.button
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.9 }}
+              onClick={onToggleInternalNote}
+              className={cn(
+                'w-8 h-8 rounded-xl flex items-center justify-center transition-colors',
+                isInternalNote
+                  ? 'text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-500/20'
+                  : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06]'
+              )}
+              title={t('conversations.internalNoteButton', 'Nota interna')}
+            >
+              <StickyNote className="w-4 h-4" />
+            </motion.button>
+          )}
+          {onSnippetClick && (
+            <motion.button
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.9 }}
+              onClick={onSnippetClick}
+              className="w-8 h-8 rounded-xl flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
+              title={t('conversations.quickReplies', 'Respostas rápidas')}
+            >
+              <Slash className="w-4 h-4" />
+            </motion.button>
+          )}
           <input
             ref={fileInputRef}
             type="file"
@@ -943,7 +1343,7 @@ function Composer({
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={onKeyDown}
             rows={1}
-            placeholder="Digite uma mensagem..."
+            placeholder={t('conversations.messagePlaceholder', 'Digite uma mensagem...')}
             disabled={isSending}
             className="w-full resize-none bg-gray-100 dark:bg-white/[0.04] border border-transparent dark:border-white/[0.06] rounded-2xl px-4 py-2.5 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-red-500/50 focus:bg-white dark:focus:bg-white/[0.06] transition-colors leading-relaxed max-h-36 overflow-y-auto disabled:opacity-50"
             style={{ minHeight: '42px' }}
@@ -979,11 +1379,11 @@ function Composer({
         <div className={cn('flex items-center gap-1', cfg.textColor)}>
           <ChannelIcon channel={channel} size="sm" />
           <span className="text-[10px] font-medium opacity-70">
-            Enviando via {cfg.label}
+            {t('conversations.sendingVia', 'Enviando via {{channel}}', { channel: cfg.label })}
           </span>
         </div>
         <span className="text-[10px] text-gray-400 dark:text-gray-600">
-          {isDisabled ? 'Apenas templates disponiveis' : 'Enter para enviar · Shift+Enter para nova linha'}
+          {isDisabled ? t('conversations.onlyTemplatesAvailable', 'Apenas templates disponíveis') : t('conversations.enterToSend', 'Enter para enviar · Shift+Enter para nova linha')}
         </span>
       </div>
     </div>
@@ -1001,11 +1401,12 @@ function StatusFilterBar({
   onStatusChange: (status: ConversationStatus | 'all') => void;
   counts: Record<string, number>;
 }) {
+  const { t } = useTranslation();
   const statuses: { id: ConversationStatus | 'all'; label: string }[] = [
-    { id: 'all', label: 'Todas' },
-    { id: 'open', label: 'Abertas' },
-    { id: 'waiting', label: 'Aguardando' },
-    { id: 'resolved', label: 'Resolvidas' },
+    { id: 'all', label: t('conversations.statusAll', 'Todas') },
+    { id: 'open', label: t('conversations.statusOpen', 'Abertas') },
+    { id: 'waiting', label: t('conversations.statusWaiting', 'Aguardando') },
+    { id: 'resolved', label: t('conversations.statusResolved', 'Resolvidas') },
   ];
 
   return (
@@ -1070,222 +1471,638 @@ function ConversationListSkeleton() {
   );
 }
 
-// ─── Mock Data for Meta API Screencast ────────────────────────────────────────
+// ─── Link Contact Drawer ─────────────────────────────────────────────────────
 
-const USE_MOCK_DATA = true; // Toggle to false to use real Firestore data
+const digits = (s: string | undefined | null) => (s || '').replace(/\D/g, '');
 
-const NOW = new Date();
-const minutesAgo = (m: number) => new Date(NOW.getTime() - m * 60_000).toISOString();
-const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3_600_000).toISOString();
+function scoreMatch(conv: Conversation, client: Client): number {
+  // Higher = better. 0 means no signal, we don't show.
+  let score = 0;
+  const convPhone = digits(conv.contactPhone || conv.contactExternalId);
+  if (convPhone) {
+    if (digits(client.phone) === convPhone) score += 100;
+    if (digits(client.whatsapp) === convPhone) score += 100;
+    // Partial suffix (same last 8 digits handles +55 variance)
+    if (convPhone.length >= 8) {
+      const suf = convPhone.slice(-8);
+      if (digits(client.phone).endsWith(suf)) score += 60;
+      if (digits(client.whatsapp).endsWith(suf)) score += 60;
+    }
+  }
+  const convName = (conv.contactName || '').toLowerCase().trim();
+  const clientName = (client.name || '').toLowerCase().trim();
+  if (convName && clientName) {
+    if (clientName === convName) score += 40;
+    else {
+      const convTokens = convName.split(/\s+/).filter(Boolean);
+      const clientTokens = clientName.split(/\s+/).filter(Boolean);
+      for (const t of convTokens) {
+        if (t.length >= 3 && clientTokens.includes(t)) score += 12;
+      }
+    }
+  }
+  return score;
+}
 
-const MOCK_CONVERSATIONS: Conversation[] = [
-  {
-    id: 'mock-whatsapp-1',
-    businessId: 'mock-biz',
-    channel: 'whatsapp',
-    contactName: 'Maria Oliveira',
-    contactPhone: '+55 11 98765-4321',
-    contactExternalId: '5511987654321',
-    status: 'open',
-    lastMessage: 'Oi! Gostaria de agendar um horário para amanhã, vocês têm disponibilidade?',
-    lastMessageAt: minutesAgo(3),
-    lastMessageDirection: 'inbound',
-    unreadCount: 2,
-    assignedTo: '',
-    createdAt: hoursAgo(2),
-    updatedAt: minutesAgo(3),
-  },
-  {
-    id: 'mock-instagram-dm-1',
-    businessId: 'mock-biz',
-    channel: 'instagram',
-    contactName: 'Lucas Ferreira',
-    contactExternalId: '17841405793042',
-    status: 'open',
-    lastMessage: 'Boa tarde! Quanto custa o pacote completo? Vi no stories e fiquei interessado',
-    lastMessageAt: minutesAgo(12),
-    lastMessageDirection: 'inbound',
-    unreadCount: 1,
-    assignedTo: '',
-    createdAt: hoursAgo(1),
-    updatedAt: minutesAgo(12),
-  },
-  {
-    id: 'mock-instagram-comment-1',
-    businessId: 'mock-biz',
-    channel: 'instagram',
-    contactName: 'Ana Costa',
-    contactExternalId: '17841405793099',
-    status: 'waiting',
-    lastMessage: 'Amei o resultado! 😍 Onde consigo o link para agendar?',
-    lastMessageAt: minutesAgo(45),
-    lastMessageDirection: 'inbound',
-    unreadCount: 1,
-    assignedTo: '',
-    createdAt: hoursAgo(3),
-    updatedAt: minutesAgo(45),
-  },
-];
+function LinkContactDrawer({
+  conversation,
+  clients,
+  businessId,
+  onClose,
+  onLinked,
+}: {
+  conversation: Conversation;
+  clients: Client[];
+  businessId: string;
+  onClose: () => void;
+  onLinked: (clientId: string | null) => void;
+}) {
+  const [search, setSearch] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [linkingId, setLinkingId] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
-const MOCK_MESSAGES: Record<string, ConversationMessage[]> = {
-  'mock-whatsapp-1': [
-    {
-      id: 'msg-w1',
-      conversationId: 'mock-whatsapp-1',
-      businessId: 'mock-biz',
-      channel: 'whatsapp',
-      direction: 'inbound',
-      content: 'Olá, boa tarde! Tudo bem?',
-      status: 'read',
-      sentAt: hoursAgo(2),
-      senderName: 'Maria Oliveira',
-    },
-    {
-      id: 'msg-w2',
-      conversationId: 'mock-whatsapp-1',
-      businessId: 'mock-biz',
-      channel: 'whatsapp',
-      direction: 'outbound',
-      content: 'Boa tarde, Maria! Tudo ótimo, como posso ajudar? 😊',
-      status: 'read',
-      sentAt: hoursAgo(2) > minutesAgo(118) ? hoursAgo(2) : minutesAgo(118),
-      senderName: 'Atendente',
-    },
-    {
-      id: 'msg-w3',
-      conversationId: 'mock-whatsapp-1',
-      businessId: 'mock-biz',
-      channel: 'whatsapp',
-      direction: 'inbound',
-      content: 'Gostaria de saber os horários disponíveis para amanhã',
-      status: 'read',
-      sentAt: minutesAgo(10),
-      senderName: 'Maria Oliveira',
-    },
-    {
-      id: 'msg-w4',
-      conversationId: 'mock-whatsapp-1',
-      businessId: 'mock-biz',
-      channel: 'whatsapp',
-      direction: 'outbound',
-      content: 'Claro! Amanhã temos disponibilidade às 9h, 14h e 16h. Qual horário prefere?',
-      status: 'delivered',
-      sentAt: minutesAgo(8),
-      senderName: 'Atendente',
-    },
-    {
-      id: 'msg-w5',
-      conversationId: 'mock-whatsapp-1',
-      businessId: 'mock-biz',
-      channel: 'whatsapp',
-      direction: 'inbound',
-      content: 'Oi! Gostaria de agendar um horário para amanhã, vocês têm disponibilidade?',
-      status: 'delivered',
-      sentAt: minutesAgo(3),
-      senderName: 'Maria Oliveira',
-    },
-    {
-      id: 'msg-w6',
-      conversationId: 'mock-whatsapp-1',
-      businessId: 'mock-biz',
-      channel: 'whatsapp',
-      direction: 'inbound',
-      content: 'O de 14h seria perfeito! Como faço para confirmar?',
-      status: 'delivered',
-      sentAt: minutesAgo(2),
-      senderName: 'Maria Oliveira',
-    },
-  ],
-  'mock-instagram-dm-1': [
-    {
-      id: 'msg-i1',
-      conversationId: 'mock-instagram-dm-1',
-      businessId: 'mock-biz',
-      channel: 'instagram',
-      direction: 'inbound',
-      content: 'Oi! Vi o post de vocês sobre o pacote premium',
-      status: 'read',
-      sentAt: hoursAgo(1),
-      senderName: 'Lucas Ferreira',
-    },
-    {
-      id: 'msg-i2',
-      conversationId: 'mock-instagram-dm-1',
-      businessId: 'mock-biz',
-      channel: 'instagram',
-      direction: 'outbound',
-      content: 'Olá Lucas! Obrigado pelo interesse! Nosso pacote premium inclui 5 sessões mensais com acompanhamento personalizado.',
-      status: 'read',
-      sentAt: minutesAgo(50),
-      senderName: 'Atendente',
-    },
-    {
-      id: 'msg-i3',
-      conversationId: 'mock-instagram-dm-1',
-      businessId: 'mock-biz',
-      channel: 'instagram',
-      direction: 'inbound',
-      content: 'Boa tarde! Quanto custa o pacote completo? Vi no stories e fiquei interessado',
-      status: 'delivered',
-      sentAt: minutesAgo(12),
-      senderName: 'Lucas Ferreira',
-    },
-  ],
-  'mock-instagram-comment-1': [
-    {
-      id: 'msg-c1',
-      conversationId: 'mock-instagram-comment-1',
-      businessId: 'mock-biz',
-      channel: 'instagram',
-      direction: 'inbound',
-      content: '📸 Comentário no post "Resultado incrível da cliente @patricia_m"',
-      status: 'read',
-      sentAt: hoursAgo(3),
-      senderName: 'Ana Costa',
-    },
-    {
-      id: 'msg-c2',
-      conversationId: 'mock-instagram-comment-1',
-      businessId: 'mock-biz',
-      channel: 'instagram',
-      direction: 'inbound',
-      content: 'Que trabalho lindo! Ficou maravilhoso!! 🔥✨',
-      status: 'read',
-      sentAt: hoursAgo(3),
-      senderName: 'Ana Costa',
-    },
-    {
-      id: 'msg-c3',
-      conversationId: 'mock-instagram-comment-1',
-      businessId: 'mock-biz',
-      channel: 'instagram',
-      direction: 'outbound',
-      content: 'Obrigado pelo carinho, Ana! 🥰 Fico feliz que gostou!',
-      status: 'read',
-      sentAt: hoursAgo(2),
-      senderName: 'Atendente',
-    },
-    {
-      id: 'msg-c4',
-      conversationId: 'mock-instagram-comment-1',
-      businessId: 'mock-biz',
-      channel: 'instagram',
-      direction: 'inbound',
-      content: 'Amei o resultado! 😍 Onde consigo o link para agendar?',
-      status: 'delivered',
-      sentAt: minutesAgo(45),
-      senderName: 'Ana Costa',
-    },
-  ],
+  const linkedClient = useMemo(
+    () => conversation.crmContactId ? clients.find(c => c.id === conversation.crmContactId) : undefined,
+    [conversation.crmContactId, clients],
+  );
+
+  // Suggestions: matches + general search
+  const { suggestions, searchResults } = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (q) {
+      const filtered = clients
+        .filter(c => c.id !== linkedClient?.id)
+        .filter(c =>
+          (c.name || '').toLowerCase().includes(q) ||
+          digits(c.phone).includes(digits(q)) ||
+          digits(c.whatsapp).includes(digits(q)) ||
+          c.email?.toLowerCase().includes(q),
+        )
+        .slice(0, 10);
+      return { suggestions: [], searchResults: filtered };
+    }
+    const scored = clients
+      .filter(c => c.id !== linkedClient?.id)
+      .map(c => ({ client: c, score: scoreMatch(conversation, c) }))
+      .filter(s => s.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5)
+      .map(s => s.client);
+    return { suggestions: scored, searchResults: [] };
+  }, [clients, search, conversation, linkedClient?.id]);
+
+  const link = async (clientId: string | null) => {
+    setLinkingId(clientId || '__unlink');
+    try {
+      const now = new Date().toISOString();
+      await updateDoc(doc(db, 'conversations', conversation.id), {
+        crmContactId: clientId || null,
+        updatedAt: now,
+      });
+      if (clientId) {
+        // Mirror onto Client for future auto-link
+        const client = clients.find(c => c.id === clientId);
+        if (client) {
+          const convExternal = digits(conversation.contactExternalId);
+          const patch: Record<string, unknown> = {
+            lastConversationId: conversation.id,
+            lastConversationAt: now,
+            updatedAt: now,
+          };
+          // Save the channel identity so future inbound messages auto-link
+          if (convExternal) {
+            const key = conversation.channel === 'whatsapp' ? 'channelIdentities.whatsapp'
+              : conversation.channel === 'facebook' ? 'channelIdentities.facebook'
+              : 'channelIdentities.instagram';
+            patch[key] = convExternal;
+          }
+          if (conversation.contactAvatarUrl && !client.avatarUrl) {
+            patch.avatarUrl = conversation.contactAvatarUrl;
+          }
+          await updateDoc(doc(db, 'clients', clientId), patch);
+        }
+      }
+      onLinked(clientId);
+    } catch (err) {
+      console.error('[Conversations] Link failed:', err);
+    } finally {
+      setLinkingId(null);
+    }
+  };
+
+  const quickCreate = async () => {
+    setCreating(true);
+    try {
+      const now = new Date().toISOString();
+      const phoneDigits = digits(conversation.contactPhone || conversation.contactExternalId);
+      const payload: Record<string, unknown> = {
+        businessId,
+        name: conversation.contactName || 'Novo contato',
+        tipo: 'pf',
+        source: conversation.channel,
+        status: 'ganho',
+        score: 0,
+        isActive: true,
+        totalSpent: 0,
+        visitCount: 0,
+        createdAt: now,
+        updatedAt: now,
+      };
+      if (phoneDigits) {
+        if (conversation.channel === 'whatsapp') payload.whatsapp = phoneDigits;
+        else payload.phone = phoneDigits;
+        payload.channelIdentities = { [conversation.channel]: phoneDigits };
+      }
+      if (conversation.contactAvatarUrl) payload.avatarUrl = conversation.contactAvatarUrl;
+      const { addDoc, collection } = await import('firebase/firestore');
+      const ref = await addDoc(collection(db, 'clients'), payload);
+      queryClient.invalidateQueries({ queryKey: ['clients', businessId] });
+      await link(ref.id);
+    } catch (err) {
+      console.error('[Conversations] Quick-create failed:', err);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ x: '100%' }}
+      animate={{ x: 0 }}
+      exit={{ x: '100%' }}
+      transition={{ type: 'spring', damping: 30, stiffness: 300 }}
+      className="fixed top-0 right-0 bottom-0 z-40 w-full max-w-md bg-white dark:bg-[#0f172a] border-l border-gray-200 dark:border-gray-800 shadow-2xl flex flex-col"
+    >
+      <div className="flex-shrink-0 flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800">
+        <div>
+          <h3 className="text-sm font-bold text-gray-900 dark:text-gray-100">Vincular cliente</h3>
+          <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+            Associe este contato a um cliente cadastrado
+          </p>
+        </div>
+        <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400">
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {/* Already linked */}
+        {linkedClient && (
+          <div className="bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 rounded-xl p-3">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400 mb-2">
+              Cliente vinculado
+            </p>
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl overflow-hidden flex-shrink-0">
+                {linkedClient.avatarUrl ? (
+                  <img src={linkedClient.avatarUrl} alt={linkedClient.name} className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center text-white font-bold text-sm">
+                    {(linkedClient.name?.[0] || '?').toUpperCase()}
+                  </div>
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-bold text-gray-900 dark:text-gray-100 truncate">{linkedClient.name}</p>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                  {linkedClient.phone || linkedClient.whatsapp || linkedClient.email || 'Sem contato'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => link(null)}
+                disabled={linkingId === '__unlink'}
+                className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:text-red-500 hover:border-red-300 disabled:opacity-50"
+              >
+                {linkingId === '__unlink' ? '...' : 'Desvincular'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Quick create — always offered unless already linked */}
+        {!linkedClient && (
+          <button
+            type="button"
+            onClick={quickCreate}
+            disabled={creating}
+            className="w-full group bg-gradient-to-br from-red-50 to-orange-50 dark:from-red-500/10 dark:to-orange-500/5 border border-red-200 dark:border-red-500/30 rounded-xl p-4 text-left hover:shadow-md transition-all disabled:opacity-50"
+          >
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-white dark:bg-gray-900 flex items-center justify-center shadow-sm flex-shrink-0">
+                {creating ? <Loader2 className="w-5 h-5 animate-spin text-red-500" /> : <Plus className="w-5 h-5 text-red-500" />}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-bold text-gray-900 dark:text-gray-100">
+                  {creating ? 'Criando...' : 'Criar novo cliente'}
+                </p>
+                <p className="text-[11px] text-gray-600 dark:text-gray-400 mt-0.5 leading-relaxed">
+                  Cria <strong>{conversation.contactName || 'este contato'}</strong>
+                  {conversation.contactPhone && <> com telefone <strong>{conversation.contactPhone}</strong></>}
+                  {' '}e vincula automaticamente.
+                </p>
+              </div>
+            </div>
+          </button>
+        )}
+
+        {/* Suggestions — exibido quando sem busca e sem cliente vinculado */}
+        {!linkedClient && !search && suggestions.length > 0 && (
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2">
+              Possíveis correspondências
+            </p>
+            <div className="space-y-1.5">
+              {suggestions.map(c => (
+                <ClientResultRow key={c.id} client={c} loading={linkingId === c.id}
+                  onLink={() => link(c.id)} highlighted />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Search */}
+        <div>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Buscar por nome, telefone ou e-mail..."
+              className="w-full pl-10 pr-4 py-2.5 bg-white dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30"
+              autoFocus
+            />
+          </div>
+          {search && (
+            <div className="mt-2 space-y-1">
+              {searchResults.length === 0 ? (
+                <p className="text-xs text-gray-500 text-center py-6">Nenhum cliente encontrado</p>
+              ) : (
+                searchResults.map(c => (
+                  <ClientResultRow key={c.id} client={c} loading={linkingId === c.id}
+                    onLink={() => link(c.id)} />
+                ))
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+function ClientResultRow({
+  client, loading, highlighted, onLink,
+}: {
+  client: Client;
+  loading: boolean;
+  highlighted?: boolean;
+  onLink: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onLink}
+      disabled={loading}
+      className={cn(
+        'w-full text-left p-2.5 rounded-xl border transition-all flex items-center gap-3 hover:shadow-sm disabled:opacity-50',
+        highlighted
+          ? 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30'
+          : 'bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800 hover:border-red-300',
+      )}
+    >
+      <div className="w-8 h-8 rounded-lg overflow-hidden flex-shrink-0">
+        {client.avatarUrl ? (
+          <img src={client.avatarUrl} alt={client.name} className="w-full h-full object-cover" />
+        ) : (
+          <div className="w-full h-full bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center text-white font-bold text-xs">
+            {(client.name?.[0] || '?').toUpperCase()}
+          </div>
+        )}
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{client.name}</p>
+        <p className="text-[10px] text-gray-500 dark:text-gray-400 truncate">
+          {client.phone || client.whatsapp || client.email || '—'}
+        </p>
+      </div>
+      {loading
+        ? <Loader2 className="w-4 h-4 animate-spin text-red-500 flex-shrink-0" />
+        : <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />}
+    </button>
+  );
+}
+
+// ─── Agent Debug Drawer ──────────────────────────────────────────────────────
+
+const RUN_STATUS_CONFIG: Record<string, { bg: string; text: string; label: string }> = {
+  success: { bg: 'bg-emerald-100 dark:bg-emerald-500/20', text: 'text-emerald-700 dark:text-emerald-400', label: 'Sucesso' },
+  error:   { bg: 'bg-red-100 dark:bg-red-500/20',         text: 'text-red-700 dark:text-red-400',         label: 'Erro' },
+  running: { bg: 'bg-amber-100 dark:bg-amber-500/20',     text: 'text-amber-700 dark:text-amber-400',     label: 'Executando' },
+  skipped: { bg: 'bg-gray-100 dark:bg-gray-700',          text: 'text-gray-600 dark:text-gray-300',       label: 'Pulado' },
 };
+
+function AgentDebugDrawer({
+  businessId,
+  conversationId,
+  onClose,
+}: {
+  businessId: string;
+  conversationId: string;
+  onClose: () => void;
+}) {
+  const [runs, setRuns] = useState<AgentRun[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!businessId || !conversationId) return;
+    setLoading(true);
+    import('firebase/firestore').then(({ collection, query, where, orderBy, limit, onSnapshot }) => {
+      const q = query(
+        collection(db, 'agentRuns'),
+        where('businessId', '==', businessId),
+        where('conversationId', '==', conversationId),
+        orderBy('createdAt', 'desc'),
+        limit(10),
+      );
+      const unsub = onSnapshot(q,
+        (snap) => {
+          setRuns(snap.docs.map(d => ({ ...(d.data() as AgentRun), id: d.id })));
+          setLoading(false);
+        },
+        () => setLoading(false),
+      );
+      return () => unsub();
+    });
+  }, [businessId, conversationId]);
+
+  return (
+    <motion.div
+      initial={{ x: '100%' }}
+      animate={{ x: 0 }}
+      exit={{ x: '100%' }}
+      transition={{ type: 'spring', damping: 30, stiffness: 300 }}
+      className="fixed top-0 right-0 bottom-0 z-40 w-full max-w-md bg-white dark:bg-[#0f172a] border-l border-gray-200 dark:border-gray-800 shadow-2xl flex flex-col"
+    >
+      <div className="flex-shrink-0 flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800 bg-gradient-to-r from-violet-50 to-purple-50 dark:from-violet-500/10 dark:to-purple-500/5">
+        <div>
+          <h3 className="text-sm font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+            <Activity className="w-4 h-4 text-violet-500" />
+            Execuções do Agente IA
+          </h3>
+          <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+            Últimas 10 runs desta conversa
+          </p>
+        </div>
+        <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-white/70 dark:hover:bg-black/20 text-gray-500">
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-4 space-y-3">
+        {loading ? (
+          <div className="space-y-2">
+            {[...Array(3)].map((_, i) => <div key={i} className="h-24 rounded-xl shimmer" />)}
+          </div>
+        ) : runs.length === 0 ? (
+          <div className="text-center py-10">
+            <Bot className="w-10 h-10 text-gray-300 dark:text-gray-700 mx-auto mb-3" />
+            <p className="text-sm text-gray-500 dark:text-gray-400">Nenhuma execução ainda</p>
+            <p className="text-xs text-gray-400 mt-1">Runs aparecem aqui em tempo real</p>
+          </div>
+        ) : (
+          runs.map(run => {
+            const cfg = RUN_STATUS_CONFIG[run.status || 'success'] || RUN_STATUS_CONFIG.success;
+            const isExpanded = expandedId === run.id;
+            return (
+              <motion.div
+                key={run.id}
+                layout
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl overflow-hidden"
+              >
+                <button
+                  onClick={() => setExpandedId(isExpanded ? null : run.id)}
+                  className="w-full text-left p-3 hover:bg-gray-50 dark:hover:bg-gray-800/40 transition-colors"
+                >
+                  <div className="flex items-start justify-between gap-2 mb-1">
+                    <span className={cn('px-2 py-0.5 rounded-full text-[10px] font-bold', cfg.bg, cfg.text)}>
+                      {cfg.label}
+                    </span>
+                    <div className="flex items-center gap-1.5 text-[10px] text-gray-400">
+                      {run.intent && <span className="px-1.5 py-0.5 rounded bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 font-semibold uppercase">{run.intent}</span>}
+                      <span>{run.totalLatencyMs}ms</span>
+                      <span>·</span>
+                      <span>${run.costUsd?.toFixed(4) || '0.0000'}</span>
+                    </div>
+                  </div>
+                  <p className="text-xs text-gray-700 dark:text-gray-300 font-medium truncate">
+                    <span className="text-gray-400">↳</span> {run.userMessage}
+                  </p>
+                  {run.finalResponse && (
+                    <p className="text-xs text-gray-600 dark:text-gray-400 mt-1 line-clamp-2">
+                      <span className="text-emerald-500">→</span> {run.finalResponse}
+                    </p>
+                  )}
+                </button>
+
+                {isExpanded && (
+                  <div className="border-t border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/60 p-3 space-y-3">
+                    {/* Node trace */}
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1.5">Pipeline</p>
+                      <div className="flex items-center gap-1 flex-wrap">
+                        {(run.nodes || []).map((n, i) => (
+                          <div key={i} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-[10px]">
+                            <span className="font-semibold text-violet-600 dark:text-violet-400">{n.node}</span>
+                            <span className="text-gray-400">{n.latencyMs}ms</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    {/* Tool calls */}
+                    {run.tools && run.tools.length > 0 && (
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1.5">Ferramentas chamadas</p>
+                        <div className="space-y-1">
+                          {run.tools.map((t, i) => (
+                            <div key={i} className="bg-white dark:bg-gray-800 rounded-lg p-2 border border-gray-200 dark:border-gray-700">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[11px] font-mono font-semibold text-gray-900 dark:text-gray-100">{t.name}</span>
+                                <span className="text-[9px] text-gray-400">{t.latencyMs}ms</span>
+                              </div>
+                              {t.error ? (
+                                <p className="text-[10px] text-red-500 mt-1">{t.error}</p>
+                              ) : (
+                                <pre className="text-[10px] text-gray-500 dark:text-gray-400 mt-1 overflow-x-auto whitespace-pre-wrap max-h-24">
+                                  {JSON.stringify(t.arguments, null, 2)}
+                                </pre>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {/* Token stats */}
+                    <div className="grid grid-cols-3 gap-2 text-center">
+                      <div className="bg-white dark:bg-gray-800 rounded-lg p-2 border border-gray-200 dark:border-gray-700">
+                        <p className="text-[10px] text-gray-400">Tokens in</p>
+                        <p className="text-xs font-bold text-gray-900 dark:text-gray-100">{run.totalTokensIn || 0}</p>
+                      </div>
+                      <div className="bg-white dark:bg-gray-800 rounded-lg p-2 border border-gray-200 dark:border-gray-700">
+                        <p className="text-[10px] text-gray-400">Tokens out</p>
+                        <p className="text-xs font-bold text-gray-900 dark:text-gray-100">{run.totalTokensOut || 0}</p>
+                      </div>
+                      <div className="bg-white dark:bg-gray-800 rounded-lg p-2 border border-gray-200 dark:border-gray-700">
+                        <p className="text-[10px] text-gray-400">Iter.</p>
+                        <p className="text-xs font-bold text-gray-900 dark:text-gray-100">{run.iterations || 0}</p>
+                      </div>
+                    </div>
+                    {run.errorMessage && (
+                      <div className="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 rounded-lg p-2 text-[11px] text-red-700 dark:text-red-400">
+                        {run.errorMessage}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </motion.div>
+            );
+          })
+        )}
+      </div>
+    </motion.div>
+  );
+}
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function ConversasModule() {
-  const { user, business } = useAuth();
+  const { t } = useTranslation();
+  const { user, business, sectors, userSectorIds } = useAuth();
+  const { setActivePage } = useAppContext();
+
+  const isPedidosMode = business?.settings?.useCase === 'pedidos';
+  const aiAgentEnabled = !!business?.settings?.aiAgent?.enabled;
+  const [agentDebugOpen, setAgentDebugOpen] = useState(false);
+  const [linkContactOpen, setLinkContactOpen] = useState(false);
+  const [clientsList, setClientsList] = useState<Client[]>([]);
+
+  useEffect(() => {
+    if (!business?.id) return;
+    const q = query(collection(db, 'clients'), where('businessId', '==', business.id));
+    const unsub = onSnapshot(q, (snap) => {
+      setClientsList(snap.docs.map(d => ({ ...(d.data() as Client), id: d.id })));
+    });
+    return () => unsub();
+  }, [business?.id]);
+
+  const handleToggleAi = useCallback(async (conv: Conversation) => {
+    if (!business?.id) return;
+    const nextValue = conv.aiEnabled === false ? true : false;
+    try {
+      await updateDoc(doc(db, 'conversations', conv.id), {
+        aiEnabled: nextValue,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('[Conversations] Toggle AI failed:', err);
+    }
+  }, [business?.id]);
+
+  const handleGoToAgentSettings = useCallback(() => {
+    setActivePage('Configurações');
+  }, [setActivePage]);
+
+  const [deleteConfirmConv, setDeleteConfirmConv] = useState<Conversation | null>(null);
+
+  const handleDeleteConversation = useCallback((conv: Conversation) => {
+    setDeleteConfirmConv(conv);
+  }, []);
+
+  const executeDeleteConversation = useCallback(async () => {
+    if (!deleteConfirmConv || !business?.id) return;
+    try {
+      await updateDoc(doc(db, 'conversations', deleteConfirmConv.id), {
+        isDeleted: true,
+        deletedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      setSelectedConversation(null);
+      setShowMobileThread(false);
+      setDeleteConfirmConv(null);
+    } catch (err) {
+      console.error('[Conversations] Delete failed:', err);
+      toast.error('Erro ao excluir conversa. Tente novamente.');
+      setDeleteConfirmConv(null);
+    }
+  }, [deleteConfirmConv, business?.id]);
+
+  const handleMarkUnread = useCallback(async (conv: Conversation) => {
+    if (!business?.id) return;
+    try {
+      await updateDoc(doc(db, 'conversations', conv.id), {
+        unreadCount: Math.max(1, conv.unreadCount || 0) + 1,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('[Conversations] Mark unread failed:', err);
+    }
+  }, [business?.id]);
+
+  const handleOpenContact = useCallback((conv: Conversation) => {
+    // Navigate to the clients page — they can find/edit there
+    setActivePage('Clientes');
+  }, [setActivePage]);
+
+  const handleExportHistory = useCallback(async (conv: Conversation) => {
+    try {
+      const snap = await (await import('firebase/firestore')).getDocs(
+        (await import('firebase/firestore')).query(
+          (await import('firebase/firestore')).collection(db, 'conversationMessages'),
+          (await import('firebase/firestore')).where('conversationId', '==', conv.id),
+          (await import('firebase/firestore')).orderBy('sentAt', 'asc'),
+        ),
+      );
+      const lines = snap.docs.map(d => {
+        const m = d.data();
+        const time = m.sentAt ? new Date(m.sentAt).toLocaleString('pt-BR') : '?';
+        const who = m.direction === 'inbound' ? conv.contactName : (m.senderName || 'Equipe');
+        return `[${time}] ${who}: ${typeof m.content === 'string' ? m.content : '[mídia]'}`;
+      });
+      const content = `Conversa com ${conv.contactName}\nCanal: ${conv.channel}\nExportado em: ${new Date().toLocaleString('pt-BR')}\n\n${lines.join('\n')}\n`;
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `conversa-${conv.contactName.replace(/\s+/g, '_')}-${new Date().toISOString().slice(0, 10)}.txt`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      console.error('[Conversations] Export failed:', err);
+    }
+  }, []);
+
+  const handleCreateOrderFromConversation = useCallback((conv: Conversation) => {
+    // Stash prefill for OrdersModule to pick up on mount.
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem('pendingOrderPrefill', JSON.stringify({
+        clientId: conv.crmContactId || '',
+        clientName: conv.contactName,
+        clientPhone: conv.contactPhone || '',
+        channel: conv.channel,
+        conversationId: conv.id,
+        contactExternalId: conv.contactExternalId || '',
+      }));
+    }
+    setActivePage('Pedidos');
+  }, [setActivePage]);
 
   const [activeChannel, setActiveChannel] = useState<ConversationChannel | 'all'>('all');
   const [activeStatus, setActiveStatus] = useState<ConversationStatus | 'all'>('all');
+  const [activeSectorFilter, setActiveSectorFilter] = useState<string | 'all'>('all');
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [messageInput, setMessageInput] = useState('');
@@ -1293,24 +2110,41 @@ export default function ConversasModule() {
   const [showSettings, setShowSettings] = useState(false);
   const [showMobileThread, setShowMobileThread] = useState(false);
   const [showTemplateSelector, setShowTemplateSelector] = useState(false);
+  const [templateList, setTemplateList] = useState<Array<{ name: string; language: string; category: string; preview: string; hasVariables: boolean }>>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [templatesError, setTemplatesError] = useState<string | null>(null);
   const [attachment, setAttachment] = useState<File | null>(null);
 
-  // Real-time data from Firestore (or mock data)
-  const [conversations, setConversations] = useState<Conversation[]>(USE_MOCK_DATA ? MOCK_CONVERSATIONS : []);
-  const [messages, setMessages] = useState<ConversationMessage[]>([]);
-  const [isLoadingConversations, setIsLoadingConversations] = useState(!USE_MOCK_DATA);
-  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  // Internal notes mode
+  const [isInternalNote, setIsInternalNote] = useState(false);
 
-  // Mock message counter for unique IDs
-  const mockMsgCounter = useRef(100);
+  // Quick replies / snippets
+  const [snippets, setSnippets] = useState<Snippet[]>([]);
+  const [showSnippets, setShowSnippets] = useState(false);
+  const [snippetSearch, setSnippetSearch] = useState('');
+
+  // Sector assignment
+  const [showSectorAssign, setShowSectorAssign] = useState(false);
+
+  // Real-time data from Firestore
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  const [isLoadingConversations, setIsLoadingConversations] = useState(true);
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  const [loadingMoreMessages, setLoadingMoreMessages] = useState(false);
+  const [oldestMessageTimestamp, setOldestMessageTimestamp] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const isLoadingOlderRef = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  const isAdmin = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['admin'];
 
   // ── Real-time: Conversations list ──────────────────────────────────────────
 
   useEffect(() => {
-    if (USE_MOCK_DATA) return; // Skip Firestore when using mock data
     if (!business?.id) return;
 
     setIsLoadingConversations(true);
@@ -1322,7 +2156,9 @@ export default function ConversasModule() {
     );
 
     const unsub = onSnapshot(q, (snap) => {
-      const data = snap.docs.map((d) => ({ ...d.data(), id: d.id } as Conversation));
+      const data = snap.docs
+        .map((d) => ({ ...d.data(), id: d.id } as Conversation & { isDeleted?: boolean }))
+        .filter((c) => !c.isDeleted);
       setConversations(data);
       setIsLoadingConversations(false);
 
@@ -1337,31 +2173,88 @@ export default function ConversasModule() {
     return () => unsub();
   }, [business?.id]);
 
-  // ── Real-time: Messages for selected conversation ──────────────────────────
+  // ── Load snippets ──────────────────────────────────────────────────────────
 
   useEffect(() => {
-    if (USE_MOCK_DATA) {
-      // Load mock messages for the selected conversation
-      if (selectedConversation?.id) {
-        setMessages(MOCK_MESSAGES[selectedConversation.id] || []);
-      }
-      return;
-    }
+    if (!business?.id) return;
+    const q = query(
+      collection(db, 'snippets'),
+      where('businessId', '==', business.id),
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      setSnippets(snap.docs.map((d) => ({ ...d.data(), id: d.id } as Snippet)));
+    });
+    return () => unsub();
+  }, [business?.id]);
+
+  // ── Sector visibility filter ──────────────────────────────────────────────
+
+  const getVisibleConversations = useCallback(
+    (convs: Conversation[]) => {
+      if (!user) return convs;
+      // Admins see everything
+      if (isAdmin) return convs;
+
+      return convs.filter((conv) => {
+        // No sector restriction = visible to all
+        if (!conv.sectorIds?.length && !conv.isPrivate) return true;
+        // Assigned to this user = always visible
+        if (conv.assignedTo === user.uid) return true;
+        // Private = only visible to members of assigned sectors
+        if (conv.isPrivate) {
+          return conv.sectorIds?.some((s) => userSectorIds.includes(s)) || false;
+        }
+        // Has sectors = check intersection
+        if (conv.sectorIds?.length) {
+          return conv.sectorIds.some((s) => userSectorIds.includes(s));
+        }
+        return true;
+      });
+    },
+    [user, isAdmin, userSectorIds],
+  );
+
+  // ── Real-time: Messages for selected conversation (paginated) ───────────────
+
+  useEffect(() => {
     if (!selectedConversation?.id || !business?.id) return;
 
     setIsLoadingMessages(true);
+    setHasMoreMessages(false);
+    setOldestMessageTimestamp(null);
 
+    // Load latest 50 messages in real-time
     const q = query(
       collection(db, 'conversationMessages'),
       where('businessId', '==', business.id),
       where('conversationId', '==', selectedConversation.id),
-      orderBy('sentAt', 'asc'),
+      orderBy('sentAt', 'desc'),
+      limit(50),
     );
 
     const unsub = onSnapshot(q, (snap) => {
-      const data = snap.docs.map((d) => ({ ...d.data(), id: d.id } as ConversationMessage));
-      setMessages(data);
+      const data = snap.docs
+        .map((d) => ({ ...d.data(), id: d.id } as ConversationMessage))
+        .reverse(); // Reverse to show oldest first (chronological order)
+
+      setMessages((prev) => {
+        // If we had loaded older messages, preserve them and merge with real-time updates
+        if (prev.length > 50) {
+          const olderMessages = prev.slice(0, prev.length - 50);
+          // Deduplicate: remove any older messages that appear in the new batch
+          const newIds = new Set(data.map((m) => m.id));
+          const filteredOlder = olderMessages.filter((m) => !newIds.has(m.id));
+          return [...filteredOlder, ...data];
+        }
+        return data;
+      });
       setIsLoadingMessages(false);
+      setHasMoreMessages(snap.docs.length >= 50);
+
+      if (data.length > 0) {
+        // Only update oldest timestamp if we haven't loaded older messages yet
+        setOldestMessageTimestamp((prev) => prev ?? data[0].sentAt);
+      }
     });
 
     return () => unsub();
@@ -1369,27 +2262,117 @@ export default function ConversasModule() {
 
   // ── Auto-scroll to bottom ──────────────────────────────────────────────────
 
+  // Scroll the messages container to the absolute bottom.
+  // Using scrollTop = scrollHeight directly on the container is more reliable than
+  // scrollIntoView, which can be affected by other scrollable ancestors.
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
-    messagesEndRef.current?.scrollIntoView({ behavior });
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    if (behavior === 'instant') {
+      container.scrollTop = container.scrollHeight;
+    } else {
+      container.scrollTo({ top: container.scrollHeight, behavior });
+    }
   }, []);
 
-  useEffect(() => {
-    if (selectedConversation) {
-      setTimeout(() => scrollToBottom('instant'), 50);
-    }
-  }, [selectedConversation?.id, scrollToBottom]);
+  // Track the conversation ID for which we've already done the initial instant scroll
+  const initialScrollDoneRef = useRef<string | null>(null);
 
+  // Reset initial scroll flag when conversation changes
   useEffect(() => {
-    if (selectedConversation && messages.length > 0) {
-      scrollToBottom();
+    if (selectedConversation?.id) {
+      initialScrollDoneRef.current = null;
+    }
+  }, [selectedConversation?.id]);
+
+  // Scroll to bottom when messages finish loading for the first time in a conversation.
+  // Two-pass strategy: immediate rAF for text messages, delayed pass for images/media
+  // that finish loading after the initial DOM paint and would otherwise push content down.
+  useEffect(() => {
+    if (
+      !isLoadingMessages &&
+      selectedConversation?.id &&
+      messages.length > 0 &&
+      initialScrollDoneRef.current !== selectedConversation.id
+    ) {
+      initialScrollDoneRef.current = selectedConversation.id;
+
+      // Pass 1: scroll as soon as the DOM is painted (catches text-only conversations)
+      requestAnimationFrame(() => scrollToBottom('instant'));
+
+      // Pass 2: re-scroll after a short delay to catch images/media that load
+      // asynchronously and shift layout after the first scroll
+      setTimeout(() => scrollToBottom('instant'), 350);
+    }
+  }, [isLoadingMessages, selectedConversation?.id, messages.length, scrollToBottom]);
+
+  // Smooth scroll when a new message arrives after the initial load
+  useEffect(() => {
+    if (
+      selectedConversation &&
+      messages.length > 0 &&
+      !isLoadingOlderRef.current &&
+      initialScrollDoneRef.current === selectedConversation.id
+    ) {
+      scrollToBottom('smooth');
     }
   }, [messages.length, selectedConversation, scrollToBottom]);
+
+  // ── Load more (older) messages ────────────────────────────────────────────
+
+  const loadMoreMessages = useCallback(async () => {
+    if (!selectedConversation?.id || !business?.id || !oldestMessageTimestamp || loadingMoreMessages) return;
+
+    setLoadingMoreMessages(true);
+    isLoadingOlderRef.current = true;
+
+    try {
+      const container = messagesContainerRef.current;
+      const previousScrollHeight = container?.scrollHeight || 0;
+
+      const q = query(
+        collection(db, 'conversationMessages'),
+        where('businessId', '==', business.id),
+        where('conversationId', '==', selectedConversation.id),
+        orderBy('sentAt', 'desc'),
+        startAfter(oldestMessageTimestamp),
+        limit(50),
+      );
+
+      const snap = await getDocs(q);
+      const olderMessages = snap.docs
+        .map((d) => ({ ...d.data(), id: d.id } as ConversationMessage))
+        .reverse();
+
+      if (olderMessages.length > 0) {
+        setMessages((prev) => [...olderMessages, ...prev]);
+        setOldestMessageTimestamp(olderMessages[0].sentAt);
+
+        // After DOM updates, restore scroll position
+        requestAnimationFrame(() => {
+          if (container) {
+            const newScrollHeight = container.scrollHeight;
+            container.scrollTop = newScrollHeight - previousScrollHeight;
+          }
+          isLoadingOlderRef.current = false;
+        });
+      } else {
+        isLoadingOlderRef.current = false;
+      }
+
+      setHasMoreMessages(snap.docs.length >= 50);
+    } catch (err) {
+      console.error('Error loading more messages:', err);
+      isLoadingOlderRef.current = false;
+    } finally {
+      setLoadingMoreMessages(false);
+    }
+  }, [selectedConversation?.id, business?.id, oldestMessageTimestamp, loadingMoreMessages]);
 
   // ── WhatsApp 24h window check ──────────────────────────────────────────────
 
   const isWindowExpired = useCallback(
     (conversation: Conversation): boolean => {
-      if (USE_MOCK_DATA) return false; // Mock data: never expired
       if (conversation.channel !== 'whatsapp') return false;
       if (!conversation.lastMessageAt) return true;
       // Check if last INBOUND message was more than 24h ago
@@ -1403,22 +2386,31 @@ export default function ConversasModule() {
     [messages],
   );
 
-  // ── WhatsApp template definitions ────────────────────────────────────────────
+  // ── WhatsApp templates — fetched from Meta API on demand ─────────────────────
 
-  const whatsappTemplates = [
-    {
-      name: 'hello_world',
-      displayName: 'Saudacao Padrao',
-      description: 'Mensagem de ola padrao do WhatsApp Business',
-      language: 'en_US',
-    },
-    {
-      name: 'reengagement',
-      displayName: 'Retomada de contato',
-      description: 'Mensagem para retomar conversa com o cliente',
-      language: 'pt_BR',
-    },
-  ];
+  const fetchWhatsappTemplates = useCallback(async () => {
+    if (!business?.id || templatesLoading) return;
+    setTemplatesLoading(true);
+    setTemplatesError(null);
+    try {
+      const auth = getAuth();
+      const token = await auth.currentUser?.getIdToken();
+      const res = await fetch(`/api/channels/whatsapp-templates?businessId=${business.id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setTemplatesError(data.error || 'Erro ao carregar templates.');
+        return;
+      }
+      const data = await res.json();
+      setTemplateList(data.templates || []);
+    } catch {
+      setTemplatesError('Erro ao carregar templates.');
+    } finally {
+      setTemplatesLoading(false);
+    }
+  }, [business?.id, templatesLoading]);
 
   // ── Send template message ─────────────────────────────────────────────────
 
@@ -1455,7 +2447,7 @@ export default function ConversasModule() {
         try {
           const auth = getAuth();
           const token = await auth.currentUser?.getIdToken();
-          await fetch('/api/conversations/send', {
+          const res = await fetch('/api/conversations/send', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -1472,8 +2464,14 @@ export default function ConversasModule() {
               templateLanguage,
             }),
           });
-        } catch {
-          console.warn('Failed to send template via API, saved locally');
+          if (!res.ok) {
+            const errBody = await res.json().catch(() => ({ error: 'Erro desconhecido' }));
+            toast.error(`Falha ao enviar template "${templateName}": ${errBody.error || 'erro desconhecido'}${errBody.metaCode ? ` (Meta #${errBody.metaCode})` : ''}`);
+            console.error('[SendTemplate] API error:', errBody);
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          toast.error(`Erro de conexão ao enviar template: ${msg}`);
         }
       } catch (err) {
         console.error('Error sending template message:', err);
@@ -1523,20 +2521,13 @@ export default function ConversasModule() {
       setShowMobileThread(true);
       setAttachment(null);
       if (conv.unreadCount > 0) {
-        if (USE_MOCK_DATA) {
-          // Mock: just clear unread count locally
-          setConversations((prev) =>
-            prev.map((c) => (c.id === conv.id ? { ...c, unreadCount: 0 } : c)),
-          );
-        } else {
-          markAsRead(conv.id);
-          // Send read receipt for the last inbound message
-          const lastInbound = messages
-            .filter((m) => m.direction === 'inbound' && m.externalMessageId)
-            .sort((a, b) => b.sentAt.localeCompare(a.sentAt))[0];
-          if (lastInbound?.externalMessageId) {
-            sendReadReceipt(conv, lastInbound.externalMessageId);
-          }
+        markAsRead(conv.id);
+        // Send read receipt for the last inbound message
+        const lastInbound = messages
+          .filter((m) => m.direction === 'inbound' && m.externalMessageId)
+          .sort((a, b) => b.sentAt.localeCompare(a.sentAt))[0];
+        if (lastInbound?.externalMessageId) {
+          sendReadReceipt(conv, lastInbound.externalMessageId);
         }
       }
     },
@@ -1577,13 +2568,24 @@ export default function ConversasModule() {
     const file = e.target.files?.[0];
     if (!file) return;
     if (file.size > 16 * 1024 * 1024) {
-      alert('Arquivo muito grande. Maximo 16MB.');
+      alert(t('conversations.fileTooLarge', 'Arquivo muito grande. Máximo 16MB.'));
       return;
     }
+
+    // Validate audio format for WhatsApp (Cloud API requires specific MIME types)
+    const channel = selectedConversation?.channel;
+    if (file.type.startsWith('audio/') && channel === 'whatsapp') {
+      const WA_SUPPORTED_AUDIO = ['audio/aac', 'audio/mp4', 'audio/mpeg', 'audio/amr', 'audio/ogg', 'audio/opus'];
+      if (!WA_SUPPORTED_AUDIO.includes(file.type)) {
+        alert(`Formato de áudio não suportado pelo WhatsApp (${file.type}).\nUse MP3, M4A, AAC, AMR ou OGG/Opus.`);
+        return;
+      }
+    }
+
     setAttachment(file);
     // Reset input so the same file can be re-selected
     e.target.value = '';
-  }, []);
+  }, [selectedConversation]);
 
   const handleRemoveAttachment = useCallback(() => {
     setAttachment(null);
@@ -1592,45 +2594,52 @@ export default function ConversasModule() {
   const sendMediaMessage = useCallback(async (file: File) => {
     if (!selectedConversation || !business?.id || !user) return;
 
-    // Upload to Firebase Storage
-    const storageRef = ref(storage, `conversations/${business.id}/${selectedConversation.id}/${Date.now()}_${file.name}`);
-    await uploadBytes(storageRef, file);
-    const mediaUrl = await getDownloadURL(storageRef);
-
     const mediaType: 'image' | 'video' | 'audio' | 'document' = file.type.startsWith('image/') ? 'image'
       : file.type.startsWith('video/') ? 'video'
       : file.type.startsWith('audio/') ? 'audio'
       : 'document';
-
     const now = new Date().toISOString();
+    const messageContent = mediaType === 'document' ? file.name : '';
 
-    // Save to Firestore
-    await addDoc(collection(db, 'conversationMessages'), {
-      conversationId: selectedConversation.id,
-      businessId: business.id,
-      channel: selectedConversation.channel,
-      direction: 'outbound' as const,
-      content: file.name,
-      mediaUrl,
-      mediaType,
-      status: 'sending' as const,
-      senderName: user.name,
-      sentAt: now,
-    });
+    let msgRef: Awaited<ReturnType<typeof addDoc>> | null = null;
 
-    // Update conversation metadata
-    await updateDoc(doc(db, 'conversations', selectedConversation.id), {
-      lastMessage: `[${mediaType === 'image' ? 'Imagem' : mediaType === 'video' ? 'Video' : mediaType === 'audio' ? 'Audio' : 'Documento'}] ${file.name}`,
-      lastMessageAt: now,
-      lastMessageDirection: 'outbound',
-      updatedAt: now,
-    });
-
-    // Send via API
     try {
+      // 1. Upload to Firebase Storage with explicit content-type so Meta APIs receive
+      //    the correct MIME header when fetching the file.
+      const storageRef = ref(storage, `conversations/${business.id}/${selectedConversation.id}/${Date.now()}_${file.name}`);
+      await uploadBytes(storageRef, file, { contentType: file.type || 'application/octet-stream' });
+      const mediaUrl = await getDownloadURL(storageRef);
+
+      // 2. Save to Firestore with 'sending' status
+      msgRef = await addDoc(collection(db, 'conversationMessages'), {
+        conversationId: selectedConversation.id,
+        businessId: business.id,
+        channel: selectedConversation.channel,
+        direction: 'outbound' as const,
+        content: messageContent,
+        mediaUrl,
+        mediaType,
+        status: 'sending' as const,
+        senderName: user.name,
+        sentAt: now,
+      });
+
+      // 3. Update conversation last-message preview
+      const mediaLabel = mediaType === 'image' ? t('conversations.mediaImage', 'Imagem')
+        : mediaType === 'video' ? t('conversations.mediaVideo', 'Vídeo')
+        : mediaType === 'audio' ? t('conversations.mediaAudio', 'Áudio')
+        : t('conversations.mediaDocument', 'Documento');
+      await updateDoc(doc(db, 'conversations', selectedConversation.id), {
+        lastMessage: `[${mediaLabel}] ${file.name}`,
+        lastMessageAt: now,
+        lastMessageDirection: 'outbound',
+        updatedAt: now,
+      });
+
+      // 4. Send via Meta API
       const authInstance = getAuth();
       const token = await authInstance.currentUser?.getIdToken();
-      await fetch('/api/conversations/send', {
+      const sendRes = await fetch('/api/conversations/send', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1647,8 +2656,23 @@ export default function ConversasModule() {
           mediaType,
         }),
       });
-    } catch {
-      console.warn('Failed to send media via API, saved locally');
+
+      if (sendRes.ok) {
+        await updateDoc(msgRef, { status: 'sent' });
+      } else {
+        const errData = await sendRes.json().catch(() => ({})) as { error?: string };
+        const errMsg = errData.error || `HTTP ${sendRes.status}`;
+        console.error('[Media] API send failed:', sendRes.status, errData);
+        await updateDoc(msgRef, { status: 'failed', errorMessage: errMsg });
+        toast.error(`Falha ao enviar mídia: ${errMsg}`);
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error('[Media] Error during send:', errMsg);
+      toast.error(`Falha ao enviar mídia: ${errMsg}`);
+      if (msgRef) {
+        await updateDoc(msgRef, { status: 'failed', errorMessage: errMsg }).catch(() => {});
+      }
     }
   }, [selectedConversation, business?.id, user]);
 
@@ -1688,15 +2712,6 @@ export default function ConversasModule() {
   // ── Update conversation status ─────────────────────────────────────────────
 
   const updateConversationStatus = useCallback(async (conversationId: string, status: ConversationStatus) => {
-    if (USE_MOCK_DATA) {
-      setConversations((prev) =>
-        prev.map((c) => (c.id === conversationId ? { ...c, status, updatedAt: new Date().toISOString() } : c)),
-      );
-      setSelectedConversation((prev) =>
-        prev?.id === conversationId ? { ...prev, status, updatedAt: new Date().toISOString() } : prev,
-      );
-      return;
-    }
     try {
       await updateDoc(doc(db, 'conversations', conversationId), {
         status,
@@ -1712,7 +2727,7 @@ export default function ConversasModule() {
   const handleSend = useCallback(async () => {
     const hasText = messageInput.trim().length > 0;
     const hasFile = !!attachment;
-    if ((!hasText && !hasFile) || !selectedConversation || isSending) return;
+    if ((!hasText && !hasFile) || !selectedConversation || !business?.id || !user || isSending) return;
 
     const content = messageInput.trim();
     const currentAttachment = attachment;
@@ -1720,61 +2735,9 @@ export default function ConversasModule() {
     setAttachment(null);
     setIsSending(true);
 
-    // ── Mock mode: append message locally ──────────────────────────────────
-    if (USE_MOCK_DATA) {
-      const now = new Date().toISOString();
-      mockMsgCounter.current += 1;
-      const newMsg: ConversationMessage = {
-        id: `mock-sent-${mockMsgCounter.current}`,
-        conversationId: selectedConversation.id,
-        businessId: 'mock-biz',
-        channel: selectedConversation.channel,
-        direction: 'outbound',
-        content: content || (currentAttachment ? currentAttachment.name : ''),
-        status: 'delivered',
-        senderName: user?.name || 'Atendente',
-        sentAt: now,
-      };
-      setMessages((prev) => [...prev, newMsg]);
-
-      // Update conversation list preview
-      setConversations((prev) =>
-        prev.map((c) =>
-          c.id === selectedConversation.id
-            ? {
-                ...c,
-                lastMessage: newMsg.content,
-                lastMessageAt: now,
-                lastMessageDirection: 'outbound' as const,
-                unreadCount: 0,
-                updatedAt: now,
-              }
-            : c,
-        ),
-      );
-
-      // Simulate status progression: delivered → read after 1.5s
-      setTimeout(() => {
-        setMessages((prev) =>
-          prev.map((m) => (m.id === newMsg.id ? { ...m, status: 'read' } : m)),
-        );
-      }, 1500);
-
-      setIsSending(false);
-      inputRef.current?.focus();
-      return;
-    }
-
-    // ── Real mode: send via Firestore + Meta API ───────────────────────────
-
-    // If there is a media attachment, send it first
+    // If there is a media attachment, send it (errors are handled + toasted inside sendMediaMessage)
     if (currentAttachment) {
-      try {
-        await sendMediaMessage(currentAttachment);
-      } catch (err) {
-        console.error('Error sending media:', err);
-        setAttachment(currentAttachment);
-      }
+      await sendMediaMessage(currentAttachment);
     }
 
     // If no text, just finish
@@ -1784,55 +2747,86 @@ export default function ConversasModule() {
       return;
     }
 
-    if (!business?.id || !user) {
-      setIsSending(false);
-      return;
-    }
-
     const now = new Date().toISOString();
 
     try {
-      // 1. Save message to Firestore
-      await addDoc(collection(db, 'conversationMessages'), {
-        conversationId: selectedConversation.id,
-        businessId: business.id,
-        channel: selectedConversation.channel,
-        direction: 'outbound' as const,
-        content,
-        status: 'sending' as const,
-        senderName: user.name,
-        sentAt: now,
-      });
-
-      // 2. Update conversation metadata
-      await updateDoc(doc(db, 'conversations', selectedConversation.id), {
-        lastMessage: content,
-        lastMessageAt: now,
-        lastMessageDirection: 'outbound',
-        updatedAt: now,
-      });
-
-      // 3. Send via Meta API (fire-and-forget with error handling)
-      try {
-        const auth = getAuth();
-        const token = await auth.currentUser?.getIdToken();
-        await fetch('/api/conversations/send', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            businessId: business.id,
-            conversationId: selectedConversation.id,
-            channel: selectedConversation.channel,
-            recipientId: selectedConversation.contactExternalId,
-            content,
-          }),
+      // Internal notes are saved locally only — not sent to the contact
+      if (isInternalNote) {
+        await addDoc(collection(db, 'conversationMessages'), {
+          conversationId: selectedConversation.id,
+          businessId: business.id,
+          channel: selectedConversation.channel,
+          direction: 'outbound' as const,
+          content,
+          status: 'delivered' as const,
+          senderName: user.name,
+          isInternal: true,
+          sentAt: now,
         });
-      } catch {
-        // Message saved locally even if external send fails
-        console.warn('Failed to send message via API, saved locally');
+        // Update internal notes count
+        await updateDoc(doc(db, 'conversations', selectedConversation.id), {
+          internalNotes: (selectedConversation.internalNotes || 0) + 1,
+          updatedAt: now,
+        });
+      } else {
+        // 1. Save message to Firestore — capture doc ID
+        const msgRef = await addDoc(collection(db, 'conversationMessages'), {
+          conversationId: selectedConversation.id,
+          businessId: business.id,
+          channel: selectedConversation.channel,
+          direction: 'outbound' as const,
+          content,
+          status: 'sending' as const,
+          senderName: user.name,
+          sentAt: now,
+        });
+
+        // 2. Update conversation metadata
+        await updateDoc(doc(db, 'conversations', selectedConversation.id), {
+          lastMessage: content,
+          lastMessageAt: now,
+          lastMessageDirection: 'outbound',
+          updatedAt: now,
+        });
+
+        // 3. Send via Meta API — pass messageDocId so backend updates sending → sent
+        try {
+          const auth = getAuth();
+          const token = await auth.currentUser?.getIdToken();
+          const res = await fetch('/api/conversations/send', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              businessId: business.id,
+              conversationId: selectedConversation.id,
+              messageDocId: msgRef.id,
+              channel: selectedConversation.channel,
+              recipientId: selectedConversation.contactExternalId,
+              content,
+            }),
+          });
+          if (!res.ok) {
+            const errBody = await res.json().catch(() => ({ code: 'unknown', error: 'Erro desconhecido' }));
+            const chNames: Record<string, string> = { whatsapp: 'WhatsApp', facebook: 'Facebook Messenger', instagram: 'Instagram' };
+            const chName = chNames[selectedConversation.channel] || 'Canal';
+            if (errBody.code === 'disconnected' || errBody.code === 'token_expired') {
+              toast.warn(`${chName} desconectado — reconecte em Configurações → Canais.\n${errBody.error || ''}`);
+            } else if (errBody.code === 'send_failed') {
+              toast.error(`Falha ao enviar pelo ${chName}: ${errBody.error || 'erro desconhecido'}${errBody.metaCode ? ` (Meta #${errBody.metaCode})` : ''}`);
+            } else {
+              toast.error(`Erro ao enviar mensagem [${res.status}]: ${errBody.error || 'erro desconhecido'}`);
+            }
+            console.error('[Send] API error:', errBody);
+            await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(e => console.warn('[Conversations] Failed to mark message as failed:', e));
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          toast.error(`Erro de conexão ao enviar mensagem: ${msg}`);
+          await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(e => console.warn('[Conversations] Failed to mark message as failed:', e));
+        }
       }
     } catch (err) {
       console.error('Error sending message:', err);
@@ -1843,7 +2837,7 @@ export default function ConversasModule() {
       inputRef.current?.focus();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messageInput, attachment, selectedConversation, business?.id, user, isSending, sendMediaMessage]);
+  }, [messageInput, attachment, selectedConversation, business?.id, user, isSending, sendMediaMessage, isInternalNote]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1851,21 +2845,81 @@ export default function ConversasModule() {
         e.preventDefault();
         handleSend();
       }
+      // Trigger snippet autocomplete with /
+      if (e.key === '/' && messageInput === '') {
+        setShowSnippets(true);
+        setSnippetSearch('');
+      }
     },
-    [handleSend],
+    [handleSend, messageInput],
   );
+
+  // ── Snippet insertion ──────────────────────────────────────────────────────
+
+  const handleInsertSnippet = useCallback((snippet: Snippet) => {
+    let content = snippet.content;
+    // Replace {{contact.name}} with actual contact name
+    if (selectedConversation) {
+      content = content.replace(/\{\{contact\.name\}\}/g, selectedConversation.contactName);
+    }
+    setMessageInput(content);
+    setShowSnippets(false);
+    inputRef.current?.focus();
+  }, [selectedConversation]);
+
+  // ── Sector assignment ──────────────────────────────────────────────────────
+
+  const handleAssignSector = useCallback(async (sectorId: string) => {
+    if (!selectedConversation || !business?.id) return;
+    const sector = sectors.find(s => s.id === sectorId);
+    try {
+      await updateDoc(doc(db, 'conversations', selectedConversation.id), {
+        assignedToSectorId: sectorId,
+        sectorIds: [sectorId],
+        updatedAt: new Date().toISOString(),
+      });
+      setShowSectorAssign(false);
+    } catch (err) {
+      console.error('Error assigning sector:', err);
+    }
+  }, [selectedConversation, business?.id, sectors]);
+
+  const handleTogglePrivate = useCallback(async () => {
+    if (!selectedConversation || !business?.id) return;
+    try {
+      await updateDoc(doc(db, 'conversations', selectedConversation.id), {
+        isPrivate: !selectedConversation.isPrivate,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('Error toggling privacy:', err);
+    }
+  }, [selectedConversation, business?.id]);
+
+  // ── Filtered snippets ──────────────────────────────────────────────────────
+
+  const filteredSnippets = useMemo(() => {
+    return snippets.filter(s => {
+      // Filter by sector if user is not admin
+      if (s.sectorId && !isAdmin && !userSectorIds.includes(s.sectorId)) return false;
+      if (!snippetSearch) return true;
+      return s.shortcode.toLowerCase().includes(snippetSearch.toLowerCase()) ||
+             s.content.toLowerCase().includes(snippetSearch.toLowerCase());
+    });
+  }, [snippets, snippetSearch, isAdmin, userSectorIds]);
 
   // ── Filtered conversations ─────────────────────────────────────────────────
 
-  const filteredConversations = conversations.filter((c) => {
+  const filteredConversations = getVisibleConversations(conversations).filter((c) => {
     const matchesChannel = activeChannel === 'all' || c.channel === activeChannel;
     const matchesStatus = activeStatus === 'all' || c.status === activeStatus;
+    const matchesSector = activeSectorFilter === 'all' || c.sectorIds?.includes(activeSectorFilter) || c.assignedToSectorId === activeSectorFilter;
     const matchesSearch =
       !searchQuery ||
       c.contactName.toLowerCase().includes(searchQuery.toLowerCase()) ||
       c.lastMessage.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (c.contactPhone && c.contactPhone.includes(searchQuery));
-    return matchesChannel && matchesStatus && matchesSearch;
+    return matchesChannel && matchesStatus && matchesSector && matchesSearch;
   });
 
   // ── Unread counts per channel ──────────────────────────────────────────────
@@ -1895,10 +2949,10 @@ export default function ConversasModule() {
   // ── Tabs ────────────────────────────────────────────────────────────────────
 
   const tabs: { id: ConversationChannel | 'all'; label: string }[] = [
-    { id: 'all', label: 'Todos' },
-    { id: 'whatsapp', label: 'WhatsApp' },
-    { id: 'facebook', label: 'Messenger' },
-    { id: 'instagram', label: 'Instagram' },
+    { id: 'all', label: t('conversations.tabAll', 'Todos') },
+    { id: 'whatsapp', label: t('conversations.tabWhatsApp', 'WhatsApp') },
+    { id: 'facebook', label: t('conversations.tabMessenger', 'Messenger') },
+    { id: 'instagram', label: t('conversations.tabInstagram', 'Instagram') },
   ];
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -1923,12 +2977,12 @@ export default function ConversasModule() {
                 </div>
                 <div>
                   <h1 className="font-display font-bold text-gray-900 dark:text-white text-base leading-tight">
-                    Conversas
+                    {t('conversations.title', 'Conversas')}
                   </h1>
                   <p className="text-[10px] text-gray-400 dark:text-gray-500">
                     {isLoadingConversations
-                      ? 'Carregando...'
-                      : `${filteredConversations.length} conversa${filteredConversations.length !== 1 ? 's' : ''}`}
+                      ? t('conversations.loading', 'Carregando...')
+                      : t(filteredConversations.length === 1 ? 'conversations.conversationCount_one' : 'conversations.conversationCount_other', filteredConversations.length === 1 ? '{{count}} conversa' : '{{count}} conversas', { count: filteredConversations.length })}
                   </p>
                 </div>
               </div>
@@ -1949,7 +3003,7 @@ export default function ConversasModule() {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
               <input
                 type="text"
-                placeholder="Buscar conversas..."
+                placeholder={t('conversations.searchPlaceholder', 'Buscar conversas...')}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full pl-8 pr-3 py-2 text-sm bg-gray-100 dark:bg-white/[0.04] border border-transparent dark:border-white/[0.06] rounded-xl text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-red-500/50 focus:bg-white dark:focus:bg-white/[0.06] transition-colors"
@@ -1958,50 +3012,44 @@ export default function ConversasModule() {
           </div>
 
           {/* Channel Tabs */}
-          <div className="px-4 pb-1 flex-shrink-0">
-            <div className="relative">
-              <div
-                className="flex gap-0.5 overflow-x-auto"
-                style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-              >
-                {tabs.map((tab) => {
-                  const isActive = activeChannel === tab.id;
-                  const unread = tab.id === 'all' ? unreadByChannel.all : unreadByChannel[tab.id];
-                  const cfg = tab.id !== 'all' ? CHANNEL_CONFIG[tab.id as ConversationChannel] : null;
-                  return (
-                    <button
-                      key={tab.id}
-                      onClick={() => setActiveChannel(tab.id)}
-                      className={cn(
-                        'flex-shrink-0 flex items-center gap-1 px-2 py-1.5 rounded-lg text-[10.5px] font-semibold transition-all duration-150 whitespace-nowrap',
-                        isActive
-                          ? 'bg-gray-900 dark:bg-white/[0.12] text-white dark:text-white'
-                          : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] hover:text-gray-800 dark:hover:text-gray-200',
-                      )}
-                    >
-                      {tab.id !== 'all' && cfg && (
-                        <span className={cn(isActive ? 'text-current' : cfg.textColor)}>
-                          <ChannelIcon channel={tab.id as ConversationChannel} size="sm" />
-                        </span>
-                      )}
-                      {tab.label}
-                      {(unread ?? 0) > 0 && (
-                        <span
-                          className={cn(
-                            'min-w-[15px] h-[15px] rounded-full text-[9px] font-bold flex items-center justify-center px-0.5 leading-none',
-                            isActive
-                              ? 'bg-red-500 text-white'
-                              : 'bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-400',
-                          )}
-                        >
-                          {unread}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="absolute right-0 top-0 bottom-0 w-6 bg-gradient-to-l from-white dark:from-[#0a0e17] to-transparent pointer-events-none" />
+          <div className="px-3 pb-1 flex-shrink-0">
+            <div className="flex gap-0.5">
+              {tabs.map((tab) => {
+                const isActive = activeChannel === tab.id;
+                const unread = tab.id === 'all' ? unreadByChannel.all : unreadByChannel[tab.id];
+                const cfg = tab.id !== 'all' ? CHANNEL_CONFIG[tab.id as ConversationChannel] : null;
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveChannel(tab.id)}
+                    className={cn(
+                      'flex items-center gap-1 min-w-0 px-1.5 py-1.5 rounded-lg text-[10.5px] font-semibold transition-all duration-150 whitespace-nowrap',
+                      isActive
+                        ? 'bg-gray-900 dark:bg-white/[0.12] text-white dark:text-white'
+                        : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] hover:text-gray-800 dark:hover:text-gray-200',
+                    )}
+                  >
+                    {tab.id !== 'all' && cfg && (
+                      <span className={cn('flex-shrink-0', isActive ? 'text-current' : cfg.textColor)}>
+                        <ChannelIcon channel={tab.id as ConversationChannel} size="sm" />
+                      </span>
+                    )}
+                    <span className="truncate">{tab.label}</span>
+                    {(unread ?? 0) > 0 && (
+                      <span
+                        className={cn(
+                          'flex-shrink-0 min-w-[15px] h-[15px] rounded-full text-[9px] font-bold flex items-center justify-center px-0.5 leading-none',
+                          isActive
+                            ? 'bg-red-500 text-white'
+                            : 'bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-400',
+                        )}
+                      >
+                        {unread}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -2011,6 +3059,42 @@ export default function ConversasModule() {
             onStatusChange={setActiveStatus}
             counts={countsByStatus}
           />
+
+          {/* Sector Filter */}
+          {sectors.length > 0 && (
+            <div className="px-4 pb-2 flex-shrink-0">
+              <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none">
+                <button
+                  onClick={() => setActiveSectorFilter('all')}
+                  className={cn(
+                    'px-2.5 py-1 rounded-lg text-[11px] font-medium whitespace-nowrap transition-colors',
+                    activeSectorFilter === 'all'
+                      ? 'bg-gray-900 dark:bg-gray-200 text-white dark:text-gray-900'
+                      : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06]'
+                  )}
+                >
+                  <Layers className="w-3 h-3 inline mr-1" />
+                  {t('conversations.statusAllSectors', 'Todos')}
+                </button>
+                {sectors.filter(s => s.isActive).map((sector) => (
+                  <button
+                    key={sector.id}
+                    onClick={() => setActiveSectorFilter(sector.id)}
+                    className={cn(
+                      'px-2.5 py-1 rounded-lg text-[11px] font-medium whitespace-nowrap transition-colors flex items-center gap-1',
+                      activeSectorFilter === sector.id
+                        ? 'text-white'
+                        : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06]'
+                    )}
+                    style={activeSectorFilter === sector.id ? { backgroundColor: sector.color } : undefined}
+                  >
+                    <div className="w-2 h-2 rounded-full" style={{ backgroundColor: sector.color }} />
+                    {sector.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Conversation list */}
           <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-white/10">
@@ -2031,25 +3115,25 @@ export default function ConversasModule() {
                     {conversations.length === 0 ? (
                       <>
                         <p className="text-sm font-medium text-gray-500 dark:text-gray-400">
-                          Nenhuma conversa ainda
+                          {t('conversations.noConversationsYet', 'Nenhuma conversa ainda')}
                         </p>
                         <p className="text-xs text-gray-400 dark:text-gray-500 mt-1 leading-relaxed max-w-[220px]">
-                          Conecte seus canais em Configuracoes para comecar a receber mensagens
+                          {t('conversations.noConversationsYetDesc', 'Conecte seus canais em Configurações para começar a receber mensagens')}
                         </p>
                         <button
                           onClick={() => setShowSettings(true)}
                           className="mt-3 text-xs font-semibold px-4 py-2 rounded-xl bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors"
                         >
-                          Configurar canais
+                          {t('conversations.configureChannels', 'Configurar canais')}
                         </button>
                       </>
                     ) : (
                       <>
                         <p className="text-sm font-medium text-gray-500 dark:text-gray-400">
-                          Nenhuma conversa encontrada
+                          {t('conversations.noConversationsFound', 'Nenhuma conversa encontrada')}
                         </p>
                         <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
-                          Tente mudar o filtro ou a busca
+                          {t('conversations.noConversationsFoundDesc', 'Tente mudar o filtro ou a busca')}
                         </p>
                       </>
                     )}
@@ -2111,10 +3195,10 @@ export default function ConversasModule() {
                 </motion.div>
                 <div className="text-center max-w-xs">
                   <h2 className="font-display font-bold text-gray-700 dark:text-gray-200 text-xl mb-2">
-                    Selecione uma conversa
+                    {t('conversations.selectConversation', 'Selecione uma conversa')}
                   </h2>
                   <p className="text-sm text-gray-400 dark:text-gray-500 leading-relaxed">
-                    Escolha uma conversa a esquerda para comecar a responder seus clientes
+                    {t('conversations.selectConversationDesc', 'Escolha uma conversa à esquerda para começar a responder seus clientes')}
                   </p>
                 </div>
                 <div className="flex items-center gap-4 mt-2">
@@ -2159,15 +3243,33 @@ export default function ConversasModule() {
                   onStatusChange={(status) => {
                     updateConversationStatus(selectedConversation.id, status);
                   }}
+                  onSectorAssign={() => setShowSectorAssign(prev => !prev)}
+                  onCreateOrder={isPedidosMode ? () => handleCreateOrderFromConversation(selectedConversation) : undefined}
+                  onToggleAi={() => handleToggleAi(selectedConversation)}
+                  onGoToAgentSettings={handleGoToAgentSettings}
+                  onOpenAgentDebug={aiAgentEnabled ? () => setAgentDebugOpen(true) : undefined}
+                  onOpenContact={() => handleOpenContact(selectedConversation)}
+                  onLinkClient={() => setLinkContactOpen(true)}
+                  linkedClientName={
+                    selectedConversation.crmContactId
+                      ? clientsList.find(c => c.id === selectedConversation.crmContactId)?.name
+                      : undefined
+                  }
+                  onDeleteConversation={() => handleDeleteConversation(selectedConversation)}
+                  onMarkUnread={() => handleMarkUnread(selectedConversation)}
+                  onTogglePrivate={handleTogglePrivate}
+                  onExport={() => handleExportHistory(selectedConversation)}
+                  aiEnabledBusinessWide={aiAgentEnabled}
+                  sectors={sectors}
                 />
 
                 {/* Messages area */}
-                <div className="flex-1 overflow-y-auto px-4 py-4 space-y-1 scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-white/10">
+                <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-1 scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-white/10">
                   {isLoadingMessages ? (
                     <div className="flex-1 flex items-center justify-center py-12">
                       <div className="flex flex-col items-center gap-3">
                         <div className="w-8 h-8 border-2 border-red-500/30 border-t-red-500 rounded-full animate-spin" />
-                        <span className="text-xs text-gray-400 dark:text-gray-500">Carregando mensagens...</span>
+                        <span className="text-xs text-gray-400 dark:text-gray-500">{t('conversations.loadingMessages', 'Carregando mensagens...')}</span>
                       </div>
                     </div>
                   ) : messages.length === 0 ? (
@@ -2176,8 +3278,8 @@ export default function ConversasModule() {
                         <div className="w-10 h-10 rounded-2xl bg-gray-100 dark:bg-white/[0.04] flex items-center justify-center">
                           <MessageSquare className="w-5 h-5 text-gray-300 dark:text-gray-600" />
                         </div>
-                        <p className="text-sm text-gray-400 dark:text-gray-500">Nenhuma mensagem ainda</p>
-                        <p className="text-xs text-gray-300 dark:text-gray-600">Envie a primeira mensagem</p>
+                        <p className="text-sm text-gray-400 dark:text-gray-500">{t('conversations.noMessagesYet', 'Nenhuma mensagem ainda')}</p>
+                        <p className="text-xs text-gray-300 dark:text-gray-600">{t('conversations.sendFirstMessage', 'Envie a primeira mensagem')}</p>
                       </div>
                     </div>
                   ) : (
@@ -2186,6 +3288,9 @@ export default function ConversasModule() {
                       conversation={selectedConversation}
                       messagesEndRef={messagesEndRef}
                       onRetry={retryMessage}
+                      hasMoreMessages={hasMoreMessages}
+                      loadingMoreMessages={loadingMoreMessages}
+                      onLoadMore={loadMoreMessages}
                     />
                   )}
                 </div>
@@ -2195,7 +3300,7 @@ export default function ConversasModule() {
                   <div className="px-4 py-2 bg-amber-50 dark:bg-amber-500/10 border-b border-amber-100 dark:border-amber-500/20 flex items-center gap-2">
                     <AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0" />
                     <p className="text-xs text-amber-700 dark:text-amber-400">
-                      Janela de 24h expirada. Apenas mensagens de template podem ser enviadas.
+                      {t('conversations.windowExpired', 'Janela de 24h expirada. Apenas mensagens de template podem ser enviadas.')}
                     </p>
                   </div>
                 )}
@@ -2211,7 +3316,7 @@ export default function ConversasModule() {
                       className="mx-4 mb-2 p-3 bg-white dark:bg-[#1e293b] rounded-xl border border-gray-200 dark:border-white/[0.08] shadow-lg"
                     >
                       <div className="flex items-center justify-between mb-2.5">
-                        <h4 className="text-xs font-semibold text-gray-900 dark:text-white">Selecionar Template</h4>
+                        <h4 className="text-xs font-semibold text-gray-900 dark:text-white">{t('conversations.selectTemplate', 'Selecionar Template')}</h4>
                         <button
                           onClick={() => setShowTemplateSelector(false)}
                           className="w-5 h-5 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
@@ -2220,18 +3325,39 @@ export default function ConversasModule() {
                         </button>
                       </div>
                       <div className="space-y-1.5">
-                        {whatsappTemplates.map((tpl) => (
+                        {templatesLoading && (
+                          <div className="flex items-center justify-center py-4 gap-2 text-gray-400 dark:text-gray-500">
+                            <div className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                            <span className="text-xs">Carregando templates...</span>
+                          </div>
+                        )}
+                        {templatesError && !templatesLoading && (
+                          <div className="text-xs text-red-500 dark:text-red-400 text-center py-3 px-2">
+                            {templatesError}
+                          </div>
+                        )}
+                        {!templatesLoading && !templatesError && templateList.length === 0 && (
+                          <div className="text-xs text-gray-400 dark:text-gray-500 text-center py-3">
+                            Nenhum template aprovado encontrado.
+                          </div>
+                        )}
+                        {!templatesLoading && templateList.map((tpl) => (
                           <button
-                            key={tpl.name}
+                            key={`${tpl.name}_${tpl.language}`}
                             onClick={() => handleSendTemplate(tpl.name, tpl.language)}
                             disabled={isSending}
                             className="w-full text-left p-2.5 rounded-lg hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors group disabled:opacity-50"
                           >
-                            <div className="flex items-center justify-between">
-                              <span className="text-sm font-medium text-gray-800 dark:text-gray-200">{tpl.displayName}</span>
-                              <Send className="w-3 h-3 text-gray-300 dark:text-gray-600 group-hover:text-[#25D366] transition-colors" />
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="min-w-0 flex-1">
+                                <span className="text-sm font-medium text-gray-800 dark:text-gray-200 block truncate">{tpl.name}</span>
+                                <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5 line-clamp-2">{tpl.preview}</p>
+                              </div>
+                              <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                                <Send className="w-3 h-3 text-gray-300 dark:text-gray-600 group-hover:text-[#25D366] transition-colors" />
+                                <span className="text-[9px] uppercase text-gray-400 dark:text-gray-500">{tpl.language}</span>
+                              </div>
                             </div>
-                            <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">{tpl.description}</p>
                           </button>
                         ))}
                       </div>
@@ -2252,8 +3378,115 @@ export default function ConversasModule() {
                   onAttachmentSelect={handleFileSelect}
                   onAttachmentRemove={handleRemoveAttachment}
                   disabled={isWindowExpired(selectedConversation)}
-                  onTemplateClick={() => setShowTemplateSelector(true)}
+                  onTemplateClick={() => {
+                    setShowTemplateSelector(true);
+                    if (templateList.length === 0 && !templatesLoading) fetchWhatsappTemplates();
+                  }}
+                  isInternalNote={isInternalNote}
+                  onToggleInternalNote={() => setIsInternalNote(prev => !prev)}
+                  onSnippetClick={() => setShowSnippets(true)}
                 />
+
+                {/* Snippets Popup */}
+                <AnimatePresence>
+                  {showSnippets && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 8 }}
+                      className="absolute bottom-20 left-4 right-4 max-h-64 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-2xl overflow-hidden z-30"
+                    >
+                      <div className="p-3 border-b border-gray-100 dark:border-gray-800">
+                        <div className="flex items-center gap-2">
+                          <Slash className="w-4 h-4 text-gray-400" />
+                          <input
+                            type="text"
+                            placeholder={t('conversations.searchSnippets', 'Buscar respostas rápidas...')}
+                            value={snippetSearch}
+                            onChange={(e) => setSnippetSearch(e.target.value)}
+                            className="flex-1 text-sm bg-transparent text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none"
+                            autoFocus
+                          />
+                          <button onClick={() => setShowSnippets(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                      <div className="overflow-y-auto max-h-48">
+                        {filteredSnippets.length === 0 ? (
+                          <div className="p-4 text-center text-xs text-gray-400 dark:text-gray-500">
+                            {snippets.length === 0 ? t('conversations.noSnippets', 'Nenhuma resposta rápida cadastrada') : t('conversations.noSnippetsFound', 'Nenhum resultado encontrado')}
+                          </div>
+                        ) : (
+                          filteredSnippets.map((s) => (
+                            <button
+                              key={s.id}
+                              onClick={() => handleInsertSnippet(s)}
+                              className="w-full text-left px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors border-b border-gray-50 dark:border-gray-800/50 last:border-0"
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-mono text-red-500 dark:text-red-400">/{s.shortcode}</span>
+                                {s.sectorId && (
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400">
+                                    {t('conversations.sectorLabel', 'setor')}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{s.content}</p>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {/* Sector Assignment Popup */}
+                <AnimatePresence>
+                  {showSectorAssign && sectors.length > 0 && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 8 }}
+                      className="absolute top-14 right-4 w-56 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-2xl overflow-hidden z-30"
+                    >
+                      <div className="px-3 py-2 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+                        <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">{t('conversations.assignSectorTitle', 'Atribuir Setor')}</span>
+                        <button onClick={() => setShowSectorAssign(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      <div className="py-1">
+                        {sectors.filter(s => s.isActive).map((sector) => (
+                          <button
+                            key={sector.id}
+                            onClick={() => handleAssignSector(sector.id)}
+                            className={cn(
+                              'w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors',
+                              selectedConversation?.assignedToSectorId === sector.id && 'bg-red-50 dark:bg-red-500/10'
+                            )}
+                          >
+                            <div className="w-3 h-3 rounded-full" style={{ backgroundColor: sector.color }} />
+                            <span className="text-gray-700 dark:text-gray-300 truncate">{sector.name}</span>
+                            {selectedConversation?.assignedToSectorId === sector.id && (
+                              <Check className="w-3.5 h-3.5 text-red-500 ml-auto" />
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                      {/* Toggle private */}
+                      <div className="px-3 py-2 border-t border-gray-100 dark:border-gray-800">
+                        <button
+                          onClick={handleTogglePrivate}
+                          className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
+                        >
+                          <Lock className="w-3.5 h-3.5" />
+                          {selectedConversation?.isPrivate ? t('conversations.makePublic', 'Tornar pública') : t('conversations.makePrivate', 'Tornar privada')}
+                        </button>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </motion.div>
             )}
           </AnimatePresence>
@@ -2263,6 +3496,92 @@ export default function ConversasModule() {
       {/* Settings Dialog */}
       <AnimatePresence>
         {showSettings && <IntegrationSettingsDialog onClose={() => setShowSettings(false)} />}
+      </AnimatePresence>
+
+      {/* Link Contact Drawer */}
+      <AnimatePresence>
+        {linkContactOpen && selectedConversation && business?.id && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setLinkContactOpen(false)}
+              className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm"
+            />
+            <LinkContactDrawer
+              conversation={selectedConversation}
+              clients={clientsList}
+              businessId={business.id}
+              onClose={() => setLinkContactOpen(false)}
+              onLinked={(clientId) => {
+                setSelectedConversation(prev => prev ? { ...prev, crmContactId: clientId || undefined } : prev);
+                setLinkContactOpen(false);
+              }}
+            />
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* Agent Debug Drawer */}
+      <AnimatePresence>
+        {agentDebugOpen && selectedConversation && business?.id && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setAgentDebugOpen(false)}
+              className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm"
+            />
+            <AgentDebugDrawer
+              businessId={business.id}
+              conversationId={selectedConversation.id}
+              onClose={() => setAgentDebugOpen(false)}
+            />
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* Delete conversation confirm */}
+      <AnimatePresence>
+        {deleteConfirmConv && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl shadow-2xl p-6"
+            >
+              <div className="w-12 h-12 rounded-2xl bg-red-50 dark:bg-red-500/10 flex items-center justify-center mx-auto mb-4">
+                <Trash2 className="w-6 h-6 text-red-500" />
+              </div>
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white text-center mb-2">Excluir conversa?</h3>
+              <p className="text-sm text-gray-500 dark:text-gray-400 text-center mb-6">
+                A conversa com <strong className="text-gray-700 dark:text-gray-300">{deleteConfirmConv.contactName}</strong> será ocultada. As mensagens ficam preservadas e a conversa pode ser restaurada se uma nova mensagem chegar.
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setDeleteConfirmConv(null)}
+                  className="flex-1 px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={executeDeleteConversation}
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors"
+                >
+                  Excluir
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
       </AnimatePresence>
     </div>
   );

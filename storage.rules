@@ -3,112 +3,95 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
 
-    // ============================================
-    // HELPER FUNCTIONS
-    // ============================================
-
-    // Check if user is authenticated
     function isAuthenticated() {
       return request.auth != null;
     }
 
-    // Get the user's businessId from their Firestore profile
-    function userBusinessId() {
-      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.businessId;
-    }
-
-    // Check if the user belongs to the specified business
-    function belongsToBusiness(businessId) {
-      return isAuthenticated() && userBusinessId() == businessId;
-    }
-
-    // Validate file size (in bytes)
     function isUnderSize(maxSizeMB) {
       return request.resource.size < maxSizeMB * 1024 * 1024;
     }
 
-    // Validate image content type
-    function isImage() {
-      return request.resource.contentType.matches('image/(jpeg|png|webp|gif|svg\\+xml)');
+    // Resolves the caller's businessId from the users/{uid} Firestore doc.
+    // Storage rules support firestore.get() and are cached per-invocation.
+    function userBusinessId() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.businessId;
     }
 
-    // Validate certificate file
+    function belongsToBusiness(businessId) {
+      return isAuthenticated() && userBusinessId() == businessId;
+    }
+
+    function isImage() {
+      return request.resource.contentType is string
+          && request.resource.contentType.lower().matches('image/.*');
+    }
+
     function isCertificate() {
       return request.resource.contentType.matches('application/x-pkcs12')
-             || request.resource.contentType.matches('application/octet-stream');
+          || request.resource.contentType.matches('application/octet-stream')
+          || request.resource.contentType.matches('application/.*');
     }
 
-    // ============================================
-    // USER AVATARS
-    // Path: users/{uid}/avatar
-    // ============================================
-    match /users/{userId}/{fileName} {
-      // Anyone authenticated can view user avatars (for team presence panels)
-      allow read: if isAuthenticated();
+    function isMedia() {
+      return request.resource.contentType is string
+          && (request.resource.contentType.lower().matches('image/.*')
+           || request.resource.contentType.lower().matches('video/.*')
+           || request.resource.contentType.lower().matches('audio/.*')
+           || request.resource.contentType == 'application/pdf');
+    }
 
-      // Users can only upload their own avatar
+    // ── User avatars ─────────────────────────────────────────────────────────
+    // Path: users/{uid}/avatar
+    match /users/{userId}/{fileName} {
+      allow read:  if isAuthenticated();
       allow write: if isAuthenticated()
                    && request.auth.uid == userId
                    && isImage()
-                   && isUnderSize(5); // Max 5MB
+                   && isUnderSize(5);
     }
 
-    // ============================================
-    // PRODUCT IMAGES
-    // Path: products/{businessId}/{productId}/{fileName}
-    // ============================================
-    match /products/{businessId}/{productId}/{fileName} {
-      // Only users in the same business can read product images
-      allow read: if isAuthenticated()
-                  && belongsToBusiness(businessId);
-
-      // Only users in the same business can upload product images
-      allow write: if isAuthenticated()
-                   && belongsToBusiness(businessId)
-                   && isImage()
-                   && isUnderSize(5); // Max 5MB
-
-      allow delete: if isAuthenticated()
-                    && belongsToBusiness(businessId);
-    }
-
-    // ============================================
-    // BUSINESS LOGOS
-    // Path: businesses/{businessId}/logo
-    // ============================================
-    match /businesses/{businessId}/{fileName} {
-      // Anyone authenticated can read business logos
-      allow read: if isAuthenticated();
-
-      // Only users in the same business can upload logos
-      allow write: if isAuthenticated()
-                   && belongsToBusiness(businessId)
-                   && isImage()
-                   && isUnderSize(5); // Max 5MB
-    }
-
-    // ============================================
-    // FISCAL CERTIFICATES (PFX)
+    // ── Fiscal certificates (PFX) ─────────────────────────────────────────────
     // Path: businesses/{businessId}/certificates/{fileName}
-    // ============================================
+    // More specific than the general businesses path below — matched first.
     match /businesses/{businessId}/certificates/{fileName} {
-      // Only users in the same business can read certificates
-      allow read: if isAuthenticated()
-                  && belongsToBusiness(businessId);
-
-      // Only users in the same business can upload certificates
-      allow write: if isAuthenticated()
-                   && belongsToBusiness(businessId)
-                   && (isCertificate() || request.resource.contentType.matches('application/.*'))
-                   && isUnderSize(10); // Max 10MB for PFX files
-
-      allow delete: if isAuthenticated()
-                    && belongsToBusiness(businessId);
+      allow read:   if belongsToBusiness(businessId);
+      allow write:  if belongsToBusiness(businessId)
+                    && isCertificate()
+                    && isUnderSize(10);
+      allow delete: if belongsToBusiness(businessId);
     }
 
-    // ============================================
-    // CATCH-ALL: Deny everything else
-    // ============================================
+    // ── General business files (logo, menu images, etc.) ─────────────────────
+    // Path: businesses/{businessId}/...
+    match /businesses/{businessId}/{path=**} {
+      allow read:   if belongsToBusiness(businessId);
+      allow write:  if belongsToBusiness(businessId) && isUnderSize(10);
+      allow delete: if belongsToBusiness(businessId);
+    }
+
+    // ── Product images ────────────────────────────────────────────────────────
+    // Path: products/{businessId}/{productId}/{fileName}
+    match /products/{businessId}/{productId}/{fileName} {
+      allow read:   if belongsToBusiness(businessId);
+      allow write:  if belongsToBusiness(businessId) && isImage() && isUnderSize(5);
+      allow delete: if belongsToBusiness(businessId);
+    }
+
+    // ── Conversation media (WhatsApp/FB/IG attachments) ───────────────────────
+    // Path: conversations/{businessId}/{conversationId}/{fileName}
+    match /conversations/{businessId}/{conversationId}/{fileName} {
+      allow read:  if belongsToBusiness(businessId);
+      allow write: if belongsToBusiness(businessId) && isMedia() && isUnderSize(25);
+    }
+
+    // ── Contact avatars (server-only via Admin SDK) ───────────────────────────
+    // Path: contactAvatars/{businessId}/...
+    match /contactAvatars/{businessId}/{rest=**} {
+      allow read:  if belongsToBusiness(businessId);
+      allow write: if false;
+    }
+
+    // ── Catch-all: deny everything else ──────────────────────────────────────
     match /{allPaths=**} {
       allow read, write: if false;
     }

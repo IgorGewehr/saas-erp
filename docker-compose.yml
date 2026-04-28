@@ -1,0 +1,84 @@
+# ServicePro Next.js app — Docker Compose stack.
+#
+# Uso:
+#   docker compose up -d                       — só o app, expõe porta 8756
+#   docker compose --profile tunnel up -d      — app + Cloudflare Tunnel
+#
+# Tunnel Setup (named, persistente):
+#   1. dash.cloudflare.com → Zero Trust → Networks → Tunnels → Create
+#   2. Nome: servicepro-app   (ou outro)
+#   3. Copie o token, coloque em .env:  CLOUDFLARE_TUNNEL_TOKEN=eyJ...
+#   4. No tunnel: Public Hostname
+#        Subdomain: app   (ou escolha o que quiser)
+#        Domain: seu-dominio.com
+#        Service → Type: HTTP   URL: app:3000
+#   5. docker compose --profile tunnel up -d
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
+        - NEXT_PUBLIC_FIREBASE_API_KEY=${NEXT_PUBLIC_FIREBASE_API_KEY}
+        - NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=${NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN}
+        - NEXT_PUBLIC_FIREBASE_PROJECT_ID=${NEXT_PUBLIC_FIREBASE_PROJECT_ID}
+        - NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=${NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET}
+        - NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=${NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID}
+        - NEXT_PUBLIC_FIREBASE_APP_ID=${NEXT_PUBLIC_FIREBASE_APP_ID}
+        - NEXT_PUBLIC_META_APP_ID=${NEXT_PUBLIC_META_APP_ID}
+    image: servicepro-app:latest
+    container_name: servicepro-app
+    restart: unless-stopped
+    # Porta host aleatória alta (evita conflito com outros containers que você roda)
+    # Porta interna do Next.js continua 3000 — host 8756 é só pra acesso local direto.
+    # Cloudflared (abaixo) alcança via nome do serviço na rede Docker, não precisa desse mapeamento.
+    ports:
+      - "${APP_PORT:-8756}:3000"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+    volumes:
+      # Sessões Baileys — precisam persistir entre restarts. Remova se usar só WhatsApp Cloud API.
+      - ./whatsapp-sessions:/app/whatsapp-sessions
+      # Se usa firebase-admin com service account file, monte aqui (não inclua na imagem):
+      - ./firebase-admin-service-account.json:/app/firebase-admin-service-account.json:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: "1536M"
+        reservations:
+          cpus: "0.5"
+          memory: "512M"
+    networks:
+      - app-net
+
+  # Cloudflare Tunnel pro Next.js — só sobe com --profile tunnel
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: servicepro-app-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --protocol http2
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - app-net
+    profiles:
+      - tunnel
+
+networks:
+  app-net:
+    driver: bridge
+    name: servicepro-app-net

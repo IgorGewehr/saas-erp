@@ -1,0 +1,61 @@
+# Dependências (reinstaladas no build)
+node_modules/
+.pnp
+.pnp.js
+npm-debug.log*
+
+# Build artifacts (keep .next/ — it's pre-built locally)
+# .next/  ← NOT excluded: pre-built output is packaged into the image
+out/
+build/
+dist/
+
+# Python agent (tem seu próprio Dockerfile em agent/)
+agent/
+
+# Git & control
+.git/
+.gitignore
+.gitattributes
+
+# Env files (montados via env_file no compose — não podem entrar na imagem)
+.env
+.env.*
+!.env.example
+
+# Development
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Logs / runtime data
+*.log
+whatsapp-sessions/
+
+# Testes (não precisa em prod)
+vitest.config.*
+__tests__/
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
+
+# Firebase service account (montado via volume em runtime)
+firebase-admin-service-account.json
+*.pem
+*.key
+
+# Docker-related (não precisa no build context)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Docs
+README.md
+AUDIT_REPORT.md
+*.md
+
+# Tsconfig artifacts
+tsconfig.tsbuildinfo
+.tsbuildinfo

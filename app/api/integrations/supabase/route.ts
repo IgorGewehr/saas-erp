@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
+import { getIntegrationKeys } from '@/lib/utils/integrationKeys';
 
 export async function GET(request: NextRequest) {
-  const apiKey = request.headers.get('x-api-key');
+  const auth = await verifyAuth(request);
+  if (isAuthError(auth)) return auth;
+
+  const keys = await getIntegrationKeys(auth.businessId, 'supabase');
+  const apiKey = keys?.apiKey || request.headers.get('x-api-key');
   if (!apiKey) {
-    return NextResponse.json({ error: 'API key required' }, { status: 401 });
+    return NextResponse.json({ error: 'Supabase integration not configured' }, { status: 400 });
   }
 
   try {

@@ -1,0 +1,173 @@
+/**
+ * Status-change → conversation notifier.
+ *
+ * Called by the UI after a DeliveryOrder or Appointment transitions state.
+ * Sends a canned, localized message via the conversation's original channel
+ * using the same dispatch pipeline as /api/conversations/send.
+ *
+ * Gating:
+ *  1. business.settings.aiAgent.notifyOnStatus must be true
+ *  2. the entity must have an associated conversationId
+ *  3. caller must be authenticated for the target business
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
+import { adminDb } from '@/lib/config/firebaseAdmin';
+import type {
+  Business, Conversation, DeliveryOrder, Appointment,
+  DeliveryOrderStatus, AppointmentStatus,
+} from '@/lib/types';
+
+interface NotifyBody {
+  businessId: string;
+  kind: 'order' | 'appointment';
+  id: string;
+  newStatus: DeliveryOrderStatus | AppointmentStatus;
+}
+
+const ORDER_TEMPLATES: Partial<Record<DeliveryOrderStatus, (o: DeliveryOrder) => string>> = {
+  preparando: (o) => `Olá ${firstName(o.clientName)}! Seu pedido #${o.number} já está sendo preparado 👨‍🍳`,
+  pronto: (o) => o.deliveryType === 'retirada'
+    ? `${firstName(o.clientName)}, seu pedido #${o.number} está pronto para retirada! 🎉`
+    : `Pedido #${o.number} pronto e aguardando o entregador.`,
+  saiu_entrega: (o) => `${firstName(o.clientName)}, seu pedido #${o.number} saiu para entrega 🏍️ Chegando em breve!`,
+  entregue: (o) => `Pedido #${o.number} entregue ✅ Muito obrigado pela preferência!`,
+  cancelado: (o) => `Olá ${firstName(o.clientName)}, seu pedido #${o.number} foi cancelado. Se foi um engano, é só nos chamar.`,
+};
+
+const APPOINTMENT_TEMPLATES: Partial<Record<AppointmentStatus, (a: Appointment) => string>> = {
+  confirmado: (a) => `Olá ${firstName(a.clientName)}! Seu horário de ${a.serviceName} dia ${fmtDate(a.date)} às ${a.startTime} está confirmado ✅`,
+  cancelado: (a) => `${firstName(a.clientName)}, seu horário de ${a.serviceName} em ${fmtDate(a.date)} às ${a.startTime} foi cancelado. Quer remarcar?`,
+  concluido: (a) => `Obrigado por escolher a gente, ${firstName(a.clientName)}! Esperamos você em breve 🙌`,
+  nao_compareceu: (a) => `${firstName(a.clientName)}, sentimos sua falta hoje! Quer remarcar seu ${a.serviceName}?`,
+};
+
+function firstName(full: string): string {
+  return (full || '').trim().split(/\s+/)[0] || '';
+}
+function fmtDate(iso: string): string {
+  if (!iso) return '';
+  const [y, m, d] = iso.split('-');
+  return `${d}/${m}/${y}`;
+}
+
+export async function POST(req: NextRequest) {
+  let body: NotifyBody;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ ok: false, error: 'Invalid JSON' }, { status: 400 });
+  }
+
+  const authResult = await verifyAuth(req, body.businessId);
+  if (isAuthError(authResult)) return authResult;
+
+  // Check setting — granular: orders use pedidos.notifyOnStatusChange
+  const bizSnap = await adminDb.collection('businesses').doc(body.businessId).get();
+  if (!bizSnap.exists) return NextResponse.json({ ok: false, error: 'Business not found' }, { status: 404 });
+  const business = bizSnap.data() as Business;
+  const aiAgent = business.settings?.aiAgent;
+  if (!aiAgent?.enabled) {
+    return NextResponse.json({ ok: true, data: { skipped: 'agent disabled' } });
+  }
+  const wantsOrderNotify = body.kind === 'order' && aiAgent.pedidos?.notifyOnStatusChange;
+  const wantsAppointmentNotify = body.kind === 'appointment'; // appointment notifications always on when agent enabled
+  if (!wantsOrderNotify && !wantsAppointmentNotify) {
+    return NextResponse.json({ ok: true, data: { skipped: 'notifications disabled for this kind' } });
+  }
+
+  // Fetch entity + build message
+  let message: string | null = null;
+  let conversationId: string | undefined;
+  let channel: Conversation['channel'] | undefined;
+  let recipientId: string | undefined;
+
+  if (body.kind === 'order') {
+    const snap = await adminDb.collection('deliveryOrders').doc(body.id).get();
+    if (!snap.exists) return NextResponse.json({ ok: false, error: 'Order not found' }, { status: 404 });
+    const o = snap.data() as DeliveryOrder;
+    if (o.businessId !== body.businessId) {
+      return NextResponse.json({ ok: false, error: 'Cross-tenant access denied' }, { status: 403 });
+    }
+    const tpl = ORDER_TEMPLATES[body.newStatus as DeliveryOrderStatus];
+    if (!tpl) return NextResponse.json({ ok: true, data: { skipped: 'no template for status' } });
+    message = tpl(o);
+    conversationId = o.conversationId;
+    recipientId = o.contactExternalId || o.clientPhone;
+  } else {
+    const snap = await adminDb.collection('appointments').doc(body.id).get();
+    if (!snap.exists) return NextResponse.json({ ok: false, error: 'Appointment not found' }, { status: 404 });
+    const a = snap.data() as Appointment;
+    if (a.businessId !== body.businessId) {
+      return NextResponse.json({ ok: false, error: 'Cross-tenant access denied' }, { status: 403 });
+    }
+    const tpl = APPOINTMENT_TEMPLATES[body.newStatus as AppointmentStatus];
+    if (!tpl) return NextResponse.json({ ok: true, data: { skipped: 'no template for status' } });
+    message = tpl(a);
+    // appointments don't have a conversationId on their own — look up by client phone
+    recipientId = a.clientPhone;
+  }
+
+  if (!message) return NextResponse.json({ ok: true, data: { skipped: 'no message' } });
+
+  // Resolve conversation — for appointments or orders without convId, find one by phone
+  if (!conversationId && recipientId) {
+    const convSnap = await adminDb.collection('conversations')
+      .where('businessId', '==', body.businessId)
+      .where('contactExternalId', '==', recipientId.replace(/\D/g, ''))
+      .orderBy('lastMessageAt', 'desc')
+      .limit(1)
+      .get();
+    if (!convSnap.empty) {
+      conversationId = convSnap.docs[0].id;
+      channel = (convSnap.docs[0].data() as Conversation).channel;
+    }
+  } else if (conversationId) {
+    const convSnap = await adminDb.collection('conversations').doc(conversationId).get();
+    if (convSnap.exists) channel = (convSnap.data() as Conversation).channel;
+  }
+
+  if (!conversationId || !channel || !recipientId) {
+    return NextResponse.json({ ok: true, data: { skipped: 'no conversation to notify' } });
+  }
+
+  // Dispatch via the existing send endpoint — we construct an internal HMAC-signed call
+  // because we don't have the user's Firebase ID token at this layer easily.
+  const { default: crypto } = await import('crypto');
+  const secret = process.env.AGENT_SHARED_SECRET;
+  if (!secret) {
+    return NextResponse.json({ ok: false, error: 'Notifier not configured' }, { status: 500 });
+  }
+  const sendBody = JSON.stringify({
+    businessId: body.businessId,
+    conversationId,
+    channel,
+    recipientId,
+    content: message,
+    type: 'text',
+  });
+  const ts = Date.now();
+  const sig = crypto.createHmac('sha256', secret).update(`${ts}.${body.businessId}.${sendBody}`).digest('hex');
+
+  const origin = req.nextUrl.origin;
+  try {
+    const resp = await fetch(`${origin}/api/conversations/send`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-agent-signature': sig,
+        'x-agent-timestamp': String(ts),
+        'x-business-id': body.businessId,
+      },
+      body: sendBody,
+    });
+    if (!resp.ok) {
+      const err = await resp.text();
+      return NextResponse.json({ ok: false, error: `send failed: ${err}` }, { status: 502 });
+    }
+    return NextResponse.json({ ok: true, data: { sent: true, message } });
+  } catch (err) {
+    return NextResponse.json({ ok: false, error: String(err) }, { status: 502 });
+  }
+}

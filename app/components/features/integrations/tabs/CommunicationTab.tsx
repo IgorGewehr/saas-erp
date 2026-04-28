@@ -6,11 +6,12 @@ import {
   Mail, Send, CheckCircle2, XCircle,
   Eye, MousePointer, ArrowRight, AlertCircle,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import type { IntegrationConfig } from '@/lib/types';
 import KPICard from '../shared/KPICard';
 import DemoDataBanner from '../shared/DemoDataBanner';
 import IntegrationSkeleton from '../shared/IntegrationSkeleton';
-import { formatNumber, timeAgo } from '../shared/utils';
+import { formatNumber, timeAgo, getAuthHeaders } from '../shared/utils';
 
 // ============================================
 // TYPES
@@ -31,7 +32,7 @@ interface EmailEntry {
 // DEMO DATA
 // ============================================
 const DEMO_EMAILS: EmailEntry[] = [
-  { id: 'e1', to: 'cliente@empresa.com', subject: 'Bem-vindo ao ServicePro!', status: 'delivered', sentAt: Date.now() - 1_200_000 },
+  { id: 'e1', to: 'cliente@empresa.com', subject: 'Bem-vindo ao Aevo!', status: 'delivered', sentAt: Date.now() - 1_200_000 },
   { id: 'e2', to: 'admin@contoso.com.br', subject: 'Relatorio Semanal - Marco 2026', status: 'delivered', sentAt: Date.now() - 3_600_000 },
   { id: 'e3', to: 'lead@startup.io', subject: 'Proposta Comercial - Plano Enterprise', status: 'delivered', sentAt: Date.now() - 7_200_000 },
   { id: 'e4', to: 'bounce@invalid.com', subject: 'Confirmacao de Agendamento', status: 'bounced', sentAt: Date.now() - 14_400_000 },
@@ -44,6 +45,7 @@ const DEMO_EMAILS: EmailEntry[] = [
 // COMPONENT
 // ============================================
 export default function CommunicationTab({ resendConfig }: CommunicationTabProps) {
+  const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -72,7 +74,7 @@ export default function CommunicationTab({ resendConfig }: CommunicationTabProps
     // Fetch Resend data
     if (resendConfig?.apiKey) {
       try {
-        const res = await fetch('/api/integrations/resend', { headers: { 'x-api-key': resendConfig.apiKey } });
+        const res = await fetch('/api/integrations/resend', { headers: { ...await getAuthHeaders(), 'x-api-key': resendConfig.apiKey } });
         if (res.ok) resendData = await res.json();
         else throw new Error('Resend API error');
       } catch {
@@ -82,7 +84,7 @@ export default function CommunicationTab({ resendConfig }: CommunicationTabProps
 
     const usingDemo = !resendData;
     if (usingDemo) {
-      setError('Usando dados de demonstracao. Configure a integracao Resend nas configuracoes Enterprise.');
+      setError(t('integrations.communication.demoMessage', 'Usando dados de demonstração. Configure a integração Resend nas configurações Enterprise.'));
     }
 
     // Resend data or demo
@@ -116,10 +118,10 @@ export default function CommunicationTab({ resendConfig }: CommunicationTabProps
   if (loading) return <IntegrationSkeleton rows={2} />;
 
   const emailStatusConfig: Record<string, { dot: string; label: string }> = {
-    delivered: { dot: 'bg-emerald-400', label: 'Entregue' },
-    sent: { dot: 'bg-blue-400', label: 'Enviado' },
-    bounced: { dot: 'bg-red-400', label: 'Bounce' },
-    complained: { dot: 'bg-amber-400', label: 'Spam' },
+    delivered: { dot: 'bg-emerald-400', label: t('integrations.communication.statusDelivered', 'Entregue') },
+    sent: { dot: 'bg-blue-400', label: t('integrations.communication.statusSent', 'Enviado') },
+    bounced: { dot: 'bg-red-400', label: t('integrations.communication.statusBounced', 'Bounce') },
+    complained: { dot: 'bg-amber-400', label: t('integrations.communication.statusComplained', 'Spam') },
   };
 
   return (
@@ -129,31 +131,37 @@ export default function CommunicationTab({ resendConfig }: CommunicationTabProps
       {/* Email KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <KPICard
-          title="E-mails Enviados (30d)"
+          title={t('integrations.kpi.emailsSent30d', 'E-mails Enviados (30d)')}
           value={formatNumber(emailsSent)}
           icon={<Send className="w-4 h-4" />}
           color="blue"
           delay={0}
         />
         <KPICard
-          title="Taxa de Entrega"
+          title={t('integrations.kpi.deliveryRate', 'Taxa de Entrega')}
           value={`${deliveryRate}%`}
           icon={<CheckCircle2 className="w-4 h-4" />}
           color="emerald"
           delay={0.05}
         />
         <KPICard
-          title="Taxa de Abertura"
+          title={t('integrations.kpi.openRate', 'Taxa de Abertura')}
           value={`${openRate}%`}
-          subtitle={`${formatNumber(opened)} abertos de ${formatNumber(delivered)} entregues`}
+          subtitle={t('integrations.communication.openedOf', '{{opened}} abertos de {{delivered}} entregues', {
+            opened: formatNumber(opened),
+            delivered: formatNumber(delivered),
+          })}
           icon={<Eye className="w-4 h-4" />}
           color="violet"
           delay={0.1}
         />
         <KPICard
-          title="Taxa de Clique"
+          title={t('integrations.kpi.clickRate', 'Taxa de Clique')}
           value={`${clickRate}%`}
-          subtitle={`${formatNumber(clicked)} cliques de ${formatNumber(opened)} abertos`}
+          subtitle={t('integrations.communication.clickedOf', '{{clicked}} cliques de {{opened}} abertos', {
+            clicked: formatNumber(clicked),
+            opened: formatNumber(opened),
+          })}
           icon={<MousePointer className="w-4 h-4" />}
           color="amber"
           delay={0.15}
@@ -166,14 +174,14 @@ export default function CommunicationTab({ resendConfig }: CommunicationTabProps
         <div className="surface rounded-2xl p-5">
           <h3 className="text-sm font-semibold font-display text-gray-900 dark:text-white mb-5 flex items-center gap-2">
             <Mail className="w-4 h-4 text-blue-500" />
-            Funil de Entrega
+            {t('integrations.communication.deliveryFunnel', 'Funil de Entrega')}
           </h3>
           <div className="space-y-3">
             {[
-              { label: 'Enviados', value: emailsSent, icon: <Send className="w-3.5 h-3.5" />, color: 'text-blue-500' },
-              { label: 'Entregues', value: delivered, icon: <CheckCircle2 className="w-3.5 h-3.5" />, color: 'text-emerald-500' },
-              { label: 'Abertos', value: opened, icon: <Eye className="w-3.5 h-3.5" />, color: 'text-violet-500' },
-              { label: 'Clicados', value: clicked, icon: <MousePointer className="w-3.5 h-3.5" />, color: 'text-amber-500' },
+              { label: t('integrations.communication.sent', 'Enviados'), value: emailsSent, icon: <Send className="w-3.5 h-3.5" />, color: 'text-blue-500' },
+              { label: t('integrations.communication.delivered', 'Entregues'), value: delivered, icon: <CheckCircle2 className="w-3.5 h-3.5" />, color: 'text-emerald-500' },
+              { label: t('integrations.communication.opened', 'Abertos'), value: opened, icon: <Eye className="w-3.5 h-3.5" />, color: 'text-violet-500' },
+              { label: t('integrations.communication.clicked', 'Clicados'), value: clicked, icon: <MousePointer className="w-3.5 h-3.5" />, color: 'text-amber-500' },
             ].map((step, i, arr) => {
               const pct = emailsSent > 0 ? Math.round(step.value / emailsSent * 100) : 0;
               return (
@@ -214,7 +222,7 @@ export default function CommunicationTab({ resendConfig }: CommunicationTabProps
                         <ArrowRight className="w-2.5 h-2.5 text-gray-300 dark:text-gray-600 rotate-90" />
                       </div>
                       <span className="text-[10px] text-gray-400">
-                        {arr[i + 1] && step.value > 0 ? `${Math.round(arr[i + 1].value / step.value * 100)}% conversao` : ''}
+                        {arr[i + 1] && step.value > 0 ? t('integrations.communication.conversion', '{{pct}}% conversão', { pct: Math.round(arr[i + 1].value / step.value * 100) }) : ''}
                       </span>
                     </div>
                   )}
@@ -227,12 +235,12 @@ export default function CommunicationTab({ resendConfig }: CommunicationTabProps
           <div className="mt-5 pt-4 border-t border-gray-100 dark:border-gray-800 flex gap-4">
             <div className="flex items-center gap-2">
               <div className="w-2 h-2 rounded-full bg-red-400" />
-              <span className="text-[11px] text-gray-500">Bounces: {bounced}</span>
+              <span className="text-[11px] text-gray-500">{t('integrations.communication.bounces', 'Bounces: {{count}}', { count: bounced })}</span>
               <span className="text-[10px] text-gray-400">({emailsSent > 0 ? (bounced / emailsSent * 100).toFixed(2) : 0}%)</span>
             </div>
             <div className="flex items-center gap-2">
               <div className="w-2 h-2 rounded-full bg-amber-400" />
-              <span className="text-[11px] text-gray-500">Reclamacoes: {complained}</span>
+              <span className="text-[11px] text-gray-500">{t('integrations.communication.complaints', 'Reclamações: {{count}}', { count: complained })}</span>
               <span className="text-[10px] text-gray-400">({emailsSent > 0 ? (complained / emailsSent * 100).toFixed(3) : 0}%)</span>
             </div>
           </div>
@@ -242,7 +250,7 @@ export default function CommunicationTab({ resendConfig }: CommunicationTabProps
         <div className="surface rounded-2xl p-5">
           <h3 className="text-sm font-semibold font-display text-gray-900 dark:text-white mb-4 flex items-center gap-2">
             <Send className="w-4 h-4 text-blue-500" />
-            E-mails Recentes
+            {t('integrations.communication.recentEmails', 'E-mails Recentes')}
           </h3>
           <div className="space-y-1.5">
             {recentEmails.map((email, i) => {

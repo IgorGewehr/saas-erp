@@ -15,6 +15,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import type { ConversationChannel, ChannelCredentials } from '@/lib/types';
+import { decryptToken } from '@/lib/utils/encryption';
+import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
+import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 
 // ─── Firebase init (server-side, client SDK) ─────────────────────────────────
 
@@ -46,9 +49,18 @@ interface TypingBody {
 // ─── POST Handler ────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
+  const clientIp = getClientIp(req);
+  const { allowed } = checkRateLimit(`typing:${clientIp}`, 60, 60_000);
+  if (!allowed) {
+    return NextResponse.json({ success: true, skipped: true, reason: 'Rate limited' });
+  }
+
   try {
     const body: TypingBody = await req.json();
     const { businessId, channel, recipientId } = body;
+
+    const authResult = await verifyAuth(req, businessId);
+    if (isAuthError(authResult)) return authResult;
 
     if (!businessId || !channel || !recipientId) {
       return NextResponse.json(
@@ -85,7 +97,7 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ error: 'Canal Facebook nao conectado' }, { status: 400 });
         }
 
-        const pageAccessToken = atob(facebook.pageAccessToken);
+        const pageAccessToken = await decryptToken(facebook.pageAccessToken);
         await fetch(`${META_BASE_URL}/me/messages`, {
           method: 'POST',
           headers: {
@@ -106,7 +118,7 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ error: 'Canal Instagram nao conectado' }, { status: 400 });
         }
 
-        const pageAccessToken = atob(facebook.pageAccessToken);
+        const pageAccessToken = await decryptToken(facebook.pageAccessToken);
         await fetch(`${META_BASE_URL}/me/messages`, {
           method: 'POST',
           headers: {

@@ -4,6 +4,7 @@ import './globals.css';
 import ThemeProvider from './components/providers/ThemeProvider';
 import QueryProvider from './components/providers/QueryProvider';
 import AuthProvider from './components/providers/AuthProvider';
+import I18nProvider from './components/providers/I18nProvider';
 import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 
@@ -21,8 +22,17 @@ const plusJakarta = Plus_Jakarta_Sans({
 });
 
 export const metadata: Metadata = {
-  title: 'ServicePro - Gestão para Prestadores de Serviço',
-  description: 'Sistema completo de gestão para prestadores de serviço: agenda, clientes, financeiro, estoque e fiscal.',
+  title: 'Aevo - Gestão Inteligente',
+  description: 'Plataforma completa de gestão e CRM omnichannel: agenda, clientes, financeiro, estoque, fiscal e atendimento via WhatsApp, Instagram e Messenger.',
+  icons: {
+    icon: [
+      { url: '/favicon.ico', sizes: '32x32' },
+      { url: '/icon.png', sizes: '512x512', type: 'image/png' },
+    ],
+    apple: [
+      { url: '/apple-icon.png', sizes: '180x180', type: 'image/png' },
+    ],
+  },
 };
 
 export default function RootLayout({
@@ -44,8 +54,9 @@ export default function RootLayout({
         <ThemeProvider>
           <QueryProvider>
             <AuthProvider>
-              {children}
-              <ToastContainer
+              <I18nProvider>
+                {children}
+                <ToastContainer
                 position="top-right"
                 autoClose={4000}
                 hideProgressBar={false}
@@ -56,7 +67,9 @@ export default function RootLayout({
                 draggable
                 pauseOnHover
                 theme="colored"
+                style={{ zIndex: 9999 }}
               />
+              </I18nProvider>
             </AuthProvider>
           </QueryProvider>
         </ThemeProvider>

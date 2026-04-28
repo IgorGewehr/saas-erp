@@ -7,11 +7,12 @@ import {
   CheckCircle2, XCircle, Loader2, Clock,
   BarChart3, Eye, Zap, Lock,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import type { IntegrationConfig } from '@/lib/types';
 import KPICard from '../shared/KPICard';
 import DemoDataBanner from '../shared/DemoDataBanner';
 import IntegrationSkeleton from '../shared/IntegrationSkeleton';
-import { formatNumber, timeAgo } from '../shared/utils';
+import { formatNumber, timeAgo, getAuthHeaders } from '../shared/utils';
 
 // ============================================
 // TYPES
@@ -75,6 +76,7 @@ const DEMO_DAILY_STATS: DailyTrafficStat[] = [
 // COMPONENT
 // ============================================
 export default function InfrastructureTab({ cloudflareConfig, vercelConfig, members }: InfrastructureTabProps) {
+  const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [deploys, setDeploys] = useState<DeployItem[]>([]);
@@ -107,7 +109,7 @@ export default function InfrastructureTab({ cloudflareConfig, vercelConfig, memb
     // Fetch Cloudflare data
     if (cloudflareConfig?.apiKey) {
       try {
-        const res = await fetch('/api/integrations/cloudflare', { headers: { 'x-api-key': cloudflareConfig.apiKey } });
+        const res = await fetch('/api/integrations/cloudflare', { headers: { ...await getAuthHeaders(), 'x-api-key': cloudflareConfig.apiKey } });
         if (res.ok) cfData = await res.json();
         else throw new Error('Cloudflare API error');
       } catch {
@@ -118,7 +120,7 @@ export default function InfrastructureTab({ cloudflareConfig, vercelConfig, memb
     // Fetch Vercel data
     if (vercelConfig?.apiKey) {
       try {
-        const res = await fetch('/api/integrations/vercel', { headers: { 'x-api-key': vercelConfig.apiKey } });
+        const res = await fetch('/api/integrations/vercel', { headers: { ...await getAuthHeaders(), 'x-api-key': vercelConfig.apiKey } });
         if (res.ok) vercelData = await res.json();
         else throw new Error('Vercel API error');
       } catch {
@@ -128,7 +130,7 @@ export default function InfrastructureTab({ cloudflareConfig, vercelConfig, memb
 
     const usingDemo = !cfData && !vercelData;
     if (usingDemo) {
-      setError('Usando dados de demonstracao. Configure as integracoes Cloudflare e Vercel nas configuracoes Enterprise.');
+      setError(t('integrations.infra.demoMessage', 'Usando dados de demonstração. Configure as integrações Cloudflare e Vercel nas configurações Enterprise.'));
     }
 
     // Cloudflare data or demo
@@ -187,9 +189,9 @@ export default function InfrastructureTab({ cloudflareConfig, vercelConfig, memb
   if (loading) return <IntegrationSkeleton rows={3} />;
 
   const deployStatusConfig: Record<string, { color: string; bg: string; label: string; icon: React.ReactNode }> = {
-    ready: { color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-400', label: 'Pronto', icon: <CheckCircle2 className="w-3.5 h-3.5" /> },
-    error: { color: 'text-red-600 dark:text-red-400', bg: 'bg-red-400', label: 'Erro', icon: <XCircle className="w-3.5 h-3.5" /> },
-    building: { color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-400', label: 'Building', icon: <Loader2 className="w-3.5 h-3.5 animate-spin" /> },
+    ready: { color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-400', label: t('integrations.infra.deployReady', 'Pronto'), icon: <CheckCircle2 className="w-3.5 h-3.5" /> },
+    error: { color: 'text-red-600 dark:text-red-400', bg: 'bg-red-400', label: t('integrations.infra.deployError', 'Erro'), icon: <XCircle className="w-3.5 h-3.5" /> },
+    building: { color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-400', label: t('integrations.infra.deployBuilding', 'Building'), icon: <Loader2 className="w-3.5 h-3.5 animate-spin" /> },
   };
 
   const zoneStatusConfig: Record<string, { bg: string; text: string }> = {
@@ -207,21 +209,21 @@ export default function InfrastructureTab({ cloudflareConfig, vercelConfig, memb
       {/* Infrastructure KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <KPICard
-          title="Requisicoes (30d)"
+          title={t('integrations.kpi.requests30d', 'Requisições (30d)')}
           value={formatNumber(kpis.totalRequests)}
           icon={<Activity className="w-4 h-4" />}
           color="violet"
           delay={0}
         />
         <KPICard
-          title="Cache Hit Rate"
+          title={t('integrations.kpi.cacheHitRate', 'Cache Hit Rate')}
           value={`${kpis.cacheHitRate}%`}
           icon={<Zap className="w-4 h-4" />}
           color="emerald"
           delay={0.05}
         />
         <KPICard
-          title="Threats Bloqueadas"
+          title={t('integrations.kpi.threatsBlocked', 'Threats Bloqueadas')}
           value={formatNumber(kpis.threatsBlocked)}
           icon={<Shield className="w-4 h-4" />}
           color="amber"
@@ -229,7 +231,7 @@ export default function InfrastructureTab({ cloudflareConfig, vercelConfig, memb
           warning={kpis.threatsBlocked > 2000}
         />
         <KPICard
-          title="Deploy Success Rate"
+          title={t('integrations.kpi.deploySuccessRate', 'Deploy Success Rate')}
           value={`${kpis.deploySuccessRate}%`}
           icon={<Rocket className="w-4 h-4" />}
           color="blue"
@@ -241,17 +243,17 @@ export default function InfrastructureTab({ cloudflareConfig, vercelConfig, memb
       <div className="surface rounded-2xl p-5">
         <h3 className="text-sm font-semibold font-display text-gray-900 dark:text-white mb-4 flex items-center gap-2">
           <Globe className="w-4 h-4 text-orange-500" />
-          Trafego & CDN (Cloudflare)
+          {t('integrations.infra.trafficCDN', 'Tráfego & CDN (Cloudflare)')}
         </h3>
 
         {/* Stats Row */}
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-5">
           {[
-            { label: 'Total Requests', value: formatNumber(kpis.totalRequests) },
-            { label: 'Cached', value: formatNumber(cfStats.cached) },
-            { label: 'Bandwidth', value: cfStats.bandwidth },
-            { label: 'Page Views', value: formatNumber(cfStats.pageViews) },
-            { label: 'Visitantes Unicos', value: formatNumber(cfStats.uniqueVisitors) },
+            { label: t('integrations.infra.totalRequests', 'Total Requests'), value: formatNumber(kpis.totalRequests) },
+            { label: t('integrations.infra.cached', 'Cached'), value: formatNumber(cfStats.cached) },
+            { label: t('integrations.infra.bandwidth', 'Bandwidth'), value: cfStats.bandwidth },
+            { label: t('integrations.infra.pageViews', 'Page Views'), value: formatNumber(cfStats.pageViews) },
+            { label: t('integrations.infra.uniqueVisitors', 'Visitantes Únicos'), value: formatNumber(cfStats.uniqueVisitors) },
           ].map((stat, i) => (
             <motion.div
               key={stat.label}
@@ -268,7 +270,7 @@ export default function InfrastructureTab({ cloudflareConfig, vercelConfig, memb
 
         {/* Daily Traffic Mini Bar Chart */}
         <div>
-          <p className="text-[11px] text-gray-400 mb-3 font-medium">Trafego diario (ultimos 7 dias)</p>
+          <p className="text-[11px] text-gray-400 mb-3 font-medium">{t('integrations.infra.dailyTraffic', 'Tráfego diário (últimos 7 dias)')}</p>
           <div className="flex items-end gap-2 h-24">
             {dailyStats.map((day, i) => {
               const pct = maxDailyRequests > 0 ? (day.requests / maxDailyRequests * 100) : 0;
@@ -304,7 +306,7 @@ export default function InfrastructureTab({ cloudflareConfig, vercelConfig, memb
       <div className="surface rounded-2xl p-5">
         <h3 className="text-sm font-semibold font-display text-gray-900 dark:text-white mb-4 flex items-center gap-2">
           <Rocket className="w-4 h-4" />
-          Deploy Pipeline
+          {t('integrations.infra.deployPipeline', 'Deploy Pipeline')}
         </h3>
         <div className="space-y-1.5">
           {deploys.map((deploy, i) => {
@@ -349,7 +351,7 @@ export default function InfrastructureTab({ cloudflareConfig, vercelConfig, memb
       <div className="surface rounded-2xl p-5">
         <h3 className="text-sm font-semibold font-display text-gray-900 dark:text-white mb-4 flex items-center gap-2">
           <Lock className="w-4 h-4 text-orange-500" />
-          Zonas & Dominios
+          {t('integrations.infra.zonesAndDomains', 'Zonas & Domínios')}
         </h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {zones.map((zone, i) => {
@@ -370,9 +372,9 @@ export default function InfrastructureTab({ cloudflareConfig, vercelConfig, memb
                 </div>
                 <div className="flex items-center gap-3">
                   <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${statusCfg.bg} ${statusCfg.text}`}>
-                    {zone.status === 'active' ? 'Ativo' : zone.status === 'pending' ? 'Pendente' : 'Inativo'}
+                    {zone.status === 'active' ? t('integrations.infra.zoneActive', 'Ativo') : zone.status === 'pending' ? t('integrations.infra.zonePending', 'Pendente') : t('integrations.infra.zoneInactive', 'Inativo')}
                   </span>
-                  <span className="text-[11px] text-gray-400">Plano {zone.plan}</span>
+                  <span className="text-[11px] text-gray-400">{t('integrations.infra.plan', 'Plano {{name}}', { name: zone.plan })}</span>
                 </div>
               </motion.div>
             );
