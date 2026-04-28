@@ -385,13 +385,13 @@ function ModuleCircle({
 
 // ─── Mini card ──────────────────────────────────────────────────────────────
 type AccentKey = 'amber' | 'orange' | 'pink' | 'rose' | 'cyan' | 'red';
-const ACCENT: Record<AccentKey, { bg: string; icon: string }> = {
-  amber:  { bg: 'bg-amber-50 dark:bg-amber-500/10',   icon: 'text-amber-600 dark:text-amber-400' },
-  orange: { bg: 'bg-orange-50 dark:bg-orange-500/10', icon: 'text-orange-600 dark:text-orange-400' },
-  pink:   { bg: 'bg-pink-50 dark:bg-pink-500/10',     icon: 'text-pink-600 dark:text-pink-400' },
-  rose:   { bg: 'bg-rose-50 dark:bg-rose-500/10',     icon: 'text-rose-600 dark:text-rose-400' },
-  cyan:   { bg: 'bg-cyan-50 dark:bg-cyan-500/10',     icon: 'text-cyan-600 dark:text-cyan-400' },
-  red:    { bg: 'bg-red-50 dark:bg-red-500/10',       icon: 'text-red-600 dark:text-red-400' },
+const ACCENT: Record<AccentKey, { bg: string; icon: string; line: string }> = {
+  amber:  { bg: 'bg-amber-50 dark:bg-amber-500/10',   icon: 'text-amber-600 dark:text-amber-400',   line: 'bg-amber-500 dark:bg-amber-400' },
+  orange: { bg: 'bg-orange-50 dark:bg-orange-500/10', icon: 'text-orange-600 dark:text-orange-400', line: 'bg-orange-500 dark:bg-orange-400' },
+  pink:   { bg: 'bg-pink-50 dark:bg-pink-500/10',     icon: 'text-pink-600 dark:text-pink-400',     line: 'bg-pink-500 dark:bg-pink-400' },
+  rose:   { bg: 'bg-rose-50 dark:bg-rose-500/10',     icon: 'text-rose-600 dark:text-rose-400',     line: 'bg-rose-500 dark:bg-rose-400' },
+  cyan:   { bg: 'bg-cyan-50 dark:bg-cyan-500/10',     icon: 'text-cyan-600 dark:text-cyan-400',     line: 'bg-cyan-500 dark:bg-cyan-400' },
+  red:    { bg: 'bg-red-50 dark:bg-red-500/10',       icon: 'text-red-600 dark:text-red-400',       line: 'bg-red-500 dark:bg-red-400' },
 };
 
 function MiniCard({
@@ -419,13 +419,23 @@ function MiniCard({
       whileTap={{ scale: 0.98 }}
       onClick={onClick}
       className={cn(
-        'group flex-1 min-w-0 max-w-[220px] rounded-xl px-3 py-2.5 text-left',
+        'group relative flex-1 min-w-0 max-w-[220px] rounded-xl px-3 py-2.5 text-left',
         'bg-white/60 dark:bg-gray-800/30',
         'border border-gray-200/60 dark:border-gray-700/40',
-        'hover:border-red-300/60 dark:hover:border-red-500/30',
+        'hover:border-gray-300 dark:hover:border-gray-600/60',
         'transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/30',
       )}
     >
+      {/* Top accent line — fica acima da borda, com cap rounded e inset dos lados */}
+      <span
+        className={cn(
+          'absolute -top-px inset-x-3 h-[2px] rounded-full transition-all',
+          a.line,
+          'group-hover:inset-x-2',
+        )}
+        aria-hidden
+      />
+
       <div className="flex items-center gap-2 mb-1">
         <div className={cn('w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0', a.bg)}>
           <Icon className={cn('w-3.5 h-3.5', a.icon)} strokeWidth={1.9} />
