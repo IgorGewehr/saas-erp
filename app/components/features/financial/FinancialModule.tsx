@@ -908,7 +908,7 @@ export default function FinancialModule() {
     } finally {
       setIsSaving(false);
     }
-  }, [business?.id, user, formType, formDescription, formCategory, formAmount, formDueDate, formPaymentDate, formPaymentMethod, formNotes, formClientName, formBankAccount, formStatus, formSectorId, formInstallments, formInstallmentInterval, editingTransaction, queryClient, t]);
+  }, [business?.id, user, formType, formDescription, formCategory, formAmount, formDueDate, formPaymentDate, formPaymentMethod, formNotes, formClientName, formBankAccount, formStatus, formSectorId, formInstallments, formInstallmentInterval, formRecurrence, formRecurrenceFrequency, formRecurrenceEndDate, formRecurrenceDay, formRecurrenceLabel, formAttachments, formFilesToUpload, formAttachmentsToDelete, editingTransaction, queryClient, t]);
 
   const handleDeleteTransaction = useCallback(async (id: string) => {
     if (!business?.id || !user) return;
