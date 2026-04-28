@@ -49,6 +49,7 @@ import {
   Crown,
   FileSpreadsheet,
   Download,
+  ChevronLeft,
   ChevronRight,
   Repeat,
   Scale,
@@ -221,6 +222,44 @@ export default function FinancialModule() {
   const isEnterprise = !!business?.enterprise?.isEnabled;
 
   const [activeTab, setActiveTab] = useState<FinancialTab>('visao-geral');
+
+  // ── Scrollable tab bar ────────────────────────────────────────────────────
+  // Use a callback ref (state) instead of useRef so effects re-run when the
+  // tab bar mounts — the module has an early-return skeleton that causes
+  // tabsRef.current to be null when effects first run on mount.
+  const [tabsEl, setTabsEl] = useState<HTMLDivElement | null>(null);
+  const [canScrollLeft,  setCanScrollLeft]  = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  const checkScroll = useCallback(() => {
+    if (!tabsEl) return;
+    setCanScrollLeft(tabsEl.scrollLeft > 1);
+    setCanScrollRight(tabsEl.scrollLeft + tabsEl.clientWidth < tabsEl.scrollWidth - 1);
+  }, [tabsEl]);
+
+  const scrollTabsBy = useCallback((amount: number) => {
+    tabsEl?.scrollBy({ left: amount, behavior: 'smooth' });
+  }, [tabsEl]);
+
+  // Wheel listener — re-runs when tabsEl appears (loading → loaded transition)
+  useEffect(() => {
+    if (!tabsEl) return;
+    checkScroll();
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY === 0) return;
+      e.preventDefault();
+      tabsEl.scrollLeft += e.deltaY;
+      checkScroll();
+    };
+    tabsEl.addEventListener('wheel', onWheel, { passive: false });
+    return () => tabsEl.removeEventListener('wheel', onWheel);
+  }, [tabsEl, checkScroll]);
+
+  useEffect(() => {
+    window.addEventListener('resize', checkScroll);
+    return () => window.removeEventListener('resize', checkScroll);
+  }, [checkScroll]);
+
   const [showForm, setShowForm] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [showBalances, setShowBalances] = useState(true);
@@ -809,16 +848,19 @@ export default function FinancialModule() {
         updatedByName: user.name,
         updatedBy: user.uid,
         updatedAt: now,
-        ...(formRecurrence && formDueDate && formInstallments <= 1 ? {
-          recurrence: {
+        // Use paymentDate as fallback when dueDate is missing (e.g. already-paid transaction being made recurrent)
+        recurrence: (() => {
+          const baseDate = formDueDate || formPaymentDate;
+          if (!formRecurrence || !baseDate || formInstallments > 1) return null;
+          return {
             frequency: formRecurrenceFrequency,
-            nextDueDate: computeNextDueDate(formDueDate, formRecurrenceFrequency, formRecurrenceDay ? parseInt(formRecurrenceDay, 10) : undefined),
+            nextDueDate: computeNextDueDate(baseDate, formRecurrenceFrequency, formRecurrenceDay ? parseInt(formRecurrenceDay, 10) : undefined),
             ...(formRecurrenceEndDate ? { endDate: formRecurrenceEndDate } : {}),
             isActive: true,
             ...(formRecurrenceDay ? { dayOfMonth: parseInt(formRecurrenceDay, 10) } : {}),
             ...(formRecurrenceLabel ? { label: formRecurrenceLabel } : {}),
-          },
-        } : {}),
+          };
+        })(),
       };
 
       if (editingTransaction) {
@@ -908,7 +950,7 @@ export default function FinancialModule() {
     } finally {
       setIsSaving(false);
     }
-  }, [business?.id, user, formType, formDescription, formCategory, formAmount, formDueDate, formPaymentDate, formPaymentMethod, formNotes, formClientName, formBankAccount, formStatus, formSectorId, formInstallments, formInstallmentInterval, editingTransaction, queryClient, t]);
+  }, [business?.id, user, formType, formDescription, formCategory, formAmount, formDueDate, formPaymentDate, formPaymentMethod, formNotes, formClientName, formBankAccount, formStatus, formSectorId, formInstallments, formInstallmentInterval, formRecurrence, formRecurrenceFrequency, formRecurrenceEndDate, formRecurrenceDay, formRecurrenceLabel, formAttachments, formFilesToUpload, formAttachmentsToDelete, editingTransaction, queryClient, t]);
 
   const handleDeleteTransaction = useCallback(async (id: string) => {
     if (!business?.id || !user) return;
@@ -1147,30 +1189,74 @@ export default function FinancialModule() {
         </div>
 
         {/* ===== TAB NAV ===== */}
-        <div className="flex gap-1 p-1.5 bg-white dark:bg-gray-900/80 border border-slate-200/80 dark:border-gray-800 rounded-2xl mb-6 overflow-x-auto shadow-sm backdrop-blur-sm">
-          {TABS.map((tab) => (
-            <button
-              key={tab.key}
-              onClick={() => setActiveTab(tab.key)}
-              className={cn(
-                'relative flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all duration-200',
-                activeTab === tab.key
-                  ? 'bg-gradient-to-r from-red-600 to-red-500 text-white shadow-md shadow-red-500/20'
-                  : 'text-slate-500 dark:text-gray-400 hover:text-slate-700 dark:hover:text-gray-300 hover:bg-slate-50 dark:hover:bg-white/[0.04]'
-              )}
-            >
-              {tab.icon}
-              {tab.label}
-              {tab.key === 'recorrentes' && urgentRecurringCount > 0 && (
-                <span className={cn(
-                  'min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold flex items-center justify-center leading-none',
-                  activeTab === 'recorrentes' ? 'bg-white/30 text-white' : 'bg-amber-500 text-white'
-                )}>
-                  {urgentRecurringCount}
-                </span>
-              )}
-            </button>
-          ))}
+        <div className="relative mb-6">
+          <AnimatePresence>
+            {canScrollLeft && (
+              <motion.div
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
+                className="absolute left-0 top-0 bottom-0 w-12 z-10 flex items-center justify-start pointer-events-none rounded-l-2xl bg-gradient-to-r from-white dark:from-gray-900 to-transparent"
+              >
+                <button
+                  type="button"
+                  onClick={() => scrollTabsBy(-160)}
+                  className="pointer-events-auto ml-1.5 w-7 h-7 rounded-full bg-white dark:bg-gray-700 shadow-md border border-gray-200 dark:border-gray-600 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <div
+            ref={setTabsEl}
+            onScroll={checkScroll}
+            className="overflow-x-auto scrollbar-hide"
+          >
+            <div className="flex gap-1 p-1.5 bg-white dark:bg-gray-900/80 border border-slate-200/80 dark:border-gray-800 rounded-2xl shadow-sm backdrop-blur-sm w-max min-w-full">
+              {TABS.map((tab) => (
+                <button
+                  key={tab.key}
+                  onClick={() => setActiveTab(tab.key)}
+                  className={cn(
+                    'relative flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all duration-200',
+                    activeTab === tab.key
+                      ? 'bg-gradient-to-r from-red-600 to-red-500 text-white shadow-md shadow-red-500/20'
+                      : 'text-slate-500 dark:text-gray-400 hover:text-slate-700 dark:hover:text-gray-300 hover:bg-slate-50 dark:hover:bg-white/[0.04]'
+                  )}
+                >
+                  {tab.icon}
+                  {tab.label}
+                  {tab.key === 'recorrentes' && urgentRecurringCount > 0 && (
+                    <span className={cn(
+                      'min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold flex items-center justify-center leading-none',
+                      activeTab === 'recorrentes' ? 'bg-white/30 text-white' : 'bg-amber-500 text-white'
+                    )}>
+                      {urgentRecurringCount}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <AnimatePresence>
+            {canScrollRight && (
+              <motion.div
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
+                className="absolute right-0 top-0 bottom-0 w-12 z-10 flex items-center justify-end pointer-events-none rounded-r-2xl bg-gradient-to-l from-white dark:from-gray-900 to-transparent"
+              >
+                <button
+                  type="button"
+                  onClick={() => scrollTabsBy(160)}
+                  className="pointer-events-auto mr-1.5 w-7 h-7 rounded-full bg-white dark:bg-gray-700 shadow-md border border-gray-200 dark:border-gray-600 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* ===== TAB CONTENT ===== */}
@@ -1318,26 +1404,91 @@ export default function FinancialModule() {
         fullWidth
         PaperProps={{ sx: { borderRadius: '20px', maxHeight: '90vh', backgroundColor: isDark ? '#111827' : undefined } }}
       >
-        <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', pb: 1, fontFamily: '"Plus Jakarta Sans", sans-serif', fontWeight: 700, color: isDark ? '#F1F5F9' : undefined }}>
-          <span>{editingTransaction ? t('financial.form.editTransaction', 'Editar Transação') : t('financial.form.newTransaction', 'Nova Transação')}</span>
-          <IconButton onClick={() => setShowForm(false)} size="small"><X size={20} className={isDark ? 'text-gray-400' : ''} /></IconButton>
-        </DialogTitle>
-        <Divider />
-        <DialogContent sx={{ pt: 3 }}>
+        {/* Custom header with type-color accent */}
+        <div className={cn(
+          'flex items-center justify-between px-6 pt-5 pb-4 border-b transition-colors duration-200',
+          formType === 'receita'
+            ? 'border-emerald-100 dark:border-emerald-900/40'
+            : 'border-red-100 dark:border-red-900/40',
+          isDark ? 'bg-gray-900' : 'bg-white'
+        )}>
+          <div className="flex items-center gap-3">
+            <div className={cn(
+              'w-9 h-9 rounded-xl flex items-center justify-center',
+              formType === 'receita'
+                ? 'bg-emerald-100 dark:bg-emerald-900/40'
+                : 'bg-red-100 dark:bg-red-900/40'
+            )}>
+              {formType === 'receita'
+                ? <ArrowUpRight size={18} className="text-emerald-600 dark:text-emerald-400" />
+                : <ArrowDownRight size={18} className="text-red-600 dark:text-red-400" />}
+            </div>
+            <h2 className="text-base font-bold font-display text-gray-900 dark:text-gray-100">
+              {editingTransaction ? t('financial.form.editTransaction', 'Editar Transação') : t('financial.form.newTransaction', 'Nova Transação')}
+            </h2>
+          </div>
+          <button onClick={() => setShowForm(false)} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+            <X size={18} className="text-gray-400 dark:text-gray-500" />
+          </button>
+        </div>
+
+        <DialogContent sx={{ pt: 2.5, pb: 2 }}>
           <div className="space-y-4">
-            {/* Type Toggle */}
-            <ToggleButtonGroup value={formType} exclusive onChange={(_, v) => v && setFormType(v)} size="small" fullWidth>
-              <ToggleButton value="receita" sx={{ gap: 1, borderRadius: '12px 0 0 12px', '&.Mui-selected': { backgroundColor: '#F0FDF4', color: '#166534', borderColor: '#BBF7D0', '&:hover': { backgroundColor: '#DCFCE7' } } }}>
-                <ArrowUpRight size={16} /> {t('financial.form.income', 'Receita')}
-              </ToggleButton>
-              <ToggleButton value="despesa" sx={{ gap: 1, borderRadius: '0 12px 12px 0', '&.Mui-selected': { backgroundColor: '#FEF2F2', color: '#991B1B', borderColor: '#FECACA', '&:hover': { backgroundColor: '#FEE2E2' } } }}>
-                <ArrowDownRight size={16} /> {t('financial.form.expense', 'Despesa')}
-              </ToggleButton>
-            </ToggleButtonGroup>
 
-            <TextField label={t('financial.form.description', 'Descrição')} value={formDescription} onChange={(e) => setFormDescription(e.target.value)} fullWidth required size="small" sx={inputSx} />
+            {/* ── Tipo ─────────────────────────────────────────────── */}
+            <div className={cn(
+              'flex rounded-2xl p-1 border transition-colors duration-200',
+              formType === 'receita'
+                ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800/40'
+                : 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800/40'
+            )}>
+              {([
+                { value: 'receita', label: t('financial.form.income', 'Receita'), Icon: ArrowUpRight, color: 'text-emerald-700 dark:text-emerald-400' },
+                { value: 'despesa', label: t('financial.form.expense', 'Despesa'), Icon: ArrowDownRight, color: 'text-red-600 dark:text-red-400' },
+              ] as const).map(({ value, label, Icon, color }) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setFormType(value)}
+                  className={cn(
+                    'flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-sm font-bold transition-all duration-200',
+                    formType === value
+                      ? cn('bg-white dark:bg-gray-900 shadow-sm', color)
+                      : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300'
+                  )}
+                >
+                  <Icon size={15} />
+                  {label}
+                </button>
+              ))}
+            </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            {/* ── Valor (destaque) ─────────────────────────────────── */}
+            <div className={cn(
+              'rounded-2xl px-4 py-3 border transition-colors duration-200',
+              formType === 'receita'
+                ? 'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/40'
+                : 'bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-800/40'
+            )}>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-1">Valor *</p>
+              <div className="flex items-center gap-2">
+                <span className={cn('text-xl font-bold leading-none', formType === 'receita' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>R$</span>
+                <input
+                  type="number"
+                  value={formAmount}
+                  onChange={e => setFormAmount(e.target.value)}
+                  placeholder="0,00"
+                  className="flex-1 bg-transparent text-2xl font-bold outline-none text-gray-900 dark:text-gray-100 placeholder-gray-200 dark:placeholder-gray-700 min-w-0"
+                />
+              </div>
+            </div>
+
+            {/* ── Descrição ─────────────────────────────────────────── */}
+            <TextField label={t('financial.form.description', 'Descrição *')} value={formDescription} onChange={(e) => setFormDescription(e.target.value)} fullWidth required size="small" sx={inputSx} />
+
+            {/* ── Categorização ─────────────────────────────────────── */}
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-2 px-0.5">Categoria</p>
               <FormControl fullWidth size="small">
                 <InputLabel>{t('financial.form.category', 'Categoria')}</InputLabel>
                 <Select value={formCategory} onChange={(e) => setFormCategory(e.target.value)} label={t('financial.form.category', 'Categoria')} sx={{ borderRadius: '12px' }}>
@@ -1346,47 +1497,55 @@ export default function FinancialModule() {
                   ))}
                 </Select>
               </FormControl>
-              <TextField label={t('financial.form.amount', 'Valor')} value={formAmount} onChange={(e) => setFormAmount(e.target.value)} type="number" fullWidth required size="small"
-                InputProps={{ startAdornment: <InputAdornment position="start"><span className="text-sm text-slate-400">R$</span></InputAdornment> }}
-                sx={inputSx}
-              />
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <TextField label={t('financial.form.dueDate', 'Vencimento')} type="date" value={formDueDate} onChange={(e) => setFormDueDate(e.target.value)} fullWidth required size="small" InputLabelProps={{ shrink: true }} sx={inputSx} />
-              <TextField label={t('financial.form.paymentDate', 'Pagamento')} type="date" value={formPaymentDate} onChange={(e) => setFormPaymentDate(e.target.value)} fullWidth size="small" InputLabelProps={{ shrink: true }} sx={inputSx}
-                helperText={t('financial.form.paymentDateHelper', 'Preencha se já foi pago')}
-              />
+            {/* ── Datas ─────────────────────────────────────────────── */}
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-2 px-0.5">Datas</p>
+              <div className="grid grid-cols-2 gap-3">
+                <TextField label={t('financial.form.dueDate', 'Vencimento')} type="date" value={formDueDate} onChange={(e) => setFormDueDate(e.target.value)} fullWidth required size="small" InputLabelProps={{ shrink: true }} sx={inputSx} />
+                <TextField label={t('financial.form.paymentDate', 'Pagamento')} type="date" value={formPaymentDate} onChange={(e) => setFormPaymentDate(e.target.value)} fullWidth size="small" InputLabelProps={{ shrink: true }} sx={inputSx}
+                  helperText={t('financial.form.paymentDateHelper', 'Preencha se já foi pago')}
+                />
+              </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <FormControl fullWidth size="small">
-                <InputLabel>{t('financial.form.paymentMethod', 'Forma de Pagamento')}</InputLabel>
-                <Select value={formPaymentMethod} onChange={(e) => setFormPaymentMethod(e.target.value as PaymentMethod | '')} label={t('financial.form.paymentMethod', 'Forma de Pagamento')} sx={{ borderRadius: '12px' }}>
-                  <MenuItem value=""><em>-</em></MenuItem>
-                  {PAYMENT_METHODS.map((pm) => (<MenuItem key={pm.value} value={pm.value}>{pm.label}</MenuItem>))}
-                </Select>
-              </FormControl>
-              <FormControl fullWidth size="small">
-                <InputLabel>{t('financial.form.status', 'Status')}</InputLabel>
-                <Select value={formStatus} onChange={(e) => setFormStatus(e.target.value as TransactionStatus)} label={t('financial.form.status', 'Status')} sx={{ borderRadius: '12px' }}>
-                  <MenuItem value="pendente">{t('financial.status.pending', 'Pendente')}</MenuItem>
-                  <MenuItem value="pago">{t('financial.status.paid', 'Pago')}</MenuItem>
-                  <MenuItem value="atrasado">{t('financial.status.overdue', 'Atrasado')}</MenuItem>
-                  <MenuItem value="cancelado">{t('financial.status.cancelled', 'Cancelado')}</MenuItem>
-                </Select>
-              </FormControl>
+            {/* ── Status e Pagamento ─────────────────────────────────── */}
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-2 px-0.5">Pagamento</p>
+              <div className="grid grid-cols-2 gap-3">
+                <FormControl fullWidth size="small">
+                  <InputLabel>{t('financial.form.status', 'Status')}</InputLabel>
+                  <Select value={formStatus} onChange={(e) => setFormStatus(e.target.value as TransactionStatus)} label={t('financial.form.status', 'Status')} sx={{ borderRadius: '12px' }}>
+                    <MenuItem value="pendente">{t('financial.status.pending', 'Pendente')}</MenuItem>
+                    <MenuItem value="pago">{t('financial.status.paid', 'Pago')}</MenuItem>
+                    <MenuItem value="atrasado">{t('financial.status.overdue', 'Atrasado')}</MenuItem>
+                    <MenuItem value="cancelado">{t('financial.status.cancelled', 'Cancelado')}</MenuItem>
+                  </Select>
+                </FormControl>
+                <FormControl fullWidth size="small">
+                  <InputLabel>{t('financial.form.paymentMethod', 'Forma de Pagamento')}</InputLabel>
+                  <Select value={formPaymentMethod} onChange={(e) => setFormPaymentMethod(e.target.value as PaymentMethod | '')} label={t('financial.form.paymentMethod', 'Forma de Pagamento')} sx={{ borderRadius: '12px' }}>
+                    <MenuItem value=""><em>-</em></MenuItem>
+                    {PAYMENT_METHODS.map((pm) => (<MenuItem key={pm.value} value={pm.value}>{pm.label}</MenuItem>))}
+                  </Select>
+                </FormControl>
+              </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <TextField label={t('financial.form.clientOptional', 'Cliente (opcional)')} value={formClientName} onChange={(e) => setFormClientName(e.target.value)} fullWidth size="small" sx={inputSx} />
-              <FormControl fullWidth size="small">
-                <InputLabel>{t('financial.form.bankAccount', 'Conta Bancária')}</InputLabel>
-                <Select value={formBankAccount} onChange={(e) => setFormBankAccount(e.target.value)} label={t('financial.form.bankAccount', 'Conta Bancária')} sx={{ borderRadius: '12px' }}>
-                  <MenuItem value=""><em>-</em></MenuItem>
-                  {bankAccounts.filter((a) => a.isActive).map((a) => (<MenuItem key={a.id} value={a.id}>{a.name} - {a.bankName}</MenuItem>))}
-                </Select>
-              </FormControl>
+            {/* ── Opcionais ─────────────────────────────────────────── */}
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-2 px-0.5">Opcionais</p>
+              <div className="grid grid-cols-2 gap-3">
+                <TextField label={t('financial.form.clientOptional', 'Cliente')} value={formClientName} onChange={(e) => setFormClientName(e.target.value)} fullWidth size="small" sx={inputSx} />
+                <FormControl fullWidth size="small">
+                  <InputLabel>{t('financial.form.bankAccount', 'Conta Bancária')}</InputLabel>
+                  <Select value={formBankAccount} onChange={(e) => setFormBankAccount(e.target.value)} label={t('financial.form.bankAccount', 'Conta Bancária')} sx={{ borderRadius: '12px' }}>
+                    <MenuItem value=""><em>-</em></MenuItem>
+                    {bankAccounts.filter((a) => a.isActive).map((a) => (<MenuItem key={a.id} value={a.id}>{a.name} - {a.bankName}</MenuItem>))}
+                  </Select>
+                </FormControl>
+              </div>
             </div>
 
             {isEnterprise && sectors.length > 0 && (
@@ -1595,15 +1754,36 @@ export default function FinancialModule() {
 
           </div>
         </DialogContent>
-        <Divider />
-        <DialogActions sx={{ px: 3, py: 2 }}>
-          <Button onClick={() => setShowForm(false)} sx={{ color: '#64748B', textTransform: 'none', fontWeight: 600, borderRadius: '12px' }}>{t('financial.form.cancel', 'Cancelar')}</Button>
-          <Button onClick={handleSaveTransaction} variant="contained" disabled={!formDescription || !formAmount || parseFloat(formAmount) <= 0 || isSaving}
-            sx={{ backgroundColor: '#DC2626', '&:hover': { backgroundColor: '#B91C1C' }, '&.Mui-disabled': { backgroundColor: '#FCA5A5', color: '#fff' }, borderRadius: '12px', textTransform: 'none', fontWeight: 700, px: 4 }}
+        <div className={cn(
+          'flex items-center justify-between px-6 py-4 border-t',
+          isDark ? 'border-gray-800 bg-gray-900' : 'border-gray-100 bg-white'
+        )}>
+          <button
+            onClick={() => setShowForm(false)}
+            className="px-5 py-2 rounded-xl text-sm font-semibold text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
           >
+            {t('financial.form.cancel', 'Cancelar')}
+          </button>
+          <button
+            onClick={handleSaveTransaction}
+            disabled={!formDescription || !formAmount || parseFloat(formAmount) <= 0 || isSaving}
+            className={cn(
+              'flex items-center gap-2 px-6 py-2 rounded-xl text-sm font-bold text-white transition-all',
+              formType === 'receita'
+                ? 'bg-emerald-600 hover:bg-emerald-700 shadow-sm shadow-emerald-200 dark:shadow-emerald-900/30'
+                : 'bg-red-600 hover:bg-red-700 shadow-sm shadow-red-200 dark:shadow-red-900/30',
+              (!formDescription || !formAmount || parseFloat(formAmount) <= 0 || isSaving) && 'opacity-40 cursor-not-allowed'
+            )}
+          >
+            {isSaving ? (
+              <motion.div animate={{ rotate: 360 }} transition={{ duration: 0.7, repeat: Infinity, ease: 'linear' }}
+                className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full" />
+            ) : (
+              formType === 'receita' ? <ArrowUpRight size={15} /> : <ArrowDownRight size={15} />
+            )}
             {isSaving ? t('financial.form.saving', 'Salvando...') : editingTransaction ? t('financial.form.save', 'Salvar') : t('financial.form.createTransaction', 'Criar Transação')}
-          </Button>
-        </DialogActions>
+          </button>
+        </div>
       </Dialog>
 
       {/* ===== FINANCIAL ALERTS MODAL ===== */}
@@ -1893,7 +2073,7 @@ export default function FinancialModule() {
 // TAB: VISAO GERAL
 // ==========================================
 
-type DashboardPeriod = '30d' | '3m' | '6m' | '12m';
+type DashboardPeriod = '30d' | '3m' | '6m' | '12m' | 'month';
 
 function OverviewContent({
   metrics,
@@ -1933,6 +2113,10 @@ function OverviewContent({
   const { t } = useTranslation();
   const hiddenValue = '******';
   const [dashboardPeriod, setDashboardPeriod] = useState<DashboardPeriod>('30d');
+  const [selectedMonth, setSelectedMonth] = useState<string>(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  });
   const [agingType, setAgingType] = useState<'ambos' | 'receber' | 'pagar'>('ambos');
   const [expandedAgingClient, setExpandedAgingClient] = useState<string | null>(null);
   const [dismissedRecurringBanner, setDismissedRecurringBanner] = useState(false);
@@ -1944,25 +2128,39 @@ function OverviewContent({
   }, [transactions]);
 
   // Period-filtered transactions for KPI + period-specific analytics
-  const periodDays: Record<DashboardPeriod, number> = { '30d': 30, '3m': 90, '6m': 180, '12m': 365 };
-  const days = periodDays[dashboardPeriod];
+  const periodDays: Record<Exclude<DashboardPeriod, 'month'>, number> = { '30d': 30, '3m': 90, '6m': 180, '12m': 365 };
 
   const { periodTx, prevTx } = useMemo(() => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const now = today.getTime() + 86400000; // End of today
-    const ms = days * 86400000;
-    const cutoffCurrent = now - ms;
-    const cutoffPrev = now - ms * 2;
-    const ref = (t: Transaction) => {
+    const txDate = (t: Transaction) => {
       const d = t.paymentDate || t.dueDate;
       return d ? new Date(d + 'T00:00:00').getTime() : 0;
     };
+
+    if (dashboardPeriod === 'month') {
+      const [y, m] = selectedMonth.split('-').map(Number);
+      const start = new Date(y, m - 1, 1).getTime();
+      const end   = new Date(y, m, 0, 23, 59, 59, 999).getTime();
+      const prevM = m === 1 ? 12 : m - 1;
+      const prevY = m === 1 ? y - 1 : y;
+      const prevStart = new Date(prevY, prevM - 1, 1).getTime();
+      const prevEnd   = new Date(prevY, prevM, 0, 23, 59, 59, 999).getTime();
+      return {
+        periodTx: transactions.filter(t => { const d = txDate(t); return d >= start && d <= end; }),
+        prevTx:   transactions.filter(t => { const d = txDate(t); return d >= prevStart && d <= prevEnd; }),
+      };
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const now = today.getTime() + 86400000;
+    const ms = periodDays[dashboardPeriod] * 86400000;
+    const cutoffCurrent = now - ms;
+    const cutoffPrev    = now - ms * 2;
     return {
-      periodTx: transactions.filter(t => ref(t) >= cutoffCurrent),
-      prevTx: transactions.filter(t => ref(t) >= cutoffPrev && ref(t) < cutoffCurrent),
+      periodTx: transactions.filter(t => txDate(t) >= cutoffCurrent),
+      prevTx:   transactions.filter(t => txDate(t) >= cutoffPrev && txDate(t) < cutoffCurrent),
     };
-  }, [transactions, days]);
+  }, [transactions, dashboardPeriod, selectedMonth, periodDays]);
 
   const periodMetrics = useMemo(() => {
     const paid = (arr: Transaction[], type: 'receita' | 'despesa') =>
@@ -2034,7 +2232,13 @@ function OverviewContent({
     t.status === 'pendente' && t.dueDate && new Date(t.dueDate + 'T00:00:00') < new Date()
   ).length;
 
-  const PERIOD_LABELS: Record<DashboardPeriod, string> = { '30d': 'Últ. 30 dias', '3m': 'Últ. 3 meses', '6m': 'Últ. 6 meses', '12m': 'Últ. 12 meses' };
+  const PERIOD_LABELS: Record<DashboardPeriod, string> = {
+    '30d': 'Últ. 30 dias', '3m': 'Últ. 3 meses', '6m': 'Últ. 6 meses', '12m': 'Últ. 12 meses',
+    'month': (() => {
+      const [y, m] = selectedMonth.split('-').map(Number);
+      return new Date(y, m - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+    })(),
+  };
 
   function DeltaBadge({ delta, invert = false }: { delta: number | null; invert?: boolean }) {
     if (delta === null) return null;
@@ -2086,7 +2290,7 @@ function OverviewContent({
       <DASWidget businessId={overviewBusinessId} onGoToDAS={onGoToDAS} />
 
       {/* Period selector */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <span className="text-xs text-slate-400 dark:text-gray-500 font-medium">Período:</span>
         <div className="flex items-center gap-1 p-1 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl">
           {(['30d', '3m', '6m', '12m'] as DashboardPeriod[]).map(p => (
@@ -2096,7 +2300,32 @@ function OverviewContent({
               )}
             >{PERIOD_LABELS[p]}</button>
           ))}
+          <button
+            onClick={() => setDashboardPeriod('month')}
+            className={cn('px-3 py-1 rounded-lg text-xs font-medium transition-all',
+              dashboardPeriod === 'month' ? 'bg-red-600 text-white shadow-sm' : 'text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800'
+            )}
+          >Mês específico</button>
         </div>
+        {/* Month/year picker — only visible when 'month' is selected */}
+        {dashboardPeriod === 'month' && (
+          <motion.div
+            initial={{ opacity: 0, x: -6 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -6 }}
+            transition={{ duration: 0.15 }}
+            className="flex items-center gap-1.5"
+          >
+            <input
+              type="month"
+              value={selectedMonth}
+              max={`${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`}
+              onChange={e => setSelectedMonth(e.target.value)}
+              className="px-2.5 py-1 rounded-lg text-xs font-medium bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 text-slate-700 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-red-400/30 focus:border-red-300 dark:focus:border-red-700 transition-all"
+              style={{ colorScheme: 'dark' }}
+            />
+          </motion.div>
+        )}
       </div>
 
       {/* KPI Cards */}

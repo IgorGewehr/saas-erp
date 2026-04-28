@@ -15,6 +15,8 @@ import {
   updateDoc,
   deleteDoc,
   doc,
+  writeBatch,
+  getDocs,
 } from 'firebase/firestore';
 import { db, storage } from '@/lib/config/firebase';
 import { ref, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
@@ -80,14 +82,17 @@ import {
   ToggleLeft,
   ToggleRight,
   RotateCcw,
+  ArrowRightLeft,
+  MoreVertical,
+  Pencil,
 } from 'lucide-react';
 
 // ─── Priority Config ──────────────────────────────────────
-const PRIORITY_CONFIG: Record<KanbanPriority, { label: string; color: string; bgColor: string; icon: React.ElementType }> = {
-  urgent: { label: 'Urgente', color: 'text-red-600 dark:text-red-400', bgColor: 'bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/20', icon: Flame },
-  high:   { label: 'Alta',    color: 'text-orange-600 dark:text-orange-400', bgColor: 'bg-orange-50 dark:bg-orange-500/10 border-orange-200 dark:border-orange-500/20', icon: ArrowUp },
-  medium: { label: 'Média',   color: 'text-blue-600 dark:text-blue-400', bgColor: 'bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-500/20', icon: Minus },
-  low:    { label: 'Baixa',   color: 'text-gray-500 dark:text-gray-400', bgColor: 'bg-gray-50 dark:bg-gray-800/50 border-gray-200 dark:border-gray-700', icon: ArrowDown },
+const PRIORITY_CONFIG: Record<KanbanPriority, { label: string; color: string; bgColor: string; icon: React.ElementType; accentHex: string; cardBg: string }> = {
+  urgent: { label: 'Urgente', color: 'text-red-600 dark:text-red-400',    bgColor: 'bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/20',       icon: Flame,   accentHex: '#EF4444', cardBg: 'bg-red-50/80 dark:bg-red-500/[0.06]'    },
+  high:   { label: 'Alta',    color: 'text-orange-600 dark:text-orange-400', bgColor: 'bg-orange-50 dark:bg-orange-500/10 border-orange-200 dark:border-orange-500/20', icon: ArrowUp, accentHex: '#F97316', cardBg: 'bg-orange-50/80 dark:bg-orange-500/[0.06]' },
+  medium: { label: 'Média',   color: 'text-blue-600 dark:text-blue-400',  bgColor: 'bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-500/20',   icon: Minus,   accentHex: '#3B82F6', cardBg: 'bg-blue-50/80 dark:bg-blue-500/[0.06]'  },
+  low:    { label: 'Baixa',   color: 'text-gray-500 dark:text-gray-400',  bgColor: 'bg-gray-50 dark:bg-gray-800/50 border-gray-200 dark:border-gray-700',     icon: ArrowDown, accentHex: '#9CA3AF', cardBg: 'bg-gray-50/50 dark:bg-gray-700/[0.10]'  },
 };
 
 // ─── Priority label translation keys ─────────────────────
@@ -302,18 +307,24 @@ function KanbanCardItem({
   members,
   onOpen,
   onDragStart,
+  onDragOverCard,
+  onDropOnCard,
   isDragging,
 }: {
   card: KanbanCard;
   members: MemberDisplay[];
   onOpen: () => void;
   onDragStart: (e: React.DragEvent, card: KanbanCard) => void;
+  onDragOverCard: (e: React.DragEvent, card: KanbanCard, position: 'before' | 'after') => void;
+  onDropOnCard: (e: React.DragEvent, card: KanbanCard) => void;
   isDragging: boolean;
 }) {
   const checkDone = card.checklist?.filter(c => c.completed).length ?? 0;
   const checkTotal = card.checklist?.length ?? 0;
   const hasChecklist = checkTotal > 0;
   const checkPercent = hasChecklist ? Math.round((checkDone / checkTotal) * 100) : 0;
+  const priorityCfg = PRIORITY_CONFIG[card.priority];
+  const PriorityIcon = priorityCfg.icon;
 
   return (
     <motion.div
@@ -324,15 +335,24 @@ function KanbanCardItem({
       exit="exit"
       draggable
       onDragStart={(e) => onDragStart(e as unknown as React.DragEvent, card)}
+      onDragOver={(e) => {
+        e.preventDefault(); e.stopPropagation();
+        const rect = e.currentTarget.getBoundingClientRect();
+        const position = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+        onDragOverCard(e as unknown as React.DragEvent, card, position);
+      }}
+      onDrop={(e) => onDropOnCard(e as unknown as React.DragEvent, card)}
       onClick={onOpen}
       className={cn(
-        'group relative bg-white dark:bg-gray-900 rounded-xl border border-gray-200/80 dark:border-gray-700/50',
+        'group relative rounded-xl border border-gray-200/80 dark:border-gray-700/50',
+        priorityCfg.cardBg,
         'shadow-[0_1px_3px_rgba(0,0,0,0.04)] hover:shadow-[0_4px_12px_rgba(0,0,0,0.08)] dark:shadow-[0_1px_3px_rgba(0,0,0,0.2)] dark:hover:shadow-[0_4px_12px_rgba(0,0,0,0.3)]',
         'cursor-grab active:cursor-grabbing',
         'transition-shadow duration-200',
         'hover:border-gray-300/80 dark:hover:border-gray-600',
         isDragging && 'opacity-40 scale-95 rotate-1'
       )}
+      style={{ borderLeft: `3px solid ${priorityCfg.accentHex}` }}
     >
       {/* Cover color strip */}
       {card.coverColor && (
@@ -357,10 +377,20 @@ function KanbanCardItem({
           </div>
         )}
 
-        {/* Title */}
-        <p className="text-sm font-medium text-gray-900 dark:text-gray-100 leading-snug pr-4">
-          {card.title}
-        </p>
+        {/* Title + priority */}
+        <div className="flex items-start gap-1.5 pr-4">
+          <p className="flex-1 text-sm font-medium text-gray-900 dark:text-gray-100 leading-snug">
+            {card.title}
+          </p>
+          <PriorityIcon className={cn('w-3.5 h-3.5 flex-shrink-0 mt-0.5', priorityCfg.color)} />
+        </div>
+
+        {/* Description preview */}
+        {card.description && (
+          <p className="text-xs text-gray-400 dark:text-gray-500 leading-relaxed line-clamp-2">
+            {card.description}
+          </p>
+        )}
 
         {/* Checklist progress bar */}
         {hasChecklist && (
@@ -388,8 +418,6 @@ function KanbanCardItem({
         {/* Meta row */}
         <div className="flex items-center justify-between gap-2 pt-0.5">
           <div className="flex items-center gap-1.5 flex-wrap">
-            <PriorityBadge priority={card.priority} compact />
-
             {card.dueDate && <DueDateBadge date={card.dueDate} />}
 
             {card.commentsCount > 0 && (
@@ -435,8 +463,12 @@ function KanbanColumnComponent({
   onDragStart,
   onDragOver,
   onDrop,
+  onDragOverCard,
+  onDropOnCard,
   dragOverColumnId,
   draggingCardId,
+  dragOverCardId,
+  dragOverPosition,
 }: {
   column: KanbanColumn;
   cards: KanbanCard[];
@@ -447,8 +479,12 @@ function KanbanColumnComponent({
   onDragStart: (e: React.DragEvent, card: KanbanCard) => void;
   onDragOver: (e: React.DragEvent, columnId: string) => void;
   onDrop: (e: React.DragEvent, columnId: string) => void;
+  onDragOverCard: (e: React.DragEvent, card: KanbanCard, position: 'before' | 'after') => void;
+  onDropOnCard: (e: React.DragEvent, card: KanbanCard) => void;
   dragOverColumnId: string | null;
   draggingCardId: string | null;
+  dragOverCardId: string | null;
+  dragOverPosition: 'before' | 'after' | null;
 }) {
   const { t } = useTranslation();
   const isOverLimit = column.cardLimit ? cards.length >= column.cardLimit : false;
@@ -525,16 +561,34 @@ function KanbanColumnComponent({
         )}
       >
         <AnimatePresence mode="popLayout">
-          {cards.map(card => (
-            <KanbanCardItem
-              key={card.id}
-              card={card}
-              members={members}
-              onOpen={() => onCardOpen(card)}
-              onDragStart={onDragStart}
-              isDragging={draggingCardId === card.id}
-            />
-          ))}
+          {cards.flatMap(card => {
+            const isTarget = dragOverCardId === card.id && draggingCardId !== card.id;
+            const indicatorEl = (key: string) => (
+              <motion.div
+                key={key}
+                layout
+                initial={{ opacity: 0, scaleY: 0 }}
+                animate={{ opacity: 1, scaleY: 1 }}
+                exit={{ opacity: 0, scaleY: 0 }}
+                transition={{ duration: 0.12 }}
+                className="h-0.5 bg-blue-400 dark:bg-blue-500 rounded-full mx-1 origin-top"
+              />
+            );
+            return [
+              isTarget && dragOverPosition === 'before' ? indicatorEl(`${card.id}-before`) : null,
+              <KanbanCardItem
+                key={card.id}
+                card={card}
+                members={members}
+                onOpen={() => onCardOpen(card)}
+                onDragStart={onDragStart}
+                onDragOverCard={onDragOverCard}
+                onDropOnCard={onDropOnCard}
+                isDragging={draggingCardId === card.id}
+              />,
+              isTarget && dragOverPosition === 'after' ? indicatorEl(`${card.id}-after`) : null,
+            ].filter((el): el is React.ReactElement => el !== null);
+          })}
         </AnimatePresence>
 
         {/* Empty state */}
@@ -568,19 +622,23 @@ function CardDetailDialog({
   columns,
   currentUser,
   members,
+  boards,
   onClose,
   onUpdate,
   onDelete,
   onSaveTemplate,
+  onMoveToBoard,
 }: {
   card: KanbanCard;
   columns: KanbanColumn[];
   currentUser: User | null;
   members: MemberDisplay[];
+  boards?: KanbanBoard[];
   onClose: () => void;
   onUpdate: (updated: KanbanCard) => void;
   onDelete: (id: string) => void;
   onSaveTemplate?: (card: KanbanCard, name: string) => void;
+  onMoveToBoard?: (cardId: string, targetBoardId: string, targetColumnId: string) => Promise<void>;
 }) {
   const { t } = useTranslation();
   const [editingTitle, setEditingTitle] = useState(false);
@@ -600,6 +658,9 @@ function CardDetailDialog({
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [showSaveTemplate, setShowSaveTemplate] = useState(false);
   const [templateName, setTemplateName] = useState('');
+  const [showBoardPicker, setShowBoardPicker] = useState(false);
+  const [pickerBoardId, setPickerBoardId] = useState<string | null>(null);
+  const [movingToBoard, setMovingToBoard] = useState(false);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const commentInputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1306,6 +1367,94 @@ function CardDetailDialog({
                   </div>
                 )}
 
+                {/* Move to board */}
+                {boards && boards.filter(b => b.id !== card.boardId && !b.isArchived).length > 0 && onMoveToBoard && (
+                  <div className="pt-2 border-t border-gray-100 dark:border-gray-800">
+                    {!showBoardPicker ? (
+                      <button
+                        onClick={() => setShowBoardPicker(true)}
+                        className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-lg text-xs font-medium text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
+                      >
+                        <ArrowRightLeft className="w-3.5 h-3.5" />
+                        {t('kanban.moveToBoard', 'Mover para board')}
+                      </button>
+                    ) : (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between mb-1">
+                          <p className="text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">
+                            {pickerBoardId
+                              ? t('kanban.selectColumn', 'Selecionar coluna')
+                              : t('kanban.selectBoard', 'Selecionar board')}
+                          </p>
+                          <button
+                            onClick={() => { setShowBoardPicker(false); setPickerBoardId(null); }}
+                            className="p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+
+                        {!pickerBoardId ? (
+                          // Board list
+                          <div className="space-y-0.5">
+                            {boards
+                              .filter(b => b.id !== card.boardId && !b.isArchived)
+                              .map(board => (
+                                <button
+                                  key={board.id}
+                                  onClick={() => setPickerBoardId(board.id)}
+                                  className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-lg text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
+                                >
+                                  <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: board.color }} />
+                                  <span className="flex-1 truncate text-left">{board.name}</span>
+                                  <ChevronRight className="w-3.5 h-3.5 flex-shrink-0 text-gray-400" />
+                                </button>
+                              ))}
+                          </div>
+                        ) : (
+                          // Column list for selected board
+                          <div className="space-y-0.5">
+                            <button
+                              onClick={() => setPickerBoardId(null)}
+                              className="flex items-center gap-1.5 text-[11px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors mb-1"
+                            >
+                              <ChevronLeft className="w-3.5 h-3.5" />
+                              {t('kanban.back', 'Voltar')}
+                            </button>
+                            {(() => {
+                              const targetBoard = boards.find(b => b.id === pickerBoardId);
+                              if (!targetBoard) return null;
+                              return [...targetBoard.columns]
+                                .sort((a, b) => a.order - b.order)
+                                .map(col => (
+                                  <button
+                                    key={col.id}
+                                    disabled={movingToBoard}
+                                    onClick={async () => {
+                                      setMovingToBoard(true);
+                                      await onMoveToBoard(card.id, pickerBoardId, col.id);
+                                      setMovingToBoard(false);
+                                      setShowBoardPicker(false);
+                                      setPickerBoardId(null);
+                                    }}
+                                    className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-lg text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors disabled:opacity-50"
+                                  >
+                                    {movingToBoard ? (
+                                      <Loader2 className="w-3 h-3 animate-spin text-gray-400 flex-shrink-0" />
+                                    ) : (
+                                      <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: col.color }} />
+                                    )}
+                                    <span className="flex-1 truncate text-left">{col.title}</span>
+                                  </button>
+                                ));
+                            })()}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Actions */}
                 <div className="pt-2 border-t border-gray-100 dark:border-gray-800">
                   {showDeleteConfirm ? (
@@ -1440,23 +1589,6 @@ function NewCardDialog({
             </button>
           </div>
 
-          {/* Template picker */}
-          {templates && templates.length > 0 && (
-            <div>
-              <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">{t('kanban.template.useTemplate', 'Usar template (opcional)')}</label>
-              <select
-                defaultValue=""
-                onChange={(e) => { if (e.target.value) applyTemplate(e.target.value); }}
-                className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-300 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30 focus:ring-2 focus:ring-red-100 dark:focus:ring-red-500/20"
-              >
-                <option value="">{t('kanban.template.noTemplate', '— Sem template —')}</option>
-                {templates.map(tmpl => (
-                  <option key={tmpl.id} value={tmpl.id}>{tmpl.name}</option>
-                ))}
-              </select>
-            </div>
-          )}
-
           {/* Title */}
           <div>
             <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">{t('kanban.titleLabel', 'Título *')}</label>
@@ -1518,6 +1650,23 @@ function NewCardDialog({
               />
             </div>
           </div>
+
+          {/* Template picker */}
+          {templates && templates.length > 0 && (
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5">{t('kanban.template.useTemplate', 'Usar template (opcional)')}</label>
+              <select
+                defaultValue=""
+                onChange={(e) => { if (e.target.value) applyTemplate(e.target.value); }}
+                className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-300 focus:outline-none focus:border-red-200 dark:focus:border-red-500/30 focus:ring-2 focus:ring-red-100 dark:focus:ring-red-500/20"
+              >
+                <option value="">{t('kanban.template.noTemplate', '— Sem template —')}</option>
+                {templates.map(tmpl => (
+                  <option key={tmpl.id} value={tmpl.id}>{tmpl.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* Labels */}
           <div>
@@ -2060,6 +2209,10 @@ function BoardHeader({
   onViewModeChange,
   urgentTaskCount,
   onOpenAutomations,
+  draggingCard,
+  onDropCardToBoard,
+  onRenameBoard,
+  onDeleteBoard,
 }: {
   boards: KanbanBoard[];
   activeBoard: KanbanBoard;
@@ -2082,11 +2235,44 @@ function BoardHeader({
   onViewModeChange: (v: KanbanViewMode) => void;
   urgentTaskCount?: number;
   onOpenAutomations?: () => void;
+  draggingCard?: KanbanCard | null;
+  onDropCardToBoard?: (card: KanbanCard, targetBoardId: string) => void;
+  onRenameBoard?: (id: string, name: string) => void;
+  onDeleteBoard?: (id: string) => void;
 }) {
   const { t } = useTranslation();
   const [showFilters, setShowFilters] = useState(false);
   const [showArchivedDropdown, setShowArchivedDropdown] = useState(false);
+  const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
+  const [showBoardOptions, setShowBoardOptions] = useState(false);
+  const [renamingBoardId, setRenamingBoardId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const boardOptionsRef = useRef<HTMLDivElement>(null);
   const hasFilters = filterPriority !== 'all' || filterAssignee !== 'all' || searchQuery.trim() !== '';
+
+  useEffect(() => {
+    if (!showBoardOptions) return;
+    const handler = (e: MouseEvent) => {
+      if (boardOptionsRef.current && !boardOptionsRef.current.contains(e.target as Node)) {
+        setShowBoardOptions(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showBoardOptions]);
+
+  const startRename = () => {
+    setRenameValue(activeBoard.name);
+    setRenamingBoardId(activeBoard.id);
+    setShowBoardOptions(false);
+  };
+
+  const commitRename = () => {
+    if (renamingBoardId && renameValue.trim() && onRenameBoard) {
+      onRenameBoard(renamingBoardId, renameValue.trim());
+    }
+    setRenamingBoardId(null);
+  };
 
   return (
     <div className="space-y-3">
@@ -2094,48 +2280,142 @@ function BoardHeader({
       <div className="flex items-center justify-between gap-4 flex-wrap">
         {/* Board tabs */}
         <div className="flex items-center gap-1 bg-gray-100/80 dark:bg-gray-800/80 p-1 rounded-xl">
-          {boards.map(board => (
-            <button
+          {boards.map(board => {
+            const isActive = activeBoard.id === board.id;
+            const isDragTarget = dragOverTabId === board.id && !isActive && !!draggingCard;
+            const isRenaming = renamingBoardId === board.id;
+            return (
+            <div
               key={board.id}
-              onClick={() => onSelectBoard(board.id)}
               className={cn(
-                'relative px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200',
-                activeBoard.id === board.id
-                  ? 'text-white'
-                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-white/50 dark:hover:bg-white/[0.04]'
+                'relative rounded-lg transition-all duration-200 group/tab',
+                isActive ? 'text-white' : isDragTarget
+                  ? 'text-white ring-2 ring-emerald-400 ring-offset-1 ring-offset-transparent scale-105'
+                  : 'text-gray-500 dark:text-gray-400',
+                draggingCard && !isActive && !isDragTarget && 'ring-1 ring-dashed ring-gray-300 dark:ring-gray-600',
               )}
+              onDragOver={(e) => {
+                if (!draggingCard || isActive) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                setDragOverTabId(board.id);
+              }}
+              onDragLeave={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                  setDragOverTabId(null);
+                }
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOverTabId(null);
+                if (draggingCard && !isActive && onDropCardToBoard) {
+                  onDropCardToBoard(draggingCard, board.id);
+                }
+              }}
             >
-              {activeBoard.id === board.id && (
+              {isActive && (
                 <motion.div
                   layoutId="board-tab-active"
                   className="absolute inset-0 rounded-lg bg-gradient-to-r from-red-500 to-red-600 shadow-md"
                   transition={{ type: 'spring', stiffness: 400, damping: 35 }}
                 />
               )}
-              <span className="relative z-10 flex items-center gap-2">
-                <span
-                  className="w-2 h-2 rounded-full"
-                  style={{ backgroundColor: activeBoard.id === board.id ? '#fff' : board.color }}
-                />
-                {board.name}
-              </span>
-            </button>
-          ))}
-
-          {/* Board actions */}
-          {canManage && onArchiveBoard && boards.length > 1 && (
-            <button
-              onClick={() => onArchiveBoard(activeBoard.id)}
-              className={cn(
-                'flex items-center justify-center w-8 h-8 rounded-lg ml-0.5',
-                'text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400',
-                'hover:bg-red-50 dark:hover:bg-red-500/10 transition-all duration-150 active:scale-90'
+              {isDragTarget && (
+                <div className="absolute inset-0 rounded-lg bg-gradient-to-r from-emerald-500 to-emerald-600 shadow-md" />
               )}
-              title={t('kanban.archiveBoardTooltip', 'Arquivar board')}
-            >
-              <ArchiveX className="w-3.5 h-3.5" />
-            </button>
-          )}
+
+              {isRenaming ? (
+                /* ── inline rename input ── */
+                <div className="relative z-10 flex items-center gap-1.5 px-2 py-1.5">
+                  <span className="w-2 h-2 rounded-full flex-shrink-0 bg-white/80" />
+                  <input
+                    autoFocus
+                    value={renameValue}
+                    onChange={e => setRenameValue(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') commitRename();
+                      if (e.key === 'Escape') setRenamingBoardId(null);
+                    }}
+                    onBlur={commitRename}
+                    className="bg-white/20 text-white text-sm font-medium rounded px-1 py-0 w-28 outline-none placeholder:text-white/60 border border-white/30 focus:border-white/60"
+                  />
+                </div>
+              ) : (
+                /* ── normal tab button ── */
+                <button
+                  onClick={() => !isActive ? onSelectBoard(board.id) : undefined}
+                  className={cn(
+                    'relative z-10 flex items-center gap-2 py-2 text-sm font-medium w-full rounded-lg',
+                    isActive && canManage ? 'pl-4 pr-7' : 'px-4',
+                    !isActive && 'hover:text-gray-700 dark:hover:text-gray-300 hover:bg-white/50 dark:hover:bg-white/[0.04]'
+                  )}
+                >
+                  <span
+                    className="w-2 h-2 rounded-full flex-shrink-0"
+                    style={{ backgroundColor: isActive || isDragTarget ? '#fff' : board.color }}
+                  />
+                  {board.name}
+                </button>
+              )}
+
+              {/* ⋮ options button — only on active, non-renaming, canManage */}
+              {isActive && canManage && !isRenaming && (onRenameBoard || onArchiveBoard || onDeleteBoard) && (
+                <div ref={boardOptionsRef} className="absolute right-1 top-1/2 -translate-y-1/2 z-20">
+                  <button
+                    onClick={e => { e.stopPropagation(); setShowBoardOptions(v => !v); }}
+                    className="opacity-0 group-hover/tab:opacity-100 flex items-center justify-center w-5 h-5 rounded hover:bg-white/20 transition-all"
+                    title={t('kanban.boardOptions', 'Opções do board')}
+                  >
+                    <MoreVertical className="w-3 h-3 text-white/80" />
+                  </button>
+
+                  <AnimatePresence>
+                    {showBoardOptions && (
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.95, y: -4 }}
+                        animate={{ opacity: 1, scale: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.95, y: -4 }}
+                        transition={{ duration: 0.12 }}
+                        className="absolute left-0 top-full mt-1.5 z-40 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700/50 rounded-xl shadow-xl min-w-[180px] py-1 overflow-hidden"
+                      >
+                          {onRenameBoard && (
+                            <button
+                              onClick={startRename}
+                              className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800/60 transition-colors"
+                            >
+                              <Pencil className="w-3.5 h-3.5 text-gray-400" />
+                              {t('kanban.renameBoard', 'Renomear board')}
+                            </button>
+                          )}
+                          {onArchiveBoard && boards.length > 1 && (
+                            <button
+                              onClick={() => { onArchiveBoard(activeBoard.id); setShowBoardOptions(false); }}
+                              className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800/60 transition-colors"
+                            >
+                              <ArchiveX className="w-3.5 h-3.5 text-gray-400" />
+                              {t('kanban.archiveBoardTooltip', 'Arquivar board')}
+                            </button>
+                          )}
+                          {onDeleteBoard && boards.length > 1 && (
+                            <>
+                              <div className="my-1 border-t border-gray-100 dark:border-gray-800" />
+                              <button
+                                onClick={() => { onDeleteBoard(activeBoard.id); setShowBoardOptions(false); }}
+                                className="flex items-center gap-2.5 w-full px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                {t('kanban.deleteBoardPermanently', 'Excluir permanentemente')}
+                              </button>
+                            </>
+                          )}
+                        </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              )}
+            </div>
+            );
+          })}
 
           {/* Archived boards button */}
           {canManage && archivedBoards && archivedBoards.length > 0 && (
@@ -2871,6 +3151,7 @@ export default function KanbanModule() {
   const [showNewBoard, setShowNewBoard] = useState(false);
   const [showAutomations, setShowAutomations] = useState(false);
   const [archiveBoardConfirmId, setArchiveBoardConfirmId] = useState<string | null>(null);
+  const [deleteBoardConfirmId, setDeleteBoardConfirmId] = useState<string | null>(null);
   const [deleteColumnConfirm, setDeleteColumnConfirm] = useState<{ columnId: string; columnTitle: string } | null>(null);
 
   // Templates
@@ -2879,6 +3160,8 @@ export default function KanbanModule() {
   // Drag state
   const [draggingCard, setDraggingCard] = useState<KanbanCard | null>(null);
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
+  const [dragOverCardId, setDragOverCardId] = useState<string | null>(null);
+  const [dragOverPosition, setDragOverPosition] = useState<'before' | 'after' | null>(null);
 
   // Toast state
   const [toast, setToast] = useState<{ message: string; type: 'error' | 'success' } | null>(null);
@@ -3058,14 +3341,42 @@ export default function KanbanModule() {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     setDragOverColumn(columnId);
+    setDragOverCardId(null); // clear card indicator when hovering over empty column space
+  }, []);
+
+  // Card-level drag over — stops propagation so column handler doesn't clear dragOverCardId
+  const handleDragOverCard = useCallback((e: React.DragEvent, card: KanbanCard, position: 'before' | 'after') => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverCardId(card.id);
+    setDragOverPosition(position);
+    setDragOverColumn(card.columnId); // highlight the column too
   }, []);
 
   const handleDrop = useCallback(async (e: React.DragEvent, targetColumnId: string) => {
     e.preventDefault();
     setDragOverColumn(null);
+    setDragOverCardId(null);
+    setDragOverPosition(null);
     if (!draggingCard || !business?.id) return;
     if (!canEdit) { showToast(t('kanban.errors.noPermission', 'Sem permissão para mover cards')); setDraggingCard(null); return; }
     if (draggingCard.columnId === targetColumnId) {
+      // Same column drop on empty space → append to end
+      const columnCards = cards.filter(c => c.columnId === targetColumnId).sort((a, b) => a.order - b.order);
+      const alreadyLast = columnCards[columnCards.length - 1]?.id === draggingCard.id;
+      if (!alreadyLast) {
+        try {
+          const reordered = [...columnCards.filter(c => c.id !== draggingCard.id), draggingCard];
+          const batch = writeBatch(db);
+          reordered.forEach((card, i) => {
+            batch.update(doc(db, 'kanbanCards', card.id), { order: i, updatedAt: new Date().toISOString() });
+          });
+          await batch.commit();
+        } catch (err) {
+          console.error('Error reordering cards:', err);
+          showToast(t('kanban.errors.moveCard', 'Erro ao mover card'));
+        }
+      }
       setDraggingCard(null);
       return;
     }
@@ -3160,7 +3471,60 @@ export default function KanbanModule() {
   const handleDragEnd = useCallback(() => {
     setDraggingCard(null);
     setDragOverColumn(null);
+    setDragOverCardId(null);
+    setDragOverPosition(null);
   }, []);
+
+  // Drop on a specific card — handles within-column reorder; cross-column drops
+  // propagate up to the column's handleDrop (which runs automations etc.)
+  const handleDropOnCard = useCallback(async (e: React.DragEvent, targetCard: KanbanCard) => {
+    if (!draggingCard || draggingCard.id === targetCard.id) {
+      setDraggingCard(null);
+      setDragOverCardId(null);
+      return;
+    }
+
+    // Only handle same-column reorder here; cross-column bubbles to handleDrop
+    if (draggingCard.columnId !== targetCard.columnId) return;
+
+    e.stopPropagation(); // prevent column's handleDrop from firing
+    setDragOverColumn(null);
+    setDragOverCardId(null);
+    setDragOverPosition(null);
+
+    if (!business?.id || !canEdit) {
+      if (!canEdit) showToast(t('kanban.errors.noPermission', 'Sem permissão para mover cards'));
+      setDraggingCard(null);
+      return;
+    }
+
+    const columnCards = cards
+      .filter(c => c.columnId === targetCard.columnId)
+      .sort((a, b) => a.order - b.order);
+
+    // Remove dragging card, then insert before or after target card based on cursor position
+    const reordered = columnCards.filter(c => c.id !== draggingCard.id);
+    const targetIdx = reordered.findIndex(c => c.id === targetCard.id);
+    const insertAt = dragOverPosition === 'after'
+      ? (targetIdx >= 0 ? targetIdx + 1 : reordered.length)
+      : (targetIdx >= 0 ? targetIdx : reordered.length);
+    reordered.splice(insertAt, 0, draggingCard);
+
+    try {
+      const batch = writeBatch(db);
+      reordered.forEach((card, i) => {
+        batch.update(doc(db, 'kanbanCards', card.id), {
+          order: i,
+          updatedAt: new Date().toISOString(),
+        });
+      });
+      await batch.commit();
+    } catch (err) {
+      console.error('Error reordering cards:', err);
+      showToast(t('kanban.errors.moveCard', 'Erro ao mover card'));
+    }
+    setDraggingCard(null);
+  }, [draggingCard, business?.id, canEdit, cards, showToast, t]);
 
   // ─── Card CRUD ────────────────────────────────────────────
   const handleCreateCard = useCallback(async (partial: Partial<KanbanCard>) => {
@@ -3259,6 +3623,49 @@ export default function KanbanModule() {
       showToast(t('kanban.errors.deleteCard', 'Erro ao excluir card'));
     }
   }, [business?.id, canEdit, showToast, t]);
+
+  const handleMoveCardToBoard = useCallback(async (cardId: string, targetBoardId: string, targetColumnId: string) => {
+    if (!business?.id || !canEdit) {
+      showToast(t('kanban.errors.noPermission', 'Sem permissão para mover cards'));
+      return;
+    }
+    try {
+      const targetColSnap = await getDocs(query(
+        collection(db, 'kanbanCards'),
+        where('businessId', '==', business.id),
+        where('boardId', '==', targetBoardId),
+        where('columnId', '==', targetColumnId),
+      ));
+      const newOrder = targetColSnap.size;
+      const now = new Date().toISOString();
+      await updateDoc(doc(db, 'kanbanCards', cardId), {
+        boardId: targetBoardId,
+        columnId: targetColumnId,
+        order: newOrder,
+        updatedAt: now,
+      });
+      setSelectedCard(null);
+      showToast(t('kanban.cardMoved', 'Card movido com sucesso'), 'success');
+    } catch (err) {
+      console.error('Error moving card to board:', err);
+      showToast(t('kanban.errors.moveCard', 'Erro ao mover card'));
+    }
+  }, [business?.id, canEdit, showToast, t]);
+
+  // Called when a card is dragged and dropped onto a board tab
+  const handleDropCardToBoard = useCallback(async (card: KanbanCard, targetBoardId: string) => {
+    const targetBoard = boards.find(b => b.id === targetBoardId);
+    if (!targetBoard) return;
+    const firstCol = [...targetBoard.columns].sort((a, b) => a.order - b.order)[0];
+    if (!firstCol) return;
+    // Clear ALL drag state so columns don't show stale "Solte aqui" when returning to this board
+    setDraggingCard(null);
+    setDragOverColumn(null);
+    setDragOverCardId(null);
+    setDragOverPosition(null);
+    await handleMoveCardToBoard(card.id, targetBoardId, firstCol.id);
+    setActiveBoardId(targetBoardId);
+  }, [boards, handleMoveCardToBoard]);
 
   // ─── Column CRUD ──────────────────────────────────────────
   const handleAddColumn = useCallback(async (title: string, color: string) => {
@@ -3369,6 +3776,33 @@ export default function KanbanModule() {
       showToast(t('kanban.errors.renameBoard', 'Erro ao renomear board'));
     }
   }, [business?.id, canManageBoard, showToast, t]);
+
+  const handleDeleteBoardConfirmed = useCallback(async () => {
+    if (!business?.id || !deleteBoardConfirmId) return;
+    if (!canManageBoard) { showToast(t('kanban.errors.noPermission', 'Sem permissão')); return; }
+    try {
+      const batch = writeBatch(db);
+      // delete all cards in this board
+      const cardsSnap = await getDocs(query(
+        collection(db, 'kanbanCards'),
+        where('businessId', '==', business.id),
+        where('boardId', '==', deleteBoardConfirmId)
+      ));
+      cardsSnap.docs.forEach(d => batch.delete(d.ref));
+      // delete the board itself
+      batch.delete(doc(db, 'kanbanBoards', deleteBoardConfirmId));
+      await batch.commit();
+      // switch to first remaining board
+      const remaining = boards.filter(b => b.id !== deleteBoardConfirmId);
+      if (remaining.length > 0) setActiveBoardId(remaining[0].id);
+      showToast(t('kanban.boardDeleted', 'Board excluído permanentemente'), 'success');
+    } catch (err) {
+      console.error('Error deleting board:', err);
+      showToast(t('kanban.errors.deleteBoard', 'Erro ao excluir board'));
+    } finally {
+      setDeleteBoardConfirmId(null);
+    }
+  }, [business?.id, deleteBoardConfirmId, boards, canManageBoard, showToast, t]);
 
   // ─── Board CRUD ───────────────────────────────────────────
   const handleCreateBoard = useCallback(async (name: string, color: string, presetId?: string) => {
@@ -3570,6 +4004,10 @@ export default function KanbanModule() {
           onViewModeChange={setViewMode}
           urgentTaskCount={urgentTaskCount}
           onOpenAutomations={canManageBoard ? () => setShowAutomations(true) : undefined}
+          draggingCard={draggingCard}
+          onDropCardToBoard={canEdit ? handleDropCardToBoard : undefined}
+          onRenameBoard={canManageBoard ? handleRenameBoard : undefined}
+          onDeleteBoard={canManageBoard && boards.length > 1 ? setDeleteBoardConfirmId : undefined}
         />
       </motion.div>
 
@@ -3603,8 +4041,12 @@ export default function KanbanModule() {
                 onDragStart={handleDragStart}
                 onDragOver={handleDragOver}
                 onDrop={handleDrop}
+                onDragOverCard={handleDragOverCard}
+                onDropOnCard={handleDropOnCard}
                 dragOverColumnId={dragOverColumn}
                 draggingCardId={draggingCard?.id || null}
+                dragOverCardId={dragOverCardId}
+                dragOverPosition={dragOverPosition}
               />
             );
           })}
@@ -3705,10 +4147,12 @@ export default function KanbanModule() {
             columns={sortedColumns}
             currentUser={user}
             members={members}
+            boards={boards.filter(b => !b.isArchived)}
             onClose={() => setSelectedCard(null)}
             onUpdate={handleUpdateCard}
             onDelete={handleDeleteCard}
             onSaveTemplate={canEdit ? handleSaveTemplate : undefined}
+            onMoveToBoard={canEdit ? handleMoveCardToBoard : undefined}
           />
         )}
       </AnimatePresence>
@@ -3808,6 +4252,67 @@ export default function KanbanModule() {
                     className="px-4 py-2 text-sm rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-medium transition-colors"
                   >
                     {t('kanban.archiveConfirm', 'Arquivar')}
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          );
+        })()}
+      </AnimatePresence>
+
+      {/* Delete board confirmation dialog */}
+      <AnimatePresence>
+        {deleteBoardConfirmId && (() => {
+          const boardToDelete = boards.find(b => b.id === deleteBoardConfirmId);
+          return (
+            <motion.div
+              key="delete-board-confirm"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 flex items-center justify-center p-4"
+              style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}
+              onClick={() => setDeleteBoardConfirmId(null)}
+            >
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 8 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 8 }}
+                transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+                className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 w-full max-w-sm p-6"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="flex-shrink-0 w-10 h-10 rounded-xl bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
+                    <Trash2 className="w-5 h-5 text-red-500" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-gray-900 dark:text-white text-sm">
+                      {t('kanban.deleteBoardTitle', 'Excluir board permanentemente')}
+                    </h3>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      {boardToDelete?.name}
+                    </p>
+                  </div>
+                </div>
+                <p className="text-sm text-gray-600 dark:text-gray-300 mb-5">
+                  {t(
+                    'kanban.deleteBoardBody',
+                    'Esta ação é irreversível. Todos os cards e dados deste board serão excluídos permanentemente.',
+                  )}
+                </p>
+                <div className="flex gap-2 justify-end">
+                  <button
+                    onClick={() => setDeleteBoardConfirmId(null)}
+                    className="px-4 py-2 text-sm rounded-xl border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                  >
+                    {t('kanban.cancel', 'Cancelar')}
+                  </button>
+                  <button
+                    onClick={handleDeleteBoardConfirmed}
+                    className="px-4 py-2 text-sm rounded-xl bg-red-500 hover:bg-red-600 text-white font-medium transition-colors"
+                  >
+                    {t('kanban.deleteBoardConfirm', 'Excluir')}
                   </button>
                 </div>
               </motion.div>
