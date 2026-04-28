@@ -774,6 +774,33 @@ export default function PDVModule() {
       // Use saleRef.id for downstream operations
       const docRef = saleRef;
 
+      // ── Commission transaction (non-critical — fires if operator has commissionRate > 0) ──
+      const commissionRate = user.commissionRate ?? 0;
+      if (commissionRate > 0 && total > 0) {
+        const commissionAmount = Math.round(total * commissionRate) / 100;
+        try {
+          await addDoc(collection(db, 'transactions'), {
+            businessId: business.id,
+            type: 'despesa',
+            category: 'Comissoes',
+            description: `Comissão ${user.name} — Venda #${saleRef.id.slice(0, 6)} (${commissionRate}%)`,
+            amount: commissionAmount,
+            dueDate: now.split('T')[0],
+            paymentDate: null,
+            status: 'pendente',
+            clientId: user.uid,
+            clientName: user.name,
+            saleId: saleRef.id,
+            operatorId: user.uid,
+            operatorName: user.name,
+            createdAt: now,
+            updatedAt: now,
+          });
+        } catch (err) {
+          console.warn('[pdv] commission transaction failed:', err);
+        }
+      }
+
       // ── Non-critical operations (loyalty/gift card — already use runTransaction internally) ──
       if (selectedClient) {
 

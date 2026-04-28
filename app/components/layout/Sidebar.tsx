@@ -5,6 +5,9 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useTranslation } from 'react-i18next';
+import { useQuery } from '@tanstack/react-query';
+import { collection, query, where, getDocs } from 'firebase/firestore';
+import { db } from '@/lib/config/firebase';
 import {
   LayoutDashboard,
   Calendar,
@@ -67,6 +70,7 @@ interface MenuItemConfig {
   enterpriseOnly?: boolean;
   useCases?: UseCase[];
   minRole?: UserRole;
+  badgeCount?: number;
 }
 
 interface MenuSection {
@@ -237,6 +241,25 @@ function MenuItem({
           )}
         </AnimatePresence>
 
+        <AnimatePresence initial={false}>
+          {(item.badgeCount ?? 0) > 0 && (
+            <motion.span
+              key="count-badge"
+              initial={{ opacity: 0, scale: 0.6 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.6 }}
+              transition={{ duration: 0.18, ease: 'easeOut' }}
+              className={cn(
+                'relative z-10 min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold flex items-center justify-center leading-none',
+                isCollapsed ? 'absolute -top-1 -right-1' : '',
+                isActive ? 'bg-white/30 text-white' : 'bg-amber-500 text-white'
+              )}
+            >
+              {item.badgeCount}
+            </motion.span>
+          )}
+        </AnimatePresence>
+
         {/* Tooltip for collapsed state */}
         {isCollapsed && (
           <div className="absolute left-full ml-3 px-2.5 py-1.5 rounded-lg bg-gray-900 dark:bg-gray-700 text-white text-[13px] font-medium whitespace-nowrap opacity-0 pointer-events-none group-hover:opacity-100 transition-all duration-150 z-50 shadow-xl translate-x-1 group-hover:translate-x-0">
@@ -297,13 +320,36 @@ function SidebarContent({
   const currentUseCase: UseCase = (business?.settings?.useCase as UseCase) || 'servicos';
   const userRoleValue = ROLE_HIERARCHY[user?.role ?? 'viewer'];
 
+  // Urgent recurring transactions count for Financial badge
+  const { data: urgentRecurringCount = 0 } = useQuery({
+    queryKey: ['sidebar-urgent-recurring', business?.id],
+    queryFn: async () => {
+      if (!business?.id) return 0;
+      const in3d = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
+      const snap = await getDocs(query(
+        collection(db, 'transactions'),
+        where('businessId', '==', business.id),
+        where('recurrence.isActive', '==', true),
+        where('recurrence.nextDueDate', '<=', in3d),
+      ));
+      return snap.size;
+    },
+    enabled: !!business?.id,
+    staleTime: 5 * 60 * 1000,
+    refetchInterval: 10 * 60 * 1000,
+  });
+
   const filterItems = (items: MenuItemConfig[]) =>
     items.filter((item) => {
       if (item.enterpriseOnly && !isEnterprise) return false;
       if (item.useCases && !item.useCases.includes(currentUseCase)) return false;
       if (item.minRole && userRoleValue < ROLE_HIERARCHY[item.minRole]) return false;
       return true;
-    });
+    }).map(item =>
+      item.id === 'Financeiro' && urgentRecurringCount > 0
+        ? { ...item, badgeCount: urgentRecurringCount }
+        : item
+    );
 
   return (
     <div
