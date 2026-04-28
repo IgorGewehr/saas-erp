@@ -21,7 +21,7 @@ import crypto from 'crypto';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, AgentAuthError } from '@/lib/agent/auth';
 import { checkRateLimit, getClientIp, rateLimitHeaders } from '@/lib/utils/rateLimit';
-import { sendFinancialNotifications } from '@/app/api/financial/notify/route';
+import { sendFinancialNotifications } from '@/app/api/financial/notify/service';
 import type { Appointment, Business, Conversation } from '@/lib/types';
 
 const RATE_LIMIT = 4;              // max 4 manual triggers
