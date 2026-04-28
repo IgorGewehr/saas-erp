@@ -1523,6 +1523,20 @@ export default function FinancialModule() {
                   <Paperclip size={16} className="text-slate-500 dark:text-gray-400" />
                   <span className="text-sm font-semibold text-slate-700 dark:text-gray-300">Anexos e Comprovantes</span>
                 </div>
+                <div className="flex items-center gap-2">
+                  <Tooltip title="Em breve: extrair dados do comprovante via OCR (Google Cloud Vision)">
+                    <span>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        disabled
+                        startIcon={<FileText size={13} />}
+                        sx={{ textTransform: 'none', borderRadius: '8px', opacity: 0.45, fontSize: '0.7rem' }}
+                      >
+                        Auto-detectar OCR
+                      </Button>
+                    </span>
+                  </Tooltip>
                 <Button component="label" size="small" variant="outlined" sx={{ textTransform: 'none', borderRadius: '8px' }}>
                   Adicionar
                   <input
@@ -1546,6 +1560,7 @@ export default function FinancialModule() {
                     }}
                   />
                 </Button>
+                </div>
               </div>
               
               <div className="space-y-2">
@@ -5845,6 +5860,46 @@ function BankAccountsContent({
       </motion.div>
 
       {/* Account Cards */}
+      {/* Payment features — coming soon */}
+      <div>
+        <div className="flex items-center gap-2 mb-3">
+          <h3 className="text-sm font-bold text-slate-700 dark:text-gray-300">Recebimentos Digitais</h3>
+          <span className="text-[10px] font-bold px-2 py-0.5 bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 rounded-full tracking-wide">Em breve</span>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {[
+            {
+              title: 'PIX QR Code',
+              desc: 'Gere QR Codes PIX estáticos e dinâmicos por transação. Confirmação automática via webhook.',
+              icon: '⚡',
+              provider: 'Asaas / Gerencianet / Pagar.me',
+            },
+            {
+              title: 'Boleto Bancário',
+              desc: 'Emita boletos vinculados a contas a receber. Baixa automática ao pagar.',
+              icon: '🏦',
+              provider: 'Asaas / Iugu / Gerencianet',
+            },
+            {
+              title: 'Open Banking',
+              desc: 'Sincronização automática diária do extrato bancário via Open Finance Brasil.',
+              icon: '🔄',
+              provider: 'Pluggy / Belvo',
+            },
+          ].map(item => (
+            <div key={item.title} className="relative bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-2xl p-4 opacity-60 select-none">
+              <div className="absolute top-3 right-3">
+                <span className="text-[9px] font-bold px-1.5 py-0.5 bg-slate-100 dark:bg-gray-800 text-slate-400 dark:text-gray-500 rounded-full uppercase tracking-widest">Em breve</span>
+              </div>
+              <div className="text-2xl mb-2">{item.icon}</div>
+              <p className="text-sm font-bold text-slate-700 dark:text-gray-300">{item.title}</p>
+              <p className="text-xs text-slate-500 dark:text-gray-500 mt-1 leading-relaxed">{item.desc}</p>
+              <p className="text-[10px] text-slate-400 dark:text-gray-600 mt-2 font-medium">Provedor: {item.provider}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {activeAccounts.length > 0 ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {activeAccounts.map((account, i) => (

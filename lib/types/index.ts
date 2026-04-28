@@ -677,6 +677,57 @@ export interface Transaction {
   updatedAt: string;
 }
 
+// ---- Reconciliation Rules (2.5) ----
+export interface ReconciliationRule {
+  id: string;
+  businessId: string;
+  /** Case-insensitive substring matched against bank statement description */
+  pattern: string;
+  category: string;
+  type?: 'receita' | 'despesa';
+  /** If set, rule only applies when this bank account is selected */
+  bankAccountId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ---- Payment Provider Config (3.5/3.6/3.8) ----
+export type PaymentProvider = 'asaas' | 'gerencianet' | 'pagseguro' | 'iugu' | 'mercadopago';
+export type OpenBankingProvider = 'pluggy' | 'belvo' | 'quanto';
+
+export interface PixConfig {
+  provider: PaymentProvider;
+  apiKey: string;     // stored encrypted
+  pixKey: string;     // chave PIX da empresa (CPF/CNPJ/email/phone/random)
+  pixKeyType: 'cpf' | 'cnpj' | 'email' | 'phone' | 'random';
+  isEnabled: boolean;
+  sandboxMode: boolean;
+  connectedAt?: string;
+}
+
+export interface BoletoConfig {
+  provider: PaymentProvider;
+  apiKey: string;     // stored encrypted
+  walletNumber?: string;
+  cedente?: string;   // nome do cedente
+  isEnabled: boolean;
+  sandboxMode: boolean;
+  connectedAt?: string;
+}
+
+export interface OpenBankingConfig {
+  provider: OpenBankingProvider;
+  clientId: string;
+  clientSecret: string; // stored encrypted
+  isEnabled: boolean;
+  connectedBankIds: string[]; // external bank connection IDs
+  lastSyncAt?: string;
+  connectedAt?: string;
+}
+
+// Add to Business.financial when these are configured:
+// financial.pixConfig, financial.boletoConfig, financial.openBankingConfig
+
 // ---- Financial Notification Settings ----
 export interface FinancialNotificationSettings {
   enabled: boolean;

@@ -5,15 +5,16 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
 import { useTranslation } from 'react-i18next';
-import { collection, query, where, orderBy, getDocs, addDoc, doc, writeBatch } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, addDoc, deleteDoc, doc, writeBatch } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { parseOFX, parseCSV, autoMatch, type AutoMatchConfig } from '@/lib/services/reconciliation';
-import type { Transaction, BankAccount, BankStatementEntry } from '@/lib/types';
+import type { Transaction, BankAccount, BankStatementEntry, ReconciliationRule } from '@/lib/types';
 import {
   Upload, FileText, Check, X, AlertTriangle,
   Search, Loader2, Scale, Settings2, ChevronDown,
-  Link2, CheckCircle2, Eye, BarChart3,
+  Link2, CheckCircle2, Eye, BarChart3, Plus, Trash2,
+  BookOpen,
 } from 'lucide-react';
 
 type ItemStatus = 'matched' | 'review' | 'pending' | 'divergent' | 'ignored';
@@ -22,6 +23,8 @@ interface ConcilItem extends BankStatementEntry {
   matchedTxId?: string;
   confidence?: number;
   status: ItemStatus;
+  suggestedCategory?: string;
+  suggestedType?: 'receita' | 'despesa';
 }
 
 interface Props {
@@ -65,12 +68,32 @@ export default function ConciliacaoTab({ businessId, transactions, bankAccounts 
   // Manual match: which item is open for manual selection
   const [manualMatchIdx, setManualMatchIdx] = useState<number | null>(null);
 
+  // Reconciliation rules (2.5)
+  const [rules, setRules] = useState<ReconciliationRule[]>([]);
+  const [showRules, setShowRules] = useState(false);
+  const [newRulePattern, setNewRulePattern] = useState('');
+  const [newRuleCategory, setNewRuleCategory] = useState('');
+  const [newRuleType, setNewRuleType] = useState<'receita' | 'despesa' | ''>('');
+  const [savingRule, setSavingRule] = useState(false);
+
   // Past imports + unreconciled report
   const [imports, setImports] = useState<Array<{
     id: string; fileName: string; importedAt: string;
     matched: number; pending: number; divergent: number; totalEntries: number;
   }>>([]);
   const [unreconciledCount, setUnreconciledCount] = useState<{ pending: number; divergent: number } | null>(null);
+
+  // Load reconciliation rules
+  useEffect(() => {
+    if (!businessId) return;
+    getDocs(query(
+      collection(db, 'reconciliationRules'),
+      where('businessId', '==', businessId),
+      orderBy('createdAt', 'desc'),
+    )).then(snap => {
+      setRules(snap.docs.map(d => ({ ...d.data(), id: d.id } as ReconciliationRule)));
+    }).catch(() => {});
+  }, [businessId]);
 
   // Load past imports and unreconciled summary
   useEffect(() => {
@@ -135,7 +158,23 @@ export default function ConciliacaoTab({ businessId, transactions, bankAccounts 
           else if (match.confidence >= 60) status = 'review';
           else status = 'divergent';
         }
-        return { ...entry, matchedTxId: match?.transactionId, confidence: match?.confidence, status };
+
+        // Apply reconciliation rules to unmatched entries
+        let suggestedCategory: string | undefined;
+        let suggestedType: 'receita' | 'despesa' | undefined;
+        if (status === 'pending' || status === 'divergent') {
+          const desc = (entry.description || '').toLowerCase();
+          const matchedRule = rules.find(r =>
+            desc.includes(r.pattern.toLowerCase()) &&
+            (!r.bankAccountId || r.bankAccountId === selectedBankId)
+          );
+          if (matchedRule) {
+            suggestedCategory = matchedRule.category;
+            suggestedType = matchedRule.type;
+          }
+        }
+
+        return { ...entry, matchedTxId: match?.transactionId, confidence: match?.confidence, status, suggestedCategory, suggestedType };
       });
 
       setItems(result);
@@ -165,6 +204,35 @@ export default function ConciliacaoTab({ businessId, transactions, bankAccounts 
     setItems(prev => prev.map((item, i) =>
       i === idx ? { ...item, status: 'ignored' as ItemStatus } : item
     ));
+  };
+
+  const handleAddRule = async () => {
+    if (!newRulePattern.trim() || !newRuleCategory.trim() || !businessId) return;
+    setSavingRule(true);
+    try {
+      const now = new Date().toISOString();
+      const data: Omit<ReconciliationRule, 'id'> = {
+        businessId,
+        pattern: newRulePattern.trim(),
+        category: newRuleCategory.trim(),
+        ...(newRuleType ? { type: newRuleType } : {}),
+        ...(selectedBankId ? { bankAccountId: selectedBankId } : {}),
+        createdAt: now,
+        updatedAt: now,
+      };
+      const ref = await addDoc(collection(db, 'reconciliationRules'), data);
+      setRules(prev => [{ ...data, id: ref.id }, ...prev]);
+      setNewRulePattern('');
+      setNewRuleCategory('');
+      setNewRuleType('');
+    } finally {
+      setSavingRule(false);
+    }
+  };
+
+  const handleDeleteRule = async (ruleId: string) => {
+    await deleteDoc(doc(db, 'reconciliationRules', ruleId));
+    setRules(prev => prev.filter(r => r.id !== ruleId));
   };
 
   const handleSaveReconciliation = useCallback(async () => {
@@ -403,6 +471,122 @@ export default function ConciliacaoTab({ businessId, transactions, bankAccounts 
             </div>
           )}
 
+          {/* Reconciliation rules panel */}
+          <div className="rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+            <button
+              onClick={() => setShowRules(v => !v)}
+              className="w-full flex items-center justify-between px-4 py-3 bg-white dark:bg-gray-800/60 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <BookOpen size={14} className="text-blue-500" />
+                <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">Regras de Auto-categorização</span>
+                {rules.length > 0 && (
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300">
+                    {rules.length}
+                  </span>
+                )}
+              </div>
+              <ChevronDown size={14} className={cn('text-gray-400 transition-transform', showRules && 'rotate-180')} />
+            </button>
+            <AnimatePresence>
+              {showRules && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
+                  className="overflow-hidden"
+                >
+                  <div className="p-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/30 space-y-3">
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      Quando uma entrada do extrato contém o padrão, recebe uma sugestão de categoria automaticamente.
+                    </p>
+
+                    {/* Add rule form */}
+                    <div className="flex flex-wrap gap-2 items-end">
+                      <div className="flex-1 min-w-[140px]">
+                        <label className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1 block">Padrão (texto)</label>
+                        <input
+                          type="text"
+                          value={newRulePattern}
+                          onChange={e => setNewRulePattern(e.target.value)}
+                          placeholder="Ex: NETFLIX, UBER, ALUGUEL"
+                          className="w-full px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                        />
+                      </div>
+                      <div className="flex-1 min-w-[120px]">
+                        <label className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1 block">Categoria</label>
+                        <input
+                          type="text"
+                          list="rule-categories"
+                          value={newRuleCategory}
+                          onChange={e => setNewRuleCategory(e.target.value)}
+                          placeholder="Ex: Assinaturas"
+                          className="w-full px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                        />
+                        <datalist id="rule-categories">
+                          {Array.from(new Set(transactions.map(t => t.category).filter(Boolean))).map(c => (
+                            <option key={c} value={c as string} />
+                          ))}
+                        </datalist>
+                      </div>
+                      <div className="w-28">
+                        <label className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1 block">Tipo</label>
+                        <select
+                          value={newRuleType}
+                          onChange={e => setNewRuleType(e.target.value as typeof newRuleType)}
+                          className="w-full px-2 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:outline-none"
+                        >
+                          <option value="">Qualquer</option>
+                          <option value="receita">Receita</option>
+                          <option value="despesa">Despesa</option>
+                        </select>
+                      </div>
+                      <button
+                        onClick={handleAddRule}
+                        disabled={savingRule || !newRulePattern.trim() || !newRuleCategory.trim()}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg transition-colors"
+                      >
+                        {savingRule ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
+                        Adicionar
+                      </button>
+                    </div>
+
+                    {/* Rules list */}
+                    {rules.length > 0 ? (
+                      <div className="space-y-1.5">
+                        {rules.map(rule => (
+                          <div key={rule.id} className="flex items-center gap-2 p-2.5 bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700">
+                            <code className="text-xs font-mono bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 px-1.5 py-0.5 rounded">
+                              {rule.pattern}
+                            </code>
+                            <span className="text-xs text-gray-400 dark:text-gray-500">→</span>
+                            <span className="text-xs font-medium text-gray-700 dark:text-gray-300">{rule.category}</span>
+                            {rule.type && (
+                              <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded-full', rule.type === 'receita' ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400' : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400')}>
+                                {rule.type}
+                              </span>
+                            )}
+                            {rule.bankAccountId && (
+                              <span className="text-[10px] text-gray-400 dark:text-gray-500 ml-auto">
+                                {bankAccounts.find(a => a.id === rule.bankAccountId)?.name || 'conta específica'}
+                              </span>
+                            )}
+                            <button
+                              onClick={() => handleDeleteRule(rule.id)}
+                              className="ml-auto p-1 text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-gray-400 dark:text-gray-500 italic">Nenhuma regra cadastrada ainda.</p>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
           {/* Past imports */}
           {imports.length > 0 && (
             <div className="space-y-2">
@@ -508,11 +692,18 @@ export default function ConciliacaoTab({ businessId, transactions, bankAccounts 
                       <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
                         {item.description || '(sem descrição)'}
                       </p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                        {formatDate(item.date)}
-                        {item.confidence !== undefined && ` · ${item.confidence}% match`}
-                        {matchedTx && ` · → ${matchedTx.description}`}
-                      </p>
+                      <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                          {formatDate(item.date)}
+                          {item.confidence !== undefined && ` · ${item.confidence}% match`}
+                          {matchedTx && ` · → ${matchedTx.description}`}
+                        </p>
+                        {item.suggestedCategory && (
+                          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300">
+                            📌 {item.suggestedCategory}{item.suggestedType ? ` · ${item.suggestedType}` : ''}
+                          </span>
+                        )}
+                      </div>
                     </div>
 
                     {/* Amount */}
