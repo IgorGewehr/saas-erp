@@ -93,17 +93,19 @@ interface ModuleEntry {
 }
 
 // Principais somente: Clientes, Agenda (serviços) / Pedidos (pedidos), PDV,
-// Vendas, Financeiro, Relatórios, Fiscal. Cores alinhadas ao tema vermelho do
-// app — todos os ícones partilham a mesma família red/rose para coerência.
+// Vendas, Financeiro, Relatórios, Fiscal. Paleta em "família quente" puxando
+// pro vermelho do tema (Clientes/Vendas/Financeiro = red/rose), com 3 tons
+// diferenciadores (Agenda âmbar, Pedidos laranja, Relatórios violeta, Fiscal
+// slate) — devolve a navegação visual sem fugir do tema.
 const MODULES: ModuleEntry[] = [
   { id: 'Clientes',    label: 'Clientes',    icon: Users,           bg: 'bg-red-50 dark:bg-red-500/10',         iconColor: 'text-red-600 dark:text-red-400' },
-  { id: 'Agenda',      label: 'Agenda',      icon: Calendar,        bg: 'bg-red-50 dark:bg-red-500/10',         iconColor: 'text-red-600 dark:text-red-400',   useCases: ['servicos'] },
-  { id: 'Pedidos',     label: 'Pedidos',     icon: ClipboardCheck,  bg: 'bg-red-50 dark:bg-red-500/10',         iconColor: 'text-red-600 dark:text-red-400',   useCases: ['pedidos'] },
-  { id: 'PDV',         label: 'PDV',         icon: ShoppingCart,    bg: 'bg-red-50 dark:bg-red-500/10',         iconColor: 'text-red-600 dark:text-red-400' },
+  { id: 'Agenda',      label: 'Agenda',      icon: Calendar,        bg: 'bg-amber-50/80 dark:bg-amber-500/10',  iconColor: 'text-amber-600 dark:text-amber-400',   useCases: ['servicos'] },
+  { id: 'Pedidos',     label: 'Pedidos',     icon: ClipboardCheck,  bg: 'bg-orange-50 dark:bg-orange-500/10',   iconColor: 'text-orange-600 dark:text-orange-400', useCases: ['pedidos'] },
+  { id: 'PDV',         label: 'PDV',         icon: ShoppingCart,    bg: 'bg-rose-50 dark:bg-rose-500/10',       iconColor: 'text-rose-600 dark:text-rose-400' },
   { id: 'Vendas',      label: 'Vendas',      icon: ClipboardList,   bg: 'bg-red-50 dark:bg-red-500/10',         iconColor: 'text-red-600 dark:text-red-400' },
-  { id: 'Financeiro',  label: 'Financeiro',  icon: DollarSign,      bg: 'bg-red-50 dark:bg-red-500/10',         iconColor: 'text-red-600 dark:text-red-400' },
-  { id: 'Relatórios',  label: 'Relatórios',  icon: BarChart3,       bg: 'bg-red-50 dark:bg-red-500/10',         iconColor: 'text-red-600 dark:text-red-400' },
-  { id: 'NFSe',        label: 'Fiscal',      icon: FileCheck2,      bg: 'bg-red-50 dark:bg-red-500/10',         iconColor: 'text-red-600 dark:text-red-400' },
+  { id: 'Financeiro',  label: 'Financeiro',  icon: DollarSign,      bg: 'bg-rose-50 dark:bg-rose-500/10',       iconColor: 'text-rose-600 dark:text-rose-400' },
+  { id: 'Relatórios',  label: 'Relatórios',  icon: BarChart3,       bg: 'bg-violet-50/80 dark:bg-violet-500/10',iconColor: 'text-violet-600 dark:text-violet-400' },
+  { id: 'NFSe',        label: 'Fiscal',      icon: FileCheck2,      bg: 'bg-slate-100 dark:bg-slate-500/10',    iconColor: 'text-slate-600 dark:text-slate-400' },
 ];
 
 // ─── Presence helper ────────────────────────────────────────────────────────
@@ -307,7 +309,12 @@ export default function DashboardModule() {
       : hour < 18
         ? t('dashboard.goodAfternoon', 'Boa tarde')
         : t('dashboard.goodEvening', 'Boa noite');
-  const firstName = user?.name?.split(' ')[0] || '';
+  // Title-case do primeiro nome — mesmo se o usuário cadastrou como "IGOR" ou
+  // "igor", apresentamos como "Igor" para a saudação não soar agressiva.
+  const firstName = useMemo(() => {
+    const raw = user?.name?.split(' ')[0] || '';
+    return raw ? raw[0].toUpperCase() + raw.slice(1).toLowerCase() : '';
+  }, [user?.name]);
   const subtitle = useMemo(() => {
     const parts = [
       i18n.language === 'en-US'
@@ -323,7 +330,7 @@ export default function DashboardModule() {
       variants={stagger}
       initial="hidden"
       animate="visible"
-      className="space-y-8 sm:space-y-10"
+      className="max-w-6xl mx-auto space-y-8 sm:space-y-10"
     >
       {/* ━━━ Hero with AI input ━━━ */}
       <motion.section variants={fadeUp} className="pt-2 sm:pt-6">
@@ -346,7 +353,7 @@ export default function DashboardModule() {
 
       {/* ━━━ Smart cards — minimal, no heading ━━━ */}
       <motion.section variants={fadeUp}>
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 xl:grid-cols-4 gap-2.5">
           {/* Card 1: Revenue today */}
           <RevenueCard
             value={todayRevenue}
@@ -488,16 +495,15 @@ function CardShell({
   return (
     <Comp
       {...(onClick
-        ? { onClick, whileHover: { y: -2 }, whileTap: { scale: 0.99 } }
+        ? { onClick, whileHover: { y: -1 }, whileTap: { scale: 0.995 } }
         : {})}
       variants={popIn}
       className={cn(
-        'group relative w-full text-left rounded-2xl p-4',
-        'bg-white dark:bg-gray-800/40',
-        'border border-gray-200/70 dark:border-gray-700/50',
-        'border-l-2 border-l-red-500/70 dark:border-l-red-500/60',
-        'hover:border-l-red-500 dark:hover:border-l-red-400',
-        'hover:border-gray-300 dark:hover:border-gray-600/60 transition-colors duration-200',
+        'group relative w-full text-left rounded-xl p-3',
+        'bg-white/60 dark:bg-gray-800/30',
+        'border border-gray-200/60 dark:border-gray-700/40',
+        'hover:border-red-300/60 dark:hover:border-red-500/30',
+        'transition-colors duration-200',
         onClick && 'cursor-pointer',
         className,
       )}
@@ -522,43 +528,51 @@ function RevenueCard({
 }) {
   const positive = delta > 0;
   const negative = delta < 0;
+  const isEmpty = !loading && value === 0 && count === 0;
   return (
     <CardShell onClick={onClick}>
-      <div className="flex items-center justify-between mb-2">
-        <p className="text-[11px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+      <div className="flex items-center justify-between mb-1.5">
+        <p className="text-[10px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
           Receita hoje
         </p>
-        <DollarSign className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+        <DollarSign className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
       </div>
       {loading ? (
-        <div className="h-8 w-32 rounded-lg shimmer" />
+        <div className="h-6 w-24 rounded shimmer" />
+      ) : isEmpty ? (
+        <>
+          <p className="text-sm font-medium text-gray-500 dark:text-gray-400">
+            Sem vendas hoje
+          </p>
+          <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">
+            Aguardando primeira venda
+          </p>
+        </>
       ) : (
-        <p className="font-display text-3xl font-semibold tracking-tight text-gray-900 dark:text-white">
-          {formatCurrency(value)}
-        </p>
+        <>
+          <p className="font-display text-xl font-semibold tracking-tight text-gray-900 dark:text-white leading-none">
+            {formatCurrency(value)}
+          </p>
+          <div className="flex items-center justify-between mt-1.5">
+            <p className="text-[11px] text-gray-500 dark:text-gray-400">
+              {count} {count === 1 ? 'venda' : 'vendas'}
+            </p>
+            {delta !== 0 && (
+              <span
+                className={cn(
+                  'inline-flex items-center gap-0.5 text-[10px] font-medium',
+                  positive && 'text-emerald-600 dark:text-emerald-400',
+                  negative && 'text-red-600 dark:text-red-400',
+                )}
+              >
+                {positive ? <TrendingUp className="w-2.5 h-2.5" /> : <TrendingDown className="w-2.5 h-2.5" />}
+                {positive ? '+' : ''}
+                {delta}%
+              </span>
+            )}
+          </div>
+        </>
       )}
-      <div className="flex items-center justify-between mt-2">
-        <p className="text-xs text-gray-500 dark:text-gray-400">
-          {count} {count === 1 ? 'venda' : 'vendas'}
-        </p>
-        {!loading && delta !== 0 && (
-          <span
-            className={cn(
-              'inline-flex items-center gap-0.5 text-[11px] font-medium',
-              positive && 'text-emerald-600 dark:text-emerald-400',
-              negative && 'text-red-600 dark:text-red-400',
-            )}
-          >
-            {positive ? (
-              <TrendingUp className="w-3 h-3" />
-            ) : (
-              <TrendingDown className="w-3 h-3" />
-            )}
-            {positive ? '+' : ''}
-            {delta}%
-          </span>
-        )}
-      </div>
     </CardShell>
   );
 }
@@ -593,68 +607,64 @@ function FocusCard({
   if (empty && !loading) {
     return (
       <CardShell>
-        <div className="flex flex-col h-full">
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-[11px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-              {title}
-            </p>
-            <Icon className="w-4 h-4 text-gray-400 dark:text-gray-500" />
-          </div>
-          <div className="flex-1 flex flex-col items-start gap-2 py-2">
-            <p className="text-sm text-gray-500 dark:text-gray-400">{emptyText}</p>
-            {emptyAction && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  emptyAction.onClick();
-                }}
-                className="inline-flex items-center gap-1 text-xs font-medium text-gray-700 dark:text-gray-200 hover:text-red-600 dark:hover:text-red-400 transition-colors"
-              >
-                {emptyAction.label}
-                <ArrowRight className="w-3 h-3" />
-              </button>
-            )}
-          </div>
+        <div className="flex items-center justify-between mb-1.5">
+          <p className="text-[10px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+            {title}
+          </p>
+          <Icon className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
         </div>
+        <p className="text-sm font-medium text-gray-500 dark:text-gray-400">{emptyText}</p>
+        {emptyAction && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              emptyAction.onClick();
+            }}
+            className="inline-flex items-center gap-1 text-[11px] font-medium text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors mt-1"
+          >
+            {emptyAction.label}
+            <ArrowRight className="w-2.5 h-2.5" />
+          </button>
+        )}
       </CardShell>
     );
   }
 
   return (
     <CardShell onClick={onClick}>
-      <div className="flex items-center justify-between mb-2">
-        <p className="text-[11px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+      <div className="flex items-center justify-between mb-1.5">
+        <p className="text-[10px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
           {title}
         </p>
-        <Icon className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+        <Icon className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
       </div>
 
       {loading ? (
         <>
-          <div className="h-7 w-32 rounded-lg shimmer mb-2" />
-          <div className="h-3.5 w-20 rounded shimmer" />
+          <div className="h-6 w-28 rounded shimmer mb-1.5" />
+          <div className="h-3 w-16 rounded shimmer" />
         </>
       ) : (
-        <div className="flex items-end gap-3">
+        <div className="flex items-center gap-2">
           {avatarText && (
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-semibold flex-shrink-0 bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300">
+            <div className="w-8 h-8 rounded-lg flex items-center justify-center text-[11px] font-semibold flex-shrink-0 bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300">
               {avatarText}
             </div>
           )}
           <div className="flex-1 min-w-0">
             {typeof bigNumber === 'number' ? (
-              <p className="font-display text-3xl font-semibold tracking-tight text-gray-900 dark:text-white leading-none">
+              <p className="font-display text-xl font-semibold tracking-tight text-gray-900 dark:text-white leading-none">
                 {bigNumber}
               </p>
             ) : (
-              <p className="text-base font-semibold tracking-tight text-gray-900 dark:text-white truncate">
+              <p className="text-sm font-semibold tracking-tight text-gray-900 dark:text-white truncate">
                 {primaryText || '—'}
               </p>
             )}
             {secondaryText && (
               <p
                 className={cn(
-                  'text-xs truncate mt-1',
+                  'text-[11px] truncate mt-0.5',
                   tone === 'alert'
                     ? 'text-red-600 dark:text-red-400 font-medium'
                     : 'text-gray-500 dark:text-gray-400',
@@ -689,51 +699,51 @@ function AlertsCard({
   const isUrgent = overdueCount > 0;
   return (
     <CardShell onClick={onClick}>
-      <div className="flex items-center justify-between mb-2">
-        <p className="text-[11px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+      <div className="flex items-center justify-between mb-1.5">
+        <p className="text-[10px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
           Alertas
         </p>
         {isUrgent ? (
-          <AlertTriangle className="w-4 h-4 text-red-500 dark:text-red-400" />
+          <AlertTriangle className="w-3.5 h-3.5 text-red-500 dark:text-red-400" />
         ) : (
-          <Wallet className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+          <Wallet className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
         )}
       </div>
 
       {loading ? (
         <>
-          <div className="h-7 w-24 rounded-lg shimmer mb-2" />
-          <div className="h-3.5 w-32 rounded shimmer" />
+          <div className="h-6 w-24 rounded shimmer mb-1.5" />
+          <div className="h-3 w-32 rounded shimmer" />
         </>
       ) : !hasAlerts ? (
-        <div>
-          <p className="font-display text-3xl font-semibold tracking-tight text-gray-900 dark:text-white leading-none">
-            0
-          </p>
-          <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+        <>
+          <p className="text-sm font-medium text-gray-500 dark:text-gray-400">
             Tudo em dia
           </p>
-        </div>
+          <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">
+            Sem pendências financeiras
+          </p>
+        </>
       ) : (
-        <div className="space-y-1.5">
+        <div className="space-y-1">
           {overdueCount > 0 && (
             <div className="flex items-center justify-between gap-2">
-              <span className="inline-flex items-center gap-1.5 text-xs text-red-600 dark:text-red-400">
+              <span className="inline-flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-400">
                 <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
                 {overdueCount} atrasada{overdueCount > 1 ? 's' : ''}
               </span>
-              <span className="text-xs font-medium text-gray-700 dark:text-gray-200 truncate">
+              <span className="text-[11px] font-medium text-gray-700 dark:text-gray-200 truncate">
                 {formatCurrency(overdueAmount)}
               </span>
             </div>
           )}
           {pendingCount > 0 && (
             <div className="flex items-center justify-between gap-2">
-              <span className="inline-flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+              <span className="inline-flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400">
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
                 {pendingCount} pendente{pendingCount > 1 ? 's' : ''}
               </span>
-              <span className="text-xs font-medium text-gray-700 dark:text-gray-200 truncate">
+              <span className="text-[11px] font-medium text-gray-700 dark:text-gray-200 truncate">
                 {formatCurrency(pendingAmount)}
               </span>
             </div>
@@ -757,26 +767,27 @@ function TeamPulseCard({
   const extra = Math.max(0, onlineMembers.length - visible.length);
   return (
     <CardShell onClick={onClick}>
-      <div className="flex items-center justify-between mb-2">
-        <p className="text-[11px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+      <div className="flex items-center justify-between mb-1.5">
+        <p className="text-[10px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
           Equipe
         </p>
-        <Sparkles className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+        <Sparkles className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
       </div>
 
-      <p className="font-display text-3xl font-semibold tracking-tight text-gray-900 dark:text-white leading-none">
-        {onlineMembers.length}
-        <span className="text-base text-gray-400 dark:text-gray-500 font-normal ml-1">
-          / {members.length}
-        </span>
-      </p>
-
-      <div className="flex items-center justify-between mt-3">
-        <p className="text-xs text-gray-500 dark:text-gray-400">
-          {onlineMembers.length === 0 ? 'Ninguém online' : 'Online agora'}
-        </p>
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="font-display text-xl font-semibold tracking-tight text-gray-900 dark:text-white leading-none">
+            {onlineMembers.length}
+            <span className="text-sm text-gray-400 dark:text-gray-500 font-normal ml-1">
+              / {members.length}
+            </span>
+          </p>
+          <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
+            {onlineMembers.length === 0 ? 'Ninguém online' : 'Online agora'}
+          </p>
+        </div>
         {visible.length > 0 && (
-          <div className="flex -space-x-1.5">
+          <div className="flex -space-x-1.5 flex-shrink-0">
             {visible.map((m) => {
               const status = memberDisplayStatus(m);
               const dot = status === 'busy' ? 'bg-amber-400' : 'bg-emerald-400';
@@ -784,7 +795,7 @@ function TeamPulseCard({
                 <div
                   key={m.id}
                   title={`${m.name} · ${status}`}
-                  className="relative w-7 h-7 rounded-full ring-2 ring-white dark:ring-gray-800 bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-[10px] font-medium text-gray-600 dark:text-gray-200 overflow-hidden"
+                  className="relative w-6 h-6 rounded-full ring-2 ring-white dark:ring-gray-800 bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-[9px] font-medium text-gray-600 dark:text-gray-200 overflow-hidden"
                 >
                   {m.photoURL ? (
                     // eslint-disable-next-line @next/next/no-img-element
@@ -794,7 +805,7 @@ function TeamPulseCard({
                   )}
                   <span
                     className={cn(
-                      'absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full ring-2 ring-white dark:ring-gray-800',
+                      'absolute -bottom-0.5 -right-0.5 w-1.5 h-1.5 rounded-full ring-2 ring-white dark:ring-gray-800',
                       dot,
                     )}
                   />
@@ -802,7 +813,7 @@ function TeamPulseCard({
               );
             })}
             {extra > 0 && (
-              <div className="relative w-7 h-7 rounded-full ring-2 ring-white dark:ring-gray-800 bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-[9px] font-medium text-gray-500 dark:text-gray-300">
+              <div className="relative w-6 h-6 rounded-full ring-2 ring-white dark:ring-gray-800 bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-[9px] font-medium text-gray-500 dark:text-gray-300">
                 +{extra}
               </div>
             )}

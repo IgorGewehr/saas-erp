@@ -213,10 +213,13 @@ export default function AgentHeroInput({
               transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
               className="text-center mb-6"
             >
-              <h1 className="font-display text-3xl sm:text-4xl font-semibold tracking-tight text-gray-900 dark:text-white">
-                {greeting}, <span className="text-red-600 dark:text-red-400">{firstName}</span>
+              <h1 className="font-display text-2xl sm:text-3xl font-semibold tracking-tight text-gray-900 dark:text-white">
+                {greeting},{' '}
+                <span className="bg-gradient-to-r from-red-500 via-rose-400 to-red-400 bg-clip-text text-transparent">
+                  {firstName}
+                </span>
               </h1>
-              <p className="mt-1.5 text-sm text-gray-500 dark:text-gray-500">
+              <p className="mt-1 text-xs sm:text-sm text-gray-500 dark:text-gray-500">
                 {subtitle}
               </p>
             </motion.div>
