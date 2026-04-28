@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   DndContext,
@@ -13,7 +14,6 @@ import {
   DragOverEvent,
   DragStartEvent,
   DragOverlay,
-  defaultDropAnimationSideEffects,
 } from '@dnd-kit/core';
 import {
   SortableContext,
@@ -194,13 +194,14 @@ function parseDragId(id: string): { type: 'section' | 'item'; sectionKey: string
 // ─── Sortable Item Component ─────────────────────────────────────────────────
 
 function SortableItem({
-  sectionKey, itemId, isHidden, onToggleHidden, overlay,
+  sectionKey, itemId, isHidden, onToggleHidden, overlay, isDropTarget,
 }: {
   sectionKey: string;
   itemId: string;
   isHidden?: boolean;
   onToggleHidden?: (id: string) => void;
   overlay?: boolean;
+  isDropTarget?: boolean;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: itemDragId(sectionKey, itemId),
@@ -211,12 +212,17 @@ function SortableItem({
   const isProtected = PROTECTED_ITEMS.has(itemId);
 
   return (
+    <div className="relative">
+      {isDropTarget && !overlay && (
+        <div className="absolute -top-px inset-x-0 h-0.5 bg-red-400 rounded-full z-10 shadow-sm shadow-red-300" />
+      )}
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
       className={cn(
         'flex items-center gap-2 px-2 py-1.5 rounded-lg border transition-all',
         isDragging && !overlay ? 'opacity-30' : 'opacity-100',
+        isDropTarget && !overlay && !isDragging ? 'border-red-200 dark:border-red-800/60 bg-red-50/50 dark:bg-red-900/10' : '',
         overlay ? 'bg-white dark:bg-gray-800 shadow-lg border-slate-200 dark:border-gray-600' : 'bg-slate-50 dark:bg-gray-800/50 border-transparent hover:border-slate-200 dark:hover:border-gray-700',
       )}
     >
@@ -251,13 +257,14 @@ function SortableItem({
         </button>
       )}
     </div>
+    </div>
   );
 }
 
 // ─── Sortable Section Component ───────────────────────────────────────────────
 
 function SortableSection({
-  section, hiddenItems, onToggleHidden, onRename, onDelete, onToggleCollapse, overlay,
+  section, hiddenItems, onToggleHidden, onRename, onDelete, onToggleCollapse, overlay, overId,
 }: {
   section: SidebarSectionPref;
   hiddenItems: Set<string>;
@@ -266,6 +273,7 @@ function SortableSection({
   onDelete: (key: string) => void;
   onToggleCollapse: (key: string) => void;
   overlay?: boolean;
+  overId?: string | null;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: sectionDragId(section.key),
@@ -275,6 +283,7 @@ function SortableSection({
 
   const isBuiltIn = ['principal', 'gestao', 'fiscal', 'sistema'].includes(section.key);
   const itemIds = section.items.map(id => itemDragId(section.key, id));
+  const isSectionDropTarget = !overlay && overId === sectionDragId(section.key);
 
   const commitRename = () => {
     setEditingTitle(false);
@@ -284,12 +293,17 @@ function SortableSection({
   };
 
   return (
+    <div className="relative">
+      {isSectionDropTarget && !isDragging && (
+        <div className="absolute -top-px inset-x-0 h-0.5 bg-red-400 rounded-full z-10 shadow-sm shadow-red-300" />
+      )}
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
       className={cn(
         'rounded-xl border transition-all',
         isDragging && !overlay ? 'opacity-30' : '',
+        isSectionDropTarget && !isDragging ? 'border-red-200 dark:border-red-800/50' : '',
         overlay ? 'bg-white dark:bg-gray-900 shadow-2xl border-slate-300 dark:border-gray-600' : 'bg-white dark:bg-gray-900 border-slate-200 dark:border-gray-800',
       )}
     >
@@ -370,6 +384,7 @@ function SortableSection({
                     isHidden={hiddenItems.has(itemId)}
                     onToggleHidden={onToggleHidden}
                     overlay={overlay}
+                    isDropTarget={overId === itemDragId(section.key, itemId)}
                   />
                 ))}
               </SortableContext>
@@ -382,6 +397,7 @@ function SortableSection({
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
     </div>
   );
 }
@@ -406,6 +422,20 @@ export default function SidebarEditorTab() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [overId, setOverId] = useState<string | null>(null);
+  const mousePos = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [, forceRender] = useState(0);
+
+  // Track cursor position while dragging for cursor-following overlay
+  useEffect(() => {
+    if (!activeId) return;
+    const onMove = (e: MouseEvent) => {
+      mousePos.current = { x: e.clientX, y: e.clientY };
+      forceRender(n => n + 1);
+    };
+    window.addEventListener('mousemove', onMove, { passive: true });
+    return () => window.removeEventListener('mousemove', onMove);
+  }, [activeId]);
 
   // Sync with server prefs (multi-device) and recompute when mode/role/enterprise changes
   useEffect(() => {
@@ -431,10 +461,12 @@ export default function SidebarEditorTab() {
 
   const handleDragStart = (event: DragStartEvent) => {
     setActiveId(String(event.active.id));
+    setOverId(null);
   };
 
   const handleDragOver = (event: DragOverEvent) => {
     const { active, over } = event;
+    setOverId(over ? String(over.id) : null);
     if (!over) return;
 
     const activeInfo = parseDragId(String(active.id));
@@ -467,6 +499,7 @@ export default function SidebarEditorTab() {
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     setActiveId(null);
+    setOverId(null);
     if (!over || active.id === over.id) return;
 
     const activeInfo = parseDragId(String(active.id));
@@ -596,28 +629,48 @@ export default function SidebarEditorTab() {
                 onRename={renameSection}
                 onDelete={deleteSection}
                 onToggleCollapse={toggleCollapse}
+                overId={overId}
               />
             ))}
           </div>
         </SortableContext>
 
-        <DragOverlay dropAnimation={{ sideEffects: defaultDropAnimationSideEffects({ styles: { active: { opacity: '0.4' } } }) }}>
-          {activeSectionData && (
-            <SortableSection
-              section={activeSectionData}
-              hiddenItems={hiddenItems}
-              onToggleHidden={() => {}}
-              onRename={() => {}}
-              onDelete={() => {}}
-              onToggleCollapse={() => {}}
-              overlay
-            />
-          )}
-          {activeItemId && activeItemSectionKey && (
-            <SortableItem sectionKey={activeItemSectionKey} itemId={activeItemId} overlay />
-          )}
-        </DragOverlay>
+        {/* Empty DragOverlay — still needed for dnd-kit's internal coordination */}
+        <DragOverlay dropAnimation={null}>{null}</DragOverlay>
       </DndContext>
+
+      {/* Cursor-following drag overlay — renders at exact mouse position via portal */}
+      {activeId && typeof window !== 'undefined' && createPortal(
+        <div
+          style={{
+            position: 'fixed',
+            left: mousePos.current.x + 14,
+            top: mousePos.current.y,
+            transform: 'translateY(-50%)',
+            zIndex: 9999,
+            pointerEvents: 'none',
+          }}
+        >
+          {activeSectionData && (
+            <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white dark:bg-gray-800 shadow-xl border border-red-200 dark:border-red-700/50 cursor-grabbing">
+              <GripVertical size={15} className="text-red-400 shrink-0" />
+              <span className="text-xs font-bold uppercase tracking-widest text-red-500 dark:text-red-400">{activeSectionData.title}</span>
+              <span className="text-[10px] text-slate-400 dark:text-gray-500 ml-1">{activeSectionData.items.length} itens</span>
+            </div>
+          )}
+          {activeItemId && activeItemSectionKey && (() => {
+            const Icon = ITEM_ICONS[activeItemId] ?? FileText;
+            return (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white dark:bg-gray-800 shadow-xl border border-red-200 dark:border-red-800/50">
+                <GripVertical size={13} className="text-red-400 shrink-0" />
+                <Icon size={13} className="text-slate-400 dark:text-gray-500 shrink-0" />
+                <span className="text-sm text-slate-700 dark:text-gray-200 font-medium">{ITEM_LABELS[activeItemId] ?? activeItemId}</span>
+              </div>
+            );
+          })()}
+        </div>,
+        document.body
+      )}
 
       {/* Ocultos */}
       {hiddenItems.size > 0 && (
