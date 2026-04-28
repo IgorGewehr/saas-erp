@@ -248,6 +248,19 @@ export interface BusinessPromotion {
   isActive: boolean;
 }
 
+export interface LoyaltyTier {
+  name: string;        // "Bronze", "Prata", "Ouro"
+  minPoints: number;   // 0, 500, 2000
+  color: string;       // hex color
+  benefits?: string;   // "5% desconto em serviços"
+}
+
+export const DEFAULT_LOYALTY_TIERS: LoyaltyTier[] = [
+  { name: 'Bronze', minPoints: 0,    color: '#CD7F32', benefits: '' },
+  { name: 'Prata',  minPoints: 500,  color: '#9CA3AF', benefits: '' },
+  { name: 'Ouro',   minPoints: 2000, color: '#F59E0B', benefits: '' },
+];
+
 export interface LoyaltyConfig {
   isEnabled: boolean;
   /** Quantos pontos o cliente ganha por R$1,00 gasto (ex: 1) */
@@ -258,6 +271,21 @@ export interface LoyaltyConfig {
   minPointsToRedeem: number;
   /** Dias até expirar (null = não expira) */
   expirationDays?: number | null;
+  /** Tiers de fidelidade configuráveis */
+  tiers?: LoyaltyTier[];
+}
+
+export interface LoyaltyHistoryEntry {
+  id: string;
+  clientId: string;
+  businessId: string;
+  type: 'add' | 'subtract' | 'sale' | 'redeem' | 'expire' | 'manual';
+  amount: number;        // positive = ganhou, negative = usou/expirou
+  balance: number;       // saldo após a operação
+  reason: string;
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
 }
 
 export interface BusinessSettings {

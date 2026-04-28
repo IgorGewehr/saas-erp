@@ -7,7 +7,7 @@ import {
   Building2, User, ChevronDown, CheckCircle2, Tag, MapPin,
   TrendingUp, TrendingDown, ShoppingCart, Star, MoreVertical, Eye, FileText,
   Download, Upload, UserCheck, Gift, Calendar, MessageSquare, History, Clock,
-  FileDown,
+  FileDown, Settings, Plus as PlusIcon, Minus, Trophy, Sparkles,
 } from 'lucide-react';
 import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, limit as firestoreLimit, orderBy, writeBatch } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
@@ -15,7 +15,9 @@ import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
-import type { Client, LeadSource, LeadStatus } from '@/lib/types';
+import type { Client, LeadSource, LeadStatus, LoyaltyConfig, LoyaltyTier, LoyaltyHistoryEntry } from '@/lib/types';
+import { DEFAULT_LOYALTY_TIERS } from '@/lib/types';
+import { ROLE_HIERARCHY } from '@/lib/types';
 import { toast } from 'react-toastify';
 import ClientAgentMemoryPanel from './ClientAgentMemoryPanel';
 import Papa from 'papaparse';
@@ -1447,6 +1449,412 @@ function MergeModal({
   );
 }
 
+// ─── Loyalty Program ─────────────────────────────────────────────────────────
+
+function getClientTier(points: number, tiers: LoyaltyTier[]): LoyaltyTier | null {
+  const sorted = [...tiers].sort((a, b) => b.minPoints - a.minPoints);
+  return sorted.find(t => points >= t.minPoints) ?? null;
+}
+
+function TierBadge({ points, tiers }: { points: number; tiers: LoyaltyTier[] }) {
+  const tier = getClientTier(points, tiers);
+  if (!tier) return null;
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold border"
+      style={{ color: tier.color, backgroundColor: tier.color + '18', borderColor: tier.color + '50' }}
+    >
+      <Trophy className="w-2.5 h-2.5" />
+      {tier.name}
+    </span>
+  );
+}
+
+// ─── Loyalty Settings Modal ───────────────────────────────────────────────────
+
+function LoyaltySettingsModal({
+  current,
+  businessId,
+  onClose,
+  onSaved,
+}: {
+  current?: LoyaltyConfig;
+  businessId: string;
+  onClose: () => void;
+  onSaved: (cfg: LoyaltyConfig) => void;
+}) {
+  const [isEnabled, setIsEnabled] = useState(current?.isEnabled ?? false);
+  const [pointsPerReal, setPointsPerReal] = useState(String(current?.pointsPerReal ?? 1));
+  const [pointValue, setPointValue] = useState(String(current?.pointValueInCentavos ?? 1));
+  const [minRedeem, setMinRedeem] = useState(String(current?.minPointsToRedeem ?? 100));
+  const [expireDays, setExpireDays] = useState(String(current?.expirationDays ?? ''));
+  const [tiers, setTiers] = useState<LoyaltyTier[]>(current?.tiers ?? DEFAULT_LOYALTY_TIERS);
+  const [saving, setSaving] = useState(false);
+
+  const updateTier = (i: number, patch: Partial<LoyaltyTier>) =>
+    setTiers(prev => prev.map((t, idx) => idx === i ? { ...t, ...patch } : t));
+
+  const handleSave = async () => {
+    setSaving(true);
+    const cfg: LoyaltyConfig = {
+      isEnabled,
+      pointsPerReal: Math.max(0, Number(pointsPerReal) || 1),
+      pointValueInCentavos: Math.max(1, Number(pointValue) || 1),
+      minPointsToRedeem: Math.max(1, Number(minRedeem) || 100),
+      expirationDays: expireDays ? Number(expireDays) : null,
+      tiers: tiers.filter(t => t.name.trim()),
+    };
+    try {
+      await updateDoc(doc(db, 'businesses', businessId), { 'settings.loyalty': cfg, updatedAt: new Date().toISOString() });
+      onSaved(cfg);
+      onClose();
+    } catch (err) {
+      console.error('Loyalty settings save error:', err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 16 }}
+        transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+        className="w-full max-w-lg bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 overflow-hidden flex flex-col max-h-[90vh]"
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800 flex-shrink-0">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center">
+              <Trophy className="w-4 h-4 text-amber-500" />
+            </div>
+            <h2 className="font-semibold text-gray-900 dark:text-white text-sm">Programa de Fidelidade</h2>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6 space-y-5">
+          {/* Enable toggle */}
+          <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-800/60 rounded-xl">
+            <div>
+              <p className="text-sm font-semibold text-gray-800 dark:text-gray-200">Ativar programa</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Clientes acumulam e resgatam pontos</p>
+            </div>
+            <button
+              onClick={() => setIsEnabled(v => !v)}
+              className={cn('w-11 h-6 rounded-full transition-colors relative', isEnabled ? 'bg-emerald-500' : 'bg-gray-300 dark:bg-gray-600')}
+            >
+              <span className={cn('absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform', isEnabled ? 'translate-x-5' : 'translate-x-0.5')} />
+            </button>
+          </div>
+
+          {/* Rules */}
+          <div className="space-y-3">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Regras de acúmulo e resgate</p>
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                { label: 'Pontos por R$1 gasto', value: pointsPerReal, set: setPointsPerReal, hint: 'ex: 1' },
+                { label: 'Centavos por ponto resgatado', value: pointValue, set: setPointValue, hint: 'ex: 1 = R$0,01/pt' },
+                { label: 'Mínimo para resgatar (pts)', value: minRedeem, set: setMinRedeem, hint: 'ex: 100' },
+                { label: 'Expiração (dias, vazio = nunca)', value: expireDays, set: setExpireDays, hint: 'ex: 365' },
+              ].map(f => (
+                <div key={f.label}>
+                  <label className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider block mb-1">{f.label}</label>
+                  <input
+                    type="number"
+                    value={f.value}
+                    onChange={e => f.set(e.target.value)}
+                    placeholder={f.hint}
+                    className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-400"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Tiers */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Tiers</p>
+              <button
+                onClick={() => setTiers(prev => [...prev, { name: '', minPoints: 0, color: '#6366F1', benefits: '' }])}
+                className="text-[10px] font-medium text-amber-600 dark:text-amber-400 hover:text-amber-700 flex items-center gap-1"
+              >
+                <PlusIcon className="w-3 h-3" /> Adicionar tier
+              </button>
+            </div>
+            <div className="space-y-2">
+              {tiers.map((tier, i) => (
+                <div key={i} className="flex items-center gap-2 p-3 bg-gray-50 dark:bg-gray-800/60 rounded-xl border border-gray-200 dark:border-gray-700">
+                  <input
+                    type="color"
+                    value={tier.color}
+                    onChange={e => updateTier(i, { color: e.target.value })}
+                    className="w-7 h-7 rounded-lg border-0 cursor-pointer bg-transparent flex-shrink-0"
+                  />
+                  <input
+                    value={tier.name}
+                    onChange={e => updateTier(i, { name: e.target.value })}
+                    placeholder="Nome (ex: Ouro)"
+                    className="flex-1 min-w-0 px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-900 dark:text-gray-100 focus:outline-none"
+                  />
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    <input
+                      type="number"
+                      value={tier.minPoints}
+                      onChange={e => updateTier(i, { minPoints: Number(e.target.value) })}
+                      className="w-20 px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-900 dark:text-gray-100 focus:outline-none"
+                      placeholder="Min pts"
+                    />
+                    <span className="text-[10px] text-gray-400">pts+</span>
+                  </div>
+                  <input
+                    value={tier.benefits ?? ''}
+                    onChange={e => updateTier(i, { benefits: e.target.value })}
+                    placeholder="Benefício"
+                    className="flex-1 min-w-0 px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-900 dark:text-gray-100 focus:outline-none"
+                  />
+                  <button onClick={() => setTiers(prev => prev.filter((_, idx) => idx !== i))} className="p-1 text-gray-400 hover:text-red-500 transition-colors flex-shrink-0">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex gap-2 justify-end px-6 py-4 border-t border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/30 flex-shrink-0">
+          <button onClick={onClose} className="px-4 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+            Cancelar
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-sm font-semibold transition-colors disabled:opacity-50"
+          >
+            {saving ? 'Salvando...' : 'Salvar programa'}
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ─── Points Adjust Modal ──────────────────────────────────────────────────────
+
+function PointsAdjustModal({
+  client,
+  businessId,
+  user,
+  onClose,
+  onDone,
+}: {
+  client: Client;
+  businessId: string;
+  user: { uid: string; name: string };
+  onClose: () => void;
+  onDone: (newBalance: number) => void;
+}) {
+  const [mode, setMode] = useState<'add' | 'subtract'>('add');
+  const [amount, setAmount] = useState('');
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const currentPts = client.loyaltyPoints ?? 0;
+  const delta = Number(amount) || 0;
+  const newBalance = mode === 'add' ? currentPts + delta : Math.max(0, currentPts - delta);
+
+  const handleSave = async () => {
+    if (!delta || !reason.trim()) return;
+    setSaving(true);
+    const now = new Date().toISOString();
+    const signedAmount = mode === 'add' ? delta : -delta;
+    try {
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'clients', client.id), { loyaltyPoints: newBalance, updatedAt: now });
+      const histRef = doc(collection(db, 'loyaltyHistory'));
+      const entry: Omit<LoyaltyHistoryEntry, 'id'> = {
+        clientId: client.id,
+        businessId,
+        type: 'manual',
+        amount: signedAmount,
+        balance: newBalance,
+        reason: reason.trim(),
+        createdBy: user.uid,
+        createdByName: user.name,
+        createdAt: now,
+      };
+      batch.set(histRef, entry);
+      await batch.commit();
+      onDone(newBalance);
+      onClose();
+    } catch (err) {
+      console.error('Points adjust error:', err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 12 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 12 }}
+        transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+        className="w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 overflow-hidden"
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800">
+          <div className="flex items-center gap-2">
+            <Gift className="w-4 h-4 text-amber-500" />
+            <h3 className="font-semibold text-gray-900 dark:text-white text-sm">Ajustar pontos</h3>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {/* Current balance */}
+          <div className="flex items-center justify-between p-3 bg-amber-50 dark:bg-amber-500/10 rounded-xl">
+            <p className="text-xs text-amber-700 dark:text-amber-300">Saldo atual de {client.name.split(' ')[0]}</p>
+            <p className="text-xl font-bold text-amber-700 dark:text-amber-300">{currentPts} pts</p>
+          </div>
+
+          {/* Add / Subtract toggle */}
+          <div className="flex gap-2">
+            {(['add', 'subtract'] as const).map(m => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className={cn('flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-sm font-semibold transition-all border',
+                  mode === m
+                    ? m === 'add' ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-red-500 text-white border-red-500'
+                    : 'border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800'
+                )}
+              >
+                {m === 'add' ? <PlusIcon className="w-3.5 h-3.5" /> : <Minus className="w-3.5 h-3.5" />}
+                {m === 'add' ? 'Adicionar' : 'Subtrair'}
+              </button>
+            ))}
+          </div>
+
+          <div>
+            <label className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider block mb-1">Quantidade de pontos</label>
+            <input
+              type="number"
+              min="1"
+              value={amount}
+              onChange={e => setAmount(e.target.value)}
+              placeholder="0"
+              className="w-full px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-lg font-bold text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-400 text-center"
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider block mb-1">Motivo *</label>
+            <input
+              value={reason}
+              onChange={e => setReason(e.target.value)}
+              placeholder="ex: Aniversário do cliente, resgate de brinde..."
+              className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-400"
+            />
+          </div>
+
+          {delta > 0 && (
+            <div className="flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-800/60 rounded-xl text-xs">
+              <span className="text-gray-500">Novo saldo:</span>
+              <span className={cn('font-bold', mode === 'add' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+                {newBalance} pts
+              </span>
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-2 px-5 pb-5">
+          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+            Cancelar
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving || !delta || !reason.trim()}
+            className="flex-1 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-sm font-semibold transition-colors disabled:opacity-40"
+          >
+            {saving ? 'Salvando...' : 'Confirmar'}
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ─── Loyalty History Section ──────────────────────────────────────────────────
+
+const HISTORY_TYPE_CFG: Record<LoyaltyHistoryEntry['type'], { label: string; color: string }> = {
+  add:      { label: '+', color: 'text-emerald-600 dark:text-emerald-400' },
+  subtract: { label: '−', color: 'text-red-500 dark:text-red-400' },
+  sale:     { label: '+', color: 'text-emerald-600 dark:text-emerald-400' },
+  redeem:   { label: '−', color: 'text-amber-600 dark:text-amber-400' },
+  expire:   { label: '−', color: 'text-gray-400' },
+  manual:   { label: '±', color: 'text-blue-500 dark:text-blue-400' },
+};
+
+function LoyaltyHistorySection({ clientId, businessId }: { clientId: string; businessId: string }) {
+  const { data: history = [], isLoading } = useQuery({
+    queryKey: ['loyalty-history', clientId],
+    queryFn: async (): Promise<LoyaltyHistoryEntry[]> => {
+      const snap = await getDocs(query(
+        collection(db, 'loyaltyHistory'),
+        where('businessId', '==', businessId),
+        where('clientId', '==', clientId),
+        orderBy('createdAt', 'desc'),
+        firestoreLimit(15),
+      ));
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as LoyaltyHistoryEntry));
+    },
+    enabled: !!clientId && !!businessId,
+    staleTime: 60 * 1000,
+  });
+
+  if (isLoading) return <div className="h-8 shimmer rounded-lg" />;
+  if (!history.length) return (
+    <p className="text-xs text-gray-400 italic">Nenhuma movimentação ainda</p>
+  );
+
+  return (
+    <div className="space-y-1.5 mt-2">
+      {history.map(h => {
+        const cfg = HISTORY_TYPE_CFG[h.type];
+        return (
+          <div key={h.id} className="flex items-center gap-2">
+            <span className={cn('text-xs font-bold w-4 text-center flex-shrink-0', cfg.color)}>
+              {cfg.label}
+            </span>
+            <div className="flex-1 min-w-0">
+              <p className="text-[11px] text-gray-700 dark:text-gray-300 truncate">{h.reason}</p>
+              <p className="text-[9px] text-gray-400">{formatDate(h.createdAt)}</p>
+            </div>
+            <span className={cn('text-xs font-semibold flex-shrink-0', cfg.color)}>
+              {h.amount > 0 ? '+' : ''}{h.amount} pts
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Client Timeline ─────────────────────────────────────────────────────────
 
 type TimelineEventKind = 'conversation' | 'appointment' | 'sale' | 'transaction_in' | 'transaction_out';
@@ -1672,9 +2080,16 @@ function ClientTimeline({ client, businessId }: { client: Client; businessId: st
 
 // ─── Client Detail Panel ──────────────────────────────────────────────────────
 
-function ClientDetailPanel({ client, onClose, onEdit }: { client: Client; onClose: () => void; onEdit: () => void }) {
-  const { business } = useAuth();
+function ClientDetailPanel({ client, onClose, onEdit, loyaltyConfig: loyaltyCfg }: { client: Client; onClose: () => void; onEdit: () => void; loyaltyConfig?: LoyaltyConfig }) {
+  const { business, user } = useAuth();
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<'perfil' | 'timeline'>('perfil');
+  const [showPointsAdjust, setShowPointsAdjust] = useState(false);
+  const [localPoints, setLocalPoints] = useState<number | null>(null);
+
+  const displayPoints = localPoints ?? client.loyaltyPoints ?? 0;
+  const tiers = loyaltyCfg?.tiers ?? DEFAULT_LOYALTY_TIERS;
+  const loyaltyEnabled = loyaltyCfg?.isEnabled ?? false;
   const statusCfg = STATUS_CONFIG[client.status] || STATUS_CONFIG.ganho;
 
   return (
@@ -1771,13 +2186,55 @@ function ClientDetailPanel({ client, onClose, onEdit }: { client: Client; onClos
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Compras</p>
             <p className="text-lg font-bold text-gray-900 dark:text-white">{client.visitCount || 0}</p>
           </div>
-          {(client.loyaltyPoints || 0) > 0 && (
-            <div className="col-span-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800/30 rounded-xl p-3 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Gift className="w-4 h-4 text-amber-600 dark:text-amber-400" />
-                <p className="text-xs text-amber-700 dark:text-amber-300 font-medium">Pontos de fidelidade</p>
+          {(loyaltyEnabled || displayPoints > 0) && (
+            <div className="col-span-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800/30 rounded-xl p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Gift className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                  <p className="text-xs text-amber-700 dark:text-amber-300 font-medium">Pontos de fidelidade</p>
+                  <TierBadge points={displayPoints} tiers={tiers} />
+                </div>
+                <div className="flex items-center gap-2">
+                  <p className="text-lg font-bold text-amber-700 dark:text-amber-300">{displayPoints} pts</p>
+                  <button
+                    onClick={() => setShowPointsAdjust(true)}
+                    className="p-1 rounded-lg bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 hover:bg-amber-200 dark:hover:bg-amber-500/30 transition-colors"
+                    title="Ajustar pontos"
+                  >
+                    <Settings className="w-3 h-3" />
+                  </button>
+                </div>
               </div>
-              <p className="text-lg font-bold text-amber-700 dark:text-amber-300">{client.loyaltyPoints || 0} pts</p>
+              {/* Tier progress */}
+              {(() => {
+                const currentTier = getClientTier(displayPoints, tiers);
+                const sorted = [...tiers].sort((a, b) => a.minPoints - b.minPoints);
+                const nextTier = sorted.find(t => t.minPoints > displayPoints);
+                if (!nextTier || !currentTier) return null;
+                const progress = Math.min(100, ((displayPoints - currentTier.minPoints) / (nextTier.minPoints - currentTier.minPoints)) * 100);
+                return (
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[9px] text-amber-600 dark:text-amber-400">
+                      <span>{currentTier.name}</span>
+                      <span>{nextTier.minPoints - displayPoints} pts para {nextTier.name}</span>
+                    </div>
+                    <div className="h-1.5 bg-amber-100 dark:bg-amber-900/40 rounded-full overflow-hidden">
+                      <motion.div
+                        className="h-full rounded-full"
+                        style={{ backgroundColor: nextTier.color }}
+                        initial={{ width: 0 }}
+                        animate={{ width: `${progress}%` }}
+                        transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+                      />
+                    </div>
+                  </div>
+                );
+              })()}
+              {/* Histórico de pontos */}
+              <div className="border-t border-amber-100 dark:border-amber-800/30 pt-2">
+                <p className="text-[9px] font-semibold text-amber-600 dark:text-amber-400 uppercase tracking-wider mb-1.5">Histórico</p>
+                <LoyaltyHistorySection clientId={client.id} businessId={business?.id ?? ''} />
+              </div>
             </div>
           )}
         </div>
@@ -1873,6 +2330,23 @@ function ClientDetailPanel({ client, onClose, onEdit }: { client: Client; onClos
         <ClientAgentMemoryPanel contactId={client.id} contactName={client.name} />
       </div>
       )} {/* end perfil tab */}
+
+      {/* Points adjust modal */}
+      <AnimatePresence>
+        {showPointsAdjust && user && (
+          <PointsAdjustModal
+            client={{ ...client, loyaltyPoints: displayPoints }}
+            businessId={business?.id ?? ''}
+            user={{ uid: user.uid, name: user.name }}
+            onClose={() => setShowPointsAdjust(false)}
+            onDone={newBalance => {
+              setLocalPoints(newBalance);
+              queryClient.invalidateQueries({ queryKey: ['loyalty-history', client.id] });
+              queryClient.invalidateQueries({ queryKey: ['clients', business?.id] });
+            }}
+          />
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
@@ -1880,7 +2354,7 @@ function ClientDetailPanel({ client, onClose, onEdit }: { client: Client; onClos
 // ─── Main Module ─────────────────────────────────────────────────────────────
 
 export default function ClientsModule() {
-  const { business } = useAuth();
+  const { business, user } = useAuth();
   const queryClient = useQueryClient();
 
   const [search, setSearch] = useState('');
@@ -1892,6 +2366,9 @@ export default function ClientsModule() {
   const [showExport, setShowExport] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
+  const [showLoyaltySettings, setShowLoyaltySettings] = useState(false);
+  const [loyaltyConfig, setLoyaltyConfig] = useState<LoyaltyConfig | undefined>(business?.settings?.loyalty);
+  const isAdmin = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
   const [showFilters, setShowFilters] = useState(false);
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
   const [showForm, setShowForm] = useState(false);
@@ -2110,6 +2587,17 @@ export default function ClientsModule() {
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">{clients.length} clientes cadastrados</p>
         </div>
         <div className="flex items-center gap-2">
+          {isAdmin && (
+            <button
+              onClick={() => setShowLoyaltySettings(true)}
+              className="inline-flex items-center gap-2 px-4 py-2.5 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 text-sm font-medium rounded-xl transition-colors"
+              title="Configurar programa de fidelidade"
+            >
+              <Trophy className="w-4 h-4 text-amber-500" />
+              Fidelidade
+              {loyaltyConfig?.isEnabled && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />}
+            </button>
+          )}
           {dupeCount > 0 && (
             <button
               onClick={() => setShowMerge(true)}
@@ -2416,10 +2904,13 @@ export default function ClientsModule() {
                         </span>
                       )}
                       {(client.loyaltyPoints || 0) > 0 && (
-                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400">
-                          <Gift className="w-2.5 h-2.5" />
-                          {client.loyaltyPoints} pts
-                        </span>
+                        <>
+                          <TierBadge points={client.loyaltyPoints ?? 0} tiers={loyaltyConfig?.tiers ?? DEFAULT_LOYALTY_TIERS} />
+                          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400">
+                            <Gift className="w-2.5 h-2.5" />
+                            {client.loyaltyPoints} pts
+                          </span>
+                        </>
                       )}
                     </div>
 
@@ -2453,6 +2944,7 @@ export default function ClientsModule() {
                 client={selectedClient}
                 onClose={() => setSelectedClient(null)}
                 onEdit={() => openEdit(selectedClient)}
+                loyaltyConfig={loyaltyConfig}
               />
             </div>
           )}
@@ -2501,6 +2993,18 @@ export default function ClientsModule() {
               </div>
             </motion.div>
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Loyalty settings modal */}
+      <AnimatePresence>
+        {showLoyaltySettings && (
+          <LoyaltySettingsModal
+            current={loyaltyConfig}
+            businessId={business!.id}
+            onClose={() => setShowLoyaltySettings(false)}
+            onSaved={cfg => setLoyaltyConfig(cfg)}
+          />
         )}
       </AnimatePresence>
 
