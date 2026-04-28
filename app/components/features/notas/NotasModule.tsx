@@ -208,8 +208,13 @@ function NoteCard({
         </div>
       )}
 
-      {/* Actions — visible on hover; each button stops propagation individually */}
-      <div className="absolute top-2.5 right-2.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+      {/* Actions — z-10 garante que ficam acima do stacking context do conteúdo;
+           onPointerDown para o Framer Motion não detectar tap no card */}
+      <div
+        className="absolute top-2.5 right-2.5 z-10 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150"
+        onClick={e => e.stopPropagation()}
+        onPointerDown={e => e.stopPropagation()}
+      >
         <button
           onClick={(e) => { e.stopPropagation(); onPin(note); }}
           title={note.isPinned ? 'Desafixar' : 'Fixar no topo'}
@@ -286,19 +291,21 @@ function NoteCard({
         </h3>
       )}
 
-      {/* Content — grows to fill card, fades out at the bottom when overflowing */}
-      <div
-        className="relative flex-1 min-h-0 overflow-hidden"
-        style={{
-          maskImage: 'linear-gradient(to bottom, black 55%, transparent 100%)',
-          WebkitMaskImage: 'linear-gradient(to bottom, black 55%, transparent 100%)',
-        }}
-      >
-        <p className={cn(
-          'text-sm leading-relaxed whitespace-pre-wrap break-words h-full',
-          note.title ? 'text-black/70 dark:text-white/80' : cn('font-medium', color.text),
-          !note.title && 'pr-14',
-        )}>
+      {/* Content — grows to fill card, fades out at the bottom when overflowing.
+           mask-image fica no <p> e não no container, para não criar stacking
+           context que competiria com os botões absolutos irmãos. */}
+      <div className="flex-1 min-h-0 overflow-hidden">
+        <p
+          className={cn(
+            'text-sm leading-relaxed whitespace-pre-wrap break-words h-full',
+            note.title ? 'text-black/70 dark:text-white/80' : cn('font-medium', color.text),
+            !note.title && 'pr-14',
+          )}
+          style={{
+            maskImage: 'linear-gradient(to bottom, black 55%, transparent 100%)',
+            WebkitMaskImage: 'linear-gradient(to bottom, black 55%, transparent 100%)',
+          }}
+        >
           {note.content}
         </p>
       </div>
