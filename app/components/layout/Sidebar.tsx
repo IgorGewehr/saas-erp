@@ -320,19 +320,23 @@ function SidebarContent({
   const currentUseCase: UseCase = (business?.settings?.useCase as UseCase) || 'servicos';
   const userRoleValue = ROLE_HIERARCHY[user?.role ?? 'viewer'];
 
-  // Urgent recurring transactions count for Financial badge
+  // Urgent recurring transactions count for Financial badge.
+  // Only filters on (businessId, recurrence.nextDueDate) to avoid requiring a 3-field
+  // composite index on nested fields — isActive is filtered client-side.
   const { data: urgentRecurringCount = 0 } = useQuery({
     queryKey: ['sidebar-urgent-recurring', business?.id],
     queryFn: async () => {
       if (!business?.id) return 0;
+      const todayStr = new Date().toISOString().slice(0, 10);
       const in3d = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
       const snap = await getDocs(query(
         collection(db, 'transactions'),
         where('businessId', '==', business.id),
-        where('recurrence.isActive', '==', true),
+        where('recurrence.nextDueDate', '>=', todayStr),
         where('recurrence.nextDueDate', '<=', in3d),
       ));
-      return snap.size;
+      // Filter isActive in-memory to avoid 3-field compound index on nested fields
+      return snap.docs.filter(d => d.data().recurrence?.isActive === true).length;
     },
     enabled: !!business?.id,
     staleTime: 5 * 60 * 1000,

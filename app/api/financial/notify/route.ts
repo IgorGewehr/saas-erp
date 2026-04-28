@@ -98,6 +98,12 @@ async function sendWhatsApp(
 
 // ─── Email helper (Resend) ────────────────────────────────────────────────────
 
+function emailDomain(email: string | undefined): string {
+  if (!email || !email.includes('@')) return 'servicepro.app';
+  const domain = email.split('@').pop();
+  return domain && domain.includes('.') ? domain : 'servicepro.app';
+}
+
 async function sendEmail(
   business: Business & { id: string },
   to: string,
@@ -116,7 +122,7 @@ async function sendEmail(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      from: `${business.nomeFantasia || business.razaoSocial} <noreply@${business.email?.split('@')[1] || 'servicepro.app'}>`,
+      from: `${business.nomeFantasia || business.razaoSocial} <noreply@${emailDomain(business.email)}>`,
       to,
       subject,
       html,
@@ -144,7 +150,7 @@ export async function sendFinancialNotifications(
   const dueSoonStr = new Date(now.getTime() + settings.dueSoonDays * 24 * 60 * 60 * 1000)
     .toISOString()
     .slice(0, 10);
-  const sevenDaysAgoStr = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const sevenDaysAgoMs = now.getTime() - 7 * 24 * 60 * 60 * 1000;
 
   let count = 0;
 
@@ -247,7 +253,7 @@ export async function sendFinancialNotifications(
     for (const txDoc of overdueSnap.docs) {
       const tx = txDoc.data();
       // Re-notify only if never notified or notified > 7 days ago
-      if (tx.overdueNotifiedAt && tx.overdueNotifiedAt > sevenDaysAgoStr) continue;
+      if (tx.overdueNotifiedAt && new Date(tx.overdueNotifiedAt).getTime() > sevenDaysAgoMs) continue;
       if (!tx.clientId) continue;
 
       const daysOverdue = Math.floor(

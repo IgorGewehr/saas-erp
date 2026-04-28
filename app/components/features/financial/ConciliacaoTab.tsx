@@ -206,7 +206,7 @@ export default function ConciliacaoTab({ businessId, transactions, bankAccounts 
     ));
   };
 
-  const handleAddRule = async () => {
+  const handleAddRule = useCallback(async () => {
     if (!newRulePattern.trim() || !newRuleCategory.trim() || !businessId) return;
     setSavingRule(true);
     try {
@@ -228,12 +228,15 @@ export default function ConciliacaoTab({ businessId, transactions, bankAccounts 
     } finally {
       setSavingRule(false);
     }
-  };
+  }, [businessId, newRulePattern, newRuleCategory, newRuleType, selectedBankId]);
 
-  const handleDeleteRule = async (ruleId: string) => {
+  const handleDeleteRule = useCallback(async (ruleId: string) => {
+    // Verify ownership before deletion — prevents cross-tenant rule deletion
+    const rule = rules.find(r => r.id === ruleId);
+    if (!rule || rule.businessId !== businessId) return;
     await deleteDoc(doc(db, 'reconciliationRules', ruleId));
     setRules(prev => prev.filter(r => r.id !== ruleId));
-  };
+  }, [rules, businessId]);
 
   const handleSaveReconciliation = useCallback(async () => {
     if (!user || !businessId || items.length === 0) return;
