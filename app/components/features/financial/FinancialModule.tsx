@@ -848,16 +848,19 @@ export default function FinancialModule() {
         updatedByName: user.name,
         updatedBy: user.uid,
         updatedAt: now,
-        ...(formRecurrence && formDueDate && formInstallments <= 1 ? {
-          recurrence: {
+        // Use paymentDate as fallback when dueDate is missing (e.g. already-paid transaction being made recurrent)
+        recurrence: (() => {
+          const baseDate = formDueDate || formPaymentDate;
+          if (!formRecurrence || !baseDate || formInstallments > 1) return null;
+          return {
             frequency: formRecurrenceFrequency,
-            nextDueDate: computeNextDueDate(formDueDate, formRecurrenceFrequency, formRecurrenceDay ? parseInt(formRecurrenceDay, 10) : undefined),
+            nextDueDate: computeNextDueDate(baseDate, formRecurrenceFrequency, formRecurrenceDay ? parseInt(formRecurrenceDay, 10) : undefined),
             ...(formRecurrenceEndDate ? { endDate: formRecurrenceEndDate } : {}),
             isActive: true,
             ...(formRecurrenceDay ? { dayOfMonth: parseInt(formRecurrenceDay, 10) } : {}),
             ...(formRecurrenceLabel ? { label: formRecurrenceLabel } : {}),
-          },
-        } : {}),
+          };
+        })(),
       };
 
       if (editingTransaction) {
