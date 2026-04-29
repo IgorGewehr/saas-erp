@@ -47,6 +47,7 @@ import {
 } from './shared';
 import RecipientListInput from './RecipientListInput';
 import BroadcastDetailDialog from './BroadcastDetailDialog';
+import TemplateSelector, { type TemplateSelection, isTemplateSelectionValid } from './TemplateSelector';
 import { KanbanBoard } from './KanbanBoard';
 import { LeadTableView } from './LeadTableView';
 import { LeadDetailPanel } from './LeadDetailPanel';
@@ -1199,7 +1200,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
   const [formTags, setFormTags] = useState('');
   const [formRecipients, setFormRecipients] = useState<BroadcastRecipient[]>([]);
   const [formMsgType, setFormMsgType] = useState<'template' | 'text'>('template');
-  const [formTemplate, setFormTemplate] = useState('');
+  const [formTemplate, setFormTemplate] = useState<TemplateSelection | null>(null);
   const [formContent, setFormContent] = useState('');
   const [saving, setSaving] = useState(false);
   const { user } = useAuth();
@@ -1229,6 +1230,14 @@ function CampaignsTab({ businessId }: { businessId: string }) {
     if (!businessId || !user || !formName.trim()) return;
     if (formAudienceType === 'list' && formRecipients.length === 0) {
       toast.error('Adicione pelo menos um recipiente na lista.');
+      return;
+    }
+    if (formMsgType === 'template' && !isTemplateSelectionValid(formTemplate)) {
+      toast.error('Selecione um template e preencha todas as variáveis.');
+      return;
+    }
+    if (formMsgType === 'text' && !formContent.trim()) {
+      toast.error('Digite o conteúdo da mensagem.');
       return;
     }
     // Firestore tem limite de 1 MiB por documento. Estimativa conservadora ~80% do limite.
@@ -1262,7 +1271,9 @@ function CampaignsTab({ businessId }: { businessId: string }) {
         audienceType: formAudienceType,
         audienceTags: formAudienceType === 'tags' ? formTags.split(',').map(t => t.trim()).filter(Boolean) : [],
         messageType: formMsgType,
-        templateName: formMsgType === 'template' ? formTemplate.trim() : undefined,
+        templateName: formMsgType === 'template' && formTemplate ? formTemplate.name : undefined,
+        templateLanguage: formMsgType === 'template' && formTemplate ? formTemplate.language : undefined,
+        templateParams: formMsgType === 'template' && formTemplate ? formTemplate.params : undefined,
         messageContent: formMsgType === 'text' ? formContent.trim() : undefined,
         status: 'draft' as BroadcastStatus,
         stats: { total: recipientsTotal, sent: 0, delivered: 0, read: 0, failed: 0, replied: 0 },
@@ -1279,7 +1290,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       setShowNew(false);
       setFormName('');
       setFormRecipients([]);
-      setFormTemplate('');
+      setFormTemplate(null);
       setFormContent('');
     } catch (err) {
       console.error('[CRM:Campaigns] Error creating broadcast:', err);
@@ -1321,7 +1332,16 @@ function CampaignsTab({ businessId }: { businessId: string }) {
             />
           )}
           <FormControl fullWidth size="small"><InputLabel>{t('crm.form.type', 'Tipo')}</InputLabel><Select value={formMsgType} label={t('crm.form.type', 'Tipo')} onChange={(e) => setFormMsgType(e.target.value as typeof formMsgType)}><MenuItem value="template">{t('crm.form.template', 'Template')}</MenuItem><MenuItem value="text">{t('crm.form.text', 'Texto')}</MenuItem></Select></FormControl>
-          {formMsgType === 'template' ? <TextField label="Template" value={formTemplate} onChange={(e) => setFormTemplate(e.target.value)} fullWidth size="small" /> : <TextField label={t('crm.form.content', 'Conteúdo')} value={formContent} onChange={(e) => setFormContent(e.target.value)} fullWidth multiline rows={3} size="small" />}
+          {formMsgType === 'template' ? (
+            <TemplateSelector
+              businessId={businessId}
+              value={formTemplate}
+              onChange={setFormTemplate}
+              sampleRecipient={formRecipients[0]}
+            />
+          ) : (
+            <TextField label={t('crm.form.content', 'Conteúdo')} value={formContent} onChange={(e) => setFormContent(e.target.value)} fullWidth multiline rows={3} size="small" />
+          )}
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}><Button onClick={() => setShowNew(false)}>{t('crm.action.cancel', 'Cancelar')}</Button><Button onClick={handleCreate} variant="contained" disabled={saving || !formName.trim()} sx={{ bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' }, borderRadius: '0.75rem' }}>{saving ? t('crm.action.creating', 'Criando...') : t('crm.action.create', 'Criar')}</Button></DialogActions>
       </Dialog>

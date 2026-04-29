@@ -3,6 +3,7 @@ import { decryptToken } from '@/lib/utils/encryption';
 import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { adminDb } from '@/lib/config/firebaseAdmin';
+import type { BroadcastTemplateParam } from '@/lib/types';
 
 /**
  * Broadcast Send API
@@ -42,6 +43,42 @@ interface NormalizedRecipient {
 
 function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Resolve um BroadcastTemplateParam[] em valores concretos por recipiente
+ * e converte para o formato `components[]` que a Meta Graph API espera.
+ *
+ * Aceita também o formato legado (componentes Meta crus) para compatibilidade.
+ */
+function resolveTemplateComponents(
+  params: unknown,
+  recipient: { name?: string; recipientId: string; email?: string },
+): unknown[] {
+  if (!Array.isArray(params) || params.length === 0) return [];
+
+  // Detecta formato legado: array de componentes Meta (cada item tem 'type' e 'parameters')
+  const looksLikeLegacy = params.every(p =>
+    typeof p === 'object' && p !== null && 'type' in p && 'parameters' in p
+  );
+  if (looksLikeLegacy) return params;
+
+  // Formato novo: array de BroadcastTemplateParam — resolve por recipiente
+  const resolved = (params as BroadcastTemplateParam[]).map(p => {
+    if (p.kind === 'literal') return p.value;
+    if (p.kind === 'field') {
+      if (p.field === 'name') return recipient.name || '';
+      if (p.field === 'phoneNumber') return recipient.recipientId;
+      if (p.field === 'email') return recipient.email || '';
+    }
+    return '';
+  });
+
+  // Converte para o shape Meta: components: [{ type: 'body', parameters: [{ type: 'text', text: '...' }, ...] }]
+  return [{
+    type: 'body',
+    parameters: resolved.map(text => ({ type: 'text', text })),
+  }];
 }
 
 /** Aceita ambos os shapes de recipiente, retorna formato normalizado. */
@@ -240,7 +277,7 @@ export async function POST(req: NextRequest) {
                 template: {
                   name: templateName,
                   language: { code: templateLanguage || 'pt_BR' },
-                  components: templateParams || [],
+                  components: resolveTemplateComponents(templateParams, recipient),
                 },
               }),
             });

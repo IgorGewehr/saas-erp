@@ -2359,6 +2359,17 @@ export interface BroadcastRecipient {
   email?: string;
 }
 
+/**
+ * Mapeamento de variável de template WhatsApp ({{1}}, {{2}}, etc.) para um valor
+ * resolvido por recipiente no momento do envio.
+ *
+ * - `literal`: valor fixo igual para todos (ex: "R$ 100" ou "BlackFriday2026")
+ * - `field`: lê do recipiente — name / phoneNumber / email
+ */
+export type BroadcastTemplateParam =
+  | { kind: 'literal'; value: string }
+  | { kind: 'field'; field: 'name' | 'phoneNumber' | 'email' };
+
 export interface BroadcastStats {
   total: number;
   sent: number;
@@ -2384,7 +2395,8 @@ export interface Broadcast {
   messageType: 'template' | 'text';
   templateName?: string;
   templateLanguage?: string;
-  templateParams?: unknown[];
+  /** Mapeamento de variáveis ({{1}}, {{2}}, ...) — resolvido per-recipiente no envio. */
+  templateParams?: BroadcastTemplateParam[];
   messageContent?: string;
   /** Assunto para canal email (broadcasts via notification-server). */
   emailSubject?: string;
