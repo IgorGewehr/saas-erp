@@ -112,6 +112,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     if (original.templateParams) newBroadcastData.templateParams = original.templateParams;
     if (original.messageContent) newBroadcastData.messageContent = original.messageContent;
     if (original.emailSubject) newBroadcastData.emailSubject = original.emailSubject;
+    if (original.viaBaileys) newBroadcastData.viaBaileys = true;
 
     const newRef = await adminDb.collection('broadcasts').add(newBroadcastData);
 

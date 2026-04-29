@@ -206,6 +206,15 @@ export async function POST(req: NextRequest) {
       if (!isReady) {
         return NextResponse.json({ error: 'WhatsApp Web (Baileys) não está conectado' }, { status: 400 });
       }
+      // Baileys broadcast suporta apenas texto (sem template, sem mídia neste endpoint)
+      if (templateName || (body.messageType && body.messageType !== 'text')) {
+        return NextResponse.json({
+          error: 'Baileys broadcasts suportam apenas texto livre. Templates e mídia não são compatíveis.',
+        }, { status: 400 });
+      }
+      if (!messageContent?.trim()) {
+        return NextResponse.json({ error: 'messageContent obrigatório para envio Baileys' }, { status: 400 });
+      }
       token = ''; // Baileys não usa token
     } else if (channel === 'whatsapp') {
       // Branch Cloud: lê whatsappCloud (novo); fallback para legado se Cloud
@@ -280,6 +289,7 @@ export async function POST(req: NextRequest) {
     const results: { contactId?: string; recipientId: string; status: string; externalMessageId?: string; error?: string }[] = [];
     const updatePromises: Promise<unknown>[] = [];
 
+    let wasPaused = false;
     for (let i = 0; i < recipients.length; i++) {
       const recipient = recipients[i];
       const messageDocId = messageDocIds[i];
@@ -291,6 +301,7 @@ export async function POST(req: NextRequest) {
         const curStatus = cur.data()?.status;
         if (curStatus === 'paused') {
           console.log('[Broadcast] paused mid-loop at index', i);
+          wasPaused = true;
           break;
         }
       }
@@ -485,16 +496,25 @@ export async function POST(req: NextRequest) {
 
     const sent = results.filter(r => r.status === 'sent').length;
     const failed = results.filter(r => r.status === 'failed').length;
+    const pendingCount = recipients.length - sent - failed;
 
     try {
-      await adminDb.collection('broadcasts').doc(broadcastId).update({
+      // Quando pausado, mantém status='paused' (não overwrite para 'sent'/'failed').
+      // Mensagens não-processadas continuam como 'pending' em broadcastMessages —
+      // permite retomada futura ou retry-failed só nas que falharam.
+      const finalStatus = wasPaused
+        ? 'paused'
+        : (failed === recipients.length ? 'failed' : 'sent');
+      const finalUpdate: Record<string, unknown> = {
         'stats.sent': sent,
         'stats.failed': failed,
         'stats.total': recipients.length,
-        status: failed === recipients.length ? 'failed' : 'sent',
-        completedAt: new Date().toISOString(),
+        status: finalStatus,
         updatedAt: new Date().toISOString(),
-      });
+      };
+      // Só seta completedAt quando realmente concluiu (não pausou)
+      if (!wasPaused) finalUpdate.completedAt = new Date().toISOString();
+      await adminDb.collection('broadcasts').doc(broadcastId).update(finalUpdate);
     } catch (statsErr) {
       console.error('[Broadcast] Failed to update stats:', statsErr);
     }
@@ -502,10 +522,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       broadcastId,
+      paused: wasPaused,
       stats: {
         total: recipients.length,
         sent,
         failed,
+        pending: pendingCount,
       },
       results,
     });

@@ -186,23 +186,32 @@ export async function sendBaileysBroadcastMessage(
     throw new Error(`Número inválido: ${phoneNumber}`);
   }
 
-  // onWhatsApp valida e devolve o JID canônico (resolve 9º dígito BR)
+  // onWhatsApp resolve o JID canônico (lida com 9º dígito BR) e indica se número
+  // tem WhatsApp. Em caso de erro de rede ou !exists, deixamos o sendMessage falhar
+  // naturalmente — evita anti-pattern de string-match no error message.
   const candidateJid = `${digits}@s.whatsapp.net`;
   let targetJid = candidateJid;
+  let knownNotOnWhatsApp = false;
   try {
     const [result] = await session.sock.onWhatsApp(candidateJid);
-    if (result?.exists && result.jid) targetJid = result.jid;
-    else if (result && !result.exists) {
-      throw new Error(`Número ${digits} não está no WhatsApp`);
+    if (result?.exists && result.jid) {
+      targetJid = result.jid;
+    } else if (result && !result.exists) {
+      knownNotOnWhatsApp = true;
     }
   } catch (err) {
-    // onWhatsApp pode falhar com erros de rede — tenta enviar mesmo assim
-    if (err instanceof Error && err.message.includes('não está no WhatsApp')) throw err;
+    // Erro de rede no check — não bloqueia, o sendMessage falhará se necessário
     console.warn('[Baileys Broadcast] onWhatsApp check falhou, tentando envio direto:', err);
   }
 
+  if (knownNotOnWhatsApp) {
+    throw new Error(`Número ${digits} não está cadastrado no WhatsApp`);
+  }
+
   const sent = await session.sock.sendMessage(targetJid, { text });
-  const externalMessageId = sent?.key?.id || `baileys_${Date.now()}`;
+  // Random suffix evita colisão se sent.key.id ausente em mensagens consecutivas
+  const externalMessageId = sent?.key?.id
+    || `baileys_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   return { externalMessageId };
 }
 

@@ -1355,6 +1355,8 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                 setFormChannel(c);
                 // Email: força text, limpa template (Meta templates não se aplicam)
                 if (c === 'email') setFormMsgType('text');
+                // viaBaileys só faz sentido com whatsapp — limpa flag em outros canais
+                if (c !== 'whatsapp') setFormViaBaileys(false);
               }}
             >
               <MenuItem value="whatsapp">WhatsApp</MenuItem>
