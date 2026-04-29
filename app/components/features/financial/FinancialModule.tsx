@@ -169,8 +169,11 @@ function computeNextDueDate(currentDue: string, frequency: string, dayOfMonth?: 
     case 'semiannual': d.setMonth(d.getMonth() + 6);   if (day) d.setDate(day); break;
     case 'yearly':     d.setFullYear(d.getFullYear() + 1); if (day) d.setDate(day); break;
     case 'biweekly_fixed': {
-      const first = day ?? 1;
-      const second = secondDayOfMonth ? Math.min(secondDayOfMonth, 28) : 15;
+      const d1 = day ?? 1;
+      const d2 = secondDayOfMonth ? Math.min(secondDayOfMonth, 28) : 15;
+      // Always sort so first < second, regardless of input order
+      const first = Math.min(d1, d2);
+      const second = Math.max(d1, d2);
       const cur = d.getDate();
       if (cur < first)        { d.setDate(first); }
       else if (cur < second)  { d.setDate(second); }
@@ -604,7 +607,7 @@ export default function FinancialModule() {
         despesas: data.despesas,
         receitasPrevisto: data.receitasPrevisto,
         despesasPrevisto: data.despesasPrevisto,
-        saldo: data.receitas - data.despesas,
+        saldo: (data.receitas + data.receitasPrevisto) - (data.despesas + data.despesasPrevisto),
       };
     });
   }, [transactions]);
@@ -1827,7 +1830,7 @@ export default function FinancialModule() {
                             sx={inputSx}
                           />
                         )}
-                        <div className={formRecurrenceFrequency === 'biweekly_fixed' ? 'grid grid-cols-2 gap-3' : 'grid grid-cols-2 gap-3'}>
+                        <div className="grid grid-cols-2 gap-3">
                           <TextField
                             label={formRecurrenceFrequency === 'biweekly_fixed' ? '1º Dia do mês' : 'Dia Fixo de Vencimento'}
                             type="number"
@@ -2893,7 +2896,7 @@ function OverviewContent({
               <p className="text-xs text-slate-400 dark:text-gray-500 mt-0.5">{t('financial.charts.cashFlowSubtitle', 'Receitas vs Despesas')}</p>
             </div>
           </div>
-          {monthlyData.length > 0 ? (
+          {monthlyData.some(d => d.receitas > 0 || d.despesas > 0 || d.receitasPrevisto > 0 || d.despesasPrevisto > 0) ? (
             <ResponsiveContainer width="100%" height={280}>
               <ComposedChart data={monthlyData}>
                 <defs>
@@ -3503,8 +3506,10 @@ function CashFlowProjection({
       case 'semiannual': d.setMonth(d.getMonth() + 6);    if (day) d.setDate(day); break;
       case 'yearly':     d.setFullYear(d.getFullYear() + 1); if (day) d.setDate(day); break;
       case 'biweekly_fixed': {
-        const first = day ?? 1;
-        const second = secondDayOfMonth ? Math.min(secondDayOfMonth, 28) : 15;
+        const d1 = day ?? 1;
+        const d2 = secondDayOfMonth ? Math.min(secondDayOfMonth, 28) : 15;
+        const first = Math.min(d1, d2);
+        const second = Math.max(d1, d2);
         const cur = d.getDate();
         if (cur < first)       { d.setDate(first); }
         else if (cur < second) { d.setDate(second); }
@@ -7018,7 +7023,7 @@ function RecurringContent({
             {/* Day cells */}
             <div className="grid grid-cols-7">
               {cells.map((day, i) => {
-                if (!day) return <div key={i} className="min-h-[72px] border-b border-r border-slate-50 dark:border-gray-800/50 last:border-r-0" />;
+                if (!day) return <div key={i} className={cn('min-h-[72px] border-b border-slate-50 dark:border-gray-800/50', (i + 1) % 7 !== 0 && 'border-r')} />;
                 const dateStr = `${calendarYear}-${String(calendarMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
                 const items = calendarDayMap[dateStr] ?? [];
                 const isToday = dateStr === todayDateStr;
