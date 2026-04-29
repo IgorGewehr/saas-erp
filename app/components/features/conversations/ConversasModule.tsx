@@ -407,7 +407,8 @@ function StatusDot({ status }: { status: ConversationStatus }) {
         'inline-block w-2 h-2 rounded-full flex-shrink-0',
         status === 'open' && 'bg-emerald-400',
         status === 'waiting' && 'bg-amber-400',
-        status === 'resolved' && 'bg-gray-400',
+        // Resolvida: cinza azulado (slate) com brilho compatível em dark mode
+        status === 'resolved' && 'bg-slate-400 dark:bg-slate-300',
       )}
     />
   );
@@ -2258,15 +2259,15 @@ function NewConversationDialog({
     whatsappBaileys?: { isConnected?: boolean };
   }) | undefined;
   // Novo modelo: campos isolados whatsappCloud + whatsappBaileys.
-  // Fallback para o legado channels.whatsapp se nenhum dos novos estiver presente.
+  // Cada canal cai no fallback legado SÓ se o seu próprio campo novo estiver ausente —
+  // assim Cloud e Baileys podem coexistir mesmo durante a migração de dados legados.
   const cloudCfg = channels?.whatsappCloud;
   const baileysCfg = channels?.whatsappBaileys;
   const legacyWa = channels?.whatsapp as ((NonNullable<typeof channels>['whatsapp']) & { connectedVia?: string }) | undefined;
-  const hasNewFields = !!(cloudCfg || baileysCfg);
   const baileysAvailable = !!baileysCfg?.isConnected
-    || (!hasNewFields && !!legacyWa?.isConnected && legacyWa.connectedVia === 'baileys');
+    || (!baileysCfg && !!legacyWa?.isConnected && legacyWa.connectedVia === 'baileys');
   const cloudAvailable = !!(cloudCfg?.isConnected && cloudCfg.accessToken)
-    || (!hasNewFields && !!legacyWa?.isConnected && legacyWa.connectedVia !== 'baileys' && !!legacyWa.accessToken);
+    || (!cloudCfg && !!legacyWa?.isConnected && legacyWa.connectedVia !== 'baileys' && !!legacyWa.accessToken);
   const fbConnected = !!channels?.facebook?.isConnected;
   const igConnected = !!channels?.instagram?.isConnected;
 
