@@ -88,6 +88,7 @@ import {
 import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector, Service, WorkingHours, DaySchedule, UseCase } from '@/lib/types';
 import { WHATSAPP_TEMPLATE_CATALOG, renderTemplatePreview } from '@/lib/constants/whatsapp-template-catalog';
 import { getAuth } from 'firebase/auth';
+import NotificationServerSection from './NotificationServerConfig';
 import { CachedImage } from '@/app/components/ui/CachedImage';
 import SidebarEditorTab from './SidebarEditorTab';
 import {
@@ -5179,6 +5180,26 @@ function EnterpriseTab() {
                 ))}
               </div>
             </div>
+
+            {/* ── Notification Server (broadcasts de email) ── */}
+            {business?.id && (
+              <div>
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-2">
+                    <Mail className="w-4.5 h-4.5 text-gray-500 dark:text-gray-400" />
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Servidor de Notificações</h3>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">Configure o servidor externo que dispara campanhas de email</p>
+                    </div>
+                  </div>
+                </div>
+                <NotificationServerSection
+                  businessId={business.id}
+                  current={(business as Business & { settings?: { notificationServer?: import('@/lib/types').NotificationServerConfig } }).settings?.notificationServer}
+                  onChange={refreshUser}
+                />
+              </div>
+            )}
 
             {/* ── API Keys Section ── */}
             <div>

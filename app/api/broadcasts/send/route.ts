@@ -159,6 +159,7 @@ export async function POST(req: NextRequest) {
       templateLanguage,
       templateParams,
       messageContent,
+      emailSubject,
       recipients: rawRecipients,
       sendRate = 10,
       phoneNumberId,
@@ -185,7 +186,8 @@ export async function POST(req: NextRequest) {
 
     const businessData = businessDoc.data()!;
     const channels = businessData.channels;
-    if (!channels) {
+    // Email não usa channels da Meta — só o branch email tem checagem própria
+    if (channel !== 'email' && !channels) {
       return NextResponse.json({ error: 'No channels configured' }, { status: 400 });
     }
 
@@ -194,8 +196,8 @@ export async function POST(req: NextRequest) {
 
     if (channel === 'whatsapp') {
       // Broadcasts via Cloud API: lê whatsappCloud (novo); fallback para legado se Cloud
-      const cloudCfg = channels.whatsappCloud;
-      const legacy = channels.whatsapp;
+      const cloudCfg = channels?.whatsappCloud;
+      const legacy = channels?.whatsapp;
       const legacyIsCloud = legacy?.connectedVia !== 'baileys';
       const waConfig = cloudCfg ?? (legacyIsCloud ? legacy : undefined);
       if (!waConfig?.isConnected || !waConfig?.accessToken) {
@@ -204,15 +206,24 @@ export async function POST(req: NextRequest) {
       token = await decryptToken(waConfig.accessToken);
       resolvedPhoneNumberId = resolvedPhoneNumberId || waConfig.phoneNumberId;
     } else if (channel === 'facebook') {
-      if (!channels.facebook?.isConnected || !channels.facebook?.pageAccessToken) {
+      if (!channels?.facebook?.isConnected || !channels.facebook?.pageAccessToken) {
         return NextResponse.json({ error: 'Facebook channel not connected' }, { status: 400 });
       }
       token = await decryptToken(channels.facebook.pageAccessToken);
     } else if (channel === 'instagram') {
-      if (!channels.facebook?.pageAccessToken) {
+      if (!channels?.facebook?.pageAccessToken) {
         return NextResponse.json({ error: 'Instagram channel not connected (requires Facebook)' }, { status: 400 });
       }
       token = await decryptToken(channels.facebook.pageAccessToken);
+    } else if (channel === 'email') {
+      // Email broadcasts são delegados ao notification-server externo
+      const nsConfig = businessData.settings?.notificationServer;
+      if (!nsConfig?.isConfigured || !nsConfig?.url || !nsConfig?.apiKey) {
+        return NextResponse.json({ error: 'Notification server não configurado' }, { status: 400 });
+      }
+      token = await decryptToken(nsConfig.apiKey);
+      // Para o branch email, "phoneNumberId" carrega a URL base — reuso do parâmetro
+      resolvedPhoneNumberId = nsConfig.url.replace(/\/$/, '');
     } else {
       return NextResponse.json({ error: `Invalid channel: ${channel}` }, { status: 400 });
     }
@@ -323,11 +334,27 @@ export async function POST(req: NextRequest) {
               message: { text: messageContent || templateName },
             }),
           });
+        } else if (channel === 'email') {
+          // resolvedPhoneNumberId carrega a URL do notification-server, token é a API key
+          response = await fetch(`${resolvedPhoneNumberId}/api/send-email`, {
+            method: 'POST',
+            headers: {
+              'x-api-key': token,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              appId: businessData.settings?.notificationServer?.appId || businessId,
+              email: recipient.recipientId,
+              subject: emailSubject || 'Mensagem',
+              message: messageContent || '',
+            }),
+          });
         }
 
         if (response?.ok) {
           const data = await response.json();
-          const messageId = data?.messages?.[0]?.id || data?.message_id || '';
+          // Notification-server retorna { success, jobId } — Meta retorna messages[0].id
+          const messageId = data?.messages?.[0]?.id || data?.message_id || data?.jobId || '';
           results.push({
             contactId: recipient.contactId,
             recipientId: recipient.recipientId,

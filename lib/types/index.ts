@@ -358,6 +358,19 @@ export interface BusinessSettings {
   };
   csatEnabled?: boolean;  // Enviar pesquisa de satisfação ao resolver conversa
   routingRules?: RoutingRule[];
+  /** Configuração do servidor de notificações externo (broadcasts de email, SMS, etc.) */
+  notificationServer?: NotificationServerConfig;
+}
+
+/** Configuração do notification-server externo para broadcasts de email. */
+export interface NotificationServerConfig {
+  url: string;            // base URL (ex: https://notify.empresa.com.br)
+  apiKey: string;         // criptografada via encryptToken
+  appId?: string;         // identificador no notification-server (default: businessId)
+  isConfigured: boolean;
+  configuredAt?: string;
+  lastTestedAt?: string;
+  lastTestStatus?: 'ok' | 'failed';
 }
 
 export interface RoutingRule {
@@ -2379,11 +2392,14 @@ export interface BroadcastStats {
   replied: number;
 }
 
+/** Canais suportados em broadcasts — inclui email (não disponível em conversations). */
+export type BroadcastChannel = ConversationChannel | 'email';
+
 export interface Broadcast {
   id: string;
   businessId: string;
   name: string;
-  channel: ConversationChannel;
+  channel: BroadcastChannel;
   audienceType: BroadcastAudienceType;
   audienceSegmentId?: string;
   audienceTags?: string[];

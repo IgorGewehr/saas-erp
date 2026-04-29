@@ -1195,15 +1195,21 @@ function CampaignsTab({ businessId }: { businessId: string }) {
   const [showNew, setShowNew] = useState(false);
   const [openBroadcast, setOpenBroadcast] = useState<Broadcast | null>(null);
   const [formName, setFormName] = useState('');
-  const [formChannel, setFormChannel] = useState<'whatsapp' | 'facebook' | 'instagram'>('whatsapp');
+  const [formChannel, setFormChannel] = useState<'whatsapp' | 'facebook' | 'instagram' | 'email'>('whatsapp');
   const [formAudienceType, setFormAudienceType] = useState<'all_contacts' | 'tags' | 'manual' | 'list'>('list');
   const [formTags, setFormTags] = useState('');
   const [formRecipients, setFormRecipients] = useState<BroadcastRecipient[]>([]);
   const [formMsgType, setFormMsgType] = useState<'template' | 'text'>('template');
   const [formTemplate, setFormTemplate] = useState<TemplateSelection | null>(null);
   const [formContent, setFormContent] = useState('');
+  const [formEmailSubject, setFormEmailSubject] = useState('');
   const [saving, setSaving] = useState(false);
-  const { user } = useAuth();
+  const { user, business } = useAuth();
+  // Detecta se notification-server está configurado (necessário para canal email)
+  type BusinessWithSettings = NonNullable<typeof business> & {
+    settings?: { notificationServer?: { isConfigured?: boolean } };
+  };
+  const notificationServerReady = !!(business as BusinessWithSettings)?.settings?.notificationServer?.isConfigured;
 
   // Carrega clientes para o auto-link do RecipientListInput (cache compartilhado com pipeline tab)
   const { data: existingClients = [] } = useQuery<Client[]>({
@@ -1232,13 +1238,19 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       toast.error('Adicione pelo menos um recipiente na lista.');
       return;
     }
-    if (formMsgType === 'template' && !isTemplateSelectionValid(formTemplate)) {
-      toast.error('Selecione um template e preencha todas as variáveis.');
-      return;
-    }
-    if (formMsgType === 'text' && !formContent.trim()) {
-      toast.error('Digite o conteúdo da mensagem.');
-      return;
+    // Email: nunca usa template, sempre texto livre + assunto
+    if (formChannel === 'email') {
+      if (!formEmailSubject.trim()) { toast.error('Digite o assunto do email.'); return; }
+      if (!formContent.trim()) { toast.error('Digite o corpo do email.'); return; }
+    } else {
+      if (formMsgType === 'template' && !isTemplateSelectionValid(formTemplate)) {
+        toast.error('Selecione um template e preencha todas as variáveis.');
+        return;
+      }
+      if (formMsgType === 'text' && !formContent.trim()) {
+        toast.error('Digite o conteúdo da mensagem.');
+        return;
+      }
     }
     // Firestore tem limite de 1 MiB por documento. Estimativa conservadora ~80% do limite.
     if (formAudienceType === 'list') {
@@ -1264,17 +1276,20 @@ function CampaignsTab({ businessId }: { businessId: string }) {
             return cleaned;
           })
         : [];
+      // Email força messageType=text; outros canais respeitam a escolha
+      const effectiveMsgType = formChannel === 'email' ? 'text' : formMsgType;
       const payload: Record<string, unknown> = {
         businessId,
         name: formName.trim(),
         channel: formChannel,
         audienceType: formAudienceType,
         audienceTags: formAudienceType === 'tags' ? formTags.split(',').map(t => t.trim()).filter(Boolean) : [],
-        messageType: formMsgType,
-        templateName: formMsgType === 'template' && formTemplate ? formTemplate.name : undefined,
-        templateLanguage: formMsgType === 'template' && formTemplate ? formTemplate.language : undefined,
-        templateParams: formMsgType === 'template' && formTemplate ? formTemplate.params : undefined,
-        messageContent: formMsgType === 'text' ? formContent.trim() : undefined,
+        messageType: effectiveMsgType,
+        templateName: effectiveMsgType === 'template' && formTemplate ? formTemplate.name : undefined,
+        templateLanguage: effectiveMsgType === 'template' && formTemplate ? formTemplate.language : undefined,
+        templateParams: effectiveMsgType === 'template' && formTemplate ? formTemplate.params : undefined,
+        messageContent: effectiveMsgType === 'text' ? formContent.trim() : undefined,
+        emailSubject: formChannel === 'email' ? formEmailSubject.trim() : undefined,
         status: 'draft' as BroadcastStatus,
         stats: { total: recipientsTotal, sent: 0, delivered: 0, read: 0, failed: 0, replied: 0 },
         createdBy: user.uid,
@@ -1292,6 +1307,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       setFormRecipients([]);
       setFormTemplate(null);
       setFormContent('');
+      setFormEmailSubject('');
     } catch (err) {
       console.error('[CRM:Campaigns] Error creating broadcast:', err);
       toast.error(t('crm.toast.errorCreateCampaign', 'Erro ao criar campanha'));
@@ -1312,7 +1328,26 @@ function CampaignsTab({ businessId }: { businessId: string }) {
         <DialogTitle sx={{ fontWeight: 700, fontFamily: '"Plus Jakarta Sans", sans-serif' }}>{t('crm.dialog.newCampaign', 'Nova Campanha')}</DialogTitle>
         <DialogContent className="space-y-4 !pt-2">
           <TextField label={t('crm.form.name', 'Nome')} value={formName} onChange={(e) => setFormName(e.target.value)} fullWidth size="small" />
-          <FormControl fullWidth size="small"><InputLabel>{t('crm.form.channel', 'Canal')}</InputLabel><Select value={formChannel} label={t('crm.form.channel', 'Canal')} onChange={(e) => setFormChannel(e.target.value as typeof formChannel)}><MenuItem value="whatsapp">WhatsApp</MenuItem><MenuItem value="facebook">Messenger</MenuItem><MenuItem value="instagram">Instagram</MenuItem></Select></FormControl>
+          <FormControl fullWidth size="small">
+            <InputLabel>{t('crm.form.channel', 'Canal')}</InputLabel>
+            <Select
+              value={formChannel}
+              label={t('crm.form.channel', 'Canal')}
+              onChange={(e) => {
+                const c = e.target.value as typeof formChannel;
+                setFormChannel(c);
+                // Email: força text, limpa template (Meta templates não se aplicam)
+                if (c === 'email') setFormMsgType('text');
+              }}
+            >
+              <MenuItem value="whatsapp">WhatsApp</MenuItem>
+              <MenuItem value="facebook">Messenger</MenuItem>
+              <MenuItem value="instagram">Instagram</MenuItem>
+              <MenuItem value="email" disabled={!notificationServerReady}>
+                Email {!notificationServerReady && '(configure notification-server)'}
+              </MenuItem>
+            </Select>
+          </FormControl>
           <FormControl fullWidth size="small">
             <InputLabel>{t('crm.form.audience', 'Audiência')}</InputLabel>
             <Select value={formAudienceType} label={t('crm.form.audience', 'Audiência')} onChange={(e) => setFormAudienceType(e.target.value as typeof formAudienceType)}>
@@ -1324,15 +1359,20 @@ function CampaignsTab({ businessId }: { businessId: string }) {
           </FormControl>
           {formAudienceType === 'tags' && <TextField label={t('crm.form.tags', 'Tags')} value={formTags} onChange={(e) => setFormTags(e.target.value)} fullWidth size="small" />}
           {formAudienceType === 'list' && (
-            // Por enquanto só telefone — email vira disponível na Fase 3 quando notification-server for plugado
             <RecipientListInput
-              mode="phone"
+              mode={formChannel === 'email' ? 'email' : 'phone'}
               onChange={(recipients) => setFormRecipients(recipients)}
               existingClients={existingClients}
             />
           )}
-          <FormControl fullWidth size="small"><InputLabel>{t('crm.form.type', 'Tipo')}</InputLabel><Select value={formMsgType} label={t('crm.form.type', 'Tipo')} onChange={(e) => setFormMsgType(e.target.value as typeof formMsgType)}><MenuItem value="template">{t('crm.form.template', 'Template')}</MenuItem><MenuItem value="text">{t('crm.form.text', 'Texto')}</MenuItem></Select></FormControl>
-          {formMsgType === 'template' ? (
+          {/* Tipo de mensagem só aparece para canais Meta — email é sempre texto livre */}
+          {formChannel !== 'email' && (
+            <FormControl fullWidth size="small"><InputLabel>{t('crm.form.type', 'Tipo')}</InputLabel><Select value={formMsgType} label={t('crm.form.type', 'Tipo')} onChange={(e) => setFormMsgType(e.target.value as typeof formMsgType)}><MenuItem value="template">{t('crm.form.template', 'Template')}</MenuItem><MenuItem value="text">{t('crm.form.text', 'Texto')}</MenuItem></Select></FormControl>
+          )}
+          {formChannel === 'email' && (
+            <TextField label="Assunto do email" value={formEmailSubject} onChange={(e) => setFormEmailSubject(e.target.value)} fullWidth size="small" />
+          )}
+          {formChannel !== 'email' && formMsgType === 'template' ? (
             <TemplateSelector
               businessId={businessId}
               value={formTemplate}
@@ -1341,7 +1381,15 @@ function CampaignsTab({ businessId }: { businessId: string }) {
               channel={formChannel}
             />
           ) : (
-            <TextField label={t('crm.form.content', 'Conteúdo')} value={formContent} onChange={(e) => setFormContent(e.target.value)} fullWidth multiline rows={3} size="small" />
+            <TextField
+              label={formChannel === 'email' ? 'Corpo do email' : t('crm.form.content', 'Conteúdo')}
+              value={formContent}
+              onChange={(e) => setFormContent(e.target.value)}
+              fullWidth
+              multiline
+              rows={formChannel === 'email' ? 6 : 3}
+              size="small"
+            />
           )}
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}><Button onClick={() => setShowNew(false)}>{t('crm.action.cancel', 'Cancelar')}</Button><Button onClick={handleCreate} variant="contained" disabled={saving || !formName.trim()} sx={{ bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' }, borderRadius: '0.75rem' }}>{saving ? t('crm.action.creating', 'Criando...') : t('crm.action.create', 'Criar')}</Button></DialogActions>
