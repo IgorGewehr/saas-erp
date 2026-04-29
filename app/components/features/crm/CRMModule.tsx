@@ -1481,7 +1481,9 @@ function CampaignsTab({ businessId }: { businessId: string }) {
             value={formScheduledAt}
             onChange={(e) => setFormScheduledAt(e.target.value)}
             InputLabelProps={{ shrink: true }}
-            helperText={formScheduledAt ? 'Será disparada automaticamente no horário marcado' : 'Deixe vazio para disparar manualmente'}
+            helperText={formScheduledAt
+              ? `Disparo automático no horário marcado (fuso: ${Intl.DateTimeFormat().resolvedOptions().timeZone})`
+              : 'Deixe vazio para disparar manualmente'}
             fullWidth
             size="small"
           />

@@ -1,10 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
+import crypto from 'crypto';
 import { decryptToken } from '@/lib/utils/encryption';
 import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { sendBaileysBroadcastMessage } from '@/app/api/whatsapp/baileys-manager';
 import type { BroadcastTemplateParam } from '@/lib/types';
+
+/** Compara strings em tempo constante — evita timing attack na CRON_SECRET. */
+function safeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Broadcast Send API
@@ -140,14 +151,22 @@ async function preCreateBroadcastMessages(
 }
 
 export async function POST(req: NextRequest) {
-  // Rate limit: 5 broadcast sends per minute per IP (broadcasts are heavy operations)
-  const clientIp = getClientIp(req);
-  const { allowed } = checkRateLimit(`broadcast:${clientIp}`, 5, 60_000);
-  if (!allowed) {
-    return NextResponse.json(
-      { error: 'Rate limit exceeded. Aguarde antes de enviar outra campanha.' },
-      { status: 429 }
-    );
+  // Detecta cron call ANTES do rate limit pra que o cron não bata no limite
+  const cronSecret = req.headers.get('x-cron-secret');
+  const isCronCall = !!cronSecret
+    && !!process.env.CRON_SECRET
+    && safeEqual(cronSecret, process.env.CRON_SECRET);
+
+  if (!isCronCall) {
+    // Rate limit: 5 broadcast sends per minute per IP (não aplica em cron interno)
+    const clientIp = getClientIp(req);
+    const { allowed } = checkRateLimit(`broadcast:${clientIp}`, 5, 60_000);
+    if (!allowed) {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded. Aguarde antes de enviar outra campanha.' },
+        { status: 429 }
+      );
+    }
   }
 
   try {
@@ -172,12 +191,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    // Auth: CRON_SECRET bypass (para process-scheduled trigger interno) OU user auth normal
-    const cronSecret = req.headers.get('x-cron-secret');
-    const isCronCall = !!cronSecret && !!process.env.CRON_SECRET && cronSecret === process.env.CRON_SECRET;
     if (!isCronCall) {
       const authResult = await verifyAuth(req, businessId);
       if (isAuthError(authResult)) return authResult;
+    }
+
+    // Defesa em profundidade: valida que broadcast.businessId === body.businessId
+    // Mesmo com CRON_SECRET vazado, atacante não consegue cross-tenant.
+    const broadcastSnap = await adminDb.collection('broadcasts').doc(broadcastId).get();
+    if (!broadcastSnap.exists) {
+      return NextResponse.json({ error: 'Broadcast not found' }, { status: 404 });
+    }
+    if (broadcastSnap.data()?.businessId !== businessId) {
+      return NextResponse.json({ error: 'Broadcast does not belong to this business' }, { status: 403 });
     }
 
     const recipients = normalizeRecipients(rawRecipients as InboundRecipient[], channel);
@@ -266,8 +292,10 @@ export async function POST(req: NextRequest) {
           return;
         }
         const status = snap.data()?.status;
-        if (status === 'sending') {
-          throw new Error('CONCURRENT_SEND'); // já em andamento, aborta
+        // Cron: process-scheduled já fez CAS scheduled→sending e nos chamou.
+        // Status='sending' é ESPERADO nesse caso.
+        if (status === 'sending' && !isCronCall) {
+          throw new Error('CONCURRENT_SEND');
         }
         tx.update(broadcastRef, {
           status: 'sending',

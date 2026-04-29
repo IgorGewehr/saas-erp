@@ -18,6 +18,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import crypto from 'crypto';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import type { Broadcast } from '@/lib/types';
 
@@ -29,10 +30,38 @@ function isAuthorized(req: NextRequest): boolean {
   if (!secret) return false; // se não configurado, endpoint fica fechado
   const auth = req.headers.get('authorization');
   if (!auth || !auth.startsWith('Bearer ')) return false;
-  return auth.slice(7) === secret;
+  const token = auth.slice(7);
+  if (token.length !== secret.length) return false;
+  // timing-safe — evita timing attack
+  try {
+    return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(secret));
+  } catch {
+    return false;
+  }
 }
 
 async function processBroadcast(b: Broadcast): Promise<{ ok: boolean; error?: string }> {
+  // CAS atômica: só dispara se ainda está em 'scheduled'. Evita race quando
+  // usuário clica "Cancelar agendamento" entre a query e o dispatch.
+  const ref = adminDb.collection('broadcasts').doc(b.id);
+  try {
+    await adminDb.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new Error('BROADCAST_GONE');
+      const cur = snap.data()?.status;
+      if (cur !== 'scheduled') throw new Error('NOT_SCHEDULED');
+      tx.update(ref, {
+        status: 'sending',
+        'stats.total': (b.recipients?.length ?? 0),
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'cas-failed';
+    return { ok: false, error: `cas-skipped: ${msg}` };
+  }
+
   // Monta body do envio idêntico ao que a UI envia em handleDispatch
   const body: Record<string, unknown> = {
     businessId: b.businessId,
@@ -76,12 +105,27 @@ async function handleProcess(req: NextRequest) {
 
   try {
     const now = new Date().toISOString();
-    // Lê scheduled broadcasts cujo scheduledAt já passou
-    const snap = await adminDb.collection('broadcasts')
-      .where('status', '==', 'scheduled')
-      .where('scheduledAt', '<=', now)
-      .limit(MAX_PER_RUN)
-      .get();
+    // Lê scheduled broadcasts cujo scheduledAt já passou.
+    // ATENÇÃO: Firestore exige composite index para esta query (status==='scheduled' + scheduledAt<=now).
+    // Index: collection=broadcasts, fields=[(status, ASC), (scheduledAt, ASC)].
+    // Configurar via firestore.indexes.json ou Firebase Console na primeira execução.
+    let snap;
+    try {
+      snap = await adminDb.collection('broadcasts')
+        .where('status', '==', 'scheduled')
+        .where('scheduledAt', '<=', now)
+        .limit(MAX_PER_RUN)
+        .get();
+    } catch (queryErr) {
+      const errMsg = queryErr instanceof Error ? queryErr.message : String(queryErr);
+      if (errMsg.toLowerCase().includes('index')) {
+        return NextResponse.json({
+          error: 'Composite index ausente para broadcasts(status, scheduledAt). Crie o index no Firebase Console — link na mensagem original do erro.',
+          firestoreError: errMsg,
+        }, { status: 500 });
+      }
+      throw queryErr;
+    }
 
     if (snap.empty) {
       return NextResponse.json({ processed: 0, results: [] });

@@ -33,6 +33,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { decryptToken } from '@/lib/utils/encryption';
+import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 
 interface BouncePayload {
   businessId: string;
@@ -53,6 +54,13 @@ const STATUS_ORDER: Record<string, number> = {
 };
 
 export async function POST(req: NextRequest) {
+  // Rate limit defensivo: 60 bounces/min por IP (notification-server pode burst)
+  const clientIp = getClientIp(req);
+  const { allowed } = checkRateLimit(`email-bounce:${clientIp}`, 60, 60_000);
+  if (!allowed) {
+    return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+  }
+
   let rawBody: string;
   let payload: BouncePayload;
 
@@ -71,8 +79,8 @@ export async function POST(req: NextRequest) {
 
   // ── Verifica assinatura HMAC com a apiKey do notification-server ────────────
   const signature = req.headers.get('x-signature');
-  if (!signature) {
-    return NextResponse.json({ error: 'Missing x-signature header' }, { status: 401 });
+  if (!signature || !/^[0-9a-fA-F]+$/.test(signature)) {
+    return NextResponse.json({ error: 'Missing or invalid x-signature header' }, { status: 401 });
   }
 
   try {
