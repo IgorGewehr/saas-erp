@@ -420,7 +420,15 @@ function NoteModal({
         const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
         const path = `businesses/${businessId}/notes/${noteId}/${fileId}_${safeName}`;
         const sRef = storageRef(storage, path);
-        await uploadBytes(sRef, file);
+        // Detecta content-type para extensões que o navegador às vezes deixa em branco (XML, etc.)
+        const ext = file.name.toLowerCase().split('.').pop() || '';
+        const inferredType = file.type
+          || (ext === 'xml' ? 'application/xml'
+            : ext === 'json' ? 'application/json'
+            : ext === 'csv' ? 'text/csv'
+            : ext === 'txt' ? 'text/plain'
+            : 'application/octet-stream');
+        await uploadBytes(sRef, file, { contentType: inferredType });
         const url = await getDownloadURL(sRef);
         newAtts.push({
           id: fileId,
@@ -435,7 +443,11 @@ function NoteModal({
       setForm(f => ({ ...f, attachments: [...f.attachments, ...newAtts] }));
     } catch (err) {
       console.error('[notas] upload failed:', err);
-      alert('Erro ao enviar arquivo. Tente novamente.');
+      const code = (err as { code?: string })?.code;
+      const msg = code === 'storage/unauthorized'
+        ? 'Tipo de arquivo não permitido pelo servidor.'
+        : 'Erro ao enviar arquivo. Tente novamente.';
+      alert(msg);
     } finally {
       setUploading(false);
     }
@@ -647,7 +659,7 @@ function NoteModal({
               ref={fileInputRef}
               type="file"
               multiple
-              accept="image/*,.pdf"
+              accept="image/*,video/*,audio/*,.pdf,.xml,.json,.csv,.txt,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.zip,.rar,.7z"
               onChange={handleFilePick}
               className="hidden"
             />

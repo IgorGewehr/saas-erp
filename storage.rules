@@ -24,6 +24,36 @@ service firebase.storage {
            || request.resource.contentType == 'application/pdf');
     }
 
+    // Allowlist mais ampla para anexos genéricos (Kanban): imagens, vídeos,
+    // áudio, PDF, documentos de escritório, texto/código, dados estruturados
+    // (XML/JSON/CSV — comum em NF-e brasileiras) e arquivos comprimidos.
+    // Bloqueia executáveis e formatos potencialmente perigosos.
+    function isAttachment() {
+      return request.resource.contentType is string
+          && (request.resource.contentType.matches('image/.*')
+           || request.resource.contentType.matches('video/.*')
+           || request.resource.contentType.matches('audio/.*')
+           || request.resource.contentType.matches('text/.*')
+           || request.resource.contentType == 'application/pdf'
+           || request.resource.contentType == 'application/xml'
+           || request.resource.contentType == 'application/json'
+           || request.resource.contentType == 'application/zip'
+           || request.resource.contentType == 'application/x-zip-compressed'
+           || request.resource.contentType == 'application/x-rar-compressed'
+           || request.resource.contentType == 'application/vnd.rar'
+           || request.resource.contentType == 'application/x-7z-compressed'
+           || request.resource.contentType == 'application/msword'
+           || request.resource.contentType == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+           || request.resource.contentType == 'application/vnd.ms-excel'
+           || request.resource.contentType == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+           || request.resource.contentType == 'application/vnd.ms-powerpoint'
+           || request.resource.contentType == 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+           || request.resource.contentType == 'application/vnd.oasis.opendocument.text'
+           || request.resource.contentType == 'application/vnd.oasis.opendocument.spreadsheet'
+           || request.resource.contentType == 'application/vnd.oasis.opendocument.presentation'
+           || request.resource.contentType == 'application/rtf');
+    }
+
     // ── User avatars ─────────────────────────────────────────────────────────
     // Path: users/{uid}/avatar
     match /users/{userId}/{fileName} {
@@ -56,9 +86,10 @@ service firebase.storage {
 
     // ── Kanban card attachments ───────────────────────────────────────────────
     // Path: kanban/{businessId}/{cardId}/{fileName}
+    // Aceita anexos genéricos (docs, planilhas, XMLs de NF-e, etc.) — não só mídia
     match /kanban/{businessId}/{cardId}/{fileName} {
       allow read:   if isAuthenticated();
-      allow write:  if isAuthenticated() && isMedia() && isUnderSize(25);
+      allow write:  if isAuthenticated() && isAttachment() && isUnderSize(25);
       allow delete: if isAuthenticated();
     }
 
