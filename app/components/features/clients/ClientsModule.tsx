@@ -7,7 +7,7 @@ import {
   Building2, User, ChevronDown, CheckCircle2, Tag, MapPin,
   TrendingUp, TrendingDown, ShoppingCart, Star, MoreVertical, Eye, FileText,
   Download, Upload, UserCheck, Gift, Calendar, MessageSquare, History, Clock,
-  FileDown, Settings, Plus as PlusIcon, Minus, Trophy, Sparkles,
+  FileDown, Settings, Plus as PlusIcon, Minus, Trophy, Sparkles, LayoutList, AlignJustify,
 } from 'lucide-react';
 import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, limit as firestoreLimit, orderBy, writeBatch } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
@@ -21,6 +21,7 @@ import { ROLE_HIERARCHY } from '@/lib/types';
 import { toast } from 'react-toastify';
 import ClientAgentMemoryPanel from './ClientAgentMemoryPanel';
 import Papa from 'papaparse';
+import { ClientTableView } from './ClientTableView';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -2387,6 +2388,14 @@ export default function ClientsModule() {
   const { business, user } = useAuth();
   const queryClient = useQueryClient();
 
+  const [clientsView, setClientsView] = useState<'list' | 'table'>(() => {
+    if (typeof window === 'undefined') return 'list';
+    return (localStorage.getItem('clients_view') as 'list' | 'table') ?? 'list';
+  });
+  const handleClientsView = (v: 'list' | 'table') => {
+    setClientsView(v);
+    localStorage.setItem('clients_view', v);
+  };
   const [search, setSearch] = useState('');
   const [filterTipo, setFilterTipo] = useState<'all' | 'pf' | 'pj'>('all');
   const [filterStatus, setFilterStatus] = useState<LeadStatus | 'all'>('all');
@@ -2737,6 +2746,28 @@ export default function ClientsModule() {
             <option value="createdAt">Mais recentes</option>
             <option value="churnRisk">Maior risco</option>
           </select>
+          <div className="flex items-center gap-0.5 p-0.5 bg-gray-100 dark:bg-gray-800 rounded-xl">
+            <button
+              onClick={() => handleClientsView('list')}
+              title="Visão lista"
+              className={cn('p-1.5 rounded-[10px] transition-all',
+                clientsView === 'list'
+                  ? 'bg-white dark:bg-white/[0.12] text-gray-900 dark:text-white shadow-sm'
+                  : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300'
+              )}>
+              <AlignJustify size={15} />
+            </button>
+            <button
+              onClick={() => handleClientsView('table')}
+              title="Visão tabela"
+              className={cn('p-1.5 rounded-[10px] transition-all',
+                clientsView === 'table'
+                  ? 'bg-white dark:bg-white/[0.12] text-gray-900 dark:text-white shadow-sm'
+                  : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300'
+              )}>
+              <LayoutList size={15} />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -2872,6 +2903,12 @@ export default function ClientsModule() {
                 {search ? 'Tente outros termos de busca' : 'Clique em "Novo cliente" para começar'}
               </p>
             </motion.div>
+          ) : clientsView === 'table' ? (
+            <ClientTableView
+              clients={filtered}
+              selectedClientId={selectedClient?.id ?? null}
+              onSelectClient={setSelectedClient}
+            />
           ) : (
             <div className="space-y-1.5 overflow-y-auto pr-1">
               {filtered.map((client, i) => {
