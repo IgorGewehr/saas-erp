@@ -1567,6 +1567,59 @@ async function updateMessageStatus(params: {
   } catch (err) {
     console.error('[Meta Webhook] Error updating message status:', err);
   }
+
+  // Espelhamento em broadcastMessages — Fase 1 do roadmap de broadcasts.
+  // Mensagens enviadas via /api/broadcasts/send criam doc em broadcastMessages
+  // (não em conversationMessages), então tentamos atualizar lá também.
+  await updateBroadcastMessageStatus(params).catch(err =>
+    console.error('[Meta Webhook] Error updating broadcastMessage status:', err)
+  );
+}
+
+/** Atualiza um BroadcastMessage por externalMessageId — invocado a partir de updateMessageStatus. */
+async function updateBroadcastMessageStatus(params: {
+  businessId: string;
+  messageId: string;
+  status: string;
+  timestamp: string;
+  errors?: Array<{ code: number; title: string }>;
+}): Promise<void> {
+  const snap = await adminDb.collection('broadcastMessages')
+    .where('externalMessageId', '==', params.messageId)
+    .where('businessId', '==', params.businessId)
+    .limit(1)
+    .get();
+  if (snap.empty) return;
+
+  const doc = snap.docs[0];
+  const current = doc.data();
+  const currentOrder = STATUS_ORDER[current.status] ?? -1;
+  const newOrder = STATUS_ORDER[params.status] ?? -1;
+  // Status regression guard — nunca volta atrás (exceto 'failed' que sempre aplica)
+  if (params.status !== 'failed' && newOrder <= currentOrder) return;
+
+  const update: Record<string, string | number> = { status: params.status };
+  if (params.status === 'delivered') update.deliveredAt = params.timestamp;
+  if (params.status === 'read') {
+    update.readAt = params.timestamp;
+    if (!current.deliveredAt) update.deliveredAt = params.timestamp;
+  }
+  if (params.status === 'failed' && params.errors?.length) {
+    const firstError = params.errors[0];
+    update.errorMessage = firstError.title;
+  }
+
+  await doc.ref.update(update);
+
+  // Atualiza stats agregados no Broadcast pai (incremento de delivered/read)
+  if (current.broadcastId && (params.status === 'delivered' || params.status === 'read')) {
+    const field = params.status === 'delivered' ? 'stats.delivered' : 'stats.read';
+    const { FieldValue } = await import('firebase-admin/firestore');
+    await adminDb.collection('broadcasts').doc(current.broadcastId).update({
+      [field]: FieldValue.increment(1),
+      updatedAt: new Date().toISOString(),
+    }).catch(() => {/* doc pode ter sido deletado */});
+  }
 }
 
 // ─── Content Extraction ──────────────────────────────────────────────────────
