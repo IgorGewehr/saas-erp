@@ -774,18 +774,31 @@ function CardDetailDialog({
   const handleUploadFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !currentUser || !card.businessId) return;
-    if (file.size > 10 * 1024 * 1024) {
-      alert('Arquivo muito grande. Limite: 10MB');
+    if (file.size > 25 * 1024 * 1024) {
+      alert('Arquivo muito grande. Limite: 25MB');
+      if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
     const attachId = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const storagePath = `kanban/${card.businessId}/${card.id}/${attachId}_${file.name}`;
     const storageRef = ref(storage, storagePath);
-    const task = uploadBytesResumable(storageRef, file);
+    // Garante content-type explícito — XMLs e outros formatos sem detecção automática
+    // do navegador podem chegar como application/octet-stream e cair no deny das Storage rules
+    const inferredType = file.type || (file.name.toLowerCase().endsWith('.xml') ? 'application/xml' : 'application/octet-stream');
+    const task = uploadBytesResumable(storageRef, file, { contentType: inferredType });
     setUploadProgress(0);
     task.on('state_changed',
       (snap) => setUploadProgress(Math.round((snap.bytesTransferred / snap.totalBytes) * 100)),
-      () => { setUploadProgress(null); },
+      (err) => {
+        const code = (err as { code?: string })?.code;
+        const msg = code === 'storage/unauthorized'
+          ? `Tipo de arquivo não permitido (${inferredType}). Tente PDF, XML, DOCX, XLSX, imagens ou vídeos.`
+          : 'Erro ao enviar arquivo. Tente novamente.';
+        alert(msg);
+        console.error('[Kanban] Upload error:', err);
+        setUploadProgress(null);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      },
       async () => {
         const url = await getDownloadURL(task.snapshot.ref);
         const newAttach: KanbanAttachment = {

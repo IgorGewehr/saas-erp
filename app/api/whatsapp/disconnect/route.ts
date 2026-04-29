@@ -44,11 +44,21 @@ export async function POST(req: NextRequest) {
       const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
       const db = getFirestore(app);
 
-      await updateDoc(doc(db, 'businesses', businessId), {
-        'channels.whatsapp.isConnected': false,
-        'channels.whatsapp.disconnectedAt': new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
+      const now = new Date().toISOString();
+      // Atualiza o novo campo isolado (whatsappBaileys) e o legado (apenas se ainda for Baileys)
+      const bizSnap = await (await import('@/lib/config/firebaseAdmin')).adminDb
+        .doc(`businesses/${businessId}`).get();
+      const legacy = bizSnap.data()?.channels?.whatsapp;
+      const updates: Record<string, unknown> = {
+        'channels.whatsappBaileys.isConnected': false,
+        'channels.whatsappBaileys.disconnectedAt': now,
+        updatedAt: now,
+      };
+      if (legacy?.connectedVia === 'baileys') {
+        updates['channels.whatsapp.isConnected'] = false;
+        updates['channels.whatsapp.disconnectedAt'] = now;
+      }
+      await updateDoc(doc(db, 'businesses', businessId), updates);
     } catch (err) {
       console.error('[WA Baileys] Firestore disconnect error:', err);
     }

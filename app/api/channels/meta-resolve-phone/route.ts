@@ -35,10 +35,16 @@ export async function GET(req: NextRequest) {
     }
 
     const bizData = bizDoc.data() as Record<string, unknown>;
-    const waChannel = (bizData?.channels as Record<string, unknown>)?.whatsapp as Record<string, unknown> | undefined;
+    const channelsData = bizData?.channels as Record<string, unknown> | undefined;
+    // Prefere whatsappCloud (novo); fallback para legado se Cloud (não Baileys).
+    const cloudCfg = channelsData?.whatsappCloud as Record<string, unknown> | undefined;
+    const legacy = channelsData?.whatsapp as Record<string, unknown> | undefined;
+    const legacyIsCloud = legacy?.connectedVia !== 'baileys';
+    const waChannel = cloudCfg ?? (legacyIsCloud ? legacy : undefined);
+    const writeToNew = !!cloudCfg; // se lemos do novo, gravamos no novo
 
     if (!waChannel?.isConnected) {
-      return NextResponse.json({ error: 'WhatsApp not connected' }, { status: 400 });
+      return NextResponse.json({ error: 'WhatsApp Cloud not connected' }, { status: 400 });
     }
 
     const phoneNumberId = waChannel.phoneNumberId as string | undefined;
@@ -139,15 +145,15 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // Save resolved data back to Firestore
-    // Also update phoneNumberId if it was actually a WABA ID (fix old data)
+    // Save resolved data back to Firestore — escreve no campo de onde leu
+    const fieldPrefix = writeToNew ? 'channels.whatsappCloud' : 'channels.whatsapp';
     const firestoreUpdate: Record<string, string | null> = {
-      'channels.whatsapp.displayPhoneNumber': displayPhoneNumber,
-      'channels.whatsapp.displayName': displayName || null,
+      [`${fieldPrefix}.displayPhoneNumber`]: displayPhoneNumber,
+      [`${fieldPrefix}.displayName`]: displayName || null,
       updatedAt: new Date().toISOString(),
     };
     if (resolvedPhoneNumberId !== phoneNumberId) {
-      firestoreUpdate['channels.whatsapp.phoneNumberId'] = resolvedPhoneNumberId;
+      firestoreUpdate[`${fieldPrefix}.phoneNumberId`] = resolvedPhoneNumberId;
       console.log('[resolve-phone] Correcting stored phoneNumberId:', phoneNumberId, '→', resolvedPhoneNumberId);
     }
     await adminDb.doc(`businesses/${businessId}`).update(firestoreUpdate);

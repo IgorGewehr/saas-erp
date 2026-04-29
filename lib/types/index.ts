@@ -150,6 +150,11 @@ export interface Business {
 }
 
 // ---- Omnichannel Channel Credentials ----
+/**
+ * @deprecated Use `WhatsAppCloudConfig` ou `WhatsAppBaileysConfig`.
+ * Mantido apenas para compatibilidade com dados legados em `channels.whatsapp`.
+ * Novos writes vão para `channels.whatsappCloud` ou `channels.whatsappBaileys`.
+ */
 export interface WhatsAppChannelConfig {
   phoneNumberId: string;
   businessAccountId: string;
@@ -160,6 +165,31 @@ export interface WhatsAppChannelConfig {
   displayPhoneNumber?: string;
   phoneNumber?: string;
   tokenExpiresAt?: string;
+  connectedAt?: string;
+  disconnectedAt?: string;
+  /** Runtime marker — só presente em conexões Baileys legadas. */
+  connectedVia?: 'baileys' | 'embedded_signup';
+}
+
+/** WhatsApp Business Cloud API (Meta oficial via Embedded Signup). */
+export interface WhatsAppCloudConfig {
+  isConnected: boolean;
+  phoneNumberId: string;
+  accessToken: string; // btoa encrypted
+  wabaId?: string;
+  businessAccountId?: string;
+  displayName?: string;
+  displayPhoneNumber?: string;
+  tokenExpiresAt?: string;
+  connectedAt?: string;
+  disconnectedAt?: string;
+}
+
+/** WhatsApp Web (Baileys / não-oficial). Não usa accessToken da Meta. */
+export interface WhatsAppBaileysConfig {
+  isConnected: boolean;
+  phoneNumber: string;
+  displayPhoneNumber?: string;
   connectedAt?: string;
   disconnectedAt?: string;
 }
@@ -189,7 +219,12 @@ export interface MetaAppConfig {
 }
 
 export interface ChannelCredentials {
+  /** @deprecated Campo legado. Novos writes vão para `whatsappCloud` ou `whatsappBaileys`. Leitores devem priorizar os novos campos. */
   whatsapp?: WhatsAppChannelConfig;
+  /** WhatsApp Business Cloud API (oficial). */
+  whatsappCloud?: WhatsAppCloudConfig;
+  /** WhatsApp Web (Baileys, não-oficial). Pode coexistir com whatsappCloud. */
+  whatsappBaileys?: WhatsAppBaileysConfig;
   facebook?: FacebookChannelConfig;
   instagram?: InstagramChannelConfig;
   meta?: MetaAppConfig;
@@ -1852,6 +1887,7 @@ export interface Conversation {
   contactPhone?: string;
   contactExternalId?: string;
   contactAvatarUrl?: string;
+  customContactName?: string;
   crmContactId?: string;
   aiEnabled?: boolean;            // toggle do agente IA — default: herda de business.settings.aiAgent.enabled
   lastMessage: string;
