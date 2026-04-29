@@ -231,6 +231,12 @@ function computeNextDueDate(currentDue: string, frequency: string, dayOfMonth?: 
   return adjustForBusinessDay(d.toISOString().slice(0, 10), holidayAdjust);
 }
 
+// FIN-R20: normalização de frequência → valor mensal equivalente
+const FREQ_TO_MONTHLY: Record<string, number> = {
+  weekly: 4.33, biweekly: 2.17, biweekly_fixed: 2,
+  monthly: 1, quarterly: 1 / 3, semiannual: 1 / 6, yearly: 1 / 12,
+};
+
 const RECURRENCE_LABELS: Record<string, string> = {
   weekly: 'Semanal',
   biweekly: 'Quinzenal',
@@ -1056,7 +1062,8 @@ export default function FinancialModule() {
         })(),
       };
 
-      if (editingTransaction) {
+      // editingTransaction.id === '' means it came from FIN-R23 "Criar série" (suggested pattern) → treat as new
+      if (editingTransaction && editingTransaction.id) {
         if (scope === 'this_only') {
           // Cria uma cópia avulsa com os valores editados, sem alterar a série original
           const { recurrence: _r, ...oneTimeFields } = baseTx as Record<string, unknown>;
@@ -6701,6 +6708,7 @@ function RecurringContent({
   onAdjustValue: (txId: string, mode: 'pct' | 'fixed', value: number) => Promise<void>;
 }) {
   const { isDark } = useTheme();
+  const queryClient = useQueryClient();
   const [filter, setFilter] = useState<RecurringFilter>('all');
   const [pausingId, setPausingId] = useState<string | null>(null);
   const [resumingId, setResumingId] = useState<string | null>(null);
@@ -6784,11 +6792,6 @@ function RecurringContent({
   }, [transactions, calendarYear, calendarMonth, todayStr]);
 
   // ── FIN-R20/R21: normalização de frequência → mensal ─────────────────────
-  const FREQ_TO_MONTHLY: Record<string, number> = {
-    weekly: 4.33, biweekly: 2.17, biweekly_fixed: 2,
-    monthly: 1, quarterly: 1 / 3, semiannual: 1 / 6, yearly: 1 / 12,
-  };
-
   const healthKpis = useMemo(() => {
     let mrr = 0, burnRate = 0;
     for (const tx of allRecurrences) {
@@ -6862,10 +6865,10 @@ function RecurringContent({
       groups[key] = [...(groups[key] ?? []), tx];
     }
     const THRESHOLDS = [
-      { freq: 'weekly', label: 'Semanal', target: 7, tol: 5 },
-      { freq: 'biweekly', label: 'Quinzenal', target: 14, tol: 5 },
-      { freq: 'monthly', label: 'Mensal', target: 30, tol: 10 },
-      { freq: 'quarterly', label: 'Trimestral', target: 90, tol: 15 },
+      { freq: 'weekly',    label: 'Semanal',     target: 7,  tol: 3  }, // 4-10d — no overlap with biweekly
+      { freq: 'biweekly', label: 'Quinzenal',    target: 14, tol: 4  }, // 10-18d — no overlap with monthly
+      { freq: 'monthly',  label: 'Mensal',       target: 30, tol: 8  }, // 22-38d
+      { freq: 'quarterly',label: 'Trimestral',   target: 90, tol: 15 }, // 75-105d
     ];
     const suggestions: Array<{ key: string; description: string; count: number; avgAmount: number; frequency: string; freqLabel: string; type: 'receita' | 'despesa'; sampleTx: Transaction }> = [];
     for (const [, txList] of Object.entries(groups)) {
@@ -6918,6 +6921,7 @@ function RecurringContent({
         batch.update(doc(db, 'transactions', txId), { amount: +(tx.amount * (1 + pctVal / 100)).toFixed(2), updatedAt: new Date().toISOString() });
       }
       await batch.commit();
+      queryClient.invalidateQueries({ queryKey: ['transactions', businessId] });
       toast.success(`${selectedIds.size} série(s) reajustadas em ${pctVal}%`);
       clearSelection(); setBulkReajusteOpen(false); setBulkPct('');
     } catch { toast.error('Erro ao reajustar em lote'); } finally { setBulkSaving(false); }
@@ -6930,6 +6934,7 @@ function RecurringContent({
       const batch = writeBatch(db);
       for (const txId of selectedIds) batch.update(doc(db, 'transactions', txId), { category: bulkCategory.trim(), updatedAt: new Date().toISOString() });
       await batch.commit();
+      queryClient.invalidateQueries({ queryKey: ['transactions', businessId] });
       toast.success(`${selectedIds.size} série(s) reclassificadas`);
       clearSelection(); setBulkReclassifyOpen(false); setBulkCategory('');
     } catch { toast.error('Erro ao reclassificar'); } finally { setBulkSaving(false); }
@@ -6941,6 +6946,7 @@ function RecurringContent({
       const batch = writeBatch(db);
       for (const txId of selectedIds) batch.update(doc(db, 'transactions', txId), { 'recurrence.isActive': false, updatedAt: new Date().toISOString() });
       await batch.commit();
+      queryClient.invalidateQueries({ queryKey: ['transactions', businessId] });
       toast.success(`${selectedIds.size} série(s) encerrada(s)`);
       clearSelection(); setBulkEndOpen(false);
     } catch { toast.error('Erro ao encerrar'); } finally { setBulkSaving(false); }
@@ -6963,6 +6969,7 @@ function RecurringContent({
         entry.dueDate !== entryDueDate ? entry : { ...entry, attachments: [...(entry.attachments ?? []), { id: fileId, name: file.name, url, path: storagePath, uploadedAt: new Date().toISOString() }] }
       );
       await updateDoc(doc(db, 'transactions', tx.id), { 'recurrence.history': updatedHistory, updatedAt: new Date().toISOString() });
+      queryClient.invalidateQueries({ queryKey: ['transactions', businessId] });
       toast.success('Comprovante salvo!');
     } catch { toast.error('Erro ao salvar comprovante'); } finally { setUploadingKey(null); }
   };
@@ -6977,6 +6984,7 @@ function RecurringContent({
         entry.dueDate !== entryDueDate ? entry : { ...entry, attachments: (entry.attachments ?? []).filter(a => a.id !== attachmentId) }
       );
       await updateDoc(doc(db, 'transactions', tx.id), { 'recurrence.history': updatedHistory, updatedAt: new Date().toISOString() });
+      queryClient.invalidateQueries({ queryKey: ['transactions', businessId] });
       toast.success('Comprovante removido');
     } catch { toast.error('Erro ao remover comprovante'); }
   };
