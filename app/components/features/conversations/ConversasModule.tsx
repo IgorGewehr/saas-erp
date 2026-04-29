@@ -93,6 +93,8 @@ import type {
   ConversationChannel,
   ConversationStatus,
   ConversationView,
+  CSATResponse,
+  RoutingRule,
   Sector,
   Snippet,
   User,
@@ -1862,9 +1864,147 @@ function BatchTagInput({ onAdd, existingTags }: { onAdd: (tag: string) => void; 
   );
 }
 
-// ─── CSAT Dashboard ──────────────────────────────────────────────────────────
+// ─── Routing Rules Dialog ─────────────────────────────────────────────────────
 
-import type { CSATResponse } from '@/lib/types';
+function RoutingRulesDialog({ rules: initial, businessId, members, sectors: sectorsList, onClose, onSaved }: {
+  rules: RoutingRule[];
+  businessId: string;
+  members: User[];
+  sectors: Sector[];
+  onClose: () => void;
+  onSaved: (rules: RoutingRule[]) => void;
+}) {
+  const [rules, setRules] = useState<RoutingRule[]>(initial);
+  const [saving, setSaving] = useState(false);
+
+  const newRule = (): RoutingRule => ({
+    id: crypto.randomUUID(), name: 'Nova regra', enabled: true, order: rules.length,
+    conditions: {}, action: { type: 'assign_sector' },
+  });
+
+  const update = (id: string, patch: Partial<RoutingRule>) =>
+    setRules(prev => prev.map(r => r.id === id ? { ...r, ...patch } : r));
+
+  const remove = (id: string) => setRules(prev => prev.filter(r => r.id !== id));
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await updateDoc(doc(db, 'businesses', businessId), { 'settings.routingRules': rules, updatedAt: new Date().toISOString() });
+      onSaved(rules);
+      onClose();
+      toast.success('Regras de roteamento salvas');
+    } catch { toast.error('Erro ao salvar'); } finally { setSaving(false); }
+  };
+
+  const selClass = 'text-xs border border-gray-200 dark:border-gray-700 rounded-lg px-2 py-1.5 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 focus:outline-none flex-1';
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <motion.div initial={{ opacity: 0, scale: 0.95, y: 8 }} animate={{ opacity: 1, scale: 1, y: 0 }}
+        className="w-full max-w-lg bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 flex flex-col max-h-[85vh]">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800 shrink-0">
+          <div>
+            <h2 className="font-bold text-sm text-gray-900 dark:text-white">Regras de Roteamento</h2>
+            <p className="text-[10px] text-gray-400 mt-0.5">Atribua conversas automaticamente ao chegar</p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400"><X className="w-4 h-4" /></button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-3">
+          {rules.length === 0 && (
+            <div className="text-center py-8 text-gray-400">
+              <p className="text-sm">Nenhuma regra configurada</p>
+              <p className="text-xs mt-1 text-gray-300">Crie regras para atribuir conversas automaticamente</p>
+            </div>
+          )}
+          {rules.map((rule, i) => (
+            <div key={rule.id} className="border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
+              <div className="flex items-center gap-2 px-3 py-2.5 bg-gray-50 dark:bg-gray-800/60">
+                <button onClick={() => update(rule.id, { enabled: !rule.enabled })}
+                  className={cn('w-8 h-4.5 rounded-full transition-colors flex-shrink-0 relative', rule.enabled ? 'bg-red-500' : 'bg-gray-300 dark:bg-gray-600')} style={{ height: 18 }}>
+                  <span className={cn('absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow transition-transform', rule.enabled ? 'translate-x-4' : 'translate-x-0.5')} />
+                </button>
+                <input value={rule.name} onChange={e => update(rule.id, { name: e.target.value })}
+                  className="flex-1 text-xs font-semibold bg-transparent text-gray-700 dark:text-gray-300 focus:outline-none" />
+                <button onClick={() => remove(rule.id)} className="p-1 text-gray-300 hover:text-red-500 transition-colors"><X className="w-3.5 h-3.5" /></button>
+              </div>
+              <div className="p-3 space-y-2.5">
+                <div>
+                  <p className="text-[9px] font-bold text-gray-400 uppercase mb-1.5">Condições (E)</p>
+                  <div className="flex flex-wrap gap-2">
+                    <select value={rule.conditions.channel ?? ''} onChange={e => update(rule.id, { conditions: { ...rule.conditions, channel: e.target.value } })} className={selClass}>
+                      <option value="">Qualquer canal</option>
+                      <option value="whatsapp">WhatsApp</option>
+                      <option value="facebook">Facebook</option>
+                      <option value="instagram">Instagram</option>
+                    </select>
+                    <input placeholder="Palavra-chave (opcional)" value={rule.conditions.keyword ?? ''}
+                      onChange={e => update(rule.id, { conditions: { ...rule.conditions, keyword: e.target.value } })}
+                      className={selClass} />
+                  </div>
+                </div>
+                <div>
+                  <p className="text-[9px] font-bold text-gray-400 uppercase mb-1.5">Ação</p>
+                  <div className="flex gap-2 flex-wrap">
+                    <select value={rule.action.type} onChange={e => update(rule.id, { action: { type: e.target.value as RoutingRule['action']['type'] } })} className={selClass}>
+                      <option value="assign_sector">Atribuir ao setor</option>
+                      <option value="assign_user">Atribuir ao agente</option>
+                      <option value="set_priority">Definir prioridade</option>
+                    </select>
+                    {rule.action.type === 'assign_sector' && (
+                      <select value={rule.action.sectorId ?? ''} onChange={e => {
+                        const s = sectorsList.find(x => x.id === e.target.value);
+                        update(rule.id, { action: { ...rule.action, sectorId: e.target.value, sectorName: s?.name } });
+                      }} className={selClass}>
+                        <option value="">Selecionar setor</option>
+                        {sectorsList.filter(s => s.isActive).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                      </select>
+                    )}
+                    {rule.action.type === 'assign_user' && (
+                      <select value={rule.action.userId ?? ''} onChange={e => {
+                        const m = members.find(x => x.uid === e.target.value);
+                        update(rule.id, { action: { ...rule.action, userId: e.target.value, userName: m?.name } });
+                      }} className={selClass}>
+                        <option value="">Selecionar agente</option>
+                        {members.map(m => <option key={m.uid} value={m.uid}>{m.name}</option>)}
+                      </select>
+                    )}
+                    {rule.action.type === 'set_priority' && (
+                      <select value={rule.action.priority ?? ''} onChange={e => update(rule.id, { action: { ...rule.action, priority: e.target.value } })} className={selClass}>
+                        <option value="">Selecionar</option>
+                        <option value="urgent">Urgente</option>
+                        <option value="high">Alta</option>
+                        <option value="medium">Média</option>
+                        <option value="low">Baixa</option>
+                      </select>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+          <button onClick={() => setRules(r => [...r, newRule()])}
+            className="w-full py-2.5 rounded-xl border-2 border-dashed border-gray-200 dark:border-gray-700 text-xs font-semibold text-gray-400 hover:border-red-400 hover:text-red-500 transition-colors flex items-center justify-center gap-1.5">
+            <Plus className="w-3.5 h-3.5" /> Nova regra
+          </button>
+        </div>
+
+        <div className="flex gap-2 px-5 pb-5 pt-3 border-t border-gray-100 dark:border-gray-800 shrink-0">
+          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancelar</button>
+          <button onClick={handleSave} disabled={saving}
+            className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors disabled:opacity-50">
+            {saving ? 'Salvando...' : 'Salvar regras'}
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ─── CSAT Dashboard ──────────────────────────────────────────────────────────
 
 function CSATDashboard({ businessId, onClose }: { businessId: string; onClose: () => void }) {
   const [responses, setResponses] = useState<CSATResponse[]>([]);
@@ -2726,6 +2866,9 @@ export default function ConversasModule() {
   const [showSLASettings, setShowSLASettings] = useState(false);
   const [showCSATDashboard, setShowCSATDashboard] = useState(false);
   const [showAnalytics, setShowAnalytics] = useState(false);
+  const [showRoutingRules, setShowRoutingRules] = useState(false);
+  const [routingRules, setRoutingRules] = useState<RoutingRule[]>(business?.settings?.routingRules ?? []);
+  useEffect(() => { setRoutingRules(business?.settings?.routingRules ?? []); }, [business?.settings?.routingRules]);
   const csatEnabled = !!business?.settings?.csatEnabled;
   const [members, setMembers] = useState<User[]>([]);
   useEffect(() => {
@@ -2920,6 +3063,31 @@ export default function ConversasModule() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversations, slaTick, slaConfig.enabled]);
+
+  // ── Routing rules engine ─────────────────────────────────────────────────
+  const appliedRoutingRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!business?.id || !routingRules.length) return;
+    const enabled = routingRules.filter(r => r.enabled).sort((a, b) => a.order - b.order);
+    for (const conv of conversations) {
+      if (conv.assignedTo || conv.status === 'resolved' || appliedRoutingRef.current.has(conv.id)) continue;
+      for (const rule of enabled) {
+        const { conditions, action } = rule;
+        if (conditions.channel && conv.channel !== conditions.channel) continue;
+        if (conditions.keyword && !conv.lastMessage.toLowerCase().includes(conditions.keyword.toLowerCase())) continue;
+        appliedRoutingRef.current.add(conv.id);
+        const now = new Date().toISOString();
+        if (action.type === 'assign_sector' && action.sectorId) {
+          updateDoc(doc(db, 'conversations', conv.id), { assignedToSectorId: action.sectorId, sectorIds: [action.sectorId], updatedAt: now }).catch(console.error);
+        } else if (action.type === 'assign_user' && action.userId) {
+          updateDoc(doc(db, 'conversations', conv.id), { assignedTo: action.userId, assignedToName: action.userName, updatedAt: now }).catch(console.error);
+        } else if (action.type === 'set_priority' && action.priority) {
+          updateDoc(doc(db, 'conversations', conv.id), { priority: action.priority, updatedAt: now }).catch(console.error);
+        }
+        break; // First matching rule wins
+      }
+    }
+  }, [conversations, routingRules, business?.id]);
 
   // ── Real-time: Conversations list ──────────────────────────────────────────
 
@@ -3967,6 +4135,18 @@ export default function ConversasModule() {
                   )}>
                   <BarChart3 className="w-4 h-4" />
                 </motion.button>
+                {isAdmin && (
+                  <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+                    onClick={() => setShowRoutingRules(true)}
+                    title="Regras de roteamento"
+                    className={cn('w-8 h-8 rounded-xl flex items-center justify-center transition-colors',
+                      routingRules.some(r => r.enabled)
+                        ? 'bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400'
+                        : 'bg-gray-100 dark:bg-white/[0.06] text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                    )}>
+                    <ArrowRightLeft className="w-4 h-4" />
+                  </motion.button>
+                )}
                 <motion.button
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
@@ -4579,6 +4759,16 @@ export default function ConversasModule() {
         )}
         {showCSATDashboard && business?.id && (
           <CSATDashboard businessId={business.id} onClose={() => setShowCSATDashboard(false)} />
+        )}
+        {showRoutingRules && isAdmin && business?.id && (
+          <RoutingRulesDialog
+            rules={routingRules}
+            businessId={business.id}
+            members={members}
+            sectors={sectors}
+            onClose={() => setShowRoutingRules(false)}
+            onSaved={r => setRoutingRules(r)}
+          />
         )}
         {showAnalytics && (
           <>

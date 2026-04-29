@@ -322,6 +322,27 @@ export interface BusinessSettings {
     warningPercent: number; // % de tempo restante para alertar (padrão: 20)
   };
   csatEnabled?: boolean;  // Enviar pesquisa de satisfação ao resolver conversa
+  routingRules?: RoutingRule[];
+}
+
+export interface RoutingRule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  conditions: {
+    channel?: string;       // 'whatsapp' | 'facebook' | 'instagram' | ''
+    keyword?: string;       // keyword na primeira mensagem
+    priority?: string;      // 'urgent' | 'high' | 'medium' | 'low' | ''
+  };
+  action: {
+    type: 'assign_sector' | 'assign_user' | 'set_priority';
+    sectorId?: string;
+    sectorName?: string;
+    userId?: string;
+    userName?: string;
+    priority?: string;
+  };
+  order: number;
 }
 
 /** Estágio customizável do pipeline de leads */
