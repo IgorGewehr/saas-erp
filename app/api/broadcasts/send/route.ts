@@ -57,9 +57,10 @@ function resolveTemplateComponents(
 ): unknown[] {
   if (!Array.isArray(params) || params.length === 0) return [];
 
-  // Detecta formato legado: array de componentes Meta (cada item tem 'type' e 'parameters')
+  // Detecta formato legado: array de componentes Meta (cada item tem 'type' e 'parameters'
+  // E NÃO tem 'kind' — campo discriminante do BroadcastTemplateParam novo)
   const looksLikeLegacy = params.every(p =>
-    typeof p === 'object' && p !== null && 'type' in p && 'parameters' in p
+    typeof p === 'object' && p !== null && 'type' in p && 'parameters' in p && !('kind' in p)
   );
   if (looksLikeLegacy) return params;
 

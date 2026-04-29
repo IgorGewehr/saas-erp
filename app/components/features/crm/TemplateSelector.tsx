@@ -40,42 +40,63 @@ interface Props {
   value: TemplateSelection | null;
   onChange: (next: TemplateSelection | null) => void;
   sampleRecipient?: BroadcastRecipient;
+  /** Canal da campanha — usado para filtrar opções de field (ex: oculta email em WA). */
+  channel?: 'whatsapp' | 'facebook' | 'instagram' | 'email';
   className?: string;
 }
 
-const FIELD_OPTIONS: { value: 'name' | 'phoneNumber' | 'email'; label: string; icon: React.ReactNode }[] = [
+const ALL_FIELD_OPTIONS: { value: 'name' | 'phoneNumber' | 'email'; label: string; icon: React.ReactNode }[] = [
   { value: 'name', label: 'Nome do contato', icon: <UserIcon className="w-3 h-3" /> },
   { value: 'phoneNumber', label: 'Telefone', icon: <Phone className="w-3 h-3" /> },
   { value: 'email', label: 'Email', icon: <Mail className="w-3 h-3" /> },
 ];
 
-/** Conta variáveis únicas {{N}} no body do template. */
-function countVariables(body: string): number {
-  const matches = body.match(/\{\{(\d+)\}\}/g) ?? [];
-  return new Set(matches.map(m => m.replace(/[{}]/g, ''))).size;
+/** Filtra opções de field por canal — email só faz sentido em campanhas de email. */
+function fieldOptionsForChannel(channel?: Props['channel']) {
+  if (channel === 'email') return ALL_FIELD_OPTIONS;
+  return ALL_FIELD_OPTIONS.filter(o => o.value !== 'email');
+}
+
+/**
+ * Retorna o maior índice {{N}} no body — usado para dimensionar params[].
+ * Ex: "{{2}} {{4}}" retorna 4 (params precisa de 4 slots, mesmo com slot 1 e 3 vazios).
+ * Templates Meta convencionalmente usam índices sequenciais 1..N, mas isso garante
+ * que gaps não causem mismatch entre UI e renderização.
+ * Index 0 ou inválido é ignorado (Meta exige >= 1).
+ */
+function maxVariableIndex(body: string): number {
+  const matches = body.matchAll(/\{\{(\d+)\}\}/g);
+  let max = 0;
+  for (const m of matches) {
+    const idx = Number(m[1]);
+    if (idx >= 1 && idx > max) max = idx;
+  }
+  return max;
 }
 
 /** Renderiza o body do template substituindo {{N}} por valores resolvidos. */
 function renderPreview(body: string, params: BroadcastTemplateParam[], sample?: BroadcastRecipient): string {
-  return body.replace(/\{\{(\d+)\}\}/g, (_, idx) => {
-    const i = Number(idx) - 1;
-    const p = params[i];
-    if (!p) return `{{${idx}}}`;
-    if (p.kind === 'literal') return p.value || `{{${idx}}}`;
+  return body.replace(/\{\{(\d+)\}\}/g, (matched, idx) => {
+    const n = Number(idx);
+    if (n < 1) return matched; // {{0}} ou inválido — não substitui
+    const p = params[n - 1];
+    if (!p) return matched;
+    if (p.kind === 'literal') return p.value || matched;
     if (p.kind === 'field') {
       if (!sample) return `[${p.field}]`;
       if (p.field === 'name') return sample.name || '[sem nome]';
       if (p.field === 'phoneNumber') return sample.phoneNumber || '[sem telefone]';
       if (p.field === 'email') return sample.email || '[sem email]';
     }
-    return `{{${idx}}}`;
+    return matched;
   });
 }
 
-export default function TemplateSelector({ businessId, value, onChange, sampleRecipient, className }: Props) {
+export default function TemplateSelector({ businessId, value, onChange, sampleRecipient, channel, className }: Props) {
   const [templates, setTemplates] = useState<WhatsAppTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const fieldOptions = useMemo(() => fieldOptionsForChannel(channel), [channel]);
 
   // Fetch templates aprovados na WABA
   useEffect(() => {
@@ -123,7 +144,7 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
     return templates.find(t => t.name === value.name && t.language === value.language) ?? null;
   }, [templates, value]);
 
-  const variableCount = useMemo(() => selected ? countVariables(selected.preview) : 0, [selected]);
+  const variableCount = useMemo(() => selected ? maxVariableIndex(selected.preview) : 0, [selected]);
 
   // Sincroniza tamanho do params[] com a quantidade de variáveis do template
   // (sem perder valores já preenchidos quando o usuário troca de template)
@@ -142,7 +163,7 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
     if (!v) { onChange(null); return; }
     const tpl = templates.find(t => `${t.name}__${t.language}` === v);
     if (!tpl) return;
-    const count = countVariables(tpl.preview);
+    const count = maxVariableIndex(tpl.preview);
     onChange({
       name: tpl.name,
       language: tpl.language,
@@ -173,7 +194,7 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
     <div className={cn('space-y-2.5', className)}>
       {/* Dropdown de template */}
       <div>
-        <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 block">Template aprovado</label>
+        <label htmlFor="broadcast-template-select" className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 block">Template aprovado</label>
         {loading ? (
           <div className="flex items-center gap-2 text-xs text-gray-400 py-2.5 px-3 bg-gray-50 dark:bg-white/[0.04] rounded-lg border border-gray-200 dark:border-gray-700">
             <Loader2 className="w-3 h-3 animate-spin" /> Carregando templates da WABA…
@@ -187,6 +208,7 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
           </div>
         ) : (
           <select
+            id="broadcast-template-select"
             value={value ? `${value.name}__${value.language}` : ''}
             onChange={handleSelectTemplate}
             className={inputCls}
@@ -231,7 +253,7 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
                   className={cn(inputCls, 'w-auto flex-shrink-0')}
                 >
                   <option value="__literal">Texto fixo</option>
-                  {FIELD_OPTIONS.map(o => (
+                  {fieldOptions.map(o => (
                     <option key={o.value} value={`field:${o.value}`}>{o.label}</option>
                   ))}
                 </select>
@@ -244,7 +266,7 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
                   />
                 ) : (
                   <span className="flex-1 inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-500/10 rounded-lg">
-                    {FIELD_OPTIONS.find(o => o.value === p.field)?.icon}
+                    {ALL_FIELD_OPTIONS.find(o => o.value === p.field)?.icon}
                     Resolvido por recipiente
                   </span>
                 )}
@@ -290,9 +312,22 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
   );
 }
 
-/** Helper público — verifica se uma TemplateSelection está válida pra envio. */
-export function isTemplateSelectionValid(sel: TemplateSelection | null): boolean {
+/**
+ * Helper público — verifica se uma TemplateSelection está válida pra envio.
+ *
+ * @param sel — seleção atual
+ * @param expectedVarCount — opcional: número de variáveis esperadas pelo template.
+ *   Se passado, valida que sel.params.length === expectedVarCount (defesa contra
+ *   sync incompleta após troca de template).
+ */
+export function isTemplateSelectionValid(
+  sel: TemplateSelection | null,
+  expectedVarCount?: number,
+): boolean {
   if (!sel) return false;
+  if (typeof expectedVarCount === 'number' && sel.params.length !== expectedVarCount) {
+    return false;
+  }
   for (const p of sel.params) {
     if (p.kind === 'literal' && !p.value.trim()) return false;
   }

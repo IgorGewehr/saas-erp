@@ -1338,6 +1338,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
               value={formTemplate}
               onChange={setFormTemplate}
               sampleRecipient={formRecipients[0]}
+              channel={formChannel}
             />
           ) : (
             <TextField label={t('crm.form.content', 'Conteúdo')} value={formContent} onChange={(e) => setFormContent(e.target.value)} fullWidth multiline rows={3} size="small" />
