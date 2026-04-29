@@ -1436,7 +1436,7 @@ function MergeModal({
                         ) : (
                           <>
                             <CheckCircle2 className="w-3 h-3" />
-                            Mesclar — manter {primaryId === a.id ? a.name.split(' ')[0] : b.name.split(' ')[0]}
+                            Mesclar — manter {primaryId === a.id ? (a.name ?? '').split(' ')[0] : (b.name ?? '').split(' ')[0]}
                           </>
                         )}
                       </button>
