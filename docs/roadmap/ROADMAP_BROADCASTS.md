@@ -231,14 +231,69 @@ Cada fase tem **commit + push isolado** após validação. Sem misturar.
 
 ---
 
-## Trabalho fora-de-escopo (parking lot)
+## Pós-Fase 4 — Próximas implementações 🚧
 
-- Agendamento de campanhas (`scheduledFor`)
-- Salvar listas reusáveis (`BroadcastList` collection)
-- Segmentação avançada (já existe `Segment`, falta UI completa)
-- A/B testing de templates
-- Opt-out automático com link de descadastro
-- Compliance LGPD (consentimento explícito antes de mandar)
-- Webhook de bounce de email
-- Rate limit por business (anti-abuse)
-- Métricas agregadas: CTR, taxa de entrega, tempo médio até leitura
+Itens que apareceram durante as Fases 0-4 e ficaram fora do escopo, organizados
+por prioridade (mais crítico → menos crítico). Marcar `[x]` quando entregar.
+
+### Bloqueante para uso real
+
+- [ ] **5.1 — Botão "Disparar agora" na UI** `code-only` · 1-2h
+  Hoje broadcasts ficam em `'draft'` e não há gatilho na UI — só via API direta.
+  Adicionar botão no card da campanha (ou dentro do BroadcastDetailDialog) que
+  chama `POST /api/broadcasts/send` com os parâmetros do broadcast. Bloquear
+  duplo-clique (já tem CAS no backend, UI só precisa disable enquanto envia).
+
+### Alto impacto
+
+- [ ] **5.2 — Botão "Retomar" para campanhas pausadas** `code-only` · 1-2h
+  Pause já funciona (Fase 4). Falta UI para retomar: re-disparar com apenas
+  os recipientes que ficaram `pending` no `broadcastMessages`. Endpoint novo
+  ou reuso de `/api/broadcasts/[id]/retry-failed` adaptado pra pegar pending.
+
+- [ ] **5.3 — Webhook de bounce email** `cross-repo` · 2-3h
+  Notification-server precisa expor um webhook que aponta de volta pro saas-erp
+  quando email rejeita (caixa cheia, inválido, hard bounce). Hoje status
+  fica como `'sent'` mesmo se não chegou. Endpoint novo `/api/webhooks/email-bounce`.
+
+### Médio
+
+- [ ] **5.4 — Agendamento de campanhas (`scheduledFor`)** `code-only` · 3-4h
+  Campo já existe no tipo `Broadcast.scheduledAt`. Falta cron worker que olha
+  campanhas com `status='scheduled'` e dispara quando chegar a hora.
+
+- [ ] **5.5 — Listas reusáveis (`BroadcastList` collection)** `code-only` · 3h
+  Salvar uma lista importada como reusável. Coleção nova, UI em CRM com
+  CRUD de listas. Útil para campanhas recorrentes.
+
+- [ ] **5.6 — Editor rich-text para corpo de email** `code-only` · 2-3h
+  Hoje é textarea. Substituir por editor (ex: TipTap, Lexical) com formatação
+  básica e preview HTML.
+
+### Baixo / refinamento
+
+- [ ] **5.7 — Templates com HEADER** `code-only` · 2h
+  Suportar templates Meta com componentes além do body (header de texto/imagem,
+  botões). Requer extensão do tipo `BroadcastTemplateParam` e mudança no
+  `resolveTemplateComponents`.
+
+- [ ] **5.8 — Variáveis com CSV columns** `code-only` · 2h
+  No template selector, permitir mapear `{{N}}` para colunas extras do CSV
+  (não só `name/phone/email`). Requer manter colunas brutas em `BroadcastRecipient`.
+
+- [ ] **5.9 — Race fix: re-check pause após sleep** `code-only` · 30min
+  Audit Fase 4 (M4): janela <2s onde pause pode escapar 1-2 mensagens.
+  Adicionar re-check após `await sleep(...)` antes da próxima iteração.
+
+- [ ] **5.10 — Cache local do status pra reduzir reads** `code-only` · 30min
+  Audit Fase 4 (M1): pause check faz 1 read Firestore a cada 10 mensagens.
+  Em volume alto, vira custo. Cache com invalidação periódica.
+
+### Compliance / qualidade (sem prazo definido)
+
+- [ ] **5.11 — Opt-out automático com link de descadastro**
+- [ ] **5.12 — Compliance LGPD** (consentimento explícito antes de mandar)
+- [ ] **5.13 — Rate limit por business** (anti-abuse, hoje só por IP)
+- [ ] **5.14 — A/B testing de templates**
+- [ ] **5.15 — Métricas agregadas** (CTR, taxa de entrega, tempo médio até leitura)
+- [ ] **5.16 — Segmentação avançada** (UI completa para `Segment`)
