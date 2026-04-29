@@ -312,6 +312,15 @@ export interface BusinessSettings {
   noShowPolicy?: NoShowPolicy;
   /** Pipeline do CRM (estágios customizáveis) */
   crmPipeline?: CRMPipelineConfig;
+  /** SLA de conversas — tempo máximo de primeira resposta por prioridade */
+  conversationSLA?: {
+    enabled: boolean;
+    urgentMinutes: number;  // padrão: 30
+    highMinutes: number;    // padrão: 60
+    mediumMinutes: number;  // padrão: 240 (4h)
+    lowMinutes: number;     // padrão: 480 (8h)
+    warningPercent: number; // % de tempo restante para alertar (padrão: 20)
+  };
 }
 
 /** Estágio customizável do pipeline de leads */
@@ -1829,6 +1838,8 @@ export interface Conversation {
   labels?: string[];
   internalNotes?: number;
   tags?: string[];
+  firstResponseAt?: string;  // ISO — quando o primeiro msg outbound não-interna foi enviada
+  slaBreached?: boolean;     // true quando SLA venceu sem firstResponseAt
   createdAt: string;
   updatedAt: string;
   isDeleted?: boolean;

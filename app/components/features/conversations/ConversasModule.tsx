@@ -53,6 +53,7 @@ import {
   Video,
   RotateCcw,
   Lock,
+  Clock,
   StickyNote,
   Hash,
   Tag,
@@ -139,6 +140,146 @@ function isSameDay(a: string, b: string): boolean {
     da.getDate() === dateB.getDate() &&
     da.getMonth() === dateB.getMonth() &&
     da.getFullYear() === dateB.getFullYear()
+  );
+}
+
+// ─── SLA helpers ─────────────────────────────────────────────────────────────
+
+import type { BusinessSettings } from '@/lib/types';
+type ConvSLAConfig = NonNullable<BusinessSettings['conversationSLA']>;
+
+const SLA_DEFAULT_CONFIG: ConvSLAConfig = { enabled: false, urgentMinutes: 30, highMinutes: 60, mediumMinutes: 240, lowMinutes: 480, warningPercent: 20 };
+
+function getSLAMinutes(priority: string | undefined, cfg: ConvSLAConfig): number {
+  if (priority === 'urgent') return cfg.urgentMinutes;
+  if (priority === 'high') return cfg.highMinutes;
+  if (priority === 'low') return cfg.lowMinutes;
+  return cfg.mediumMinutes;
+}
+
+interface SLAInfo {
+  status: 'ok' | 'warning' | 'breached' | 'responded';
+  remainingMs: number;
+  totalMs: number;
+}
+
+function getSLAInfo(conv: Pick<Conversation, 'createdAt' | 'status' | 'priority' | 'firstResponseAt'>, cfg?: ConvSLAConfig): SLAInfo | null {
+  if (!cfg?.enabled || conv.status === 'resolved') return null;
+  const minutes = getSLAMinutes(conv.priority, cfg);
+  const totalMs = minutes * 60_000;
+  const deadlineMs = new Date(conv.createdAt).getTime() + totalMs;
+  if (conv.firstResponseAt) return { status: 'responded', remainingMs: 0, totalMs };
+  const remainingMs = deadlineMs - Date.now();
+  if (remainingMs <= 0) return { status: 'breached', remainingMs: 0, totalMs };
+  const pct = remainingMs / totalMs;
+  return { status: pct <= cfg.warningPercent / 100 ? 'warning' : 'ok', remainingMs, totalMs };
+}
+
+function formatSLARemaining(ms: number): string {
+  if (ms <= 0) return 'Vencido';
+  const mins = Math.ceil(ms / 60_000);
+  if (mins < 60) return `${mins}min`;
+  const h = Math.floor(mins / 60), m = mins % 60;
+  return m > 0 ? `${h}h${m}min` : `${h}h`;
+}
+
+// ─── SLA Settings Dialog ──────────────────────────────────────────────────────
+
+function SLASettingsDialog({ current, businessId, onClose, onSaved }: {
+  current?: ConvSLAConfig;
+  businessId: string;
+  onClose: () => void;
+  onSaved: (cfg: ConvSLAConfig) => void;
+}) {
+  const cfg = current ?? SLA_DEFAULT_CONFIG;
+  const [enabled, setEnabled] = useState(cfg.enabled);
+  const [urgent, setUrgent] = useState(cfg.urgentMinutes);
+  const [high, setHigh] = useState(cfg.highMinutes);
+  const [medium, setMedium] = useState(cfg.mediumMinutes);
+  const [low, setLow] = useState(cfg.lowMinutes);
+  const [warn, setWarn] = useState(cfg.warningPercent);
+  const [saving, setSaving] = useState(false);
+
+  const rows: { label: string; color: string; val: number; set: (v: number) => void }[] = [
+    { label: 'Urgente', color: 'text-red-600 dark:text-red-400', val: urgent, set: setUrgent },
+    { label: 'Alta', color: 'text-orange-600 dark:text-orange-400', val: high, set: setHigh },
+    { label: 'Média', color: 'text-amber-600 dark:text-amber-400', val: medium, set: setMedium },
+    { label: 'Baixa', color: 'text-blue-600 dark:text-blue-400', val: low, set: setLow },
+  ];
+
+  const handleSave = async () => {
+    setSaving(true);
+    const next: ConvSLAConfig = { enabled, urgentMinutes: urgent, highMinutes: high, mediumMinutes: medium, lowMinutes: low, warningPercent: warn };
+    try {
+      await updateDoc(doc(db, 'businesses', businessId), { 'settings.conversationSLA': next, updatedAt: new Date().toISOString() });
+      onSaved(next);
+      onClose();
+    } catch (err) {
+      console.error('[SLA] Save error:', err);
+      toast.error('Erro ao salvar configurações de SLA');
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <motion.div initial={{ opacity: 0, scale: 0.95, y: 8 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 8 }}
+        className="w-full max-w-sm bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
+              <Clock className="w-4 h-4 text-red-500" />
+            </div>
+            <div>
+              <h2 className="font-semibold text-sm text-gray-900 dark:text-white">Configurar SLA</h2>
+              <p className="text-[10px] text-gray-400">Tempo máximo de primeira resposta</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400"><X className="w-4 h-4" /></button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {/* Enable toggle */}
+          <label className="flex items-center justify-between cursor-pointer">
+            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Ativar SLA</span>
+            <button onClick={() => setEnabled(v => !v)}
+              className={cn('relative w-10 h-5.5 rounded-full transition-colors', enabled ? 'bg-red-500' : 'bg-gray-300 dark:bg-gray-600')} style={{ height: 22 }}>
+              <span className={cn('absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform', enabled ? 'translate-x-5' : 'translate-x-0.5')} />
+            </button>
+          </label>
+
+          {/* Per-priority minutes */}
+          <div className={cn('space-y-2.5 transition-opacity', !enabled && 'opacity-40 pointer-events-none')}>
+            {rows.map(row => (
+              <div key={row.label} className="flex items-center gap-3">
+                <span className={cn('text-xs font-semibold w-14 flex-shrink-0', row.color)}>{row.label}</span>
+                <input type="number" min={1} max={1440} value={row.val} onChange={e => row.set(Math.max(1, Number(e.target.value)))}
+                  className="w-20 text-xs border border-gray-200 dark:border-gray-700 rounded-lg px-2.5 py-1.5 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 focus:outline-none text-center" />
+                <span className="text-xs text-gray-400">min</span>
+                <span className="text-[10px] text-gray-400 ml-auto">
+                  {row.val < 60 ? `${row.val}min` : `${Math.floor(row.val / 60)}h${row.val % 60 > 0 ? `${row.val % 60}min` : ''}`}
+                </span>
+              </div>
+            ))}
+            <div className="flex items-center gap-3 pt-1 border-t border-gray-100 dark:border-gray-800">
+              <span className="text-xs text-gray-500 w-14 flex-shrink-0">Alertar em</span>
+              <input type="number" min={5} max={50} value={warn} onChange={e => setWarn(Math.max(5, Math.min(50, Number(e.target.value))))}
+                className="w-20 text-xs border border-gray-200 dark:border-gray-700 rounded-lg px-2.5 py-1.5 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 focus:outline-none text-center" />
+              <span className="text-xs text-gray-400">% restante</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex gap-2 px-5 pb-5">
+          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancelar</button>
+          <button onClick={handleSave} disabled={saving}
+            className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors disabled:opacity-50">
+            {saving ? 'Salvando...' : 'Salvar'}
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
   );
 }
 
@@ -273,9 +414,10 @@ interface ConversationItemProps {
   conversation: Conversation;
   isSelected: boolean;
   onClick: () => void;
+  slaInfo?: SLAInfo | null;
 }
 
-function ConversationItem({ conversation, isSelected, onClick }: ConversationItemProps) {
+function ConversationItem({ conversation, isSelected, onClick, slaInfo }: ConversationItemProps) {
   const { t } = useTranslation();
   const cfg = getConvConfig(conversation);
   const initials = getInitials(conversation.contactName);
@@ -353,6 +495,15 @@ function ConversationItem({ conversation, isSelected, onClick }: ConversationIte
             )}
             {conversation.lastMessage}
           </p>
+          {slaInfo && slaInfo.status !== 'ok' && slaInfo.status !== 'responded' && (
+            <span className={cn('flex-shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full',
+              slaInfo.status === 'breached'
+                ? 'bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-400'
+                : 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400'
+            )}>
+              {slaInfo.status === 'breached' ? 'VENC.' : formatSLARemaining(slaInfo.remainingMs)}
+            </span>
+          )}
           {conversation.unreadCount > 0 && (
             <span className="flex-shrink-0 min-w-[18px] h-[18px] rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center px-1">
               {conversation.unreadCount}
@@ -524,6 +675,7 @@ function ThreadHeader({
   onExport,
   aiEnabledBusinessWide,
   sectors: sectorsList,
+  slaInfo,
 }: {
   conversation: Conversation;
   onBack: () => void;
@@ -542,6 +694,7 @@ function ThreadHeader({
   onExport?: () => void;
   aiEnabledBusinessWide?: boolean;
   sectors?: Sector[];
+  slaInfo?: SLAInfo | null;
 }) {
   const { t } = useTranslation();
   const cfg = getConvConfig(conversation);
@@ -693,6 +846,22 @@ function ThreadHeader({
               <>
                 <span className="text-gray-300 dark:text-gray-600">·</span>
                 <Lock className="w-3 h-3 text-amber-500" />
+              </>
+            )}
+            {/* SLA chip */}
+            {slaInfo && slaInfo.status !== 'ok' && (
+              <>
+                <span className="text-gray-300 dark:text-gray-600">·</span>
+                <span className={cn('text-[10px] font-semibold px-1.5 py-0.5 rounded-full flex items-center gap-1',
+                  slaInfo.status === 'responded' && 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400',
+                  slaInfo.status === 'warning' && 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400',
+                  slaInfo.status === 'breached' && 'bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-400',
+                )}>
+                  <Clock className="w-2.5 h-2.5" />
+                  {slaInfo.status === 'responded' && 'SLA atendido'}
+                  {slaInfo.status === 'warning' && `${formatSLARemaining(slaInfo.remainingMs)} restantes`}
+                  {slaInfo.status === 'breached' && 'SLA vencido'}
+                </span>
               </>
             )}
           </div>
@@ -1986,6 +2155,22 @@ export default function ConversasModule() {
 
   const isPedidosMode = business?.settings?.useCase === 'pedidos';
   const aiAgentEnabled = !!business?.settings?.aiAgent?.enabled;
+
+  // ── SLA config ────────────────────────────────────────────────────────────
+  const [slaConfig, setSLAConfig] = useState<ConvSLAConfig>(
+    business?.settings?.conversationSLA ?? SLA_DEFAULT_CONFIG
+  );
+  useEffect(() => { setSLAConfig(business?.settings?.conversationSLA ?? SLA_DEFAULT_CONFIG); }, [business?.settings?.conversationSLA]);
+  const [showSLASettings, setShowSLASettings] = useState(false);
+
+  // Tick every 30s to refresh SLA countdowns without re-fetching data
+  const [slaTick, setSLATick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setSLATick(t => t + 1), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const notifiedBreachIdsRef = useRef<Set<string>>(new Set());
   const [agentDebugOpen, setAgentDebugOpen] = useState(false);
   const [linkContactOpen, setLinkContactOpen] = useState(false);
   const [clientsList, setClientsList] = useState<Client[]>([]);
@@ -2141,6 +2326,19 @@ export default function ConversasModule() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const isAdmin = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['admin'];
+
+  // ── SLA breach notifications ───────────────────────────────────────────────
+  useEffect(() => {
+    if (!slaConfig.enabled) return;
+    for (const conv of conversations) {
+      const info = getSLAInfo(conv, slaConfig);
+      if (info?.status === 'breached' && !notifiedBreachIdsRef.current.has(conv.id)) {
+        notifiedBreachIdsRef.current.add(conv.id);
+        toast.warn(`⏱ SLA vencido: ${conv.contactName}`, { toastId: `sla-${conv.id}`, autoClose: 8000 });
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversations, slaTick, slaConfig.enabled]);
 
   // ── Real-time: Conversations list ──────────────────────────────────────────
 
@@ -2435,12 +2633,13 @@ export default function ConversasModule() {
           sentAt: now,
         });
 
-        // 2. Update conversation metadata
+        // 2. Update conversation metadata (set firstResponseAt if this is the first reply)
         await updateDoc(doc(db, 'conversations', selectedConversation.id), {
           lastMessage: `[Template: ${templateName}]`,
           lastMessageAt: now,
           lastMessageDirection: 'outbound',
           updatedAt: now,
+          ...(!selectedConversation.firstResponseAt ? { firstResponseAt: now } : {}),
         });
 
         // 3. Send via API as template
@@ -2781,12 +2980,13 @@ export default function ConversasModule() {
           sentAt: now,
         });
 
-        // 2. Update conversation metadata
+        // 2. Update conversation metadata (set firstResponseAt if this is the first reply)
         await updateDoc(doc(db, 'conversations', selectedConversation.id), {
           lastMessage: content,
           lastMessageAt: now,
           lastMessageDirection: 'outbound',
           updatedAt: now,
+          ...(!selectedConversation.firstResponseAt ? { firstResponseAt: now } : {}),
         });
 
         // 3. Send via Meta API — pass messageDocId so backend updates sending → sent
@@ -2987,6 +3187,18 @@ export default function ConversasModule() {
                 </div>
               </div>
               <div className="flex items-center gap-1.5">
+                {isAdmin && (
+                  <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+                    onClick={() => setShowSLASettings(true)}
+                    title="Configurar SLA"
+                    className={cn('w-8 h-8 rounded-xl flex items-center justify-center transition-colors',
+                      slaConfig.enabled
+                        ? 'bg-red-50 dark:bg-red-500/10 text-red-500 dark:text-red-400'
+                        : 'bg-gray-100 dark:bg-white/[0.06] text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                    )}>
+                    <Clock className="w-4 h-4" />
+                  </motion.button>
+                )}
                 <motion.button
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
@@ -3151,6 +3363,7 @@ export default function ConversasModule() {
                         conversation={conv}
                         isSelected={selectedConversation?.id === conv.id}
                         onClick={() => handleSelectConversation(conv)}
+                        slaInfo={getSLAInfo(conv, slaConfig)}
                       />
                     </motion.div>
                   ))
@@ -3261,6 +3474,7 @@ export default function ConversasModule() {
                   onExport={() => handleExportHistory(selectedConversation)}
                   aiEnabledBusinessWide={aiAgentEnabled}
                   sectors={sectors}
+                  slaInfo={getSLAInfo(selectedConversation, slaConfig)}
                 />
 
                 {/* Messages area */}
@@ -3496,6 +3710,14 @@ export default function ConversasModule() {
       {/* Settings Dialog */}
       <AnimatePresence>
         {showSettings && <IntegrationSettingsDialog onClose={() => setShowSettings(false)} />}
+        {showSLASettings && isAdmin && business?.id && (
+          <SLASettingsDialog
+            current={slaConfig}
+            businessId={business.id}
+            onClose={() => setShowSLASettings(false)}
+            onSaved={cfg => setSLAConfig(cfg)}
+          />
+        )}
       </AnimatePresence>
 
       {/* Link Contact Drawer */}
