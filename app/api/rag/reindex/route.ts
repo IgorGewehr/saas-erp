@@ -14,7 +14,7 @@
 
 import { NextResponse, type NextRequest } from 'next/server';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
-import { reindexAll, reindexProducts, reindexServices, reindexSnippets, reindexBusinessDesc, type ReindexStats } from '@/lib/rag/reindex';
+import { reindexAll, reindexProducts, reindexServices, reindexSnippets, reindexBusinessDesc, reindexPolicies, type ReindexStats } from '@/lib/rag/reindex';
 
 const ROLE_HIERARCHY: Record<string, number> = {
   founder: 100, admin: 80, manager: 60, operator: 40, viewer: 20,
@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'Role forbidden — admin or higher required' }, { status: 403 });
   }
 
-  let body: { scope?: 'all' | 'products' | 'services' | 'snippets' | 'business_desc' } = {};
+  let body: { scope?: 'all' | 'products' | 'services' | 'snippets' | 'business_desc' | 'policy' } = {};
   try {
     body = await req.json();
   } catch { /* allow empty body — defaults to all */ }
@@ -44,6 +44,7 @@ export async function POST(req: NextRequest) {
       case 'services':       stats = [await reindexServices(businessId)]; break;
       case 'snippets':       stats = [await reindexSnippets(businessId)]; break;
       case 'business_desc':  stats = [await reindexBusinessDesc(businessId)]; break;
+      case 'policy':         stats = [await reindexPolicies(businessId)]; break;
       case 'all':
       default:               stats = await reindexAll(businessId); break;
     }

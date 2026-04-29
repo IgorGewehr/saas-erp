@@ -3571,11 +3571,17 @@ function IntegrationRow({
 // VaultTab is defined in SenhasModule and imported above.
 
 function KnowledgeReindexPanel() {
+  const { business, refreshUser } = useAuth();
   const [isRunning, setIsRunning] = useState(false);
   const [result, setResult] = useState<{ upserted: number; skipped: number; pruned: number; errors: number; totalDurationMs: number } | null>(null);
-  const [lastRunAt, setLastRunAt] = useState<string | null>(null);
+
+  const lastReindexAt = business?.settings?.aiAgent?.lastReindexAt ?? null;
+  const lastRunLabel = lastReindexAt
+    ? new Date(lastReindexAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : null;
 
   const run = async () => {
+    if (!business?.id) return;
     setIsRunning(true);
     setResult(null);
     try {
@@ -3595,7 +3601,11 @@ function KnowledgeReindexPanel() {
         errors: data.data.summary.errors,
         totalDurationMs: data.data.totalDurationMs,
       });
-      setLastRunAt(new Date().toLocaleString('pt-BR'));
+      // Persist timestamp so it survives page reload
+      await updateDoc(doc(db, 'businesses', business.id), {
+        'settings.aiAgent.lastReindexAt': new Date().toISOString(),
+      });
+      await refreshUser();
       toast.success(`Reindex concluído — ${data.data.summary.upserted} novos, ${data.data.summary.skipped} inalterados`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Erro no reindex');
@@ -3608,12 +3618,13 @@ function KnowledgeReindexPanel() {
     <div className="space-y-3">
       <div>
         <p className="text-sm text-gray-700 dark:text-gray-300">
-          A base de conhecimento indexa produtos, serviços, snippets e a descrição do negócio
+          A base de conhecimento indexa produtos, serviços, snippets, políticas e a descrição do negócio
           para buscas semânticas. O agente usa para responder perguntas como
           <em> &ldquo;vocês têm opções veganas?&rdquo;</em> ou <em>&ldquo;qual a política de cancelamento?&rdquo;</em>
         </p>
         <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-          Chunks que não mudaram são pulados automaticamente (content-hash). Custo típico ~$0,02/reindex completo.
+          Descrição e políticas são re-indexadas automaticamente ao salvar. Produtos, serviços e snippets exigem reindex manual ou será agendado a cada 6h.
+          Chunks inalterados são pulados (content-hash). Custo típico ~$0,02/reindex completo.
         </p>
       </div>
       <div className="flex items-center gap-3">
@@ -3625,9 +3636,9 @@ function KnowledgeReindexPanel() {
           {isRunning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
           {isRunning ? 'Indexando...' : 'Reindexar base agora'}
         </button>
-        {lastRunAt && (
+        {lastRunLabel && (
           <span className="text-xs text-gray-500 dark:text-gray-400">
-            Último: {lastRunAt}
+            Último: {lastRunLabel}
           </span>
         )}
       </div>
@@ -3781,6 +3792,20 @@ function AgenteTab() {
       await updateDoc(doc(db, 'businesses', business.id), payload);
       await refreshUser();
       toast.success('Configurações do agente salvas!');
+
+      // Fire-and-forget reindex for description + policies — no need to await
+      firebaseAuth.currentUser?.getIdToken().then((token) => {
+        if (!token) return;
+        const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+        Promise.all([
+          fetch('/api/rag/reindex', { method: 'POST', headers, body: JSON.stringify({ scope: 'business_desc' }) }),
+          fetch('/api/rag/reindex', { method: 'POST', headers, body: JSON.stringify({ scope: 'policy' }) }),
+        ]).then(() => {
+          updateDoc(doc(db, 'businesses', business.id), {
+            'settings.aiAgent.lastReindexAt': new Date().toISOString(),
+          }).catch(() => null);
+        }).catch(() => null);
+      }).catch(() => null);
     } catch (err) {
       console.error('[AI Agent Settings] Save failed:', err);
       toast.error('Erro ao salvar');

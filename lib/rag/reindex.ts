@@ -3,13 +3,15 @@
  *
  * Invoked:
  *   - Manually via admin endpoint /api/rag/reindex (Wave 3 MVP)
+ *   - Auto-triggered (fire-and-forget) after AgenteTab save for business_desc + policy
  *   - On write via Firestore trigger (future — cloud function)
  *
  * Sources indexed:
- *   - products  → name + menuCategory + description + dietary
- *   - services  → name + category + description
- *   - snippets  → shortcode + content
+ *   - products       → name + menuCategory + description + dietary
+ *   - services       → name + category + description
+ *   - snippets       → shortcode + content
  *   - business_desc  → single chunk from settings.aiAgent.businessDescription
+ *   - policy         → cancellation + refund + privacy from settings.aiAgent.policies
  *
  * The returned stats are useful for the UI reindex button.
  */
@@ -33,6 +35,7 @@ export async function reindexAll(businessId: string): Promise<ReindexStats[]> {
   stats.push(await reindexServices(businessId));
   stats.push(await reindexSnippets(businessId));
   stats.push(await reindexBusinessDesc(businessId));
+  stats.push(await reindexPolicies(businessId));
   return stats;
 }
 
@@ -188,6 +191,53 @@ export async function reindexBusinessDesc(businessId: string): Promise<ReindexSt
   } catch {
     return { source: 'business_desc', upserted: 0, pruned: 0, skipped: 0, errors: 1, durationMs: Date.now() - t0 };
   }
+}
+
+export async function reindexPolicies(businessId: string): Promise<ReindexStats> {
+  const t0 = Date.now();
+  const snap = await adminDb.collection('businesses').doc(businessId).get();
+  if (!snap.exists) return { source: 'policy', upserted: 0, pruned: 0, skipped: 0, errors: 0, durationMs: Date.now() - t0 };
+
+  const biz = snap.data() as Business;
+  const policies = biz.settings?.aiAgent?.policies;
+
+  // Build a single chunk per policy kind so the agent can filter by sourceId
+  const entries: Array<{ sourceId: string; label: string; text: string | undefined }> = [
+    { sourceId: 'cancellation', label: 'Política de cancelamento', text: policies?.cancellation?.trim() },
+    { sourceId: 'refund',       label: 'Política de reembolso/estorno', text: policies?.refund?.trim() },
+    { sourceId: 'privacy',      label: 'Política de privacidade (LGPD)', text: policies?.privacy?.trim() },
+  ];
+
+  const activeIds = new Set<string>();
+  let upserted = 0;
+  let skipped = 0;
+  let errors = 0;
+
+  for (const entry of entries) {
+    if (!entry.text) continue;
+    activeIds.add(entry.sourceId);
+    try {
+      const before = Date.now();
+      const chunk = await upsertChunk({
+        businessId,
+        source: 'policy',
+        sourceId: entry.sourceId,
+        text: `${entry.label}: ${entry.text}`,
+        metadata: { kind: entry.sourceId },
+      });
+      if (Date.now() - new Date(chunk.updatedAt).getTime() < 1500 && chunk.updatedAt >= new Date(before).toISOString()) {
+        upserted += 1;
+      } else {
+        skipped += 1;
+      }
+    } catch (err) {
+      console.warn('[reindex.policies] error', entry.sourceId, (err as Error).message);
+      errors += 1;
+    }
+  }
+
+  const pruned = await pruneOrphans(businessId, 'policy', activeIds);
+  return { source: 'policy', upserted, pruned, skipped, errors, durationMs: Date.now() - t0 };
 }
 
 // ─── Text builders ───────────────────────────────────────────────────────────

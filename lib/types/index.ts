@@ -385,6 +385,9 @@ export interface AiAgentSettings {
     suggestion: string;
     isActive: boolean;
   }>;
+
+  /** ISO timestamp of last successful knowledgeChunks reindex. Persisted to Firestore. */
+  lastReindexAt?: string;
 }
 
 // ---- Fiscal Configuration ----
