@@ -15,7 +15,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { collection, query, where, orderBy, onSnapshot, limit as firestoreLimit } from 'firebase/firestore';
+import { collection, doc, query, where, orderBy, onSnapshot, limit as firestoreLimit } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 import { db } from '@/lib/config/firebase';
 import { toast } from 'react-toastify';
@@ -37,11 +37,26 @@ interface Props {
   onRetryCreated?: (newBroadcastId: string) => void;
 }
 
-export default function BroadcastDetailDialog({ broadcast, onClose, onRetryCreated }: Props) {
+export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onClose, onRetryCreated }: Props) {
+  // Real-time do próprio broadcast doc — prop inicial é só seed.
+  // Sem isso, status/recipients ficam stale após dispatch/resume e UI mostra
+  // botões errados (ex: "Disparar agora" após envio bem-sucedido).
+  const [broadcast, setBroadcast] = useState<Broadcast>(initialBroadcast);
   const [messages, setMessages] = useState<BroadcastMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<BroadcastMessageStatus | 'all'>('all');
   const [retrying, setRetrying] = useState(false);
+
+  // Listener do broadcast doc (sincroniza status, recipients, stats)
+  useEffect(() => {
+    const ref = doc(db, 'broadcasts', initialBroadcast.id);
+    const unsub = onSnapshot(ref, (snap) => {
+      if (snap.exists()) {
+        setBroadcast({ ...(snap.data() as Broadcast), id: snap.id });
+      }
+    });
+    return () => unsub();
+  }, [initialBroadcast.id]);
 
   // Real-time listener das mensagens deste broadcast (limit 500 — UI prática para listas grandes)
   useEffect(() => {
@@ -80,7 +95,7 @@ export default function BroadcastDetailDialog({ broadcast, onClose, onRetryCreat
   const pendingCount = counts.pending ?? 0;
   const [dispatching, setDispatching] = useState(false);
   const [resuming, setResuming] = useState(false);
-  const canDispatch = broadcast.status === 'draft';
+  const canDispatch = broadcast.status === 'draft' && (broadcast.recipients?.length ?? 0) > 0;
   const canResume = broadcast.status === 'paused' && pendingCount > 0;
 
   const handleDispatch = async () => {
@@ -137,11 +152,13 @@ export default function BroadcastDetailDialog({ broadcast, onClose, onRetryCreat
       const prepData = await prepRes.json();
       if (!prepRes.ok) throw new Error(prepData.error || `HTTP ${prepRes.status}`);
 
-      // Passo 2: dispara o envio. Não usa broadcast.recipients direto pois o
-      // doc local pode estar stale — o resume endpoint já gravou os pendentes.
-      // Lê do prepData ou re-busca; aqui usamos os pendentes que estavam no doc
-      // local (mais robusto pra evitar race).
-      const recipients = (prepData.recipients as Array<Record<string, unknown>>) ?? broadcast.recipients ?? [];
+      // Passo 2: dispara o envio. Usa SEMPRE os recipients retornados pelo resume
+      // endpoint (não o broadcast.recipients local, que poderia estar stale).
+      const recipients = prepData.recipients as Array<Record<string, unknown>> | undefined;
+      if (!Array.isArray(recipients) || recipients.length === 0) {
+        toast.warn('Nenhum recipiente pendente para retomar.');
+        return;
+      }
       const sendBody: Record<string, unknown> = {
         businessId: broadcast.businessId,
         broadcastId: broadcast.id,

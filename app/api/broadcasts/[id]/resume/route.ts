@@ -22,7 +22,7 @@ import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import type { Broadcast, BroadcastMessage, BroadcastRecipient, UserRole } from '@/lib/types';
 
-const MAX_PENDING_TO_RESUME = 5000;
+const MAX_PENDING_TO_RESUME = 10_000;
 const FIRESTORE_BATCH_LIMIT = 400;
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
@@ -76,15 +76,22 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       .limit(MAX_PENDING_TO_RESUME)
       .get();
 
+    // Idempotência: se não há pendentes, é provável que o resume já rodou.
+    // Em vez de erro, retorna sucesso vazio — UI lida graciosamente.
     if (pendingSnap.empty) {
       return NextResponse.json({
-        error: 'Não há mensagens pendentes para retomar',
-      }, { status: 400 });
+        success: true,
+        pendingCount: 0,
+        recipients: [],
+        message: 'Sem mensagens pendentes — broadcast já foi totalmente processado.',
+      });
     }
 
+    const truncated = pendingSnap.size === MAX_PENDING_TO_RESUME;
+
     // Reconstrói recipients dos pending docs
-    const recipients: BroadcastRecipient[] = pendingSnap.docs.map(doc => {
-      const m = doc.data() as BroadcastMessage;
+    const recipients: BroadcastRecipient[] = pendingSnap.docs.map(d => {
+      const m = d.data() as BroadcastMessage;
       const r: BroadcastRecipient = {};
       if (m.contactId) r.contactId = m.contactId;
       if (m.contactName) r.name = m.contactName;
@@ -93,24 +100,17 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       return r;
     });
 
-    // Deleta pending docs em batches (serão recriados no próximo dispatch)
-    for (let i = 0; i < pendingSnap.docs.length; i += FIRESTORE_BATCH_LIMIT) {
-      const batch = adminDb.batch();
-      const slice = pendingSnap.docs.slice(i, i + FIRESTORE_BATCH_LIMIT);
-      for (const doc of slice) batch.delete(doc.ref);
-      await batch.commit();
-    }
-
-    // Reseta broadcast para 'draft' com novo recipient set + limpa stats parciais
-    // (sent/failed do envio anterior são preservados implicitamente nos broadcastMessages
-    // que NÃO eram pending — esses docs ficam como histórico)
+    // ORDEM: update do broadcast PRIMEIRO, deletes depois.
+    // Se o update falhar, abortamos sem mexer nos pending docs (recoverable).
+    // Se update succeed mas delete falhar parcialmente, os pendentes restantes
+    // serão limpos no próximo resume (idempotente — encontrará pendentes restantes).
     const now = new Date().toISOString();
     const { FieldValue } = await import('firebase-admin/firestore');
     await broadcastRef.update({
       status: 'draft',
       recipients,
       'stats.total': recipients.length,
-      // Reseta sent/failed do agregado — vai ser recontado no próximo dispatch
+      // Stats agregadas resetam — broadcastMessages mantém histórico real
       'stats.sent': 0,
       'stats.failed': 0,
       startedAt: FieldValue.delete(),
@@ -118,11 +118,31 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       updatedAt: now,
     });
 
+    // Deleta pending docs em batches (serão recriados no próximo dispatch).
+    // Best-effort: erros aqui não bloqueiam — orfãos serão cleanup no próximo resume.
+    let deletedCount = 0;
+    for (let i = 0; i < pendingSnap.docs.length; i += FIRESTORE_BATCH_LIMIT) {
+      const batch = adminDb.batch();
+      const slice = pendingSnap.docs.slice(i, i + FIRESTORE_BATCH_LIMIT);
+      for (const d of slice) batch.delete(d.ref);
+      try {
+        await batch.commit();
+        deletedCount += slice.length;
+      } catch (delErr) {
+        console.error('[Broadcast resume] Failed to delete pending batch:', delErr);
+        break; // para evitar pilha de erros; restante limpa no próximo resume
+      }
+    }
+
     return NextResponse.json({
       success: true,
       pendingCount: recipients.length,
+      deletedCount,
+      truncated, // true se hit MAX_PENDING_TO_RESUME — UI deve avisar
       recipients,
-      message: `${recipients.length} contato(s) prontos para retomada.`,
+      message: truncated
+        ? `${recipients.length} contato(s) prontos. Há mais pendentes — execute "Retomar" novamente após este dispatch.`
+        : `${recipients.length} contato(s) prontos para retomada.`,
     });
   } catch (err) {
     console.error('[Broadcast resume] Error:', err);
