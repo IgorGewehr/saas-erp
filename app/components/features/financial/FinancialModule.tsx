@@ -6730,7 +6730,7 @@ function RecurringContent({
                           className="flex-1 text-xs px-2.5 py-1.5 rounded-lg border border-violet-200 dark:border-violet-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 focus:outline-none focus:border-violet-400 dark:focus:border-violet-500"
                         />
                       </div>
-                      {adjustValue && parseFloat(adjustValue) > 0 && (
+                      {adjustValue && (adjustMode === 'pct' ? parseFloat(adjustValue) !== 0 : parseFloat(adjustValue) > 0) && (
                         <span className="text-[11px] text-slate-500 dark:text-gray-400 shrink-0">
                           → {formatCurrency(adjustMode === 'pct' ? tx.amount * (1 + parseFloat(adjustValue) / 100) : parseFloat(adjustValue))}
                         </span>
@@ -6758,7 +6758,7 @@ function RecurringContent({
                 {historyExpandedId === tx.id && (tx.recurrence?.history?.length ?? 0) > 0 && (
                   <div className="mt-3 p-3 rounded-xl bg-slate-50 dark:bg-gray-800/50 border border-slate-200 dark:border-gray-700 space-y-1.5">
                     <p className="text-[10px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider mb-2">Histórico de pagamentos</p>
-                    {[...(tx.recurrence!.history!)].reverse().map((entry, i) => (
+                    {[...(tx.recurrence?.history ?? [])].reverse().map((entry, i) => (
                       <div key={i} className="flex items-center justify-between text-xs">
                         <div className="flex items-center gap-2">
                           <CheckCircle2 size={12} className="text-emerald-500 shrink-0" />
