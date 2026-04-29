@@ -262,13 +262,20 @@ por prioridade (mais crítico → menos crítico). Marcar `[x]` quando entregar.
   Campo já existe no tipo `Broadcast.scheduledAt`. Falta cron worker que olha
   campanhas com `status='scheduled'` e dispara quando chegar a hora.
 
-- [ ] **5.5 — Listas reusáveis (`BroadcastList` collection)** `code-only` · 3h
-  Salvar uma lista importada como reusável. Coleção nova, UI em CRM com
-  CRUD de listas. Útil para campanhas recorrentes.
+- [x] **5.5 — Listas reusáveis (`BroadcastList` collection)** `code-only` · 3h ✅
+  Coleção `broadcastLists` + endpoints `/api/broadcast-lists` (GET/POST) e
+  `/api/broadcast-lists/[id]` (DELETE). Tipo derivado (`phone` | `email` | `mixed`)
+  filtra listas compatíveis com canal escolhido. UI em "Nova Campanha" mostra
+  Select de listas existentes + checkbox "Salvar como lista reusável" abaixo
+  do `RecipientListInput`. Auto-limpa lista carregada ao trocar de canal
+  incompatível.
 
-- [ ] **5.6 — Editor rich-text para corpo de email** `code-only` · 2-3h
-  Hoje é textarea. Substituir por editor (ex: TipTap, Lexical) com formatação
-  básica e preview HTML.
+- [x] **5.6 — Editor rich-text para corpo de email** `code-only` · 2-3h ✅
+  Componente `EmailBodyEditor` (contenteditable + execCommand) sem dependência
+  externa. Toolbar: bold/italic/underline/listas/link/limpar/ver-código. Output
+  HTML sanitizado via allowlist (P/BR/B/STRONG/I/EM/U/UL/OL/LI/A/DIV/SPAN);
+  href normalizado p/ http(s)/mailto/tel; protocolos suspeitos viram URLs
+  inertes. Paste é sanitizado. Substitui o `TextField` quando `channel='email'`.
 
 ### Baixo / refinamento
 

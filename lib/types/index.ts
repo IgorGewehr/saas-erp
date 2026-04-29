@@ -2453,6 +2453,31 @@ export interface BroadcastMessage {
   createdAt: string;
 }
 
+/**
+ * Lista de recipientes salva e reusável em campanhas futuras.
+ * Útil quando o usuário quer reaproveitar a mesma lista (ex: clientes inativos,
+ * leads de webinar) sem precisar colar/importar a cada nova campanha.
+ *
+ * Tipo (`phone` | `email` | `mixed`) é derivado do conteúdo na criação para
+ * permitir filtrar listas compatíveis com o canal escolhido na UI.
+ */
+export type BroadcastListType = 'phone' | 'email' | 'mixed';
+
+export interface BroadcastList {
+  id: string;
+  businessId: string;
+  name: string;
+  description?: string;
+  type: BroadcastListType;
+  recipients: BroadcastRecipient[];
+  /** Cache do tamanho — atualizado junto com `recipients`. */
+  recipientCount: number;
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export const LIFECYCLE_STAGE_LABELS: Record<LifecycleStage, string> = {
   new_lead: 'Novo Lead',
   contacted: 'Contatado',

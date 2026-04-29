@@ -32,7 +32,9 @@ import type {
   CRMContact, CRMDeal, CRMPipelineStage, CRMStageConfig, CRMPipelineConfig, CRMActivity, CRMActivityType,
   LeadStatus, LeadSource, User, Broadcast, BroadcastStatus, BroadcastRecipient, Client, ContactProfile, CRMAuditAction,
   Segment, SegmentFilter, SegmentFilterGroup, SegmentFilterOperator,
+  BroadcastList,
 } from '@/lib/types';
+import { getAuth } from 'firebase/auth';
 import { ROLE_HIERARCHY } from '@/lib/types';
 
 // ── Extracted sub-components ────────────────────────────────────────────────
@@ -48,6 +50,7 @@ import {
 import RecipientListInput from './RecipientListInput';
 import BroadcastDetailDialog from './BroadcastDetailDialog';
 import TemplateSelector, { type TemplateSelection, isTemplateSelectionValid } from './TemplateSelector';
+import EmailBodyEditor from './EmailBodyEditor';
 import { KanbanBoard } from './KanbanBoard';
 import { LeadTableView } from './LeadTableView';
 import { LeadDetailPanel } from './LeadDetailPanel';
@@ -1206,6 +1209,14 @@ function CampaignsTab({ businessId }: { businessId: string }) {
   const [formEmailSubject, setFormEmailSubject] = useState('');
   const [formScheduledAt, setFormScheduledAt] = useState(''); // datetime-local string ou ''
   const [saving, setSaving] = useState(false);
+  // ── Listas reusáveis (BroadcastList) ────────────────────────────────────────
+  // savedLists: cache local; selectedListId: lista carregada agora;
+  // saveAsList + listSaveName: persistir o set atual após criar a campanha.
+  const [savedLists, setSavedLists] = useState<BroadcastList[]>([]);
+  const [selectedListId, setSelectedListId] = useState<string>('');
+  const [saveAsList, setSaveAsList] = useState(false);
+  const [listSaveName, setListSaveName] = useState('');
+  const [recipientResetKey, setRecipientResetKey] = useState(0);
   const { user, business } = useAuth();
   // Detecta features disponíveis a partir de business.settings/channels
   type BusinessExtended = NonNullable<typeof business> & {
@@ -1222,6 +1233,27 @@ function CampaignsTab({ businessId }: { businessId: string }) {
     biz?.channels?.whatsappBaileys?.isConnected
     || (biz?.channels?.whatsapp?.connectedVia === 'baileys' && biz?.channels?.whatsapp?.isConnected)
   );
+
+  // Carrega listas reusáveis salvas (atualiza ao abrir o dialog de Nova Campanha)
+  const refreshSavedLists = useCallback(async () => {
+    if (!businessId) return;
+    try {
+      const token = await getAuth().currentUser?.getIdToken();
+      if (!token) return;
+      const res = await fetch(`/api/broadcast-lists?businessId=${encodeURIComponent(businessId)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setSavedLists(Array.isArray(data.lists) ? data.lists : []);
+    } catch (err) {
+      console.error('[CRM:Campaigns] Failed to load broadcast lists:', err);
+    }
+  }, [businessId]);
+
+  useEffect(() => {
+    if (showNew) refreshSavedLists();
+  }, [showNew, refreshSavedLists]);
 
   // Carrega clientes para o auto-link do RecipientListInput (cache compartilhado com pipeline tab)
   const { data: existingClients = [] } = useQuery<Client[]>({
@@ -1253,7 +1285,9 @@ function CampaignsTab({ businessId }: { businessId: string }) {
     // Email: nunca usa template, sempre texto livre + assunto
     if (formChannel === 'email') {
       if (!formEmailSubject.trim()) { toast.error('Digite o assunto do email.'); return; }
-      if (!formContent.trim()) { toast.error('Digite o corpo do email.'); return; }
+      // EmailBodyEditor produz HTML — validamos se há texto real, não só tags vazias.
+      const emailBodyText = formContent.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim();
+      if (!emailBodyText) { toast.error('Digite o corpo do email.'); return; }
     } else if (formChannel === 'whatsapp' && formViaBaileys) {
       // Baileys: sem template — só texto livre
       if (!formContent.trim()) { toast.error('Digite o conteúdo da mensagem.'); return; }
@@ -1335,6 +1369,42 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       // Remove undefineds em primeiro nível
       Object.keys(payload).forEach(k => payload[k] === undefined && delete payload[k]);
       await addDoc(collection(db, 'broadcasts'), payload);
+
+      // Salva lista reusável (best-effort — falha aqui não invalida a campanha já criada).
+      // Só roda quando audienceType=list, há recipientes e usuário marcou o checkbox
+      // sem ter usado uma lista pré-existente (evita duplicar a mesma lista).
+      if (
+        formAudienceType === 'list' &&
+        saveAsList &&
+        !selectedListId &&
+        cleanRecipients.length > 0 &&
+        listSaveName.trim()
+      ) {
+        try {
+          const token = await getAuth().currentUser?.getIdToken();
+          if (token) {
+            const res = await fetch('/api/broadcast-lists', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+              body: JSON.stringify({
+                businessId,
+                name: listSaveName.trim(),
+                recipients: cleanRecipients,
+              }),
+            });
+            if (res.ok) {
+              toast.success('Lista salva para reuso');
+            } else {
+              const err = await res.json().catch(() => ({}));
+              toast.error(`Lista não foi salva: ${err.error || 'erro desconhecido'}`);
+            }
+          }
+        } catch (err) {
+          console.error('[CRM:Campaigns] Failed to save broadcast list:', err);
+          toast.error('Lista não foi salva (campanha foi criada normalmente).');
+        }
+      }
+
       toast.success(t('crm.toast.campaignCreated', 'Campanha criada'));
       setShowNew(false);
       setFormName('');
@@ -1344,6 +1414,10 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       setFormEmailSubject('');
       setFormViaBaileys(false);
       setFormScheduledAt('');
+      setSelectedListId('');
+      setSaveAsList(false);
+      setListSaveName('');
+      setRecipientResetKey(k => k + 1);
     } catch (err) {
       console.error('[CRM:Campaigns] Error creating broadcast:', err);
       toast.error(t('crm.toast.errorCreateCampaign', 'Erro ao criar campanha'));
@@ -1376,6 +1450,31 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                 if (c === 'email') setFormMsgType('text');
                 // viaBaileys só faz sentido com whatsapp — limpa flag em outros canais
                 if (c !== 'whatsapp') setFormViaBaileys(false);
+                // Lista carregada pode virar incompatível ao trocar canal
+                // (ex: lista 'phone' selecionada e usuário muda para email).
+                // Limpa selectedListId + formRecipients quando incompatível.
+                const newDesiredType = c === 'email' ? 'email' : 'phone';
+                if (selectedListId) {
+                  const list = savedLists.find(l => l.id === selectedListId);
+                  if (list && list.type !== newDesiredType && list.type !== 'mixed') {
+                    setSelectedListId('');
+                    setFormRecipients([]);
+                    setRecipientResetKey(k => k + 1);
+                    toast.info(`Lista "${list.name}" não é compatível com canal ${c}. Selecione outra ou cole nova lista.`);
+                  }
+                }
+                // Mesmo sem lista, recipients colados manualmente podem ser do tipo errado
+                // (ex: colou phones, troca para email). Resetamos para evitar confusão.
+                if (formRecipients.length > 0 && !selectedListId) {
+                  const firstHasPhone = !!formRecipients[0].phoneNumber;
+                  const firstHasEmail = !!formRecipients[0].email;
+                  const incompatible = (newDesiredType === 'phone' && !firstHasPhone)
+                    || (newDesiredType === 'email' && !firstHasEmail);
+                  if (incompatible) {
+                    setFormRecipients([]);
+                    setRecipientResetKey(k => k + 1);
+                  }
+                }
               }}
             >
               <MenuItem value="whatsapp">WhatsApp</MenuItem>
@@ -1438,13 +1537,114 @@ function CampaignsTab({ businessId }: { businessId: string }) {
             </Select>
           </FormControl>
           {formAudienceType === 'tags' && <TextField label={t('crm.form.tags', 'Tags')} value={formTags} onChange={(e) => setFormTags(e.target.value)} fullWidth size="small" />}
-          {formAudienceType === 'list' && (
-            <RecipientListInput
-              mode={formChannel === 'email' ? 'email' : 'phone'}
-              onChange={(recipients) => setFormRecipients(recipients)}
-              existingClients={existingClients}
-            />
-          )}
+          {formAudienceType === 'list' && (() => {
+            const desiredType = formChannel === 'email' ? 'email' : 'phone';
+            // Filtra listas compatíveis com canal atual: 'mixed' serve para ambos.
+            const compatibleLists = savedLists.filter(l => l.type === desiredType || l.type === 'mixed');
+            const activeList = selectedListId ? savedLists.find(l => l.id === selectedListId) : null;
+            return (
+              <div className="space-y-3">
+                {compatibleLists.length > 0 && (
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Carregar lista salva</InputLabel>
+                    <Select
+                      value={selectedListId}
+                      label="Carregar lista salva"
+                      onChange={(e) => {
+                        const id = e.target.value as string;
+                        setSelectedListId(id);
+                        if (!id) {
+                          setFormRecipients([]);
+                          setRecipientResetKey(k => k + 1);
+                          return;
+                        }
+                        const list = savedLists.find(l => l.id === id);
+                        if (list) {
+                          // Filtra recipientes incompatíveis (lista mixed em canal phone só usa phone)
+                          const compatible = list.recipients.filter(r =>
+                            desiredType === 'phone' ? !!r.phoneNumber : !!r.email
+                          );
+                          setFormRecipients(compatible);
+                          if (compatible.length < list.recipients.length) {
+                            toast.info(`${list.recipients.length - compatible.length} recipiente(s) ignorados (incompatíveis com canal ${formChannel}).`);
+                          }
+                          // Pré-preenche checkbox como falso — já existe, não duplica
+                          setSaveAsList(false);
+                          setListSaveName('');
+                        }
+                      }}
+                    >
+                      <MenuItem value="">— nenhuma (digitar/colar abaixo) —</MenuItem>
+                      {compatibleLists.map(l => (
+                        <MenuItem key={l.id} value={l.id}>
+                          {l.name} ({l.recipientCount})
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                )}
+
+                {activeList ? (
+                  <div className="flex items-center justify-between gap-3 p-3 rounded-xl bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/20">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-blue-700 dark:text-blue-300 truncate">
+                        Usando lista: {activeList.name}
+                      </p>
+                      <p className="text-[11px] text-blue-600/80 dark:text-blue-400/80">
+                        {formRecipients.length} recipiente(s) · criada por {activeList.createdByName}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedListId('');
+                        setFormRecipients([]);
+                        setRecipientResetKey(k => k + 1);
+                      }}
+                      className="text-xs font-semibold text-blue-700 dark:text-blue-300 hover:underline whitespace-nowrap"
+                    >
+                      Trocar lista
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <RecipientListInput
+                      key={`recipient-input-${recipientResetKey}-${desiredType}`}
+                      mode={desiredType}
+                      onChange={(recipients) => setFormRecipients(recipients)}
+                      existingClients={existingClients}
+                    />
+                    {formRecipients.length > 0 && (
+                      <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3 space-y-2">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={saveAsList}
+                            onChange={(e) => setSaveAsList(e.target.checked)}
+                            className="w-4 h-4 rounded accent-red-600"
+                          />
+                          <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">
+                            Salvar como lista reusável
+                          </span>
+                        </label>
+                        {saveAsList && (
+                          <TextField
+                            label="Nome da lista"
+                            value={listSaveName}
+                            onChange={(e) => setListSaveName(e.target.value.slice(0, 120))}
+                            placeholder="Ex: Clientes inativos · jan/2026"
+                            fullWidth
+                            size="small"
+                            inputProps={{ maxLength: 120 }}
+                          />
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })()}
           {/* Tipo de mensagem aparece só para canais Meta sem Baileys.
               Email = sempre texto livre. Baileys = sempre texto livre (sem template). */}
           {formChannel !== 'email' && !(formChannel === 'whatsapp' && formViaBaileys) && (
@@ -1462,14 +1662,24 @@ function CampaignsTab({ businessId }: { businessId: string }) {
               sampleRecipient={formRecipients[0]}
               channel={formChannel}
             />
+          ) : formChannel === 'email' ? (
+            <div>
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">Corpo do email</p>
+              <EmailBodyEditor
+                value={formContent}
+                onChange={setFormContent}
+                placeholder="Escreva o corpo do email — use a barra de formatação para negrito, links e listas."
+                minRows={8}
+              />
+            </div>
           ) : (
             <TextField
-              label={formChannel === 'email' ? 'Corpo do email' : t('crm.form.content', 'Conteúdo')}
+              label={t('crm.form.content', 'Conteúdo')}
               value={formContent}
               onChange={(e) => setFormContent(e.target.value)}
               fullWidth
               multiline
-              rows={formChannel === 'email' ? 6 : 3}
+              rows={3}
               size="small"
             />
           )}
