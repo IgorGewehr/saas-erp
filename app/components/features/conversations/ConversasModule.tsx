@@ -447,25 +447,34 @@ function ConversationItem({ conversation, isSelected, onClick, slaInfo, batchMod
   const initials = getInitials(conversation.contactName);
 
   return (
-    <motion.button
+    <motion.div
       onClick={onClick}
+      role="button"
+      tabIndex={0}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
       whileHover={{ x: 2 }}
       transition={{ type: 'spring', stiffness: 400, damping: 25 }}
       className={cn(
-        'w-full text-left px-3 py-3 flex items-start gap-3 transition-colors duration-150 relative',
+        'w-full text-left px-3 py-3 flex items-start gap-3 transition-colors duration-150 relative cursor-pointer select-none',
         isSelected
           ? 'bg-red-50 dark:bg-red-500/[0.08] border-l-2 border-red-500'
           : 'border-l-2 border-transparent hover:bg-gray-50 dark:hover:bg-white/[0.03]',
       )}
     >
-      {/* Batch checkbox */}
+      {/* Batch checkbox — div para evitar button-dentro-de-button */}
       {batchMode && (
-        <button onClick={e => { e.stopPropagation(); onBatchToggle?.(); }}
-          className="flex-shrink-0 mt-0.5 text-gray-400 hover:text-red-500 transition-colors">
+        <div
+          role="checkbox"
+          aria-checked={isBatchSelected}
+          tabIndex={0}
+          onClick={e => { e.stopPropagation(); onBatchToggle?.(); }}
+          onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onBatchToggle?.(); } }}
+          className="flex-shrink-0 mt-0.5 text-gray-400 hover:text-red-500 transition-colors cursor-pointer"
+        >
           {isBatchSelected
             ? <CheckSquare className="w-5 h-5 text-red-500" />
             : <Square className="w-5 h-5" />}
-        </button>
+        </div>
       )}
 
       {/* Avatar */}
@@ -545,7 +554,7 @@ function ConversationItem({ conversation, isSelected, onClick, slaInfo, batchMod
           )}
         </div>
       </div>
-    </motion.button>
+    </motion.div>
   );
 }
 
