@@ -11,7 +11,7 @@ import {
   CheckCircle2, PhoneCall, Video, FileText, MessageCircle, BarChart3, Activity, Layers, Gauge,
   UserPlus, Briefcase, Tag, Hash, AlertTriangle, Heart, Shield, Zap, Brain,
   Sparkles, Filter, Crown, Settings2, GripVertical, Eye, EyeOff, ChevronUp, ChevronDown,
-  Download, Upload, GitBranch,
+  Download, Upload, GitBranch, LayoutList, LayoutDashboard,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -46,6 +46,7 @@ import {
   type CRMTab,
 } from './shared';
 import { KanbanBoard } from './KanbanBoard';
+import { LeadTableView } from './LeadTableView';
 import { LeadDetailPanel } from './LeadDetailPanel';
 import { ScheduleActionDialog } from './ScheduleActionDialog';
 import AutomacoesTab from './AutomacoesTab';
@@ -1776,6 +1777,14 @@ export default function CRMModule() {
   const stages = useMemo(() => getVisibleStages(pipelineConfig), [pipelineConfig]);
 
   const [activeTab, setActiveTab] = useState<CRMTab>('kanban');
+  const [pipelineView, setPipelineView] = useState<'kanban' | 'table'>(() => {
+    if (typeof window === 'undefined') return 'kanban';
+    return (localStorage.getItem('crm_pipeline_view') as 'kanban' | 'table') ?? 'kanban';
+  });
+  const handlePipelineView = (v: 'kanban' | 'table') => {
+    setPipelineView(v);
+    localStorage.setItem('crm_pipeline_view', v);
+  };
   const [selectedContact, setSelectedContact] = useState<CRMContact | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -2004,6 +2013,32 @@ export default function CRMModule() {
               </>
             )}
 
+            {/* Pipeline view toggle — only on kanban tab */}
+            {activeTab === 'kanban' && (
+              <div className="flex items-center gap-0.5 p-0.5 bg-gray-100 dark:bg-white/[0.06] rounded-xl">
+                <button
+                  onClick={() => handlePipelineView('kanban')}
+                  title="Visão Kanban"
+                  className={cn('p-1.5 rounded-[10px] transition-all',
+                    pipelineView === 'kanban'
+                      ? 'bg-white dark:bg-white/[0.12] text-gray-900 dark:text-white shadow-sm'
+                      : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300'
+                  )}>
+                  <LayoutDashboard size={15} />
+                </button>
+                <button
+                  onClick={() => handlePipelineView('table')}
+                  title="Visão Lista"
+                  className={cn('p-1.5 rounded-[10px] transition-all',
+                    pipelineView === 'table'
+                      ? 'bg-white dark:bg-white/[0.12] text-gray-900 dark:text-white shadow-sm'
+                      : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300'
+                  )}>
+                  <LayoutList size={15} />
+                </button>
+              </div>
+            )}
+
             {/* CSV Import/Export dropdown */}
             <div className="relative" ref={csvMenuRef}>
               <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
@@ -2115,7 +2150,7 @@ export default function CRMModule() {
             transition={{ duration: 0.18 }}
             className="flex-1 flex flex-col min-h-0 h-full">
 
-            {activeTab === 'kanban' && (
+            {activeTab === 'kanban' && pipelineView === 'kanban' && (
               <KanbanBoard contacts={contacts}
                 stages={stages}
                 onSelectContact={(c) => { setSelectedContact(c); setDetailOpen(true); }}
@@ -2123,6 +2158,18 @@ export default function CRMModule() {
                 onStatusChange={handleStatusChange}
                 onNewContact={() => { setEditingContact(null); setContactDialogOpen(true); }}
                 searchQuery={searchQuery} filterTags={filterTags} filterSource={filterSource} />
+            )}
+
+            {activeTab === 'kanban' && pipelineView === 'table' && (
+              <LeadTableView
+                contacts={contacts}
+                stages={stages}
+                searchQuery={searchQuery}
+                filterTags={filterTags}
+                filterSource={filterSource}
+                onSelectContact={(c) => { setSelectedContact(c); setDetailOpen(true); }}
+                selectedContactId={selectedContact?.id || null}
+              />
             )}
 
             {activeTab === 'atividades' && (
