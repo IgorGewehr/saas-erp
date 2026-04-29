@@ -11,6 +11,7 @@ import {
   CheckCircle2, PhoneCall, Video, FileText, MessageCircle, BarChart3, Activity, Layers, Gauge,
   UserPlus, Briefcase, Tag, Hash, AlertTriangle, Heart, Shield, Zap, Brain,
   Sparkles, Filter, Crown, Settings2, GripVertical, Eye, EyeOff, ChevronUp, ChevronDown,
+  Download, Upload,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -1398,6 +1399,301 @@ function PipelineSettingsModal({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CRM EXPORT CSV MODAL
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CRM_EXPORT_COLUMNS: { key: string; label: string }[] = [
+  { key: 'name', label: 'Nome' },
+  { key: 'email', label: 'E-mail' },
+  { key: 'phone', label: 'Telefone' },
+  { key: 'whatsapp', label: 'WhatsApp' },
+  { key: 'company', label: 'Empresa' },
+  { key: 'role', label: 'Cargo' },
+  { key: 'source', label: 'Origem' },
+  { key: 'stageName', label: 'Status' },
+  { key: 'score', label: 'Score' },
+  { key: 'tagsStr', label: 'Tags' },
+  { key: 'notes', label: 'Notas' },
+  { key: 'assignedToName', label: 'Responsável' },
+  { key: 'createdAt', label: 'Criado em' },
+];
+
+function CRMExportModal({ contacts, stages, onClose }: { contacts: CRMContact[]; stages: CRMStageConfig[]; onClose: () => void }) {
+  const [selected, setSelected] = useState<Set<string>>(new Set(CRM_EXPORT_COLUMNS.map(c => c.key)));
+
+  const toggle = (key: string) => setSelected(prev => {
+    const next = new Set(prev);
+    next.has(key) ? next.delete(key) : next.add(key);
+    return next;
+  });
+
+  const handleExport = () => {
+    const cols = CRM_EXPORT_COLUMNS.filter(c => selected.has(c.key));
+    const esc = (v: string) => (v.includes(';') || v.includes('"') || v.includes('\n')) ? `"${v.replace(/"/g, '""')}"` : v;
+    const header = cols.map(c => c.label).join(';');
+    const rows = contacts.map(c => cols.map(col => {
+      let val = '';
+      if (col.key === 'tagsStr') val = (c.tags ?? []).join(', ');
+      else if (col.key === 'stageName') val = getStageLabel(stages, c.status);
+      else if (col.key === 'source') val = SOURCE_LABELS[c.source] ?? c.source;
+      else val = String((c as unknown as Record<string, unknown>)[col.key] ?? '');
+      return esc(val);
+    }).join(';'));
+    const csv = '﻿' + [header, ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `crm_contatos_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    onClose();
+  };
+
+  return (
+    <Dialog open onClose={onClose} maxWidth="xs" fullWidth PaperProps={{ sx: { borderRadius: '16px' } }}>
+      <DialogTitle sx={{ pb: 1 }}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center"><Download size={18} className="text-white" /></div>
+            <span className="text-base font-display font-bold text-gray-900 dark:text-gray-100">Exportar Contatos</span>
+          </div>
+          <IconButton onClick={onClose} size="small"><X size={18} /></IconButton>
+        </div>
+      </DialogTitle>
+      <DialogContent sx={{ pt: '12px !important' }}>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">Selecione as colunas ({contacts.length} contatos)</p>
+        <div className="grid grid-cols-2 gap-2">
+          {CRM_EXPORT_COLUMNS.map(col => (
+            <label key={col.key} className={cn('flex items-center gap-2.5 p-2.5 rounded-lg border cursor-pointer transition-all text-sm',
+              selected.has(col.key)
+                ? 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-300 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-300'
+                : 'bg-gray-50 dark:bg-white/[0.04] border-gray-200 dark:border-gray-700 text-gray-500')}>
+              <input type="checkbox" checked={selected.has(col.key)} onChange={() => toggle(col.key)} className="w-3.5 h-3.5 accent-emerald-500" />
+              {col.label}
+            </label>
+          ))}
+        </div>
+      </DialogContent>
+      <DialogActions sx={{ px: 3, pb: 2.5, gap: 1 }}>
+        <Button onClick={onClose} variant="outlined" sx={{ borderRadius: '10px' }}>Cancelar</Button>
+        <Button onClick={handleExport} variant="contained" disabled={selected.size === 0}
+          sx={{ borderRadius: '10px', bgcolor: '#10b981', '&:hover': { bgcolor: '#059669' } }}>
+          Exportar CSV
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CRM IMPORT CSV MODAL
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CRM_IMPORT_FIELDS: { key: string; label: string; aliases: string[] }[] = [
+  { key: 'name', label: 'Nome', aliases: ['nome', 'name', 'contato'] },
+  { key: 'email', label: 'E-mail', aliases: ['email', 'e-mail'] },
+  { key: 'phone', label: 'Telefone', aliases: ['telefone', 'phone', 'tel', 'fone'] },
+  { key: 'whatsapp', label: 'WhatsApp', aliases: ['whatsapp', 'wpp', 'zap'] },
+  { key: 'company', label: 'Empresa', aliases: ['empresa', 'company'] },
+  { key: 'role', label: 'Cargo', aliases: ['cargo', 'role', 'função', 'funcao'] },
+  { key: 'source', label: 'Origem', aliases: ['origem', 'source', 'canal'] },
+  { key: 'status', label: 'Status', aliases: ['status', 'estagio', 'estágio', 'stage'] },
+  { key: 'score', label: 'Score', aliases: ['score', 'pontuação', 'pontuacao'] },
+  { key: 'tags', label: 'Tags', aliases: ['tags', 'etiquetas'] },
+  { key: 'notes', label: 'Notas', aliases: ['notas', 'notes', 'observações', 'obs'] },
+  { key: 'assignedToName', label: 'Responsável', aliases: ['responsavel', 'responsável', 'assigned'] },
+];
+
+const CRM_SOURCE_NORM: Record<string, LeadSource> = {
+  whatsapp: 'whatsapp', facebook: 'facebook', instagram: 'instagram', linkedin: 'linkedin',
+  indicacao: 'indicacao', indicação: 'indicacao', site: 'site', website: 'site',
+  google: 'google_ads', google_ads: 'google_ads', evento: 'evento', email: 'email',
+  telefone: 'telefone', outro: 'outro', other: 'outro',
+};
+
+const CRM_STATUS_NORM: Record<string, LeadStatus> = {
+  novo: 'novo', new: 'novo',
+  contatado: 'contatado', contato: 'contatado', contacted: 'contatado',
+  qualificado: 'qualificado', qualified: 'qualificado',
+  proposta: 'proposta', proposal: 'proposta',
+  negociacao: 'negociacao', negociação: 'negociacao', negotiation: 'negociacao',
+  ganho: 'ganho', fechado: 'ganho', won: 'ganho', closed: 'ganho',
+  perdido: 'perdido', lost: 'perdido',
+};
+
+function crmAutoMap(headers: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const h of headers) {
+    const hl = h.toLowerCase().trim();
+    out[h] = CRM_IMPORT_FIELDS.find(f => f.aliases.some(a => hl.includes(a)))?.key ?? '';
+  }
+  return out;
+}
+
+function CRMImportModal({ onClose, businessId, onImported }: { onClose: () => void; businessId: string; onImported: () => void }) {
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [rawData, setRawData] = useState<Record<string, string>[]>([]);
+  const [headers, setHeaders] = useState<string[]>([]);
+  const [mapping, setMapping] = useState<Record<string, string>>({});
+  const [importing, setImporting] = useState(false);
+  const [fileName, setFileName] = useState('');
+  const fileRef = React.useRef<HTMLInputElement>(null);
+
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileName(file.name);
+    import('papaparse').then(({ default: Papa }) => {
+      Papa.parse(file, {
+        header: true, skipEmptyLines: true,
+        complete: (result) => {
+          const data = result.data as Record<string, string>[];
+          const hdrs = result.meta.fields ?? [];
+          setRawData(data); setHeaders(hdrs); setMapping(crmAutoMap(hdrs)); setStep(2);
+        },
+      });
+    });
+  };
+
+  const handleImport = async () => {
+    setImporting(true);
+    const now = new Date().toISOString();
+    try {
+      let count = 0;
+      for (const row of rawData) {
+        const contact: Record<string, unknown> = { businessId, tipo: 'pf', createdAt: now, updatedAt: now, score: 0, status: 'novo' as LeadStatus, source: 'outro' as LeadSource };
+        for (const [header, fieldKey] of Object.entries(mapping)) {
+          if (!fieldKey) continue;
+          const raw = (row[header] ?? '').trim();
+          if (!raw) continue;
+          if (fieldKey === 'score') contact.score = Number(raw) || 0;
+          else if (fieldKey === 'tags') contact.tags = raw.split(',').map(t => t.trim()).filter(Boolean);
+          else if (fieldKey === 'source') contact.source = CRM_SOURCE_NORM[raw.toLowerCase()] ?? 'outro';
+          else if (fieldKey === 'status') contact.status = CRM_STATUS_NORM[raw.toLowerCase()] ?? 'novo';
+          else contact[fieldKey] = raw;
+        }
+        if (!contact.name) continue;
+        await addDoc(collection(db, 'clients'), contact);
+        count++;
+      }
+      toast.success(`${count} contato(s) importado(s) com sucesso!`);
+      onImported();
+      onClose();
+    } catch (err) {
+      console.error('[CRM] Import error:', err);
+      toast.error('Erro ao importar contatos');
+    } finally { setImporting(false); }
+  };
+
+  const preview = rawData.slice(0, 5);
+  const mappedHeaders = Object.entries(mapping).filter(([, v]) => v);
+
+  return (
+    <Dialog open onClose={onClose} maxWidth="md" fullWidth PaperProps={{ sx: { borderRadius: '16px' } }}>
+      <DialogTitle sx={{ pb: 1 }}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center"><Upload size={18} className="text-white" /></div>
+            <div>
+              <span className="text-base font-display font-bold text-gray-900 dark:text-gray-100">Importar Contatos</span>
+              <div className="flex items-center gap-1 mt-0.5">
+                {([1, 2, 3] as const).map((s, i) => (
+                  <React.Fragment key={s}>
+                    {i > 0 && <div className={cn('w-8 h-0.5 transition-colors', step > s - 1 ? 'bg-blue-400' : 'bg-gray-200 dark:bg-gray-700')} />}
+                    <div className={cn('w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold transition-colors',
+                      step > s ? 'bg-blue-500 text-white' : step === s ? 'bg-blue-500 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-400')}>
+                      {step > s ? '✓' : s}
+                    </div>
+                  </React.Fragment>
+                ))}
+                <span className="text-xs text-gray-400 ml-1">{step === 1 ? 'Upload' : step === 2 ? 'Mapeamento' : 'Confirmar'}</span>
+              </div>
+            </div>
+          </div>
+          <IconButton onClick={onClose} size="small"><X size={18} /></IconButton>
+        </div>
+      </DialogTitle>
+
+      <DialogContent sx={{ pt: '12px !important' }}>
+        {step === 1 && (
+          <div className="flex flex-col items-center justify-center py-12 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-xl cursor-pointer hover:border-blue-400 transition-colors"
+            onClick={() => fileRef.current?.click()}>
+            <Upload size={36} className="text-gray-300 dark:text-gray-600 mb-3" />
+            <p className="font-semibold text-gray-700 dark:text-gray-300 text-sm">Clique para selecionar um arquivo CSV</p>
+            <p className="text-xs text-gray-400 mt-1">Separador: vírgula ou ponto-e-vírgula</p>
+            <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={handleFile} />
+          </div>
+        )}
+
+        {step === 2 && (
+          <div className="space-y-3">
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              <span className="font-medium text-gray-700 dark:text-gray-300">{fileName}</span> — {rawData.length} linha(s). Mapeie as colunas:
+            </p>
+            <div className="grid grid-cols-2 gap-2 max-h-72 overflow-y-auto pr-1">
+              {headers.map(h => (
+                <div key={h} className="flex items-center gap-2 p-2.5 bg-gray-50 dark:bg-white/[0.04] rounded-lg border border-gray-100 dark:border-gray-700">
+                  <span className="text-xs font-mono text-gray-500 flex-1 truncate" title={h}>{h}</span>
+                  <span className="text-gray-300 text-xs">→</span>
+                  <select value={mapping[h] ?? ''} onChange={e => setMapping(prev => ({ ...prev, [h]: e.target.value }))}
+                    className="text-xs border border-gray-200 dark:border-gray-600 rounded-lg px-2 py-1.5 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-1 focus:ring-blue-400">
+                    <option value="">— Ignorar —</option>
+                    {CRM_IMPORT_FIELDS.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
+                  </select>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {step === 3 && (
+          <div>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
+              Prévia dos primeiros {Math.min(5, rawData.length)} de {rawData.length} contatos:
+            </p>
+            <div className="overflow-x-auto rounded-xl border border-gray-100 dark:border-gray-700">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-gray-50 dark:bg-white/[0.04]">
+                    {mappedHeaders.map(([h]) => <th key={h} className="px-3 py-2 text-left font-semibold text-gray-500 whitespace-nowrap">{h}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {preview.map((row, i) => (
+                    <tr key={i} className="border-t border-gray-100 dark:border-gray-800">
+                      {mappedHeaders.map(([h]) => <td key={h} className="px-3 py-2 text-gray-600 dark:text-gray-400 max-w-[140px] truncate">{row[h] ?? ''}</td>)}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </DialogContent>
+
+      <DialogActions sx={{ px: 3, pb: 2.5, gap: 1 }}>
+        <Button onClick={onClose} variant="outlined" sx={{ borderRadius: '10px' }}>Cancelar</Button>
+        {step === 2 && <>
+          <Button onClick={() => setStep(1)} variant="outlined" sx={{ borderRadius: '10px' }}>Voltar</Button>
+          <Button onClick={() => setStep(3)} disabled={!Object.values(mapping).some(v => v === 'name')}
+            variant="contained" sx={{ borderRadius: '10px', bgcolor: '#3b82f6', '&:hover': { bgcolor: '#2563eb' } }}>
+            Avançar
+          </Button>
+        </>}
+        {step === 3 && <>
+          <Button onClick={() => setStep(2)} variant="outlined" sx={{ borderRadius: '10px' }}>Voltar</Button>
+          <Button onClick={handleImport} variant="contained" disabled={importing}
+            sx={{ borderRadius: '10px', bgcolor: '#3b82f6', '&:hover': { bgcolor: '#2563eb' } }}>
+            {importing ? 'Importando...' : `Importar ${rawData.length} contatos`}
+          </Button>
+        </>}
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export default function CRMModule() {
   const { t } = useTranslation();
@@ -1420,6 +1716,19 @@ export default function CRMModule() {
   const isAdmin = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
   const [pipelineConfig, setPipelineConfig] = useState<CRMPipelineConfig | undefined>(business?.settings?.crmPipeline);
   const [showPipelineSettings, setShowPipelineSettings] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [csvMenuOpen, setCsvMenuOpen] = useState(false);
+  const csvMenuRef = React.useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!csvMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (csvMenuRef.current && !csvMenuRef.current.contains(e.target as Node)) setCsvMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [csvMenuOpen]);
 
   // Effective visible stages — recomputed when config changes
   const stages = useMemo(() => getVisibleStages(pipelineConfig), [pipelineConfig]);
@@ -1618,6 +1927,31 @@ export default function CRMModule() {
               </>
             )}
 
+            {/* CSV Import/Export dropdown */}
+            <div className="relative" ref={csvMenuRef}>
+              <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
+                onClick={() => setCsvMenuOpen(v => !v)}
+                className="inline-flex items-center gap-1.5 px-3 py-2.5 bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 rounded-xl text-sm font-medium hover:border-gray-300 dark:hover:border-gray-600 transition-colors">
+                <Download size={14} />
+                <Upload size={14} />
+              </motion.button>
+              <AnimatePresence>
+                {csvMenuOpen && (
+                  <motion.div initial={{ opacity: 0, y: 4, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 4, scale: 0.97 }} transition={{ duration: 0.1 }}
+                    className="absolute right-0 top-full mt-1.5 w-44 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg z-50 overflow-hidden">
+                    <button onClick={() => { setCsvMenuOpen(false); setShowExportModal(true); }}
+                      className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors">
+                      <Download size={15} className="text-emerald-500" /> Exportar CSV
+                    </button>
+                    <button onClick={() => { setCsvMenuOpen(false); setShowImportModal(true); }}
+                      className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors">
+                      <Upload size={15} className="text-blue-500" /> Importar CSV
+                    </button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
             <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
               onClick={() => { setEditingContact(null); setContactDialogOpen(true); }}
               className="inline-flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-white/[0.06] border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl font-semibold text-sm hover:border-gray-300 dark:hover:border-gray-600 transition-colors">
@@ -1769,6 +2103,10 @@ export default function CRMModule() {
       {/* ═══════════════════════════════════════════════════════════
           OVERLAYS & DIALOGS
           ═══════════════════════════════════════════════════════════ */}
+
+      {/* CSV Export/Import modals */}
+      {showExportModal && <CRMExportModal contacts={contacts} stages={stages} onClose={() => setShowExportModal(false)} />}
+      {showImportModal && <CRMImportModal businessId={business?.id ?? ''} onClose={() => setShowImportModal(false)} onImported={() => queryClient.invalidateQueries({ queryKey: ['clients', business?.id] })} />}
 
       {/* Pipeline settings modal */}
       <AnimatePresence>
