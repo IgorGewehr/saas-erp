@@ -39,39 +39,67 @@ interface ListStats {
   linkedToCrm: number;
 }
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Regex razoavelmente estrito — exige TLD com 2+ chars alfabéticos
+const EMAIL_RE = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
 
-/** Normaliza telefone para E.164 (apenas dígitos). Retorna null se inválido. */
+/** Normaliza telefone para E.164 (apenas dígitos, sem +). Retorna null se inválido. */
 function normalizePhone(raw: string): string | null {
-  const digits = raw.replace(/\D/g, '');
+  let digits = raw.replace(/\D/g, '');
   if (!digits) return null;
-  // Já tem código de país (12-15 dígitos)
-  if (digits.length >= 12 && digits.length <= 15) return digits;
-  // Brasileiro sem DDI (10-11 dígitos): adiciona 55
-  if (digits.length === 10 || digits.length === 11) return '55' + digits;
-  return null;
+  // Caso BR com 0 no DDD (ex: 011 99999-8888 → 11999998888)
+  if (digits.length === 12 && digits.startsWith('0')) {
+    digits = digits.substring(1);
+  }
+  // Brasileiro sem DDI (10 ou 11 dígitos): adiciona 55
+  if ((digits.length === 10 || digits.length === 11) && !digits.startsWith('55')) {
+    digits = '55' + digits;
+  }
+  // E.164 válido: [1-9] inicial (sem 0), entre 8 e 15 dígitos no total
+  if (!/^[1-9]\d{7,14}$/.test(digits)) return null;
+  return digits;
 }
 
-/** Parse CSV simples — aceita vírgula ou ponto-e-vírgula, primeira linha como header opcional. */
+/** Divide uma linha CSV respeitando aspas — aceita células com vírgula dentro. */
+function parseCsvLine(line: string, sep: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      // Aspas escapadas: "" dentro de campo entre aspas vira "
+      if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }
+      else inQuotes = !inQuotes;
+    } else if (ch === sep && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  result.push(current.trim());
+  return result;
+}
+
+/** Parse CSV — aceita vírgula ou ponto-e-vírgula, primeira linha como header opcional. */
 function parseCsv(text: string): { headers: string[]; rows: string[][] } {
-  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  // Remove BOM se presente (arquivos Excel UTF-8)
+  const clean = text.replace(/^﻿/, '');
+  const lines = clean.split(/\r?\n/).filter(l => l.trim());
   if (!lines.length) return { headers: [], rows: [] };
-  // Detecta separador
   const sep = lines[0].includes(';') ? ';' : ',';
-  const splitLine = (l: string) => l.split(sep).map(c => c.trim().replace(/^"(.*)"$/, '$1'));
-  const first = splitLine(lines[0]);
-  // Detecta se primeira linha é header (não tem dígitos suficientes para ser telefone)
+  const first = parseCsvLine(lines[0], sep);
+  // Detecta se primeira linha é header
   const looksLikeHeader = first.some(c =>
-    /^(nome|name|telefone|phone|email|e-?mail|whatsapp)$/i.test(c)
+    /^(nome|name|telefone|phone|email|e-?mail|whatsapp|celular)$/i.test(c)
   );
   if (looksLikeHeader) {
     return {
       headers: first.map(h => h.toLowerCase()),
-      rows: lines.slice(1).map(splitLine),
+      rows: lines.slice(1).map(l => parseCsvLine(l, sep)),
     };
   }
-  // Sem header — assume primeira coluna é o identificador
-  return { headers: [], rows: lines.map(splitLine) };
+  return { headers: [], rows: lines.map(l => parseCsvLine(l, sep)) };
 }
 
 interface Props {
@@ -100,8 +128,10 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
 
       for (const line of lines) {
         if (line.error) continue;
-        const key = mode === 'phone' ? line.phoneNumber : line.email;
-        if (!key) continue;
+        const rawKey = mode === 'phone' ? line.phoneNumber : line.email;
+        if (!rawKey) continue;
+        // Email é case-insensitive; phone já vem normalizado
+        const key = mode === 'email' ? rawKey.toLowerCase() : rawKey;
         if (seen.has(key)) { duplicates++; continue; }
         seen.add(key);
 

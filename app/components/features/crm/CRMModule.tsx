@@ -1212,7 +1212,8 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       return snap.docs.map(d => ({ ...(d.data() as Client), id: d.id }));
     },
     enabled: !!businessId,
-    staleTime: 5 * 60 * 1000,
+    staleTime: 30 * 1000, // 30s — clientes recém-criados aparecem rápido pro auto-link
+    gcTime: 5 * 60 * 1000,
   });
 
   useEffect(() => {
@@ -1228,10 +1229,30 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       toast.error('Adicione pelo menos um recipiente na lista.');
       return;
     }
+    // Firestore tem limite de 1 MiB por documento. Estimativa conservadora ~80% do limite.
+    if (formAudienceType === 'list') {
+      const recipientsSizeEstimate = JSON.stringify(formRecipients).length;
+      if (recipientsSizeEstimate > 800_000) {
+        toast.error(`Lista muito grande (${formRecipients.length} contatos, ~${Math.round(recipientsSizeEstimate / 1024)}KB). Limite por campanha: ~10.000 contatos. Divida em múltiplas.`);
+        return;
+      }
+    }
     setSaving(true);
     try {
       const now = new Date().toISOString();
       const recipientsTotal = formAudienceType === 'list' ? formRecipients.length : 0;
+      // Limpa undefined dentro de cada recipient (Firestore aceita undefined no top-level via SDK
+      // mas armazena como null em arrays — preferimos omitir o campo)
+      const cleanRecipients: BroadcastRecipient[] = formAudienceType === 'list'
+        ? formRecipients.map(r => {
+            const cleaned: BroadcastRecipient = {};
+            if (r.contactId) cleaned.contactId = r.contactId;
+            if (r.name) cleaned.name = r.name;
+            if (r.phoneNumber) cleaned.phoneNumber = r.phoneNumber;
+            if (r.email) cleaned.email = r.email;
+            return cleaned;
+          })
+        : [];
       const payload: Record<string, unknown> = {
         businessId,
         name: formName.trim(),
@@ -1248,8 +1269,8 @@ function CampaignsTab({ businessId }: { businessId: string }) {
         createdAt: now,
         updatedAt: now,
       };
-      if (formAudienceType === 'list') payload.recipients = formRecipients;
-      // Remove undefineds (Firestore não aceita)
+      if (formAudienceType === 'list') payload.recipients = cleanRecipients;
+      // Remove undefineds em primeiro nível
       Object.keys(payload).forEach(k => payload[k] === undefined && delete payload[k]);
       await addDoc(collection(db, 'broadcasts'), payload);
       toast.success(t('crm.toast.campaignCreated', 'Campanha criada'));
