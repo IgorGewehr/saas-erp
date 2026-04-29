@@ -11,9 +11,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
-import type { Broadcast, BroadcastMessage, BroadcastRecipient } from '@/lib/types';
+import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
+import { ROLE_HIERARCHY } from '@/lib/types';
+import type { Broadcast, BroadcastMessage, BroadcastRecipient, UserRole } from '@/lib/types';
+
+const MAX_FAILED_TO_RETRY = 1000;
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  // Rate limit: 2 retries por minuto por IP
+  const clientIp = getClientIp(req);
+  const { allowed } = checkRateLimit(`retry:${clientIp}`, 2, 60_000);
+  if (!allowed) {
+    return NextResponse.json(
+      { error: 'Aguarde antes de criar outro retry.' },
+      { status: 429 },
+    );
+  }
+
   try {
     const { id: broadcastId } = await ctx.params;
     if (!broadcastId) {
@@ -29,6 +43,12 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     const authResult = await verifyAuth(req, businessId);
     if (isAuthError(authResult)) return authResult;
 
+    // Bloqueia viewer (somente leitura) — precisa operator+ para disparar retry
+    const role = authResult.role as UserRole;
+    if ((ROLE_HIERARCHY[role] || 0) < ROLE_HIERARCHY['operator']) {
+      return NextResponse.json({ error: 'Forbidden — operator role required' }, { status: 403 });
+    }
+
     // Busca broadcast original
     const broadcastSnap = await adminDb.collection('broadcasts').doc(broadcastId).get();
     if (!broadcastSnap.exists) {
@@ -39,15 +59,17 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
-    // Busca todos os BroadcastMessage com status 'failed' deste broadcast
+    // Busca BroadcastMessage com status 'failed' (limit defensivo)
     const failedSnap = await adminDb.collection('broadcastMessages')
       .where('broadcastId', '==', broadcastId)
       .where('status', '==', 'failed')
+      .limit(MAX_FAILED_TO_RETRY)
       .get();
 
     if (failedSnap.empty) {
       return NextResponse.json({ error: 'No failed messages to retry' }, { status: 400 });
     }
+    const truncated = failedSnap.size === MAX_FAILED_TO_RETRY;
 
     // Reconstrói recipients a partir das mensagens falhadas
     const recipients: BroadcastRecipient[] = failedSnap.docs.map(doc => {
@@ -97,6 +119,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       success: true,
       newBroadcastId: newRef.id,
       recipientsCount: recipients.length,
+      truncated, // true se hit MAX_FAILED_TO_RETRY — usuário deve criar mais retries depois
     });
   } catch (err) {
     console.error('[Broadcast retry] Error:', err);

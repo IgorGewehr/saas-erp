@@ -2379,6 +2379,8 @@ export interface Broadcast {
   audienceContactIds?: string[];
   /** Lista direta de recipientes (paste/CSV) — usado quando audienceType === 'list'. */
   recipients?: BroadcastRecipient[];
+  /** ID do broadcast original quando este é um retry — auditoria. */
+  retryOf?: string;
   messageType: 'template' | 'text';
   templateName?: string;
   templateLanguage?: string;

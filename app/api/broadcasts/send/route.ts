@@ -181,19 +181,42 @@ export async function POST(req: NextRequest) {
 
     const delayMs = Math.max(1000 / sendRate, 50); // minimum 50ms between messages
 
-    // Marca broadcast como sending no início
-    await adminDb.collection('broadcasts').doc(broadcastId).update({
-      status: 'sending',
-      'stats.total': recipients.length,
-      startedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    }).catch(() => {/* documento pode não existir em testes */});
+    // Idempotência: CAS draft/sent/failed → sending. Bloqueia duplo-clique e re-trigger.
+    const broadcastRef = adminDb.collection('broadcasts').doc(broadcastId);
+    try {
+      await adminDb.runTransaction(async (tx) => {
+        const snap = await tx.get(broadcastRef);
+        if (!snap.exists) {
+          // Doc pode não existir em testes — tolera
+          return;
+        }
+        const status = snap.data()?.status;
+        if (status === 'sending') {
+          throw new Error('CONCURRENT_SEND'); // já em andamento, aborta
+        }
+        tx.update(broadcastRef, {
+          status: 'sending',
+          'stats.total': recipients.length,
+          startedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+      });
+    } catch (err) {
+      if (err instanceof Error && err.message === 'CONCURRENT_SEND') {
+        return NextResponse.json(
+          { error: 'Esta campanha já está sendo enviada. Aguarde a conclusão.' },
+          { status: 409 },
+        );
+      }
+      throw err;
+    }
 
-    // Pré-cria 1 doc broadcastMessages por recipiente (status 'pending')
-    // Os IDs ficam alinhados ao array para update direto no loop
+    // Pré-cria 1 doc broadcastMessages por recipiente (status 'pending').
+    // Os IDs ficam alinhados ao array para update direto no loop.
     const messageDocIds = await preCreateBroadcastMessages(businessId, broadcastId, recipients);
 
     const results: { contactId?: string; recipientId: string; status: string; externalMessageId?: string; error?: string }[] = [];
+    const updatePromises: Promise<unknown>[] = [];
 
     for (let i = 0; i < recipients.length; i++) {
       const recipient = recipients[i];
@@ -273,12 +296,14 @@ export async function POST(req: NextRequest) {
             status: 'sent',
             externalMessageId: messageId,
           });
-          // Atualiza o BroadcastMessage com sucesso
-          adminDb.collection('broadcastMessages').doc(messageDocId).update({
-            status: 'sent',
-            externalMessageId: messageId,
-            sentAt: new Date().toISOString(),
-          }).catch(err => console.error('[Broadcast] Failed to update sent message doc:', err));
+          // Coleta promise — flush ao final garante consistência
+          updatePromises.push(
+            adminDb.collection('broadcastMessages').doc(messageDocId).update({
+              status: 'sent',
+              externalMessageId: messageId,
+              sentAt: new Date().toISOString(),
+            })
+          );
         } else {
           const errData = await response?.json().catch(() => ({}));
           const errMessage = errData?.error?.message || `HTTP ${response?.status || '?'}`;
@@ -288,10 +313,12 @@ export async function POST(req: NextRequest) {
             status: 'failed',
             error: errMessage,
           });
-          adminDb.collection('broadcastMessages').doc(messageDocId).update({
-            status: 'failed',
-            errorMessage: errMessage,
-          }).catch(err => console.error('[Broadcast] Failed to update failed message doc:', err));
+          updatePromises.push(
+            adminDb.collection('broadcastMessages').doc(messageDocId).update({
+              status: 'failed',
+              errorMessage: errMessage,
+            })
+          );
         }
       } catch (err) {
         const errMessage = err instanceof Error ? err.message : 'Send error';
@@ -301,14 +328,25 @@ export async function POST(req: NextRequest) {
           status: 'failed',
           error: errMessage,
         });
-        adminDb.collection('broadcastMessages').doc(messageDocId).update({
-          status: 'failed',
-          errorMessage: errMessage,
-        }).catch(updateErr => console.error('[Broadcast] Failed to update message doc on catch:', updateErr));
+        updatePromises.push(
+          adminDb.collection('broadcastMessages').doc(messageDocId).update({
+            status: 'failed',
+            errorMessage: errMessage,
+          })
+        );
       }
 
       // Throttle
       await sleep(delayMs);
+    }
+
+    // Garante que todos os updates do loop completaram antes de gravar stats agregadas.
+    // Promise.allSettled — não aborta em update individual falho, só registra.
+    const settled = await Promise.allSettled(updatePromises);
+    const updateFailures = settled.filter(s => s.status === 'rejected').length;
+    if (updateFailures > 0) {
+      console.error(`[Broadcast] ${updateFailures} broadcastMessage updates failed`,
+        settled.filter(s => s.status === 'rejected').slice(0, 5));
     }
 
     const sent = results.filter(r => r.status === 'sent').length;
