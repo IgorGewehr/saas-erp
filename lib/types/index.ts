@@ -329,6 +329,23 @@ export interface CRMPipelineConfig {
   stages: CRMStageConfig[];
 }
 
+export type CRMAuditAction =
+  | 'contact_created' | 'contact_updated' | 'contact_deleted'
+  | 'status_changed' | 'tags_changed'
+  | 'deal_created' | 'deal_updated' | 'deal_deleted';
+
+export interface CRMAuditEntry {
+  id: string;
+  businessId: string;
+  contactId?: string;
+  dealId?: string;
+  action: CRMAuditAction;
+  userId: string;
+  userName: string;
+  details?: string;
+  createdAt: string;
+}
+
 export interface AiAgentSettings {
   enabled: boolean;
   /** Contexto de negócio inserido no prompt do agente */

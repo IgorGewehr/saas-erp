@@ -30,7 +30,7 @@ import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDo
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   CRMContact, CRMDeal, CRMPipelineStage, CRMStageConfig, CRMPipelineConfig, CRMActivity, CRMActivityType,
-  LeadStatus, LeadSource, User, Broadcast, BroadcastStatus, ContactProfile,
+  LeadStatus, LeadSource, User, Broadcast, BroadcastStatus, ContactProfile, CRMAuditAction,
 } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
 
@@ -63,6 +63,31 @@ const ACTIVITY_ICONS: Record<CRMActivityType, React.ReactNode> = {
   whatsapp: <MessageCircle size={14} />, tarefa: <CheckCircle2 size={14} />,
   nota: <FileText size={14} />, proposta: <Send size={14} />,
 };
+
+// ── Audit helper ────────────────────────────────────────────────────────────
+
+async function logAudit(opts: {
+  businessId: string;
+  userId: string;
+  userName: string;
+  action: CRMAuditAction;
+  contactId?: string;
+  dealId?: string;
+  details?: string;
+}) {
+  try {
+    await addDoc(collection(db, 'crmAuditLog'), {
+      businessId: opts.businessId,
+      userId: opts.userId,
+      userName: opts.userName,
+      action: opts.action,
+      contactId: opts.contactId ?? null,
+      dealId: opts.dealId ?? null,
+      details: opts.details ?? null,
+      createdAt: new Date().toISOString(),
+    });
+  } catch { /* audit failures must never break the main flow */ }
+}
 
 // ==========================================
 // LOADING SKELETON
@@ -1797,9 +1822,11 @@ export default function CRMModule() {
       if (editingContact) {
         await updateDoc(doc(db, 'clients', editingContact.id), { ...clean, updatedAt: now });
         toast.success(t('crm.toast.contactUpdated', 'Contato atualizado!'));
+        void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'contact_updated', contactId: editingContact.id, details: `Dados editados` });
       } else {
-        await addDoc(collection(db, 'clients'), { ...clean, businessId: business.id, tipo: 'pf', score: data.score ?? 0, status: data.status ?? 'novo', source: data.source ?? 'outro', createdAt: now, updatedAt: now });
+        const ref = await addDoc(collection(db, 'clients'), { ...clean, businessId: business.id, tipo: 'pf', score: data.score ?? 0, status: data.status ?? 'novo', source: data.source ?? 'outro', createdAt: now, updatedAt: now });
         toast.success(t('crm.toast.contactCreated', 'Contato criado!'));
+        void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'contact_created', contactId: ref.id, details: data.name });
       }
       queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
       setContactDialogOpen(false); setEditingContact(null);
@@ -1816,6 +1843,7 @@ export default function CRMModule() {
       const activitiesSnap = await getDocs(query(collection(db, 'crmActivities'), where('businessId', '==', business.id), where('contactId', '==', deleteContactConfirm.id)));
       for (const a of activitiesSnap.docs) await deleteDoc(doc(db, 'crmActivities', a.id));
       // Delete the contact itself
+      void logAudit({ businessId: business.id, userId: user!.uid, userName: user!.name, action: 'contact_deleted', contactId: deleteContactConfirm.id, details: deleteContactConfirm.name });
       await deleteDoc(doc(db, 'clients', deleteContactConfirm.id));
       toast.success(t('crm.toast.contactDeleted', 'Contato excluído'));
       queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
@@ -1825,9 +1853,30 @@ export default function CRMModule() {
     } catch (err) { console.error('[CRM] Error deleting contact:', err); toast.error(t('crm.toast.errorDelete', 'Erro ao excluir')); }
   }, [deleteContactConfirm, business?.id, queryClient]);
 
-  const handleSaveDeal = useCallback(async (data: Partial<CRMDeal>) => { if (!business?.id || !user) return; const now = new Date().toISOString(); try { if (editingDeal) { await updateDoc(doc(db, 'crmDeals', editingDeal.id), { ...data, updatedAt: now }); toast.success(t('crm.toast.dealUpdated', 'Deal atualizado!')); } else { await addDoc(collection(db, 'crmDeals'), { ...data, businessId: business.id, stage: data.stage ?? 'prospeccao', probability: data.probability ?? 10, value: data.value ?? 0, createdAt: now, updatedAt: now }); toast.success(t('crm.toast.dealCreated', 'Deal criado!')); } queryClient.invalidateQueries({ queryKey: ['crmDeals', business.id] }); setDealDialogOpen(false); setEditingDeal(null); } catch (err) { console.error('[CRM] Error saving deal:', err); toast.error(t('crm.toast.errorSaveDeal', 'Erro ao salvar deal')); } }, [business?.id, user, editingDeal, queryClient]);
+  const handleSaveDeal = useCallback(async (data: Partial<CRMDeal>) => {
+    if (!business?.id || !user) return; const now = new Date().toISOString();
+    try {
+      if (editingDeal) {
+        await updateDoc(doc(db, 'crmDeals', editingDeal.id), { ...data, updatedAt: now });
+        toast.success(t('crm.toast.dealUpdated', 'Deal atualizado!'));
+        void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'deal_updated', contactId: editingDeal.contactId, dealId: editingDeal.id, details: data.title ?? editingDeal.title });
+      } else {
+        const ref = await addDoc(collection(db, 'crmDeals'), { ...data, businessId: business.id, stage: data.stage ?? 'prospeccao', probability: data.probability ?? 10, value: data.value ?? 0, createdAt: now, updatedAt: now });
+        toast.success(t('crm.toast.dealCreated', 'Deal criado!'));
+        void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'deal_created', contactId: data.contactId, dealId: ref.id, details: data.title });
+      }
+      queryClient.invalidateQueries({ queryKey: ['crmDeals', business.id] }); setDealDialogOpen(false); setEditingDeal(null);
+    } catch (err) { console.error('[CRM] Error saving deal:', err); toast.error(t('crm.toast.errorSaveDeal', 'Erro ao salvar deal')); }
+  }, [business?.id, user, editingDeal, queryClient, t]);
 
-  const handleDeleteDeal = useCallback(async () => { if (!deleteDealConfirm || !business?.id) return; try { await deleteDoc(doc(db, 'crmDeals', deleteDealConfirm.id)); toast.success(t('crm.toast.dealDeleted', 'Deal excluído')); queryClient.invalidateQueries({ queryKey: ['crmDeals', business.id] }); setDeleteDealConfirm(null); } catch (err) { console.error('[CRM] Error deleting deal:', err); toast.error(t('crm.toast.errorDelete', 'Erro ao excluir')); } }, [deleteDealConfirm, business?.id, queryClient]);
+  const handleDeleteDeal = useCallback(async () => {
+    if (!deleteDealConfirm || !business?.id || !user) return;
+    try {
+      void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'deal_deleted', contactId: deleteDealConfirm.contactId, dealId: deleteDealConfirm.id, details: deleteDealConfirm.title });
+      await deleteDoc(doc(db, 'crmDeals', deleteDealConfirm.id));
+      toast.success(t('crm.toast.dealDeleted', 'Deal excluído')); queryClient.invalidateQueries({ queryKey: ['crmDeals', business.id] }); setDeleteDealConfirm(null);
+    } catch (err) { console.error('[CRM] Error deleting deal:', err); toast.error(t('crm.toast.errorDelete', 'Erro ao excluir')); }
+  }, [deleteDealConfirm, business?.id, user, queryClient, t]);
 
   const handleSaveActivity = useCallback(async (data: Partial<CRMActivity>) => { if (!business?.id || !user) return; const now = new Date().toISOString(); try { if (editingActivity) { await updateDoc(doc(db, 'crmActivities', editingActivity.id), { ...data, updatedAt: now }); toast.success(t('crm.toast.activityUpdated', 'Atividade atualizada!')); } else { await addDoc(collection(db, 'crmActivities'), { ...data, businessId: business.id, isCompleted: false, createdAt: now, updatedAt: now }); toast.success(t('crm.toast.activityCreated', 'Atividade registrada!')); } queryClient.invalidateQueries({ queryKey: ['crmActivities', business.id] }); setActivityDialogOpen(false); setEditingActivity(null); } catch (err) { console.error('[CRM] Error saving activity:', err); toast.error(t('crm.toast.errorSaveActivity', 'Erro ao salvar atividade')); } }, [business?.id, user, editingActivity, queryClient]);
 
@@ -1836,8 +1885,9 @@ export default function CRMModule() {
   const handleDeleteActivity = useCallback(async () => { if (!deleteActivityConfirm || !business?.id) return; try { await deleteDoc(doc(db, 'crmActivities', deleteActivityConfirm.id)); toast.success(t('crm.toast.activityDeleted', 'Atividade excluída')); queryClient.invalidateQueries({ queryKey: ['crmActivities', business.id] }); setDeleteActivityConfirm(null); } catch (err) { console.error('[CRM] Error deleting activity:', err); toast.error(t('crm.toast.errorDelete', 'Erro ao excluir')); } }, [deleteActivityConfirm, business?.id, queryClient]);
 
   const handleStatusChange = useCallback(async (contactId: string, newStatus: LeadStatus) => {
-    if (!business?.id) return;
+    if (!business?.id || !user) return;
     const qk = ['clients', business.id] as const;
+    const prevContact = (queryClient.getQueryData(qk) as CRMContact[] | undefined)?.find(c => c.id === contactId);
     // Optimistic update — card moves instantly, no snap-back
     queryClient.setQueryData(qk, (old: CRMContact[] = []) =>
       old.map((c) => c.id === contactId ? { ...c, status: newStatus } : c)
@@ -1845,14 +1895,24 @@ export default function CRMModule() {
     try {
       await updateDoc(doc(db, 'clients', contactId), { status: newStatus, updatedAt: new Date().toISOString() });
       queryClient.invalidateQueries({ queryKey: qk });
+      if (prevContact) {
+        void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'status_changed', contactId, details: `${getStageLabel(stages, prevContact.status)} → ${getStageLabel(stages, newStatus)}` });
+      }
     } catch (err) {
       console.error('[CRM] Error changing lead status:', err);
       toast.error(t('crm.toast.errorMoveLead', 'Erro ao mover lead'));
       queryClient.invalidateQueries({ queryKey: qk }); // revert on failure
     }
-  }, [business?.id, queryClient, t]);
+  }, [business?.id, user, queryClient, t, stages]);
 
-  const handleTagsChange = useCallback(async (contactId: string, tags: string[]) => { if (!business?.id) return; try { await updateDoc(doc(db, 'clients', contactId), { tags, updatedAt: new Date().toISOString() }); queryClient.invalidateQueries({ queryKey: ['clients', business.id] }); } catch (err) { console.error('[CRM] Error updating tags:', err); toast.error(t('crm.toast.errorUpdateTags', 'Erro ao atualizar tags')); } }, [business?.id, queryClient]);
+  const handleTagsChange = useCallback(async (contactId: string, tags: string[]) => {
+    if (!business?.id || !user) return;
+    try {
+      await updateDoc(doc(db, 'clients', contactId), { tags, updatedAt: new Date().toISOString() });
+      queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
+      void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'tags_changed', contactId, details: tags.join(', ') || '(sem tags)' });
+    } catch (err) { console.error('[CRM] Error updating tags:', err); toast.error(t('crm.toast.errorUpdateTags', 'Erro ao atualizar tags')); }
+  }, [business?.id, user, queryClient, t]);
 
   // Quick stats for header
   const hotLeads = contacts.filter((c) => c.scores?.churnRisk && c.scores.churnRisk >= 60).length;
