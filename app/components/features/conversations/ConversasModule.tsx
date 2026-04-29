@@ -706,6 +706,7 @@ function ThreadHeader({
   onMarkUnread,
   onTogglePrivate,
   onExport,
+  onMerge,
   aiEnabledBusinessWide,
   sectors: sectorsList,
   slaInfo,
@@ -726,6 +727,7 @@ function ThreadHeader({
   onMarkUnread?: () => void;
   onTogglePrivate?: () => void;
   onExport?: () => void;
+  onMerge?: () => void;
   aiEnabledBusinessWide?: boolean;
   sectors?: Sector[];
   slaInfo?: SLAInfo | null;
@@ -1088,7 +1090,14 @@ function ThreadHeader({
                     className="w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs text-gray-700 dark:text-gray-300"
                   >
                     <FileText className="w-3.5 h-3.5 text-gray-400" />
-                    Exportar histórico (.txt)
+                    Exportar PDF
+                  </button>
+                )}
+                {onMerge && (
+                  <button onClick={() => { onMerge(); setShowOverflowMenu(false); }}
+                    className="w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs text-gray-700 dark:text-gray-300">
+                    <ArrowRightLeft className="w-3.5 h-3.5 text-gray-400" />
+                    Unificar com outra conversa
                   </button>
                 )}
                 {(conversation.assignmentHistory?.length ?? 0) > 0 && onToggleAssignHistory && (
@@ -2126,6 +2135,80 @@ function CSATDashboard({ businessId, onClose }: { businessId: string; onClose: (
   );
 }
 
+// ─── Merge Conversations Dialog ───────────────────────────────────────────────
+
+function MergeConversationsDialog({ source, conversations, onClose, onMerge }: {
+  source: Conversation;
+  conversations: Conversation[];
+  onClose: () => void;
+  onMerge: (targetId: string) => Promise<void>;
+}) {
+  const [search, setSearch] = useState('');
+  const [merging, setMerging] = useState(false);
+  const candidates = conversations.filter(c =>
+    c.id !== source.id &&
+    c.status !== 'resolved' &&
+    (c.contactName.toLowerCase().includes(search.toLowerCase()) ||
+     (c.contactPhone && c.contactPhone.includes(search)))
+  ).slice(0, 15);
+
+  const handleMerge = async (targetId: string) => {
+    setMerging(true);
+    try { await onMerge(targetId); onClose(); }
+    finally { setMerging(false); }
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <motion.div initial={{ opacity: 0, scale: 0.95, y: 8 }} animate={{ opacity: 1, scale: 1, y: 0 }}
+        className="w-full max-w-sm bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-100 dark:border-gray-800">
+          <div>
+            <h3 className="font-bold text-sm text-gray-900 dark:text-gray-100">Unificar conversa</h3>
+            <p className="text-[10px] text-gray-400 mt-0.5">Mover mensagens de <span className="font-semibold text-gray-600 dark:text-gray-300">{source.contactName}</span> para:</p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400"><X className="w-3.5 h-3.5" /></button>
+        </div>
+        <div className="p-3 space-y-2">
+          <input autoFocus value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar por nome ou telefone..."
+            className="w-full px-3 py-2 text-sm bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-xl text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400" />
+          <div className="max-h-64 overflow-y-auto space-y-1">
+            {candidates.length === 0 && (
+              <p className="text-center text-xs text-gray-400 py-4">Nenhuma conversa encontrada</p>
+            )}
+            {candidates.map(c => {
+              const cfg = CHANNEL_CONFIG[c.channel];
+              return (
+                <button key={c.id} onClick={() => handleMerge(c.id)} disabled={merging}
+                  className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors text-left group">
+                  <div className={cn('w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0', cfg.avatarBg, cfg.textColor)}>
+                    {getInitials(c.contactName)}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold text-gray-800 dark:text-gray-200 truncate group-hover:text-red-600 dark:group-hover:text-red-400">{c.contactName}</p>
+                    <p className="text-[10px] text-gray-400 truncate">{c.lastMessage}</p>
+                  </div>
+                  <ChannelIcon channel={c.channel} size="sm" />
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div className="px-3 pb-3">
+          <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20">
+            <p className="text-[10px] text-amber-700 dark:text-amber-400 flex items-start gap-1.5">
+              <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />
+              As mensagens serão movidas para a conversa destino. A conversa atual será encerrada.
+            </p>
+          </div>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 // ─── Conversation Analytics Panel ────────────────────────────────────────────
 
 function AnalyticsBar({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
@@ -2908,6 +2991,7 @@ export default function ConversasModule() {
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [showRoutingRules, setShowRoutingRules] = useState(false);
   const [showAssignHistory, setShowAssignHistory] = useState(false);
+  const [showMergeDialog, setShowMergeDialog] = useState(false);
   const [routingRules, setRoutingRules] = useState<RoutingRule[]>(business?.settings?.routingRules ?? []);
   useEffect(() => { setRoutingRules(business?.settings?.routingRules ?? []); }, [business?.settings?.routingRules]);
   const csatEnabled = !!business?.settings?.csatEnabled;
@@ -3320,6 +3404,30 @@ export default function ConversasModule() {
     setShowBatchTag(false);
     exitBatchMode();
   }, [business?.id, batchSelectedIds, conversations, exitBatchMode]);
+
+  // ── Merge conversations ────────────────────────────────────────────────────
+
+  const handleMergeConversations = useCallback(async (sourceConvId: string, targetConvId: string) => {
+    if (!business?.id) return;
+    const now = new Date().toISOString();
+    try {
+      // Move all messages from source → target
+      const msgsSnap = await getDocs(query(collection(db, 'conversationMessages'), where('conversationId', '==', sourceConvId)));
+      const batch = writeBatch(db);
+      msgsSnap.docs.forEach(d => batch.update(d.ref, { conversationId: targetConvId, updatedAt: now }));
+      // Resolve source conversation with a merge note
+      batch.update(doc(db, 'conversations', sourceConvId), { status: 'resolved', mergedInto: targetConvId, updatedAt: now });
+      await batch.commit();
+      // Update target's last message snapshot
+      const targetSnap = await getDocs(query(collection(db, 'conversationMessages'), where('conversationId', '==', targetConvId), orderBy('sentAt', 'desc'), limit(1)));
+      if (!targetSnap.empty) {
+        const last = targetSnap.docs[0].data();
+        await updateDoc(doc(db, 'conversations', targetConvId), { lastMessage: last.content ?? '[mídia]', lastMessageAt: last.sentAt ?? now, updatedAt: now });
+      }
+      toast.success('Conversas unificadas com sucesso');
+      setSelectedConversation(null); setShowMobileThread(false);
+    } catch (err) { console.error('[Merge] Error:', err); toast.error('Erro ao unificar conversas'); }
+  }, [business?.id]);
 
   // ── Sector visibility filter ──────────────────────────────────────────────
 
@@ -4550,6 +4658,7 @@ export default function ConversasModule() {
                   sectors={sectors}
                   slaInfo={getSLAInfo(selectedConversation, slaConfig)}
                   onToggleAssignHistory={() => setShowAssignHistory(v => !v)}
+                  onMerge={() => setShowMergeDialog(true)}
                 />
 
                 {/* Assignment history panel */}
@@ -4854,6 +4963,14 @@ export default function ConversasModule() {
         )}
         {showCSATDashboard && business?.id && (
           <CSATDashboard businessId={business.id} onClose={() => setShowCSATDashboard(false)} />
+        )}
+        {showMergeDialog && selectedConversation && (
+          <MergeConversationsDialog
+            source={selectedConversation}
+            conversations={conversations}
+            onClose={() => setShowMergeDialog(false)}
+            onMerge={targetId => handleMergeConversations(selectedConversation.id, targetId)}
+          />
         )}
         {showRoutingRules && isAdmin && business?.id && (
           <RoutingRulesDialog
