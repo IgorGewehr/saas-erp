@@ -9,7 +9,7 @@ import {
   Download, Upload, UserCheck, Gift, Calendar, MessageSquare, History, Clock,
   FileDown, Settings, Plus as PlusIcon, Minus, Trophy, Sparkles, LayoutList, AlignJustify,
 } from 'lucide-react';
-import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, limit as firestoreLimit, orderBy, writeBatch } from 'firebase/firestore';
+import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, limit as firestoreLimit, orderBy, writeBatch, deleteField } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -2471,10 +2471,18 @@ export default function ClientsModule() {
       }
 
       if (editingClient) {
-        await updateDoc(doc(db, 'clients', editingClient.id), payload);
+        // updateDoc rejeita undefined — converte para deleteField() para limpar campos apagados
+        const updatePayload = Object.fromEntries(
+          Object.entries(payload).map(([k, v]) => [k, v === undefined ? deleteField() : v])
+        );
+        await updateDoc(doc(db, 'clients', editingClient.id), updatePayload);
       } else {
+        // addDoc: remove undefined para não gravar campos vazios
+        const createPayload = Object.fromEntries(
+          Object.entries(payload).filter(([, v]) => v !== undefined)
+        );
         await addDoc(collection(db, 'clients'), {
-          ...payload,
+          ...createPayload,
           businessId: business!.id,
           score: 0,
           isActive: true,
