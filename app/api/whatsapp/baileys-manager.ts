@@ -156,6 +156,56 @@ async function updateFirestoreConnection(businessId: string, phoneNumber: string
   }
 }
 
+// ─── Public: send simple text message via Baileys ────────────────────────────
+
+/**
+ * Envia uma mensagem de texto simples via Baileys.
+ *
+ * Diferente de `sendWhatsAppBaileys` em conversations/send, esta versão é
+ * voltada a broadcasts: recebe o número diretamente (já em E.164) e não
+ * precisa fazer lookup em conversations.
+ *
+ * Lança erro se a sessão não está conectada ou se o número não tem WhatsApp.
+ */
+export async function sendBaileysBroadcastMessage(
+  businessId: string,
+  phoneNumber: string,
+  text: string,
+): Promise<{ externalMessageId: string }> {
+  const session = sessions.get(businessId);
+  if (!session?.sock) {
+    throw new Error('WhatsApp Web não está conectado. Reconecte escaneando o QR Code em Configurações.');
+  }
+  if (!session.isConnected) {
+    throw new Error('WhatsApp Web está reconectando. Tente novamente em alguns segundos.');
+  }
+
+  // phoneNumber já vem em E.164 (apenas dígitos) do RecipientListInput
+  const digits = phoneNumber.replace(/\D/g, '');
+  if (!/^[1-9]\d{7,14}$/.test(digits)) {
+    throw new Error(`Número inválido: ${phoneNumber}`);
+  }
+
+  // onWhatsApp valida e devolve o JID canônico (resolve 9º dígito BR)
+  const candidateJid = `${digits}@s.whatsapp.net`;
+  let targetJid = candidateJid;
+  try {
+    const [result] = await session.sock.onWhatsApp(candidateJid);
+    if (result?.exists && result.jid) targetJid = result.jid;
+    else if (result && !result.exists) {
+      throw new Error(`Número ${digits} não está no WhatsApp`);
+    }
+  } catch (err) {
+    // onWhatsApp pode falhar com erros de rede — tenta enviar mesmo assim
+    if (err instanceof Error && err.message.includes('não está no WhatsApp')) throw err;
+    console.warn('[Baileys Broadcast] onWhatsApp check falhou, tentando envio direto:', err);
+  }
+
+  const sent = await session.sock.sendMessage(targetJid, { text });
+  const externalMessageId = sent?.key?.id || `baileys_${Date.now()}`;
+  return { externalMessageId };
+}
+
 // ─── Firestore: save inbound message ─────────────────────────────────────────
 
 async function handleInboundMessage(

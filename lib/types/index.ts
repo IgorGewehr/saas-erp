@@ -2408,6 +2408,8 @@ export interface Broadcast {
   recipients?: BroadcastRecipient[];
   /** ID do broadcast original quando este é um retry — auditoria. */
   retryOf?: string;
+  /** Quando true e channel === 'whatsapp', envia via Baileys (WhatsApp Web) em vez de Cloud API. */
+  viaBaileys?: boolean;
   messageType: 'template' | 'text';
   templateName?: string;
   templateLanguage?: string;

@@ -1196,6 +1196,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
   const [openBroadcast, setOpenBroadcast] = useState<Broadcast | null>(null);
   const [formName, setFormName] = useState('');
   const [formChannel, setFormChannel] = useState<'whatsapp' | 'facebook' | 'instagram' | 'email'>('whatsapp');
+  const [formViaBaileys, setFormViaBaileys] = useState(false);
   const [formAudienceType, setFormAudienceType] = useState<'all_contacts' | 'tags' | 'manual' | 'list'>('list');
   const [formTags, setFormTags] = useState('');
   const [formRecipients, setFormRecipients] = useState<BroadcastRecipient[]>([]);
@@ -1205,11 +1206,21 @@ function CampaignsTab({ businessId }: { businessId: string }) {
   const [formEmailSubject, setFormEmailSubject] = useState('');
   const [saving, setSaving] = useState(false);
   const { user, business } = useAuth();
-  // Detecta se notification-server está configurado (necessário para canal email)
-  type BusinessWithSettings = NonNullable<typeof business> & {
+  // Detecta features disponíveis a partir de business.settings/channels
+  type BusinessExtended = NonNullable<typeof business> & {
     settings?: { notificationServer?: { isConfigured?: boolean } };
+    channels?: {
+      whatsappBaileys?: { isConnected?: boolean };
+      whatsapp?: { isConnected?: boolean; connectedVia?: string };
+    };
   };
-  const notificationServerReady = !!(business as BusinessWithSettings)?.settings?.notificationServer?.isConfigured;
+  const biz = business as BusinessExtended | undefined;
+  const notificationServerReady = !!biz?.settings?.notificationServer?.isConfigured;
+  // Baileys disponível: campo novo isolado OU legacy com connectedVia=baileys
+  const baileysReady = !!(
+    biz?.channels?.whatsappBaileys?.isConnected
+    || (biz?.channels?.whatsapp?.connectedVia === 'baileys' && biz?.channels?.whatsapp?.isConnected)
+  );
 
   // Carrega clientes para o auto-link do RecipientListInput (cache compartilhado com pipeline tab)
   const { data: existingClients = [] } = useQuery<Client[]>({
@@ -1242,6 +1253,9 @@ function CampaignsTab({ businessId }: { businessId: string }) {
     if (formChannel === 'email') {
       if (!formEmailSubject.trim()) { toast.error('Digite o assunto do email.'); return; }
       if (!formContent.trim()) { toast.error('Digite o corpo do email.'); return; }
+    } else if (formChannel === 'whatsapp' && formViaBaileys) {
+      // Baileys: sem template — só texto livre
+      if (!formContent.trim()) { toast.error('Digite o conteúdo da mensagem.'); return; }
     } else {
       if (formMsgType === 'template' && !isTemplateSelectionValid(formTemplate)) {
         toast.error('Selecione um template e preencha todas as variáveis.');
@@ -1276,8 +1290,9 @@ function CampaignsTab({ businessId }: { businessId: string }) {
             return cleaned;
           })
         : [];
-      // Email força messageType=text; outros canais respeitam a escolha
-      const effectiveMsgType = formChannel === 'email' ? 'text' : formMsgType;
+      // Email e Baileys forçam messageType=text; outros canais respeitam a escolha
+      const isBaileysSend = formChannel === 'whatsapp' && formViaBaileys;
+      const effectiveMsgType = (formChannel === 'email' || isBaileysSend) ? 'text' : formMsgType;
       const payload: Record<string, unknown> = {
         businessId,
         name: formName.trim(),
@@ -1290,6 +1305,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
         templateParams: effectiveMsgType === 'template' && formTemplate ? formTemplate.params : undefined,
         messageContent: effectiveMsgType === 'text' ? formContent.trim() : undefined,
         emailSubject: formChannel === 'email' ? formEmailSubject.trim() : undefined,
+        viaBaileys: isBaileysSend,
         status: 'draft' as BroadcastStatus,
         stats: { total: recipientsTotal, sent: 0, delivered: 0, read: 0, failed: 0, replied: 0 },
         createdBy: user.uid,
@@ -1308,6 +1324,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       setFormTemplate(null);
       setFormContent('');
       setFormEmailSubject('');
+      setFormViaBaileys(false);
     } catch (err) {
       console.error('[CRM:Campaigns] Error creating broadcast:', err);
       toast.error(t('crm.toast.errorCreateCampaign', 'Erro ao criar campanha'));
@@ -1348,6 +1365,48 @@ function CampaignsTab({ businessId }: { businessId: string }) {
               </MenuItem>
             </Select>
           </FormControl>
+          {/* Toggle Cloud vs Baileys — só aparece se ambos disponíveis */}
+          {formChannel === 'whatsapp' && baileysReady && (
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">Modo de envio</p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setFormViaBaileys(false)}
+                  className={cn(
+                    'flex-1 px-3 py-2 text-xs rounded-lg border-2 transition-colors text-left',
+                    !formViaBaileys
+                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-500/10'
+                      : 'border-gray-200 dark:border-gray-700 hover:border-blue-300',
+                  )}
+                >
+                  <p className="font-bold text-gray-900 dark:text-gray-100">WhatsApp Business (Cloud)</p>
+                  <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5">Oficial Meta · requer template aprovado</p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFormViaBaileys(true)}
+                  className={cn(
+                    'flex-1 px-3 py-2 text-xs rounded-lg border-2 transition-colors text-left',
+                    formViaBaileys
+                      ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10'
+                      : 'border-gray-200 dark:border-gray-700 hover:border-emerald-300',
+                  )}
+                >
+                  <p className="font-bold text-gray-900 dark:text-gray-100">WhatsApp Web (Baileys)</p>
+                  <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5">Texto livre · sem template</p>
+                </button>
+              </div>
+              {formViaBaileys && (
+                <div className="mt-2 px-2.5 py-1.5 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20">
+                  <p className="text-[10px] text-amber-700 dark:text-amber-400 leading-relaxed">
+                    ⚠️ <strong>Risco de banimento:</strong> envios em massa via Baileys violam ToS do WhatsApp.
+                    Use com moderação (recomendado: ≤200 msgs/dia, delay ≥2s entre envios).
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
           <FormControl fullWidth size="small">
             <InputLabel>{t('crm.form.audience', 'Audiência')}</InputLabel>
             <Select value={formAudienceType} label={t('crm.form.audience', 'Audiência')} onChange={(e) => setFormAudienceType(e.target.value as typeof formAudienceType)}>
@@ -1365,14 +1424,16 @@ function CampaignsTab({ businessId }: { businessId: string }) {
               existingClients={existingClients}
             />
           )}
-          {/* Tipo de mensagem só aparece para canais Meta — email é sempre texto livre */}
-          {formChannel !== 'email' && (
+          {/* Tipo de mensagem aparece só para canais Meta sem Baileys.
+              Email = sempre texto livre. Baileys = sempre texto livre (sem template). */}
+          {formChannel !== 'email' && !(formChannel === 'whatsapp' && formViaBaileys) && (
             <FormControl fullWidth size="small"><InputLabel>{t('crm.form.type', 'Tipo')}</InputLabel><Select value={formMsgType} label={t('crm.form.type', 'Tipo')} onChange={(e) => setFormMsgType(e.target.value as typeof formMsgType)}><MenuItem value="template">{t('crm.form.template', 'Template')}</MenuItem><MenuItem value="text">{t('crm.form.text', 'Texto')}</MenuItem></Select></FormControl>
           )}
           {formChannel === 'email' && (
             <TextField label="Assunto do email" value={formEmailSubject} onChange={(e) => setFormEmailSubject(e.target.value)} fullWidth size="small" />
           )}
-          {formChannel !== 'email' && formMsgType === 'template' ? (
+          {/* TemplateSelector só para Cloud (não-email, não-baileys) com tipo template */}
+          {formChannel !== 'email' && !(formChannel === 'whatsapp' && formViaBaileys) && formMsgType === 'template' ? (
             <TemplateSelector
               businessId={businessId}
               value={formTemplate}

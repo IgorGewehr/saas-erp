@@ -3,6 +3,7 @@ import { decryptToken } from '@/lib/utils/encryption';
 import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { adminDb } from '@/lib/config/firebaseAdmin';
+import { sendBaileysBroadcastMessage } from '@/app/api/whatsapp/baileys-manager';
 import type { BroadcastTemplateParam } from '@/lib/types';
 
 /**
@@ -163,6 +164,8 @@ export async function POST(req: NextRequest) {
       recipients: rawRecipients,
       sendRate = 10,
       phoneNumberId,
+      /** Quando true, envia via Baileys (WhatsApp Web) em vez de Cloud API. Só vale para channel === 'whatsapp'. */
+      viaBaileys = false,
     } = body;
 
     if (!businessId || !broadcastId || !rawRecipients?.length) {
@@ -194,8 +197,18 @@ export async function POST(req: NextRequest) {
     let token: string;
     let resolvedPhoneNumberId = phoneNumberId;
 
-    if (channel === 'whatsapp') {
-      // Broadcasts via Cloud API: lê whatsappCloud (novo); fallback para legado se Cloud
+    if (channel === 'whatsapp' && viaBaileys) {
+      // Branch Baileys: valida que a sessão está ativa
+      const baileysCfg = channels?.whatsappBaileys;
+      const legacy = channels?.whatsapp;
+      const legacyIsBaileys = legacy?.connectedVia === 'baileys';
+      const isReady = baileysCfg?.isConnected || (!baileysCfg && legacyIsBaileys && legacy?.isConnected);
+      if (!isReady) {
+        return NextResponse.json({ error: 'WhatsApp Web (Baileys) não está conectado' }, { status: 400 });
+      }
+      token = ''; // Baileys não usa token
+    } else if (channel === 'whatsapp') {
+      // Branch Cloud: lê whatsappCloud (novo); fallback para legado se Cloud
       const cloudCfg = channels?.whatsappCloud;
       const legacy = channels?.whatsapp;
       const legacyIsCloud = legacy?.connectedVia !== 'baileys';
@@ -271,6 +284,57 @@ export async function POST(req: NextRequest) {
       const recipient = recipients[i];
       const messageDocId = messageDocIds[i];
       let response;
+
+      // Pause/cancel: re-checa status do broadcast a cada 10 mensagens
+      if (i > 0 && i % 10 === 0) {
+        const cur = await broadcastRef.get();
+        const curStatus = cur.data()?.status;
+        if (curStatus === 'paused') {
+          console.log('[Broadcast] paused mid-loop at index', i);
+          break;
+        }
+      }
+
+      // ── Branch Baileys (chamada direta na sessão local, não via fetch) ─────
+      if (channel === 'whatsapp' && viaBaileys) {
+        try {
+          const { externalMessageId } = await sendBaileysBroadcastMessage(
+            businessId,
+            recipient.recipientId,
+            messageContent || '',
+          );
+          results.push({
+            contactId: recipient.contactId,
+            recipientId: recipient.recipientId,
+            status: 'sent',
+            externalMessageId,
+          });
+          updatePromises.push(
+            adminDb.collection('broadcastMessages').doc(messageDocId).update({
+              status: 'sent',
+              externalMessageId,
+              sentAt: new Date().toISOString(),
+            })
+          );
+        } catch (err) {
+          const errMessage = err instanceof Error ? err.message : 'Baileys send error';
+          results.push({
+            contactId: recipient.contactId,
+            recipientId: recipient.recipientId,
+            status: 'failed',
+            error: errMessage,
+          });
+          updatePromises.push(
+            adminDb.collection('broadcastMessages').doc(messageDocId).update({
+              status: 'failed',
+              errorMessage: errMessage,
+            })
+          );
+        }
+        // Throttle mais agressivo para Baileys (recomenda-se 2-5s)
+        await sleep(Math.max(delayMs, 2000));
+        continue;
+      }
 
       try {
         if (channel === 'whatsapp') {
