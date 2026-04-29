@@ -124,6 +124,7 @@ import type {
   PaymentMethod,
   BankAccount,
   BankAccountType,
+  RecurrenceFrequency,
   Sector,
   Broadcast,
   ConversationChannel,
@@ -6699,6 +6700,7 @@ function RecurringContent({
   onEndSeries: (txId: string, cancelCurrent: boolean) => Promise<void>;
   onAdjustValue: (txId: string, mode: 'pct' | 'fixed', value: number) => Promise<void>;
 }) {
+  const { isDark } = useTheme();
   const [filter, setFilter] = useState<RecurringFilter>('all');
   const [pausingId, setPausingId] = useState<string | null>(null);
   const [resumingId, setResumingId] = useState<string | null>(null);
@@ -7452,6 +7454,40 @@ function RecurringContent({
         </div>
       </div>
 
+      {/* ── FIN-R23: Padrões recorrentes detectados ── */}
+      {suggestedPatterns.length > 0 && (
+        <div className="bg-white dark:bg-gray-900 border border-blue-200 dark:border-blue-800 rounded-2xl overflow-hidden shadow-sm">
+          <div className="px-5 py-3 border-b border-blue-100 dark:border-blue-900/50 flex items-center gap-2">
+            <Repeat size={15} className="text-blue-500" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-bold text-slate-900 dark:text-gray-100">Padrões recorrentes detectados</p>
+              <p className="text-[11px] text-slate-400 dark:text-gray-500">{suggestedPatterns.length} transação{suggestedPatterns.length !== 1 ? 'ões parecem' : ' parece'} recorrente{suggestedPatterns.length !== 1 ? 's' : ''}</p>
+            </div>
+          </div>
+          <div className="divide-y divide-blue-50 dark:divide-blue-900/20">
+            {suggestedPatterns.map(p => (
+              <div key={p.key} className="px-5 py-3.5 flex items-start justify-between gap-4">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-slate-900 dark:text-gray-100 truncate">{p.description}</p>
+                  <p className="text-xs text-slate-500 dark:text-gray-400 mt-0.5">
+                    {p.count} pagamentos de ~{formatCurrency(p.avgAmount)} · {p.freqLabel} ·{' '}
+                    <span className={p.type === 'receita' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>{p.type === 'receita' ? 'Receita' : 'Despesa'}</span>
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button onClick={() => onEdit({ ...p.sampleTx, id: '', recurrence: { frequency: p.frequency as RecurrenceFrequency, nextDueDate: p.sampleTx.dueDate ?? new Date().toISOString().slice(0, 10), isActive: true } })}
+                    className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-100 transition-colors"
+                  ><Repeat size={11} /> Criar série</button>
+                  <button onClick={() => dismissPattern(p.key)}
+                    className="flex items-center gap-1 px-2.5 py-1.5 text-xs text-slate-400 hover:text-slate-600 dark:hover:text-gray-300 border border-slate-200 dark:border-gray-700 rounded-lg hover:bg-slate-50 dark:hover:bg-gray-800 transition-colors"
+                  ><X size={11} /> Ignorar</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* FIN-R27: Dashboard de inadimplência */}
       {(() => {
         const overdue = allRecurrences.filter(tx => tx.recurrence?.nextDueDate && tx.recurrence.nextDueDate < todayStr);
@@ -7530,6 +7566,10 @@ function RecurringContent({
         <button onClick={() => exportRecurrencesCSV(transactions, businessName)} title="Exportar recorrências em CSV"
           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium border border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors ml-auto"
         ><Download size={13} /> CSV</button>
+        {/* FIN-R22: Botão Simulador */}
+        <button onClick={() => setSimOpen(v => !v)}
+          className={cn('flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium border transition-colors', simOpen ? 'bg-violet-50 dark:bg-violet-900/30 border-violet-300 dark:border-violet-700 text-violet-700 dark:text-violet-300' : 'border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-white/[0.04]')}
+        ><Scale size={13} /> Simular</button>
         <div className="flex items-center gap-1 p-1 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl">
           <button onClick={() => setViewMode('list')} title="Visão em lista"
             className={cn('p-1.5 rounded-lg transition-all', viewMode === 'list' ? 'bg-red-600 text-white shadow-sm' : 'text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800')}
@@ -7539,6 +7579,104 @@ function RecurringContent({
           ><CalendarDays size={14} /></button>
         </div>
       </div>
+
+      {/* ── FIN-R22: Painel Simulador "E Se?" ── */}
+      <AnimatePresence>
+        {simOpen && (
+          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.25 }} className="overflow-hidden">
+            <div className="bg-white dark:bg-gray-900 border border-violet-200 dark:border-violet-800 rounded-2xl p-5 space-y-5 shadow-sm">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Scale size={16} className="text-violet-500" />
+                  <h3 className="text-sm font-display font-bold text-slate-900 dark:text-gray-100">Simulador &quot;E Se?&quot;</h3>
+                  <span className="text-[10px] text-violet-500 bg-violet-50 dark:bg-violet-900/30 px-1.5 py-0.5 rounded-full font-semibold">Não salva</span>
+                </div>
+                <button onClick={() => setSimOpen(false)} className="p-1 rounded-lg text-slate-400 hover:text-slate-600 transition-colors"><X size={14} /></button>
+              </div>
+              {/* Séries ativas */}
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase tracking-wider">Ajustar séries ativas</p>
+                <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                  {allRecurrences.map(tx => {
+                    const ov = simOverrides[tx.id] ?? { amountMultiplier: 1, paused: false };
+                    const monthly = tx.amount * (FREQ_TO_MONTHLY[tx.recurrence?.frequency ?? 'monthly'] ?? 1);
+                    return (
+                      <div key={tx.id} className={cn('flex items-center gap-3 p-2.5 rounded-xl border text-xs', ov.paused ? 'opacity-40 bg-slate-50 dark:bg-gray-800/50 border-slate-200 dark:border-gray-700' : 'bg-white dark:bg-gray-900 border-slate-200 dark:border-gray-700')}>
+                        <button onClick={() => setSimOverrides(p => ({ ...p, [tx.id]: { ...ov, paused: !ov.paused } }))} className={cn('p-1 rounded-lg shrink-0 transition-colors', ov.paused ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600' : 'text-slate-400 hover:text-amber-500')} title={ov.paused ? 'Retomar no simulador' : 'Pausar no simulador'}>
+                          {ov.paused ? <PlayCircle size={12} /> : <PauseCircle size={12} />}
+                        </button>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-slate-700 dark:text-gray-200 truncate">{tx.recurrence?.label || tx.description}</p>
+                          <p className="text-[10px] text-slate-400 dark:text-gray-500">{formatCurrency(monthly)}/mês base</p>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <input type="range" min={0.1} max={3} step={0.05} value={ov.amountMultiplier} disabled={ov.paused}
+                            onChange={e => setSimOverrides(p => ({ ...p, [tx.id]: { ...ov, amountMultiplier: parseFloat(e.target.value) } }))}
+                            className="w-20 accent-violet-500"
+                          />
+                          <span className={cn('w-20 text-right font-semibold', tx.type === 'receita' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+                            {formatCurrency(monthly * ov.amountMultiplier)}/m
+                          </span>
+                          {ov.amountMultiplier !== 1 && <span className="text-[10px] text-slate-400 w-10 text-right">×{ov.amountMultiplier.toFixed(2)}</span>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              {/* Séries hipotéticas */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase tracking-wider">Séries hipotéticas</p>
+                  <button onClick={() => setSimNewSeries(p => [...p, { type: 'despesa', amount: '', frequency: 'monthly' }])}
+                    className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold bg-violet-50 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 rounded-lg border border-violet-200 dark:border-violet-700 hover:bg-violet-100 transition-colors"
+                  ><Plus size={10} /> Adicionar</button>
+                </div>
+                {simNewSeries.map((s, idx) => (
+                  <div key={idx} className="flex items-center gap-2 p-2 rounded-xl bg-violet-50 dark:bg-violet-900/10 border border-violet-100 dark:border-violet-900/50">
+                    <select value={s.type} onChange={e => setSimNewSeries(p => p.map((x, i) => i === idx ? { ...x, type: e.target.value as 'receita' | 'despesa' } : x))}
+                      className="text-xs bg-transparent text-slate-700 dark:text-gray-300 font-medium focus:outline-none cursor-pointer">
+                      <option value="receita">Receita</option><option value="despesa">Despesa</option>
+                    </select>
+                    <input type="number" placeholder="R$ Valor" value={s.amount} onChange={e => setSimNewSeries(p => p.map((x, i) => i === idx ? { ...x, amount: e.target.value } : x))}
+                      className="flex-1 text-xs px-2 py-1 rounded-lg border border-violet-200 dark:border-violet-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 focus:outline-none" />
+                    <select value={s.frequency} onChange={e => setSimNewSeries(p => p.map((x, i) => i === idx ? { ...x, frequency: e.target.value } : x))}
+                      className="text-xs border border-violet-200 dark:border-violet-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 px-1 py-1 rounded-lg focus:outline-none">
+                      {Object.entries(RECURRENCE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                    </select>
+                    <button onClick={() => setSimNewSeries(p => p.filter((_, i) => i !== idx))} className="p-1 text-slate-400 hover:text-red-500 transition-colors"><X size={12} /></button>
+                  </div>
+                ))}
+              </div>
+              {/* Resultado simulado */}
+              {simMonthlyData.length > 0 && (
+                <div className="flex items-start gap-4">
+                  <div className={cn('flex-none p-3 rounded-xl border text-center min-w-[100px]', simRunway === Infinity ? 'bg-emerald-50 dark:bg-emerald-900/10 border-emerald-200 dark:border-emerald-800' : (simRunway ?? 0) < 3 ? 'bg-red-50 dark:bg-red-900/10 border-red-200 dark:border-red-800' : (simRunway ?? 0) < 6 ? 'bg-amber-50 dark:bg-amber-900/10 border-amber-200 dark:border-amber-800' : 'bg-slate-50 dark:bg-gray-800 border-slate-200 dark:border-gray-700')}>
+                    <p className="text-[10px] text-slate-500 dark:text-gray-400">Runway simulado</p>
+                    <p className={cn('text-2xl font-display font-bold mt-0.5', simRunway === Infinity ? 'text-emerald-600 dark:text-emerald-400' : (simRunway ?? 0) < 3 ? 'text-red-600 dark:text-red-400' : (simRunway ?? 0) < 6 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-700 dark:text-gray-200')}>
+                      {simRunway === Infinity ? '∞' : `${simRunway}m`}
+                    </p>
+                    <p className="text-[10px] text-slate-400 dark:text-gray-500">{simRunway === Infinity ? 'Saldo positivo' : 'meses até zerar'}</p>
+                  </div>
+                  <div className="flex-1 min-w-0 h-40">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <ComposedChart data={simMonthlyData} margin={{ top: 4, right: 4, left: 0, bottom: 4 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#1E293B' : '#F1F5F9'} />
+                        <XAxis dataKey="month" tick={{ fontSize: 9, fill: '#94A3B8' }} />
+                        <YAxis tick={{ fontSize: 9, fill: '#94A3B8' }} tickFormatter={v => `${(v / 1000).toFixed(0)}k`} />
+                        <RechartsTooltip formatter={(v: number) => formatCurrency(v)} contentStyle={{ borderRadius: '10px', fontSize: 11 }} />
+                        <Bar dataKey="receita" name="MRR sim." fill="#10B981" radius={[3, 3, 0, 0]} />
+                        <Bar dataKey="despesa" name="Burn sim." fill="#EF4444" radius={[3, 3, 0, 0]} />
+                        <Line dataKey="saldo" name="Saldo acum." stroke="#8B5CF6" strokeWidth={2} dot={false} />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Calendar view */}
       {viewMode === 'calendar' && (() => {
@@ -7676,6 +7814,68 @@ function RecurringContent({
           </div>
         </div>
       )}
+
+      {/* ── FIN-R24: Toolbar flutuante de edição em lote ── */}
+      <AnimatePresence>
+        {selectedIds.size > 0 && (
+          <motion.div initial={{ opacity: 0, y: 40 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 40 }} transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-gray-900 dark:bg-gray-800 text-white rounded-2xl shadow-2xl px-4 py-3 flex items-center gap-3 border border-gray-700"
+          >
+            <span className="text-sm font-semibold">{selectedIds.size} selecionada{selectedIds.size !== 1 ? 's' : ''}</span>
+            <div className="w-px h-4 bg-gray-600" />
+            <button onClick={() => setBulkReajusteOpen(true)} className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold bg-violet-600 hover:bg-violet-700 rounded-lg transition-colors"><Percent size={12} /> Reajustar %</button>
+            <button onClick={() => setBulkReclassifyOpen(true)} className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"><LayoutList size={12} /> Reclassificar</button>
+            <button onClick={() => setBulkEndOpen(true)} className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold bg-red-600 hover:bg-red-700 rounded-lg transition-colors"><StopCircle size={12} /> Encerrar</button>
+            <div className="w-px h-4 bg-gray-600" />
+            <button onClick={clearSelection} className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-gray-400 hover:text-white rounded-lg transition-colors"><X size={12} /> Desmarcar</button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <Dialog open={bulkReajusteOpen} onClose={() => setBulkReajusteOpen(false)} PaperProps={{ sx: { borderRadius: '16px', maxWidth: 400, width: '100%' } }}>
+        <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem', pb: 1 }}>Reajustar {selectedIds.size} série(s)</DialogTitle>
+        <DialogContent>
+          <p className="text-sm text-slate-500 mb-4">Informe o percentual de reajuste. Use valores negativos para redução.</p>
+          <TextField label="Percentual (%)" type="number" fullWidth value={bulkPct} onChange={e => setBulkPct(e.target.value)} placeholder="Ex: 5"
+            InputProps={{ startAdornment: <InputAdornment position="start"><Percent size={14} /></InputAdornment> }}
+            sx={{ '& .MuiOutlinedInput-root': { borderRadius: '12px' } }}
+          />
+          {bulkPct && !isNaN(parseFloat(bulkPct)) && <p className="text-xs text-slate-400 mt-2">Exemplo: R$ 1.000 → {formatCurrency(1000 * (1 + parseFloat(bulkPct) / 100))}</p>}
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setBulkReajusteOpen(false)} disabled={bulkSaving}>Cancelar</Button>
+          <Button onClick={handleBulkReajuste} disabled={bulkSaving || !bulkPct || isNaN(parseFloat(bulkPct))} variant="contained"
+            sx={{ background: '#7C3AED', '&:hover': { background: '#6D28D9' }, borderRadius: '10px' }}
+            startIcon={bulkSaving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}>Aplicar</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={bulkReclassifyOpen} onClose={() => setBulkReclassifyOpen(false)} PaperProps={{ sx: { borderRadius: '16px', maxWidth: 400, width: '100%' } }}>
+        <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem', pb: 1 }}>Reclassificar {selectedIds.size} série(s)</DialogTitle>
+        <DialogContent>
+          <p className="text-sm text-slate-500 mb-4">Informe a nova categoria para todas as séries selecionadas.</p>
+          <TextField label="Nova categoria" fullWidth value={bulkCategory} onChange={e => setBulkCategory(e.target.value)} placeholder="Ex: Infraestrutura"
+            sx={{ '& .MuiOutlinedInput-root': { borderRadius: '12px' } }} />
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setBulkReclassifyOpen(false)} disabled={bulkSaving}>Cancelar</Button>
+          <Button onClick={handleBulkReclassify} disabled={bulkSaving || !bulkCategory.trim()} variant="contained"
+            sx={{ background: '#2563EB', '&:hover': { background: '#1D4ED8' }, borderRadius: '10px' }}
+            startIcon={bulkSaving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}>Aplicar</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={bulkEndOpen} onClose={() => setBulkEndOpen(false)} PaperProps={{ sx: { borderRadius: '16px', maxWidth: 400, width: '100%' } }}>
+        <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem', pb: 1, color: '#DC2626' }}>Encerrar {selectedIds.size} série(s)?</DialogTitle>
+        <DialogContent>
+          <p className="text-sm text-slate-600">Esta ação marca todas as séries como <strong>inativas</strong>. Lançamentos existentes não são alterados.</p>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setBulkEndOpen(false)} disabled={bulkSaving}>Cancelar</Button>
+          <Button onClick={handleBulkEnd} disabled={bulkSaving} variant="contained" color="error" sx={{ borderRadius: '10px' }}
+            startIcon={bulkSaving ? <Loader2 size={14} className="animate-spin" /> : <StopCircle size={14} />}>Confirmar encerramento</Button>
+        </DialogActions>
+      </Dialog>
     </div>
   );
 }
