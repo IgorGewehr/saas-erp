@@ -155,25 +155,15 @@ const inputSx = { '& .MuiOutlinedInput-root': { borderRadius: '12px' } };
 
 function computeNextDueDate(currentDue: string, frequency: string, dayOfMonth?: number): string {
   const d = new Date(currentDue + 'T00:00:00');
+  // Cap dayOfMonth at 28 to avoid JS auto-overflow into next month (e.g., Feb 31 → Mar 3)
+  const day = dayOfMonth ? Math.min(dayOfMonth, 28) : undefined;
   switch (frequency) {
-    case 'weekly':      d.setDate(d.getDate() + 7); break;
-    case 'biweekly':    d.setDate(d.getDate() + 14); break;
-    case 'monthly':
-      d.setMonth(d.getMonth() + 1);
-      if (dayOfMonth) d.setDate(dayOfMonth);
-      break;
-    case 'quarterly':
-      d.setMonth(d.getMonth() + 3);
-      if (dayOfMonth) d.setDate(dayOfMonth);
-      break;
-    case 'semiannual':
-      d.setMonth(d.getMonth() + 6);
-      if (dayOfMonth) d.setDate(dayOfMonth);
-      break;
-    case 'yearly':
-      d.setFullYear(d.getFullYear() + 1);
-      if (dayOfMonth) d.setDate(dayOfMonth);
-      break;
+    case 'weekly':     d.setDate(d.getDate() + 7); break;
+    case 'biweekly':   d.setDate(d.getDate() + 14); break;
+    case 'monthly':    d.setMonth(d.getMonth() + 1);   if (day) d.setDate(day); break;
+    case 'quarterly':  d.setMonth(d.getMonth() + 3);   if (day) d.setDate(day); break;
+    case 'semiannual': d.setMonth(d.getMonth() + 6);   if (day) d.setDate(day); break;
+    case 'yearly':     d.setFullYear(d.getFullYear() + 1); if (day) d.setDate(day); break;
   }
   return d.toISOString().slice(0, 10);
 }
@@ -3214,12 +3204,14 @@ function CashFlowProjection({
   // ── Helper: advance a date by one recurrence period ─────────────────────────
   function advanceRecurrence(dateStr: string, frequency: string, dayOfMonth?: number): string {
     const d = new Date(dateStr + 'T00:00:00');
+    const day = dayOfMonth ? Math.min(dayOfMonth, 28) : undefined;
     switch (frequency) {
-      case 'weekly':    d.setDate(d.getDate() + 7); break;
-      case 'biweekly':  d.setDate(d.getDate() + 14); break;
-      case 'monthly':   d.setMonth(d.getMonth() + 1); if (dayOfMonth) d.setDate(Math.min(dayOfMonth, 28)); break;
-      case 'quarterly': d.setMonth(d.getMonth() + 3); if (dayOfMonth) d.setDate(Math.min(dayOfMonth, 28)); break;
-      case 'yearly':    d.setFullYear(d.getFullYear() + 1); if (dayOfMonth) d.setDate(Math.min(dayOfMonth, 28)); break;
+      case 'weekly':     d.setDate(d.getDate() + 7); break;
+      case 'biweekly':   d.setDate(d.getDate() + 14); break;
+      case 'monthly':    d.setMonth(d.getMonth() + 1);    if (day) d.setDate(day); break;
+      case 'quarterly':  d.setMonth(d.getMonth() + 3);    if (day) d.setDate(day); break;
+      case 'semiannual': d.setMonth(d.getMonth() + 6);    if (day) d.setDate(day); break;
+      case 'yearly':     d.setFullYear(d.getFullYear() + 1); if (day) d.setDate(day); break;
     }
     return d.toISOString().slice(0, 10);
   }
