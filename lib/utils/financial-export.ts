@@ -416,3 +416,45 @@ export function exportCommissionsCSV(
   ];
   triggerDownload(lines.join('\n'), filename, 'text/csv;charset=utf-8;');
 }
+
+// ─── 8. RECURRING TRANSACTIONS CSV ───────────────────────────────────────────
+
+export function exportRecurrencesCSV(
+  transactions: Transaction[],
+  businessName: string,
+  filename = `recorrentes_${new Date().toISOString().slice(0, 10)}.csv`,
+) {
+  const FREQ_LABEL: Record<string, string> = {
+    weekly: 'Semanal', biweekly: 'Quinzenal', biweekly_fixed: 'Quinzenal (dias fixos)',
+    monthly: 'Mensal', quarterly: 'Trimestral', semiannual: 'Semestral', yearly: 'Anual',
+  };
+  const recs = transactions.filter(t => t.recurrence != null);
+  const lines: string[] = [
+    BOM,
+    row([businessName]),
+    row(['Recorrências — Relatório']),
+    row([`Gerado em ${new Date().toLocaleString('pt-BR')}`]),
+    '',
+    row(['Nome', 'Tipo', 'Status', 'Frequência', 'Valor (R$)', 'Próximo Vencimento', 'Data Encerramento', 'Total Pago (R$)', 'Nº Ocorrências Pagas']),
+    ...recs.map(t => {
+      const rec = t.recurrence!;
+      const totalPago = (rec.history ?? []).reduce((s, e) => s + e.amount, 0);
+      return row([
+        rec.label || t.description,
+        t.type === 'receita' ? 'Receita' : 'Despesa',
+        rec.isActive ? 'Ativa' : 'Pausada',
+        FREQ_LABEL[rec.frequency] ?? rec.frequency,
+        fmtR(t.amount),
+        formatDate(rec.nextDueDate),
+        rec.endDate ? formatDate(rec.endDate) : '',
+        fmtR(totalPago),
+        rec.history?.length ?? 0,
+      ]);
+    }),
+    '',
+    row(['TOTAL REGISTROS', recs.length]),
+    row(['ATIVAS', recs.filter(t => t.recurrence!.isActive).length]),
+    row(['PAUSADAS', recs.filter(t => !t.recurrence!.isActive).length]),
+  ];
+  triggerDownload(lines.join('\n'), filename, 'text/csv;charset=utf-8;');
+}

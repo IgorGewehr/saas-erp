@@ -110,6 +110,7 @@ import {
   exportCashFlowCSV,
   exportDRESectorCSV,
   exportCommissionsCSV,
+  exportRecurrencesCSV,
   type DREData,
   type CashFlowRow,
   type SectorDRERow,
@@ -157,7 +158,52 @@ const inputSx = { '& .MuiOutlinedInput-root': { borderRadius: '12px' } };
 // HELPERS
 // ==========================================
 
-function computeNextDueDate(currentDue: string, frequency: string, dayOfMonth?: number, secondDayOfMonth?: number): string {
+// ── FIN-R17: Brazilian national holiday set (fixed + moveable 2025–2030) ─────
+function _easterDate(year: number): Date {
+  const a = year % 19, b = Math.floor(year / 100), c = year % 100;
+  const d = Math.floor(b / 4), e = b % 4;
+  const f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4), k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31) - 1; // 0-indexed
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(year, month, day);
+}
+
+const BR_HOLIDAYS: Set<string> = (() => {
+  const set = new Set<string>();
+  const fmt = (d: Date) => d.toISOString().slice(0, 10);
+  const addDays = (base: Date, n: number) => { const d = new Date(base); d.setDate(d.getDate() + n); return d; };
+  for (let year = 2025; year <= 2030; year++) {
+    const y = year;
+    const fix = (m: number, day: number) => new Date(y, m - 1, day);
+    set.add(fmt(fix(1, 1))); set.add(fmt(fix(4, 21))); set.add(fmt(fix(5, 1)));
+    set.add(fmt(fix(9, 7))); set.add(fmt(fix(10, 12))); set.add(fmt(fix(11, 2)));
+    set.add(fmt(fix(11, 15))); set.add(fmt(fix(11, 20))); set.add(fmt(fix(12, 25)));
+    const easter = _easterDate(y);
+    set.add(fmt(addDays(easter, -48))); // Carnaval (segunda)
+    set.add(fmt(addDays(easter, -47))); // Carnaval (terça)
+    set.add(fmt(addDays(easter, -2)));  // Sexta-Feira Santa
+    set.add(fmt(easter));               // Páscoa
+    set.add(fmt(addDays(easter, 60)));  // Corpus Christi
+  }
+  return set;
+})();
+
+function adjustForBusinessDay(dateStr: string, adjust: 'none' | 'before' | 'after' | undefined): string {
+  if (!adjust || adjust === 'none') return dateStr;
+  const d = new Date(dateStr + 'T00:00:00');
+  const step = adjust === 'before' ? -1 : 1;
+  let guard = 0;
+  while ((d.getDay() === 0 || d.getDay() === 6 || BR_HOLIDAYS.has(d.toISOString().slice(0, 10))) && guard++ < 10) {
+    d.setDate(d.getDate() + step);
+  }
+  return d.toISOString().slice(0, 10);
+}
+
+function computeNextDueDate(currentDue: string, frequency: string, dayOfMonth?: number, secondDayOfMonth?: number, holidayAdjust?: 'none' | 'before' | 'after'): string {
   const d = new Date(currentDue + 'T00:00:00');
   // Cap dayOfMonth at 28 to avoid JS auto-overflow into next month (e.g., Feb 31 → Mar 3)
   const day = dayOfMonth ? Math.min(dayOfMonth, 28) : undefined;
@@ -181,7 +227,7 @@ function computeNextDueDate(currentDue: string, frequency: string, dayOfMonth?: 
       break;
     }
   }
-  return d.toISOString().slice(0, 10);
+  return adjustForBusinessDay(d.toISOString().slice(0, 10), holidayAdjust);
 }
 
 const RECURRENCE_LABELS: Record<string, string> = {
@@ -336,6 +382,9 @@ export default function FinancialModule() {
   const [formRecurrenceDay, setFormRecurrenceDay] = useState<string>('');
   const [formRecurrenceSecondDay, setFormRecurrenceSecondDay] = useState<string>('');
   const [formRecurrenceLabel, setFormRecurrenceLabel] = useState<string>('');
+  const [formRecurrenceHolidayAdjust, setFormRecurrenceHolidayAdjust] = useState<'none' | 'before' | 'after'>('none');
+  const [formRecurrenceLateFeePct, setFormRecurrenceLateFeePct] = useState('');
+  const [formRecurrenceInterestPct, setFormRecurrenceInterestPct] = useState('');
 
   // Transactions tab state
   const [txFilterTab, setTxFilterTab] = useState<'todas' | 'receitas' | 'despesas' | 'pendentes' | 'atrasadas'>('todas');
@@ -745,14 +794,14 @@ export default function FinancialModule() {
     queryClient.invalidateQueries({ queryKey: ['transactions', business?.id] });
   }, [business?.id, queryClient]);
 
-  const handleMarkRecurringPaid = useCallback(async (txId: string) => {
+  const handleMarkRecurringPaid = useCallback(async (txId: string, paidAmount?: number) => {
     const tx = transactions.find(t => t.id === txId);
     const rec = tx?.recurrence;
     const now = new Date().toISOString();
     const today = now.slice(0, 10);
 
     if (tx && rec?.isActive && rec.nextDueDate && rec.frequency) {
-      const nextDate = computeNextDueDate(rec.nextDueDate, rec.frequency, rec.dayOfMonth, rec.secondDayOfMonth);
+      const nextDate = computeNextDueDate(rec.nextDueDate, rec.frequency, rec.dayOfMonth, rec.secondDayOfMonth, rec.holidayAdjust);
       const seriesEnds = rec.endDate && nextDate > rec.endDate;
       await updateDoc(doc(db, 'transactions', txId), {
         status: 'pago',
@@ -762,7 +811,7 @@ export default function FinancialModule() {
         'recurrence.history': arrayUnion({
           dueDate: rec.nextDueDate,
           paidDate: today,
-          amount: tx.amount,
+          amount: paidAmount ?? tx.amount,
         }),
         ...(seriesEnds ? { 'recurrence.isActive': false } : {}),
       });
@@ -788,7 +837,7 @@ export default function FinancialModule() {
     const tx = transactions.find(t => t.id === txId);
     const rec = tx?.recurrence;
     if (!rec?.nextDueDate || !rec.frequency) return;
-    const nextDate = computeNextDueDate(rec.nextDueDate, rec.frequency, rec.dayOfMonth, rec.secondDayOfMonth);
+    const nextDate = computeNextDueDate(rec.nextDueDate, rec.frequency, rec.dayOfMonth, rec.secondDayOfMonth, rec.holidayAdjust);
     const seriesEnds = rec.endDate && nextDate > rec.endDate;
     await updateDoc(doc(db, 'transactions', txId), {
       'recurrence.nextDueDate': nextDate,
@@ -863,6 +912,9 @@ export default function FinancialModule() {
     setFormRecurrenceDay('');
     setFormRecurrenceSecondDay('');
     setFormRecurrenceLabel('');
+    setFormRecurrenceHolidayAdjust('none');
+    setFormRecurrenceLateFeePct('');
+    setFormRecurrenceInterestPct('');
     setFormAttachments([]);
     setFormFilesToUpload([]);
     setFormAttachmentsToDelete([]);
@@ -908,6 +960,9 @@ export default function FinancialModule() {
     setFormRecurrenceDay(tx.recurrence?.dayOfMonth?.toString() || '');
     setFormRecurrenceSecondDay(tx.recurrence?.secondDayOfMonth?.toString() || '');
     setFormRecurrenceLabel(tx.recurrence?.label || '');
+    setFormRecurrenceHolidayAdjust(tx.recurrence?.holidayAdjust ?? 'none');
+    setFormRecurrenceLateFeePct(tx.recurrence?.lateFeePct?.toString() ?? '');
+    setFormRecurrenceInterestPct(tx.recurrence?.interestPctMonth?.toString() ?? '');
     setFormAttachments(tx.attachments || []);
     setFormFilesToUpload([]);
     setFormAttachmentsToDelete([]);
@@ -987,12 +1042,15 @@ export default function FinancialModule() {
           const secondDayNum = formRecurrenceSecondDay ? parseInt(formRecurrenceSecondDay, 10) : undefined;
           return {
             frequency: formRecurrenceFrequency,
-            nextDueDate: computeNextDueDate(baseDate, formRecurrenceFrequency, dayNum, secondDayNum),
+            nextDueDate: computeNextDueDate(baseDate, formRecurrenceFrequency, dayNum, secondDayNum, formRecurrenceHolidayAdjust),
             ...(formRecurrenceEndDate ? { endDate: formRecurrenceEndDate } : {}),
             isActive: true,
             ...(dayNum ? { dayOfMonth: dayNum } : {}),
             ...(secondDayNum && formRecurrenceFrequency === 'biweekly_fixed' ? { secondDayOfMonth: secondDayNum } : {}),
             ...(formRecurrenceLabel ? { label: formRecurrenceLabel } : {}),
+            holidayAdjust: formRecurrenceHolidayAdjust,
+            ...(formRecurrenceLateFeePct ? { lateFeePct: parseFloat(formRecurrenceLateFeePct) } : {}),
+            ...(formRecurrenceInterestPct ? { interestPctMonth: parseFloat(formRecurrenceInterestPct) } : {}),
           };
         })(),
       };
@@ -1106,7 +1164,7 @@ export default function FinancialModule() {
     } finally {
       setIsSaving(false);
     }
-  }, [business?.id, user, formType, formDescription, formCategory, formAmount, formDueDate, formPaymentDate, formPaymentMethod, formNotes, formClientName, formBankAccount, formStatus, formSectorId, formInstallments, formInstallmentInterval, formRecurrence, formRecurrenceFrequency, formRecurrenceEndDate, formRecurrenceDay, formRecurrenceSecondDay, formRecurrenceLabel, formAttachments, formFilesToUpload, formAttachmentsToDelete, editingTransaction, queryClient, t]);
+  }, [business?.id, user, formType, formDescription, formCategory, formAmount, formDueDate, formPaymentDate, formPaymentMethod, formNotes, formClientName, formBankAccount, formStatus, formSectorId, formInstallments, formInstallmentInterval, formRecurrence, formRecurrenceFrequency, formRecurrenceEndDate, formRecurrenceDay, formRecurrenceSecondDay, formRecurrenceLabel, formRecurrenceHolidayAdjust, formRecurrenceLateFeePct, formRecurrenceInterestPct, formAttachments, formFilesToUpload, formAttachmentsToDelete, editingTransaction, queryClient, t]);
 
   const handleDeleteTransaction = useCallback(async (id: string) => {
     if (!business?.id || !user) return;
@@ -1856,6 +1914,53 @@ export default function FinancialModule() {
                             />
                           )}
                         </div>
+                      </div>
+                    )}
+
+                    {/* FIN-R17: Ajuste de vencimento para dia útil */}
+                    <div className="space-y-1.5">
+                      <p className="text-xs font-medium text-slate-600 dark:text-gray-400">Vencimento em feriado / fim de semana</p>
+                      <div className="flex items-center gap-1 p-0.5 bg-slate-100 dark:bg-gray-800 rounded-xl w-fit">
+                        {(['none', 'before', 'after'] as const).map((opt) => {
+                          const labels = { none: 'Manter', before: 'Antecipar', after: 'Postergar' };
+                          return (
+                            <button key={opt} type="button" onClick={() => setFormRecurrenceHolidayAdjust(opt)}
+                              className={cn('px-3 py-1.5 rounded-lg text-xs font-medium transition-all',
+                                formRecurrenceHolidayAdjust === opt
+                                  ? 'bg-white dark:bg-gray-700 text-red-600 dark:text-red-400 shadow-sm'
+                                  : 'text-slate-500 dark:text-gray-400 hover:text-slate-700 dark:hover:text-gray-200'
+                              )}
+                            >{labels[opt]}</button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* FIN-R18: Multa e juros por atraso (apenas receitas) */}
+                    {formType === 'receita' && (
+                      <div className="grid grid-cols-2 gap-3">
+                        <TextField
+                          label="Multa por atraso (%)"
+                          type="number"
+                          value={formRecurrenceLateFeePct}
+                          onChange={(e) => setFormRecurrenceLateFeePct(e.target.value)}
+                          size="small"
+                          inputProps={{ min: 0, max: 100, step: 0.1 }}
+                          placeholder="Ex: 2"
+                          helperText="% sobre o valor (único)"
+                          sx={inputSx}
+                        />
+                        <TextField
+                          label="Juros ao mês (%)"
+                          type="number"
+                          value={formRecurrenceInterestPct}
+                          onChange={(e) => setFormRecurrenceInterestPct(e.target.value)}
+                          size="small"
+                          inputProps={{ min: 0, max: 100, step: 0.01 }}
+                          placeholder="Ex: 1"
+                          helperText="% a.m. pro-rata em dias"
+                          sx={inputSx}
+                        />
                       </div>
                     )}
 
@@ -3495,7 +3600,7 @@ function CashFlowProjection({
   );
 
   // ── Helper: advance a date by one recurrence period ─────────────────────────
-  function advanceRecurrence(dateStr: string, frequency: string, dayOfMonth?: number, secondDayOfMonth?: number): string {
+  function advanceRecurrence(dateStr: string, frequency: string, dayOfMonth?: number, secondDayOfMonth?: number, holidayAdjust?: 'none' | 'before' | 'after'): string {
     const d = new Date(dateStr + 'T00:00:00');
     const day = dayOfMonth ? Math.min(dayOfMonth, 28) : undefined;
     switch (frequency) {
@@ -3517,7 +3622,7 @@ function CashFlowProjection({
         break;
       }
     }
-    return d.toISOString().slice(0, 10);
+    return adjustForBusinessDay(d.toISOString().slice(0, 10), holidayAdjust);
   }
 
   // ── 13-week rolling projection ───────────────────────────────────────────────
@@ -3572,7 +3677,7 @@ function CashFlowProjection({
             else weeks[w].despesas += tx.amount;
           }
         }
-        next = advanceRecurrence(next, freq, dom, tx.recurrence!.secondDayOfMonth);
+        next = advanceRecurrence(next, freq, dom, tx.recurrence!.secondDayOfMonth, tx.recurrence!.holidayAdjust);
       }
     }
 
@@ -6564,6 +6669,7 @@ type RecurringFilter = 'all' | '7d' | '15d' | '30d';
 function RecurringContent({
   transactions,
   showBalances,
+  businessName,
   onEdit,
   onPause,
   onResume,
@@ -6574,10 +6680,11 @@ function RecurringContent({
 }: {
   transactions: Transaction[];
   showBalances: boolean;
+  businessName: string;
   onEdit: (tx: Transaction) => void;
   onPause: (txId: string) => Promise<void>;
   onResume: (txId: string) => Promise<void>;
-  onMarkPaid: (txId: string) => Promise<void>;
+  onMarkPaid: (txId: string, paidAmount?: number) => Promise<void>;
   onSkip: (txId: string) => Promise<void>;
   onEndSeries: (txId: string, cancelCurrent: boolean) => Promise<void>;
   onAdjustValue: (txId: string, mode: 'pct' | 'fixed', value: number) => Promise<void>;
@@ -6594,6 +6701,8 @@ function RecurringContent({
   const [adjustValue, setAdjustValue] = useState('');
   const [adjustSaving, setAdjustSaving] = useState(false);
   const [historyExpandedId, setHistoryExpandedId] = useState<string | null>(null);
+  const [latePayingId, setLatePayingId] = useState<string | null>(null);
+  const [lateConfirmedAmount, setLateConfirmedAmount] = useState('');
   const [viewMode, setViewMode] = useState<'list' | 'calendar'>('list');
   const [calendarYear, setCalendarYear] = useState(() => new Date().getFullYear());
   const [calendarMonth, setCalendarMonth] = useState(() => new Date().getMonth()); // 0-indexed
@@ -6637,7 +6746,7 @@ function RecurringContent({
           map[next] = [...(map[next] ?? []), { tx, overdue: next < todayStr }];
         }
         if (rec.endDate && next >= rec.endDate) break;
-        next = computeNextDueDate(next, rec.frequency, rec.dayOfMonth, rec.secondDayOfMonth);
+        next = computeNextDueDate(next, rec.frequency, rec.dayOfMonth, rec.secondDayOfMonth, rec.holidayAdjust);
       }
     }
     return map;

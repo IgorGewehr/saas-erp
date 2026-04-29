@@ -743,6 +743,9 @@ export interface TransactionRecurrence {
   parentTransactionId?: string; // original transaction that spawned this
   dayOfMonth?: number;       // fixed day of month for next occurrences (1-28)
   secondDayOfMonth?: number; // second fixed day for 'biweekly_fixed' (1-28)
+  holidayAdjust?: 'none' | 'before' | 'after'; // FIN-R17: adjust nextDueDate to business day
+  lateFeePct?: number;       // FIN-R18: flat late fee % (e.g. 2 = 2%)
+  interestPctMonth?: number; // FIN-R18: monthly interest % pro-rata (e.g. 1 = 1%/month)
   label?: string;            // user-friendly name (e.g. "Aluguel")
   history?: TransactionRecurrenceEntry[]; // log of past paid occurrences
 }

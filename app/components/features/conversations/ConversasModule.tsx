@@ -21,6 +21,7 @@ import {
   onSnapshot,
   limit,
   startAfter,
+  writeBatch,
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { getAuth } from 'firebase/auth';
@@ -73,6 +74,12 @@ import {
   SlidersHorizontal,
   Bookmark,
   BookmarkCheck,
+  CheckSquare,
+  Square,
+  UserCheck,
+  CheckCircle,
+  TagIcon,
+  MailOpen,
 } from 'lucide-react';
 import { getDocs } from 'firebase/firestore';
 import type {
@@ -420,9 +427,12 @@ interface ConversationItemProps {
   isSelected: boolean;
   onClick: () => void;
   slaInfo?: SLAInfo | null;
+  batchMode?: boolean;
+  isBatchSelected?: boolean;
+  onBatchToggle?: () => void;
 }
 
-function ConversationItem({ conversation, isSelected, onClick, slaInfo }: ConversationItemProps) {
+function ConversationItem({ conversation, isSelected, onClick, slaInfo, batchMode, isBatchSelected, onBatchToggle }: ConversationItemProps) {
   const { t } = useTranslation();
   const cfg = getConvConfig(conversation);
   const initials = getInitials(conversation.contactName);
@@ -439,6 +449,16 @@ function ConversationItem({ conversation, isSelected, onClick, slaInfo }: Conver
           : 'border-l-2 border-transparent hover:bg-gray-50 dark:hover:bg-white/[0.03]',
       )}
     >
+      {/* Batch checkbox */}
+      {batchMode && (
+        <button onClick={e => { e.stopPropagation(); onBatchToggle?.(); }}
+          className="flex-shrink-0 mt-0.5 text-gray-400 hover:text-red-500 transition-colors">
+          {isBatchSelected
+            ? <CheckSquare className="w-5 h-5 text-red-500" />
+            : <Square className="w-5 h-5" />}
+        </button>
+      )}
+
       {/* Avatar */}
       <div className="relative flex-shrink-0">
         <div className="relative w-10 h-10">
@@ -1744,6 +1764,99 @@ function SaveViewModal({ onSave, onClose }: {
   );
 }
 
+// ─── Batch Action Bar ─────────────────────────────────────────────────────────
+
+function BatchActionBar({ count, onAssign, onStatus, onTag, onMarkRead, onCancel }: {
+  count: number;
+  onAssign: () => void;
+  onStatus: (s: ConversationStatus) => void;
+  onTag: () => void;
+  onMarkRead: () => void;
+  onCancel: () => void;
+}) {
+  const [showStatus, setShowStatus] = useState(false);
+
+  return (
+    <motion.div initial={{ y: 80, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 80, opacity: 0 }}
+      transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+      className="absolute bottom-0 left-0 right-0 z-20 px-3 pb-3">
+      <div className="bg-gray-900 dark:bg-gray-800 rounded-2xl shadow-2xl p-3 flex items-center gap-2">
+        <span className="text-xs font-bold text-white bg-red-500 rounded-full min-w-[22px] h-[22px] flex items-center justify-center px-1.5">
+          {count}
+        </span>
+        <span className="text-xs text-gray-300 flex-1">selecionada{count !== 1 ? 's' : ''}</span>
+
+        <div className="flex items-center gap-1.5">
+          <button onClick={onMarkRead} title="Marcar como lida"
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[10px] font-semibold transition-colors">
+            <MailOpen className="w-3 h-3" /> Lida
+          </button>
+          <button onClick={onAssign} title="Atribuir"
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[10px] font-semibold transition-colors">
+            <UserCheck className="w-3 h-3" /> Atribuir
+          </button>
+          <div className="relative">
+            <button onClick={() => setShowStatus(v => !v)} title="Mudar status"
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[10px] font-semibold transition-colors">
+              <CheckCircle className="w-3 h-3" /> Status
+            </button>
+            <AnimatePresence>
+              {showStatus && (
+                <motion.div initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 4 }}
+                  className="absolute bottom-full mb-1.5 left-0 bg-white dark:bg-gray-900 rounded-xl shadow-xl border border-gray-200 dark:border-gray-700 overflow-hidden w-36">
+                  {(['open', 'waiting', 'resolved'] as ConversationStatus[]).map(s => (
+                    <button key={s} onClick={() => { onStatus(s); setShowStatus(false); }}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors">
+                      <StatusDot status={s} />
+                      {s === 'open' ? 'Aberta' : s === 'waiting' ? 'Aguardando' : 'Resolvida'}
+                    </button>
+                  ))}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+          <button onClick={onTag} title="Adicionar tag"
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[10px] font-semibold transition-colors">
+            <TagIcon className="w-3 h-3" /> Tag
+          </button>
+        </div>
+
+        <button onClick={onCancel} className="ml-1 p-1.5 rounded-lg hover:bg-white/10 text-gray-400 hover:text-white transition-colors">
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </motion.div>
+  );
+}
+
+function BatchTagInput({ onAdd, existingTags }: { onAdd: (tag: string) => void; existingTags: string[] }) {
+  const [val, setVal] = useState('');
+  const filtered = existingTags.filter(t => val ? t.toLowerCase().includes(val.toLowerCase()) : true).slice(0, 8);
+  return (
+    <div className="space-y-2">
+      <input autoFocus value={val} onChange={e => setVal(e.target.value)} placeholder="Nome da tag..."
+        onKeyDown={e => e.key === 'Enter' && val.trim() && onAdd(val.trim())}
+        className="w-full px-3 py-2 text-sm bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-xl text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400" />
+      {filtered.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {filtered.map(t => (
+            <button key={t} onClick={() => onAdd(t)}
+              className="px-2.5 py-1 text-xs font-medium bg-gray-100 dark:bg-white/[0.06] text-gray-600 dark:text-gray-400 rounded-full hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 transition-colors">
+              {t}
+            </button>
+          ))}
+        </div>
+      )}
+      {val.trim() && !existingTags.includes(val.trim()) && (
+        <button onClick={() => onAdd(val.trim())}
+          className="w-full py-2 text-xs font-semibold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-xl transition-colors">
+          + Criar tag "{val.trim()}"
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ─── Status Filter Tabs ──────────────────────────────────────────────────────
 
 function StatusFilterBar({
@@ -2483,6 +2596,10 @@ export default function ConversasModule() {
   const [advFilters, setAdvFilters] = useState<AdvancedFilters>(EMPTY_ADV_FILTERS);
   const [showAdvFilters, setShowAdvFilters] = useState(false);
   const [savedViews, setSavedViews] = useState<ConversationView[]>([]);
+  const [batchMode, setBatchMode] = useState(false);
+  const [batchSelectedIds, setBatchSelectedIds] = useState<Set<string>>(new Set());
+  const [showBatchAssign, setShowBatchAssign] = useState(false);
+  const [showBatchTag, setShowBatchTag] = useState(false);
   const [activeViewId, setActiveViewId] = useState<string | null>(null);
   const [showSaveViewModal, setShowSaveViewModal] = useState(false);
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
@@ -2638,6 +2755,67 @@ export default function ConversasModule() {
       unreadOnly: view.filters.unreadOnly ?? false,
     });
   };
+
+  // ── Batch actions ─────────────────────────────────────────────────────────
+
+  const toggleBatchSelect = useCallback((id: string) => {
+    setBatchSelectedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }, []);
+
+  const exitBatchMode = useCallback(() => {
+    setBatchMode(false);
+    setBatchSelectedIds(new Set());
+  }, []);
+
+  const handleBatchStatus = useCallback(async (status: ConversationStatus) => {
+    if (!business?.id || batchSelectedIds.size === 0) return;
+    const now = new Date().toISOString();
+    const batch = writeBatch(db);
+    for (const id of batchSelectedIds) batch.update(doc(db, 'conversations', id), { status, updatedAt: now });
+    await batch.commit();
+    toast.success(`${batchSelectedIds.size} conversa(s) atualizada(s)`);
+    exitBatchMode();
+  }, [business?.id, batchSelectedIds, exitBatchMode]);
+
+  const handleBatchMarkRead = useCallback(async () => {
+    if (!business?.id || batchSelectedIds.size === 0) return;
+    const now = new Date().toISOString();
+    const batch = writeBatch(db);
+    for (const id of batchSelectedIds) batch.update(doc(db, 'conversations', id), { unreadCount: 0, updatedAt: now });
+    await batch.commit();
+    toast.success(`${batchSelectedIds.size} conversa(s) marcada(s) como lida(s)`);
+    exitBatchMode();
+  }, [business?.id, batchSelectedIds, exitBatchMode]);
+
+  const handleBatchAssign = useCallback(async (userId: string, userName: string) => {
+    if (!business?.id || batchSelectedIds.size === 0) return;
+    const now = new Date().toISOString();
+    const batch = writeBatch(db);
+    for (const id of batchSelectedIds) batch.update(doc(db, 'conversations', id), { assignedTo: userId, assignedToName: userName, updatedAt: now });
+    await batch.commit();
+    toast.success(`${batchSelectedIds.size} conversa(s) atribuída(s) a ${userName}`);
+    setShowBatchAssign(false);
+    exitBatchMode();
+  }, [business?.id, batchSelectedIds, exitBatchMode]);
+
+  const handleBatchTag = useCallback(async (tag: string) => {
+    if (!business?.id || batchSelectedIds.size === 0) return;
+    const now = new Date().toISOString();
+    const convs = conversations.filter(c => batchSelectedIds.has(c.id));
+    const batch = writeBatch(db);
+    for (const c of convs) {
+      const tags = Array.from(new Set([...(c.tags ?? []), tag]));
+      batch.update(doc(db, 'conversations', c.id), { tags, updatedAt: now });
+    }
+    await batch.commit();
+    toast.success(`Tag "${tag}" adicionada a ${batchSelectedIds.size} conversa(s)`);
+    setShowBatchTag(false);
+    exitBatchMode();
+  }, [business?.id, batchSelectedIds, conversations, exitBatchMode]);
 
   // ── Sector visibility filter ──────────────────────────────────────────────
 
@@ -3459,6 +3637,16 @@ export default function ConversasModule() {
                 </div>
               </div>
               <div className="flex items-center gap-1.5">
+                <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+                  onClick={() => { setBatchMode(v => !v); if (batchMode) exitBatchMode(); }}
+                  title="Selecionar conversas"
+                  className={cn('w-8 h-8 rounded-xl flex items-center justify-center transition-colors',
+                    batchMode
+                      ? 'bg-red-50 dark:bg-red-500/10 text-red-500 dark:text-red-400'
+                      : 'bg-gray-100 dark:bg-white/[0.06] text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                  )}>
+                  <CheckSquare className="w-4 h-4" />
+                </motion.button>
                 {isAdmin && (
                   <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
                     onClick={() => setShowSLASettings(true)}
@@ -3619,7 +3807,7 @@ export default function ConversasModule() {
           )}
 
           {/* Conversation list */}
-          <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-white/10">
+          <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-white/10 relative">
             {isLoadingConversations ? (
               <ConversationListSkeleton />
             ) : (
@@ -3672,14 +3860,31 @@ export default function ConversasModule() {
                       <ConversationItem
                         conversation={conv}
                         isSelected={selectedConversation?.id === conv.id}
-                        onClick={() => handleSelectConversation(conv)}
+                        onClick={() => { if (batchMode) toggleBatchSelect(conv.id); else handleSelectConversation(conv); }}
                         slaInfo={getSLAInfo(conv, slaConfig)}
+                        batchMode={batchMode}
+                        isBatchSelected={batchSelectedIds.has(conv.id)}
+                        onBatchToggle={() => toggleBatchSelect(conv.id)}
                       />
                     </motion.div>
                   ))
                 )}
               </AnimatePresence>
             )}
+
+            {/* Batch action bar */}
+            <AnimatePresence>
+              {batchMode && batchSelectedIds.size > 0 && (
+                <BatchActionBar
+                  count={batchSelectedIds.size}
+                  onMarkRead={handleBatchMarkRead}
+                  onAssign={() => setShowBatchAssign(true)}
+                  onStatus={handleBatchStatus}
+                  onTag={() => setShowBatchTag(true)}
+                  onCancel={exitBatchMode}
+                />
+              )}
+            </AnimatePresence>
           </div>
         </div>
 
@@ -4025,6 +4230,44 @@ export default function ConversasModule() {
             onSave={handleSaveView}
             onClose={() => setShowSaveViewModal(false)}
           />
+        )}
+        {showBatchAssign && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/40 backdrop-blur-sm"
+            onClick={e => { if (e.target === e.currentTarget) setShowBatchAssign(false); }}>
+            <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
+              className="w-full max-w-xs bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800">
+                <p className="font-semibold text-sm text-gray-900 dark:text-gray-100">Atribuir a ({batchSelectedIds.size})</p>
+                <button onClick={() => setShowBatchAssign(false)} className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400"><X className="w-3.5 h-3.5" /></button>
+              </div>
+              <div className="max-h-64 overflow-y-auto">
+                {members.map(m => (
+                  <button key={m.id} onClick={() => handleBatchAssign(m.uid, m.name)}
+                    className="w-full flex items-center gap-2.5 px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors text-left">
+                    <div className="w-7 h-7 rounded-full bg-gradient-to-br from-gray-300 to-gray-400 dark:from-gray-700 dark:to-gray-600 flex items-center justify-center text-[10px] font-bold text-gray-600 dark:text-gray-300">
+                      {getInitials(m.name)}
+                    </div>
+                    <span className="text-sm text-gray-700 dark:text-gray-300">{m.name}</span>
+                  </button>
+                ))}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+        {showBatchTag && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm"
+            onClick={e => { if (e.target === e.currentTarget) setShowBatchTag(false); }}>
+            <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
+              className="w-full max-w-xs bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="font-semibold text-sm text-gray-900 dark:text-gray-100">Adicionar tag ({batchSelectedIds.size})</p>
+                <button onClick={() => setShowBatchTag(false)} className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400"><X className="w-3.5 h-3.5" /></button>
+              </div>
+              <BatchTagInput onAdd={handleBatchTag} existingTags={allLabels} />
+            </motion.div>
+          </motion.div>
         )}
         {showSLASettings && isAdmin && business?.id && (
           <SLASettingsDialog
