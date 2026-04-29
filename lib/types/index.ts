@@ -718,7 +718,7 @@ export interface Sale {
 export type TransactionType = 'receita' | 'despesa';
 export type TransactionStatus = 'pendente' | 'pago' | 'atrasado' | 'cancelado';
 
-export type RecurrenceFrequency = 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'semiannual' | 'yearly';
+export type RecurrenceFrequency = 'weekly' | 'biweekly' | 'biweekly_fixed' | 'monthly' | 'quarterly' | 'semiannual' | 'yearly';
 
 export interface TransactionRecurrenceEntry {
   dueDate: string;   // nextDueDate at time of payment (ISO date)
@@ -733,6 +733,7 @@ export interface TransactionRecurrence {
   isActive: boolean;
   parentTransactionId?: string; // original transaction that spawned this
   dayOfMonth?: number;       // fixed day of month for next occurrences (1-28)
+  secondDayOfMonth?: number; // second fixed day for 'biweekly_fixed' (1-28)
   label?: string;            // user-friendly name (e.g. "Aluguel")
   history?: TransactionRecurrenceEntry[]; // log of past paid occurrences
 }

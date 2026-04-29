@@ -72,6 +72,7 @@ import {
   BellOff,
   Percent,
   Check,
+  LayoutList,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -156,7 +157,7 @@ const inputSx = { '& .MuiOutlinedInput-root': { borderRadius: '12px' } };
 // HELPERS
 // ==========================================
 
-function computeNextDueDate(currentDue: string, frequency: string, dayOfMonth?: number): string {
+function computeNextDueDate(currentDue: string, frequency: string, dayOfMonth?: number, secondDayOfMonth?: number): string {
   const d = new Date(currentDue + 'T00:00:00');
   // Cap dayOfMonth at 28 to avoid JS auto-overflow into next month (e.g., Feb 31 → Mar 3)
   const day = dayOfMonth ? Math.min(dayOfMonth, 28) : undefined;
@@ -167,6 +168,15 @@ function computeNextDueDate(currentDue: string, frequency: string, dayOfMonth?: 
     case 'quarterly':  d.setMonth(d.getMonth() + 3);   if (day) d.setDate(day); break;
     case 'semiannual': d.setMonth(d.getMonth() + 6);   if (day) d.setDate(day); break;
     case 'yearly':     d.setFullYear(d.getFullYear() + 1); if (day) d.setDate(day); break;
+    case 'biweekly_fixed': {
+      const first = day ?? 1;
+      const second = secondDayOfMonth ? Math.min(secondDayOfMonth, 28) : 15;
+      const cur = d.getDate();
+      if (cur < first)        { d.setDate(first); }
+      else if (cur < second)  { d.setDate(second); }
+      else                    { d.setMonth(d.getMonth() + 1); d.setDate(first); }
+      break;
+    }
   }
   return d.toISOString().slice(0, 10);
 }
@@ -174,6 +184,7 @@ function computeNextDueDate(currentDue: string, frequency: string, dayOfMonth?: 
 const RECURRENCE_LABELS: Record<string, string> = {
   weekly: 'Semanal',
   biweekly: 'Quinzenal',
+  biweekly_fixed: 'Quinzenal (dias fixos)',
   monthly: 'Mensal',
   quarterly: 'Trimestral',
   semiannual: 'Semestral',
@@ -317,9 +328,10 @@ export default function FinancialModule() {
   const [formInstallments, setFormInstallments] = useState(1);
   const [formInstallmentInterval, setFormInstallmentInterval] = useState<'monthly' | 'weekly'>('monthly');
   const [formRecurrence, setFormRecurrence] = useState(false);
-  const [formRecurrenceFrequency, setFormRecurrenceFrequency] = useState<'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'semiannual' | 'yearly'>('monthly');
+  const [formRecurrenceFrequency, setFormRecurrenceFrequency] = useState<'weekly' | 'biweekly' | 'biweekly_fixed' | 'monthly' | 'quarterly' | 'semiannual' | 'yearly'>('monthly');
   const [formRecurrenceEndDate, setFormRecurrenceEndDate] = useState('');
   const [formRecurrenceDay, setFormRecurrenceDay] = useState<string>('');
+  const [formRecurrenceSecondDay, setFormRecurrenceSecondDay] = useState<string>('');
   const [formRecurrenceLabel, setFormRecurrenceLabel] = useState<string>('');
 
   // Transactions tab state
@@ -535,25 +547,66 @@ export default function FinancialModule() {
     return filtered;
   }, [transactions, txFilterTab, deferredTxSearch, txDateFrom, txDateTo, txCategory, txBankAccount, txPaymentMethod, txSectorId, deferredTxClientName, txSortField, txSortDir]);
 
-  // Monthly data for charts
+  // Monthly data for charts — 2 months back + current + 3 months forward
   const monthlyData = useMemo(() => {
-    const months: Record<string, { receitas: number; despesas: number }> = {};
+    const today = new Date();
+    const todayStr = today.toISOString().slice(0, 10);
+
+    // Fixed 6-month window
+    const windowMonths: string[] = [];
+    for (let i = -2; i <= 3; i++) {
+      const d = new Date(today.getFullYear(), today.getMonth() + i, 1);
+      windowMonths.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+    }
+
+    const months: Record<string, { receitas: number; despesas: number; receitasPrevisto: number; despesasPrevisto: number }> = {};
+    for (const m of windowMonths) months[m] = { receitas: 0, despesas: 0, receitasPrevisto: 0, despesasPrevisto: 0 };
+
+    // Historical paid transactions
     transactions.forEach(t => {
-      if (!t.dueDate) return;
+      if (!t.dueDate || t.status !== 'pago') return;
       const month = t.dueDate.substring(0, 7);
-      if (!months[month]) months[month] = { receitas: 0, despesas: 0 };
-      if (t.type === 'receita' && t.status === 'pago') months[month].receitas += t.amount;
-      if (t.type === 'despesa' && t.status === 'pago') months[month].despesas += t.amount;
+      if (!months[month]) return;
+      if (t.type === 'receita') months[month].receitas += t.amount;
+      else months[month].despesas += t.amount;
     });
-    return Object.entries(months)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .slice(-6)
-      .map(([month, data]) => {
-        const [y, m] = month.split('-');
-        const monthNames = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
-        const label = `${monthNames[parseInt(m) - 1]}/${y.slice(2)}`;
-        return { month: label, receitas: data.receitas, despesas: data.despesas, saldo: data.receitas - data.despesas };
-      });
+
+    // Project active recurring transactions into future months
+    const maxMonth = windowMonths[windowMonths.length - 1];
+    const [maxY, maxM] = maxMonth.split('-').map(Number);
+    const maxDate = new Date(maxY, maxM, 0).toISOString().slice(0, 10); // last day of window
+
+    for (const tx of transactions.filter(t => t.recurrence?.isActive && t.recurrence.nextDueDate)) {
+      const rec = tx.recurrence!;
+      let next = rec.nextDueDate!;
+      let guard = 0;
+      while (next <= maxDate && guard++ < 100) {
+        if (next > todayStr) {
+          const month = next.slice(0, 7);
+          if (months[month]) {
+            if (tx.type === 'receita') months[month].receitasPrevisto += tx.amount;
+            else months[month].despesasPrevisto += tx.amount;
+          }
+        }
+        if (rec.endDate && next >= rec.endDate) break;
+        next = computeNextDueDate(next, rec.frequency, rec.dayOfMonth, rec.secondDayOfMonth);
+      }
+    }
+
+    const monthNames = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+    return windowMonths.map(month => {
+      const data = months[month];
+      const [y, m] = month.split('-');
+      const label = `${monthNames[parseInt(m) - 1]}/${y.slice(2)}`;
+      return {
+        month: label,
+        receitas: data.receitas,
+        despesas: data.despesas,
+        receitasPrevisto: data.receitasPrevisto,
+        despesasPrevisto: data.despesasPrevisto,
+        saldo: data.receitas - data.despesas,
+      };
+    });
   }, [transactions]);
 
   // Expense breakdown by category
@@ -696,7 +749,7 @@ export default function FinancialModule() {
     const today = now.slice(0, 10);
 
     if (tx && rec?.isActive && rec.nextDueDate && rec.frequency) {
-      const nextDate = computeNextDueDate(rec.nextDueDate, rec.frequency, rec.dayOfMonth);
+      const nextDate = computeNextDueDate(rec.nextDueDate, rec.frequency, rec.dayOfMonth, rec.secondDayOfMonth);
       const seriesEnds = rec.endDate && nextDate > rec.endDate;
       await updateDoc(doc(db, 'transactions', txId), {
         status: 'pago',
@@ -732,7 +785,7 @@ export default function FinancialModule() {
     const tx = transactions.find(t => t.id === txId);
     const rec = tx?.recurrence;
     if (!rec?.nextDueDate || !rec.frequency) return;
-    const nextDate = computeNextDueDate(rec.nextDueDate, rec.frequency, rec.dayOfMonth);
+    const nextDate = computeNextDueDate(rec.nextDueDate, rec.frequency, rec.dayOfMonth, rec.secondDayOfMonth);
     const seriesEnds = rec.endDate && nextDate > rec.endDate;
     await updateDoc(doc(db, 'transactions', txId), {
       'recurrence.nextDueDate': nextDate,
@@ -805,6 +858,7 @@ export default function FinancialModule() {
     setFormRecurrenceFrequency('monthly');
     setFormRecurrenceEndDate('');
     setFormRecurrenceDay('');
+    setFormRecurrenceSecondDay('');
     setFormRecurrenceLabel('');
     setFormAttachments([]);
     setFormFilesToUpload([]);
@@ -849,6 +903,7 @@ export default function FinancialModule() {
     setFormRecurrenceFrequency(tx.recurrence?.frequency || 'monthly');
     setFormRecurrenceEndDate(tx.recurrence?.endDate || '');
     setFormRecurrenceDay(tx.recurrence?.dayOfMonth?.toString() || '');
+    setFormRecurrenceSecondDay(tx.recurrence?.secondDayOfMonth?.toString() || '');
     setFormRecurrenceLabel(tx.recurrence?.label || '');
     setFormAttachments(tx.attachments || []);
     setFormFilesToUpload([]);
@@ -925,12 +980,15 @@ export default function FinancialModule() {
           if (!formRecurrence || formInstallments > 1) return null;
           // Fall back to today when neither dueDate nor paymentDate is set
           const baseDate = formDueDate || formPaymentDate || new Date().toISOString().slice(0, 10);
+          const dayNum = formRecurrenceDay ? parseInt(formRecurrenceDay, 10) : undefined;
+          const secondDayNum = formRecurrenceSecondDay ? parseInt(formRecurrenceSecondDay, 10) : undefined;
           return {
             frequency: formRecurrenceFrequency,
-            nextDueDate: computeNextDueDate(baseDate, formRecurrenceFrequency, formRecurrenceDay ? parseInt(formRecurrenceDay, 10) : undefined),
+            nextDueDate: computeNextDueDate(baseDate, formRecurrenceFrequency, dayNum, secondDayNum),
             ...(formRecurrenceEndDate ? { endDate: formRecurrenceEndDate } : {}),
             isActive: true,
-            ...(formRecurrenceDay ? { dayOfMonth: parseInt(formRecurrenceDay, 10) } : {}),
+            ...(dayNum ? { dayOfMonth: dayNum } : {}),
+            ...(secondDayNum && formRecurrenceFrequency === 'biweekly_fixed' ? { secondDayOfMonth: secondDayNum } : {}),
             ...(formRecurrenceLabel ? { label: formRecurrenceLabel } : {}),
           };
         })(),
@@ -1045,7 +1103,7 @@ export default function FinancialModule() {
     } finally {
       setIsSaving(false);
     }
-  }, [business?.id, user, formType, formDescription, formCategory, formAmount, formDueDate, formPaymentDate, formPaymentMethod, formNotes, formClientName, formBankAccount, formStatus, formSectorId, formInstallments, formInstallmentInterval, formRecurrence, formRecurrenceFrequency, formRecurrenceEndDate, formRecurrenceDay, formRecurrenceLabel, formAttachments, formFilesToUpload, formAttachmentsToDelete, editingTransaction, queryClient, t]);
+  }, [business?.id, user, formType, formDescription, formCategory, formAmount, formDueDate, formPaymentDate, formPaymentMethod, formNotes, formClientName, formBankAccount, formStatus, formSectorId, formInstallments, formInstallmentInterval, formRecurrence, formRecurrenceFrequency, formRecurrenceEndDate, formRecurrenceDay, formRecurrenceSecondDay, formRecurrenceLabel, formAttachments, formFilesToUpload, formAttachmentsToDelete, editingTransaction, queryClient, t]);
 
   const handleDeleteTransaction = useCallback(async (id: string) => {
     if (!business?.id || !user) return;
@@ -1756,27 +1814,45 @@ export default function FinancialModule() {
                         sx={inputSx}
                       />
                     </div>
-                    {['monthly', 'quarterly', 'semiannual', 'yearly'].includes(formRecurrenceFrequency) && (
-                      <div className="grid grid-cols-2 gap-3 bg-slate-50 dark:bg-gray-800/50 p-3 rounded-xl border border-slate-100 dark:border-gray-800">
-                        <TextField
-                          label="Nome da Recorrência (Opcional)"
-                          value={formRecurrenceLabel}
-                          onChange={(e) => setFormRecurrenceLabel(e.target.value)}
-                          size="small"
-                          placeholder="Ex: Aluguel, Internet..."
-                          sx={inputSx}
-                        />
-                        <TextField
-                          label="Dia Fixo de Vencimento"
-                          type="number"
-                          value={formRecurrenceDay}
-                          onChange={(e) => setFormRecurrenceDay(e.target.value)}
-                          size="small"
-                          inputProps={{ min: 1, max: 28 }}
-                          placeholder="Ex: 5"
-                          helperText="Se vazio, usa o dia da primeira parcela"
-                          sx={inputSx}
-                        />
+                    {['monthly', 'quarterly', 'semiannual', 'yearly', 'biweekly_fixed'].includes(formRecurrenceFrequency) && (
+                      <div className="space-y-3 bg-slate-50 dark:bg-gray-800/50 p-3 rounded-xl border border-slate-100 dark:border-gray-800">
+                        {formRecurrenceFrequency !== 'biweekly_fixed' && (
+                          <TextField
+                            label="Nome da Recorrência (Opcional)"
+                            value={formRecurrenceLabel}
+                            onChange={(e) => setFormRecurrenceLabel(e.target.value)}
+                            size="small"
+                            placeholder="Ex: Aluguel, Internet..."
+                            fullWidth
+                            sx={inputSx}
+                          />
+                        )}
+                        <div className={formRecurrenceFrequency === 'biweekly_fixed' ? 'grid grid-cols-2 gap-3' : 'grid grid-cols-2 gap-3'}>
+                          <TextField
+                            label={formRecurrenceFrequency === 'biweekly_fixed' ? '1º Dia do mês' : 'Dia Fixo de Vencimento'}
+                            type="number"
+                            value={formRecurrenceDay}
+                            onChange={(e) => setFormRecurrenceDay(e.target.value)}
+                            size="small"
+                            inputProps={{ min: 1, max: 28 }}
+                            placeholder="Ex: 5"
+                            helperText={formRecurrenceFrequency === 'biweekly_fixed' ? '' : 'Se vazio, usa o dia da primeira parcela'}
+                            sx={inputSx}
+                          />
+                          {formRecurrenceFrequency === 'biweekly_fixed' && (
+                            <TextField
+                              label="2º Dia do mês"
+                              type="number"
+                              value={formRecurrenceSecondDay}
+                              onChange={(e) => setFormRecurrenceSecondDay(e.target.value)}
+                              size="small"
+                              inputProps={{ min: 1, max: 28 }}
+                              placeholder="Ex: 15"
+                              helperText="Ex: 1 e 15, 5 e 20"
+                              sx={inputSx}
+                            />
+                          )}
+                        </div>
                       </div>
                     )}
 
@@ -1784,10 +1860,11 @@ export default function FinancialModule() {
                     {(() => {
                       const base = formDueDate || formPaymentDate || new Date().toISOString().slice(0, 10);
                       const dayNum = formRecurrenceDay ? Math.min(parseInt(formRecurrenceDay, 10), 28) : undefined;
+                      const secondDayNum = formRecurrenceSecondDay ? Math.min(parseInt(formRecurrenceSecondDay, 10), 28) : undefined;
                       const dates: string[] = [];
                       let cur = base;
                       for (let i = 0; i < 5; i++) {
-                        cur = computeNextDueDate(cur, formRecurrenceFrequency, dayNum);
+                        cur = computeNextDueDate(cur, formRecurrenceFrequency, dayNum, secondDayNum);
                         if (formRecurrenceEndDate && cur > formRecurrenceEndDate) break;
                         dates.push(cur);
                       }
@@ -2296,7 +2373,7 @@ function OverviewContent({
   ChartTooltip: React.FC;
   fmtChart: (v: number) => string;
   isDark: boolean;
-  monthlyData: { month: string; receitas: number; despesas: number; saldo: number }[];
+  monthlyData: { month: string; receitas: number; despesas: number; receitasPrevisto: number; despesasPrevisto: number; saldo: number }[];
   expenseBreakdown: { name: string; amount: number; color: string; percentage: number }[];
   transactions: Transaction[];
   isEnterprise: boolean;
@@ -2834,8 +2911,10 @@ function OverviewContent({
                 <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94A3B8', fontSize: 11 }} tickFormatter={fmtChart} />
                 <RechartsTooltip content={<ChartTooltip />} />
                 <Legend wrapperStyle={{ paddingTop: 12 }} iconType="circle" iconSize={8} formatter={(v: string) => <span className="text-xs text-slate-500 dark:text-gray-400">{v}</span>} />
-                <Bar dataKey="receitas" name={t('financial.charts.revenues', 'Receitas')} fill="url(#gradReceita)" radius={[6, 6, 0, 0]} barSize={22} />
-                <Bar dataKey="despesas" name={t('financial.charts.expenses', 'Despesas')} fill="url(#gradDespesa)" radius={[6, 6, 0, 0]} barSize={22} />
+                <Bar dataKey="receitas" name={t('financial.charts.revenues', 'Receitas')} fill="url(#gradReceita)" radius={[0, 0, 0, 0]} barSize={22} stackId="r" />
+                <Bar dataKey="receitasPrevisto" name="Receitas Previstas" fill="#6EE7B7" radius={[6, 6, 0, 0]} barSize={22} stackId="r" fillOpacity={0.65} />
+                <Bar dataKey="despesas" name={t('financial.charts.expenses', 'Despesas')} fill="url(#gradDespesa)" radius={[0, 0, 0, 0]} barSize={22} stackId="d" />
+                <Bar dataKey="despesasPrevisto" name="Despesas Previstas" fill="#FCA5A5" radius={[6, 6, 0, 0]} barSize={22} stackId="d" fillOpacity={0.65} />
                 <Line type="monotone" dataKey="saldo" name={t('financial.charts.result', 'Resultado')} stroke="#3B82F6" strokeWidth={2.5} dot={{ r: 4, fill: '#3B82F6', strokeWidth: 2, stroke: '#fff' }} />
               </ComposedChart>
             </ResponsiveContainer>
@@ -3413,7 +3492,7 @@ function CashFlowProjection({
   );
 
   // ── Helper: advance a date by one recurrence period ─────────────────────────
-  function advanceRecurrence(dateStr: string, frequency: string, dayOfMonth?: number): string {
+  function advanceRecurrence(dateStr: string, frequency: string, dayOfMonth?: number, secondDayOfMonth?: number): string {
     const d = new Date(dateStr + 'T00:00:00');
     const day = dayOfMonth ? Math.min(dayOfMonth, 28) : undefined;
     switch (frequency) {
@@ -3423,6 +3502,15 @@ function CashFlowProjection({
       case 'quarterly':  d.setMonth(d.getMonth() + 3);    if (day) d.setDate(day); break;
       case 'semiannual': d.setMonth(d.getMonth() + 6);    if (day) d.setDate(day); break;
       case 'yearly':     d.setFullYear(d.getFullYear() + 1); if (day) d.setDate(day); break;
+      case 'biweekly_fixed': {
+        const first = day ?? 1;
+        const second = secondDayOfMonth ? Math.min(secondDayOfMonth, 28) : 15;
+        const cur = d.getDate();
+        if (cur < first)       { d.setDate(first); }
+        else if (cur < second) { d.setDate(second); }
+        else                   { d.setMonth(d.getMonth() + 1); d.setDate(first); }
+        break;
+      }
     }
     return d.toISOString().slice(0, 10);
   }
@@ -3479,7 +3567,7 @@ function CashFlowProjection({
             else weeks[w].despesas += tx.amount;
           }
         }
-        next = advanceRecurrence(next, freq, dom);
+        next = advanceRecurrence(next, freq, dom, tx.recurrence!.secondDayOfMonth);
       }
     }
 
@@ -6501,6 +6589,9 @@ function RecurringContent({
   const [adjustValue, setAdjustValue] = useState('');
   const [adjustSaving, setAdjustSaving] = useState(false);
   const [historyExpandedId, setHistoryExpandedId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'list' | 'calendar'>('list');
+  const [calendarYear, setCalendarYear] = useState(() => new Date().getFullYear());
+  const [calendarMonth, setCalendarMonth] = useState(() => new Date().getMonth()); // 0-indexed
 
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
@@ -6525,6 +6616,27 @@ function RecurringContent({
 
   const despesas = sortedRecurrences.filter(t => t.type === 'despesa');
   const receitas = sortedRecurrences.filter(t => t.type === 'receita');
+
+  // Calendar: map date string → transactions due that day (projected forward from nextDueDate)
+  const calendarDayMap = useMemo(() => {
+    const firstStr = `${calendarYear}-${String(calendarMonth + 1).padStart(2, '0')}-01`;
+    const lastDay = new Date(calendarYear, calendarMonth + 1, 0).getDate();
+    const lastStr = `${calendarYear}-${String(calendarMonth + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+    const map: Record<string, Array<{ tx: Transaction; overdue: boolean }>> = {};
+    for (const tx of transactions.filter(t => t.recurrence?.isActive && t.recurrence.nextDueDate)) {
+      const rec = tx.recurrence!;
+      let next = rec.nextDueDate!;
+      let guard = 0;
+      while (next <= lastStr && guard++ < 200) {
+        if (next >= firstStr) {
+          map[next] = [...(map[next] ?? []), { tx, overdue: next < todayStr }];
+        }
+        if (rec.endDate && next >= rec.endDate) break;
+        next = computeNextDueDate(next, rec.frequency, rec.dayOfMonth, rec.secondDayOfMonth);
+      }
+    }
+    return map;
+  }, [transactions, calendarYear, calendarMonth, todayStr]);
 
   const kpis = useMemo(() => {
     const now = new Date();
@@ -6843,25 +6955,99 @@ function RecurringContent({
         </div>
       </div>
 
-      {/* Filter bar */}
-      <div className="flex items-center gap-2">
-        <span className="text-xs text-slate-400 dark:text-gray-500 font-medium">Mostrar vencimentos:</span>
-        <div className="flex items-center gap-1 p-1 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl">
-          {(['all', '7d', '15d', '30d'] as RecurringFilter[]).map(f => (
-            <button key={f} onClick={() => setFilter(f)}
-              className={cn('px-3 py-1 rounded-lg text-xs font-medium transition-all',
-                filter === f ? 'bg-red-600 text-white shadow-sm' : 'text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800'
-              )}
-            >{FILTER_LABELS[f]}</button>
-          ))}
-        </div>
-        {filter !== 'all' && filteredRecurrences.length === 0 && (
-          <span className="text-xs text-slate-400 dark:text-gray-500">Nenhum vencimento nesse período</span>
+      {/* Filter + view toggle bar */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {viewMode === 'list' && (
+          <>
+            <span className="text-xs text-slate-400 dark:text-gray-500 font-medium">Mostrar vencimentos:</span>
+            <div className="flex items-center gap-1 p-1 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl">
+              {(['all', '7d', '15d', '30d'] as RecurringFilter[]).map(f => (
+                <button key={f} onClick={() => setFilter(f)}
+                  className={cn('px-3 py-1 rounded-lg text-xs font-medium transition-all',
+                    filter === f ? 'bg-red-600 text-white shadow-sm' : 'text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800'
+                  )}
+                >{FILTER_LABELS[f]}</button>
+              ))}
+            </div>
+            {filter !== 'all' && filteredRecurrences.length === 0 && (
+              <span className="text-xs text-slate-400 dark:text-gray-500">Nenhum vencimento nesse período</span>
+            )}
+          </>
         )}
+        <div className="ml-auto flex items-center gap-1 p-1 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl">
+          <button onClick={() => setViewMode('list')} title="Visão em lista"
+            className={cn('p-1.5 rounded-lg transition-all', viewMode === 'list' ? 'bg-red-600 text-white shadow-sm' : 'text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800')}
+          ><LayoutList size={14} /></button>
+          <button onClick={() => setViewMode('calendar')} title="Visão calendário"
+            className={cn('p-1.5 rounded-lg transition-all', viewMode === 'calendar' ? 'bg-red-600 text-white shadow-sm' : 'text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800')}
+          ><CalendarDays size={14} /></button>
+        </div>
       </div>
 
-      {/* Groups */}
-      {allRecurrences.length === 0 ? (
+      {/* Calendar view */}
+      {viewMode === 'calendar' && (() => {
+        const monthNames = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+        const dayHeaders = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+        const firstDay = new Date(calendarYear, calendarMonth, 1).getDay(); // 0 = Sun
+        const totalDays = new Date(calendarYear, calendarMonth + 1, 0).getDate();
+        const todayDateStr = new Date().toISOString().slice(0, 10);
+        const cells: (number | null)[] = [...Array(firstDay).fill(null), ...Array.from({ length: totalDays }, (_, i) => i + 1)];
+        while (cells.length % 7 !== 0) cells.push(null);
+        const prevMonth = () => {
+          if (calendarMonth === 0) { setCalendarYear(y => y - 1); setCalendarMonth(11); }
+          else setCalendarMonth(m => m - 1);
+        };
+        const nextMonth = () => {
+          if (calendarMonth === 11) { setCalendarYear(y => y + 1); setCalendarMonth(0); }
+          else setCalendarMonth(m => m + 1);
+        };
+        return (
+          <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl overflow-hidden shadow-sm">
+            {/* Calendar header */}
+            <div className="px-5 py-3 border-b border-slate-100 dark:border-gray-800 flex items-center gap-3">
+              <button onClick={prevMonth} className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-gray-800 text-slate-500 dark:text-gray-400 transition-colors"><ChevronLeft size={16} /></button>
+              <h3 className="flex-1 text-center text-sm font-display font-bold text-slate-900 dark:text-gray-100">{monthNames[calendarMonth]} {calendarYear}</h3>
+              <button onClick={nextMonth} className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-gray-800 text-slate-500 dark:text-gray-400 transition-colors"><ChevronRight size={16} /></button>
+            </div>
+            {/* Day headers */}
+            <div className="grid grid-cols-7 border-b border-slate-100 dark:border-gray-800">
+              {dayHeaders.map(d => (
+                <div key={d} className="py-2 text-center text-[10px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider">{d}</div>
+              ))}
+            </div>
+            {/* Day cells */}
+            <div className="grid grid-cols-7">
+              {cells.map((day, i) => {
+                if (!day) return <div key={i} className="min-h-[72px] border-b border-r border-slate-50 dark:border-gray-800/50 last:border-r-0" />;
+                const dateStr = `${calendarYear}-${String(calendarMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                const items = calendarDayMap[dateStr] ?? [];
+                const isToday = dateStr === todayDateStr;
+                return (
+                  <div key={i} className={cn('min-h-[72px] p-1.5 border-b border-r border-slate-50 dark:border-gray-800/50', (i + 1) % 7 === 0 && 'border-r-0', isToday && 'bg-red-50/50 dark:bg-red-900/10')}>
+                    <span className={cn('text-[11px] font-semibold leading-none block mb-1', isToday ? 'text-red-600 dark:text-red-400' : 'text-slate-500 dark:text-gray-400')}>{day}</span>
+                    <div className="space-y-0.5">
+                      {items.slice(0, 3).map(({ tx, overdue }, j) => (
+                        <div key={j} title={`${tx.recurrence?.label || tx.description} — ${formatCurrency(tx.amount)}`}
+                          className={cn('text-[9px] font-medium px-1 py-0.5 rounded truncate leading-tight',
+                            tx.type === 'receita' ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300' :
+                              overdue ? 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300' :
+                                'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400'
+                          )}>
+                          {tx.recurrence?.label || tx.description}
+                        </div>
+                      ))}
+                      {items.length > 3 && <span className="text-[9px] text-slate-400 dark:text-gray-500 pl-0.5">+{items.length - 3}</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* List groups (hidden in calendar mode) */}
+      {viewMode === 'list' && (allRecurrences.length === 0 ? (
         <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
           <Repeat size={40} strokeWidth={1.5} />
           <p className="mt-3 text-sm font-medium">Nenhuma recorrência ativa</p>
@@ -6880,10 +7066,10 @@ function RecurringContent({
             icon={<ArrowUpRight size={16} className="text-emerald-500" />}
           />
         </>
-      )}
+      ))}
 
-      {/* Paused recurrences */}
-      {pausedRecurrences.length > 0 && (
+      {/* Paused recurrences (list mode only) */}
+      {viewMode === 'list' && pausedRecurrences.length > 0 && (
         <div className="bg-white dark:bg-gray-900 border border-dashed border-slate-200 dark:border-gray-700 rounded-2xl overflow-hidden">
           <div className="px-6 py-3 border-b border-slate-100 dark:border-gray-800 flex items-center gap-2">
             <PauseCircle size={16} className="text-slate-400 dark:text-gray-500" />
