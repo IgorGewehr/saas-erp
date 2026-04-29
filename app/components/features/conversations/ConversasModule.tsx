@@ -4359,21 +4359,47 @@ export default function ConversasModule() {
     if (!business?.id || templatesLoading) return;
     setTemplatesLoading(true);
     setTemplatesError(null);
+    // hello_world é auto-aprovado pela Meta em toda WABA — sempre disponível como fallback.
+    // Garante que o usuário sempre tem ao menos UM template para abrir janela de 24h.
+    const helloWorldFallback = {
+      name: 'hello_world',
+      language: 'en_US',
+      category: 'UTILITY',
+      preview: 'Hello World',
+      hasVariables: false,
+    };
+    const ensureHelloWorld = (list: Array<{ name: string; language: string; category: string; preview: string; hasVariables: boolean }>) => {
+      const has = list.some(t => t.name.toLowerCase() === 'hello_world');
+      return has ? list : [helloWorldFallback, ...list];
+    };
     try {
       const auth = getAuth();
       const token = await auth.currentUser?.getIdToken();
+      if (!token) {
+        setTemplatesError('Sessão expirada. Faça login novamente.');
+        setTemplateList([helloWorldFallback]);
+        return;
+      }
       const res = await fetch(`/api/channels/whatsapp-templates?businessId=${business.id}`, {
         headers: { Authorization: `Bearer ${token}` },
+        cache: 'no-store',
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setTemplatesError(data.error || 'Erro ao carregar templates.');
+        const msg = data.error || `Falha ao carregar templates (HTTP ${res.status}).`;
+        console.error('[Conversations] Templates fetch failed:', { status: res.status, body: data });
+        // Mesmo em erro, oferece hello_world para o usuário poder reengajar
+        setTemplateList([helloWorldFallback]);
+        setTemplatesError(`${msg} Você ainda pode usar hello_world.`);
         return;
       }
       const data = await res.json();
-      setTemplateList(data.templates || []);
-    } catch {
-      setTemplatesError('Erro ao carregar templates.');
+      setTemplateList(ensureHelloWorld(data.templates || []));
+    } catch (err) {
+      console.error('[Conversations] Templates fetch threw:', err);
+      const msg = err instanceof Error ? `Erro: ${err.message}` : 'Erro ao carregar templates.';
+      setTemplateList([helloWorldFallback]);
+      setTemplatesError(`${msg} Você ainda pode usar hello_world.`);
     } finally {
       setTemplatesLoading(false);
     }
@@ -5527,8 +5553,14 @@ export default function ConversasModule() {
                             <span className="text-xs">Carregando templates...</span>
                           </div>
                         )}
-                        {templatesError && !templatesLoading && (
+                        {templatesError && !templatesLoading && templateList.length === 0 && (
                           <div className="text-xs text-red-500 dark:text-red-400 text-center py-3 px-2">
+                            {templatesError}
+                          </div>
+                        )}
+                        {templatesError && !templatesLoading && templateList.length > 0 && (
+                          <div className="text-[10px] text-amber-600 dark:text-amber-400 px-2 py-1.5 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20">
+                            <AlertTriangle className="w-3 h-3 inline mr-1 -mt-0.5" />
                             {templatesError}
                           </div>
                         )}
