@@ -3617,6 +3617,19 @@ export default function ConversasModule() {
   const [showCSATDashboard, setShowCSATDashboard] = useState(false);
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [showRoutingRules, setShowRoutingRules] = useState(false);
+  const [showHeaderMore, setShowHeaderMore] = useState(false);
+  const headerMoreRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!showHeaderMore) return;
+    const handler = (e: MouseEvent) => {
+      if (headerMoreRef.current && !headerMoreRef.current.contains(e.target as Node)) {
+        setShowHeaderMore(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showHeaderMore]);
   const [showAssignHistory, setShowAssignHistory] = useState(false);
   const [showMergeDialog, setShowMergeDialog] = useState(false);
   const [showNewConversation, setShowNewConversation] = useState(false);
@@ -5001,62 +5014,89 @@ export default function ConversasModule() {
                   )}>
                   <CheckSquare className="w-4 h-4" />
                 </motion.button>
-                {isAdmin && (
-                  <>
-                    <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
-                      onClick={() => setShowSLASettings(true)}
-                      title="Configurar SLA"
-                      className={cn('w-8 h-8 rounded-xl flex items-center justify-center transition-colors',
-                        slaConfig.enabled
-                          ? 'bg-red-50 dark:bg-red-500/10 text-red-500 dark:text-red-400'
-                          : 'bg-gray-100 dark:bg-white/[0.06] text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-                      )}>
-                      <Clock className="w-4 h-4" />
-                    </motion.button>
-                    <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
-                      onClick={async (e) => {
-                        if (e.detail >= 2) return; // double-click is handled by onDoubleClick
-                        if (!business?.id) return;
-                        await updateDoc(doc(db, 'businesses', business.id), { 'settings.csatEnabled': !csatEnabled, updatedAt: new Date().toISOString() });
-                        toast.success(!csatEnabled ? 'CSAT ativado' : 'CSAT desativado');
-                      }}
-                      title={csatEnabled ? 'CSAT ativo — clique para desativar / duplo clique para ver dashboard' : 'Ativar CSAT'}
-                      onDoubleClick={() => setShowCSATDashboard(true)}
-                      className={cn('w-8 h-8 rounded-xl flex items-center justify-center transition-colors',
-                        csatEnabled
-                          ? 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400'
-                          : 'bg-gray-100 dark:bg-white/[0.06] text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-                      )}>
-                      <span className="text-sm leading-none">⭐</span>
-                    </motion.button>
-                  </>
-                )}
-                <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
-                  onClick={() => setShowAnalytics(v => !v)}
-                  title="Analytics de conversas"
-                  className={cn('w-8 h-8 rounded-xl flex items-center justify-center transition-colors',
-                    showAnalytics
-                      ? 'bg-red-50 dark:bg-red-500/10 text-red-500 dark:text-red-400'
-                      : 'bg-gray-100 dark:bg-white/[0.06] text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-                  )}>
-                  <BarChart3 className="w-4 h-4" />
-                </motion.button>
-                {isAdmin && (
-                  <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
-                    onClick={() => setShowRoutingRules(true)}
-                    title="Regras de roteamento"
-                    className={cn('w-8 h-8 rounded-xl flex items-center justify-center transition-colors',
-                      routingRules.some(r => r.enabled)
-                        ? 'bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400'
-                        : 'bg-gray-100 dark:bg-white/[0.06] text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-                    )}>
-                    <ArrowRightLeft className="w-4 h-4" />
-                  </motion.button>
-                )}
+                {/* Kebab "Mais" — colapsa SLA, CSAT, Analytics, Routing num único dropdown
+                    para liberar espaço horizontal no header. Indicador de ponto colorido aparece
+                    se alguma feature interna estiver ativa. */}
+                <div ref={headerMoreRef} className="relative">
+                  {(() => {
+                    const hasActiveSecondary = slaConfig.enabled || csatEnabled || showAnalytics || routingRules.some(r => r.enabled);
+                    return (
+                      <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+                        onClick={() => setShowHeaderMore(v => !v)}
+                        title="Mais opções"
+                        className={cn('w-8 h-8 rounded-xl flex items-center justify-center transition-colors relative',
+                          showHeaderMore
+                            ? 'bg-red-50 dark:bg-red-500/10 text-red-500 dark:text-red-400'
+                            : 'bg-gray-100 dark:bg-white/[0.06] text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                        )}>
+                        <MoreVertical className="w-4 h-4" />
+                        {hasActiveSecondary && !showHeaderMore && (
+                          <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-red-500" />
+                        )}
+                      </motion.button>
+                    );
+                  })()}
+                  <AnimatePresence>
+                    {showHeaderMore && (
+                      <motion.div initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }}
+                        className="absolute right-0 top-full mt-1 w-56 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl overflow-hidden z-30">
+                        <button
+                          type="button"
+                          onClick={() => { setShowAnalytics(v => !v); setShowHeaderMore(false); }}
+                          className="w-full flex items-center gap-2.5 px-3 py-2 text-xs hover:bg-gray-50 dark:hover:bg-white/[0.04] text-gray-700 dark:text-gray-300">
+                          <BarChart3 className={cn('w-4 h-4', showAnalytics && 'text-red-500')} />
+                          Analytics de conversas
+                          {showAnalytics && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-red-500" />}
+                        </button>
+                        {isAdmin && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => { setShowSLASettings(true); setShowHeaderMore(false); }}
+                              className="w-full flex items-center gap-2.5 px-3 py-2 text-xs hover:bg-gray-50 dark:hover:bg-white/[0.04] text-gray-700 dark:text-gray-300">
+                              <Clock className={cn('w-4 h-4', slaConfig.enabled && 'text-red-500')} />
+                              Configurar SLA
+                              {slaConfig.enabled && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-red-500" />}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                setShowHeaderMore(false);
+                                if (!business?.id) return;
+                                await updateDoc(doc(db, 'businesses', business.id), { 'settings.csatEnabled': !csatEnabled, updatedAt: new Date().toISOString() });
+                                toast.success(!csatEnabled ? 'CSAT ativado' : 'CSAT desativado');
+                              }}
+                              className="w-full flex items-center gap-2.5 px-3 py-2 text-xs hover:bg-gray-50 dark:hover:bg-white/[0.04] text-gray-700 dark:text-gray-300">
+                              <span className={cn('w-4 h-4 leading-none flex items-center justify-center', csatEnabled && 'text-amber-500')}>⭐</span>
+                              {csatEnabled ? 'Desativar CSAT' : 'Ativar CSAT'}
+                              {csatEnabled && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); setShowCSATDashboard(true); setShowHeaderMore(false); }}
+                                  className="ml-auto text-[9px] font-semibold text-red-500 hover:text-red-600">
+                                  ver dashboard
+                                </button>
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => { setShowRoutingRules(true); setShowHeaderMore(false); }}
+                              className="w-full flex items-center gap-2.5 px-3 py-2 text-xs hover:bg-gray-50 dark:hover:bg-white/[0.04] text-gray-700 dark:text-gray-300">
+                              <ArrowRightLeft className={cn('w-4 h-4', routingRules.some(r => r.enabled) && 'text-violet-500')} />
+                              Regras de roteamento
+                              {routingRules.some(r => r.enabled) && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-violet-500" />}
+                            </button>
+                          </>
+                        )}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
                 <motion.button
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
                   onClick={() => setShowSettings(true)}
+                  title="Configurações de canais"
                   className="w-8 h-8 rounded-xl bg-gray-100 dark:bg-white/[0.06] flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
                 >
                   <Settings className="w-4 h-4" />
