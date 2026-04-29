@@ -11,7 +11,7 @@ import {
   CheckCircle2, PhoneCall, Video, FileText, MessageCircle, BarChart3, Activity, Layers, Gauge,
   UserPlus, Briefcase, Tag, Hash, AlertTriangle, Heart, Shield, Zap, Brain,
   Sparkles, Filter, Crown, Settings2, GripVertical, Eye, EyeOff, ChevronUp, ChevronDown,
-  Download, Upload,
+  Download, Upload, GitBranch,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -50,6 +50,7 @@ import { ScheduleActionDialog } from './ScheduleActionDialog';
 import AutomacoesTab from './AutomacoesTab';
 import FormulariosTab from './FormulariosTab';
 import MembershipsTab from './MembershipsTab';
+import SequenciasTab from './SequenciasTab';
 import { SourceIcon } from './SourceIcon';
 
 // ── Tab Config ──────────────────────────────────────────────────────────────
@@ -63,6 +64,9 @@ const ACTIVITY_ICONS: Record<CRMActivityType, React.ReactNode> = {
   whatsapp: <MessageCircle size={14} />, tarefa: <CheckCircle2 size={14} />,
   nota: <FileText size={14} />, proposta: <Send size={14} />,
 };
+
+// Small icon wrapper for JSX in tab config
+const GitBranchIcon = () => <GitBranch size={15} />;
 
 // ── Audit helper ────────────────────────────────────────────────────────────
 
@@ -1730,6 +1734,7 @@ export default function CRMModule() {
     { key: 'segmentos', label: t('crm.tab.segments', 'Segmentos'), icon: <Filter size={15} />, desc: t('crm.tab.segments_desc', 'Filtros AND/OR') },
     { key: 'metricas', label: t('crm.tab.metrics', 'Inteligência'), icon: <Brain size={15} />, desc: t('crm.tab.metrics_desc', 'Scores e insights') },
     { key: 'automacoes', label: t('crm.tab.automations', 'Automações'), icon: <Zap size={15} />, desc: t('crm.tab.automations_desc', 'Regras automáticas') },
+    { key: 'sequencias', label: t('crm.tab.sequences', 'Sequências'), icon: <GitBranchIcon />, desc: t('crm.tab.sequences_desc', 'Follow-up multi-passo') },
     { key: 'formularios', label: t('crm.tab.forms', 'Formulários'), icon: <FileText size={15} />, desc: t('crm.tab.forms_desc', 'Fichas de anamnese') },
     { key: 'planos', label: t('crm.tab.plans', 'Planos'), icon: <Crown size={15} />, desc: t('crm.tab.plans_desc', 'Assinaturas recorrentes') },
   ], [t]);
@@ -2144,6 +2149,11 @@ export default function CRMModule() {
             {activeTab === 'automacoes' && (
               <div className="flex-1 overflow-y-auto min-h-0">
                 <AutomacoesTab businessId={business?.id || ''} userId={user?.uid || ''} userName={user?.name || ''} isDark={isDark} />
+              </div>
+            )}
+            {activeTab === 'sequencias' && (
+              <div className="flex-1 overflow-y-auto min-h-0 p-1">
+                <SequenciasTab businessId={business?.id || ''} userId={user?.uid || ''} userName={user?.name || ''} contacts={contacts} />
               </div>
             )}
             {activeTab === 'formularios' && (

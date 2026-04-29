@@ -346,6 +346,42 @@ export interface CRMAuditEntry {
   createdAt: string;
 }
 
+export interface CRMSequenceStep {
+  id: string;
+  delayDays: number;
+  action: 'send_whatsapp' | 'create_task' | 'send_email' | 'add_tag' | 'notify_team';
+  content: string;
+  label?: string;
+}
+
+export interface CRMSequence {
+  id: string;
+  businessId: string;
+  name: string;
+  description?: string;
+  steps: CRMSequenceStep[];
+  isActive: boolean;
+  enrolledCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CRMSequenceEnrollment {
+  id: string;
+  businessId: string;
+  sequenceId: string;
+  sequenceName: string;
+  contactId: string;
+  contactName: string;
+  status: 'active' | 'completed' | 'paused' | 'cancelled';
+  currentStep: number;
+  enrolledAt: string;
+  nextStepAt?: string;
+  completedAt?: string;
+  enrolledByUserId: string;
+  enrolledByUserName: string;
+}
+
 export interface AiAgentSettings {
   enabled: boolean;
   /** Contexto de negócio inserido no prompt do agente */
