@@ -16,6 +16,7 @@ import {
   orderBy,
   addDoc,
   updateDoc,
+  deleteDoc,
   doc,
   onSnapshot,
   limit,
@@ -69,6 +70,9 @@ import {
   Activity,
   Bot,
   BotOff,
+  SlidersHorizontal,
+  Bookmark,
+  BookmarkCheck,
 } from 'lucide-react';
 import { getDocs } from 'firebase/firestore';
 import type {
@@ -76,6 +80,7 @@ import type {
   ConversationMessage,
   ConversationChannel,
   ConversationStatus,
+  ConversationView,
   Sector,
   Snippet,
   User,
@@ -1559,6 +1564,186 @@ function Composer({
   );
 }
 
+// ─── Advanced Filters ────────────────────────────────────────────────────────
+
+interface AdvancedFilters {
+  assignedTo: string;
+  priority: string;
+  label: string;
+  slaStatus: '' | 'warning' | 'breached';
+  unreadOnly: boolean;
+}
+
+const EMPTY_ADV_FILTERS: AdvancedFilters = { assignedTo: '', priority: '', label: '', slaStatus: '', unreadOnly: false };
+
+function countActiveFilters(f: AdvancedFilters): number {
+  return [f.assignedTo, f.priority, f.label, f.slaStatus, f.unreadOnly].filter(Boolean).length;
+}
+
+function AdvancedFilterPanel({ filters, onChange, members, allLabels, slaEnabled, onSaveView }: {
+  filters: AdvancedFilters;
+  onChange: (f: AdvancedFilters) => void;
+  members: User[];
+  allLabels: string[];
+  slaEnabled: boolean;
+  onSaveView: () => void;
+}) {
+  const set = <K extends keyof AdvancedFilters>(key: K, val: AdvancedFilters[K]) =>
+    onChange({ ...filters, [key]: val });
+
+  const selClass = 'text-xs border border-gray-200 dark:border-gray-700 rounded-lg px-2.5 py-1.5 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-1 focus:ring-red-400 w-full';
+
+  return (
+    <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+      transition={{ duration: 0.18 }} className="overflow-hidden border-b border-gray-100 dark:border-white/[0.06]">
+      <div className="px-4 py-3 space-y-2.5">
+        <div className="grid grid-cols-2 gap-2">
+          {/* Assigned to */}
+          <div>
+            <p className="text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1">Responsável</p>
+            <select value={filters.assignedTo} onChange={e => set('assignedTo', e.target.value)} className={selClass}>
+              <option value="">Todos</option>
+              {members.map(m => <option key={m.id} value={m.uid}>{m.name}</option>)}
+            </select>
+          </div>
+          {/* Priority */}
+          <div>
+            <p className="text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1">Prioridade</p>
+            <select value={filters.priority} onChange={e => set('priority', e.target.value)} className={selClass}>
+              <option value="">Todas</option>
+              <option value="urgent">Urgente</option>
+              <option value="high">Alta</option>
+              <option value="medium">Média</option>
+              <option value="low">Baixa</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          {/* Label */}
+          <div>
+            <p className="text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1">Label / Tag</p>
+            <select value={filters.label} onChange={e => set('label', e.target.value)} className={selClass}>
+              <option value="">Todas</option>
+              {allLabels.map(l => <option key={l} value={l}>{l}</option>)}
+            </select>
+          </div>
+          {/* SLA status */}
+          {slaEnabled && (
+            <div>
+              <p className="text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1">Status SLA</p>
+              <select value={filters.slaStatus} onChange={e => set('slaStatus', e.target.value as AdvancedFilters['slaStatus'])} className={selClass}>
+                <option value="">Todos</option>
+                <option value="warning">Em alerta</option>
+                <option value="breached">Vencido</option>
+              </select>
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between">
+          {/* Unread only */}
+          <label className="flex items-center gap-2 cursor-pointer">
+            <button onClick={() => set('unreadOnly', !filters.unreadOnly)}
+              className={cn('w-8 h-4 rounded-full transition-colors relative', filters.unreadOnly ? 'bg-red-500' : 'bg-gray-300 dark:bg-gray-600')}>
+              <span className={cn('absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform', filters.unreadOnly ? 'translate-x-4' : 'translate-x-0.5')} />
+            </button>
+            <span className="text-xs text-gray-600 dark:text-gray-400">Não lidas</span>
+          </label>
+
+          <button onClick={onSaveView}
+            className="flex items-center gap-1.5 text-xs font-semibold text-red-600 dark:text-red-400 hover:text-red-700 transition-colors">
+            <Bookmark className="w-3 h-3" /> Salvar view
+          </button>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+// ─── Saved Views Bar ─────────────────────────────────────────────────────────
+
+function SavedViewsBar({ views, activeViewId, onSelect, onDelete }: {
+  views: ConversationView[];
+  activeViewId: string | null;
+  onSelect: (view: ConversationView) => void;
+  onDelete: (viewId: string) => void;
+}) {
+  if (views.length === 0) return null;
+  return (
+    <div className="flex items-center gap-1.5 px-4 pb-2 overflow-x-auto scrollbar-none flex-shrink-0">
+      {views.map(view => {
+        const isActive = activeViewId === view.id;
+        return (
+          <div key={view.id} className={cn('flex items-center gap-1 rounded-lg border text-[10px] font-semibold whitespace-nowrap transition-all',
+            isActive
+              ? 'bg-red-50 dark:bg-red-500/10 border-red-300 dark:border-red-500/30 text-red-600 dark:text-red-400'
+              : 'bg-gray-50 dark:bg-white/[0.04] border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:border-gray-300 dark:hover:border-gray-600')}>
+            <button onClick={() => onSelect(view)} className="flex items-center gap-1 pl-2.5 py-1.5">
+              {view.emoji && <span>{view.emoji}</span>}
+              <BookmarkCheck className="w-2.5 h-2.5 opacity-60" />
+              {view.name}
+            </button>
+            <button onClick={() => onDelete(view.id)}
+              className="pr-1.5 py-1.5 opacity-50 hover:opacity-100 transition-opacity">
+              <X className="w-2.5 h-2.5" />
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Save View Modal ─────────────────────────────────────────────────────────
+
+function SaveViewModal({ onSave, onClose }: {
+  onSave: (name: string, emoji: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState('');
+  const [emoji, setEmoji] = useState('🔖');
+  const [saving, setSaving] = useState(false);
+  const EMOJIS = ['🔖', '⭐', '🔥', '📌', '💼', '🎯', '📋', '🚨', '💬', '✅'];
+
+  const handleSave = async () => {
+    if (!name.trim()) return;
+    setSaving(true);
+    try { await onSave(name.trim(), emoji); onClose(); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <motion.div initial={{ opacity: 0, scale: 0.95, y: 8 }} animate={{ opacity: 1, scale: 1, y: 0 }}
+        className="w-full max-w-xs bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="font-bold text-sm text-gray-900 dark:text-gray-100">Salvar view</h3>
+          <button onClick={onClose} className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400"><X className="w-3.5 h-3.5" /></button>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {EMOJIS.map(e => (
+            <button key={e} onClick={() => setEmoji(e)}
+              className={cn('w-8 h-8 text-base rounded-lg transition-all', emoji === e ? 'bg-red-100 dark:bg-red-500/20 ring-2 ring-red-400' : 'hover:bg-gray-100 dark:hover:bg-gray-800')}>
+              {e}
+            </button>
+          ))}
+        </div>
+        <input autoFocus value={name} onChange={e => setName(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSave()}
+          placeholder="Nome da view (ex: Urgentes sem resposta)"
+          className="w-full px-3 py-2.5 text-sm bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-xl text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400" />
+        <div className="flex gap-2">
+          <button onClick={onClose} className="flex-1 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancelar</button>
+          <button onClick={handleSave} disabled={!name.trim() || saving}
+            className="flex-1 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors disabled:opacity-50">
+            {saving ? 'Salvando...' : 'Salvar'}
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 // ─── Status Filter Tabs ──────────────────────────────────────────────────────
 
 function StatusFilterBar({
@@ -2162,6 +2347,13 @@ export default function ConversasModule() {
   );
   useEffect(() => { setSLAConfig(business?.settings?.conversationSLA ?? SLA_DEFAULT_CONFIG); }, [business?.settings?.conversationSLA]);
   const [showSLASettings, setShowSLASettings] = useState(false);
+  const [members, setMembers] = useState<User[]>([]);
+  useEffect(() => {
+    if (!business?.id) return;
+    const q = query(collection(db, 'users'), where('businessId', '==', business.id));
+    const unsub = onSnapshot(q, snap => setMembers(snap.docs.map(d => ({ ...d.data(), id: d.id } as User))));
+    return () => unsub();
+  }, [business?.id]);
 
   // Tick every 30s to refresh SLA countdowns without re-fetching data
   const [slaTick, setSLATick] = useState(0);
@@ -2288,6 +2480,11 @@ export default function ConversasModule() {
   const [activeChannel, setActiveChannel] = useState<ConversationChannel | 'all'>('all');
   const [activeStatus, setActiveStatus] = useState<ConversationStatus | 'all'>('all');
   const [activeSectorFilter, setActiveSectorFilter] = useState<string | 'all'>('all');
+  const [advFilters, setAdvFilters] = useState<AdvancedFilters>(EMPTY_ADV_FILTERS);
+  const [showAdvFilters, setShowAdvFilters] = useState(false);
+  const [savedViews, setSavedViews] = useState<ConversationView[]>([]);
+  const [activeViewId, setActiveViewId] = useState<string | null>(null);
+  const [showSaveViewModal, setShowSaveViewModal] = useState(false);
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [messageInput, setMessageInput] = useState('');
@@ -2384,6 +2581,63 @@ export default function ConversasModule() {
     });
     return () => unsub();
   }, [business?.id]);
+
+  // ── Load saved views ──────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (!business?.id) return;
+    const q = query(collection(db, 'conversationViews'), where('businessId', '==', business.id), orderBy('createdAt', 'asc'));
+    const unsub = onSnapshot(q, snap => setSavedViews(snap.docs.map(d => ({ ...d.data(), id: d.id } as ConversationView))));
+    return () => unsub();
+  }, [business?.id]);
+
+  const handleSaveView = async (name: string, emoji: string) => {
+    if (!business?.id || !user) return;
+    const filters = {
+      channel: activeChannel !== 'all' ? activeChannel : undefined,
+      status: activeStatus !== 'all' ? activeStatus : undefined,
+      sectorId: activeSectorFilter !== 'all' ? activeSectorFilter : undefined,
+      assignedTo: advFilters.assignedTo || undefined,
+      priority: advFilters.priority || undefined,
+      label: advFilters.label || undefined,
+      slaStatus: advFilters.slaStatus || undefined,
+      unreadOnly: advFilters.unreadOnly || undefined,
+    };
+    await addDoc(collection(db, 'conversationViews'), {
+      businessId: business.id, name, emoji,
+      filters,
+      createdBy: user.uid, createdByName: user.name,
+      createdAt: new Date().toISOString(),
+    });
+  };
+
+  const handleDeleteView = async (viewId: string) => {
+    try {
+      await deleteDoc(doc(db, 'conversationViews', viewId));
+      if (activeViewId === viewId) { setActiveViewId(null); }
+    } catch (err) { console.error('[Views] Delete error:', err); }
+  };
+
+  const handleSelectView = (view: ConversationView) => {
+    if (activeViewId === view.id) {
+      // Deselect
+      setActiveViewId(null);
+      setActiveChannel('all'); setActiveStatus('all'); setActiveSectorFilter('all');
+      setAdvFilters(EMPTY_ADV_FILTERS);
+      return;
+    }
+    setActiveViewId(view.id);
+    setActiveChannel((view.filters.channel as ConversationChannel | 'all') ?? 'all');
+    setActiveStatus((view.filters.status as ConversationStatus | 'all') ?? 'all');
+    setActiveSectorFilter(view.filters.sectorId ?? 'all');
+    setAdvFilters({
+      assignedTo: view.filters.assignedTo ?? '',
+      priority: view.filters.priority ?? '',
+      label: view.filters.label ?? '',
+      slaStatus: (view.filters.slaStatus as AdvancedFilters['slaStatus']) ?? '',
+      unreadOnly: view.filters.unreadOnly ?? false,
+    });
+  };
 
   // ── Sector visibility filter ──────────────────────────────────────────────
 
@@ -3119,8 +3373,26 @@ export default function ConversasModule() {
       c.contactName.toLowerCase().includes(searchQuery.toLowerCase()) ||
       c.lastMessage.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (c.contactPhone && c.contactPhone.includes(searchQuery));
-    return matchesChannel && matchesStatus && matchesSector && matchesSearch;
+    // Advanced filters
+    const matchesAssigned = !advFilters.assignedTo || c.assignedTo === advFilters.assignedTo;
+    const matchesPriority = !advFilters.priority || c.priority === advFilters.priority;
+    const matchesLabel = !advFilters.label || c.labels?.includes(advFilters.label) || c.tags?.includes(advFilters.label);
+    const matchesUnread = !advFilters.unreadOnly || (c.unreadCount ?? 0) > 0;
+    const matchesSLAStatus = !advFilters.slaStatus || getSLAInfo(c, slaConfig)?.status === advFilters.slaStatus;
+    return matchesChannel && matchesStatus && matchesSector && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus;
   });
+
+  const activeFilterCount = countActiveFilters(advFilters);
+
+  // Collect all unique labels/tags from conversations for the filter dropdown
+  const allLabels = useMemo(() => {
+    const s = new Set<string>();
+    for (const c of conversations) {
+      c.labels?.forEach(l => s.add(l));
+      c.tags?.forEach(t => s.add(t));
+    }
+    return Array.from(s).sort();
+  }, [conversations]);
 
   // ── Unread counts per channel ──────────────────────────────────────────────
 
@@ -3210,16 +3482,32 @@ export default function ConversasModule() {
               </div>
             </div>
 
-            {/* Search */}
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
-              <input
-                type="text"
-                placeholder={t('conversations.searchPlaceholder', 'Buscar conversas...')}
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-8 pr-3 py-2 text-sm bg-gray-100 dark:bg-white/[0.04] border border-transparent dark:border-white/[0.06] rounded-xl text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-red-500/50 focus:bg-white dark:focus:bg-white/[0.06] transition-colors"
-              />
+            {/* Search + filter button */}
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder={t('conversations.searchPlaceholder', 'Buscar conversas...')}
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-8 pr-3 py-2 text-sm bg-gray-100 dark:bg-white/[0.04] border border-transparent dark:border-white/[0.06] rounded-xl text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-red-500/50 focus:bg-white dark:focus:bg-white/[0.06] transition-colors"
+                />
+              </div>
+              <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+                onClick={() => setShowAdvFilters(v => !v)}
+                className={cn('relative w-9 h-9 rounded-xl flex-shrink-0 flex items-center justify-center transition-colors',
+                  showAdvFilters || activeFilterCount > 0
+                    ? 'bg-red-50 dark:bg-red-500/10 text-red-500 dark:text-red-400'
+                    : 'bg-gray-100 dark:bg-white/[0.04] text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                )}>
+                <SlidersHorizontal className="w-4 h-4" />
+                {activeFilterCount > 0 && (
+                  <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center">
+                    {activeFilterCount}
+                  </span>
+                )}
+              </motion.button>
             </div>
           </div>
 
@@ -3270,6 +3558,28 @@ export default function ConversasModule() {
             activeStatus={activeStatus}
             onStatusChange={setActiveStatus}
             counts={countsByStatus}
+          />
+
+          {/* Advanced filter panel */}
+          <AnimatePresence>
+            {showAdvFilters && (
+              <AdvancedFilterPanel
+                filters={advFilters}
+                onChange={f => { setAdvFilters(f); setActiveViewId(null); }}
+                members={members}
+                allLabels={allLabels}
+                slaEnabled={slaConfig.enabled}
+                onSaveView={() => setShowSaveViewModal(true)}
+              />
+            )}
+          </AnimatePresence>
+
+          {/* Saved views bar */}
+          <SavedViewsBar
+            views={savedViews}
+            activeViewId={activeViewId}
+            onSelect={handleSelectView}
+            onDelete={handleDeleteView}
           />
 
           {/* Sector Filter */}
@@ -3710,6 +4020,12 @@ export default function ConversasModule() {
       {/* Settings Dialog */}
       <AnimatePresence>
         {showSettings && <IntegrationSettingsDialog onClose={() => setShowSettings(false)} />}
+        {showSaveViewModal && (
+          <SaveViewModal
+            onSave={handleSaveView}
+            onClose={() => setShowSaveViewModal(false)}
+          />
+        )}
         {showSLASettings && isAdmin && business?.id && (
           <SLASettingsDialog
             current={slaConfig}

@@ -1846,6 +1846,26 @@ export interface Conversation {
   deletedAt?: string;
 }
 
+export interface ConversationView {
+  id: string;
+  businessId: string;
+  name: string;
+  emoji?: string;
+  filters: {
+    channel?: string;
+    status?: string;
+    sectorId?: string;
+    assignedTo?: string;
+    priority?: string;
+    label?: string;
+    slaStatus?: string;
+    unreadOnly?: boolean;
+  };
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
+}
+
 export interface ConversationMessage {
   id: string;
   conversationId: string;
