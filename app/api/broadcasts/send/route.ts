@@ -371,7 +371,12 @@ export async function POST(req: NextRequest) {
           );
         } else {
           const errData = await response?.json().catch(() => ({}));
-          const errMessage = errData?.error?.message || `HTTP ${response?.status || '?'}`;
+          // Aceita múltiplos shapes: Meta usa { error: { message } }, notification-server
+          // tipicamente retorna { error: 'msg' } ou { message: 'msg' }
+          const errMessage = errData?.error?.message
+            || (typeof errData?.error === 'string' ? errData.error : null)
+            || errData?.message
+            || `HTTP ${response?.status || '?'}`;
           results.push({
             contactId: recipient.contactId,
             recipientId: recipient.recipientId,

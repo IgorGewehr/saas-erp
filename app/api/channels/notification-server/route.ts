@@ -10,6 +10,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { encryptToken, decryptToken } from '@/lib/utils/encryption';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
+import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import type { UserRole } from '@/lib/types';
 
@@ -21,15 +22,31 @@ function requireAdmin(role: string): NextResponse | null {
 }
 
 export async function POST(req: NextRequest) {
+  // Rate limit: 10 saves/min por IP (defensivo, evita abuse)
+  const clientIp = getClientIp(req);
+  const { allowed } = checkRateLimit(`ns-config:${clientIp}`, 10, 60_000);
+  if (!allowed) {
+    return NextResponse.json({ error: 'Aguarde antes de salvar novamente.' }, { status: 429 });
+  }
+
   try {
     const body = await req.json();
     const { businessId, url, apiKey, appId } = body;
-    if (!businessId || !url || !apiKey) {
-      return NextResponse.json({ error: 'businessId, url e apiKey são obrigatórios' }, { status: 400 });
+    if (!businessId || !url) {
+      return NextResponse.json({ error: 'businessId e url são obrigatórios' }, { status: 400 });
     }
-    // Valida URL
-    try { new URL(url); } catch {
+    // Valida URL — só aceita HTTP/HTTPS, e em produção bloqueia HTTP (apiKey em claro)
+    let parsedUrl: URL;
+    try { parsedUrl = new URL(url); } catch {
       return NextResponse.json({ error: 'URL inválida' }, { status: 400 });
+    }
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+      return NextResponse.json({ error: 'URL deve usar protocolo http:// ou https://' }, { status: 400 });
+    }
+    if (parsedUrl.protocol === 'http:' && process.env.NODE_ENV === 'production') {
+      return NextResponse.json({
+        error: 'HTTPS obrigatório em produção (API key trafegaria em claro com HTTP)',
+      }, { status: 400 });
     }
 
     const authResult = await verifyAuth(req, businessId);
@@ -37,9 +54,15 @@ export async function POST(req: NextRequest) {
     const adminCheck = requireAdmin(authResult.role);
     if (adminCheck) return adminCheck;
 
-    const now = new Date().toISOString();
-    const encryptedKey = await encryptToken(apiKey);
+    // Lê config atual — permite update sem reenviar apiKey (mantém a existente)
+    const bizSnap = await adminDb.collection('businesses').doc(businessId).get();
+    const currentKey = bizSnap.data()?.settings?.notificationServer?.apiKey;
+    if (!apiKey && !currentKey) {
+      return NextResponse.json({ error: 'apiKey é obrigatória na primeira configuração' }, { status: 400 });
+    }
+    const encryptedKey = apiKey ? await encryptToken(apiKey) : currentKey;
 
+    const now = new Date().toISOString();
     await adminDb.collection('businesses').doc(businessId).set({
       settings: {
         notificationServer: {
