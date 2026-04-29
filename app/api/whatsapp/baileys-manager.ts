@@ -139,13 +139,15 @@ function getMediaLabel(type: string | null): string {
 
 async function updateFirestoreConnection(businessId: string, phoneNumber: string | null) {
   try {
+    // Escreve APENAS em channels.whatsappBaileys — campo isolado.
+    // O campo legado channels.whatsapp não é mais tocado para que conexões
+    // Cloud paralelas sobrevivam.
     await adminDb.collection('businesses').doc(businessId).update({
-      'channels.whatsapp': {
+      'channels.whatsappBaileys': {
         isConnected: true,
         connectedAt: new Date().toISOString(),
-        connectedVia: 'baileys',
-        displayPhoneNumber: phoneNumber,
-        phoneNumberId: phoneNumber,
+        phoneNumber: phoneNumber || '',
+        displayPhoneNumber: phoneNumber || '',
       },
       updatedAt: new Date().toISOString(),
     });

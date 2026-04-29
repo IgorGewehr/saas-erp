@@ -428,7 +428,10 @@ export async function POST(req: NextRequest) {
     const channelUpdates: Record<string, unknown> = { updatedAt: new Date().toISOString() };
 
     if (phoneNumberId) {
-      channelUpdates['channels.whatsapp'] = {
+      // Escreve APENAS em channels.whatsappCloud — campo isolado que não é
+      // sobrescrito quando Baileys conecta. O campo legado channels.whatsapp
+      // não é mais tocado para preservar isolamento entre canais.
+      channelUpdates['channels.whatsappCloud'] = {
         phoneNumberId,
         wabaId: wabaIdFromScopes || null,
         accessToken: await encryptToken(longLivedToken),
@@ -463,13 +466,20 @@ export async function POST(req: NextRequest) {
 
     // ── Check uniqueness of channel identifiers before saving ─────────────
     if (phoneNumberId) {
-      const existingWa = await adminDb.collection('businesses')
-        .where('channels.whatsapp.phoneNumberId', '==', phoneNumberId)
-        .where('channels.whatsapp.isConnected', '==', true)
-        .limit(1)
-        .get();
-
-      if (!existingWa.empty && existingWa.docs[0].id !== businessId) {
+      // Verifica em ambos os campos: novo (whatsappCloud) e legado (whatsapp)
+      const [existingNew, existingLegacy] = await Promise.all([
+        adminDb.collection('businesses')
+          .where('channels.whatsappCloud.phoneNumberId', '==', phoneNumberId)
+          .where('channels.whatsappCloud.isConnected', '==', true)
+          .limit(1).get(),
+        adminDb.collection('businesses')
+          .where('channels.whatsapp.phoneNumberId', '==', phoneNumberId)
+          .where('channels.whatsapp.isConnected', '==', true)
+          .limit(1).get(),
+      ]);
+      const conflict = (!existingNew.empty && existingNew.docs[0].id !== businessId)
+        || (!existingLegacy.empty && existingLegacy.docs[0].id !== businessId);
+      if (conflict) {
         return NextResponse.json({
           error: `Este numero do WhatsApp ja esta conectado a outra empresa. Desconecte-o primeiro.`,
         }, { status: 409 });

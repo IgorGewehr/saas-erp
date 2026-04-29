@@ -323,14 +323,41 @@ export async function POST(req: NextRequest) {
 
     switch (channel) {
       case 'whatsapp': {
-        // Check if this business uses Baileys (WhatsApp Web) or Cloud API
-        const waConfig = channels.whatsapp;
-        const isBaileys = waConfig && 'connectedVia' in waConfig && waConfig.connectedVia === 'baileys';
+        // CRITICAL: routing decision deve vir da conversation, NÃO do business config.
+        // Antes lia channels.whatsapp.connectedVia (config global, podia estar errado quando dois canais coexistem).
+        // Agora lê conversation.connectedVia — fonte da verdade per-conversation.
+        let convVia: string | undefined;
+        if (conversationId) {
+          try {
+            const convSnap = await adminDb.doc(`conversations/${conversationId}`).get();
+            convVia = convSnap.data()?.connectedVia as string | undefined;
+          } catch (err) {
+            console.error('[Send] Failed to read conversation.connectedVia:', err);
+          }
+        }
+
+        let isBaileys: boolean;
+        if (convVia === 'baileys') {
+          isBaileys = true;
+        } else if (convVia === 'embedded_signup') {
+          isBaileys = false;
+        } else {
+          // Conversation sem connectedVia (dados antigos): cai no comportamento legado
+          const waLegacy = channels.whatsapp as (typeof channels.whatsapp & { connectedVia?: string }) | undefined;
+          isBaileys = waLegacy?.connectedVia === 'baileys' && !channels.whatsappCloud;
+        }
 
         if (isBaileys) {
           result = await sendWhatsAppBaileys(businessId, recipientId, content, conversationId, mediaOpts);
         } else {
-          result = await sendWhatsApp(channels, recipientId, content, {
+          // Resolve config Cloud: novo campo whatsappCloud > legado whatsapp
+          const cloudConfig = channels.whatsappCloud ?? channels.whatsapp;
+          if (!cloudConfig?.isConnected || !cloudConfig.accessToken || !cloudConfig.phoneNumberId) {
+            throw new Error('WhatsApp Cloud não está conectado neste business');
+          }
+          // Compat: sendWhatsApp lê channels.whatsapp — substituímos pelo config resolvido
+          const resolvedChannels = { ...channels, whatsapp: cloudConfig as typeof channels.whatsapp };
+          result = await sendWhatsApp(resolvedChannels, recipientId, content, {
             type: type || 'text',
             templateName,
             templateLanguage,

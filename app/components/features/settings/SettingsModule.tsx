@@ -86,6 +86,8 @@ import {
   PanelLeft,
 } from 'lucide-react';
 import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector, Service, WorkingHours, DaySchedule, UseCase } from '@/lib/types';
+import { WHATSAPP_TEMPLATE_CATALOG, renderTemplatePreview } from '@/lib/constants/whatsapp-template-catalog';
+import { getAuth } from 'firebase/auth';
 import { CachedImage } from '@/app/components/ui/CachedImage';
 import SidebarEditorTab from './SidebarEditorTab';
 import {
@@ -5535,6 +5537,225 @@ interface ChannelConfig {
   connectedVia?: string;
 }
 
+// ─── WhatsApp Template Catalog ────────────────────────────────────────────────
+//
+// Lista templates Aevo recomendados que o cliente deve submeter manualmente no
+// WhatsApp Manager. Mostra status (aprovado / pendente / não submetido) cruzando
+// com os templates já existentes na WABA via /api/channels/whatsapp-templates.
+
+interface WabaTemplateBrief {
+  name: string;
+  language: string;
+  status?: 'APPROVED' | 'PENDING' | 'REJECTED' | string;
+}
+
+function WhatsAppTemplateCatalog({ businessId, wabaId }: { businessId: string; wabaId?: string }) {
+  const [wabaTemplates, setWabaTemplates] = useState<WabaTemplateBrief[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  const loadTemplates = useCallback(async () => {
+    try {
+      const token = await getAuth().currentUser?.getIdToken();
+      if (!token) {
+        toast.error('Sessão expirada. Faça login novamente.');
+        return;
+      }
+      const res = await fetch(`/api/channels/whatsapp-templates?businessId=${businessId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        if (res.status === 401) toast.error('Sem permissão para listar templates');
+        else if (res.status !== 404) console.error('[Catalog] HTTP', res.status);
+        return;
+      }
+      const data = await res.json();
+      setWabaTemplates(
+        (data.templates ?? []).map((t: { name: string; language: string; status?: string }) => ({
+          name: t.name,
+          language: t.language,
+          status: t.status ?? 'APPROVED',
+        })),
+      );
+    } catch (err) {
+      console.error('[Catalog] Failed to load templates:', err);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [businessId]);
+
+  useEffect(() => { loadTemplates(); }, [loadTemplates]);
+
+  const copy = async (text: string, key: string) => {
+    try {
+      // Modern API (HTTPS / secure contexts)
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        // Legacy fallback for HTTP / older browsers
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-9999px';
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(textArea);
+        if (!ok) throw new Error('execCommand failed');
+      }
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey(null), 1500);
+    } catch {
+      toast.error('Não foi possível copiar');
+    }
+  };
+
+  const findStatus = (name: string): 'approved' | 'not_submitted' => {
+    const found = wabaTemplates.find(t => t.name.toLowerCase() === name.toLowerCase());
+    if (!found) return 'not_submitted';
+    return found.status === 'APPROVED' ? 'approved' : 'not_submitted';
+  };
+
+  const managerUrl = wabaId
+    ? `https://business.facebook.com/wa/manage/message-templates/?waba_id=${wabaId}`
+    : 'https://business.facebook.com/wa/manage/message-templates/';
+
+  const approvedCount = WHATSAPP_TEMPLATE_CATALOG.filter(t => findStatus(t.name) === 'approved').length;
+
+  return (
+    <div className="rounded-2xl border border-gray-200 dark:border-gray-700/50 bg-white dark:bg-[#111827] overflow-hidden">
+      <div className="p-5 border-b border-gray-100 dark:border-gray-800">
+        <div className="flex items-start justify-between gap-3 mb-2">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-sm shadow-emerald-500/20">
+              <FileText className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h4 className="text-sm font-bold text-gray-900 dark:text-gray-100">Catálogo de Templates Aevo</h4>
+                {!loading && (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                    {approvedCount}/{WHATSAPP_TEMPLATE_CATALOG.length} aprovados
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                Submeta no WhatsApp Manager — aprovação geralmente em poucos minutos
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => { setRefreshing(true); loadTemplates(); }}
+            disabled={refreshing || loading}
+            title="Atualizar status"
+            className="flex-shrink-0 w-8 h-8 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 flex items-center justify-center text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 disabled:opacity-50"
+          >
+            <RefreshCw className={cn('w-3.5 h-3.5', (refreshing || loading) && 'animate-spin')} />
+          </button>
+        </div>
+
+        {/* How-to */}
+        <div className="px-3 py-2.5 rounded-lg bg-blue-50 dark:bg-blue-500/10 border border-blue-100 dark:border-blue-500/20 mb-3">
+          <p className="text-[11px] font-semibold text-blue-900 dark:text-blue-300 mb-1">Como aprovar um template</p>
+          <ol className="text-[11px] text-blue-800/90 dark:text-blue-200/80 space-y-0.5 list-decimal list-inside leading-relaxed">
+            <li>Clique em &quot;Abrir WhatsApp Manager&quot; abaixo</li>
+            <li>Clique em &quot;Criar template&quot; → escolha categoria <strong>Utility</strong></li>
+            <li>Cole o nome e o conteúdo do template usando os botões de copiar</li>
+            <li>Configure variáveis de exemplo e submeta</li>
+            <li>Aguarde aprovação (utility costuma sair em &lt; 5 min)</li>
+          </ol>
+        </div>
+
+        <a
+          href={managerUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300"
+        >
+          <ExternalLink className="w-3 h-3" />
+          Abrir WhatsApp Manager
+        </a>
+      </div>
+
+      {/* Template list */}
+      <div className="divide-y divide-gray-100 dark:divide-gray-800">
+        {WHATSAPP_TEMPLATE_CATALOG.map(tpl => {
+          const status = findStatus(tpl.name);
+          const preview = renderTemplatePreview(tpl.body, tpl.variableExamples);
+          const isApproved = status === 'approved';
+          return (
+            <div key={tpl.name} className="p-4 hover:bg-gray-50/50 dark:hover:bg-white/[0.02] transition-colors">
+              <div className="flex items-start justify-between gap-3 mb-2">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap mb-1">
+                    <code className="text-[11px] font-mono font-semibold text-gray-900 dark:text-gray-100 bg-gray-100 dark:bg-white/[0.06] px-1.5 py-0.5 rounded">
+                      {tpl.name}
+                    </code>
+                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400">
+                      {tpl.category}
+                    </span>
+                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-gray-100 dark:bg-white/[0.06] text-gray-500 dark:text-gray-400">
+                      {tpl.language}
+                    </span>
+                    {isApproved ? (
+                      <span className="inline-flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                        <Check className="w-2.5 h-2.5" /> Aprovado
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400">
+                        Pendente
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400 mb-1.5">{tpl.description}</p>
+                </div>
+              </div>
+
+              <div className="px-3 py-2 rounded-lg bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700/50 mb-2">
+                <p className="text-[11px] text-gray-700 dark:text-gray-300 leading-relaxed whitespace-pre-wrap">
+                  {tpl.body}
+                </p>
+                {tpl.variableExamples.length > 0 && (
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1.5 italic">
+                    Preview: {preview}
+                  </p>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => copy(tpl.name, `name-${tpl.name}`)}
+                  aria-label={`Copiar nome do template ${tpl.name}`}
+                  className="inline-flex items-center gap-1.5 text-[10px] font-semibold px-2.5 py-1 rounded-lg border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
+                >
+                  {copiedKey === `name-${tpl.name}` ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+                  Copiar nome
+                </button>
+                <button
+                  type="button"
+                  onClick={() => copy(tpl.body, `body-${tpl.name}`)}
+                  aria-label={`Copiar conteúdo do template ${tpl.name}`}
+                  className="inline-flex items-center gap-1.5 text-[10px] font-semibold px-2.5 py-1 rounded-lg border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
+                >
+                  {copiedKey === `body-${tpl.name}` ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+                  Copiar conteúdo
+                </button>
+                <span className="sr-only" role="status" aria-live="polite">
+                  {copiedKey === `name-${tpl.name}` ? 'Nome copiado' : copiedKey === `body-${tpl.name}` ? 'Conteúdo copiado' : ''}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function CanaisTab() {
   const { t } = useTranslation();
   const { business, refreshUser, firebaseUser } = useAuth();
@@ -5670,9 +5891,11 @@ function CanaisTab() {
                     setIgConnected(true);
                     setIgAccountName(data.channels.instagram.accountName || data.channels.instagram.accountId || '');
                   }
-                  if (data.channels.whatsapp) {
+                  // Após meta-signup, dados ficam em whatsappCloud (novo) ou whatsapp (fallback legado)
+                  const waResp = data.channels.whatsappCloud || data.channels.whatsapp;
+                  if (waResp) {
                     setWaConnected(true);
-                    setWaPhoneNumber(data.channels.whatsapp.displayPhoneNumber || data.channels.whatsapp.phoneNumberId || '');
+                    setWaPhoneNumber(waResp.displayPhoneNumber || waResp.phoneNumberId || '');
                   }
                   await refreshUser();
                   toast.success(`${channelLabels[channel]} conectado!`);
@@ -5702,15 +5925,44 @@ function CanaisTab() {
   };
 
   // ── Disconnect channel ──
-  const handleDisconnect = async (channel: 'whatsapp' | 'facebook' | 'instagram') => {
+  // `via` é usado apenas quando channel === 'whatsapp' para diferenciar
+  // entre desconectar a conexão Cloud ou a Baileys, que agora coexistem.
+  const handleDisconnect = async (channel: 'whatsapp' | 'facebook' | 'instagram', via?: 'cloud' | 'baileys') => {
     if (!business) return;
-    setDisconnecting(channel);
+    const key = channel === 'whatsapp' && via ? `${channel}-${via}` : channel;
+    setDisconnecting(key);
     try {
-      await updateDoc(doc(db, 'businesses', business.id), {
-        [`channels.${channel}.isConnected`]: false,
-        [`channels.${channel}.disconnectedAt`]: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
+      const now = new Date().toISOString();
+      if (channel === 'whatsapp' && via === 'baileys') {
+        // Baileys: chama API que limpa session files e atualiza Firestore
+        const token = await getAuth().currentUser?.getIdToken();
+        await fetch('/api/whatsapp/disconnect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ businessId: business.id }),
+        });
+      } else if (channel === 'whatsapp' && via === 'cloud') {
+        // Cloud: desconecta o novo campo + legado se for Cloud
+        const channelsAny = (business as Business & { channels?: { whatsapp?: { connectedVia?: string } } }).channels;
+        const legacyIsBaileys = channelsAny?.whatsapp?.connectedVia === 'baileys';
+        const updates: Record<string, unknown> = {
+          'channels.whatsappCloud.isConnected': false,
+          'channels.whatsappCloud.disconnectedAt': now,
+          updatedAt: now,
+        };
+        if (!legacyIsBaileys) {
+          updates['channels.whatsapp.isConnected'] = false;
+          updates['channels.whatsapp.disconnectedAt'] = now;
+        }
+        await updateDoc(doc(db, 'businesses', business.id), updates);
+      } else {
+        // facebook / instagram (sem alteração)
+        await updateDoc(doc(db, 'businesses', business.id), {
+          [`channels.${channel}.isConnected`]: false,
+          [`channels.${channel}.disconnectedAt`]: now,
+          updatedAt: now,
+        });
+      }
       if (channel === 'whatsapp') { setWaConnected(false); setWaPhoneNumber(''); }
       if (channel === 'facebook') { setFbConnected(false); setFbPageName(''); }
       if (channel === 'instagram') { setIgConnected(false); setIgAccountName(''); }
@@ -5755,9 +6007,10 @@ function CanaisTab() {
           setIgConnected(true);
           setIgAccountName(data.channels.instagram.accountName || data.channels.instagram.accountId || '');
         }
-        if (data.channels.whatsapp) {
+        const waResp2 = data.channels.whatsappCloud || data.channels.whatsapp;
+        if (waResp2) {
           setWaConnected(true);
-          setWaPhoneNumber(data.channels.whatsapp.displayPhoneNumber || data.channels.whatsapp.phoneNumberId || '');
+          setWaPhoneNumber(waResp2.displayPhoneNumber || waResp2.phoneNumberId || '');
         }
         await refreshUser();
         const labels: Record<string, string> = { facebook: 'Facebook Messenger', instagram: 'Instagram', whatsapp: 'WhatsApp' };
@@ -5777,15 +6030,32 @@ function CanaisTab() {
   // ── Load existing channel config ──
   useEffect(() => {
     if (!business) return;
-    const channels = (business as Business & { channels?: ChannelConfig }).channels;
+    type ChannelConfigExtended = ChannelConfig & {
+      whatsappCloud?: { isConnected?: boolean; phoneNumberId?: string; displayPhoneNumber?: string };
+      whatsappBaileys?: { isConnected?: boolean; phoneNumber?: string; displayPhoneNumber?: string };
+    };
+    const channels = (business as Business & { channels?: ChannelConfigExtended }).channels;
     let attention = false;
     let phoneDisplay = '';
     if (channels) {
-      if (channels.whatsapp) {
-        const wa = channels.whatsapp;
-        setWaConnected(wa.isConnected || false);
-        phoneDisplay = wa.displayPhoneNumber || wa.phoneNumberId || '';
+      // Lê o novo campo whatsappCloud OU whatsappBaileys; fallback para legado whatsapp
+      const cloud = channels.whatsappCloud;
+      const baileys = channels.whatsappBaileys;
+      const legacy = channels.whatsapp;
+      const hasNewFields = !!(cloud || baileys);
+      // Considera conectado se qualquer um dos novos campos está ativo, OU se só temos legado
+      const cloudActive = cloud?.isConnected || (!hasNewFields && legacy?.isConnected && legacy.connectedVia !== 'baileys');
+      const baileysActive = baileys?.isConnected || (!hasNewFields && legacy?.isConnected && legacy.connectedVia === 'baileys');
+      if (cloudActive || baileysActive) {
+        setWaConnected(true);
+        if (cloudActive) {
+          phoneDisplay = cloud?.displayPhoneNumber || cloud?.phoneNumberId || legacy?.displayPhoneNumber || legacy?.phoneNumberId || '';
+        } else if (baileysActive) {
+          phoneDisplay = baileys?.displayPhoneNumber || baileys?.phoneNumber || legacy?.displayPhoneNumber || legacy?.phoneNumberId || '';
+        }
         setWaPhoneNumber(phoneDisplay);
+      } else {
+        setWaConnected(false);
       }
       if (channels.facebook) {
         const fb = channels.facebook;
@@ -5804,10 +6074,12 @@ function CanaisTab() {
     setNeedsAttention(attention);
     setLoading(false);
 
-    // Auto-resolve: if WhatsApp is connected but the stored value is a raw numeric ID
+    // Auto-resolve: if WhatsApp Cloud is connected but the stored value is a raw numeric ID
     // (i.e. displayPhoneNumber was never saved), fetch the real number from Meta silently.
-    const wa = channels?.whatsapp;
-    if (wa?.isConnected && wa.phoneNumberId && /^\d+$/.test(phoneDisplay)) {
+    const cloudForResolve = channels?.whatsappCloud ?? channels?.whatsapp;
+    const isCloudActiveForResolve = cloudForResolve?.isConnected
+      && (channels?.whatsappCloud || channels?.whatsapp?.connectedVia !== 'baileys');
+    if (isCloudActiveForResolve && cloudForResolve?.phoneNumberId && /^\d+$/.test(phoneDisplay)) {
       setResolvingPhone(true);
       firebaseUser?.getIdToken().then(async (idToken) => {
         try {
@@ -6035,10 +6307,24 @@ function CanaisTab() {
 
       {/* ── WhatsApp Cloud API (Oficial) ── */}
       {(() => {
-        const channels = (business as Business & { channels?: ChannelConfig }).channels;
-        const waChannel = channels?.whatsapp;
-        const isCloudApi = waChannel?.isConnected && !waChannel?.connectedVia;
-        const isBaileys = waChannel?.isConnected && waChannel?.connectedVia === 'baileys';
+        type ChannelConfigExtended = ChannelConfig & {
+          whatsappCloud?: { isConnected?: boolean; phoneNumberId?: string; displayPhoneNumber?: string; wabaId?: string; businessAccountId?: string };
+          whatsappBaileys?: { isConnected?: boolean; phoneNumber?: string; displayPhoneNumber?: string };
+        };
+        const channels = (business as Business & { channels?: ChannelConfigExtended }).channels;
+        const cloudCfg = channels?.whatsappCloud;
+        const baileysCfg = channels?.whatsappBaileys;
+        const legacy = channels?.whatsapp;
+        const hasNewFields = !!(cloudCfg || baileysCfg);
+        // isCloudApi: novo campo cloudCfg ativo, OU legado ativo sem connectedVia (e sem novo campo Baileys)
+        const isCloudApi = !!(cloudCfg?.isConnected
+          || (!hasNewFields && legacy?.isConnected && !legacy.connectedVia));
+        // isBaileys: novo campo baileysCfg ativo, OU legado com connectedVia=baileys
+        const isBaileys = !!(baileysCfg?.isConnected
+          || (!hasNewFields && legacy?.isConnected && legacy.connectedVia === 'baileys'));
+        const wabaId = cloudCfg?.wabaId || cloudCfg?.businessAccountId
+          || (legacy as { wabaId?: string; businessAccountId?: string } | undefined)?.wabaId
+          || (legacy as { wabaId?: string; businessAccountId?: string } | undefined)?.businessAccountId;
         return (
           <>
             <div className={cn(
@@ -6073,17 +6359,17 @@ function CanaisTab() {
                           ) : waPhoneNumber}
                         </p>
                       ) : (
-                        <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{t('settings.channelsTab.waCloudApiDesc', 'API oficial da Meta com suporte a templates e volume ilimitado')}</p>
+                        <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">API oficial da Meta · Requer aprovação de templates para iniciar conversas</p>
                       )}
                     </div>
                   </div>
                   {isCloudApi && (
                     <button
-                      onClick={() => handleDisconnect('whatsapp')}
-                      disabled={disconnecting === 'whatsapp'}
+                      onClick={() => handleDisconnect('whatsapp', 'cloud')}
+                      disabled={disconnecting === 'whatsapp-cloud'}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
                     >
-                      {disconnecting === 'whatsapp' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : t('settings.channelsTab.disconnect', 'Desconectar')}
+                      {disconnecting === 'whatsapp-cloud' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : t('settings.channelsTab.disconnect', 'Desconectar')}
                     </button>
                   )}
                 </div>
@@ -6102,6 +6388,11 @@ function CanaisTab() {
                 )}
               </div>
             </div>
+
+            {/* Template catalog — só aparece se Cloud está conectado */}
+            {isCloudApi && business?.id && (
+              <WhatsAppTemplateCatalog businessId={business.id} wabaId={wabaId} />
+            )}
 
             {/* ── WhatsApp Web (QR Code / Baileys) ── */}
             <div className={cn(
@@ -6132,7 +6423,7 @@ function CanaisTab() {
                       {isBaileys && waPhoneNumber ? (
                         <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{waPhoneNumber}</p>
                       ) : (
-                        <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{t('settings.channelsTab.qrCodeDesc', 'Conexão rápida via QR Code, ideal para testes')}</p>
+                        <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Envie mensagens livres sem aprovação de templates · Ideal para iniciar contatos</p>
                       )}
                     </div>
                   </div>
@@ -6153,11 +6444,11 @@ function CanaisTab() {
                         Reconectar
                       </button>
                       <button
-                        onClick={() => handleDisconnect('whatsapp')}
-                        disabled={disconnecting === 'whatsapp'}
+                        onClick={() => handleDisconnect('whatsapp', 'baileys')}
+                        disabled={disconnecting === 'whatsapp-baileys'}
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
                       >
-                        {disconnecting === 'whatsapp' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : t('settings.channelsTab.disconnect', 'Desconectar')}
+                        {disconnecting === 'whatsapp-baileys' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : t('settings.channelsTab.disconnect', 'Desconectar')}
                       </button>
                     </div>
                   )}

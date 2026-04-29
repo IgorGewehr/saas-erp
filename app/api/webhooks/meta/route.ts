@@ -264,7 +264,12 @@ async function getWhatsAppAccessToken(businessId: string): Promise<string | null
     if (!bizSnap.exists) return null;
 
     const bizData = bizSnap.data();
-    const encryptedToken = bizData?.channels?.whatsapp?.accessToken;
+    // Prefere o novo campo isolado whatsappCloud; fallback para legado whatsapp
+    // (que só é Cloud se connectedVia !== 'baileys').
+    const cloudCfg = bizData?.channels?.whatsappCloud;
+    const legacy = bizData?.channels?.whatsapp;
+    const encryptedToken = cloudCfg?.accessToken
+      ?? (legacy?.connectedVia !== 'baileys' ? legacy?.accessToken : null);
     if (!encryptedToken) return null;
 
     return decryptToken(encryptedToken);
@@ -945,11 +950,18 @@ async function resolveBusinessId(
 ): Promise<string | null> {
   try {
     if (channel === 'whatsapp') {
-      const snap = await adminDb.collection('businesses')
+      // Tenta o novo campo isolado primeiro; fallback para legado
+      const snapNew = await adminDb.collection('businesses')
+        .where('channels.whatsappCloud.phoneNumberId', '==', channelIdentifier)
+        .limit(1)
+        .get();
+      if (!snapNew.empty) return snapNew.docs[0].id;
+
+      const snapLegacy = await adminDb.collection('businesses')
         .where('channels.whatsapp.phoneNumberId', '==', channelIdentifier)
         .limit(1)
         .get();
-      return snap.empty ? null : snap.docs[0].id;
+      return snapLegacy.empty ? null : snapLegacy.docs[0].id;
     }
 
     if (channel === 'facebook') {

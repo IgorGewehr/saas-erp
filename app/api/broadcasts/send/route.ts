@@ -81,11 +81,16 @@ export async function POST(req: NextRequest) {
     let resolvedPhoneNumberId = phoneNumberId;
 
     if (channel === 'whatsapp') {
-      if (!channels.whatsapp?.isConnected || !channels.whatsapp?.accessToken) {
-        return NextResponse.json({ error: 'WhatsApp channel not connected' }, { status: 400 });
+      // Broadcasts via Cloud API: lê whatsappCloud (novo); fallback para legado se Cloud
+      const cloudCfg = channels.whatsappCloud;
+      const legacy = channels.whatsapp;
+      const legacyIsCloud = legacy?.connectedVia !== 'baileys';
+      const waConfig = cloudCfg ?? (legacyIsCloud ? legacy : undefined);
+      if (!waConfig?.isConnected || !waConfig?.accessToken) {
+        return NextResponse.json({ error: 'WhatsApp Cloud channel not connected' }, { status: 400 });
       }
-      token = await decryptToken(channels.whatsapp.accessToken);
-      resolvedPhoneNumberId = resolvedPhoneNumberId || channels.whatsapp.phoneNumberId;
+      token = await decryptToken(waConfig.accessToken);
+      resolvedPhoneNumberId = resolvedPhoneNumberId || waConfig.phoneNumberId;
     } else if (channel === 'facebook') {
       if (!channels.facebook?.isConnected || !channels.facebook?.pageAccessToken) {
         return NextResponse.json({ error: 'Facebook channel not connected' }, { status: 400 });

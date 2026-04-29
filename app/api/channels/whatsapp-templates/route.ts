@@ -36,11 +36,16 @@ export async function GET(req: NextRequest) {
     }
 
     const bizData = bizSnap.data()!;
-    const waConfig = bizData?.channels?.whatsapp;
+    // Prefere o novo campo isolado whatsappCloud; fallback para legado whatsapp.
+    // O legado pode ser um config Cloud OU Baileys — descartamos se for Baileys.
+    const cloudFromNew = bizData?.channels?.whatsappCloud;
+    const cloudFromLegacy = bizData?.channels?.whatsapp;
+    const isLegacyBaileys = cloudFromLegacy?.connectedVia === 'baileys';
+    const waConfig = cloudFromNew ?? (isLegacyBaileys ? null : cloudFromLegacy);
 
     if (!waConfig?.isConnected || !waConfig?.phoneNumberId || !waConfig?.accessToken) {
       return NextResponse.json(
-        { error: 'WhatsApp não está conectado. Configure em Configurações → Canais.' },
+        { error: 'WhatsApp Cloud não está conectado. Configure em Configurações → Canais.' },
         { status: 400 },
       );
     }
@@ -100,8 +105,9 @@ export async function GET(req: NextRequest) {
         );
       }
 
-      // Backfill wabaId so future calls skip this discovery step
-      adminDb.doc(`businesses/${businessId}`).update({ 'channels.whatsapp.wabaId': wabaId }).catch(() => {});
+      // Backfill wabaId — escreve no campo correto (novo ou legado conforme leu)
+      const backfillField = cloudFromNew ? 'channels.whatsappCloud.wabaId' : 'channels.whatsapp.wabaId';
+      adminDb.doc(`businesses/${businessId}`).update({ [backfillField]: wabaId }).catch(() => {});
     }
 
     // Step 2: List APPROVED templates from WABA

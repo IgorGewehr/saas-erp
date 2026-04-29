@@ -88,6 +88,7 @@ import {
   CheckCircle,
   TagIcon,
   MailOpen,
+  Pencil,
 } from 'lucide-react';
 import { getDocs } from 'firebase/firestore';
 import type {
@@ -445,7 +446,8 @@ interface ConversationItemProps {
 function ConversationItem({ conversation, isSelected, onClick, slaInfo, batchMode, isBatchSelected, onBatchToggle }: ConversationItemProps) {
   const { t } = useTranslation();
   const cfg = getConvConfig(conversation);
-  const initials = getInitials(conversation.contactName);
+  const displayName = conversation.customContactName ?? conversation.contactName;
+  const initials = getInitials(displayName);
 
   return (
     <motion.div
@@ -495,7 +497,7 @@ function ConversationItem({ conversation, isSelected, onClick, slaInfo, batchMod
           {conversation.contactAvatarUrl && (
             <CachedImage
               src={conversation.contactAvatarUrl}
-              alt={conversation.contactName}
+              alt={displayName}
               className="w-10 h-10 rounded-full object-cover absolute inset-0"
               onError={(e) => { e.currentTarget.style.display = 'none'; }}
             />
@@ -525,7 +527,7 @@ function ConversationItem({ conversation, isSelected, onClick, slaInfo, batchMod
                   : 'text-gray-900 dark:text-gray-100',
               )}
             >
-              {conversation.contactName}
+              {displayName}
             </span>
           </div>
           <span className="text-[10px] text-gray-400 dark:text-gray-500 flex-shrink-0 whitespace-nowrap">
@@ -566,15 +568,26 @@ function IntegrationSettingsDialog({ onClose }: { onClose: () => void }) {
   const { business } = useAuth();
   const { setActivePage } = useAppContext();
 
-  const channels = business?.channels;
+  const channels = business?.channels as (NonNullable<typeof business>['channels'] & {
+    whatsappCloud?: { isConnected?: boolean; phoneNumberId?: string; displayPhoneNumber?: string };
+    whatsappBaileys?: { isConnected?: boolean; phoneNumber?: string; displayPhoneNumber?: string };
+  }) | undefined;
+  // Considera conectado se qualquer um dos campos (novo ou legado) está ativo
+  const waCloud = channels?.whatsappCloud;
+  const waBaileys = channels?.whatsappBaileys;
+  const waLegacy = channels?.whatsapp;
+  const waConnected = !!(waCloud?.isConnected || waBaileys?.isConnected || waLegacy?.isConnected);
+  const waDisplayName = waCloud?.displayPhoneNumber || waCloud?.phoneNumberId
+    || waBaileys?.displayPhoneNumber || waBaileys?.phoneNumber
+    || waLegacy?.displayPhoneNumber || waLegacy?.phoneNumberId || '';
   const integrations = [
     {
       channel: 'whatsapp' as ConversationChannel,
       name: 'WhatsApp Business',
-      description: channels?.whatsapp?.isConnected
-        ? `Conectado: ${channels.whatsapp.displayPhoneNumber || channels.whatsapp.phoneNumberId || ''}`
+      description: waConnected
+        ? `Conectado: ${waDisplayName}`
         : 'Receba e envie mensagens via API oficial do WhatsApp Business',
-      isConnected: channels?.whatsapp?.isConnected || false,
+      isConnected: waConnected,
     },
     {
       channel: 'facebook' as ConversationChannel,
@@ -718,6 +731,7 @@ function ThreadHeader({
   onTogglePrivate,
   onExport,
   onMerge,
+  onRename,
   aiEnabledBusinessWide,
   sectors: sectorsList,
   slaInfo,
@@ -739,6 +753,7 @@ function ThreadHeader({
   onTogglePrivate?: () => void;
   onExport?: () => void;
   onMerge?: () => void;
+  onRename?: (name: string) => Promise<void>;
   aiEnabledBusinessWide?: boolean;
   sectors?: Sector[];
   slaInfo?: SLAInfo | null;
@@ -746,10 +761,46 @@ function ThreadHeader({
 }) {
   const { t } = useTranslation();
   const cfg = getConvConfig(conversation);
-  const initials = getInitials(conversation.contactName);
+  const displayName = conversation.customContactName ?? conversation.contactName;
+  const initials = getInitials(displayName);
   const [showStatusMenu, setShowStatusMenu] = useState(false);
   const [showOverflowMenu, setShowOverflowMenu] = useState(false);
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [editNameValue, setEditNameValue] = useState('');
+  const [savingName, setSavingName] = useState(false);
+  const isCommittingRef = useRef(false);
   const overflowRef = useRef<HTMLDivElement | null>(null);
+
+  // Reset edit state when conversation changes
+  useEffect(() => {
+    setIsEditingName(false);
+    setEditNameValue('');
+    setSavingName(false);
+    isCommittingRef.current = false;
+  }, [conversation.id]);
+
+  const startEditName = () => {
+    setEditNameValue(displayName);
+    setIsEditingName(true);
+  };
+
+  const commitEditName = async () => {
+    if (isCommittingRef.current) return; // guard against Enter + onBlur double-fire
+    const trimmed = editNameValue.trim();
+    if (!trimmed || trimmed === displayName) { setIsEditingName(false); return; }
+    isCommittingRef.current = true;
+    setSavingName(true);
+    try {
+      await onRename?.(trimmed);
+    } catch (err) {
+      console.error('Rename failed:', err);
+      toast.error('Erro ao renomear contato');
+    } finally {
+      isCommittingRef.current = false;
+      setSavingName(false);
+      setIsEditingName(false);
+    }
+  };
 
   useEffect(() => {
     if (!showOverflowMenu) return;
@@ -796,7 +847,7 @@ function ThreadHeader({
             {conversation.contactAvatarUrl && (
               <CachedImage
                 src={conversation.contactAvatarUrl}
-                alt={conversation.contactName}
+                alt={displayName}
                 className="w-9 h-9 rounded-full object-cover absolute inset-0"
                 onError={(e) => { e.currentTarget.style.display = 'none'; }}
               />
@@ -814,9 +865,36 @@ function ThreadHeader({
 
         <div className="min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-semibold text-sm text-gray-900 dark:text-white truncate">
-              {conversation.contactName}
-            </span>
+            {isEditingName ? (
+              <input
+                autoFocus
+                value={editNameValue}
+                onChange={e => setEditNameValue(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') { e.preventDefault(); commitEditName(); }
+                  if (e.key === 'Escape') { setIsEditingName(false); setEditNameValue(''); }
+                }}
+                onBlur={commitEditName}
+                disabled={savingName}
+                maxLength={80}
+                className="font-semibold text-sm bg-transparent border-b border-red-400 focus:outline-none text-gray-900 dark:text-white w-40 max-w-[200px] disabled:opacity-50"
+              />
+            ) : (
+              <div className="flex items-center gap-1 group/name min-w-0">
+                <span className="font-semibold text-sm text-gray-900 dark:text-white truncate">
+                  {displayName}
+                </span>
+                {onRename && (
+                  <button
+                    onClick={startEditName}
+                    title="Renomear contato"
+                    className="opacity-0 group-hover/name:opacity-100 transition-opacity p-0.5 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 flex-shrink-0"
+                  >
+                    <Pencil className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+            )}
             <span
               className={cn(
                 'hidden sm:inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0',
@@ -2153,6 +2231,529 @@ function CSATDashboard({ businessId, onClose }: { businessId: string; onClose: (
   );
 }
 
+// ─── New Conversation Dialog ──────────────────────────────────────────────────
+
+interface WaTemplate {
+  name: string;
+  language: string;
+  category: string;
+  preview: string;
+  hasVariables: boolean;
+}
+
+function NewConversationDialog({
+  open,
+  onClose,
+  onCreated,
+  clients,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onCreated: (conversation: Conversation) => void;
+  clients: Client[];
+}) {
+  const { business, user } = useAuth();
+  const channels = business?.channels as (NonNullable<typeof business>['channels'] & {
+    whatsappCloud?: { isConnected?: boolean; accessToken?: string };
+    whatsappBaileys?: { isConnected?: boolean };
+  }) | undefined;
+  // Novo modelo: campos isolados whatsappCloud + whatsappBaileys.
+  // Fallback para o legado channels.whatsapp se nenhum dos novos estiver presente.
+  const cloudCfg = channels?.whatsappCloud;
+  const baileysCfg = channels?.whatsappBaileys;
+  const legacyWa = channels?.whatsapp as ((NonNullable<typeof channels>['whatsapp']) & { connectedVia?: string }) | undefined;
+  const hasNewFields = !!(cloudCfg || baileysCfg);
+  const baileysAvailable = !!baileysCfg?.isConnected
+    || (!hasNewFields && !!legacyWa?.isConnected && legacyWa.connectedVia === 'baileys');
+  const cloudAvailable = !!(cloudCfg?.isConnected && cloudCfg.accessToken)
+    || (!hasNewFields && !!legacyWa?.isConnected && legacyWa.connectedVia !== 'baileys' && !!legacyWa.accessToken);
+  const fbConnected = !!channels?.facebook?.isConnected;
+  const igConnected = !!channels?.instagram?.isConnected;
+
+  const [channelMode, setChannelMode] = useState<'baileys' | 'cloud'>('baileys');
+  const [phoneInput, setPhoneInput] = useState('');
+  const [nameInput, setNameInput] = useState('');
+  const [clientSearch, setClientSearch] = useState('');
+  const [selectedClient, setSelectedClient] = useState<Client | null>(null);
+  const [messageMode, setMessageMode] = useState<'text' | 'template'>('text');
+  const [messageText, setMessageText] = useState('');
+  const [templates, setTemplates] = useState<WaTemplate[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState<WaTemplate | null>(null);
+  const [templateVars, setTemplateVars] = useState<string[]>([]);
+  const [loadingTemplates, setLoadingTemplates] = useState(false);
+  const [sending, setSending] = useState(false);
+
+  // Reset everything on open and pick best default channel
+  useEffect(() => {
+    if (!open) return;
+    setPhoneInput('');
+    setNameInput('');
+    setClientSearch('');
+    setSelectedClient(null);
+    setMessageText('');
+    setSelectedTemplate(null);
+    setTemplateVars([]);
+    if (baileysAvailable) {
+      setChannelMode('baileys');
+      setMessageMode('text');
+    } else if (cloudAvailable) {
+      setChannelMode('cloud');
+      setMessageMode('template');
+    }
+  }, [open, baileysAvailable, cloudAvailable]);
+
+  // When switching to cloud+template, fetch templates
+  useEffect(() => {
+    if (!open || channelMode !== 'cloud' || messageMode !== 'template' || !business?.id) return;
+    if (templates.length > 0) return;
+    let cancelled = false;
+    (async () => {
+      setLoadingTemplates(true);
+      // hello_world is auto-created by Meta in every new WABA — sempre disponível como fallback
+      const helloWorldFallback: WaTemplate = {
+        name: 'hello_world',
+        language: 'en_US',
+        category: 'UTILITY',
+        preview: 'Hello World',
+        hasVariables: false,
+      };
+      try {
+        const token = await getAuth().currentUser?.getIdToken();
+        const res = await fetch(`/api/channels/whatsapp-templates?businessId=${business.id}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error('Falha ao carregar templates');
+        const data = await res.json();
+        if (!cancelled) {
+          const fetched: WaTemplate[] = data.templates ?? [];
+          // Inject hello_world se não estiver presente — garante que sempre há ao menos 1 template usável
+          const hasHelloWorld = fetched.some(t => t.name.toLowerCase() === 'hello_world');
+          setTemplates(hasHelloWorld ? fetched : [helloWorldFallback, ...fetched]);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error('[NewConversation] Failed to load templates:', err);
+          // Mesmo em erro, oferece hello_world para o usuário poder iniciar conversa
+          setTemplates([helloWorldFallback]);
+          toast.warn('Lista de templates indisponível — usando hello_world como fallback');
+        }
+      } finally {
+        if (!cancelled) setLoadingTemplates(false);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, channelMode, messageMode, business?.id]);
+
+  // When template is selected, init variable inputs
+  useEffect(() => {
+    if (!selectedTemplate) { setTemplateVars([]); return; }
+    const matches = (selectedTemplate.preview || '').match(/\{\{(\d+)\}\}/g) ?? [];
+    const count = new Set(matches.map(m => m.replace(/[{}]/g, ''))).size;
+    setTemplateVars(Array(count).fill(''));
+  }, [selectedTemplate]);
+
+  // Filter clients for search
+  const filteredClients = useMemo(() => {
+    if (!clientSearch.trim()) return [];
+    const q = clientSearch.trim().toLowerCase();
+    const qDigits = clientSearch.replace(/\D/g, '');
+    return clients.filter(c => {
+      if (c.name?.toLowerCase().includes(q)) return true;
+      if (qDigits && (c.phone || '').replace(/\D/g, '').includes(qDigits)) return true;
+      if (qDigits && (c.whatsapp || '').replace(/\D/g, '').includes(qDigits)) return true;
+      return false;
+    }).slice(0, 6);
+  }, [clientSearch, clients]);
+
+  // Normalize phone to digits-only E.164 (Brazilian default if no country code)
+  const normalizePhone = (raw: string): string | null => {
+    const digits = raw.replace(/\D/g, '');
+    if (!digits) return null;
+    if (digits.length >= 12 && digits.length <= 15) return digits; // already has country code
+    if (digits.length === 10 || digits.length === 11) return '55' + digits; // BR default
+    return null;
+  };
+
+  const pickClient = (c: Client) => {
+    setSelectedClient(c);
+    setNameInput(c.name);
+    const ph = c.whatsapp || c.phone || '';
+    setPhoneInput(ph);
+    setClientSearch('');
+  };
+
+  const renderedTemplatePreview = useMemo(() => {
+    if (!selectedTemplate) return '';
+    let preview = selectedTemplate.preview || '';
+    templateVars.forEach((v, i) => {
+      preview = preview.replace(new RegExp(`\\{\\{${i + 1}\\}\\}`, 'g'), v || `{{${i + 1}}}`);
+    });
+    return preview;
+  }, [selectedTemplate, templateVars]);
+
+  const canSend = useMemo(() => {
+    if (sending) return false;
+    if (!normalizePhone(phoneInput)) return false;
+    if (channelMode === 'cloud' && messageMode === 'template') {
+      if (!selectedTemplate) return false;
+      if (templateVars.some(v => !v.trim())) return false;
+      return true;
+    }
+    return messageText.trim().length > 0;
+  }, [sending, phoneInput, channelMode, messageMode, selectedTemplate, templateVars, messageText]);
+
+  const handleSend = async () => {
+    if (!business?.id || !user) return;
+    const phoneE164 = normalizePhone(phoneInput);
+    if (!phoneE164) { toast.error('Telefone inválido'); return; }
+
+    setSending(true);
+    try {
+      // Check for existing conversation with same number on whatsapp
+      const dupQ = query(
+        collection(db, 'conversations'),
+        where('businessId', '==', business.id),
+        where('channel', '==', 'whatsapp'),
+        where('contactExternalId', '==', phoneE164),
+      );
+      const dupSnap = await getDocs(dupQ);
+      if (!dupSnap.empty) {
+        const existing = dupSnap.docs[0];
+        toast.info('Conversa já existe — abrindo');
+        onCreated({ ...(existing.data() as Conversation), id: existing.id });
+        onClose();
+        return;
+      }
+
+      // Build message content + send params
+      let content: string;
+      let sendType: 'text' | 'template' = 'text';
+      let templateName: string | undefined;
+      let templateLanguage: string | undefined;
+      let templateParams: string[] = [];
+
+      if (channelMode === 'cloud' && messageMode === 'template' && selectedTemplate) {
+        sendType = 'template';
+        templateName = selectedTemplate.name;
+        templateLanguage = selectedTemplate.language;
+        templateParams = templateVars;
+        content = renderedTemplatePreview;
+      } else {
+        content = messageText.trim();
+        if (!content) { toast.error('Digite a mensagem'); return; }
+      }
+
+      const now = new Date().toISOString();
+      const displayName = (selectedClient?.name) || nameInput.trim() || phoneE164;
+
+      // Create conversation document
+      const convData: Record<string, unknown> = {
+        businessId: business.id,
+        channel: 'whatsapp',
+        connectedVia: channelMode === 'baileys' ? 'baileys' : 'embedded_signup',
+        contactName: displayName,
+        contactPhone: phoneE164,
+        contactExternalId: phoneE164,
+        status: 'open',
+        lastMessage: content,
+        lastMessageAt: now,
+        lastMessageDirection: 'outbound',
+        unreadCount: 0,
+        firstResponseAt: now,
+        assignedTo: user.uid,
+        assignedToName: user.name,
+        createdAt: now,
+        updatedAt: now,
+      };
+      if (selectedClient) convData.crmContactId = selectedClient.id;
+
+      const convRef = await addDoc(collection(db, 'conversations'), convData);
+
+      // Create first outbound message
+      const msgData: Record<string, unknown> = {
+        conversationId: convRef.id,
+        businessId: business.id,
+        channel: 'whatsapp',
+        direction: 'outbound',
+        content,
+        status: 'sending',
+        senderName: user.name,
+        senderId: user.uid,
+        sentAt: now,
+        createdAt: now,
+      };
+      if (sendType === 'template' && templateName) {
+        msgData.templateName = templateName;
+        msgData.templateLanguage = templateLanguage;
+      }
+      const msgRef = await addDoc(collection(db, 'conversationMessages'), msgData);
+
+      // Send via API
+      const token = await getAuth().currentUser?.getIdToken();
+      const sendBody: Record<string, unknown> = {
+        businessId: business.id,
+        conversationId: convRef.id,
+        messageDocId: msgRef.id,
+        channel: 'whatsapp',
+        recipientId: phoneE164,
+        content,
+        type: sendType,
+      };
+      if (sendType === 'template') {
+        sendBody.templateName = templateName;
+        sendBody.templateLanguage = templateLanguage;
+        sendBody.templateParams = templateParams;
+      }
+
+      const res = await fetch('/api/conversations/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(sendBody),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Falha no envio (${res.status})`);
+      }
+
+      toast.success('Conversa iniciada!');
+      // Pass full conversation object so the parent doesn't have to wait for onSnapshot
+      onCreated({ ...convData, id: convRef.id } as unknown as Conversation);
+      onClose();
+    } catch (err) {
+      console.error('[NewConversation] Failed:', err);
+      toast.error(err instanceof Error ? err.message : 'Erro ao iniciar conversa');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  if (!open) return null;
+
+  const noWhatsapp = !baileysAvailable && !cloudAvailable;
+  const inputCls = 'w-full px-3 py-2 text-sm bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-xl text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400';
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+      onClick={e => { if (e.target === e.currentTarget && !sending) onClose(); }}>
+      <motion.div initial={{ opacity: 0, scale: 0.95, y: 8 }} animate={{ opacity: 1, scale: 1, y: 0 }}
+        className="w-full max-w-md bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-100 dark:border-gray-800 flex-shrink-0">
+          <div>
+            <h3 className="font-bold text-sm text-gray-900 dark:text-gray-100">Nova conversa</h3>
+            <p className="text-[10px] text-gray-400 mt-0.5">Inicie uma conversa com um contato novo ou existente</p>
+          </div>
+          <button onClick={onClose} disabled={sending} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 disabled:opacity-50"><X className="w-3.5 h-3.5" /></button>
+        </div>
+
+        <div className="p-4 space-y-4 overflow-y-auto">
+          {noWhatsapp ? (
+            <div className="text-center py-6">
+              <div className="w-12 h-12 mx-auto mb-3 rounded-2xl bg-amber-100 dark:bg-amber-500/10 flex items-center justify-center">
+                <AlertCircle className="w-6 h-6 text-amber-500" />
+              </div>
+              <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Nenhum canal WhatsApp conectado</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400 max-w-[260px] mx-auto leading-relaxed">
+                Conecte o WhatsApp em Configurações → Enterprise antes de iniciar conversas.
+              </p>
+            </div>
+          ) : (
+            <>
+              {/* Channel selector */}
+              <div>
+                <p className="text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">Canal</p>
+                <div className="grid grid-cols-1 gap-2">
+                  {baileysAvailable && (
+                    <button
+                      type="button"
+                      onClick={() => { setChannelMode('baileys'); setMessageMode('text'); }}
+                      className={cn('flex items-center gap-3 px-3 py-2.5 rounded-xl border-2 transition-all text-left',
+                        channelMode === 'baileys'
+                          ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10'
+                          : 'border-gray-200 dark:border-gray-700 hover:border-emerald-300')}>
+                      <div className="w-8 h-8 rounded-lg bg-emerald-500 flex items-center justify-center text-white">
+                        <ChannelIcon channel="whatsapp" size="sm" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-bold text-gray-900 dark:text-gray-100">WhatsApp Web</p>
+                        <p className="text-[10px] text-gray-500 dark:text-gray-400">Sem limites de janela ou template</p>
+                      </div>
+                      <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400">SEM LIMITES</span>
+                    </button>
+                  )}
+                  {cloudAvailable && (
+                    <button
+                      type="button"
+                      onClick={() => { setChannelMode('cloud'); setMessageMode('template'); }}
+                      className={cn('flex items-center gap-3 px-3 py-2.5 rounded-xl border-2 transition-all text-left',
+                        channelMode === 'cloud'
+                          ? 'border-blue-500 bg-blue-50 dark:bg-blue-500/10'
+                          : 'border-gray-200 dark:border-gray-700 hover:border-blue-300')}>
+                      <div className="w-8 h-8 rounded-lg bg-blue-500 flex items-center justify-center text-white">
+                        <ChannelIcon channel="whatsapp" size="sm" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-bold text-gray-900 dark:text-gray-100">WhatsApp Business (Meta)</p>
+                        <p className="text-[10px] text-gray-500 dark:text-gray-400">Requer template fora da janela de 24h</p>
+                      </div>
+                      <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400">OFICIAL</span>
+                    </button>
+                  )}
+                  {(fbConnected || igConnected) && (
+                    <div className="px-3 py-2 rounded-xl border border-dashed border-gray-300 dark:border-gray-700 bg-gray-50/50 dark:bg-white/[0.02]">
+                      <p className="text-[10px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                        <Lock className="w-3 h-3 inline mr-1 -mt-0.5" />
+                        <strong>Facebook</strong> e <strong>Instagram</strong> não permitem iniciar conversas. O contato deve enviar a primeira mensagem.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Contact section */}
+              <div>
+                <p className="text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">Contato</p>
+                <div className="relative mb-2">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+                  <input
+                    placeholder="Buscar cliente existente..."
+                    value={clientSearch}
+                    onChange={e => setClientSearch(e.target.value)}
+                    className={cn(inputCls, 'pl-8')}
+                  />
+                  {filteredClients.length > 0 && (
+                    <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl z-10 overflow-hidden">
+                      {filteredClients.map(c => (
+                        <button key={c.id} type="button" onClick={() => pickClient(c)}
+                          className="w-full flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-left">
+                          <div className="w-7 h-7 rounded-full bg-gradient-to-br from-gray-300 to-gray-400 dark:from-gray-700 dark:to-gray-600 flex items-center justify-center text-[10px] font-bold text-gray-700 dark:text-gray-200">
+                            {getInitials(c.name)}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs font-semibold text-gray-800 dark:text-gray-200 truncate">{c.name}</p>
+                            <p className="text-[10px] text-gray-400 truncate">{c.whatsapp || c.phone || '—'}</p>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <input placeholder="Nome (opcional)" value={nameInput} onChange={e => setNameInput(e.target.value)} className={inputCls} />
+                  <input placeholder="(11) 99999-9999" value={phoneInput} onChange={e => setPhoneInput(e.target.value)} className={inputCls} />
+                </div>
+                {selectedClient && (
+                  <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1.5 flex items-center gap-1">
+                    <Check className="w-3 h-3" /> Vinculado a {selectedClient.name}
+                  </p>
+                )}
+              </div>
+
+              {/* Message section */}
+              <div>
+                <p className="text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">Mensagem</p>
+                {channelMode === 'cloud' && (
+                  <div className="flex gap-1 mb-2 p-0.5 bg-gray-100 dark:bg-white/[0.04] rounded-lg">
+                    <button type="button" onClick={() => setMessageMode('template')}
+                      className={cn('flex-1 text-[11px] py-1.5 rounded-md font-semibold transition-colors',
+                        messageMode === 'template' ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm' : 'text-gray-500 dark:text-gray-400')}>
+                      Template (recomendado)
+                    </button>
+                    <button type="button" onClick={() => setMessageMode('text')}
+                      className={cn('flex-1 text-[11px] py-1.5 rounded-md font-semibold transition-colors',
+                        messageMode === 'text' ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm' : 'text-gray-500 dark:text-gray-400')}>
+                      Texto livre
+                    </button>
+                  </div>
+                )}
+
+                {channelMode === 'cloud' && messageMode === 'text' && (
+                  <div className="mb-2 px-2.5 py-2 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20">
+                    <p className="text-[10px] text-amber-700 dark:text-amber-400 leading-relaxed">
+                      <AlertTriangle className="w-3 h-3 inline mr-1 -mt-0.5" />
+                      Texto livre só funciona dentro da janela de 24h após resposta do cliente. Se este for o primeiro contato, o envio falhará.
+                    </p>
+                  </div>
+                )}
+
+                {channelMode === 'cloud' && messageMode === 'template' ? (
+                  <div className="space-y-2">
+                    {loadingTemplates ? (
+                      <div className="flex items-center gap-2 text-xs text-gray-400 py-3 justify-center">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" /> Carregando templates...
+                      </div>
+                    ) : templates.length === 0 ? (
+                      <p className="text-xs text-gray-400 py-3 text-center">Nenhum template aprovado encontrado</p>
+                    ) : (
+                      <>
+                        <select value={selectedTemplate?.name ?? ''}
+                          onChange={e => setSelectedTemplate(templates.find(t => t.name === e.target.value) ?? null)}
+                          className={inputCls}>
+                          <option value="">Selecione um template...</option>
+                          {templates.map(t => (
+                            <option key={`${t.name}-${t.language}`} value={t.name}>
+                              {t.name} ({t.language}) — {t.category}
+                            </option>
+                          ))}
+                        </select>
+                        {selectedTemplate && templateVars.length > 0 && (
+                          <div className="space-y-1.5">
+                            <p className="text-[10px] text-gray-500 dark:text-gray-400">Variáveis</p>
+                            {templateVars.map((v, i) => (
+                              <input key={i} placeholder={`Valor para {{${i + 1}}}`}
+                                value={v}
+                                onChange={e => setTemplateVars(prev => prev.map((p, idx) => idx === i ? e.target.value : p))}
+                                className={inputCls} />
+                            ))}
+                          </div>
+                        )}
+                        {selectedTemplate && (
+                          <div className="px-3 py-2 rounded-lg bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700">
+                            <p className="text-[9px] font-bold text-gray-400 uppercase mb-1">Preview</p>
+                            <p className="text-xs text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{renderedTemplatePreview}</p>
+                          </div>
+                        )}
+                        {selectedTemplate?.name === 'hello_world' && (
+                          <div className="px-2.5 py-2 rounded-lg bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/20">
+                            <p className="text-[10px] text-blue-700 dark:text-blue-300 leading-relaxed">
+                              <Sparkles className="w-3 h-3 inline mr-1 -mt-0.5" />
+                              <strong>hello_world</strong> é um template padrão da Meta, sempre disponível em qualquer WABA. Use como icebreaker — assim que o cliente responder, a janela de 24h abre e você pode mandar texto livre normalmente.
+                            </p>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <textarea
+                    placeholder="Digite a mensagem..."
+                    value={messageText}
+                    onChange={e => setMessageText(e.target.value)}
+                    rows={3}
+                    className={cn(inputCls, 'resize-none')}
+                  />
+                )}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="flex gap-2 px-4 py-3 border-t border-gray-100 dark:border-gray-800 flex-shrink-0">
+          <button onClick={onClose} disabled={sending}
+            className="flex-1 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors disabled:opacity-50">
+            Cancelar
+          </button>
+          <button onClick={handleSend} disabled={!canSend || noWhatsapp}
+            className="flex-1 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5">
+            {sending ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Enviando...</> : <><Send className="w-3.5 h-3.5" /> Enviar</>}
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 // ─── Merge Conversations Dialog ───────────────────────────────────────────────
 
 function MergeConversationsDialog({ source, conversations, onClose, onMerge }: {
@@ -2166,7 +2767,7 @@ function MergeConversationsDialog({ source, conversations, onClose, onMerge }: {
   const candidates = conversations.filter(c =>
     c.id !== source.id &&
     c.status !== 'resolved' &&
-    (c.contactName.toLowerCase().includes(search.toLowerCase()) ||
+    ((c.customContactName ?? c.contactName).toLowerCase().includes(search.toLowerCase()) ||
      (c.contactPhone && c.contactPhone.includes(search)))
   ).slice(0, 15);
 
@@ -2185,7 +2786,7 @@ function MergeConversationsDialog({ source, conversations, onClose, onMerge }: {
         <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-100 dark:border-gray-800">
           <div>
             <h3 className="font-bold text-sm text-gray-900 dark:text-gray-100">Unificar conversa</h3>
-            <p className="text-[10px] text-gray-400 mt-0.5">Mover mensagens de <span className="font-semibold text-gray-600 dark:text-gray-300">{source.contactName}</span> para:</p>
+            <p className="text-[10px] text-gray-400 mt-0.5">Mover mensagens de <span className="font-semibold text-gray-600 dark:text-gray-300">{source.customContactName ?? source.contactName}</span> para:</p>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400"><X className="w-3.5 h-3.5" /></button>
         </div>
@@ -2202,10 +2803,10 @@ function MergeConversationsDialog({ source, conversations, onClose, onMerge }: {
                 <button key={c.id} onClick={() => handleMerge(c.id)} disabled={merging}
                   className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors text-left group">
                   <div className={cn('w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0', cfg.avatarBg, cfg.textColor)}>
-                    {getInitials(c.contactName)}
+                    {getInitials(c.customContactName ?? c.contactName)}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-xs font-semibold text-gray-800 dark:text-gray-200 truncate group-hover:text-red-600 dark:group-hover:text-red-400">{c.contactName}</p>
+                    <p className="text-xs font-semibold text-gray-800 dark:text-gray-200 truncate group-hover:text-red-600 dark:group-hover:text-red-400">{c.customContactName ?? c.contactName}</p>
                     <p className="text-[10px] text-gray-400 truncate">{c.lastMessage}</p>
                   </div>
                   <ChannelIcon channel={c.channel} size="sm" />
@@ -2501,7 +3102,7 @@ function scoreMatch(conv: Conversation, client: Client): number {
       if (digits(client.whatsapp).endsWith(suf)) score += 60;
     }
   }
-  const convName = (conv.contactName || '').toLowerCase().trim();
+  const convName = ((conv.customContactName ?? conv.contactName) || '').toLowerCase().trim();
   const clientName = (client.name || '').toLowerCase().trim();
   if (convName && clientName) {
     if (clientName === convName) score += 40;
@@ -2618,7 +3219,7 @@ function LinkContactDrawer({
       const phoneDigits = digits(conversation.contactPhone || conversation.contactExternalId);
       const payload: Record<string, unknown> = {
         businessId,
-        name: conversation.contactName || 'Novo contato',
+        name: (conversation.customContactName ?? conversation.contactName) || 'Novo contato',
         tipo: 'pf',
         source: conversation.channel,
         status: 'ganho',
@@ -2718,7 +3319,7 @@ function LinkContactDrawer({
                   {creating ? 'Criando...' : 'Criar novo cliente'}
                 </p>
                 <p className="text-[11px] text-gray-600 dark:text-gray-400 mt-0.5 leading-relaxed">
-                  Cria <strong>{conversation.contactName || 'este contato'}</strong>
+                  Cria <strong>{(conversation.customContactName ?? conversation.contactName) || 'este contato'}</strong>
                   {conversation.contactPhone && <> com telefone <strong>{conversation.contactPhone}</strong></>}
                   {' '}e vincula automaticamente.
                 </p>
@@ -3018,6 +3619,7 @@ export default function ConversasModule() {
   const [showRoutingRules, setShowRoutingRules] = useState(false);
   const [showAssignHistory, setShowAssignHistory] = useState(false);
   const [showMergeDialog, setShowMergeDialog] = useState(false);
+  const [showNewConversation, setShowNewConversation] = useState(false);
   const [routingRules, setRoutingRules] = useState<RoutingRule[]>(business?.settings?.routingRules ?? []);
   useEffect(() => { setRoutingRules(business?.settings?.routingRules ?? []); }, [business?.settings?.routingRules]);
   const csatEnabled = !!business?.settings?.csatEnabled;
@@ -3123,7 +3725,8 @@ export default function ConversasModule() {
 
       // Header
       pdf.setFontSize(16); pdf.setFont('helvetica', 'bold');
-      pdf.text(`Conversa: ${conv.contactName}`, margin, y); y += 8;
+      const pdfDisplayName = conv.customContactName ?? conv.contactName;
+      pdf.text(`Conversa: ${pdfDisplayName}`, margin, y); y += 8;
       pdf.setFontSize(9); pdf.setFont('helvetica', 'normal');
       pdf.setTextColor(120);
       pdf.text(`Canal: ${conv.channel} · Exportado em: ${new Date().toLocaleString('pt-BR')} · Status: ${conv.status}`, margin, y); y += 6;
@@ -3133,7 +3736,7 @@ export default function ConversasModule() {
       for (const m of msgs) {
         if (m.isInternal) continue; // Skip internal notes
         const time = m.sentAt ? new Date(m.sentAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
-        const who = m.direction === 'inbound' ? conv.contactName : (m.senderName || 'Equipe');
+        const who = m.direction === 'inbound' ? pdfDisplayName : (m.senderName || 'Equipe');
         const text = typeof m.content === 'string' ? m.content : '[mídia]';
 
         // Check page break
@@ -3156,7 +3759,7 @@ export default function ConversasModule() {
         y += 1.5;
       }
 
-      pdf.save(`conversa-${conv.contactName.replace(/\s+/g, '_')}-${new Date().toISOString().slice(0, 10)}.pdf`);
+      pdf.save(`conversa-${pdfDisplayName.replace(/\s+/g, '_')}-${new Date().toISOString().slice(0, 10)}.pdf`);
       toast.success('PDF exportado!');
     } catch (err) {
       console.error('[Conversations] Export failed:', err);
@@ -3169,7 +3772,7 @@ export default function ConversasModule() {
     if (typeof window !== 'undefined') {
       sessionStorage.setItem('pendingOrderPrefill', JSON.stringify({
         clientId: conv.crmContactId || '',
-        clientName: conv.contactName,
+        clientName: conv.customContactName ?? conv.contactName,
         clientPhone: conv.contactPhone || '',
         channel: conv.channel,
         conversationId: conv.id,
@@ -3237,7 +3840,7 @@ export default function ConversasModule() {
       const info = getSLAInfo(conv, slaConfig);
       if (info?.status === 'breached' && !notifiedBreachIdsRef.current.has(conv.id)) {
         notifiedBreachIdsRef.current.add(conv.id);
-        toast.warn(`⏱ SLA vencido: ${conv.contactName}`, { toastId: `sla-${conv.id}`, autoClose: 8000 });
+        toast.warn(`⏱ SLA vencido: ${conv.customContactName ?? conv.contactName}`, { toastId: `sla-${conv.id}`, autoClose: 8000 });
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -4221,7 +4824,7 @@ export default function ConversasModule() {
     let content = snippet.content;
     // Replace {{contact.name}} with actual contact name
     if (selectedConversation) {
-      content = content.replace(/\{\{contact\.name\}\}/g, selectedConversation.contactName);
+      content = content.replace(/\{\{contact\.name\}\}/g, selectedConversation.customContactName ?? selectedConversation.contactName);
     }
     setMessageInput(content);
     setShowSnippets(false);
@@ -4260,6 +4863,14 @@ export default function ConversasModule() {
     } catch (err) { console.error('Error assigning sector:', err); }
   }, [selectedConversation, business, user, sectors]);
 
+  const handleRenameContact = useCallback(async (name: string) => {
+    if (!selectedConversation || !business?.id) return;
+    await updateDoc(doc(db, 'conversations', selectedConversation.id), {
+      customContactName: name,
+      updatedAt: new Date().toISOString(),
+    });
+  }, [selectedConversation, business?.id]);
+
   const handleTogglePrivate = useCallback(async () => {
     if (!selectedConversation || !business?.id) return;
     try {
@@ -4292,7 +4903,7 @@ export default function ConversasModule() {
     const matchesSector = activeSectorFilter === 'all' || c.sectorIds?.includes(activeSectorFilter) || c.assignedToSectorId === activeSectorFilter;
     const matchesSearch =
       !searchQuery ||
-      c.contactName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (c.customContactName ?? c.contactName).toLowerCase().includes(searchQuery.toLowerCase()) ||
       c.lastMessage.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (c.contactPhone && c.contactPhone.includes(searchQuery));
     const matchesAssigned = !advFilters.assignedTo || c.assignedTo === advFilters.assignedTo;
@@ -4453,7 +5064,7 @@ export default function ConversasModule() {
               </div>
             </div>
 
-            {/* Search + filter button */}
+            {/* Search + new conversation + filter button */}
             <div className="flex items-center gap-2">
               <div className="relative flex-1">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
@@ -4465,6 +5076,12 @@ export default function ConversasModule() {
                   className="w-full pl-8 pr-3 py-2 text-sm bg-gray-100 dark:bg-white/[0.04] border border-transparent dark:border-white/[0.06] rounded-xl text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-red-500/50 focus:bg-white dark:focus:bg-white/[0.06] transition-colors"
                 />
               </div>
+              <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+                onClick={() => setShowNewConversation(true)}
+                title="Nova conversa"
+                className="w-9 h-9 rounded-xl flex-shrink-0 flex items-center justify-center transition-colors bg-red-500 hover:bg-red-600 text-white shadow-sm shadow-red-500/30">
+                <Plus className="w-4 h-4" />
+              </motion.button>
               <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
                 onClick={() => setShowAdvFilters(v => !v)}
                 className={cn('relative w-9 h-9 rounded-xl flex-shrink-0 flex items-center justify-center transition-colors',
@@ -4775,6 +5392,7 @@ export default function ConversasModule() {
                   slaInfo={getSLAInfo(selectedConversation, slaConfig)}
                   onToggleAssignHistory={() => setShowAssignHistory(v => !v)}
                   onMerge={() => setShowMergeDialog(true)}
+                  onRename={handleRenameContact}
                 />
 
                 {/* Assignment history panel */}
@@ -5088,6 +5706,16 @@ export default function ConversasModule() {
             onMerge={targetId => handleMergeConversations(selectedConversation.id, targetId)}
           />
         )}
+        <NewConversationDialog
+          open={showNewConversation}
+          onClose={() => setShowNewConversation(false)}
+          onCreated={(conv) => {
+            // Select immediately; onSnapshot will upgrade with any server-side mutations
+            setSelectedConversation(conv);
+            setShowMobileThread(true);
+          }}
+          clients={clientsList}
+        />
         {showRoutingRules && isAdmin && business?.id && (
           <RoutingRulesDialog
             rules={routingRules}
@@ -5184,7 +5812,7 @@ export default function ConversasModule() {
               </div>
               <h3 className="text-lg font-semibold text-gray-900 dark:text-white text-center mb-2">Excluir conversa?</h3>
               <p className="text-sm text-gray-500 dark:text-gray-400 text-center mb-6">
-                A conversa com <strong className="text-gray-700 dark:text-gray-300">{deleteConfirmConv.contactName}</strong> será ocultada. As mensagens ficam preservadas e a conversa pode ser restaurada se uma nova mensagem chegar.
+                A conversa com <strong className="text-gray-700 dark:text-gray-300">{deleteConfirmConv.customContactName ?? deleteConfirmConv.contactName}</strong> será ocultada. As mensagens ficam preservadas e a conversa pode ser restaurada se uma nova mensagem chegar.
               </p>
               <div className="flex gap-3">
                 <button
