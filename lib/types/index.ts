@@ -2622,7 +2622,8 @@ export type NotificationType =
   | 'task_overdue'
   | 'task_mentioned'
   | 'appointment_reminder'
-  | 'review_received';
+  | 'review_received'
+  | 'conversation_assigned';
 
 export interface AppNotification {
   id: string;

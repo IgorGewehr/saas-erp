@@ -27,6 +27,7 @@ import {
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { getAuth } from 'firebase/auth';
 import { db, storage } from '@/lib/config/firebase';
+import { notifyUsers } from '@/lib/services/notifications';
 import debounce from 'lodash.debounce';
 import {
   MessageSquare,
@@ -3270,6 +3271,20 @@ export default function ConversasModule() {
             assignmentHistory: arrayUnion(historyEntry),
             updatedAt: now,
           }).catch(console.error);
+          const sectorData = sectors.find(s => s.id === action.sectorId);
+          const memberIds = sectorData?.memberIds ?? [];
+          if (memberIds.length > 0 && business?.id) {
+            notifyUsers(db, memberIds, {
+              businessId: business.id,
+              type: 'conversation_assigned',
+              title: 'Conversa atribuída ao seu setor',
+              body: `Roteamento automático atribuiu uma conversa ao setor ${action.sectorName ?? action.sectorId}`,
+              link: 'Conversas',
+              relatedId: conv.id,
+              actorId: 'routing',
+              actorName: 'Roteamento automático',
+            }).catch(console.error);
+          }
         } else if (action.type === 'assign_user' && action.userId) {
           const historyEntry = {
             assignedTo: action.userId,
@@ -3284,13 +3299,25 @@ export default function ConversasModule() {
             assignmentHistory: arrayUnion(historyEntry),
             updatedAt: now,
           }).catch(console.error);
+          if (business?.id) {
+            notifyUsers(db, [action.userId], {
+              businessId: business.id,
+              type: 'conversation_assigned',
+              title: 'Conversa atribuída',
+              body: `Roteamento automático atribuiu uma conversa a você`,
+              link: 'Conversas',
+              relatedId: conv.id,
+              actorId: 'routing',
+              actorName: 'Roteamento automático',
+            }).catch(console.error);
+          }
         } else if (action.type === 'set_priority' && action.priority) {
           updateDoc(doc(db, 'conversations', conv.id), { priority: action.priority, updatedAt: now }).catch(console.error);
         }
         break; // First matching rule wins
       }
     }
-  }, [conversations, routingRules, business?.id]);
+  }, [conversations, routingRules, business, sectors]);
 
   // ── Real-time: Conversations list ──────────────────────────────────────────
 
@@ -3456,10 +3483,20 @@ export default function ConversasModule() {
       });
     }
     await batch.commit();
-    toast.success(`${batchSelectedIds.size} conversa(s) atribuída(s) a ${userName}`);
+    const count = batchSelectedIds.size;
+    notifyUsers(db, [userId], {
+      businessId: business.id,
+      type: 'conversation_assigned',
+      title: 'Conversa atribuída',
+      body: `${user.name} atribuiu ${count === 1 ? 'uma conversa' : `${count} conversas`} a você`,
+      link: 'Conversas',
+      actorId: user.uid,
+      actorName: user.name,
+    }).catch(err => console.warn('Notification dispatch failed:', err));
+    toast.success(`${count} conversa(s) atribuída(s) a ${userName}`);
     setShowBatchAssign(false);
     exitBatchMode();
-  }, [business?.id, batchSelectedIds, user, exitBatchMode]);
+  }, [business?.id, business, batchSelectedIds, user, exitBatchMode]);
 
   const handleBatchTag = useCallback(async (tag: string) => {
     if (!business?.id || batchSelectedIds.size === 0) return;
@@ -4206,9 +4243,22 @@ export default function ConversasModule() {
         assignedToSectorId: sectorId, sectorIds: [sectorId], updatedAt: now,
         assignmentHistory: arrayUnion(historyEntry),
       });
+      const memberIds = sector?.memberIds ?? [];
+      if (memberIds.length > 0) {
+        notifyUsers(db, memberIds, {
+          businessId: business.id,
+          type: 'conversation_assigned',
+          title: 'Conversa atribuída ao seu setor',
+          body: `${user.name} atribuiu uma conversa ao setor ${sector?.name ?? sectorId}`,
+          link: 'Conversas',
+          relatedId: selectedConversation.id,
+          actorId: user.uid,
+          actorName: user.name,
+        }).catch(err => console.warn('Notification dispatch failed:', err));
+      }
       setShowSectorAssign(false);
     } catch (err) { console.error('Error assigning sector:', err); }
-  }, [selectedConversation, business?.id, user, sectors]);
+  }, [selectedConversation, business, user, sectors]);
 
   const handleTogglePrivate = useCallback(async () => {
     if (!selectedConversation || !business?.id) return;
