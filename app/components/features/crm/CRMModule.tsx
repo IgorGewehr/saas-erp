@@ -593,7 +593,8 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
           </div>
           <div className="space-y-2.5">
             {churnRiskContacts.map((c) => {
-              const cl = getChurnLabel(c.scores!.churnRisk);
+              const churnRisk = c.scores?.churnRisk ?? 0;
+              const cl = getChurnLabel(churnRisk);
               return (
                 <div key={c.id} className="flex items-center gap-3 p-2.5 rounded-xl bg-gray-50 dark:bg-white/[0.02] border border-gray-100 dark:border-white/[0.04]">
                   <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-gray-200 to-gray-300 dark:from-gray-700 dark:to-gray-600 flex items-center justify-center text-[10px] font-bold text-gray-600 dark:text-gray-300">
@@ -604,7 +605,7 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
                     <p className="text-xs text-gray-400">{c.suggestedAction || t('crm.metrics.reactivate', 'Reativar contato')}</p>
                   </div>
                   <span className={cn('text-xs font-bold px-2 py-1 rounded-md shrink-0', cl.bg, cl.color)}>
-                    {c.scores!.churnRisk}%
+                    {churnRisk}%
                   </span>
                 </div>
               );

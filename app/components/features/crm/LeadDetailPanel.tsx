@@ -131,20 +131,25 @@ export function LeadDetailPanel({ contact, activities, stages, onClose, onEdit, 
   // Fetch form responses for this contact
   const [formResponses, setFormResponses] = useState<FormResponse[]>([]);
   useEffect(() => {
+    setFormResponses([]);
     if (!contact.businessId || !contact.id) return;
+    let cancelled = false;
     getDocs(query(
       collection(db, 'formResponses'),
       where('businessId', '==', contact.businessId),
       where('clientId', '==', contact.id),
     )).then(snap => {
-      setFormResponses(snap.docs.map(d => ({ ...d.data(), id: d.id } as FormResponse)));
-    }).catch(() => {});
+      if (!cancelled) setFormResponses(snap.docs.map(d => ({ ...d.data(), id: d.id } as FormResponse)));
+    }).catch(err => console.error('[CRM] Form responses fetch error:', err));
+    return () => { cancelled = true; };
   }, [contact.businessId, contact.id]);
 
   // Fetch audit log for this contact
   const [auditLog, setAuditLog] = useState<CRMAuditEntry[]>([]);
   useEffect(() => {
+    setAuditLog([]);
     if (!contact.businessId || !contact.id) return;
+    let cancelled = false;
     getDocs(query(
       collection(db, 'crmAuditLog'),
       where('businessId', '==', contact.businessId),
@@ -152,8 +157,9 @@ export function LeadDetailPanel({ contact, activities, stages, onClose, onEdit, 
       orderBy('createdAt', 'desc'),
       limit(15),
     )).then(snap => {
-      setAuditLog(snap.docs.map(d => ({ ...d.data(), id: d.id } as CRMAuditEntry)));
-    }).catch(() => {});
+      if (!cancelled) setAuditLog(snap.docs.map(d => ({ ...d.data(), id: d.id } as CRMAuditEntry)));
+    }).catch(err => console.error('[CRM] Audit log fetch error:', err));
+    return () => { cancelled = true; };
   }, [contact.businessId, contact.id]);
 
   const effectiveStages = stages ?? DEFAULT_CRM_PIPELINE;
