@@ -401,13 +401,46 @@ function ActivitiesTab({ activities, onEdit, onDelete, onToggle, onNew }: {
 // METRICS TAB — Intelligence Dashboard
 // ==========================================
 
+const ROTTING_DAYS_THRESHOLD = 7;
+
 function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
   deals: CRMDeal[]; contacts: CRMContact[]; activities: CRMActivity[]; stages: CRMPipelineStage[]; isDark: boolean;
-  metrics: { totalValue: number; weightedValue: number; avgDealSize: number; activeDeals: number; conversionRate: number; wonValue: number; wonDeals: number };
+  metrics: { totalValue: number; weightedValue: number; avgDealSize: number; activeDeals: number; conversionRate: number; wonValue: number; wonDeals: number; rottingCount: number };
 }) {
   const { t } = useTranslation();
   const funnelData = useMemo(() => stages.map((s) => { const sd = deals.filter((d) => d.stage === s.id); return { name: t('crm.stage.' + s.id, s.name), value: sd.length, dealValue: sd.reduce((a, d) => a + d.value, 0), fill: s.color }; }), [deals, stages, t]);
   const sourceData = useMemo(() => { const c: Record<string, number> = {}; contacts.forEach((ct) => { c[ct.source] = (c[ct.source] || 0) + 1; }); return Object.entries(c).map(([s, v]) => ({ name: t('crm.source.' + s, SOURCE_LABELS[s as LeadSource] || s), value: v, color: SOURCE_COLORS[s as LeadSource] || '#6B7280' })).sort((a, b) => b.value - a.value); }, [contacts, t]);
+
+  // ── Rotting deals ──────────────────────────────────────────
+  const rottingDeals = useMemo(() => {
+    const cutoff = Date.now() - ROTTING_DAYS_THRESHOLD * 86_400_000;
+    return deals
+      .filter(d => !d.closedDate && new Date(d.updatedAt).getTime() < cutoff)
+      .sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime())
+      .slice(0, 6);
+  }, [deals]);
+
+  // ── Revenue forecast (next 6 months) ──────────────────────
+  const forecastData = useMemo(() => {
+    const now = new Date();
+    const months = Array.from({ length: 6 }, (_, i) => {
+      const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      return { key, label: d.toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' }), weighted: 0, optimistic: 0 };
+    });
+    for (const deal of deals) {
+      if (!deal.expectedCloseDate || deal.closedDate) continue;
+      const key = deal.expectedCloseDate.slice(0, 7);
+      const m = months.find(m => m.key === key);
+      if (m) {
+        m.weighted  += deal.value * (deal.probability / 100);
+        m.optimistic += deal.value;
+      }
+    }
+    return months;
+  }, [deals]);
+
+  const hasForecast = forecastData.some(m => m.weighted > 0 || m.optimistic > 0);
   const convRate = contacts.length > 0 ? ((contacts.filter((c) => c.status === 'ganho').length / contacts.length) * 100).toFixed(1) : '0';
   const avgScore = contacts.length > 0 ? (contacts.reduce((s, c) => s + (c.scores?.overall ?? c.score), 0) / contacts.length).toFixed(0) : '0';
   const tooltipStyle = { borderRadius: '12px', border: isDark ? '1px solid #374151' : '1px solid #E2E8F0', backgroundColor: isDark ? '#111827' : '#fff', color: isDark ? '#F1F5F9' : '#0F172A' };
@@ -459,8 +492,8 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
           { label: t('crm.metrics.avgScore', 'Score Médio'), value: avgScore, icon: <Gauge size={18} />, c: 'amber' },
           { label: t('crm.metrics.totalLeads', 'Total Leads'), value: String(contacts.length), icon: <Users size={18} />, c: 'blue' },
           { label: t('crm.metrics.wonValue', 'Valor Ganho'), value: formatCurrency(metrics.wonValue), icon: <DollarSign size={18} />, c: 'red' },
-          { label: t('crm.metrics.avgLoyalty', 'Fidelidade Média'), value: `${avgLoyalty}%`, icon: <Heart size={18} />, c: 'purple' },
-          { label: t('crm.metrics.avgChurn', 'Risco Churn Médio'), value: `${avgChurn}%`, icon: <AlertTriangle size={18} />, c: 'orange' },
+          { label: t('crm.metrics.rottingDeals', 'Deals Parados'), value: String(metrics.rottingCount), icon: <Clock size={18} />, c: metrics.rottingCount > 0 ? 'orange' : 'emerald' },
+          { label: t('crm.metrics.weightedPipeline', 'Pipeline Ponderado'), value: formatCurrency(metrics.weightedValue), icon: <BarChart3 size={18} />, c: 'purple' },
         ].map((card, i) => {
           const cm: Record<string, { bg: string; txt: string }> = {
             emerald: { bg: 'bg-emerald-50 dark:bg-emerald-500/10', txt: 'text-emerald-600 dark:text-emerald-400' },
@@ -580,9 +613,91 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
         </motion.div>
       </div>
 
-      {/* ── Row 4: Pending Actions ─────────────────────────────── */}
-      {pendingActions.length > 0 && (
+      {/* ── Row 4: Forecast de Receita ────────────────────────── */}
+      {hasForecast && (
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}
+          className="bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-blue-500/10 flex items-center justify-center"><TrendingUp size={16} className="text-blue-500" /></div>
+              <div>
+                <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100">{t('crm.metrics.forecast', 'Previsão de Receita')}</h3>
+                <p className="text-[10px] text-gray-400 mt-0.5">{t('crm.metrics.forecastSub', 'Próximos 6 meses · valor ponderado pela probabilidade')}</p>
+              </div>
+            </div>
+            <div className="text-right">
+              <p className="text-xs text-gray-400">{t('crm.metrics.forecastTotal', 'Total esperado')}</p>
+              <p className="text-sm font-bold text-blue-600 dark:text-blue-400">
+                {formatCurrency(forecastData.reduce((s, m) => s + m.weighted, 0))}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-4 mb-3 text-[10px] text-gray-400">
+            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-blue-500 inline-block" />Esperado (ponderado)</span>
+            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-blue-200 dark:bg-blue-500/20 inline-block" />Otimista (100%)</span>
+          </div>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={forecastData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#1F2937' : '#F3F4F6'} />
+              <XAxis dataKey="label" tick={{ fontSize: 10, fill: isDark ? '#6B7280' : '#9CA3AF' }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 10, fill: isDark ? '#6B7280' : '#9CA3AF' }} axisLine={false} tickLine={false}
+                tickFormatter={(v) => v >= 1000 ? `${(v / 1000).toFixed(0)}k` : String(v)} />
+              <RechartsTooltip contentStyle={tooltipStyle}
+                formatter={(value: number, name: string) => [formatCurrency(value), name === 'optimistic' ? 'Otimista' : 'Esperado']} />
+              <Bar dataKey="optimistic" fill={isDark ? 'rgba(59,130,246,0.15)' : 'rgba(59,130,246,0.12)'} radius={[4, 4, 0, 0]} />
+              <Bar dataKey="weighted" fill="#3B82F6" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+          {forecastData.every(m => m.weighted === 0) && deals.some(d => !d.expectedCloseDate && !d.closedDate) && (
+            <p className="text-[10px] text-gray-400 text-center mt-2">
+              {t('crm.metrics.forecastHint', 'Defina uma data de fechamento nos deals para aparecer aqui')}
+            </p>
+          )}
+        </motion.div>
+      )}
+
+      {/* ── Row 5: Rotting Deals ──────────────────────────────── */}
+      {rottingDeals.length > 0 && (
         <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.45 }}
+          className="bg-white dark:bg-[#111827] border border-orange-200/60 dark:border-orange-500/20 rounded-2xl p-5">
+          <div className="flex items-center gap-2.5 mb-4">
+            <div className="w-8 h-8 rounded-xl bg-orange-500/10 flex items-center justify-center"><Clock size={16} className="text-orange-500" /></div>
+            <div>
+              <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100">{t('crm.metrics.rottingDeals', 'Deals Parados')}</h3>
+              <p className="text-[10px] text-gray-400 mt-0.5">{t('crm.metrics.rottingDealsSub', `Sem atualização há mais de ${ROTTING_DAYS_THRESHOLD} dias`)}</p>
+            </div>
+            <span className="ml-auto text-xs font-semibold text-orange-600 dark:text-orange-400 bg-orange-500/10 px-2.5 py-0.5 rounded-full">
+              {rottingDeals.length}
+            </span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+            {rottingDeals.map((deal) => {
+              const daysSince = Math.floor((Date.now() - new Date(deal.updatedAt).getTime()) / 86_400_000);
+              const stage = stages.find(s => s.id === deal.stage);
+              return (
+                <div key={deal.id} className="flex items-start gap-3 p-3 rounded-xl bg-orange-50/50 dark:bg-orange-500/[0.04] border border-orange-100 dark:border-orange-500/10">
+                  <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{ backgroundColor: stage?.color ?? '#F97316' }} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">{deal.title}</p>
+                    <p className="text-xs text-gray-400 truncate">{deal.contactName}</p>
+                    <div className="flex items-center gap-2 mt-1.5">
+                      <span className="text-[10px] font-medium text-orange-600 dark:text-orange-400 bg-orange-500/10 px-1.5 py-0.5 rounded-md">
+                        {daysSince}d parado
+                      </span>
+                      <span className="text-[10px] text-gray-400">{stage?.name ?? deal.stage}</span>
+                    </div>
+                  </div>
+                  <span className="text-xs font-bold text-gray-700 dark:text-gray-300 flex-shrink-0">{formatCurrency(deal.value)}</span>
+                </div>
+              );
+            })}
+          </div>
+        </motion.div>
+      )}
+
+      {/* ── Row 7: Pending Actions ────────────────────────────── */}
+      {pendingActions.length > 0 && (
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.5 }}
           className="bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl p-5">
           <div className="flex items-center gap-2.5 mb-4">
             <div className="w-8 h-8 rounded-xl bg-amber-500/10 flex items-center justify-center"><Zap size={16} className="text-amber-500" /></div>
@@ -902,7 +1017,22 @@ export default function CRMModule() {
   const { data: activities = [], isLoading: la } = useQuery({ queryKey: ['crmActivities', business?.id], queryFn: async () => { const q = query(collection(db, 'crmActivities'), where('businessId', '==', business!.id), orderBy('createdAt', 'desc')); const snap = await getDocs(q); return snap.docs.map((d) => ({ ...d.data(), id: d.id } as CRMActivity)); }, enabled: !!business?.id });
 
   const isLoading = lc || ld || la;
-  const pipelineMetrics = useMemo(() => { const tv = deals.reduce((s, d) => s + d.value, 0); const wv = deals.reduce((s, d) => s + d.value * (d.probability / 100), 0); const wd = deals.filter((d) => d.stage === 'fechamento' || d.closedDate); const wdv = wd.reduce((s, d) => s + d.value, 0); return { totalValue: tv, weightedValue: wv, avgDealSize: wd.length > 0 ? wdv / wd.length : 0, activeDeals: deals.length, conversionRate: deals.length > 0 ? (wd.length / deals.length) * 100 : 0, wonValue: wdv, wonDeals: wd.length }; }, [deals]);
+  const ROTTING_DAYS = 7;
+  const pipelineMetrics = useMemo(() => {
+    const tv = deals.reduce((s, d) => s + d.value, 0);
+    const wv = deals.reduce((s, d) => s + d.value * (d.probability / 100), 0);
+    const wd = deals.filter((d) => d.stage === 'fechamento' || d.closedDate);
+    const wdv = wd.reduce((s, d) => s + d.value, 0);
+    const rottingCutoff = Date.now() - ROTTING_DAYS * 86_400_000;
+    const rottingCount = deals.filter(d => !d.closedDate && new Date(d.updatedAt).getTime() < rottingCutoff).length;
+    return {
+      totalValue: tv, weightedValue: wv,
+      avgDealSize: wd.length > 0 ? wdv / wd.length : 0,
+      activeDeals: deals.length,
+      conversionRate: deals.length > 0 ? (wd.length / deals.length) * 100 : 0,
+      wonValue: wdv, wonDeals: wd.length, rottingCount,
+    };
+  }, [deals]);
 
   // Dialog states
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
