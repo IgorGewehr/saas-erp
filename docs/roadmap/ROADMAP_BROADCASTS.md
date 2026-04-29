@@ -288,13 +288,15 @@ por prioridade (mais crítico → menos crítico). Marcar `[x]` quando entregar.
   No template selector, permitir mapear `{{N}}` para colunas extras do CSV
   (não só `name/phone/email`). Requer manter colunas brutas em `BroadcastRecipient`.
 
-- [ ] **5.9 — Race fix: re-check pause após sleep** `code-only` · 30min
-  Audit Fase 4 (M4): janela <2s onde pause pode escapar 1-2 mensagens.
-  Adicionar re-check após `await sleep(...)` antes da próxima iteração.
+- [x] **5.9 — Race fix: re-check pause após sleep** `code-only` · 30min ✅
+  Pause check agora roda a CADA iteração (depois do sleep da anterior), em vez
+  de 1-em-10. Janela de detecção: <3s (TTL do cache do 5.10).
 
-- [ ] **5.10 — Cache local do status pra reduzir reads** `code-only` · 30min
-  Audit Fase 4 (M1): pause check faz 1 read Firestore a cada 10 mensagens.
-  Em volume alto, vira custo. Cache com invalidação periódica.
+- [x] **5.10 — Cache local do status pra reduzir reads** `code-only` · 30min ✅
+  `isPausedFresh()` lê status com cache TTL de 3s. Cloud (delayMs ~100ms): ~30
+  iterações por TTL → 1 read/30 msgs (antes 1/10). Baileys (delayMs ~2s): pause
+  detectado em <3s. `lastFetchAt` atualizado mesmo em erro Firestore — outage
+  prolongada não causa retry agressivo nem log spam (fail-open intencional).
 
 ### Compliance / qualidade (sem prazo definido)
 

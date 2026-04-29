@@ -321,21 +321,53 @@ export async function POST(req: NextRequest) {
     const results: { contactId?: string; recipientId: string; status: string; externalMessageId?: string; error?: string }[] = [];
     const updatePromises: Promise<unknown>[] = [];
 
+    // ── Pause check com cache TTL ──────────────────────────────────────────
+    // Lê o status do broadcast com cache local de 3s — combina dois objetivos:
+    //  (a) [5.9] check a cada iteração (depois do sleep) em vez de 1-em-10,
+    //      fechando a janela onde mensagens escapam após pause.
+    //  (b) [5.10] reduzir reads do Firestore: para Cloud (delayMs ~100ms)
+    //      são ~30 iterações por janela TTL → 1 read/30 msgs (antes era 1/10).
+    //      Para Baileys (delayMs ~2s) ainda detecta pause em <3s.
+    const STATUS_CACHE_TTL_MS = 3_000;
+    let cachedStatus: string | undefined;
+    let lastFetchAt = 0;
+
+    async function isPausedFresh(): Promise<boolean> {
+      const now = Date.now();
+      // Cache válido enquanto TTL não expirou — mesmo se cachedStatus ainda é
+      // undefined (Firestore nunca respondeu): a TTL impede retry agressivo.
+      // Comportamento "fail open" intencional: outage Firestore não trava o envio.
+      if (lastFetchAt > 0 && now - lastFetchAt < STATUS_CACHE_TTL_MS) {
+        return cachedStatus === 'paused';
+      }
+      try {
+        const snap = await broadcastRef.get();
+        const fetched = snap.data()?.status as string | undefined;
+        if (fetched !== undefined) cachedStatus = fetched;
+      } catch (err) {
+        // Falha de rede/Firestore — mantém último valor cacheado.
+        // Loga 1x por TTL (graças ao update incondicional de lastFetchAt abaixo)
+        // em vez de 1x/msg, evitando spam em outage prolongada.
+        console.warn('[Broadcast] pause-check read failed (using cached value):', err);
+      }
+      // Atualiza SEMPRE (sucesso ou erro) para respeitar a TTL e evitar retry
+      // agressivo (10k reads falhos em campanha de 10k com Firestore offline).
+      lastFetchAt = Date.now();
+      return cachedStatus === 'paused';
+    }
+
     let wasPaused = false;
     for (let i = 0; i < recipients.length; i++) {
       const recipient = recipients[i];
       const messageDocId = messageDocIds[i];
       let response;
 
-      // Pause/cancel: re-checa status do broadcast a cada 10 mensagens
-      if (i > 0 && i % 10 === 0) {
-        const cur = await broadcastRef.get();
-        const curStatus = cur.data()?.status;
-        if (curStatus === 'paused') {
-          console.log('[Broadcast] paused mid-loop at index', i);
-          wasPaused = true;
-          break;
-        }
+      // Check a cada iteração — depois do sleep da anterior. Cache TTL evita
+      // virar 1 read/msg em volume alto (5.10).
+      if (await isPausedFresh()) {
+        console.log('[Broadcast] paused mid-loop at index', i);
+        wasPaused = true;
+        break;
       }
 
       // ── Branch Baileys (chamada direta na sessão local, não via fetch) ─────
