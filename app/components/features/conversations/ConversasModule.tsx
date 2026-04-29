@@ -3232,9 +3232,33 @@ export default function ConversasModule() {
         appliedRoutingRef.current.add(conv.id);
         const now = new Date().toISOString();
         if (action.type === 'assign_sector' && action.sectorId) {
-          updateDoc(doc(db, 'conversations', conv.id), { assignedToSectorId: action.sectorId, sectorIds: [action.sectorId], updatedAt: now }).catch(console.error);
+          const historyEntry = {
+            assignedToSectorId: action.sectorId,
+            sectorName: action.sectorName ?? action.sectorId,
+            changedBy: 'routing',
+            changedByName: 'Roteamento automático',
+            changedAt: now,
+          };
+          updateDoc(doc(db, 'conversations', conv.id), {
+            assignedToSectorId: action.sectorId,
+            sectorIds: [action.sectorId],
+            assignmentHistory: arrayUnion(historyEntry),
+            updatedAt: now,
+          }).catch(console.error);
         } else if (action.type === 'assign_user' && action.userId) {
-          updateDoc(doc(db, 'conversations', conv.id), { assignedTo: action.userId, assignedToName: action.userName, updatedAt: now }).catch(console.error);
+          const historyEntry = {
+            assignedTo: action.userId,
+            assignedToName: action.userName,
+            changedBy: 'routing',
+            changedByName: 'Roteamento automático',
+            changedAt: now,
+          };
+          updateDoc(doc(db, 'conversations', conv.id), {
+            assignedTo: action.userId,
+            assignedToName: action.userName,
+            assignmentHistory: arrayUnion(historyEntry),
+            updatedAt: now,
+          }).catch(console.error);
         } else if (action.type === 'set_priority' && action.priority) {
           updateDoc(doc(db, 'conversations', conv.id), { priority: action.priority, updatedAt: now }).catch(console.error);
         }
