@@ -20,7 +20,7 @@ import { getAuth } from 'firebase/auth';
 import { db } from '@/lib/config/firebase';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
-import { X, RefreshCw, Loader2, AlertTriangle, Check, CheckCheck, Clock } from 'lucide-react';
+import { X, RefreshCw, Loader2, AlertTriangle, Check, CheckCheck, Clock, Send } from 'lucide-react';
 import type { Broadcast, BroadcastMessage, BroadcastMessageStatus } from '@/lib/types';
 
 const STATUS_CFG: Record<BroadcastMessageStatus, { label: string; color: string; icon: React.ReactNode }> = {
@@ -77,6 +77,47 @@ export default function BroadcastDetailDialog({ broadcast, onClose, onRetryCreat
   }, [messages, statusFilter]);
 
   const failedCount = counts.failed ?? 0;
+  const [dispatching, setDispatching] = useState(false);
+  const canDispatch = broadcast.status === 'draft';
+
+  const handleDispatch = async () => {
+    if (!canDispatch) return;
+    if (!confirm(`Disparar campanha "${broadcast.name}" para ${broadcast.recipients?.length ?? 0} contato(s)?`)) return;
+    setDispatching(true);
+    try {
+      const token = await getAuth().currentUser?.getIdToken();
+      const body: Record<string, unknown> = {
+        businessId: broadcast.businessId,
+        broadcastId: broadcast.id,
+        channel: broadcast.channel,
+        recipients: broadcast.recipients ?? [],
+        sendRate: broadcast.sendRate ?? 10,
+      };
+      if (broadcast.templateName) body.templateName = broadcast.templateName;
+      if (broadcast.templateLanguage) body.templateLanguage = broadcast.templateLanguage;
+      if (broadcast.templateParams) body.templateParams = broadcast.templateParams;
+      if (broadcast.messageContent) body.messageContent = broadcast.messageContent;
+      if (broadcast.emailSubject) body.emailSubject = broadcast.emailSubject;
+      if (broadcast.viaBaileys) body.viaBaileys = true;
+
+      const res = await fetch('/api/broadcasts/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const summary = data.paused
+        ? `Pausada após ${data.stats.sent} envio(s)`
+        : `Concluída — ${data.stats.sent} enviadas, ${data.stats.failed} falharam`;
+      toast.success(summary);
+    } catch (err) {
+      console.error('[BroadcastDetail] dispatch failed:', err);
+      toast.error(err instanceof Error ? err.message : 'Erro ao disparar campanha');
+    } finally {
+      setDispatching(false);
+    }
+  };
 
   const handleRetryFailed = async () => {
     if (failedCount === 0) return;
@@ -146,7 +187,25 @@ export default function BroadcastDetailDialog({ broadcast, onClose, onRetryCreat
           })}
         </div>
 
-        {/* Toolbar */}
+        {/* Dispatch toolbar — só quando draft */}
+        {canDispatch && (
+          <div className="px-5 py-2.5 bg-emerald-50 dark:bg-emerald-500/5 border-b border-emerald-100 dark:border-emerald-500/10 flex items-center justify-between">
+            <span className="text-xs text-emerald-700 dark:text-emerald-400">
+              <Send className="w-3 h-3 inline mr-1 -mt-0.5" />
+              Pronto para disparar — {broadcast.recipients?.length ?? 0} contato(s)
+            </span>
+            <button
+              type="button"
+              onClick={handleDispatch}
+              disabled={dispatching}
+              className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50 transition-colors"
+            >
+              {dispatching ? <><Loader2 className="w-3 h-3 animate-spin" /> Disparando...</> : <><Send className="w-3 h-3" /> Disparar agora</>}
+            </button>
+          </div>
+        )}
+
+        {/* Failed retry toolbar */}
         {failedCount > 0 && (
           <div className="px-5 py-2.5 bg-red-50 dark:bg-red-500/5 border-b border-red-100 dark:border-red-500/10 flex items-center justify-between">
             <span className="text-xs text-red-700 dark:text-red-400">
