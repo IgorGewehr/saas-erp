@@ -1974,8 +1974,8 @@ function RoutingRulesDialog({ rules: initial, businessId, members, sectors: sect
             <div key={rule.id} className="border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
               <div className="flex items-center gap-2 px-3 py-2.5 bg-gray-50 dark:bg-gray-800/60">
                 <button onClick={() => update(rule.id, { enabled: !rule.enabled })}
-                  className={cn('w-8 h-4.5 rounded-full transition-colors flex-shrink-0 relative', rule.enabled ? 'bg-red-500' : 'bg-gray-300 dark:bg-gray-600')} style={{ height: 18 }}>
-                  <span className={cn('absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow transition-transform', rule.enabled ? 'translate-x-4' : 'translate-x-0.5')} />
+                  className={cn('w-9 rounded-full transition-colors flex-shrink-0 relative overflow-hidden', rule.enabled ? 'bg-red-500' : 'bg-gray-300 dark:bg-gray-600')} style={{ width: 36, height: 20, minWidth: 36 }}>
+                  <span className={cn('absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform', rule.enabled ? 'translate-x-[18px]' : 'translate-x-0.5')} />
                 </button>
                 <input value={rule.name} onChange={e => update(rule.id, { name: e.target.value })}
                   className="flex-1 text-xs font-semibold bg-transparent text-gray-700 dark:text-gray-300 focus:outline-none" />
@@ -4264,23 +4264,23 @@ export default function ConversasModule() {
         >
           {/* Panel Header */}
           <div className="px-4 pt-4 pb-2 flex-shrink-0">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-red-600 to-red-500 flex items-center justify-center shadow-lg shadow-red-500/25">
+            <div className="flex items-center justify-between mb-3 gap-2">
+              <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-red-600 to-red-500 flex items-center justify-center shadow-lg shadow-red-500/25 flex-shrink-0">
                   <MessageSquare className="w-4 h-4 text-white" />
                 </div>
-                <div>
-                  <h1 className="font-display font-bold text-gray-900 dark:text-white text-base leading-tight">
+                <div className="min-w-0">
+                  <h1 className="font-display font-bold text-gray-900 dark:text-white text-base leading-tight truncate">
                     {t('conversations.title', 'Conversas')}
                   </h1>
-                  <p className="text-[10px] text-gray-400 dark:text-gray-500">
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500 truncate">
                     {isLoadingConversations
                       ? t('conversations.loading', 'Carregando...')
                       : t(filteredConversations.length === 1 ? 'conversations.conversationCount_one' : 'conversations.conversationCount_other', filteredConversations.length === 1 ? '{{count}} conversa' : '{{count}} conversas', { count: filteredConversations.length })}
                   </p>
                 </div>
               </div>
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1 flex-shrink-0">
                 <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
                   onClick={() => { setBatchMode(v => !v); if (batchMode) exitBatchMode(); }}
                   title="Selecionar conversas"
@@ -4685,7 +4685,7 @@ export default function ConversasModule() {
                       className="overflow-hidden border-b border-gray-100 dark:border-white/[0.06] bg-gray-50/50 dark:bg-white/[0.02]">
                       <div className="px-4 py-2.5 space-y-1.5 max-h-40 overflow-y-auto">
                         <p className="text-[9px] font-bold text-gray-400 uppercase tracking-wider">Histórico de atribuições</p>
-                        {[...selectedConversation.assignmentHistory].reverse().map((h, i) => (
+                        {[...(selectedConversation.assignmentHistory ?? [])].reverse().map((h, i) => (
                           <div key={i} className="flex items-start gap-2 text-[10px]">
                             <div className="w-1 h-1 rounded-full bg-gray-400 mt-1.5 shrink-0" />
                             <div>
