@@ -2347,7 +2347,17 @@ export interface Segment {
 // ============================================
 
 export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent' | 'paused' | 'failed';
-export type BroadcastAudienceType = 'segment' | 'tags' | 'all_contacts' | 'manual';
+export type BroadcastAudienceType = 'segment' | 'tags' | 'all_contacts' | 'manual' | 'list';
+
+/** Recipiente direto de uma lista (paste/CSV) — não exige contato CRM. */
+export interface BroadcastRecipient {
+  /** Auto-vinculado se número/email bater com cliente CRM existente. */
+  contactId?: string;
+  name?: string;
+  /** Telefone em formato E.164 (apenas dígitos). Para canais WhatsApp. */
+  phoneNumber?: string;
+  email?: string;
+}
 
 export interface BroadcastStats {
   total: number;
@@ -2367,11 +2377,15 @@ export interface Broadcast {
   audienceSegmentId?: string;
   audienceTags?: string[];
   audienceContactIds?: string[];
+  /** Lista direta de recipientes (paste/CSV) — usado quando audienceType === 'list'. */
+  recipients?: BroadcastRecipient[];
   messageType: 'template' | 'text';
   templateName?: string;
   templateLanguage?: string;
   templateParams?: unknown[];
   messageContent?: string;
+  /** Assunto para canal email (broadcasts via notification-server). */
+  emailSubject?: string;
   scheduledAt?: string;
   sendRate?: number;
   status: BroadcastStatus;
@@ -2390,9 +2404,14 @@ export interface BroadcastMessage {
   id: string;
   broadcastId: string;
   businessId: string;
-  contactId: string;
-  contactName: string;
+  /** Opcional — só preenchido quando recipiente foi vinculado a um cliente CRM. */
+  contactId?: string;
+  /** Opcional — pode vir do CRM, da lista importada ou ficar vazio. */
+  contactName?: string;
+  /** Identificador externo do recipiente (telefone E.164 para WA, endereço para email). */
   recipientId: string;
+  /** Email do recipiente — preenchido em broadcasts de canal email. */
+  email?: string;
   status: BroadcastMessageStatus;
   externalMessageId?: string;
   errorMessage?: string;

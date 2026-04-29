@@ -30,7 +30,7 @@ import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDo
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   CRMContact, CRMDeal, CRMPipelineStage, CRMStageConfig, CRMPipelineConfig, CRMActivity, CRMActivityType,
-  LeadStatus, LeadSource, User, Broadcast, BroadcastStatus, ContactProfile, CRMAuditAction,
+  LeadStatus, LeadSource, User, Broadcast, BroadcastStatus, BroadcastRecipient, Client, ContactProfile, CRMAuditAction,
   Segment, SegmentFilter, SegmentFilterGroup, SegmentFilterOperator,
 } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
@@ -45,6 +45,7 @@ import {
   DEFAULT_CRM_PIPELINE, getVisibleStages, getStageLabel, getWonStageId,
   type CRMTab,
 } from './shared';
+import RecipientListInput from './RecipientListInput';
 import { KanbanBoard } from './KanbanBoard';
 import { LeadTableView } from './LeadTableView';
 import { LeadDetailPanel } from './LeadDetailPanel';
@@ -1192,13 +1193,27 @@ function CampaignsTab({ businessId }: { businessId: string }) {
   const [showNew, setShowNew] = useState(false);
   const [formName, setFormName] = useState('');
   const [formChannel, setFormChannel] = useState<'whatsapp' | 'facebook' | 'instagram'>('whatsapp');
-  const [formAudienceType, setFormAudienceType] = useState<'all_contacts' | 'tags' | 'manual'>('all_contacts');
+  const [formAudienceType, setFormAudienceType] = useState<'all_contacts' | 'tags' | 'manual' | 'list'>('list');
   const [formTags, setFormTags] = useState('');
+  const [formRecipients, setFormRecipients] = useState<BroadcastRecipient[]>([]);
   const [formMsgType, setFormMsgType] = useState<'template' | 'text'>('template');
   const [formTemplate, setFormTemplate] = useState('');
   const [formContent, setFormContent] = useState('');
   const [saving, setSaving] = useState(false);
   const { user } = useAuth();
+
+  // Carrega clientes para o auto-link do RecipientListInput (cache compartilhado com pipeline tab)
+  const { data: existingClients = [] } = useQuery<Client[]>({
+    queryKey: ['clients', businessId],
+    queryFn: async () => {
+      if (!businessId) return [];
+      const q = query(collection(db, 'clients'), where('businessId', '==', businessId));
+      const snap = await getDocs(q);
+      return snap.docs.map(d => ({ ...(d.data() as Client), id: d.id }));
+    },
+    enabled: !!businessId,
+    staleTime: 5 * 60 * 1000,
+  });
 
   useEffect(() => {
     if (!businessId) return;
@@ -1208,9 +1223,47 @@ function CampaignsTab({ businessId }: { businessId: string }) {
   }, [businessId]);
 
   const handleCreate = async () => {
-    if (!businessId || !user || !formName.trim()) return; setSaving(true);
-    try { const now = new Date().toISOString(); await addDoc(collection(db, 'broadcasts'), { businessId, name: formName.trim(), channel: formChannel, audienceType: formAudienceType, audienceTags: formAudienceType === 'tags' ? formTags.split(',').map(t => t.trim()).filter(Boolean) : [], messageType: formMsgType, templateName: formMsgType === 'template' ? formTemplate.trim() : undefined, messageContent: formMsgType === 'text' ? formContent.trim() : undefined, status: 'draft' as BroadcastStatus, stats: { total: 0, sent: 0, delivered: 0, read: 0, failed: 0, replied: 0 }, createdBy: user.uid, createdByName: user.name, createdAt: now, updatedAt: now }); toast.success(t('crm.toast.campaignCreated', 'Campanha criada')); setShowNew(false); setFormName(''); }
-    catch (err) { console.error('[CRM:Campaigns] Error creating broadcast:', err); toast.error(t('crm.toast.errorCreateCampaign', 'Erro ao criar campanha')); } finally { setSaving(false); }
+    if (!businessId || !user || !formName.trim()) return;
+    if (formAudienceType === 'list' && formRecipients.length === 0) {
+      toast.error('Adicione pelo menos um recipiente na lista.');
+      return;
+    }
+    setSaving(true);
+    try {
+      const now = new Date().toISOString();
+      const recipientsTotal = formAudienceType === 'list' ? formRecipients.length : 0;
+      const payload: Record<string, unknown> = {
+        businessId,
+        name: formName.trim(),
+        channel: formChannel,
+        audienceType: formAudienceType,
+        audienceTags: formAudienceType === 'tags' ? formTags.split(',').map(t => t.trim()).filter(Boolean) : [],
+        messageType: formMsgType,
+        templateName: formMsgType === 'template' ? formTemplate.trim() : undefined,
+        messageContent: formMsgType === 'text' ? formContent.trim() : undefined,
+        status: 'draft' as BroadcastStatus,
+        stats: { total: recipientsTotal, sent: 0, delivered: 0, read: 0, failed: 0, replied: 0 },
+        createdBy: user.uid,
+        createdByName: user.name,
+        createdAt: now,
+        updatedAt: now,
+      };
+      if (formAudienceType === 'list') payload.recipients = formRecipients;
+      // Remove undefineds (Firestore não aceita)
+      Object.keys(payload).forEach(k => payload[k] === undefined && delete payload[k]);
+      await addDoc(collection(db, 'broadcasts'), payload);
+      toast.success(t('crm.toast.campaignCreated', 'Campanha criada'));
+      setShowNew(false);
+      setFormName('');
+      setFormRecipients([]);
+      setFormTemplate('');
+      setFormContent('');
+    } catch (err) {
+      console.error('[CRM:Campaigns] Error creating broadcast:', err);
+      toast.error(t('crm.toast.errorCreateCampaign', 'Erro ao criar campanha'));
+    } finally {
+      setSaving(false);
+    }
   };
 
   if (loading) return <div className="space-y-4">{[0, 1, 2].map(i => <div key={i} className="h-24 rounded-2xl shimmer" />)}</div>;
@@ -1225,8 +1278,24 @@ function CampaignsTab({ businessId }: { businessId: string }) {
         <DialogContent className="space-y-4 !pt-2">
           <TextField label={t('crm.form.name', 'Nome')} value={formName} onChange={(e) => setFormName(e.target.value)} fullWidth size="small" />
           <FormControl fullWidth size="small"><InputLabel>{t('crm.form.channel', 'Canal')}</InputLabel><Select value={formChannel} label={t('crm.form.channel', 'Canal')} onChange={(e) => setFormChannel(e.target.value as typeof formChannel)}><MenuItem value="whatsapp">WhatsApp</MenuItem><MenuItem value="facebook">Messenger</MenuItem><MenuItem value="instagram">Instagram</MenuItem></Select></FormControl>
-          <FormControl fullWidth size="small"><InputLabel>{t('crm.form.audience', 'Audiência')}</InputLabel><Select value={formAudienceType} label={t('crm.form.audience', 'Audiência')} onChange={(e) => setFormAudienceType(e.target.value as typeof formAudienceType)}><MenuItem value="all_contacts">{t('crm.form.all', 'Todos')}</MenuItem><MenuItem value="tags">{t('crm.form.byTags', 'Por tags')}</MenuItem><MenuItem value="manual">{t('crm.form.manual', 'Manual')}</MenuItem></Select></FormControl>
+          <FormControl fullWidth size="small">
+            <InputLabel>{t('crm.form.audience', 'Audiência')}</InputLabel>
+            <Select value={formAudienceType} label={t('crm.form.audience', 'Audiência')} onChange={(e) => setFormAudienceType(e.target.value as typeof formAudienceType)}>
+              <MenuItem value="list">Lista direta (cole ou CSV)</MenuItem>
+              <MenuItem value="all_contacts">{t('crm.form.all', 'Todos os contatos CRM')}</MenuItem>
+              <MenuItem value="tags">{t('crm.form.byTags', 'Por tags')}</MenuItem>
+              <MenuItem value="manual">{t('crm.form.manual', 'Manual')}</MenuItem>
+            </Select>
+          </FormControl>
           {formAudienceType === 'tags' && <TextField label={t('crm.form.tags', 'Tags')} value={formTags} onChange={(e) => setFormTags(e.target.value)} fullWidth size="small" />}
+          {formAudienceType === 'list' && (
+            // Por enquanto só telefone — email vira disponível na Fase 3 quando notification-server for plugado
+            <RecipientListInput
+              mode="phone"
+              onChange={(recipients) => setFormRecipients(recipients)}
+              existingClients={existingClients}
+            />
+          )}
           <FormControl fullWidth size="small"><InputLabel>{t('crm.form.type', 'Tipo')}</InputLabel><Select value={formMsgType} label={t('crm.form.type', 'Tipo')} onChange={(e) => setFormMsgType(e.target.value as typeof formMsgType)}><MenuItem value="template">{t('crm.form.template', 'Template')}</MenuItem><MenuItem value="text">{t('crm.form.text', 'Texto')}</MenuItem></Select></FormControl>
           {formMsgType === 'template' ? <TextField label="Template" value={formTemplate} onChange={(e) => setFormTemplate(e.target.value)} fullWidth size="small" /> : <TextField label={t('crm.form.content', 'Conteúdo')} value={formContent} onChange={(e) => setFormContent(e.target.value)} fullWidth multiline rows={3} size="small" />}
         </DialogContent>
