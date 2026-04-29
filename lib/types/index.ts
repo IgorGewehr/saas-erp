@@ -1867,6 +1867,15 @@ export interface Conversation {
   slaBreached?: boolean;     // true quando SLA venceu sem firstResponseAt
   csatRating?: 1 | 2 | 3 | 4 | 5;  // avaliação de satisfação registrada pelo contato
   csatSentAt?: string;       // ISO — quando a pesquisa CSAT foi enviada
+  assignmentHistory?: Array<{
+    assignedTo?: string;
+    assignedToName?: string;
+    assignedToSectorId?: string;
+    sectorName?: string;
+    changedBy: string;
+    changedByName: string;
+    changedAt: string;
+  }>;
   createdAt: string;
   updatedAt: string;
   isDeleted?: boolean;

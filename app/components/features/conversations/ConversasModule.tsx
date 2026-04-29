@@ -79,6 +79,7 @@ import {
   SlidersHorizontal,
   Bookmark,
   BookmarkCheck,
+  History,
   CheckSquare,
   Square,
   UserCheck,
@@ -708,6 +709,7 @@ function ThreadHeader({
   aiEnabledBusinessWide,
   sectors: sectorsList,
   slaInfo,
+  onToggleAssignHistory,
 }: {
   conversation: Conversation;
   onBack: () => void;
@@ -727,6 +729,7 @@ function ThreadHeader({
   aiEnabledBusinessWide?: boolean;
   sectors?: Sector[];
   slaInfo?: SLAInfo | null;
+  onToggleAssignHistory?: () => void;
 }) {
   const { t } = useTranslation();
   const cfg = getConvConfig(conversation);
@@ -1088,6 +1091,13 @@ function ThreadHeader({
                     Exportar histórico (.txt)
                   </button>
                 )}
+                {(conversation.assignmentHistory?.length ?? 0) > 0 && onToggleAssignHistory && (
+                  <button onClick={() => { onToggleAssignHistory(); setShowOverflowMenu(false); }}
+                    className="w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs text-gray-700 dark:text-gray-300">
+                    <History className="w-3.5 h-3.5" />
+                    Histórico de atribuições ({conversation.assignmentHistory!.length})
+                  </button>
+                )}
                 {onDeleteConversation && (
                   <>
                     <div className="border-t border-gray-100 dark:border-white/[0.06] my-1" />
@@ -1391,6 +1401,17 @@ function Composer({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Generate thumbnail preview for images
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const emojiPickerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!showEmojiPicker) return;
+    const h = (e: MouseEvent) => { if (emojiPickerRef.current && !emojiPickerRef.current.contains(e.target as Node)) setShowEmojiPicker(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [showEmojiPicker]);
+
+  const EMOJIS = ['😀','😂','😍','🥰','😊','😎','😭','😤','🙏','👍','👎','❤️','🔥','✅','⚠️','🎉','💡','📌','🕐','💰','📞','📧','🤝','👋','😅','🤔','💪','🎯','📢','🚀'];
+
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   useEffect(() => {
     if (attachment && attachment.type.startsWith('image/')) {
@@ -1484,13 +1505,32 @@ function Composer({
       <div className="flex items-end gap-2">
         {/* Left actions */}
         <div className="flex items-center gap-1 pb-1.5">
-          <motion.button
-            whileHover={{ scale: 1.1 }}
-            whileTap={{ scale: 0.9 }}
-            className="w-8 h-8 rounded-xl flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
-          >
-            <Smile className="w-4 h-4" />
-          </motion.button>
+          <div className="relative" ref={emojiPickerRef}>
+            <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}
+              onClick={() => setShowEmojiPicker(v => !v)}
+              className={cn('w-8 h-8 rounded-xl flex items-center justify-center transition-colors',
+                showEmojiPicker
+                  ? 'bg-amber-50 dark:bg-amber-500/10 text-amber-500'
+                  : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06]'
+              )}>
+              <Smile className="w-4 h-4" />
+            </motion.button>
+            <AnimatePresence>
+              {showEmojiPicker && (
+                <motion.div initial={{ opacity: 0, y: 6, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 6, scale: 0.97 }}
+                  className="absolute bottom-full mb-2 left-0 z-20 bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 p-2.5 w-56">
+                  <div className="grid grid-cols-6 gap-1">
+                    {EMOJIS.map(e => (
+                      <button key={e} onClick={() => { onChange(value + e); setShowEmojiPicker(false); inputRef.current?.focus(); }}
+                        className="w-8 h-8 flex items-center justify-center text-lg rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+                        {e}
+                      </button>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
           <motion.button
             whileHover={{ scale: 1.1 }}
             whileTap={{ scale: 0.9 }}
@@ -2867,6 +2907,7 @@ export default function ConversasModule() {
   const [showCSATDashboard, setShowCSATDashboard] = useState(false);
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [showRoutingRules, setShowRoutingRules] = useState(false);
+  const [showAssignHistory, setShowAssignHistory] = useState(false);
   const [routingRules, setRoutingRules] = useState<RoutingRule[]>(business?.settings?.routingRules ?? []);
   useEffect(() => { setRoutingRules(business?.settings?.routingRules ?? []); }, [business?.settings?.routingRules]);
   const csatEnabled = !!business?.settings?.csatEnabled;
@@ -2959,29 +3000,57 @@ export default function ConversasModule() {
 
   const handleExportHistory = useCallback(async (conv: Conversation) => {
     try {
-      const snap = await (await import('firebase/firestore')).getDocs(
-        (await import('firebase/firestore')).query(
-          (await import('firebase/firestore')).collection(db, 'conversationMessages'),
-          (await import('firebase/firestore')).where('conversationId', '==', conv.id),
-          (await import('firebase/firestore')).orderBy('sentAt', 'asc'),
-        ),
-      );
-      const lines = snap.docs.map(d => {
-        const m = d.data();
-        const time = m.sentAt ? new Date(m.sentAt).toLocaleString('pt-BR') : '?';
+      const { getDocs: gd, query: q, collection: col, where: wh, orderBy: ob } = await import('firebase/firestore');
+      const snap = await gd(q(col(db, 'conversationMessages'), wh('conversationId', '==', conv.id), ob('sentAt', 'asc')));
+      const msgs = snap.docs.map(d => d.data());
+
+      // Generate PDF with jsPDF
+      const { jsPDF } = await import('jspdf');
+      const pdf = new jsPDF({ unit: 'mm', format: 'a4' });
+      const pageW = pdf.internal.pageSize.getWidth();
+      const margin = 14;
+      let y = 20;
+
+      // Header
+      pdf.setFontSize(16); pdf.setFont('helvetica', 'bold');
+      pdf.text(`Conversa: ${conv.contactName}`, margin, y); y += 8;
+      pdf.setFontSize(9); pdf.setFont('helvetica', 'normal');
+      pdf.setTextColor(120);
+      pdf.text(`Canal: ${conv.channel} · Exportado em: ${new Date().toLocaleString('pt-BR')} · Status: ${conv.status}`, margin, y); y += 6;
+      pdf.setDrawColor(220); pdf.line(margin, y, pageW - margin, y); y += 6;
+      pdf.setTextColor(0);
+
+      for (const m of msgs) {
+        if (m.isInternal) continue; // Skip internal notes
+        const time = m.sentAt ? new Date(m.sentAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
         const who = m.direction === 'inbound' ? conv.contactName : (m.senderName || 'Equipe');
-        return `[${time}] ${who}: ${typeof m.content === 'string' ? m.content : '[mídia]'}`;
-      });
-      const content = `Conversa com ${conv.contactName}\nCanal: ${conv.channel}\nExportado em: ${new Date().toLocaleString('pt-BR')}\n\n${lines.join('\n')}\n`;
-      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `conversa-${conv.contactName.replace(/\s+/g, '_')}-${new Date().toISOString().slice(0, 10)}.txt`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+        const text = typeof m.content === 'string' ? m.content : '[mídia]';
+
+        // Check page break
+        if (y > 270) { pdf.addPage(); y = 20; }
+
+        pdf.setFontSize(8); pdf.setFont('helvetica', 'bold');
+        pdf.setTextColor(m.direction === 'outbound' ? 60 : 0);
+        pdf.text(`${who}  `, margin, y);
+        pdf.setFont('helvetica', 'normal'); pdf.setTextColor(150);
+        pdf.text(time, margin + pdf.getTextWidth(`${who}  `), y);
+        y += 4.5;
+
+        pdf.setFontSize(9); pdf.setFont('helvetica', 'normal'); pdf.setTextColor(40);
+        const lines = pdf.splitTextToSize(text, pageW - margin * 2 - 4);
+        for (const line of lines) {
+          if (y > 272) { pdf.addPage(); y = 20; }
+          pdf.text(line, margin + 2, y);
+          y += 4.5;
+        }
+        y += 1.5;
+      }
+
+      pdf.save(`conversa-${conv.contactName.replace(/\s+/g, '_')}-${new Date().toISOString().slice(0, 10)}.pdf`);
+      toast.success('PDF exportado!');
     } catch (err) {
       console.error('[Conversations] Export failed:', err);
+      toast.error('Erro ao exportar');
     }
   }, []);
 
@@ -3951,19 +4020,21 @@ export default function ConversasModule() {
   // ── Sector assignment ──────────────────────────────────────────────────────
 
   const handleAssignSector = useCallback(async (sectorId: string) => {
-    if (!selectedConversation || !business?.id) return;
+    if (!selectedConversation || !business?.id || !user) return;
     const sector = sectors.find(s => s.id === sectorId);
+    const now = new Date().toISOString();
+    const historyEntry = {
+      assignedToSectorId: sectorId, sectorName: sector?.name ?? sectorId,
+      changedBy: user.uid, changedByName: user.name, changedAt: now,
+    };
     try {
       await updateDoc(doc(db, 'conversations', selectedConversation.id), {
-        assignedToSectorId: sectorId,
-        sectorIds: [sectorId],
-        updatedAt: new Date().toISOString(),
+        assignedToSectorId: sectorId, sectorIds: [sectorId], updatedAt: now,
+        assignmentHistory: [...(selectedConversation.assignmentHistory ?? []), historyEntry],
       });
       setShowSectorAssign(false);
-    } catch (err) {
-      console.error('Error assigning sector:', err);
-    }
-  }, [selectedConversation, business?.id, sectors]);
+    } catch (err) { console.error('Error assigning sector:', err); }
+  }, [selectedConversation, business?.id, user, sectors]);
 
   const handleTogglePrivate = useCallback(async () => {
     if (!selectedConversation || !business?.id) return;
@@ -4478,7 +4549,31 @@ export default function ConversasModule() {
                   aiEnabledBusinessWide={aiAgentEnabled}
                   sectors={sectors}
                   slaInfo={getSLAInfo(selectedConversation, slaConfig)}
+                  onToggleAssignHistory={() => setShowAssignHistory(v => !v)}
                 />
+
+                {/* Assignment history panel */}
+                <AnimatePresence>
+                  {showAssignHistory && selectedConversation.assignmentHistory?.length && (
+                    <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+                      className="overflow-hidden border-b border-gray-100 dark:border-white/[0.06] bg-gray-50/50 dark:bg-white/[0.02]">
+                      <div className="px-4 py-2.5 space-y-1.5 max-h-40 overflow-y-auto">
+                        <p className="text-[9px] font-bold text-gray-400 uppercase tracking-wider">Histórico de atribuições</p>
+                        {[...selectedConversation.assignmentHistory].reverse().map((h, i) => (
+                          <div key={i} className="flex items-start gap-2 text-[10px]">
+                            <div className="w-1 h-1 rounded-full bg-gray-400 mt-1.5 shrink-0" />
+                            <div>
+                              <span className="text-gray-600 dark:text-gray-400">
+                                {h.sectorName ? `Setor: ${h.sectorName}` : h.assignedToName ? `Agente: ${h.assignedToName}` : 'Removido'}
+                              </span>
+                              <span className="text-gray-400 ml-1">por {h.changedByName} · {new Date(h.changedAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
 
                 {/* Messages area */}
                 <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-1 scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-white/10">
