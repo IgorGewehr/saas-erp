@@ -1548,6 +1548,7 @@ export default function FinancialModule() {
               <RecurringContent
                 transactions={transactions}
                 showBalances={showBalances}
+                businessName={business?.razaoSocial ?? ''}
                 onEdit={openEditForm}
                 onPause={handlePauseRecurrence}
                 onResume={handleResumeRecurrence}
@@ -6863,9 +6864,20 @@ function RecurringContent({
                     </p>
                   </div>
 
-                  {/* Quitar agora */}
+                  {/* Quitar agora — abre painel de late payment se houver multa/juros configurados */}
                   <button
-                    onClick={() => handlePay(tx)}
+                    onClick={() => {
+                      const hasLateFees = !!(tx.recurrence?.lateFeePct || tx.recurrence?.interestPctMonth);
+                      if (isOverdue && hasLateFees) {
+                        setLatePayingId(latePayingId === tx.id ? null : tx.id);
+                        const daysDue = Math.max(0, Math.round((new Date(todayStr + 'T00:00:00').getTime() - new Date(tx.recurrence!.nextDueDate! + 'T00:00:00').getTime()) / 86400000));
+                        const multa = tx.amount * (tx.recurrence!.lateFeePct ?? 0) / 100;
+                        const juros = tx.amount * (tx.recurrence!.interestPctMonth ?? 0) / 100 * daysDue / 30;
+                        setLateConfirmedAmount((tx.amount + multa + juros).toFixed(2));
+                      } else {
+                        handlePay(tx);
+                      }
+                    }}
                     disabled={payingId === tx.id}
                     title="Quitar agora"
                     className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900/40 transition-colors disabled:opacity-50"
@@ -7001,6 +7013,49 @@ function RecurringContent({
                   </div>
                 )}
 
+                {/* FIN-R18: Painel de late payment */}
+                {latePayingId === tx.id && tx.recurrence?.nextDueDate && (
+                  <div className="mt-3 p-3 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 space-y-2.5">
+                    <p className="text-xs font-semibold text-amber-700 dark:text-amber-300">Quitar com encargos por atraso</p>
+                    {(() => {
+                      const daysDue = Math.max(0, Math.round((new Date(todayStr + 'T00:00:00').getTime() - new Date(tx.recurrence!.nextDueDate! + 'T00:00:00').getTime()) / 86400000));
+                      const multa = tx.amount * (tx.recurrence!.lateFeePct ?? 0) / 100;
+                      const juros = tx.amount * (tx.recurrence!.interestPctMonth ?? 0) / 100 * daysDue / 30;
+                      return (
+                        <div className="space-y-1.5 text-xs text-slate-600 dark:text-gray-300">
+                          <div className="flex justify-between"><span>Valor original</span><span className="font-semibold">{formatCurrency(tx.amount)}</span></div>
+                          {multa > 0 && <div className="flex justify-between"><span>Multa ({tx.recurrence!.lateFeePct}%)</span><span className="font-semibold text-amber-600 dark:text-amber-400">+{formatCurrency(multa)}</span></div>}
+                          {juros > 0 && <div className="flex justify-between"><span>Juros ({daysDue}d × {tx.recurrence!.interestPctMonth}% a.m.)</span><span className="font-semibold text-amber-600 dark:text-amber-400">+{formatCurrency(juros)}</span></div>}
+                          <div className="border-t border-amber-200 dark:border-amber-700 pt-1.5 flex justify-between font-bold"><span>Total sugerido</span><span>{formatCurrency(tx.amount + multa + juros)}</span></div>
+                        </div>
+                      );
+                    })()}
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-500 dark:text-gray-400 shrink-0">Valor a quitar</span>
+                      <input type="number" value={lateConfirmedAmount} onChange={e => setLateConfirmedAmount(e.target.value)} step="0.01" min="0"
+                        className="flex-1 text-xs px-2.5 py-1.5 rounded-lg border border-amber-200 dark:border-amber-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 focus:outline-none focus:border-amber-400"
+                      />
+                    </div>
+                    <div className="flex gap-1.5">
+                      <button disabled={payingId === tx.id}
+                        onClick={async () => {
+                          setPayingId(tx.id);
+                          try { await onMarkPaid(tx.id, parseFloat(lateConfirmedAmount)); setLatePayingId(null); }
+                          finally { setPayingId(null); }
+                        }}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600 text-white text-xs font-semibold hover:bg-amber-700 transition-colors disabled:opacity-40"
+                      >
+                        {payingId === tx.id ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                        Confirmar
+                      </button>
+                      <button disabled={payingId === tx.id} onClick={() => handlePay(tx)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-200 dark:border-amber-700 bg-white dark:bg-gray-800 text-amber-700 dark:text-amber-300 text-xs font-medium hover:bg-amber-50 transition-colors disabled:opacity-40"
+                      >Quitar valor original</button>
+                      <button onClick={() => setLatePayingId(null)} className="px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-slate-600 dark:hover:text-gray-300 transition-colors">Cancelar</button>
+                    </div>
+                  </div>
+                )}
+
                 {/* End-series confirmation panel */}
                 {endingId === tx.id && (
                   <div className="mt-3 p-3 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 space-y-2">
@@ -7069,6 +7124,61 @@ function RecurringContent({
         </div>
       </div>
 
+      {/* FIN-R27: Dashboard de inadimplência */}
+      {(() => {
+        const overdue = allRecurrences.filter(tx => tx.recurrence?.nextDueDate && tx.recurrence.nextDueDate < todayStr);
+        if (overdue.length === 0) return null;
+        const totalOverdue = overdue.reduce((s, tx) => s + tx.amount, 0);
+        return (
+          <div className="bg-white dark:bg-gray-900 border border-red-200 dark:border-red-800 rounded-2xl overflow-hidden shadow-sm">
+            <div className="px-5 py-3 bg-red-600 flex items-center gap-3">
+              <AlertTriangle size={16} className="text-white shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-bold text-white">Em Atraso</p>
+                <p className="text-xs text-red-100">{overdue.length} lançamento{overdue.length !== 1 ? 's' : ''} · Total: {showBalances ? formatCurrency(totalOverdue) : 'R$ ****'}</p>
+              </div>
+            </div>
+            <div className="divide-y divide-red-50 dark:divide-red-900/20">
+              {overdue.map(tx => {
+                const daysDue = Math.round((new Date(todayStr + 'T00:00:00').getTime() - new Date(tx.recurrence!.nextDueDate! + 'T00:00:00').getTime()) / 86400000);
+                return (
+                  <div key={tx.id} className="flex items-center justify-between gap-3 px-5 py-2.5 hover:bg-red-50/50 dark:hover:bg-red-900/10 transition-colors">
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <span className="shrink-0 text-[11px] font-bold text-white bg-red-500 px-1.5 py-0.5 rounded-full whitespace-nowrap">{daysDue}d</span>
+                      <span className="text-sm font-medium text-slate-900 dark:text-gray-100 truncate">{tx.recurrence?.label || tx.description}</span>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span className={cn('text-sm font-bold', tx.type === 'receita' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+                        {showBalances ? formatCurrency(tx.amount) : 'R$ ****'}
+                      </span>
+                      <button
+                        onClick={() => {
+                          const hasLateFees = !!(tx.recurrence?.lateFeePct || tx.recurrence?.interestPctMonth);
+                          if (hasLateFees) {
+                            setLatePayingId(tx.id);
+                            const multa = tx.amount * (tx.recurrence!.lateFeePct ?? 0) / 100;
+                            const juros = tx.amount * (tx.recurrence!.interestPctMonth ?? 0) / 100 * daysDue / 30;
+                            setLateConfirmedAmount((tx.amount + multa + juros).toFixed(2));
+                          } else {
+                            setPayingId(tx.id);
+                            onMarkPaid(tx.id).finally(() => setPayingId(null));
+                          }
+                        }}
+                        disabled={payingId === tx.id}
+                        className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 rounded-lg hover:bg-emerald-100 transition-colors disabled:opacity-50"
+                      >
+                        {payingId === tx.id ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
+                        Quitar
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Filter + view toggle bar */}
       <div className="flex items-center gap-2 flex-wrap">
         {viewMode === 'list' && (
@@ -7088,7 +7198,11 @@ function RecurringContent({
             )}
           </>
         )}
-        <div className="ml-auto flex items-center gap-1 p-1 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl">
+        {/* FIN-R19: Exportar CSV */}
+        <button onClick={() => exportRecurrencesCSV(transactions, businessName)} title="Exportar recorrências em CSV"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium border border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors ml-auto"
+        ><Download size={13} /> CSV</button>
+        <div className="flex items-center gap-1 p-1 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl">
           <button onClick={() => setViewMode('list')} title="Visão em lista"
             className={cn('p-1.5 rounded-lg transition-all', viewMode === 'list' ? 'bg-red-600 text-white shadow-sm' : 'text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800')}
           ><LayoutList size={14} /></button>

@@ -321,6 +321,7 @@ export interface BusinessSettings {
     lowMinutes: number;     // padrão: 480 (8h)
     warningPercent: number; // % de tempo restante para alertar (padrão: 20)
   };
+  csatEnabled?: boolean;  // Enviar pesquisa de satisfação ao resolver conversa
 }
 
 /** Estágio customizável do pipeline de leads */
@@ -1843,10 +1844,25 @@ export interface Conversation {
   tags?: string[];
   firstResponseAt?: string;  // ISO — quando o primeiro msg outbound não-interna foi enviada
   slaBreached?: boolean;     // true quando SLA venceu sem firstResponseAt
+  csatRating?: 1 | 2 | 3 | 4 | 5;  // avaliação de satisfação registrada pelo contato
+  csatSentAt?: string;       // ISO — quando a pesquisa CSAT foi enviada
   createdAt: string;
   updatedAt: string;
   isDeleted?: boolean;
   deletedAt?: string;
+}
+
+export interface CSATResponse {
+  id: string;
+  businessId: string;
+  conversationId: string;
+  contactName: string;
+  channel: string;
+  rating: 1 | 2 | 3 | 4 | 5;
+  comment?: string;
+  assignedTo?: string;
+  assignedToName?: string;
+  respondedAt: string;
 }
 
 export interface ConversationView {
