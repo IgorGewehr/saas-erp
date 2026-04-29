@@ -22,6 +22,7 @@ import {
   limit,
   startAfter,
   writeBatch,
+  arrayUnion,
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { getAuth } from 'firebase/auth';
@@ -101,6 +102,7 @@ import type {
   User,
   AgentRun,
   Client,
+  BusinessSettings,
 } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import { CachedImage } from '@/app/components/ui/CachedImage';
@@ -165,7 +167,6 @@ function isSameDay(a: string, b: string): boolean {
 
 // ─── SLA helpers ─────────────────────────────────────────────────────────────
 
-import type { BusinessSettings } from '@/lib/types';
 type ConvSLAConfig = NonNullable<BusinessSettings['conversationSLA']>;
 
 const SLA_DEFAULT_CONFIG: ConvSLAConfig = { enabled: false, urgentMinutes: 30, highMinutes: 60, mediumMinutes: 240, lowMinutes: 480, warningPercent: 20 };
@@ -3365,9 +3366,24 @@ export default function ConversasModule() {
     const batch = writeBatch(db);
     for (const id of batchSelectedIds) batch.update(doc(db, 'conversations', id), { status, updatedAt: now });
     await batch.commit();
+    // Send CSAT survey to each resolved conversation if enabled
+    if (status === 'resolved' && business.settings?.csatEnabled) {
+      const toSurvey = conversations.filter(c => batchSelectedIds.has(c.id) && !c.csatSentAt);
+      const csatMsg = '⭐ Como foi seu atendimento? Responda com um número de 1 a 5.\n1 = Péssimo  2 = Ruim  3 = Regular  4 = Bom  5 = Excelente';
+      for (const conv of toSurvey) {
+        await addDoc(collection(db, 'conversationMessages'), {
+          conversationId: conv.id, businessId: business.id, channel: conv.channel,
+          direction: 'outbound', content: csatMsg,
+          status: 'sending', senderName: 'Sistema', isCsat: true, sentAt: now,
+        });
+        await updateDoc(doc(db, 'conversations', conv.id), {
+          lastMessage: csatMsg, lastMessageAt: now, lastMessageDirection: 'outbound', csatSentAt: now, updatedAt: now,
+        });
+      }
+    }
     toast.success(`${batchSelectedIds.size} conversa(s) atualizada(s)`);
     exitBatchMode();
-  }, [business?.id, batchSelectedIds, exitBatchMode]);
+  }, [business?.id, business?.settings?.csatEnabled, batchSelectedIds, conversations, exitBatchMode]);
 
   const handleBatchMarkRead = useCallback(async () => {
     if (!business?.id || batchSelectedIds.size === 0) return;
@@ -3380,15 +3396,21 @@ export default function ConversasModule() {
   }, [business?.id, batchSelectedIds, exitBatchMode]);
 
   const handleBatchAssign = useCallback(async (userId: string, userName: string) => {
-    if (!business?.id || batchSelectedIds.size === 0) return;
+    if (!business?.id || batchSelectedIds.size === 0 || !user) return;
     const now = new Date().toISOString();
+    const historyEntry = { assignedTo: userId, assignedToName: userName, changedBy: user.uid, changedByName: user.name, changedAt: now };
     const batch = writeBatch(db);
-    for (const id of batchSelectedIds) batch.update(doc(db, 'conversations', id), { assignedTo: userId, assignedToName: userName, updatedAt: now });
+    for (const id of batchSelectedIds) {
+      batch.update(doc(db, 'conversations', id), {
+        assignedTo: userId, assignedToName: userName, updatedAt: now,
+        assignmentHistory: arrayUnion(historyEntry),
+      });
+    }
     await batch.commit();
     toast.success(`${batchSelectedIds.size} conversa(s) atribuída(s) a ${userName}`);
     setShowBatchAssign(false);
     exitBatchMode();
-  }, [business?.id, batchSelectedIds, exitBatchMode]);
+  }, [business?.id, batchSelectedIds, user, exitBatchMode]);
 
   const handleBatchTag = useCallback(async (tag: string) => {
     if (!business?.id || batchSelectedIds.size === 0) return;
@@ -3765,16 +3787,11 @@ export default function ConversasModule() {
       setAttachment(null);
       if (conv.unreadCount > 0) {
         markAsRead(conv.id);
-        // Send read receipt for the last inbound message
-        const lastInbound = messages
-          .filter((m) => m.direction === 'inbound' && m.externalMessageId)
-          .sort((a, b) => b.sentAt.localeCompare(a.sentAt))[0];
-        if (lastInbound?.externalMessageId) {
-          sendReadReceipt(conv, lastInbound.externalMessageId);
-        }
+        // Read receipt is sent in the messages useEffect once the new conversation's
+        // messages load — using `messages` here would reference the previous conv's data.
       }
     },
-    [markAsRead, messages, sendReadReceipt],
+    [markAsRead],
   );
 
   // ── Typing indicator (Task 4) ─────────────────────────────────────────────
@@ -4170,7 +4187,7 @@ export default function ConversasModule() {
 
   // ── Filtered conversations ─────────────────────────────────────────────────
 
-  const filteredConversations = getVisibleConversations(conversations).filter((c) => {
+  const filteredConversations = useMemo(() => getVisibleConversations(conversations).filter((c) => {
     const matchesChannel = activeChannel === 'all' || c.channel === activeChannel;
     const matchesStatus = activeStatus === 'all' || c.status === activeStatus;
     const matchesSector = activeSectorFilter === 'all' || c.sectorIds?.includes(activeSectorFilter) || c.assignedToSectorId === activeSectorFilter;
@@ -4179,14 +4196,13 @@ export default function ConversasModule() {
       c.contactName.toLowerCase().includes(searchQuery.toLowerCase()) ||
       c.lastMessage.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (c.contactPhone && c.contactPhone.includes(searchQuery));
-    // Advanced filters
     const matchesAssigned = !advFilters.assignedTo || c.assignedTo === advFilters.assignedTo;
     const matchesPriority = !advFilters.priority || c.priority === advFilters.priority;
     const matchesLabel = !advFilters.label || c.labels?.includes(advFilters.label) || c.tags?.includes(advFilters.label);
     const matchesUnread = !advFilters.unreadOnly || (c.unreadCount ?? 0) > 0;
     const matchesSLAStatus = !advFilters.slaStatus || getSLAInfo(c, slaConfig)?.status === advFilters.slaStatus;
     return matchesChannel && matchesStatus && matchesSector && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus;
-  });
+  }), [getVisibleConversations, conversations, activeChannel, activeStatus, activeSectorFilter, searchQuery, advFilters, slaConfig]);
 
   const activeFilterCount = countActiveFilters(advFilters);
 
@@ -4288,12 +4304,13 @@ export default function ConversasModule() {
                       <Clock className="w-4 h-4" />
                     </motion.button>
                     <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
-                      onClick={async () => {
+                      onClick={async (e) => {
+                        if (e.detail >= 2) return; // double-click is handled by onDoubleClick
                         if (!business?.id) return;
                         await updateDoc(doc(db, 'businesses', business.id), { 'settings.csatEnabled': !csatEnabled, updatedAt: new Date().toISOString() });
                         toast.success(!csatEnabled ? 'CSAT ativado' : 'CSAT desativado');
                       }}
-                      title={csatEnabled ? 'CSAT ativo — clique para desativar / ver dashboard' : 'Ativar CSAT'}
+                      title={csatEnabled ? 'CSAT ativo — clique para desativar / duplo clique para ver dashboard' : 'Ativar CSAT'}
                       onDoubleClick={() => setShowCSATDashboard(true)}
                       className={cn('w-8 h-8 rounded-xl flex items-center justify-center transition-colors',
                         csatEnabled
@@ -4663,7 +4680,7 @@ export default function ConversasModule() {
 
                 {/* Assignment history panel */}
                 <AnimatePresence>
-                  {showAssignHistory && selectedConversation.assignmentHistory?.length && (
+                  {showAssignHistory && (selectedConversation.assignmentHistory?.length ?? 0) > 0 && (
                     <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
                       className="overflow-hidden border-b border-gray-100 dark:border-white/[0.06] bg-gray-50/50 dark:bg-white/[0.02]">
                       <div className="px-4 py-2.5 space-y-1.5 max-h-40 overflow-y-auto">

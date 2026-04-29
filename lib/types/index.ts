@@ -755,6 +755,7 @@ export interface TransactionRecurrenceEntry {
   dueDate: string;   // nextDueDate at time of payment (ISO date)
   paidDate: string;  // actual payment date (ISO date)
   amount: number;    // amount paid
+  attachments?: Array<{ id: string; name: string; url: string; path: string; uploadedAt: string }>; // FIN-R25
 }
 
 export interface TransactionRecurrence {

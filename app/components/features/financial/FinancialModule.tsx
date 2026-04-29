@@ -1549,6 +1549,9 @@ export default function FinancialModule() {
                 transactions={transactions}
                 showBalances={showBalances}
                 businessName={business?.razaoSocial ?? ''}
+                bankAccounts={bankAccounts}
+                sectors={sectors}
+                businessId={business?.id ?? ''}
                 onEdit={openEditForm}
                 onPause={handlePauseRecurrence}
                 onResume={handleResumeRecurrence}
@@ -6671,6 +6674,9 @@ function RecurringContent({
   transactions,
   showBalances,
   businessName,
+  bankAccounts,
+  sectors: _sectors,
+  businessId,
   onEdit,
   onPause,
   onResume,
@@ -6682,6 +6688,9 @@ function RecurringContent({
   transactions: Transaction[];
   showBalances: boolean;
   businessName: string;
+  bankAccounts: BankAccount[];
+  sectors: Sector[];
+  businessId: string;
   onEdit: (tx: Transaction) => void;
   onPause: (txId: string) => Promise<void>;
   onResume: (txId: string) => Promise<void>;
@@ -6707,6 +6716,25 @@ function RecurringContent({
   const [viewMode, setViewMode] = useState<'list' | 'calendar'>('list');
   const [calendarYear, setCalendarYear] = useState(() => new Date().getFullYear());
   const [calendarMonth, setCalendarMonth] = useState(() => new Date().getMonth()); // 0-indexed
+  // FIN-R24: edição em lote
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkReajusteOpen, setBulkReajusteOpen] = useState(false);
+  const [bulkReclassifyOpen, setBulkReclassifyOpen] = useState(false);
+  const [bulkEndOpen, setBulkEndOpen] = useState(false);
+  const [bulkPct, setBulkPct] = useState('');
+  const [bulkCategory, setBulkCategory] = useState('');
+  const [bulkSaving, setBulkSaving] = useState(false);
+  // FIN-R25: comprovante por ocorrência
+  const [uploadingKey, setUploadingKey] = useState<string | null>(null);
+  // FIN-R22: simulador
+  const [simOpen, setSimOpen] = useState(false);
+  const [simOverrides, setSimOverrides] = useState<Record<string, { amountMultiplier: number; paused: boolean }>>({});
+  const [simNewSeries, setSimNewSeries] = useState<Array<{ type: 'receita' | 'despesa'; amount: string; frequency: string }>>([]);
+  // FIN-R23: padrões ignorados (persistidos em localStorage)
+  const [dismissedPatterns, setDismissedPatterns] = useState<Set<string>>(() => {
+    try { const r = localStorage.getItem(`dP_${businessId}`); return r ? new Set(JSON.parse(r)) : new Set(); }
+    catch { return new Set(); }
+  });
 
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
@@ -6753,6 +6781,111 @@ function RecurringContent({
     return map;
   }, [transactions, calendarYear, calendarMonth, todayStr]);
 
+  // ── FIN-R20/R21: normalização de frequência → mensal ─────────────────────
+  const FREQ_TO_MONTHLY: Record<string, number> = {
+    weekly: 4.33, biweekly: 2.17, biweekly_fixed: 2,
+    monthly: 1, quarterly: 1 / 3, semiannual: 1 / 6, yearly: 1 / 12,
+  };
+
+  const healthKpis = useMemo(() => {
+    let mrr = 0, burnRate = 0;
+    for (const tx of allRecurrences) {
+      const mult = FREQ_TO_MONTHLY[tx.recurrence?.frequency ?? 'monthly'] ?? 1;
+      if (tx.type === 'receita') mrr += tx.amount * mult;
+      else burnRate += tx.amount * mult;
+    }
+    const totalBankBalance = bankAccounts.filter(a => a.isActive).reduce((s, a) => s + a.balance, 0);
+    const netMrr = mrr - burnRate;
+    const runway = burnRate > 0 ? totalBankBalance / burnRate : Infinity;
+    return { mrr, burnRate, netMrr, runway, arr: mrr * 12, totalBankBalance };
+  }, [allRecurrences, bankAccounts]);
+
+  const burnByCategory = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const tx of allRecurrences.filter(t => t.type === 'despesa')) {
+      const cat = tx.category || 'Sem categoria';
+      map[cat] = (map[cat] ?? 0) + tx.amount * (FREQ_TO_MONTHLY[tx.recurrence?.frequency ?? 'monthly'] ?? 1);
+    }
+    return Object.entries(map).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([category, amount]) => ({ category, amount }));
+  }, [allRecurrences]);
+
+  const mrrByCategory = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const tx of allRecurrences.filter(t => t.type === 'receita')) {
+      const cat = tx.category || 'Sem categoria';
+      map[cat] = (map[cat] ?? 0) + tx.amount * (FREQ_TO_MONTHLY[tx.recurrence?.frequency ?? 'monthly'] ?? 1);
+    }
+    return Object.entries(map).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([category, amount]) => ({ category, amount }));
+  }, [allRecurrences]);
+
+  // ── FIN-R22: projeção simulada ────────────────────────────────────────────
+  const simMonthlyData = useMemo(() => {
+    if (!simOpen) return [];
+    let simMrr = 0, simBurn = 0;
+    for (const tx of allRecurrences) {
+      const ov = simOverrides[tx.id];
+      if (ov?.paused) continue;
+      const mult = FREQ_TO_MONTHLY[tx.recurrence?.frequency ?? 'monthly'] ?? 1;
+      const val = tx.amount * (ov?.amountMultiplier ?? 1) * mult;
+      if (tx.type === 'receita') simMrr += val; else simBurn += val;
+    }
+    for (const s of simNewSeries) {
+      const v = parseFloat(s.amount);
+      if (!v || isNaN(v)) continue;
+      const val = v * (FREQ_TO_MONTHLY[s.frequency] ?? 1);
+      if (s.type === 'receita') simMrr += val; else simBurn += val;
+    }
+    const today = new Date();
+    let balance = healthKpis.totalBankBalance;
+    return Array.from({ length: 12 }, (_, i) => {
+      const d = new Date(today.getFullYear(), today.getMonth() + i, 1);
+      const label = d.toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' });
+      balance = balance + simMrr - simBurn;
+      return { month: label, receita: +simMrr.toFixed(2), despesa: +simBurn.toFixed(2), saldo: +balance.toFixed(2) };
+    });
+  }, [simOpen, simOverrides, simNewSeries, allRecurrences, healthKpis.totalBankBalance]);
+
+  const simRunway = useMemo(() => {
+    if (!simMonthlyData.length) return null;
+    const idx = simMonthlyData.findIndex(d => d.saldo < 0);
+    return idx === -1 ? Infinity : idx;
+  }, [simMonthlyData]);
+
+  // ── FIN-R23: detecção de padrões recorrentes ──────────────────────────────
+  const suggestedPatterns = useMemo(() => {
+    const nonRecurring = transactions.filter(t => !t.recurrence);
+    const groups: Record<string, Transaction[]> = {};
+    for (const tx of nonRecurring) {
+      const key = tx.description.toLowerCase().trim();
+      groups[key] = [...(groups[key] ?? []), tx];
+    }
+    const THRESHOLDS = [
+      { freq: 'weekly', label: 'Semanal', target: 7, tol: 5 },
+      { freq: 'biweekly', label: 'Quinzenal', target: 14, tol: 5 },
+      { freq: 'monthly', label: 'Mensal', target: 30, tol: 10 },
+      { freq: 'quarterly', label: 'Trimestral', target: 90, tol: 15 },
+    ];
+    const suggestions: Array<{ key: string; description: string; count: number; avgAmount: number; frequency: string; freqLabel: string; type: 'receita' | 'despesa'; sampleTx: Transaction }> = [];
+    for (const [, txList] of Object.entries(groups)) {
+      if (txList.length < 3) continue;
+      const amounts = txList.map(t => t.amount);
+      const avg = amounts.reduce((s, v) => s + v, 0) / amounts.length;
+      const stdDev = Math.sqrt(amounts.reduce((s, v) => s + (v - avg) ** 2, 0) / amounts.length);
+      if (avg > 0 && stdDev / avg > 0.15) continue;
+      const sorted = [...txList].sort((a, b) => (a.dueDate ?? a.paymentDate ?? a.createdAt).localeCompare(b.dueDate ?? b.paymentDate ?? b.createdAt));
+      const dates = sorted.map(t => new Date((t.dueDate ?? t.paymentDate ?? t.createdAt).slice(0, 10) + 'T00:00:00').getTime());
+      const diffs: number[] = [];
+      for (let i = 1; i < dates.length; i++) diffs.push((dates[i] - dates[i - 1]) / 86400000);
+      const avgDiff = diffs.reduce((s, v) => s + v, 0) / diffs.length;
+      const match = THRESHOLDS.find(f => Math.abs(avgDiff - f.target) <= f.tol);
+      if (!match) continue;
+      const pKey = `${businessId}_${sorted[0].description.toLowerCase().trim()}_${match.freq}`;
+      if (dismissedPatterns.has(pKey)) continue;
+      suggestions.push({ key: pKey, description: sorted[0].description, count: txList.length, avgAmount: avg, frequency: match.freq, freqLabel: match.label, type: sorted[0].type, sampleTx: sorted[sorted.length - 1] });
+    }
+    return suggestions;
+  }, [transactions, businessId, dismissedPatterns]);
+
   const kpis = useMemo(() => {
     const now = new Date();
     const in30Days = new Date(now.getTime() + 30 * 86400000).toISOString().slice(0, 10);
@@ -6766,6 +6899,94 @@ function RecurringContent({
     const urgentCount = allRecurrences.filter(r => r.recurrence?.nextDueDate && r.recurrence.nextDueDate <= new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10)).length;
     return { active: allRecurrences.length, receitas30, despesas30, saldo30: receitas30 - despesas30, urgentCount };
   }, [allRecurrences]);
+
+  // ── FIN-R24: bulk handlers ────────────────────────────────────────────────
+  const toggleSelect = (txId: string) => setSelectedIds(prev => { const n = new Set(prev); n.has(txId) ? n.delete(txId) : n.add(txId); return n; });
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const handleBulkReajuste = async () => {
+    const pctVal = parseFloat(bulkPct);
+    if (!pctVal || isNaN(pctVal)) return;
+    setBulkSaving(true);
+    try {
+      const batch = writeBatch(db);
+      for (const txId of selectedIds) {
+        const tx = transactions.find(t => t.id === txId);
+        if (!tx) continue;
+        batch.update(doc(db, 'transactions', txId), { amount: +(tx.amount * (1 + pctVal / 100)).toFixed(2), updatedAt: new Date().toISOString() });
+      }
+      await batch.commit();
+      toast.success(`${selectedIds.size} série(s) reajustadas em ${pctVal}%`);
+      clearSelection(); setBulkReajusteOpen(false); setBulkPct('');
+    } catch { toast.error('Erro ao reajustar em lote'); } finally { setBulkSaving(false); }
+  };
+
+  const handleBulkReclassify = async () => {
+    if (!bulkCategory.trim()) return;
+    setBulkSaving(true);
+    try {
+      const batch = writeBatch(db);
+      for (const txId of selectedIds) batch.update(doc(db, 'transactions', txId), { category: bulkCategory.trim(), updatedAt: new Date().toISOString() });
+      await batch.commit();
+      toast.success(`${selectedIds.size} série(s) reclassificadas`);
+      clearSelection(); setBulkReclassifyOpen(false); setBulkCategory('');
+    } catch { toast.error('Erro ao reclassificar'); } finally { setBulkSaving(false); }
+  };
+
+  const handleBulkEnd = async () => {
+    setBulkSaving(true);
+    try {
+      const batch = writeBatch(db);
+      for (const txId of selectedIds) batch.update(doc(db, 'transactions', txId), { 'recurrence.isActive': false, updatedAt: new Date().toISOString() });
+      await batch.commit();
+      toast.success(`${selectedIds.size} série(s) encerrada(s)`);
+      clearSelection(); setBulkEndOpen(false);
+    } catch { toast.error('Erro ao encerrar'); } finally { setBulkSaving(false); }
+  };
+
+  // ── FIN-R25: comprovante por ocorrência ───────────────────────────────────
+  const handleOccurrenceAttachment = async (tx: Transaction, entryDueDate: string, file: File) => {
+    const key = `${tx.id}_${entryDueDate}`;
+    setUploadingKey(key);
+    try {
+      const fileId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const storagePath = `businesses/${businessId}/financial_attachments/rec_${tx.id}_${entryDueDate}_${fileId}`;
+      const storRef = ref(storage, storagePath);
+      await uploadBytes(storRef, file);
+      const url = await getDownloadURL(storRef);
+      const txSnap = await getDoc(doc(db, 'transactions', tx.id));
+      const txData = txSnap.data() as Transaction | undefined;
+      if (!txData?.recurrence?.history) throw new Error('Histórico não encontrado');
+      const updatedHistory = txData.recurrence.history.map(entry =>
+        entry.dueDate !== entryDueDate ? entry : { ...entry, attachments: [...(entry.attachments ?? []), { id: fileId, name: file.name, url, path: storagePath, uploadedAt: new Date().toISOString() }] }
+      );
+      await updateDoc(doc(db, 'transactions', tx.id), { 'recurrence.history': updatedHistory, updatedAt: new Date().toISOString() });
+      toast.success('Comprovante salvo!');
+    } catch { toast.error('Erro ao salvar comprovante'); } finally { setUploadingKey(null); }
+  };
+
+  const handleDeleteOccurrenceAttachment = async (tx: Transaction, entryDueDate: string, attachmentId: string, storagePath: string) => {
+    try {
+      await deleteObject(ref(storage, storagePath));
+      const txSnap = await getDoc(doc(db, 'transactions', tx.id));
+      const txData = txSnap.data() as Transaction | undefined;
+      if (!txData?.recurrence?.history) return;
+      const updatedHistory = txData.recurrence.history.map(entry =>
+        entry.dueDate !== entryDueDate ? entry : { ...entry, attachments: (entry.attachments ?? []).filter(a => a.id !== attachmentId) }
+      );
+      await updateDoc(doc(db, 'transactions', tx.id), { 'recurrence.history': updatedHistory, updatedAt: new Date().toISOString() });
+      toast.success('Comprovante removido');
+    } catch { toast.error('Erro ao remover comprovante'); }
+  };
+
+  // ── FIN-R23: dismiss pattern ──────────────────────────────────────────────
+  const dismissPattern = (patternKey: string) => {
+    setDismissedPatterns(prev => {
+      const next = new Set(prev); next.add(patternKey);
+      try { localStorage.setItem(`dP_${businessId}`, JSON.stringify([...next])); } catch { /* silent */ }
+      return next;
+    });
+  };
 
   const getDaysLabel = (dateStr?: string): string => {
     if (!dateStr) return '—';
@@ -6822,6 +7043,10 @@ function RecurringContent({
             const isOverdue = tx.recurrence?.nextDueDate && tx.recurrence.nextDueDate < todayStr;
             return (
               <div key={tx.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-5 py-3.5 hover:bg-slate-50 dark:hover:bg-gray-800/40 transition-colors">
+                {/* FIN-R24: Checkbox de seleção */}
+                <input type="checkbox" checked={selectedIds.has(tx.id)} onChange={() => toggleSelect(tx.id)}
+                  className="w-4 h-4 rounded border-slate-300 dark:border-gray-600 text-red-500 focus:ring-red-400 shrink-0 cursor-pointer mt-1 sm:mt-0"
+                />
                 {/* Left: urgency badge + info */}
                 <div className="flex items-center gap-3 flex-1 min-w-0">
                   <div className={cn('w-14 h-12 rounded-xl flex items-center justify-center border shrink-0 flex-col gap-0.5', u.bg, u.border)}>
@@ -6992,24 +7217,48 @@ function RecurringContent({
                   </div>
                 )}
 
-                {/* Histórico de ocorrências */}
+                {/* Histórico de ocorrências + FIN-R25 comprovantes */}
                 {historyExpandedId === tx.id && (tx.recurrence?.history?.length ?? 0) > 0 && (
-                  <div className="mt-3 p-3 rounded-xl bg-slate-50 dark:bg-gray-800/50 border border-slate-200 dark:border-gray-700 space-y-1.5">
+                  <div className="mt-3 p-3 rounded-xl bg-slate-50 dark:bg-gray-800/50 border border-slate-200 dark:border-gray-700 space-y-2">
                     <p className="text-[10px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider mb-2">Histórico de pagamentos</p>
-                    {[...(tx.recurrence?.history ?? [])].reverse().map((entry, i) => (
-                      <div key={i} className="flex items-center justify-between text-xs">
-                        <div className="flex items-center gap-2">
-                          <CheckCircle2 size={12} className="text-emerald-500 shrink-0" />
-                          <span className="text-slate-600 dark:text-gray-300">
-                            Venc. <strong>{entry.dueDate.slice(5).replace('-', '/')}/{entry.dueDate.slice(2,4)}</strong>
-                          </span>
-                          <span className="text-slate-400 dark:text-gray-500">→ pago em {entry.paidDate.slice(5).replace('-', '/')}/{entry.paidDate.slice(2,4)}</span>
+                    {[...(tx.recurrence?.history ?? [])].reverse().map((entry, i) => {
+                      const uKey = `${tx.id}_${entry.dueDate}`;
+                      return (
+                        <div key={i} className="space-y-1">
+                          <div className="flex items-center justify-between text-xs">
+                            <div className="flex items-center gap-2">
+                              <CheckCircle2 size={12} className="text-emerald-500 shrink-0" />
+                              <span className="text-slate-600 dark:text-gray-300">
+                                Venc. <strong>{entry.dueDate.slice(5).replace('-', '/')}/{entry.dueDate.slice(2,4)}</strong>
+                              </span>
+                              <span className="text-slate-400 dark:text-gray-500">→ pago em {entry.paidDate.slice(5).replace('-', '/')}/{entry.paidDate.slice(2,4)}</span>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className={cn('font-semibold', tx.type === 'receita' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+                                {showBalances ? formatCurrency(entry.amount) : 'R$ ****'}
+                              </span>
+                              <label title="Anexar comprovante" className="cursor-pointer text-slate-400 hover:text-blue-500 dark:hover:text-blue-400 transition-colors">
+                                {uploadingKey === uKey ? <Loader2 size={12} className="animate-spin text-blue-500" /> : <Paperclip size={12} />}
+                                <input type="file" accept="image/*,application/pdf" className="hidden" disabled={uploadingKey === uKey}
+                                  onChange={e => { const f = e.target.files?.[0]; if (f) handleOccurrenceAttachment(tx, entry.dueDate, f); e.target.value = ''; }}
+                                />
+                              </label>
+                            </div>
+                          </div>
+                          {(entry.attachments ?? []).length > 0 && (
+                            <div className="pl-5 flex flex-wrap gap-1.5">
+                              {(entry.attachments ?? []).map(att => (
+                                <div key={att.id} className="flex items-center gap-1 px-2 py-0.5 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg text-[10px] text-blue-700 dark:text-blue-300">
+                                  <Paperclip size={9} />
+                                  <a href={att.url} target="_blank" rel="noreferrer" className="max-w-[100px] truncate hover:underline">{att.name}</a>
+                                  <button onClick={() => handleDeleteOccurrenceAttachment(tx, entry.dueDate, att.id, att.path)} className="ml-0.5 text-blue-400 hover:text-red-500 transition-colors"><X size={9} /></button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
-                        <span className={cn('font-semibold shrink-0', tx.type === 'receita' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
-                          {showBalances ? formatCurrency(entry.amount) : 'R$ ****'}
-                        </span>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
 
@@ -7091,6 +7340,85 @@ function RecurringContent({
 
   return (
     <div className="space-y-5">
+      {/* ── FIN-R20/R21: Saúde Financeira ── */}
+      {allRecurrences.length > 0 && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+            <Scale size={15} className="text-violet-500" />
+            <h2 className="text-sm font-display font-bold text-slate-700 dark:text-gray-200">Saúde Financeira</h2>
+            <span className="text-[10px] font-semibold text-violet-600 dark:text-violet-400 bg-violet-50 dark:bg-violet-900/30 px-1.5 py-0.5 rounded-full">por mês</span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-4 shadow-sm">
+              <p className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1">MRR</p>
+              <p className="text-lg font-display font-bold text-emerald-600 dark:text-emerald-400">{showBalances ? formatCurrency(healthKpis.mrr) : 'R$ ****'}</p>
+              <p className="text-[10px] text-slate-400 dark:text-gray-500 mt-0.5">Receita recorrente/mês</p>
+            </div>
+            <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-4 shadow-sm">
+              <p className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1">Burn Rate</p>
+              <p className="text-lg font-display font-bold text-red-600 dark:text-red-400">{showBalances ? formatCurrency(healthKpis.burnRate) : 'R$ ****'}</p>
+              <p className="text-[10px] text-slate-400 dark:text-gray-500 mt-0.5">Despesas recorrentes/mês</p>
+            </div>
+            <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-4 shadow-sm">
+              <p className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1">Net MRR</p>
+              <p className={cn('text-lg font-display font-bold', healthKpis.netMrr >= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-orange-600 dark:text-orange-400')}>{showBalances ? formatCurrency(healthKpis.netMrr) : 'R$ ****'}</p>
+              <p className="text-[10px] text-slate-400 dark:text-gray-500 mt-0.5">MRR − Burn Rate</p>
+            </div>
+            <div className={cn('border rounded-2xl p-4 shadow-sm', healthKpis.runway === Infinity ? 'bg-white dark:bg-gray-900 border-slate-100 dark:border-gray-800' : healthKpis.runway < 3 ? 'bg-red-50 dark:bg-red-900/10 border-red-200 dark:border-red-800' : healthKpis.runway < 6 ? 'bg-amber-50 dark:bg-amber-900/10 border-amber-200 dark:border-amber-800' : 'bg-white dark:bg-gray-900 border-slate-100 dark:border-gray-800')}>
+              <p className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1">Runway</p>
+              <p className={cn('text-lg font-display font-bold', healthKpis.runway === Infinity ? 'text-slate-400 dark:text-gray-500' : healthKpis.runway < 3 ? 'text-red-600 dark:text-red-400' : healthKpis.runway < 6 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400')}>
+                {healthKpis.runway === Infinity ? '∞' : `${healthKpis.runway.toFixed(1)}m`}
+              </p>
+              <p className="text-[10px] text-slate-400 dark:text-gray-500 mt-0.5">{healthKpis.runway === Infinity ? 'Sem burn rate' : `Saldo ÷ Burn (${showBalances ? formatCurrency(healthKpis.totalBankBalance) : '****'})`}</p>
+            </div>
+            <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-4 shadow-sm">
+              <p className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1">ARR</p>
+              <p className="text-lg font-display font-bold text-violet-600 dark:text-violet-400">{showBalances ? formatCurrency(healthKpis.arr) : 'R$ ****'}</p>
+              <p className="text-[10px] text-slate-400 dark:text-gray-500 mt-0.5">MRR × 12</p>
+            </div>
+          </div>
+          {/* FIN-R21: Breakdown por categoria */}
+          {(mrrByCategory.length > 0 || burnByCategory.length > 0) && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {mrrByCategory.length > 0 && (
+                <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-4 shadow-sm space-y-2.5">
+                  <p className="text-xs font-semibold text-slate-600 dark:text-gray-300 flex items-center gap-1.5"><ArrowUpRight size={13} className="text-emerald-500" />MRR por categoria</p>
+                  {mrrByCategory.map(({ category, amount }) => {
+                    const pct = healthKpis.mrr > 0 ? (amount / healthKpis.mrr) * 100 : 0;
+                    return (
+                      <div key={category} className="space-y-1">
+                        <div className="flex justify-between items-center">
+                          <span className="text-xs text-slate-600 dark:text-gray-300 truncate flex-1 mr-2">{category}</span>
+                          <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 shrink-0">{showBalances ? formatCurrency(amount) : '****'} <span className="text-[10px] text-slate-400 font-normal">({pct.toFixed(0)}%)</span></span>
+                        </div>
+                        <div className="h-1.5 bg-slate-100 dark:bg-gray-800 rounded-full overflow-hidden"><div className="h-full bg-emerald-400 rounded-full transition-all" style={{ width: `${Math.min(pct, 100)}%` }} /></div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {burnByCategory.length > 0 && (
+                <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-4 shadow-sm space-y-2.5">
+                  <p className="text-xs font-semibold text-slate-600 dark:text-gray-300 flex items-center gap-1.5"><ArrowDownRight size={13} className="text-red-500" />Burn por categoria</p>
+                  {burnByCategory.map(({ category, amount }) => {
+                    const pct = healthKpis.burnRate > 0 ? (amount / healthKpis.burnRate) * 100 : 0;
+                    return (
+                      <div key={category} className="space-y-1">
+                        <div className="flex justify-between items-center">
+                          <span className="text-xs text-slate-600 dark:text-gray-300 truncate flex-1 mr-2">{category}</span>
+                          <span className="text-xs font-semibold text-red-600 dark:text-red-400 shrink-0">{showBalances ? formatCurrency(amount) : '****'} <span className="text-[10px] text-slate-400 font-normal">({pct.toFixed(0)}%)</span></span>
+                        </div>
+                        <div className="h-1.5 bg-slate-100 dark:bg-gray-800 rounded-full overflow-hidden"><div className="h-full bg-red-400 rounded-full transition-all" style={{ width: `${Math.min(pct, 100)}%` }} /></div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* KPI Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-4 shadow-sm">
