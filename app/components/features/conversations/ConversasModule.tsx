@@ -1850,21 +1850,21 @@ function BatchActionBar({ count, onAssign, onStatus, onTag, onMarkRead, onCancel
         <span className="text-xs font-bold text-white bg-red-500 rounded-full min-w-[22px] h-[22px] flex items-center justify-center px-1.5">
           {count}
         </span>
-        <span className="text-xs text-gray-300 flex-1">selecionada{count !== 1 ? 's' : ''}</span>
+        <span className="text-xs text-gray-300 flex-1 min-w-0 truncate">selecionada{count !== 1 ? 's' : ''}</span>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1 flex-shrink-0">
           <button onClick={onMarkRead} title="Marcar como lida"
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[10px] font-semibold transition-colors">
-            <MailOpen className="w-3 h-3" /> Lida
+            className="w-8 h-8 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors">
+            <MailOpen className="w-3.5 h-3.5" />
           </button>
           <button onClick={onAssign} title="Atribuir"
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[10px] font-semibold transition-colors">
-            <UserCheck className="w-3 h-3" /> Atribuir
+            className="w-8 h-8 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors">
+            <UserCheck className="w-3.5 h-3.5" />
           </button>
           <div className="relative">
             <button onClick={() => setShowStatus(v => !v)} title="Mudar status"
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[10px] font-semibold transition-colors">
-              <CheckCircle className="w-3 h-3" /> Status
+              className="w-8 h-8 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors">
+              <CheckCircle className="w-3.5 h-3.5" />
             </button>
             <AnimatePresence>
               {showStatus && (
@@ -1882,12 +1882,12 @@ function BatchActionBar({ count, onAssign, onStatus, onTag, onMarkRead, onCancel
             </AnimatePresence>
           </div>
           <button onClick={onTag} title="Adicionar tag"
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[10px] font-semibold transition-colors">
-            <TagIcon className="w-3 h-3" /> Tag
+            className="w-8 h-8 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors">
+            <TagIcon className="w-3.5 h-3.5" />
           </button>
         </div>
 
-        <button onClick={onCancel} className="ml-1 p-1.5 rounded-lg hover:bg-white/10 text-gray-400 hover:text-white transition-colors">
+        <button onClick={onCancel} title="Cancelar seleção" className="w-8 h-8 rounded-lg hover:bg-white/10 text-gray-400 hover:text-white flex items-center justify-center transition-colors">
           <X className="w-3.5 h-3.5" />
         </button>
       </div>
@@ -1999,6 +1999,13 @@ function RoutingRulesDialog({ rules: initial, businessId, members, sectors: sect
                       <option value="whatsapp">WhatsApp</option>
                       <option value="facebook">Facebook</option>
                       <option value="instagram">Instagram</option>
+                    </select>
+                    <select value={rule.conditions.priority ?? ''} onChange={e => update(rule.id, { conditions: { ...rule.conditions, priority: e.target.value } })} className={selClass}>
+                      <option value="">Qualquer prioridade</option>
+                      <option value="urgent">Urgente</option>
+                      <option value="high">Alta</option>
+                      <option value="medium">Média</option>
+                      <option value="low">Baixa</option>
                     </select>
                     <input placeholder="Palavra-chave (opcional)" value={rule.conditions.keyword ?? ''}
                       onChange={e => update(rule.id, { conditions: { ...rule.conditions, keyword: e.target.value } })}
@@ -2560,6 +2567,14 @@ function LinkContactDrawer({
     setLinkingId(clientId || '__unlink');
     try {
       const now = new Date().toISOString();
+      // On unlink: clear lastConversationId on the previously linked client
+      if (!clientId && conversation.crmContactId) {
+        await updateDoc(doc(db, 'clients', conversation.crmContactId), {
+          lastConversationId: null,
+          lastConversationAt: null,
+          updatedAt: now,
+        }).catch(err => console.warn('[Conversations] Could not clear client lastConversationId:', err));
+      }
       await updateDoc(doc(db, 'conversations', conversation.id), {
         crmContactId: clientId || null,
         updatedAt: now,
@@ -3238,6 +3253,7 @@ export default function ConversasModule() {
         const { conditions, action } = rule;
         if (conditions.channel && conv.channel !== conditions.channel) continue;
         if (conditions.keyword && !conv.lastMessage.toLowerCase().includes(conditions.keyword.toLowerCase())) continue;
+        if (conditions.priority && conv.priority !== conditions.priority) continue;
         appliedRoutingRef.current.add(conv.id);
         const now = new Date().toISOString();
         if (action.type === 'assign_sector' && action.sectorId) {
@@ -4188,7 +4204,7 @@ export default function ConversasModule() {
     try {
       await updateDoc(doc(db, 'conversations', selectedConversation.id), {
         assignedToSectorId: sectorId, sectorIds: [sectorId], updatedAt: now,
-        assignmentHistory: [...(selectedConversation.assignmentHistory ?? []), historyEntry],
+        assignmentHistory: arrayUnion(historyEntry),
       });
       setShowSectorAssign(false);
     } catch (err) { console.error('Error assigning sector:', err); }

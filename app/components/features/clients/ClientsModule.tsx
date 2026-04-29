@@ -1274,6 +1274,13 @@ function MergeModal({
           updates.visitCount = (primary.visitCount ?? 0) + (secondary.visitCount ?? 0);
         if ((secondary.loyaltyPoints ?? 0) > 0)
           updates.loyaltyPoints = (primary.loyaltyPoints ?? 0) + (secondary.loyaltyPoints ?? 0);
+
+        // Merge channel identities: secondary fills gaps in primary (primary takes precedence)
+        const mergedIdentities = {
+          ...(secondary.channelIdentities ?? {}),
+          ...(primary.channelIdentities ?? {}),
+        };
+        if (Object.keys(mergedIdentities).length) updates.channelIdentities = mergedIdentities;
       }
 
       const batch = writeBatch(db);
@@ -1286,8 +1293,9 @@ function MergeModal({
       });
       await batch.commit();
 
-      // Reassociate related docs in background (fire-and-forget)
-      reassociateRelatedDocs(secondary.id, primary.id, businessId);
+      // Await reassociation so conversations/sales/appointments point to the primary
+      // before the dialog closes. Each collection has its own try-catch — won't throw.
+      await reassociateRelatedDocs(secondary.id, primary.id, businessId);
 
       setMerged(prev => new Set([...prev, key]));
       onDone();
