@@ -152,7 +152,6 @@ function ContactFormDialog({ open, onClose, onSave, contact, members, stages }: 
   const [preferredChannel, setPreferredChannel] = useState<string>('');
   const [profile, setProfile] = useState<string>('');
   const [suggestedAction, setSuggestedAction] = useState('');
-  const [aiSummary, setAiSummary] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -168,8 +167,7 @@ function ContactFormDialog({ open, onClose, onSave, contact, members, stages }: 
       setPreferredChannel(contact?.preferredChannel ?? '');
       setProfile(contact?.profile ?? '');
       setSuggestedAction(contact?.suggestedAction ?? '');
-      setAiSummary(contact?.aiSummary ?? '');
-      setShowAdvanced(!!(contact?.profile || contact?.suggestedAction || contact?.aiSummary || contact?.preferredChannel));
+      setShowAdvanced(!!(contact?.profile || contact?.suggestedAction || contact?.preferredChannel));
     }
   }, [open, contact]);
 
@@ -187,7 +185,6 @@ function ContactFormDialog({ open, onClose, onSave, contact, members, stages }: 
         preferredChannel: (preferredChannel as CRMContact['preferredChannel']) || undefined,
         profile: (profile as CRMContact['profile']) || undefined,
         suggestedAction: suggestedAction.trim() || undefined,
-        aiSummary: aiSummary.trim() || undefined,
       });
     } finally { setSaving(false); }
   };
@@ -243,8 +240,6 @@ function ContactFormDialog({ open, onClose, onSave, contact, members, stages }: 
             <div className="space-y-3 p-3 rounded-xl bg-gray-50 dark:bg-white/[0.02] border border-gray-100 dark:border-white/[0.06]">
               <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">{t('crm.form.aiData', 'Dados para Agente IA')}</p>
               <TextField label={t('crm.form.suggestedAction', 'Próxima ação sugerida')} value={suggestedAction} onChange={(e) => setSuggestedAction(e.target.value)} fullWidth size="small" placeholder={t('crm.form.suggestedActionPlaceholder', 'Ligar para reativar, oferecer desconto...')} sx={inputSx} />
-              <TextField label={t('crm.form.aiSummary', 'Resumo IA')} value={aiSummary} onChange={(e) => setAiSummary(e.target.value)} fullWidth size="small" multiline rows={3}
-                placeholder={t('crm.form.aiSummaryPlaceholder', 'Ex: Cliente há 8 meses, sempre agenda corte + barba, cancelou 2x nos últimos 3 meses, score de churn alto')} sx={inputSx} />
             </div>
           )}
         </div>

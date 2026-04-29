@@ -9,7 +9,7 @@ import {
   Brain, TrendingUp, TrendingDown, AlertTriangle, Heart,
   DollarSign, Target, Shield, Zap, Star, BarChart3,
   ThumbsUp, ThumbsDown, Timer, UserCheck, Ban, ArrowRight,
-  Sparkles, Eye, MapPin, Hash, History,
+  Eye, MapPin, Hash, History,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -238,17 +238,6 @@ export function LeadDetailPanel({ contact, activities, stages, onClose, onEdit, 
           </div>
         </div>
 
-        {/* ── AI Summary Card ─────────────────────────────────── */}
-        {contact.aiSummary && (
-          <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
-            className="relative p-3.5 rounded-xl bg-gradient-to-br from-violet-500/5 to-blue-500/5 dark:from-violet-500/10 dark:to-blue-500/10 border border-violet-200/50 dark:border-violet-500/20">
-            <div className="flex items-center gap-1.5 mb-2">
-              <Sparkles size={12} className="text-violet-500" />
-              <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400 uppercase tracking-wider">{t('crm.form.aiSummary', 'Resumo IA')}</span>
-            </div>
-            <p className="text-xs text-gray-700 dark:text-gray-300 leading-relaxed">{contact.aiSummary}</p>
-          </motion.div>
-        )}
 
         {/* ── Suggested Action ────────────────────────────────── */}
         {contact.suggestedAction && (
