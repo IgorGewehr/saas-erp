@@ -70,6 +70,8 @@ import {
   Settings2,
   Bell,
   BellOff,
+  Percent,
+  Check,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -88,7 +90,7 @@ import {
   Pie,
   Cell,
 } from 'recharts';
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch, getDoc } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch, getDoc, arrayUnion } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { db, storage } from '@/lib/config/firebase';
 import { logAudit } from '@/lib/services/audit';
@@ -260,6 +262,7 @@ export default function FinancialModule() {
 
   const [showForm, setShowForm] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+  const [showScopeDialog, setShowScopeDialog] = useState(false);
   const [showBalances, setShowBalances] = useState(true);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
   const [showAlertsModal, setShowAlertsModal] = useState(false);
@@ -692,7 +695,7 @@ export default function FinancialModule() {
     const now = new Date().toISOString();
     const today = now.slice(0, 10);
 
-    if (rec?.isActive && rec.nextDueDate && rec.frequency) {
+    if (tx && rec?.isActive && rec.nextDueDate && rec.frequency) {
       const nextDate = computeNextDueDate(rec.nextDueDate, rec.frequency, rec.dayOfMonth);
       const seriesEnds = rec.endDate && nextDate > rec.endDate;
       await updateDoc(doc(db, 'transactions', txId), {
@@ -700,6 +703,11 @@ export default function FinancialModule() {
         paymentDate: today,
         updatedAt: now,
         'recurrence.nextDueDate': nextDate,
+        'recurrence.history': arrayUnion({
+          dueDate: rec.nextDueDate,
+          paidDate: today,
+          amount: tx.amount,
+        }),
         ...(seriesEnds ? { 'recurrence.isActive': false } : {}),
       });
     } else {
@@ -730,6 +738,21 @@ export default function FinancialModule() {
       'recurrence.nextDueDate': nextDate,
       updatedAt: new Date().toISOString(),
       ...(seriesEnds ? { 'recurrence.isActive': false } : {}),
+    });
+    queryClient.invalidateQueries({ queryKey: ['transactions', business?.id] });
+  }, [business?.id, queryClient, transactions]);
+
+  // mode='pct' → aplica percentual (ex: 5 = +5%), mode='fixed' → novo valor absoluto
+  const handleAdjustSeriesValue = useCallback(async (txId: string, mode: 'pct' | 'fixed', value: number) => {
+    const tx = transactions.find(t => t.id === txId);
+    if (!tx) return;
+    const newAmount = mode === 'pct'
+      ? Math.round(tx.amount * (1 + value / 100) * 100) / 100
+      : Math.round(value * 100) / 100;
+    if (newAmount <= 0) return;
+    await updateDoc(doc(db, 'transactions', txId), {
+      amount: newAmount,
+      updatedAt: new Date().toISOString(),
     });
     queryClient.invalidateQueries({ queryKey: ['transactions', business?.id] });
   }, [business?.id, queryClient, transactions]);
@@ -833,7 +856,7 @@ export default function FinancialModule() {
     setShowForm(true);
   }, []);
 
-  const handleSaveTransaction = useCallback(async () => {
+  const handleSaveTransaction = useCallback(async (scope: 'all' | 'this_only' = 'all') => {
     if (!business?.id || !user) {
       toast.error(t('financial.toast.businessNotLoaded', 'Dados da empresa não carregados. Recarregue a página.'));
       return;
@@ -914,21 +937,43 @@ export default function FinancialModule() {
       };
 
       if (editingTransaction) {
-        const docRef = doc(db, 'transactions', editingTransaction.id);
-        const before = { ...editingTransaction };
-        await updateDoc(docRef, baseTx);
-        await logAudit(db, {
-          businessId: business.id,
-          entity: 'transaction',
-          entityId: editingTransaction.id,
-          action: 'update',
-          actor,
-          before,
-          after: { ...editingTransaction, ...baseTx },
-          amount,
-          description: formDescription,
-        });
-        toast.success(t('financial.toast.transactionUpdated', 'Transação atualizada'));
+        if (scope === 'this_only') {
+          // Cria uma cópia avulsa com os valores editados, sem alterar a série original
+          const { recurrence: _r, ...oneTimeFields } = baseTx as Record<string, unknown>;
+          const newRef = await addDoc(collection(db, 'transactions'), {
+            ...oneTimeFields,
+            recurrence: null,
+            createdBy: user.uid,
+            createdByName: user.name,
+            createdAt: now,
+          });
+          await logAudit(db, {
+            businessId: business.id,
+            entity: 'transaction',
+            entityId: newRef.id,
+            action: 'create',
+            actor,
+            amount,
+            description: `${formDescription} (cópia avulsa da série recorrente)`,
+          });
+          toast.success('Vencimento avulso criado — a série continua inalterada');
+        } else {
+          const docRef = doc(db, 'transactions', editingTransaction.id);
+          const before = { ...editingTransaction };
+          await updateDoc(docRef, baseTx);
+          await logAudit(db, {
+            businessId: business.id,
+            entity: 'transaction',
+            entityId: editingTransaction.id,
+            action: 'update',
+            actor,
+            before,
+            after: { ...editingTransaction, ...baseTx },
+            amount,
+            description: formDescription,
+          });
+          toast.success(t('financial.toast.transactionUpdated', 'Transação atualizada'));
+        }
       } else if (formInstallments > 1 && formDueDate) {
         // Split into N linked installments via batch write
         const groupId = `inst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -1390,6 +1435,7 @@ export default function FinancialModule() {
                 onMarkPaid={handleMarkRecurringPaid}
                 onSkip={handleSkipRecurrence}
                 onEndSeries={handleEndSeries}
+                onAdjustValue={handleAdjustSeriesValue}
               />
             )}
 
@@ -1855,7 +1901,13 @@ export default function FinancialModule() {
             {t('financial.form.cancel', 'Cancelar')}
           </button>
           <button
-            onClick={handleSaveTransaction}
+            onClick={() => {
+              if (editingTransaction?.recurrence?.isActive) {
+                setShowScopeDialog(true);
+              } else {
+                handleSaveTransaction('all');
+              }
+            }}
             disabled={!formDescription || !formAmount || parseFloat(formAmount) <= 0 || isSaving}
             className={cn(
               'flex items-center gap-2 px-6 py-2 rounded-xl text-sm font-bold text-white transition-all',
@@ -1872,6 +1924,62 @@ export default function FinancialModule() {
               formType === 'receita' ? <ArrowUpRight size={15} /> : <ArrowDownRight size={15} />
             )}
             {isSaving ? t('financial.form.saving', 'Salvando...') : editingTransaction ? t('financial.form.save', 'Salvar') : t('financial.form.createTransaction', 'Criar Transação')}
+          </button>
+        </div>
+      </Dialog>
+
+      {/* ===== SCOPE DIALOG — editar série recorrente ===== */}
+      <Dialog
+        open={showScopeDialog}
+        onClose={() => setShowScopeDialog(false)}
+        maxWidth="xs"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: '20px', backgroundColor: isDark ? '#111827' : undefined } }}
+      >
+        <div className="p-6 space-y-4">
+          <div className="flex items-center gap-3 mb-1">
+            <div className="w-9 h-9 rounded-xl bg-blue-50 dark:bg-blue-900/30 flex items-center justify-center">
+              <Repeat size={18} className="text-blue-500 dark:text-blue-400" />
+            </div>
+            <div>
+              <h2 className="text-base font-bold font-display text-gray-900 dark:text-gray-100">Editar série recorrente</h2>
+              <p className="text-xs text-gray-500 dark:text-gray-400">O que você deseja alterar?</p>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <button
+              onClick={() => { setShowScopeDialog(false); handleSaveTransaction('this_only'); }}
+              className="w-full flex items-start gap-3 p-3.5 rounded-xl border border-slate-200 dark:border-gray-700 hover:border-blue-300 dark:hover:border-blue-700 hover:bg-blue-50/50 dark:hover:bg-blue-900/10 transition-all text-left"
+            >
+              <div className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-gray-800 flex items-center justify-center shrink-0 mt-0.5">
+                <span className="text-sm font-bold text-slate-500 dark:text-gray-400">1</span>
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">Apenas este vencimento</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Cria uma cópia avulsa com as alterações. A série original continua inalterada.</p>
+              </div>
+            </button>
+
+            <button
+              onClick={() => { setShowScopeDialog(false); handleSaveTransaction('all'); }}
+              className="w-full flex items-start gap-3 p-3.5 rounded-xl border border-slate-200 dark:border-gray-700 hover:border-blue-300 dark:hover:border-blue-700 hover:bg-blue-50/50 dark:hover:bg-blue-900/10 transition-all text-left"
+            >
+              <div className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-gray-800 flex items-center justify-center shrink-0 mt-0.5">
+                <Repeat size={14} className="text-slate-500 dark:text-gray-400" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">Este e todos os seguintes</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Atualiza a série — todos os vencimentos futuros usarão os novos valores.</p>
+              </div>
+            </button>
+          </div>
+
+          <button
+            onClick={() => setShowScopeDialog(false)}
+            className="w-full text-sm text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors py-1"
+          >
+            Cancelar
           </button>
         </div>
       </Dialog>
@@ -6369,6 +6477,7 @@ function RecurringContent({
   onMarkPaid,
   onSkip,
   onEndSeries,
+  onAdjustValue,
 }: {
   transactions: Transaction[];
   showBalances: boolean;
@@ -6378,14 +6487,20 @@ function RecurringContent({
   onMarkPaid: (txId: string) => Promise<void>;
   onSkip: (txId: string) => Promise<void>;
   onEndSeries: (txId: string, cancelCurrent: boolean) => Promise<void>;
+  onAdjustValue: (txId: string, mode: 'pct' | 'fixed', value: number) => Promise<void>;
 }) {
   const [filter, setFilter] = useState<RecurringFilter>('all');
   const [pausingId, setPausingId] = useState<string | null>(null);
   const [resumingId, setResumingId] = useState<string | null>(null);
   const [payingId, setPayingId] = useState<string | null>(null);
   const [skippingId, setSkippingId] = useState<string | null>(null);
-  const [endingId, setEndingId] = useState<string | null>(null); // txId showing end-series confirm
+  const [endingId, setEndingId] = useState<string | null>(null);
   const [endingSaving, setEndingSaving] = useState(false);
+  const [adjustingId, setAdjustingId] = useState<string | null>(null);
+  const [adjustMode, setAdjustMode] = useState<'pct' | 'fixed'>('pct');
+  const [adjustValue, setAdjustValue] = useState('');
+  const [adjustSaving, setAdjustSaving] = useState(false);
+  const [historyExpandedId, setHistoryExpandedId] = useState<string | null>(null);
 
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
@@ -6536,11 +6651,31 @@ function RecurringContent({
                   {/* Editar */}
                   <button
                     onClick={() => onEdit(tx)}
-                    title="Editar"
+                    title="Editar lançamento"
                     className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-gray-300 hover:bg-slate-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
                   >
                     <Edit3 size={14} />
                   </button>
+
+                  {/* Reajustar valor */}
+                  <button
+                    onClick={() => { setAdjustingId(adjustingId === tx.id ? null : tx.id); setAdjustValue(''); setAdjustMode('pct'); }}
+                    title="Reajustar valor da série"
+                    className={cn('p-1.5 rounded-lg transition-colors', adjustingId === tx.id ? 'bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-400' : 'text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/20')}
+                  >
+                    <Percent size={14} />
+                  </button>
+
+                  {/* Histórico de ocorrências */}
+                  {(tx.recurrence?.history?.length ?? 0) > 0 && (
+                    <button
+                      onClick={() => setHistoryExpandedId(historyExpandedId === tx.id ? null : tx.id)}
+                      title="Ver histórico de pagamentos"
+                      className={cn('p-1.5 rounded-lg transition-colors', historyExpandedId === tx.id ? 'bg-slate-200 dark:bg-gray-700 text-slate-600 dark:text-gray-300' : 'text-slate-400 hover:text-slate-600 dark:hover:text-gray-300 hover:bg-slate-100 dark:hover:bg-gray-800')}
+                    >
+                      <History size={14} />
+                    </button>
+                  )}
 
                   {/* Pular ocorrência */}
                   <button
@@ -6571,6 +6706,74 @@ function RecurringContent({
                     <StopCircle size={14} />
                   </button>
                 </div>
+
+                {/* Reajuste de valor panel */}
+                {adjustingId === tx.id && (
+                  <div className="mt-3 p-3 rounded-xl bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-800 space-y-2.5">
+                    <p className="text-xs font-semibold text-violet-700 dark:text-violet-300">Reajustar valor da série</p>
+                    <div className="flex items-center gap-1 p-0.5 bg-violet-100 dark:bg-violet-900/40 rounded-lg w-fit">
+                      {(['pct', 'fixed'] as const).map(m => (
+                        <button key={m} onClick={() => { setAdjustMode(m); setAdjustValue(''); }}
+                          className={cn('px-2.5 py-1 rounded-md text-xs font-medium transition-all', adjustMode === m ? 'bg-white dark:bg-gray-800 text-violet-700 dark:text-violet-300 shadow-sm' : 'text-violet-500 dark:text-violet-400')}>
+                          {m === 'pct' ? '% Percentual' : 'R$ Valor fixo'}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1 flex-1">
+                        <span className="text-xs font-semibold text-slate-500 dark:text-gray-400">{adjustMode === 'pct' ? '+' : 'R$'}</span>
+                        <input
+                          type="number"
+                          value={adjustValue}
+                          onChange={e => setAdjustValue(e.target.value)}
+                          placeholder={adjustMode === 'pct' ? 'Ex: 5 (= +5%)' : `Ex: ${tx.amount.toFixed(2)}`}
+                          className="flex-1 text-xs px-2.5 py-1.5 rounded-lg border border-violet-200 dark:border-violet-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 focus:outline-none focus:border-violet-400 dark:focus:border-violet-500"
+                        />
+                      </div>
+                      {adjustValue && parseFloat(adjustValue) > 0 && (
+                        <span className="text-[11px] text-slate-500 dark:text-gray-400 shrink-0">
+                          → {formatCurrency(adjustMode === 'pct' ? tx.amount * (1 + parseFloat(adjustValue) / 100) : parseFloat(adjustValue))}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex gap-1.5">
+                      <button
+                        disabled={adjustSaving || !adjustValue || parseFloat(adjustValue) <= 0}
+                        onClick={async () => {
+                          setAdjustSaving(true);
+                          try { await onAdjustValue(tx.id, adjustMode, parseFloat(adjustValue)); setAdjustingId(null); setAdjustValue(''); }
+                          finally { setAdjustSaving(false); }
+                        }}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 text-white text-xs font-semibold hover:bg-violet-700 transition-colors disabled:opacity-40"
+                      >
+                        {adjustSaving ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                        Aplicar reajuste
+                      </button>
+                      <button onClick={() => { setAdjustingId(null); setAdjustValue(''); }} className="px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-slate-600 dark:hover:text-gray-300 transition-colors">Cancelar</button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Histórico de ocorrências */}
+                {historyExpandedId === tx.id && (tx.recurrence?.history?.length ?? 0) > 0 && (
+                  <div className="mt-3 p-3 rounded-xl bg-slate-50 dark:bg-gray-800/50 border border-slate-200 dark:border-gray-700 space-y-1.5">
+                    <p className="text-[10px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider mb-2">Histórico de pagamentos</p>
+                    {[...(tx.recurrence!.history!)].reverse().map((entry, i) => (
+                      <div key={i} className="flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle2 size={12} className="text-emerald-500 shrink-0" />
+                          <span className="text-slate-600 dark:text-gray-300">
+                            Venc. <strong>{entry.dueDate.slice(5).replace('-', '/')}/{entry.dueDate.slice(2,4)}</strong>
+                          </span>
+                          <span className="text-slate-400 dark:text-gray-500">→ pago em {entry.paidDate.slice(5).replace('-', '/')}/{entry.paidDate.slice(2,4)}</span>
+                        </div>
+                        <span className={cn('font-semibold shrink-0', tx.type === 'receita' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+                          {showBalances ? formatCurrency(entry.amount) : 'R$ ****'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 {/* End-series confirmation panel */}
                 {endingId === tx.id && (

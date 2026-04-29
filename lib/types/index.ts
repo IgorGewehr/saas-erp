@@ -720,6 +720,12 @@ export type TransactionStatus = 'pendente' | 'pago' | 'atrasado' | 'cancelado';
 
 export type RecurrenceFrequency = 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'semiannual' | 'yearly';
 
+export interface TransactionRecurrenceEntry {
+  dueDate: string;   // nextDueDate at time of payment (ISO date)
+  paidDate: string;  // actual payment date (ISO date)
+  amount: number;    // amount paid
+}
+
 export interface TransactionRecurrence {
   frequency: RecurrenceFrequency;
   nextDueDate: string;       // ISO date — when the next copy should be generated
@@ -728,6 +734,7 @@ export interface TransactionRecurrence {
   parentTransactionId?: string; // original transaction that spawned this
   dayOfMonth?: number;       // fixed day of month for next occurrences (1-28)
   label?: string;            // user-friendly name (e.g. "Aluguel")
+  history?: TransactionRecurrenceEntry[]; // log of past paid occurrences
 }
 
 export interface TransactionAttachment {
