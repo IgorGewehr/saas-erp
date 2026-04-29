@@ -10,7 +10,8 @@ import {
   Users, DollarSign, TrendingUp, MoreVertical, Globe, Instagram, Facebook, Linkedin, Send,
   CheckCircle2, PhoneCall, Video, FileText, MessageCircle, BarChart3, Activity, Layers, Gauge,
   UserPlus, Briefcase, Tag, Hash, AlertTriangle, Heart, Shield, Zap, Brain,
-  Sparkles, Filter, Crown,
+  Sparkles, Filter, Crown, Settings2, GripVertical, Eye, EyeOff, ChevronUp, ChevronDown,
+  Download, Upload, GitBranch, LayoutList, LayoutDashboard,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -25,12 +26,14 @@ import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
 import { db } from '@/lib/config/firebase';
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot, increment, writeBatch } from 'firebase/firestore';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
-  CRMContact, CRMDeal, CRMPipelineStage, CRMActivity, CRMActivityType,
-  LeadStatus, LeadSource, User, Broadcast, BroadcastStatus, ContactProfile,
+  CRMContact, CRMDeal, CRMPipelineStage, CRMStageConfig, CRMPipelineConfig, CRMActivity, CRMActivityType,
+  LeadStatus, LeadSource, User, Broadcast, BroadcastStatus, ContactProfile, CRMAuditAction,
+  Segment, SegmentFilter, SegmentFilterGroup, SegmentFilterOperator,
 } from '@/lib/types';
+import { ROLE_HIERARCHY } from '@/lib/types';
 
 // ── Extracted sub-components ────────────────────────────────────────────────
 import {
@@ -39,14 +42,17 @@ import {
   BROADCAST_STATUS_LABELS, ALL_PRESET_TAGS, getTagConfig, relativeTime,
   applyPhoneMask, stripPhoneMask, parseCurrencyInput, formatCurrencyInput,
   PROFILE_CONFIG, getScoreColor, getChurnLabel,
+  DEFAULT_CRM_PIPELINE, getVisibleStages, getStageLabel, getWonStageId,
   type CRMTab,
 } from './shared';
 import { KanbanBoard } from './KanbanBoard';
+import { LeadTableView } from './LeadTableView';
 import { LeadDetailPanel } from './LeadDetailPanel';
 import { ScheduleActionDialog } from './ScheduleActionDialog';
 import AutomacoesTab from './AutomacoesTab';
 import FormulariosTab from './FormulariosTab';
 import MembershipsTab from './MembershipsTab';
+import SequenciasTab from './SequenciasTab';
 import { SourceIcon } from './SourceIcon';
 
 // ── Tab Config ──────────────────────────────────────────────────────────────
@@ -60,6 +66,34 @@ const ACTIVITY_ICONS: Record<CRMActivityType, React.ReactNode> = {
   whatsapp: <MessageCircle size={14} />, tarefa: <CheckCircle2 size={14} />,
   nota: <FileText size={14} />, proposta: <Send size={14} />,
 };
+
+// Small icon wrapper for JSX in tab config
+const GitBranchIcon = () => <GitBranch size={15} />;
+
+// ── Audit helper ────────────────────────────────────────────────────────────
+
+async function logAudit(opts: {
+  businessId: string;
+  userId: string;
+  userName: string;
+  action: CRMAuditAction;
+  contactId?: string;
+  dealId?: string;
+  details?: string;
+}) {
+  try {
+    await addDoc(collection(db, 'crmAuditLog'), {
+      businessId: opts.businessId,
+      userId: opts.userId,
+      userName: opts.userName,
+      action: opts.action,
+      contactId: opts.contactId ?? null,
+      dealId: opts.dealId ?? null,
+      details: opts.details ?? null,
+      createdAt: new Date().toISOString(),
+    });
+  } catch { /* audit failures must never break the main flow */ }
+}
 
 // ==========================================
 // LOADING SKELETON
@@ -100,8 +134,8 @@ function CRMSkeleton() {
 // CONTACT FORM DIALOG
 // ==========================================
 
-function ContactFormDialog({ open, onClose, onSave, contact, members }: {
-  open: boolean; onClose: () => void; onSave: (data: Partial<CRMContact>) => Promise<void>; contact: CRMContact | null; members: User[];
+function ContactFormDialog({ open, onClose, onSave, contact, members, stages }: {
+  open: boolean; onClose: () => void; onSave: (data: Partial<CRMContact>) => Promise<void>; contact: CRMContact | null; members: User[]; stages: CRMStageConfig[];
 }) {
   const { t } = useTranslation();
   const [name, setName] = useState('');
@@ -119,7 +153,6 @@ function ContactFormDialog({ open, onClose, onSave, contact, members }: {
   const [preferredChannel, setPreferredChannel] = useState<string>('');
   const [profile, setProfile] = useState<string>('');
   const [suggestedAction, setSuggestedAction] = useState('');
-  const [aiSummary, setAiSummary] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -135,8 +168,7 @@ function ContactFormDialog({ open, onClose, onSave, contact, members }: {
       setPreferredChannel(contact?.preferredChannel ?? '');
       setProfile(contact?.profile ?? '');
       setSuggestedAction(contact?.suggestedAction ?? '');
-      setAiSummary(contact?.aiSummary ?? '');
-      setShowAdvanced(!!(contact?.profile || contact?.suggestedAction || contact?.aiSummary || contact?.preferredChannel));
+      setShowAdvanced(!!(contact?.profile || contact?.suggestedAction || contact?.preferredChannel));
     }
   }, [open, contact]);
 
@@ -154,7 +186,6 @@ function ContactFormDialog({ open, onClose, onSave, contact, members }: {
         preferredChannel: (preferredChannel as CRMContact['preferredChannel']) || undefined,
         profile: (profile as CRMContact['profile']) || undefined,
         suggestedAction: suggestedAction.trim() || undefined,
-        aiSummary: aiSummary.trim() || undefined,
       });
     } finally { setSaving(false); }
   };
@@ -189,7 +220,7 @@ function ContactFormDialog({ open, onClose, onSave, contact, members }: {
             <FormControl size="small" fullWidth><InputLabel>{t('crm.filter.source', 'Origem')}</InputLabel><Select value={source} onChange={(e) => setSource(e.target.value as LeadSource)} label={t('crm.form.source', 'Origem')} sx={{ borderRadius: '10px' }}>{ALL_SOURCES.map((s) => <MenuItem key={s} value={s}>{t('crm.source.' + s, SOURCE_LABELS[s])}</MenuItem>)}</Select></FormControl>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <FormControl size="small" fullWidth><InputLabel>{t('crm.form.status', 'Status')}</InputLabel><Select value={status} onChange={(e) => setStatus(e.target.value as LeadStatus)} label={t('crm.form.status', 'Status')} sx={{ borderRadius: '10px' }}>{ALL_STATUSES.map((s) => <MenuItem key={s} value={s}>{t('crm.status.' + s, STATUS_LABELS[s])}</MenuItem>)}</Select></FormControl>
+            <FormControl size="small" fullWidth><InputLabel>{t('crm.form.status', 'Status')}</InputLabel><Select value={status} onChange={(e) => setStatus(e.target.value as LeadStatus)} label={t('crm.form.status', 'Status')} sx={{ borderRadius: '10px' }}>{stages.map((s) => <MenuItem key={s.id} value={s.id}>{s.name}</MenuItem>)}</Select></FormControl>
             <FormControl size="small" fullWidth><InputLabel>{t('crm.form.assignedTo', 'Responsável')}</InputLabel><Select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} label={t('crm.form.assignedTo', 'Responsável')} sx={{ borderRadius: '10px' }}><MenuItem value="">{t('crm.form.none', 'Nenhum')}</MenuItem>{members.map((m) => <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>)}</Select></FormControl>
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -210,8 +241,6 @@ function ContactFormDialog({ open, onClose, onSave, contact, members }: {
             <div className="space-y-3 p-3 rounded-xl bg-gray-50 dark:bg-white/[0.02] border border-gray-100 dark:border-white/[0.06]">
               <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">{t('crm.form.aiData', 'Dados para Agente IA')}</p>
               <TextField label={t('crm.form.suggestedAction', 'Próxima ação sugerida')} value={suggestedAction} onChange={(e) => setSuggestedAction(e.target.value)} fullWidth size="small" placeholder={t('crm.form.suggestedActionPlaceholder', 'Ligar para reativar, oferecer desconto...')} sx={inputSx} />
-              <TextField label={t('crm.form.aiSummary', 'Resumo IA')} value={aiSummary} onChange={(e) => setAiSummary(e.target.value)} fullWidth size="small" multiline rows={3}
-                placeholder={t('crm.form.aiSummaryPlaceholder', 'Ex: Cliente há 8 meses, sempre agenda corte + barba, cancelou 2x nos últimos 3 meses, score de churn alto')} sx={inputSx} />
             </div>
           )}
         </div>
@@ -399,14 +428,48 @@ function ActivitiesTab({ activities, onEdit, onDelete, onToggle, onNew }: {
 // METRICS TAB — Intelligence Dashboard
 // ==========================================
 
-function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
+const ROTTING_DAYS_THRESHOLD = 7;
+
+function MetricsTab({ deals, contacts, activities, stages, isDark, metrics, wonStatusId = 'ganho' }: {
   deals: CRMDeal[]; contacts: CRMContact[]; activities: CRMActivity[]; stages: CRMPipelineStage[]; isDark: boolean;
-  metrics: { totalValue: number; weightedValue: number; avgDealSize: number; activeDeals: number; conversionRate: number; wonValue: number; wonDeals: number };
+  metrics: { totalValue: number; weightedValue: number; avgDealSize: number; activeDeals: number; conversionRate: number; wonValue: number; wonDeals: number; rottingCount: number };
+  wonStatusId?: LeadStatus;
 }) {
   const { t } = useTranslation();
   const funnelData = useMemo(() => stages.map((s) => { const sd = deals.filter((d) => d.stage === s.id); return { name: t('crm.stage.' + s.id, s.name), value: sd.length, dealValue: sd.reduce((a, d) => a + d.value, 0), fill: s.color }; }), [deals, stages, t]);
   const sourceData = useMemo(() => { const c: Record<string, number> = {}; contacts.forEach((ct) => { c[ct.source] = (c[ct.source] || 0) + 1; }); return Object.entries(c).map(([s, v]) => ({ name: t('crm.source.' + s, SOURCE_LABELS[s as LeadSource] || s), value: v, color: SOURCE_COLORS[s as LeadSource] || '#6B7280' })).sort((a, b) => b.value - a.value); }, [contacts, t]);
-  const convRate = contacts.length > 0 ? ((contacts.filter((c) => c.status === 'ganho').length / contacts.length) * 100).toFixed(1) : '0';
+
+  // ── Rotting deals ──────────────────────────────────────────
+  const rottingDeals = useMemo(() => {
+    const cutoff = Date.now() - ROTTING_DAYS_THRESHOLD * 86_400_000;
+    return deals
+      .filter(d => !d.closedDate && new Date(d.updatedAt).getTime() < cutoff)
+      .sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime())
+      .slice(0, 6);
+  }, [deals]);
+
+  // ── Revenue forecast (next 6 months) ──────────────────────
+  const forecastData = useMemo(() => {
+    const now = new Date();
+    const months = Array.from({ length: 6 }, (_, i) => {
+      const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      return { key, label: d.toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' }), weighted: 0, optimistic: 0 };
+    });
+    for (const deal of deals) {
+      if (!deal.expectedCloseDate || deal.closedDate) continue;
+      const key = deal.expectedCloseDate.slice(0, 7);
+      const m = months.find(m => m.key === key);
+      if (m) {
+        m.weighted  += deal.value * (deal.probability / 100);
+        m.optimistic += deal.value;
+      }
+    }
+    return months;
+  }, [deals]);
+
+  const hasForecast = forecastData.some(m => m.weighted > 0 || m.optimistic > 0);
+  const convRate = contacts.length > 0 ? ((contacts.filter((c) => c.status === wonStatusId).length / contacts.length) * 100).toFixed(1) : '0';
   const avgScore = contacts.length > 0 ? (contacts.reduce((s, c) => s + (c.scores?.overall ?? c.score), 0) / contacts.length).toFixed(0) : '0';
   const tooltipStyle = { borderRadius: '12px', border: isDark ? '1px solid #374151' : '1px solid #E2E8F0', backgroundColor: isDark ? '#111827' : '#fff', color: isDark ? '#F1F5F9' : '#0F172A' };
 
@@ -457,8 +520,8 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
           { label: t('crm.metrics.avgScore', 'Score Médio'), value: avgScore, icon: <Gauge size={18} />, c: 'amber' },
           { label: t('crm.metrics.totalLeads', 'Total Leads'), value: String(contacts.length), icon: <Users size={18} />, c: 'blue' },
           { label: t('crm.metrics.wonValue', 'Valor Ganho'), value: formatCurrency(metrics.wonValue), icon: <DollarSign size={18} />, c: 'red' },
-          { label: t('crm.metrics.avgLoyalty', 'Fidelidade Média'), value: `${avgLoyalty}%`, icon: <Heart size={18} />, c: 'purple' },
-          { label: t('crm.metrics.avgChurn', 'Risco Churn Médio'), value: `${avgChurn}%`, icon: <AlertTriangle size={18} />, c: 'orange' },
+          { label: t('crm.metrics.rottingDeals', 'Deals Parados'), value: String(metrics.rottingCount), icon: <Clock size={18} />, c: metrics.rottingCount > 0 ? 'orange' : 'emerald' },
+          { label: t('crm.metrics.weightedPipeline', 'Pipeline Ponderado'), value: formatCurrency(metrics.weightedValue), icon: <BarChart3 size={18} />, c: 'purple' },
         ].map((card, i) => {
           const cm: Record<string, { bg: string; txt: string }> = {
             emerald: { bg: 'bg-emerald-50 dark:bg-emerald-500/10', txt: 'text-emerald-600 dark:text-emerald-400' },
@@ -528,7 +591,8 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
           </div>
           <div className="space-y-2.5">
             {churnRiskContacts.map((c) => {
-              const cl = getChurnLabel(c.scores!.churnRisk);
+              const churnRisk = c.scores?.churnRisk ?? 0;
+              const cl = getChurnLabel(churnRisk);
               return (
                 <div key={c.id} className="flex items-center gap-3 p-2.5 rounded-xl bg-gray-50 dark:bg-white/[0.02] border border-gray-100 dark:border-white/[0.04]">
                   <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-gray-200 to-gray-300 dark:from-gray-700 dark:to-gray-600 flex items-center justify-center text-[10px] font-bold text-gray-600 dark:text-gray-300">
@@ -539,7 +603,7 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
                     <p className="text-xs text-gray-400">{c.suggestedAction || t('crm.metrics.reactivate', 'Reativar contato')}</p>
                   </div>
                   <span className={cn('text-xs font-bold px-2 py-1 rounded-md shrink-0', cl.bg, cl.color)}>
-                    {c.scores!.churnRisk}%
+                    {churnRisk}%
                   </span>
                 </div>
               );
@@ -578,9 +642,91 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
         </motion.div>
       </div>
 
-      {/* ── Row 4: Pending Actions ─────────────────────────────── */}
-      {pendingActions.length > 0 && (
+      {/* ── Row 4: Forecast de Receita ────────────────────────── */}
+      {hasForecast && (
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}
+          className="bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-blue-500/10 flex items-center justify-center"><TrendingUp size={16} className="text-blue-500" /></div>
+              <div>
+                <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100">{t('crm.metrics.forecast', 'Previsão de Receita')}</h3>
+                <p className="text-[10px] text-gray-400 mt-0.5">{t('crm.metrics.forecastSub', 'Próximos 6 meses · valor ponderado pela probabilidade')}</p>
+              </div>
+            </div>
+            <div className="text-right">
+              <p className="text-xs text-gray-400">{t('crm.metrics.forecastTotal', 'Total esperado')}</p>
+              <p className="text-sm font-bold text-blue-600 dark:text-blue-400">
+                {formatCurrency(forecastData.reduce((s, m) => s + m.weighted, 0))}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-4 mb-3 text-[10px] text-gray-400">
+            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-blue-500 inline-block" />Esperado (ponderado)</span>
+            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-blue-200 dark:bg-blue-500/20 inline-block" />Otimista (100%)</span>
+          </div>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={forecastData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#1F2937' : '#F3F4F6'} />
+              <XAxis dataKey="label" tick={{ fontSize: 10, fill: isDark ? '#6B7280' : '#9CA3AF' }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 10, fill: isDark ? '#6B7280' : '#9CA3AF' }} axisLine={false} tickLine={false}
+                tickFormatter={(v) => v >= 1000 ? `${(v / 1000).toFixed(0)}k` : String(v)} />
+              <RechartsTooltip contentStyle={tooltipStyle}
+                formatter={(value: number, name: string) => [formatCurrency(value), name === 'optimistic' ? 'Otimista' : 'Esperado']} />
+              <Bar dataKey="optimistic" fill={isDark ? 'rgba(59,130,246,0.15)' : 'rgba(59,130,246,0.12)'} radius={[4, 4, 0, 0]} />
+              <Bar dataKey="weighted" fill="#3B82F6" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+          {forecastData.every(m => m.weighted === 0) && deals.some(d => !d.expectedCloseDate && !d.closedDate) && (
+            <p className="text-[10px] text-gray-400 text-center mt-2">
+              {t('crm.metrics.forecastHint', 'Defina uma data de fechamento nos deals para aparecer aqui')}
+            </p>
+          )}
+        </motion.div>
+      )}
+
+      {/* ── Row 5: Rotting Deals ──────────────────────────────── */}
+      {rottingDeals.length > 0 && (
         <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.45 }}
+          className="bg-white dark:bg-[#111827] border border-orange-200/60 dark:border-orange-500/20 rounded-2xl p-5">
+          <div className="flex items-center gap-2.5 mb-4">
+            <div className="w-8 h-8 rounded-xl bg-orange-500/10 flex items-center justify-center"><Clock size={16} className="text-orange-500" /></div>
+            <div>
+              <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100">{t('crm.metrics.rottingDeals', 'Deals Parados')}</h3>
+              <p className="text-[10px] text-gray-400 mt-0.5">{t('crm.metrics.rottingDealsSub', `Sem atualização há mais de ${ROTTING_DAYS_THRESHOLD} dias`)}</p>
+            </div>
+            <span className="ml-auto text-xs font-semibold text-orange-600 dark:text-orange-400 bg-orange-500/10 px-2.5 py-0.5 rounded-full">
+              {rottingDeals.length}
+            </span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+            {rottingDeals.map((deal) => {
+              const daysSince = Math.floor((Date.now() - new Date(deal.updatedAt).getTime()) / 86_400_000);
+              const stage = stages.find(s => s.id === deal.stage);
+              return (
+                <div key={deal.id} className="flex items-start gap-3 p-3 rounded-xl bg-orange-50/50 dark:bg-orange-500/[0.04] border border-orange-100 dark:border-orange-500/10">
+                  <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{ backgroundColor: stage?.color ?? '#F97316' }} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">{deal.title}</p>
+                    <p className="text-xs text-gray-400 truncate">{deal.contactName}</p>
+                    <div className="flex items-center gap-2 mt-1.5">
+                      <span className="text-[10px] font-medium text-orange-600 dark:text-orange-400 bg-orange-500/10 px-1.5 py-0.5 rounded-md">
+                        {daysSince}d parado
+                      </span>
+                      <span className="text-[10px] text-gray-400">{stage?.name ?? deal.stage}</span>
+                    </div>
+                  </div>
+                  <span className="text-xs font-bold text-gray-700 dark:text-gray-300 flex-shrink-0">{formatCurrency(deal.value)}</span>
+                </div>
+              );
+            })}
+          </div>
+        </motion.div>
+      )}
+
+      {/* ── Row 7: Pending Actions ────────────────────────────── */}
+      {pendingActions.length > 0 && (
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.5 }}
           className="bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl p-5">
           <div className="flex items-center gap-2.5 mb-4">
             <div className="w-8 h-8 rounded-xl bg-amber-500/10 flex items-center justify-center"><Zap size={16} className="text-amber-500" /></div>
@@ -602,6 +748,435 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
           </div>
         </motion.div>
       )}
+    </div>
+  );
+}
+
+// ==========================================
+// SEGMENTS TAB — OR/AND filter builder
+// ==========================================
+
+type SegFieldType = 'string' | 'number' | 'select' | 'tags' | 'lifecycle' | 'tipo';
+
+interface SegFieldDef {
+  id: string;
+  label: string;
+  type: SegFieldType;
+  options?: { value: string; label: string }[];
+}
+
+const SEGMENT_FIELDS: SegFieldDef[] = [
+  { id: 'status', label: 'Status', type: 'select',
+    options: ALL_STATUSES.map(s => ({ value: s, label: STATUS_LABELS[s] })) },
+  { id: 'source', label: 'Origem', type: 'select',
+    options: ALL_SOURCES.map(s => ({ value: s, label: SOURCE_LABELS[s] })) },
+  { id: 'tipo', label: 'Tipo (PF/PJ)', type: 'select',
+    options: [{ value: 'pf', label: 'Pessoa Física' }, { value: 'pj', label: 'Pessoa Jurídica' }] },
+  { id: 'lifecycleStage', label: 'Etapa do ciclo', type: 'select',
+    options: [
+      { value: 'new_lead', label: 'Novo Lead' }, { value: 'contacted', label: 'Contatado' },
+      { value: 'qualified', label: 'Qualificado' }, { value: 'proposal', label: 'Proposta' },
+      { value: 'negotiation', label: 'Negociação' }, { value: 'customer', label: 'Cliente' },
+      { value: 'churned', label: 'Churned' },
+    ] },
+  { id: 'score', label: 'Score geral', type: 'number' },
+  { id: 'scores.churnRisk', label: 'Risco de churn (%)', type: 'number' },
+  { id: 'scores.overall', label: 'Score IA', type: 'number' },
+  { id: 'totalSpent', label: 'Total gasto (R$)', type: 'number' },
+  { id: 'visitCount', label: 'Nº de compras', type: 'number' },
+  { id: 'tags', label: 'Tags', type: 'tags' },
+  { id: 'company', label: 'Empresa (contém)', type: 'string' },
+];
+
+const OPS_BY_TYPE: Record<SegFieldType, { value: SegmentFilterOperator; label: string }[]> = {
+  string:    [{ value: 'contains', label: 'contém' }, { value: 'not_contains', label: 'não contém' }, { value: 'eq', label: '=' }, { value: 'neq', label: '≠' }],
+  number:    [{ value: 'gt', label: '>' }, { value: 'lt', label: '<' }, { value: 'eq', label: '=' }, { value: 'neq', label: '≠' }],
+  select:    [{ value: 'eq', label: '=' }, { value: 'neq', label: '≠' }],
+  tags:      [{ value: 'contains', label: 'inclui tag' }, { value: 'not_contains', label: 'não inclui tag' }],
+  lifecycle: [{ value: 'eq', label: '=' }, { value: 'neq', label: '≠' }],
+  tipo:      [{ value: 'eq', label: '=' }],
+};
+
+function getNestedVal(obj: unknown, path: string): unknown {
+  return path.split('.').reduce((acc, k) =>
+    (acc != null && typeof acc === 'object' ? (acc as Record<string, unknown>)[k] : undefined), obj);
+}
+
+function evalFilter(contact: CRMContact, filter: SegmentFilter): boolean {
+  const val = getNestedVal(contact, filter.field);
+  if (Array.isArray(val)) {
+    const arr = val as string[];
+    if (filter.operator === 'contains') return arr.includes(filter.value as string);
+    if (filter.operator === 'not_contains') return !arr.includes(filter.value as string);
+    return false;
+  }
+  switch (filter.operator) {
+    case 'eq': return val === filter.value;
+    case 'neq': return val !== filter.value;
+    case 'gt': return typeof val === 'number' && typeof filter.value === 'number' && val > filter.value;
+    case 'lt': return typeof val === 'number' && typeof filter.value === 'number' && val < filter.value;
+    case 'contains': return typeof val === 'string' && typeof filter.value === 'string' && val.toLowerCase().includes((filter.value as string).toLowerCase());
+    case 'not_contains': return !(typeof val === 'string' && typeof filter.value === 'string' && val.toLowerCase().includes((filter.value as string).toLowerCase()));
+    default: return false;
+  }
+}
+
+function matchesSegmentGroups(contact: CRMContact, filterGroups: SegmentFilterGroup[]): boolean {
+  if (!filterGroups.length) return true;
+  return filterGroups.some(group => group.filters.every(f => evalFilter(contact, f)));
+}
+
+function makeFilter(): SegmentFilter { return { field: 'status', operator: 'eq', value: 'novo' }; }
+function makeGroup(): SegmentFilterGroup { return { id: crypto.randomUUID(), filters: [makeFilter()] }; }
+
+function FilterRow({ filter, onChange, onRemove }: {
+  filter: SegmentFilter;
+  onChange: (f: SegmentFilter) => void;
+  onRemove: () => void;
+}) {
+  const fieldDef = SEGMENT_FIELDS.find(f => f.id === filter.field) ?? SEGMENT_FIELDS[0];
+  const ops = OPS_BY_TYPE[fieldDef.type];
+
+  const handleFieldChange = (fieldId: string) => {
+    const def = SEGMENT_FIELDS.find(f => f.id === fieldId) ?? SEGMENT_FIELDS[0];
+    const firstOp = OPS_BY_TYPE[def.type][0].value;
+    const defaultVal = def.type === 'number' ? 0 : (def.options?.[0]?.value ?? '');
+    onChange({ field: fieldId, operator: firstOp, value: defaultVal });
+  };
+
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <select value={filter.field} onChange={e => handleFieldChange(e.target.value)}
+        className="px-2 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-700 dark:text-gray-300 focus:outline-none">
+        {SEGMENT_FIELDS.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+      </select>
+      <select value={filter.operator} onChange={e => onChange({ ...filter, operator: e.target.value as SegmentFilterOperator })}
+        className="px-2 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-700 dark:text-gray-300 focus:outline-none">
+        {ops.map(op => <option key={op.value} value={op.value}>{op.label}</option>)}
+      </select>
+      {fieldDef.options ? (
+        <select value={filter.value as string} onChange={e => onChange({ ...filter, value: e.target.value })}
+          className="flex-1 min-w-0 px-2 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-700 dark:text-gray-300 focus:outline-none">
+          {fieldDef.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      ) : (
+        <input type={fieldDef.type === 'number' ? 'number' : 'text'}
+          value={filter.value as string | number}
+          onChange={e => onChange({ ...filter, value: fieldDef.type === 'number' ? Number(e.target.value) : e.target.value })}
+          className="flex-1 min-w-0 px-2 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-700 dark:text-gray-300 focus:outline-none"
+          placeholder={fieldDef.type === 'number' ? '0' : 'valor...'} />
+      )}
+      <button onClick={onRemove} className="p-1 text-gray-300 dark:text-gray-600 hover:text-red-500 transition-colors flex-shrink-0">
+        <X size={13} />
+      </button>
+    </div>
+  );
+}
+
+function SegmentsTab({ contacts, businessId, userId, userName }: {
+  contacts: CRMContact[];
+  businessId: string;
+  userId: string;
+  userName: string;
+}) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState<Segment | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<Segment | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  // Form state
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [filterGroups, setFilterGroups] = useState<SegmentFilterGroup[]>([makeGroup()]);
+
+  const { data: segments = [], isLoading } = useQuery({
+    queryKey: ['segments', businessId],
+    queryFn: async () => {
+      const snap = await getDocs(query(
+        collection(db, 'segments'),
+        where('businessId', '==', businessId),
+        orderBy('createdAt', 'desc'),
+      ));
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Segment));
+    },
+    enabled: !!businessId,
+    staleTime: 2 * 60 * 1000,
+  });
+
+  const openCreate = () => {
+    setEditing(null);
+    setName(''); setDescription('');
+    setFilterGroups([makeGroup()]);
+    setShowForm(true);
+  };
+
+  const openEdit = (seg: Segment) => {
+    setEditing(seg);
+    setName(seg.name);
+    setDescription(seg.description ?? '');
+    setFilterGroups(
+      seg.filterGroups?.length
+        ? seg.filterGroups
+        : [{ id: crypto.randomUUID(), filters: seg.filters?.length ? seg.filters : [makeFilter()] }]
+    );
+    setShowForm(true);
+  };
+
+  const liveCount = useMemo(() => {
+    const groups = filterGroups.filter(g => g.filters.length > 0);
+    if (!groups.length) return contacts.length;
+    return contacts.filter(c => matchesSegmentGroups(c, groups)).length;
+  }, [contacts, filterGroups]);
+
+  const handleSave = async () => {
+    if (!name.trim()) return;
+    setSaving(true);
+    const now = new Date().toISOString();
+    const groups = filterGroups.filter(g => g.filters.length > 0);
+    const payload: Omit<Segment, 'id'> = {
+      businessId,
+      name: name.trim(),
+      description: description.trim() || undefined,
+      filters: groups[0]?.filters ?? [],
+      filterGroups: groups,
+      contactCount: liveCount,
+      lastCalculatedAt: now,
+      createdBy: userId,
+      createdAt: editing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    try {
+      if (editing) {
+        await updateDoc(doc(db, 'segments', editing.id), payload);
+      } else {
+        await addDoc(collection(db, 'segments'), payload);
+      }
+      queryClient.invalidateQueries({ queryKey: ['segments', businessId] });
+      toast.success(editing ? 'Segmento atualizado' : 'Segmento criado');
+      setShowForm(false);
+    } catch (err) {
+      console.error('Segment save error:', err);
+      toast.error('Erro ao salvar segmento');
+    } finally { setSaving(false); }
+  };
+
+  const handleDelete = async (seg: Segment) => {
+    try {
+      await deleteDoc(doc(db, 'segments', seg.id));
+      queryClient.invalidateQueries({ queryKey: ['segments', businessId] });
+      toast.success('Segmento excluído');
+      setDeleteConfirm(null);
+    } catch { toast.error('Erro ao excluir'); }
+  };
+
+  const updateGroup = (gIdx: number, patch: Partial<SegmentFilterGroup>) =>
+    setFilterGroups(prev => prev.map((g, i) => i === gIdx ? { ...g, ...patch } : g));
+
+  const addFilter = (gIdx: number) =>
+    updateGroup(gIdx, { filters: [...filterGroups[gIdx].filters, makeFilter()] });
+
+  const updateFilter = (gIdx: number, fIdx: number, f: SegmentFilter) =>
+    updateGroup(gIdx, { filters: filterGroups[gIdx].filters.map((ff, i) => i === fIdx ? f : ff) });
+
+  const removeFilter = (gIdx: number, fIdx: number) => {
+    const newFilters = filterGroups[gIdx].filters.filter((_, i) => i !== fIdx);
+    if (newFilters.length === 0) {
+      setFilterGroups(prev => prev.filter((_, i) => i !== gIdx));
+    } else {
+      updateGroup(gIdx, { filters: newFilters });
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100">Segmentos</h3>
+          <p className="text-xs text-gray-400 mt-0.5">Grupos de contatos com filtros AND/OR para usar em campanhas</p>
+        </div>
+        <button onClick={openCreate}
+          className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded-xl transition-colors">
+          <Plus size={14} />Novo segmento
+        </button>
+      </div>
+
+      {/* List */}
+      {isLoading ? (
+        <div className="space-y-3">{[0,1,2].map(i => <div key={i} className="h-20 rounded-2xl shimmer" />)}</div>
+      ) : segments.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16 text-center">
+          <div className="w-14 h-14 rounded-2xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center mb-3">
+            <Filter size={22} className="text-gray-400" />
+          </div>
+          <p className="text-sm font-semibold text-gray-600 dark:text-gray-400">Nenhum segmento criado</p>
+          <p className="text-xs text-gray-400 mt-1">Crie segmentos para usar em campanhas com filtros avançados</p>
+        </div>
+      ) : (
+        <div className="space-y-2.5">
+          {segments.map(seg => {
+            const count = contacts.filter(c =>
+              matchesSegmentGroups(c, seg.filterGroups?.length ? seg.filterGroups : [{ id: '', filters: seg.filters }])
+            ).length;
+            const groupCount = seg.filterGroups?.length ?? 1;
+            return (
+              <motion.div key={seg.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+                className="flex items-center gap-4 p-4 bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl hover:shadow-sm transition-shadow">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{seg.name}</h4>
+                    <span className="text-[10px] font-medium text-gray-400 bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded-full">
+                      {groupCount} grupo{groupCount !== 1 ? 's' : ''} {groupCount > 1 ? '· OR' : ''}
+                    </span>
+                  </div>
+                  {seg.description && <p className="text-xs text-gray-400 truncate">{seg.description}</p>}
+                </div>
+                <div className="text-center flex-shrink-0">
+                  <p className="text-xl font-bold text-red-600 dark:text-red-400">{count}</p>
+                  <p className="text-[10px] text-gray-400">contatos</p>
+                </div>
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  <button onClick={() => openEdit(seg)}
+                    className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors">
+                    <Edit3 size={14} />
+                  </button>
+                  <button onClick={() => setDeleteConfirm(seg)}
+                    className="p-2 rounded-lg hover:bg-red-50 dark:hover:bg-red-500/10 text-gray-400 hover:text-red-500 transition-colors">
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </motion.div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Create/Edit modal */}
+      <AnimatePresence>
+        {showForm && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={e => { if (e.target === e.currentTarget) setShowForm(false); }}>
+            <motion.div initial={{ opacity: 0, scale: 0.95, y: 16 }} animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 16 }} transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+              className="w-full max-w-xl bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 flex flex-col max-h-[90vh]">
+              {/* Header */}
+              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800 flex-shrink-0">
+                <h3 className="font-semibold text-gray-900 dark:text-white text-sm">
+                  {editing ? 'Editar segmento' : 'Novo segmento'}
+                </h3>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs font-semibold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-500/10 px-2.5 py-1 rounded-full">
+                    {liveCount} contatos
+                  </span>
+                  <button onClick={() => setShowForm(false)} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400">
+                    <X size={15} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-6 space-y-4">
+                {/* Name + description */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="col-span-2">
+                    <label className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider block mb-1">Nome *</label>
+                    <input value={name} onChange={e => setName(e.target.value)} placeholder="Ex: Leads quentes qualificados"
+                      className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/30" />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider block mb-1">Descrição (opcional)</label>
+                    <input value={description} onChange={e => setDescription(e.target.value)} placeholder="Para que serve este segmento..."
+                      className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/30" />
+                  </div>
+                </div>
+
+                {/* Filter groups */}
+                <div className="space-y-3">
+                  <p className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Filtros</p>
+
+                  {filterGroups.map((group, gIdx) => (
+                    <React.Fragment key={group.id}>
+                      {gIdx > 0 && (
+                        <div className="flex items-center gap-3">
+                          <div className="flex-1 h-px bg-gray-200 dark:bg-gray-700" />
+                          <span className="text-[10px] font-bold text-red-500 bg-red-50 dark:bg-red-500/10 px-2 py-1 rounded-full">OU</span>
+                          <div className="flex-1 h-px bg-gray-200 dark:bg-gray-700" />
+                        </div>
+                      )}
+                      <div className="border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
+                        {/* Group header */}
+                        <div className="flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-800/60">
+                          <p className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                            {filterGroups.length > 1 ? `Grupo ${gIdx + 1} — todas as condições` : 'Todas as condições'}
+                          </p>
+                          {filterGroups.length > 1 && (
+                            <button onClick={() => setFilterGroups(prev => prev.filter((_, i) => i !== gIdx))}
+                              className="text-[10px] text-red-500 hover:text-red-700 font-medium">Remover grupo</button>
+                          )}
+                        </div>
+                        {/* Filters */}
+                        <div className="p-3 space-y-2">
+                          {group.filters.map((f, fIdx) => (
+                            <React.Fragment key={fIdx}>
+                              {fIdx > 0 && (
+                                <p className="text-[9px] font-bold text-gray-400 uppercase px-1">E</p>
+                              )}
+                              <FilterRow
+                                filter={f}
+                                onChange={newF => updateFilter(gIdx, fIdx, newF)}
+                                onRemove={() => removeFilter(gIdx, fIdx)}
+                              />
+                            </React.Fragment>
+                          ))}
+                          <button onClick={() => addFilter(gIdx)}
+                            className="text-xs font-medium text-red-600 dark:text-red-400 hover:text-red-700 flex items-center gap-1 mt-1">
+                            <Plus size={11} />Adicionar condição
+                          </button>
+                        </div>
+                      </div>
+                    </React.Fragment>
+                  ))}
+
+                  <button onClick={() => setFilterGroups(prev => [...prev, makeGroup()])}
+                    className="w-full py-2 rounded-xl border-2 border-dashed border-red-200 dark:border-red-500/20 text-xs font-semibold text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/5 transition-colors flex items-center justify-center gap-1.5">
+                    <Plus size={12} />Adicionar grupo (OU)
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex gap-2 justify-end px-6 py-4 border-t border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/30 flex-shrink-0">
+                <button onClick={() => setShowForm(false)} className="px-4 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+                  Cancelar
+                </button>
+                <button onClick={handleSave} disabled={saving || !name.trim()}
+                  className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors disabled:opacity-40">
+                  {saving ? 'Salvando...' : editing ? 'Atualizar' : 'Criar segmento'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Delete confirm */}
+      <AnimatePresence>
+        {deleteConfirm && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
+              className="w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl shadow-2xl p-6">
+              <p className="text-sm font-semibold text-gray-900 dark:text-white mb-1">Excluir segmento?</p>
+              <p className="text-xs text-gray-500 mb-5"><strong>{deleteConfirm.name}</strong> será removido permanentemente.</p>
+              <div className="flex gap-2">
+                <button onClick={() => setDeleteConfirm(null)} className="flex-1 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-400">Cancelar</button>
+                <button onClick={() => handleDelete(deleteConfirm)} className="flex-1 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold">Excluir</button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -665,6 +1240,499 @@ function CampaignsTab({ businessId }: { businessId: string }) {
 // MAIN ORCHESTRATOR
 // ==========================================
 
+// ─── Pipeline Settings Modal ──────────────────────────────────────────────────
+
+function PipelineSettingsModal({
+  current,
+  businessId,
+  onClose,
+  onSaved,
+}: {
+  current?: CRMPipelineConfig;
+  businessId: string;
+  onClose: () => void;
+  onSaved: (cfg: CRMPipelineConfig) => void;
+}) {
+  const [stages, setStages] = useState<CRMStageConfig[]>(
+    current?.stages?.length ? [...current.stages].sort((a, b) => a.order - b.order) : [...DEFAULT_CRM_PIPELINE]
+  );
+  const [saving, setSaving] = useState(false);
+
+  const update = (i: number, patch: Partial<CRMStageConfig>) =>
+    setStages(prev => prev.map((s, idx) => idx === i ? { ...s, ...patch } : s));
+
+  const move = (i: number, dir: -1 | 1) => {
+    const j = i + dir;
+    if (j < 0 || j >= stages.length) return;
+    setStages(prev => {
+      const next = [...prev];
+      [next[i], next[j]] = [next[j], next[i]];
+      return next.map((s, idx) => ({ ...s, order: idx }));
+    });
+  };
+
+  const setWon = (i: number) =>
+    setStages(prev => prev.map((s, idx) => ({ ...s, isWon: idx === i, isLost: idx === i ? false : s.isLost })));
+
+  const setLost = (i: number) =>
+    setStages(prev => prev.map((s, idx) => ({ ...s, isLost: idx === i, isWon: idx === i ? false : s.isWon })));
+
+  const handleSave = async () => {
+    setSaving(true);
+    const cfg: CRMPipelineConfig = {
+      stages: stages.map((s, idx) => ({ ...s, order: idx })),
+    };
+    try {
+      await updateDoc(doc(db, 'businesses', businessId), {
+        'settings.crmPipeline': cfg,
+        updatedAt: new Date().toISOString(),
+      });
+      onSaved(cfg);
+      onClose();
+    } catch (err) {
+      console.error('Pipeline save error:', err);
+      toast.error('Erro ao salvar configurações do pipeline');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 16 }}
+        transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+        className="w-full max-w-lg bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 flex flex-col max-h-[90vh]"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800 flex-shrink-0">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
+              <Settings2 className="w-4 h-4 text-red-500" />
+            </div>
+            <div>
+              <h2 className="font-semibold text-gray-900 dark:text-white text-sm">Configurar Pipeline</h2>
+              <p className="text-[10px] text-gray-400">Renomeie, reordene e personalize os estágios</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Stage list */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+          {/* Legend */}
+          <div className="grid grid-cols-[auto_1fr_auto_auto_auto_auto] gap-2 px-2 pb-1 text-[9px] font-semibold text-gray-400 uppercase tracking-wider">
+            <span />
+            <span>Nome do estágio</span>
+            <span className="text-center">Ganho</span>
+            <span className="text-center">Perdido</span>
+            <span className="text-center">Visível</span>
+            <span />
+          </div>
+
+          {stages.map((stage, i) => (
+            <div key={stage.id} className={cn(
+              'grid grid-cols-[auto_1fr_auto_auto_auto_auto] gap-2 items-center p-2.5 rounded-xl border transition-colors',
+              stage.isVisible === false
+                ? 'border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/20 opacity-60'
+                : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900'
+            )}>
+              {/* Color + name */}
+              <input
+                type="color"
+                value={stage.color}
+                onChange={e => update(i, { color: e.target.value })}
+                className="w-7 h-7 rounded-lg border-0 cursor-pointer bg-transparent flex-shrink-0"
+              />
+              <input
+                value={stage.name}
+                onChange={e => update(i, { name: e.target.value })}
+                className="w-full px-2 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-red-500/30"
+              />
+
+              {/* Won toggle */}
+              <button
+                onClick={() => setWon(i)}
+                title="Marcar como estágio de ganho"
+                className={cn('w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all text-[10px]',
+                  stage.isWon ? 'border-emerald-500 bg-emerald-500 text-white' : 'border-gray-300 dark:border-gray-600 text-gray-300'
+                )}
+              >W</button>
+
+              {/* Lost toggle */}
+              <button
+                onClick={() => setLost(i)}
+                title="Marcar como estágio de perda"
+                className={cn('w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all text-[10px]',
+                  stage.isLost ? 'border-red-500 bg-red-500 text-white' : 'border-gray-300 dark:border-gray-600 text-gray-300'
+                )}
+              >L</button>
+
+              {/* Visibility toggle */}
+              <button
+                onClick={() => update(i, { isVisible: stage.isVisible === false ? true : false })}
+                title={stage.isVisible === false ? 'Mostrar no kanban' : 'Ocultar do kanban'}
+                className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+              >
+                {stage.isVisible === false
+                  ? <EyeOff className="w-3.5 h-3.5" />
+                  : <Eye className="w-3.5 h-3.5" />}
+              </button>
+
+              {/* Reorder */}
+              <div className="flex flex-col gap-0.5">
+                <button onClick={() => move(i, -1)} disabled={i === 0}
+                  className="p-0.5 text-gray-300 dark:text-gray-600 hover:text-gray-500 disabled:opacity-20 transition-colors">
+                  <ChevronUp className="w-3 h-3" />
+                </button>
+                <button onClick={() => move(i, 1)} disabled={i === stages.length - 1}
+                  className="p-0.5 text-gray-300 dark:text-gray-600 hover:text-gray-500 disabled:opacity-20 transition-colors">
+                  <ChevronDown className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+          ))}
+
+          <p className="text-[10px] text-gray-400 text-center pt-1">
+            W = estágio de conversão (verde) · L = estágio de perda (vermelho) · Olho = visível no kanban
+          </p>
+        </div>
+
+        {/* Footer */}
+        <div className="flex gap-2 justify-end px-6 py-4 border-t border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/30 flex-shrink-0">
+          <button onClick={onClose} className="px-4 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+            Cancelar
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors disabled:opacity-50"
+          >
+            {saving ? 'Salvando...' : 'Salvar pipeline'}
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CRM EXPORT CSV MODAL
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CRM_EXPORT_COLUMNS: { key: string; label: string }[] = [
+  { key: 'name', label: 'Nome' },
+  { key: 'email', label: 'E-mail' },
+  { key: 'phone', label: 'Telefone' },
+  { key: 'whatsapp', label: 'WhatsApp' },
+  { key: 'company', label: 'Empresa' },
+  { key: 'role', label: 'Cargo' },
+  { key: 'source', label: 'Origem' },
+  { key: 'stageName', label: 'Status' },
+  { key: 'score', label: 'Score' },
+  { key: 'tagsStr', label: 'Tags' },
+  { key: 'notes', label: 'Notas' },
+  { key: 'assignedToName', label: 'Responsável' },
+  { key: 'createdAt', label: 'Criado em' },
+];
+
+function CRMExportModal({ contacts, stages, onClose }: { contacts: CRMContact[]; stages: CRMStageConfig[]; onClose: () => void }) {
+  const [selected, setSelected] = useState<Set<string>>(new Set(CRM_EXPORT_COLUMNS.map(c => c.key)));
+
+  const toggle = (key: string) => setSelected(prev => {
+    const next = new Set(prev);
+    next.has(key) ? next.delete(key) : next.add(key);
+    return next;
+  });
+
+  const handleExport = () => {
+    const cols = CRM_EXPORT_COLUMNS.filter(c => selected.has(c.key));
+    const esc = (v: string) => (v.includes(';') || v.includes('"') || v.includes('\n')) ? `"${v.replace(/"/g, '""')}"` : v;
+    const header = cols.map(c => c.label).join(';');
+    const rows = contacts.map(c => cols.map(col => {
+      let val = '';
+      if (col.key === 'tagsStr') val = (c.tags ?? []).join(', ');
+      else if (col.key === 'stageName') val = getStageLabel(stages, c.status);
+      else if (col.key === 'source') val = SOURCE_LABELS[c.source] ?? c.source;
+      else if (col.key === 'createdAt') val = formatDate(c.createdAt) || '';
+      else val = String((c as unknown as Record<string, unknown>)[col.key] ?? '');
+      return esc(val);
+    }).join(';'));
+    const csv = '﻿' + [header, ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `crm_contatos_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    onClose();
+  };
+
+  return (
+    <Dialog open onClose={onClose} maxWidth="xs" fullWidth PaperProps={{ sx: { borderRadius: '16px' } }}>
+      <DialogTitle sx={{ pb: 1 }}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center"><Download size={18} className="text-white" /></div>
+            <span className="text-base font-display font-bold text-gray-900 dark:text-gray-100">Exportar Contatos</span>
+          </div>
+          <IconButton onClick={onClose} size="small"><X size={18} /></IconButton>
+        </div>
+      </DialogTitle>
+      <DialogContent sx={{ pt: '12px !important' }}>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">Selecione as colunas ({contacts.length} contatos)</p>
+        <div className="grid grid-cols-2 gap-2">
+          {CRM_EXPORT_COLUMNS.map(col => (
+            <label key={col.key} className={cn('flex items-center gap-2.5 p-2.5 rounded-lg border cursor-pointer transition-all text-sm',
+              selected.has(col.key)
+                ? 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-300 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-300'
+                : 'bg-gray-50 dark:bg-white/[0.04] border-gray-200 dark:border-gray-700 text-gray-500')}>
+              <input type="checkbox" checked={selected.has(col.key)} onChange={() => toggle(col.key)} className="w-3.5 h-3.5 accent-emerald-500" />
+              {col.label}
+            </label>
+          ))}
+        </div>
+      </DialogContent>
+      <DialogActions sx={{ px: 3, pb: 2.5, gap: 1 }}>
+        <Button onClick={onClose} variant="outlined" sx={{ borderRadius: '10px' }}>Cancelar</Button>
+        <Button onClick={handleExport} variant="contained" disabled={selected.size === 0}
+          sx={{ borderRadius: '10px', bgcolor: '#10b981', '&:hover': { bgcolor: '#059669' } }}>
+          Exportar CSV
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CRM IMPORT CSV MODAL
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CRM_IMPORT_FIELDS: { key: string; label: string; aliases: string[] }[] = [
+  { key: 'name', label: 'Nome', aliases: ['nome', 'name', 'contato'] },
+  { key: 'email', label: 'E-mail', aliases: ['email', 'e-mail'] },
+  { key: 'phone', label: 'Telefone', aliases: ['telefone', 'phone', 'tel', 'fone'] },
+  { key: 'whatsapp', label: 'WhatsApp', aliases: ['whatsapp', 'wpp', 'zap'] },
+  { key: 'company', label: 'Empresa', aliases: ['empresa', 'company'] },
+  { key: 'role', label: 'Cargo', aliases: ['cargo', 'role', 'função', 'funcao'] },
+  { key: 'source', label: 'Origem', aliases: ['origem', 'source', 'canal'] },
+  { key: 'status', label: 'Status', aliases: ['status', 'estagio', 'estágio', 'stage'] },
+  { key: 'score', label: 'Score', aliases: ['score', 'pontuação', 'pontuacao'] },
+  { key: 'tags', label: 'Tags', aliases: ['tags', 'etiquetas'] },
+  { key: 'notes', label: 'Notas', aliases: ['notas', 'notes', 'observações', 'obs'] },
+  { key: 'assignedToName', label: 'Responsável', aliases: ['responsavel', 'responsável', 'assigned'] },
+];
+
+const CRM_SOURCE_NORM: Record<string, LeadSource> = {
+  whatsapp: 'whatsapp', facebook: 'facebook', instagram: 'instagram', linkedin: 'linkedin',
+  indicacao: 'indicacao', indicação: 'indicacao', site: 'site', website: 'site',
+  google: 'google_ads', google_ads: 'google_ads', evento: 'evento', email: 'email',
+  telefone: 'telefone', outro: 'outro', other: 'outro',
+};
+
+const CRM_STATUS_NORM: Record<string, LeadStatus> = {
+  novo: 'novo', new: 'novo',
+  contatado: 'contatado', contato: 'contatado', contacted: 'contatado',
+  qualificado: 'qualificado', qualified: 'qualificado',
+  proposta: 'proposta', proposal: 'proposta',
+  negociacao: 'negociacao', negociação: 'negociacao', negotiation: 'negociacao',
+  ganho: 'ganho', fechado: 'ganho', won: 'ganho', closed: 'ganho',
+  perdido: 'perdido', lost: 'perdido',
+};
+
+function crmAutoMap(headers: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const h of headers) {
+    const hl = h.toLowerCase().trim();
+    out[h] = CRM_IMPORT_FIELDS.find(f => f.aliases.some(a => hl.includes(a)))?.key ?? '';
+  }
+  return out;
+}
+
+function CRMImportModal({ onClose, businessId, onImported }: { onClose: () => void; businessId: string; onImported: () => void }) {
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [rawData, setRawData] = useState<Record<string, string>[]>([]);
+  const [headers, setHeaders] = useState<string[]>([]);
+  const [mapping, setMapping] = useState<Record<string, string>>({});
+  const [importing, setImporting] = useState(false);
+  const [fileName, setFileName] = useState('');
+  const fileRef = React.useRef<HTMLInputElement>(null);
+
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileName(file.name);
+    import('papaparse').then(({ default: Papa }) => {
+      Papa.parse(file, {
+        header: true, skipEmptyLines: true,
+        complete: (result) => {
+          const data = result.data as Record<string, string>[];
+          const hdrs = result.meta.fields ?? [];
+          setRawData(data); setHeaders(hdrs); setMapping(crmAutoMap(hdrs)); setStep(2);
+        },
+      });
+    });
+  };
+
+  const handleImport = async () => {
+    setImporting(true);
+    const now = new Date().toISOString();
+    try {
+      const BATCH_SIZE = 400; // Firestore batch max is 500
+      let count = 0;
+      let batch = writeBatch(db);
+      let batchCount = 0;
+
+      for (const row of rawData) {
+        const contact: Record<string, unknown> = { businessId, tipo: 'pf', createdAt: now, updatedAt: now, score: 0, status: 'novo' as LeadStatus, source: 'outro' as LeadSource };
+        for (const [header, fieldKey] of Object.entries(mapping)) {
+          if (!fieldKey) continue;
+          const raw = (row[header] ?? '').trim();
+          if (!raw) continue;
+          if (fieldKey === 'score') contact.score = Number(raw) || 0;
+          else if (fieldKey === 'tags') contact.tags = raw.split(',').map(t => t.trim()).filter(Boolean);
+          else if (fieldKey === 'source') contact.source = CRM_SOURCE_NORM[raw.toLowerCase()] ?? 'outro';
+          else if (fieldKey === 'status') contact.status = CRM_STATUS_NORM[raw.toLowerCase()] ?? 'novo';
+          else contact[fieldKey] = raw;
+        }
+        if (!contact.name) continue;
+        batch.set(doc(collection(db, 'clients')), contact);
+        count++;
+        batchCount++;
+        if (batchCount >= BATCH_SIZE) {
+          await batch.commit();
+          batch = writeBatch(db);
+          batchCount = 0;
+        }
+      }
+      if (batchCount > 0) await batch.commit();
+      toast.success(`${count} contato(s) importado(s) com sucesso!`);
+      onImported();
+      onClose();
+    } catch (err) {
+      console.error('[CRM] Import error:', err);
+      toast.error('Erro ao importar contatos');
+    } finally { setImporting(false); }
+  };
+
+  const preview = rawData.slice(0, 5);
+  const mappedHeaders = Object.entries(mapping).filter(([, v]) => v);
+
+  return (
+    <Dialog open onClose={onClose} maxWidth="md" fullWidth PaperProps={{ sx: { borderRadius: '16px' } }}>
+      <DialogTitle sx={{ pb: 1 }}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center"><Upload size={18} className="text-white" /></div>
+            <div>
+              <span className="text-base font-display font-bold text-gray-900 dark:text-gray-100">Importar Contatos</span>
+              <div className="flex items-center gap-1 mt-0.5">
+                {([1, 2, 3] as const).map((s, i) => (
+                  <React.Fragment key={s}>
+                    {i > 0 && <div className={cn('w-8 h-0.5 transition-colors', step > s - 1 ? 'bg-blue-400' : 'bg-gray-200 dark:bg-gray-700')} />}
+                    <div className={cn('w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold transition-colors',
+                      step > s ? 'bg-blue-500 text-white' : step === s ? 'bg-blue-500 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-400')}>
+                      {step > s ? '✓' : s}
+                    </div>
+                  </React.Fragment>
+                ))}
+                <span className="text-xs text-gray-400 ml-1">{step === 1 ? 'Upload' : step === 2 ? 'Mapeamento' : 'Confirmar'}</span>
+              </div>
+            </div>
+          </div>
+          <IconButton onClick={onClose} size="small"><X size={18} /></IconButton>
+        </div>
+      </DialogTitle>
+
+      <DialogContent sx={{ pt: '12px !important' }}>
+        {step === 1 && (
+          <div className="flex flex-col items-center justify-center py-12 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-xl cursor-pointer hover:border-blue-400 transition-colors"
+            onClick={() => fileRef.current?.click()}>
+            <Upload size={36} className="text-gray-300 dark:text-gray-600 mb-3" />
+            <p className="font-semibold text-gray-700 dark:text-gray-300 text-sm">Clique para selecionar um arquivo CSV</p>
+            <p className="text-xs text-gray-400 mt-1">Separador: vírgula ou ponto-e-vírgula</p>
+            <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={handleFile} />
+          </div>
+        )}
+
+        {step === 2 && (
+          <div className="space-y-3">
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              <span className="font-medium text-gray-700 dark:text-gray-300">{fileName}</span> — {rawData.length} linha(s). Mapeie as colunas:
+            </p>
+            <div className="grid grid-cols-2 gap-2 max-h-72 overflow-y-auto pr-1">
+              {headers.map(h => (
+                <div key={h} className="flex items-center gap-2 p-2.5 bg-gray-50 dark:bg-white/[0.04] rounded-lg border border-gray-100 dark:border-gray-700">
+                  <span className="text-xs font-mono text-gray-500 flex-1 truncate" title={h}>{h}</span>
+                  <span className="text-gray-300 text-xs">→</span>
+                  <select value={mapping[h] ?? ''} onChange={e => setMapping(prev => ({ ...prev, [h]: e.target.value }))}
+                    className="text-xs border border-gray-200 dark:border-gray-600 rounded-lg px-2 py-1.5 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-1 focus:ring-blue-400">
+                    <option value="">— Ignorar —</option>
+                    {CRM_IMPORT_FIELDS.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
+                  </select>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {step === 3 && (
+          <div>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
+              Prévia dos primeiros {Math.min(5, rawData.length)} de {rawData.length} contatos:
+            </p>
+            <div className="overflow-x-auto rounded-xl border border-gray-100 dark:border-gray-700">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-gray-50 dark:bg-white/[0.04]">
+                    {mappedHeaders.map(([h]) => <th key={h} className="px-3 py-2 text-left font-semibold text-gray-500 whitespace-nowrap">{h}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {preview.map((row, i) => (
+                    <tr key={i} className="border-t border-gray-100 dark:border-gray-800">
+                      {mappedHeaders.map(([h]) => <td key={h} className="px-3 py-2 text-gray-600 dark:text-gray-400 max-w-[140px] truncate">{row[h] ?? ''}</td>)}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </DialogContent>
+
+      <DialogActions sx={{ px: 3, pb: 2.5, gap: 1 }}>
+        <Button onClick={onClose} variant="outlined" sx={{ borderRadius: '10px' }}>Cancelar</Button>
+        {step === 2 && <>
+          <Button onClick={() => setStep(1)} variant="outlined" sx={{ borderRadius: '10px' }}>Voltar</Button>
+          <Button onClick={() => setStep(3)} disabled={!Object.values(mapping).some(v => v === 'name')}
+            variant="contained" sx={{ borderRadius: '10px', bgcolor: '#3b82f6', '&:hover': { bgcolor: '#2563eb' } }}>
+            Avançar
+          </Button>
+        </>}
+        {step === 3 && <>
+          <Button onClick={() => setStep(2)} variant="outlined" sx={{ borderRadius: '10px' }}>Voltar</Button>
+          <Button onClick={handleImport} variant="contained" disabled={importing}
+            sx={{ borderRadius: '10px', bgcolor: '#3b82f6', '&:hover': { bgcolor: '#2563eb' } }}>
+            {importing ? 'Importando...' : `Importar ${rawData.length} contatos`}
+          </Button>
+        </>}
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export default function CRMModule() {
   const { t } = useTranslation();
 
@@ -672,8 +1740,10 @@ export default function CRMModule() {
     { key: 'kanban', label: t('crm.tab.kanban', 'Pipeline'), icon: <Layers size={15} />, desc: t('crm.tab.kanban_desc', 'Kanban de leads') },
     { key: 'atividades', label: t('crm.tab.activities', 'Atividades'), icon: <Activity size={15} />, desc: t('crm.tab.activities_desc', 'Tarefas e follow-ups') },
     { key: 'campanhas', label: t('crm.tab.campaigns', 'Campanhas'), icon: <Send size={15} />, desc: t('crm.tab.campaigns_desc', 'Broadcasts') },
+    { key: 'segmentos', label: t('crm.tab.segments', 'Segmentos'), icon: <Filter size={15} />, desc: t('crm.tab.segments_desc', 'Filtros AND/OR') },
     { key: 'metricas', label: t('crm.tab.metrics', 'Inteligência'), icon: <Brain size={15} />, desc: t('crm.tab.metrics_desc', 'Scores e insights') },
     { key: 'automacoes', label: t('crm.tab.automations', 'Automações'), icon: <Zap size={15} />, desc: t('crm.tab.automations_desc', 'Regras automáticas') },
+    { key: 'sequencias', label: t('crm.tab.sequences', 'Sequências'), icon: <GitBranchIcon />, desc: t('crm.tab.sequences_desc', 'Follow-up multi-passo') },
     { key: 'formularios', label: t('crm.tab.forms', 'Formulários'), icon: <FileText size={15} />, desc: t('crm.tab.forms_desc', 'Fichas de anamnese') },
     { key: 'planos', label: t('crm.tab.plans', 'Planos'), icon: <Crown size={15} />, desc: t('crm.tab.plans_desc', 'Assinaturas recorrentes') },
   ], [t]);
@@ -682,7 +1752,39 @@ export default function CRMModule() {
   const { setActivePage } = useAppContext();
   const queryClient = useQueryClient();
 
+  const isAdmin = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
+  const [pipelineConfig, setPipelineConfig] = useState<CRMPipelineConfig | undefined>(business?.settings?.crmPipeline);
+  // Sync with remote business changes (e.g. another admin saves pipeline from another device)
+  useEffect(() => {
+    setPipelineConfig(business?.settings?.crmPipeline);
+  }, [business?.settings?.crmPipeline]);
+  const [showPipelineSettings, setShowPipelineSettings] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [csvMenuOpen, setCsvMenuOpen] = useState(false);
+  const csvMenuRef = React.useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!csvMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (csvMenuRef.current && !csvMenuRef.current.contains(e.target as Node)) setCsvMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [csvMenuOpen]);
+
+  // Effective visible stages — recomputed when config changes
+  const stages = useMemo(() => getVisibleStages(pipelineConfig), [pipelineConfig]);
+
   const [activeTab, setActiveTab] = useState<CRMTab>('kanban');
+  const [pipelineView, setPipelineView] = useState<'kanban' | 'table'>(() => {
+    if (typeof window === 'undefined') return 'kanban';
+    return (localStorage.getItem('crm_pipeline_view') as 'kanban' | 'table') ?? 'kanban';
+  });
+  const handlePipelineView = (v: 'kanban' | 'table') => {
+    setPipelineView(v);
+    localStorage.setItem('crm_pipeline_view', v);
+  };
   const [selectedContact, setSelectedContact] = useState<CRMContact | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -707,7 +1809,22 @@ export default function CRMModule() {
   const { data: activities = [], isLoading: la } = useQuery({ queryKey: ['crmActivities', business?.id], queryFn: async () => { const q = query(collection(db, 'crmActivities'), where('businessId', '==', business!.id), orderBy('createdAt', 'desc')); const snap = await getDocs(q); return snap.docs.map((d) => ({ ...d.data(), id: d.id } as CRMActivity)); }, enabled: !!business?.id });
 
   const isLoading = lc || ld || la;
-  const pipelineMetrics = useMemo(() => { const tv = deals.reduce((s, d) => s + d.value, 0); const wv = deals.reduce((s, d) => s + d.value * (d.probability / 100), 0); const wd = deals.filter((d) => d.stage === 'fechamento' || d.closedDate); const wdv = wd.reduce((s, d) => s + d.value, 0); return { totalValue: tv, weightedValue: wv, avgDealSize: wd.length > 0 ? wdv / wd.length : 0, activeDeals: deals.length, conversionRate: deals.length > 0 ? (wd.length / deals.length) * 100 : 0, wonValue: wdv, wonDeals: wd.length }; }, [deals]);
+  const ROTTING_DAYS = 7;
+  const pipelineMetrics = useMemo(() => {
+    const tv = deals.reduce((s, d) => s + d.value, 0);
+    const wv = deals.reduce((s, d) => s + d.value * (d.probability / 100), 0);
+    const wd = deals.filter((d) => d.stage === 'fechamento' || d.closedDate);
+    const wdv = wd.reduce((s, d) => s + d.value, 0);
+    const rottingCutoff = Date.now() - ROTTING_DAYS * 86_400_000;
+    const rottingCount = deals.filter(d => !d.closedDate && new Date(d.updatedAt).getTime() < rottingCutoff).length;
+    return {
+      totalValue: tv, weightedValue: wv,
+      avgDealSize: wd.length > 0 ? wdv / wd.length : 0,
+      activeDeals: deals.length,
+      conversionRate: deals.length > 0 ? (wd.length / deals.length) * 100 : 0,
+      wonValue: wdv, wonDeals: wd.length, rottingCount,
+    };
+  }, [deals]);
 
   // Dialog states
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
@@ -731,9 +1848,11 @@ export default function CRMModule() {
       if (editingContact) {
         await updateDoc(doc(db, 'clients', editingContact.id), { ...clean, updatedAt: now });
         toast.success(t('crm.toast.contactUpdated', 'Contato atualizado!'));
+        void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'contact_updated', contactId: editingContact.id, details: `Dados editados` });
       } else {
-        await addDoc(collection(db, 'clients'), { ...clean, businessId: business.id, tipo: 'pf', score: data.score ?? 0, status: data.status ?? 'novo', source: data.source ?? 'outro', createdAt: now, updatedAt: now });
+        const ref = await addDoc(collection(db, 'clients'), { ...clean, businessId: business.id, tipo: 'pf', score: data.score ?? 0, status: data.status ?? 'novo', source: data.source ?? 'outro', createdAt: now, updatedAt: now });
         toast.success(t('crm.toast.contactCreated', 'Contato criado!'));
+        void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'contact_created', contactId: ref.id, details: data.name });
       }
       queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
       setContactDialogOpen(false); setEditingContact(null);
@@ -741,7 +1860,7 @@ export default function CRMModule() {
   }, [business?.id, user, editingContact, queryClient]);
 
   const handleDeleteContact = useCallback(async () => {
-    if (!deleteContactConfirm || !business?.id) return;
+    if (!deleteContactConfirm || !business?.id || !user) return;
     try {
       // Cascade: delete deals linked to this contact
       const dealsSnap = await getDocs(query(collection(db, 'crmDeals'), where('businessId', '==', business.id), where('contactId', '==', deleteContactConfirm.id)));
@@ -750,6 +1869,7 @@ export default function CRMModule() {
       const activitiesSnap = await getDocs(query(collection(db, 'crmActivities'), where('businessId', '==', business.id), where('contactId', '==', deleteContactConfirm.id)));
       for (const a of activitiesSnap.docs) await deleteDoc(doc(db, 'crmActivities', a.id));
       // Delete the contact itself
+      void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'contact_deleted', contactId: deleteContactConfirm.id, details: deleteContactConfirm.name });
       await deleteDoc(doc(db, 'clients', deleteContactConfirm.id));
       toast.success(t('crm.toast.contactDeleted', 'Contato excluído'));
       queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
@@ -757,11 +1877,32 @@ export default function CRMModule() {
       queryClient.invalidateQueries({ queryKey: ['crmActivities', business.id] });
       setDeleteContactConfirm(null);
     } catch (err) { console.error('[CRM] Error deleting contact:', err); toast.error(t('crm.toast.errorDelete', 'Erro ao excluir')); }
-  }, [deleteContactConfirm, business?.id, queryClient]);
+  }, [deleteContactConfirm, business?.id, user, queryClient, t]);
 
-  const handleSaveDeal = useCallback(async (data: Partial<CRMDeal>) => { if (!business?.id || !user) return; const now = new Date().toISOString(); try { if (editingDeal) { await updateDoc(doc(db, 'crmDeals', editingDeal.id), { ...data, updatedAt: now }); toast.success(t('crm.toast.dealUpdated', 'Deal atualizado!')); } else { await addDoc(collection(db, 'crmDeals'), { ...data, businessId: business.id, stage: data.stage ?? 'prospeccao', probability: data.probability ?? 10, value: data.value ?? 0, createdAt: now, updatedAt: now }); toast.success(t('crm.toast.dealCreated', 'Deal criado!')); } queryClient.invalidateQueries({ queryKey: ['crmDeals', business.id] }); setDealDialogOpen(false); setEditingDeal(null); } catch (err) { console.error('[CRM] Error saving deal:', err); toast.error(t('crm.toast.errorSaveDeal', 'Erro ao salvar deal')); } }, [business?.id, user, editingDeal, queryClient]);
+  const handleSaveDeal = useCallback(async (data: Partial<CRMDeal>) => {
+    if (!business?.id || !user) return; const now = new Date().toISOString();
+    try {
+      if (editingDeal) {
+        await updateDoc(doc(db, 'crmDeals', editingDeal.id), { ...data, updatedAt: now });
+        toast.success(t('crm.toast.dealUpdated', 'Deal atualizado!'));
+        void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'deal_updated', contactId: editingDeal.contactId, dealId: editingDeal.id, details: data.title ?? editingDeal.title });
+      } else {
+        const ref = await addDoc(collection(db, 'crmDeals'), { ...data, businessId: business.id, stage: data.stage ?? 'prospeccao', probability: data.probability ?? 10, value: data.value ?? 0, createdAt: now, updatedAt: now });
+        toast.success(t('crm.toast.dealCreated', 'Deal criado!'));
+        void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'deal_created', contactId: data.contactId, dealId: ref.id, details: data.title });
+      }
+      queryClient.invalidateQueries({ queryKey: ['crmDeals', business.id] }); setDealDialogOpen(false); setEditingDeal(null);
+    } catch (err) { console.error('[CRM] Error saving deal:', err); toast.error(t('crm.toast.errorSaveDeal', 'Erro ao salvar deal')); }
+  }, [business?.id, user, editingDeal, queryClient, t]);
 
-  const handleDeleteDeal = useCallback(async () => { if (!deleteDealConfirm || !business?.id) return; try { await deleteDoc(doc(db, 'crmDeals', deleteDealConfirm.id)); toast.success(t('crm.toast.dealDeleted', 'Deal excluído')); queryClient.invalidateQueries({ queryKey: ['crmDeals', business.id] }); setDeleteDealConfirm(null); } catch (err) { console.error('[CRM] Error deleting deal:', err); toast.error(t('crm.toast.errorDelete', 'Erro ao excluir')); } }, [deleteDealConfirm, business?.id, queryClient]);
+  const handleDeleteDeal = useCallback(async () => {
+    if (!deleteDealConfirm || !business?.id || !user) return;
+    try {
+      void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'deal_deleted', contactId: deleteDealConfirm.contactId, dealId: deleteDealConfirm.id, details: deleteDealConfirm.title });
+      await deleteDoc(doc(db, 'crmDeals', deleteDealConfirm.id));
+      toast.success(t('crm.toast.dealDeleted', 'Deal excluído')); queryClient.invalidateQueries({ queryKey: ['crmDeals', business.id] }); setDeleteDealConfirm(null);
+    } catch (err) { console.error('[CRM] Error deleting deal:', err); toast.error(t('crm.toast.errorDelete', 'Erro ao excluir')); }
+  }, [deleteDealConfirm, business?.id, user, queryClient, t]);
 
   const handleSaveActivity = useCallback(async (data: Partial<CRMActivity>) => { if (!business?.id || !user) return; const now = new Date().toISOString(); try { if (editingActivity) { await updateDoc(doc(db, 'crmActivities', editingActivity.id), { ...data, updatedAt: now }); toast.success(t('crm.toast.activityUpdated', 'Atividade atualizada!')); } else { await addDoc(collection(db, 'crmActivities'), { ...data, businessId: business.id, isCompleted: false, createdAt: now, updatedAt: now }); toast.success(t('crm.toast.activityCreated', 'Atividade registrada!')); } queryClient.invalidateQueries({ queryKey: ['crmActivities', business.id] }); setActivityDialogOpen(false); setEditingActivity(null); } catch (err) { console.error('[CRM] Error saving activity:', err); toast.error(t('crm.toast.errorSaveActivity', 'Erro ao salvar atividade')); } }, [business?.id, user, editingActivity, queryClient]);
 
@@ -770,8 +1911,9 @@ export default function CRMModule() {
   const handleDeleteActivity = useCallback(async () => { if (!deleteActivityConfirm || !business?.id) return; try { await deleteDoc(doc(db, 'crmActivities', deleteActivityConfirm.id)); toast.success(t('crm.toast.activityDeleted', 'Atividade excluída')); queryClient.invalidateQueries({ queryKey: ['crmActivities', business.id] }); setDeleteActivityConfirm(null); } catch (err) { console.error('[CRM] Error deleting activity:', err); toast.error(t('crm.toast.errorDelete', 'Erro ao excluir')); } }, [deleteActivityConfirm, business?.id, queryClient]);
 
   const handleStatusChange = useCallback(async (contactId: string, newStatus: LeadStatus) => {
-    if (!business?.id) return;
+    if (!business?.id || !user) return;
     const qk = ['clients', business.id] as const;
+    const prevContact = (queryClient.getQueryData(qk) as CRMContact[] | undefined)?.find(c => c.id === contactId);
     // Optimistic update — card moves instantly, no snap-back
     queryClient.setQueryData(qk, (old: CRMContact[] = []) =>
       old.map((c) => c.id === contactId ? { ...c, status: newStatus } : c)
@@ -779,14 +1921,24 @@ export default function CRMModule() {
     try {
       await updateDoc(doc(db, 'clients', contactId), { status: newStatus, updatedAt: new Date().toISOString() });
       queryClient.invalidateQueries({ queryKey: qk });
+      if (prevContact) {
+        void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'status_changed', contactId, details: `${getStageLabel(stages, prevContact.status)} → ${getStageLabel(stages, newStatus)}` });
+      }
     } catch (err) {
       console.error('[CRM] Error changing lead status:', err);
       toast.error(t('crm.toast.errorMoveLead', 'Erro ao mover lead'));
       queryClient.invalidateQueries({ queryKey: qk }); // revert on failure
     }
-  }, [business?.id, queryClient, t]);
+  }, [business?.id, user, queryClient, t, stages]);
 
-  const handleTagsChange = useCallback(async (contactId: string, tags: string[]) => { if (!business?.id) return; try { await updateDoc(doc(db, 'clients', contactId), { tags, updatedAt: new Date().toISOString() }); queryClient.invalidateQueries({ queryKey: ['clients', business.id] }); } catch (err) { console.error('[CRM] Error updating tags:', err); toast.error(t('crm.toast.errorUpdateTags', 'Erro ao atualizar tags')); } }, [business?.id, queryClient]);
+  const handleTagsChange = useCallback(async (contactId: string, tags: string[]) => {
+    if (!business?.id || !user) return;
+    try {
+      await updateDoc(doc(db, 'clients', contactId), { tags, updatedAt: new Date().toISOString() });
+      queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
+      void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'tags_changed', contactId, details: tags.join(', ') || '(sem tags)' });
+    } catch (err) { console.error('[CRM] Error updating tags:', err); toast.error(t('crm.toast.errorUpdateTags', 'Erro ao atualizar tags')); }
+  }, [business?.id, user, queryClient, t]);
 
   // Quick stats for header
   const hotLeads = contacts.filter((c) => c.scores?.churnRisk && c.scores.churnRisk >= 60).length;
@@ -861,6 +2013,57 @@ export default function CRMModule() {
               </>
             )}
 
+            {/* Pipeline view toggle — only on kanban tab */}
+            {activeTab === 'kanban' && (
+              <div className="flex items-center gap-0.5 p-0.5 bg-gray-100 dark:bg-white/[0.06] rounded-xl">
+                <button
+                  onClick={() => handlePipelineView('kanban')}
+                  title="Visão Kanban"
+                  className={cn('p-1.5 rounded-[10px] transition-all',
+                    pipelineView === 'kanban'
+                      ? 'bg-white dark:bg-white/[0.12] text-gray-900 dark:text-white shadow-sm'
+                      : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300'
+                  )}>
+                  <LayoutDashboard size={15} />
+                </button>
+                <button
+                  onClick={() => handlePipelineView('table')}
+                  title="Visão Lista"
+                  className={cn('p-1.5 rounded-[10px] transition-all',
+                    pipelineView === 'table'
+                      ? 'bg-white dark:bg-white/[0.12] text-gray-900 dark:text-white shadow-sm'
+                      : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300'
+                  )}>
+                  <LayoutList size={15} />
+                </button>
+              </div>
+            )}
+
+            {/* CSV Import/Export dropdown */}
+            <div className="relative" ref={csvMenuRef}>
+              <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
+                onClick={() => setCsvMenuOpen(v => !v)}
+                className="inline-flex items-center gap-1.5 px-3 py-2.5 bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 rounded-xl text-sm font-medium hover:border-gray-300 dark:hover:border-gray-600 transition-colors">
+                <Download size={14} />
+                <Upload size={14} />
+              </motion.button>
+              <AnimatePresence>
+                {csvMenuOpen && (
+                  <motion.div initial={{ opacity: 0, y: 4, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 4, scale: 0.97 }} transition={{ duration: 0.1 }}
+                    className="absolute right-0 top-full mt-1.5 w-44 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg z-50 overflow-hidden">
+                    <button onClick={() => { setCsvMenuOpen(false); setShowExportModal(true); }}
+                      className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors">
+                      <Download size={15} className="text-emerald-500" /> Exportar CSV
+                    </button>
+                    <button onClick={() => { setCsvMenuOpen(false); setShowImportModal(true); }}
+                      className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors">
+                      <Upload size={15} className="text-blue-500" /> Importar CSV
+                    </button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
             <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
               onClick={() => { setEditingContact(null); setContactDialogOpen(true); }}
               className="inline-flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-white/[0.06] border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl font-semibold text-sm hover:border-gray-300 dark:hover:border-gray-600 transition-colors">
@@ -898,6 +2101,16 @@ export default function CRMModule() {
               </button>
             );
           })}
+          {/* Pipeline settings gear — only on kanban tab, admin only */}
+          {activeTab === 'kanban' && isAdmin && (
+            <button
+              onClick={() => setShowPipelineSettings(true)}
+              className="ml-auto mr-1 p-2 rounded-lg text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+              title="Configurar estágios do pipeline"
+            >
+              <Settings2 className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -937,13 +2150,26 @@ export default function CRMModule() {
             transition={{ duration: 0.18 }}
             className="flex-1 flex flex-col min-h-0 h-full">
 
-            {activeTab === 'kanban' && (
+            {activeTab === 'kanban' && pipelineView === 'kanban' && (
               <KanbanBoard contacts={contacts}
+                stages={stages}
                 onSelectContact={(c) => { setSelectedContact(c); setDetailOpen(true); }}
                 selectedContactId={selectedContact?.id || null}
                 onStatusChange={handleStatusChange}
                 onNewContact={() => { setEditingContact(null); setContactDialogOpen(true); }}
                 searchQuery={searchQuery} filterTags={filterTags} filterSource={filterSource} />
+            )}
+
+            {activeTab === 'kanban' && pipelineView === 'table' && (
+              <LeadTableView
+                contacts={contacts}
+                stages={stages}
+                searchQuery={searchQuery}
+                filterTags={filterTags}
+                filterSource={filterSource}
+                onSelectContact={(c) => { setSelectedContact(c); setDetailOpen(true); }}
+                selectedContactId={selectedContact?.id || null}
+              />
             )}
 
             {activeTab === 'atividades' && (
@@ -962,15 +2188,32 @@ export default function CRMModule() {
               </div>
             )}
 
+            {activeTab === 'segmentos' && (
+              <div className="flex-1 overflow-y-auto min-h-0 p-1">
+                <SegmentsTab
+                  contacts={contacts}
+                  businessId={business?.id || ''}
+                  userId={user?.uid || ''}
+                  userName={user?.name || ''}
+                />
+              </div>
+            )}
+
             {activeTab === 'metricas' && (
               <div className="flex-1 overflow-y-auto min-h-0">
                 <MetricsTab deals={deals} contacts={contacts} activities={activities}
-                  stages={PIPELINE_STAGES} isDark={isDark} metrics={pipelineMetrics} />
+                  stages={PIPELINE_STAGES} isDark={isDark} metrics={pipelineMetrics}
+                  wonStatusId={getWonStageId(stages)} />
               </div>
             )}
             {activeTab === 'automacoes' && (
               <div className="flex-1 overflow-y-auto min-h-0">
                 <AutomacoesTab businessId={business?.id || ''} userId={user?.uid || ''} userName={user?.name || ''} isDark={isDark} />
+              </div>
+            )}
+            {activeTab === 'sequencias' && (
+              <div className="flex-1 overflow-y-auto min-h-0 p-1">
+                <SequenciasTab businessId={business?.id || ''} userId={user?.uid || ''} userName={user?.name || ''} contacts={contacts} />
               </div>
             )}
             {activeTab === 'formularios' && (
@@ -991,6 +2234,22 @@ export default function CRMModule() {
           OVERLAYS & DIALOGS
           ═══════════════════════════════════════════════════════════ */}
 
+      {/* CSV Export/Import modals */}
+      {showExportModal && <CRMExportModal contacts={contacts} stages={stages} onClose={() => setShowExportModal(false)} />}
+      {showImportModal && <CRMImportModal businessId={business?.id ?? ''} onClose={() => setShowImportModal(false)} onImported={() => queryClient.invalidateQueries({ queryKey: ['clients', business?.id] })} />}
+
+      {/* Pipeline settings modal */}
+      <AnimatePresence>
+        {showPipelineSettings && (
+          <PipelineSettingsModal
+            current={pipelineConfig}
+            businessId={business!.id}
+            onClose={() => setShowPipelineSettings(false)}
+            onSaved={cfg => setPipelineConfig(cfg)}
+          />
+        )}
+      </AnimatePresence>
+
       {/* Lead Detail Panel */}
       <AnimatePresence>
         {detailOpen && selectedContact && (
@@ -998,6 +2257,7 @@ export default function CRMModule() {
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               className="fixed inset-0 bg-black/30 backdrop-blur-sm z-30" onClick={() => setDetailOpen(false)} />
             <LeadDetailPanel contact={selectedContact} activities={activities}
+              stages={stages}
               onClose={() => setDetailOpen(false)}
               onEdit={() => { setEditingContact(selectedContact); setContactDialogOpen(true); setDetailOpen(false); }}
               onDelete={() => { setDeleteContactConfirm(selectedContact); setDetailOpen(false); }}
@@ -1017,7 +2277,7 @@ export default function CRMModule() {
       )}
 
       {/* Form Dialogs */}
-      <ContactFormDialog open={contactDialogOpen} onClose={() => { setContactDialogOpen(false); setEditingContact(null); }} onSave={handleSaveContact} contact={editingContact} members={members} />
+      <ContactFormDialog open={contactDialogOpen} onClose={() => { setContactDialogOpen(false); setEditingContact(null); }} onSave={handleSaveContact} contact={editingContact} members={members} stages={stages} />
       <DealFormDialog open={dealDialogOpen} onClose={() => { setDealDialogOpen(false); setEditingDeal(null); }} onSave={handleSaveDeal} deal={editingDeal} contacts={contacts} members={members} />
       <ActivityFormDialog open={activityDialogOpen} onClose={() => { setActivityDialogOpen(false); setEditingActivity(null); }} onSave={handleSaveActivity} activity={editingActivity} contacts={contacts} deals={deals} members={members} />
 

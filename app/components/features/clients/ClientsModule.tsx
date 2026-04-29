@@ -7,16 +7,21 @@ import {
   Building2, User, ChevronDown, CheckCircle2, Tag, MapPin,
   TrendingUp, TrendingDown, ShoppingCart, Star, MoreVertical, Eye, FileText,
   Download, Upload, UserCheck, Gift, Calendar, MessageSquare, History, Clock,
+  FileDown, Settings, Plus as PlusIcon, Minus, Trophy, Sparkles, LayoutList, AlignJustify,
 } from 'lucide-react';
-import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, limit as firestoreLimit, orderBy } from 'firebase/firestore';
+import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, limit as firestoreLimit, orderBy, writeBatch } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
-import type { Client, LeadSource, LeadStatus } from '@/lib/types';
+import type { Client, LeadSource, LeadStatus, LoyaltyConfig, LoyaltyTier, LoyaltyHistoryEntry } from '@/lib/types';
+import { DEFAULT_LOYALTY_TIERS } from '@/lib/types';
+import { ROLE_HIERARCHY } from '@/lib/types';
 import { toast } from 'react-toastify';
 import ClientAgentMemoryPanel from './ClientAgentMemoryPanel';
+import Papa from 'papaparse';
+import { ClientTableView } from './ClientTableView';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -37,6 +42,119 @@ const SOURCE_LABELS: Record<LeadSource, string> = {
 };
 
 const TIPO_LABELS = { pf: 'Pessoa Física', pj: 'Pessoa Jurídica' };
+
+// ─── Health / Churn Risk ──────────────────────────────────────────────────────
+
+type ChurnRiskLevel = 'minimal' | 'low' | 'moderate' | 'high' | 'critical';
+
+const CHURN_CFG: Record<ChurnRiskLevel, { label: string; color: string; dot: string; bg: string; bar: string; min: number }> = {
+  minimal:  { label: 'Saudável',   color: 'text-emerald-600 dark:text-emerald-400', dot: 'bg-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-500/10', bar: 'bg-emerald-500', min: 0  },
+  low:      { label: 'Baixo risco',color: 'text-green-600 dark:text-green-400',     dot: 'bg-green-500',   bg: 'bg-green-50 dark:bg-green-500/10',     bar: 'bg-green-500',   min: 20 },
+  moderate: { label: 'Moderado',   color: 'text-amber-600 dark:text-amber-400',     dot: 'bg-amber-500',   bg: 'bg-amber-50 dark:bg-amber-500/10',     bar: 'bg-amber-500',   min: 40 },
+  high:     { label: 'Alto risco', color: 'text-orange-600 dark:text-orange-400',   dot: 'bg-orange-500',  bg: 'bg-orange-50 dark:bg-orange-500/10',   bar: 'bg-orange-500',  min: 60 },
+  critical: { label: 'Crítico',    color: 'text-red-600 dark:text-red-400',         dot: 'bg-red-500',     bg: 'bg-red-50 dark:bg-red-500/10',         bar: 'bg-red-500',     min: 80 },
+};
+
+function getChurnLevel(risk: number): ChurnRiskLevel {
+  if (risk >= 80) return 'critical';
+  if (risk >= 60) return 'high';
+  if (risk >= 40) return 'moderate';
+  if (risk >= 20) return 'low';
+  return 'minimal';
+}
+
+function getOverallColor(score: number): string {
+  if (score >= 80) return 'bg-emerald-500';
+  if (score >= 60) return 'bg-green-500';
+  if (score >= 40) return 'bg-amber-500';
+  if (score >= 20) return 'bg-orange-500';
+  return 'bg-red-500';
+}
+
+// ─── Health Badge (list card) ─────────────────────────────────────────────────
+
+function HealthBadge({ client }: { client: Client }) {
+  const risk = client.scores?.churnRisk;
+  if (risk == null) return null;
+  const cfg = CHURN_CFG[getChurnLevel(risk)];
+  return (
+    <span className={cn('inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-medium', cfg.bg, cfg.color)}>
+      <span className={cn('w-1.5 h-1.5 rounded-full', cfg.dot)} />
+      {cfg.label}
+    </span>
+  );
+}
+
+// ─── Scores Section (Perfil tab) ──────────────────────────────────────────────
+
+function ScoresSection({ client }: { client: Client }) {
+  const scores = client.scores;
+  if (!scores || scores.lastCalculatedAt == null) return null;
+
+  const bars = [
+    { label: 'Fidelidade',   value: scores.loyalty ?? 0,    color: 'bg-purple-500' },
+    { label: 'Valor',        value: scores.value ?? 0,      color: 'bg-blue-500' },
+    { label: 'Engajamento',  value: scores.engagement ?? 0, color: 'bg-sky-500' },
+    { label: 'Risco de churn', value: scores.churnRisk ?? 0, color: CHURN_CFG[getChurnLevel(scores.churnRisk ?? 0)].bar, invert: true },
+  ];
+
+  const overall = scores.overall ?? 0;
+  const churnLvl = getChurnLevel(scores.churnRisk ?? 0);
+  const churnCfg = CHURN_CFG[churnLvl];
+
+  return (
+    <div className="border-t border-gray-100 dark:border-gray-800 pt-4 space-y-3">
+      <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Saúde do cliente</p>
+
+      {/* Overall gauge */}
+      <div className="flex items-center gap-3">
+        <div className="relative w-14 h-14 flex-shrink-0">
+          <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
+            <circle cx="18" cy="18" r="14" fill="none" stroke="currentColor" strokeWidth="3.5"
+              className="text-gray-100 dark:text-gray-800" />
+            <circle cx="18" cy="18" r="14" fill="none" strokeWidth="3.5"
+              strokeDasharray={`${overall * 0.879} 87.9`}
+              strokeLinecap="round"
+              className={cn('transition-all duration-700', overall >= 60 ? 'text-emerald-500' : overall >= 40 ? 'text-amber-500' : 'text-red-500')}
+              stroke="currentColor" />
+          </svg>
+          <span className="absolute inset-0 flex items-center justify-center text-sm font-bold text-gray-900 dark:text-white rotate-0">
+            {overall}
+          </span>
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-gray-800 dark:text-gray-200">Score geral: {overall}/100</p>
+          <span className={cn('inline-flex items-center gap-1 text-xs font-medium mt-0.5', churnCfg.color)}>
+            <span className={cn('w-1.5 h-1.5 rounded-full', churnCfg.dot)} />
+            {churnCfg.label}
+          </span>
+        </div>
+      </div>
+
+      {/* Individual bars */}
+      <div className="space-y-2">
+        {bars.map(b => (
+          <div key={b.label}>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[10px] text-gray-500 dark:text-gray-400">{b.label}</span>
+              <span className={cn('text-[10px] font-semibold', b.invert && b.value >= 60 ? 'text-red-500' : 'text-gray-600 dark:text-gray-300')}>
+                {b.value}
+              </span>
+            </div>
+            <div className="h-1.5 rounded-full bg-gray-100 dark:bg-gray-800 overflow-hidden">
+              <motion.div
+                className={cn('h-full rounded-full', b.color)}
+                initial={{ width: 0 }}
+                animate={{ width: `${b.value}%` }}
+                transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 // ─── Client Form ─────────────────────────────────────────────────────────────
 
@@ -82,6 +200,7 @@ function findDuplicate(form: ClientFormData, clients: Client[], editingId?: stri
 
   for (const c of clients) {
     if (editingId && c.id === editingId) continue;
+    if (c.mergedInto) continue; // skip already-merged secondary records
     if (cpfCnpj && digits(c.cpfCnpj) === cpfCnpj) return { client: c, field: form.tipo === 'pj' ? 'CNPJ' : 'CPF' };
     if (email && normEmail(c.email) === email) return { client: c, field: 'e-mail' };
     if (phone) {
@@ -351,6 +470,1406 @@ function ClientForm({
 
 // ─── Client Detail Panel ──────────────────────────────────────────────────────
 
+// ─── Export ──────────────────────────────────────────────────────────────────
+
+interface ExportColumn {
+  id: string;
+  label: string;
+  group: string;
+  get: (c: Client) => string;
+}
+
+const EXPORT_COLUMNS: ExportColumn[] = [
+  { id: 'name',          label: 'Nome',           group: 'Básico',     get: c => c.name },
+  { id: 'email',         label: 'E-mail',         group: 'Básico',     get: c => c.email || '' },
+  { id: 'phone',         label: 'Telefone',       group: 'Básico',     get: c => c.phone || '' },
+  { id: 'whatsapp',      label: 'WhatsApp',       group: 'Básico',     get: c => c.whatsapp || '' },
+  { id: 'company',       label: 'Empresa',        group: 'Básico',     get: c => c.company || '' },
+  { id: 'tipo',          label: 'Tipo',           group: 'Básico',     get: c => TIPO_LABELS[c.tipo || 'pf'] },
+  { id: 'cpfCnpj',       label: 'CPF/CNPJ',       group: 'Básico',     get: c => c.cpfCnpj || '' },
+  { id: 'status',        label: 'Status',         group: 'Básico',     get: c => STATUS_CONFIG[c.status]?.label || c.status },
+  { id: 'source',        label: 'Origem',         group: 'Básico',     get: c => SOURCE_LABELS[c.source] || c.source },
+  { id: 'tags',          label: 'Tags',           group: 'Básico',     get: c => (c.tags || []).join(', ') },
+  { id: 'totalSpent',    label: 'Total gasto',    group: 'Financeiro', get: c => String(c.totalSpent || 0) },
+  { id: 'visitCount',    label: 'Compras',        group: 'Financeiro', get: c => String(c.visitCount || 0) },
+  { id: 'lastVisit',     label: 'Última compra',  group: 'Financeiro', get: c => formatDate(c.lastVisit || '') },
+  { id: 'loyaltyPoints', label: 'Pts fidelidade', group: 'Financeiro', get: c => String(c.loyaltyPoints || 0) },
+  { id: 'cep',           label: 'CEP',            group: 'Endereço',   get: c => c.endereco?.cep || '' },
+  { id: 'logradouro',    label: 'Logradouro',     group: 'Endereço',   get: c => c.endereco?.logradouro || '' },
+  { id: 'numero',        label: 'Número',         group: 'Endereço',   get: c => c.endereco?.numero || '' },
+  { id: 'bairro',        label: 'Bairro',         group: 'Endereço',   get: c => c.endereco?.bairro || '' },
+  { id: 'municipio',     label: 'Município',      group: 'Endereço',   get: c => c.endereco?.municipio || '' },
+  { id: 'uf',            label: 'UF',             group: 'Endereço',   get: c => c.endereco?.uf || '' },
+  { id: 'notes',         label: 'Observações',    group: 'Avançado',   get: c => c.notes || '' },
+  { id: 'createdAt',     label: 'Cadastrado em',  group: 'Avançado',   get: c => formatDate(c.createdAt) },
+];
+
+const DEFAULT_EXPORT_COLS = new Set(['name', 'email', 'phone', 'whatsapp', 'company', 'tipo', 'cpfCnpj', 'status', 'source', 'tags', 'totalSpent', 'visitCount']);
+
+const EXPORT_GROUPS = ['Básico', 'Financeiro', 'Endereço', 'Avançado'];
+
+function downloadCSV(clients: Client[], selectedCols: Set<string>, filename: string) {
+  const cols = EXPORT_COLUMNS.filter(c => selectedCols.has(c.id));
+  if (cols.length === 0 || clients.length === 0) return;
+
+  const escape = (v: string) => {
+    const s = String(v ?? '').replace(/"/g, '""');
+    return s.includes(';') || s.includes('\n') || s.includes('"') ? `"${s}"` : s;
+  };
+
+  const lines = [
+    cols.map(c => escape(c.label)).join(';'),
+    ...clients.map(client => cols.map(col => escape(col.get(client))).join(';')),
+  ];
+
+  // UTF-8 BOM so Excel BR opens with correct encoding
+  const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function ExportModal({
+  allClients,
+  filteredClients,
+  onClose,
+}: {
+  allClients: Client[];
+  filteredClients: Client[];
+  onClose: () => void;
+}) {
+  const [source, setSource] = useState<'filtered' | 'all'>('filtered');
+  const [selectedCols, setSelectedCols] = useState<Set<string>>(new Set(DEFAULT_EXPORT_COLS));
+
+  const toggleCol = (id: string) =>
+    setSelectedCols(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+
+  const toggleGroup = (group: string) => {
+    const groupIds = EXPORT_COLUMNS.filter(c => c.group === group).map(c => c.id);
+    const allOn = groupIds.every(id => selectedCols.has(id));
+    setSelectedCols(prev => {
+      const next = new Set(prev);
+      groupIds.forEach(id => allOn ? next.delete(id) : next.add(id));
+      return next;
+    });
+  };
+
+  const clients = source === 'filtered' ? filteredClients : allClients;
+
+  const handleExport = () => {
+    const date = new Date().toISOString().slice(0, 10);
+    downloadCSV(clients, selectedCols, `clientes_${date}.csv`);
+    onClose();
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 16 }}
+        transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+        className="w-full max-w-lg bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 overflow-hidden"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-emerald-50 dark:bg-emerald-500/10 flex items-center justify-center">
+              <FileDown className="w-4 h-4 text-emerald-500" />
+            </div>
+            <h2 className="font-semibold text-gray-900 dark:text-white text-sm">Exportar clientes</h2>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-6 space-y-5 max-h-[70vh] overflow-y-auto">
+          {/* Source */}
+          <div>
+            <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">Quais clientes</p>
+            <div className="grid grid-cols-2 gap-2">
+              {([
+                { key: 'filtered', label: 'Filtrados atualmente', count: filteredClients.length },
+                { key: 'all',      label: 'Todos os clientes',    count: allClients.length },
+              ] as const).map(opt => (
+                <button
+                  key={opt.key}
+                  onClick={() => setSource(opt.key)}
+                  className={cn(
+                    'flex flex-col items-start px-4 py-3 rounded-xl border text-left transition-all',
+                    source === opt.key
+                      ? 'border-red-500 bg-red-50/50 dark:bg-red-500/5'
+                      : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
+                  )}
+                >
+                  <span className="text-xs font-medium text-gray-700 dark:text-gray-300">{opt.label}</span>
+                  <span className={cn('text-lg font-bold mt-0.5', source === opt.key ? 'text-red-600 dark:text-red-400' : 'text-gray-400')}>
+                    {opt.count}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Columns */}
+          <div>
+            <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
+              Colunas — {selectedCols.size} selecionadas
+            </p>
+            <div className="space-y-3">
+              {EXPORT_GROUPS.map(group => {
+                const groupCols = EXPORT_COLUMNS.filter(c => c.group === group);
+                const allOn = groupCols.every(c => selectedCols.has(c.id));
+                return (
+                  <div key={group} className="border border-gray-100 dark:border-gray-800 rounded-xl overflow-hidden">
+                    <button
+                      onClick={() => toggleGroup(group)}
+                      className="w-full flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-800/60 text-xs font-semibold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                    >
+                      {group}
+                      <span className={cn('text-[10px] font-medium px-1.5 py-0.5 rounded', allOn ? 'bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-400' : 'bg-gray-200 dark:bg-gray-700 text-gray-500')}>
+                        {allOn ? 'Desmarcar todos' : 'Marcar todos'}
+                      </span>
+                    </button>
+                    <div className="px-3 py-2 flex flex-wrap gap-2">
+                      {groupCols.map(col => (
+                        <button
+                          key={col.id}
+                          onClick={() => toggleCol(col.id)}
+                          className={cn(
+                            'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-all border',
+                            selectedCols.has(col.id)
+                              ? 'bg-red-600 text-white border-red-600'
+                              : 'bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:border-gray-300'
+                          )}
+                        >
+                          <CheckCircle2 className={cn('w-3 h-3', selectedCols.has(col.id) ? 'opacity-100' : 'opacity-0')} />
+                          {col.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between gap-3 px-6 py-4 border-t border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/30">
+          <p className="text-xs text-gray-400 dark:text-gray-500">
+            Formato CSV • abre no Excel
+          </p>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="px-4 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+              Cancelar
+            </button>
+            <button
+              onClick={handleExport}
+              disabled={selectedCols.size === 0 || clients.length === 0}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold transition-colors disabled:opacity-40"
+            >
+              <FileDown className="w-4 h-4" />
+              Baixar {clients.length} clientes
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ─── Import ──────────────────────────────────────────────────────────────────
+
+const IMPORT_FIELDS: { id: string; label: string; required?: boolean }[] = [
+  { id: 'name',        label: 'Nome',                      required: true },
+  { id: 'email',       label: 'E-mail' },
+  { id: 'phone',       label: 'Telefone' },
+  { id: 'whatsapp',    label: 'WhatsApp' },
+  { id: 'company',     label: 'Empresa' },
+  { id: 'tipo',        label: 'Tipo (pf / pj)' },
+  { id: 'cpfCnpj',     label: 'CPF / CNPJ' },
+  { id: 'status',      label: 'Status' },
+  { id: 'source',      label: 'Origem' },
+  { id: 'tags',        label: 'Tags (vírgula)' },
+  { id: 'notes',       label: 'Observações' },
+  { id: 'cep',         label: 'CEP' },
+  { id: 'logradouro',  label: 'Logradouro' },
+  { id: 'numero',      label: 'Número' },
+  { id: 'bairro',      label: 'Bairro' },
+  { id: 'municipio',   label: 'Município' },
+  { id: 'uf',          label: 'UF' },
+];
+
+const FIELD_ALIASES: Record<string, string[]> = {
+  name:       ['nome', 'name', 'cliente', 'razao social', 'razão social'],
+  email:      ['email', 'e-mail', 'mail'],
+  phone:      ['telefone', 'phone', 'tel', 'fone', 'celular'],
+  whatsapp:   ['whatsapp', 'wpp', 'zap', 'whats'],
+  company:    ['empresa', 'company', 'negocio', 'negócio', 'corporação'],
+  tipo:       ['tipo', 'type', 'pessoa'],
+  cpfCnpj:   ['cpf', 'cnpj', 'cpf/cnpj', 'documento', 'doc'],
+  status:     ['status', 'situação', 'situacao'],
+  source:     ['origem', 'source', 'canal', 'procedência'],
+  tags:       ['tags', 'etiquetas', 'categorias', 'labels'],
+  notes:      ['notas', 'observações', 'observacoes', 'notes', 'obs', 'comentario'],
+  cep:        ['cep', 'zip', 'postal'],
+  logradouro: ['logradouro', 'rua', 'endereco', 'endereço', 'street'],
+  numero:     ['numero', 'número', 'num', 'number', 'n°'],
+  bairro:     ['bairro', 'district', 'neighborhood'],
+  municipio:  ['municipio', 'município', 'cidade', 'city'],
+  uf:         ['uf', 'estado', 'state', 'province'],
+};
+
+function autoMap(headers: string[]): Record<string, string> {
+  const used = new Set<string>();
+  const result: Record<string, string> = {};
+  for (const h of headers) {
+    const norm = h.toLowerCase().trim();
+    for (const [field, aliases] of Object.entries(FIELD_ALIASES)) {
+      if (!used.has(field) && aliases.some(a => norm === a || norm.includes(a) || a.includes(norm))) {
+        result[h] = field;
+        used.add(field);
+        break;
+      }
+    }
+  }
+  return result;
+}
+
+function normalizeStatus(raw: string): LeadStatus {
+  const m: Record<string, LeadStatus> = {
+    novo: 'novo', new: 'novo', lead: 'novo',
+    contatado: 'contatado', contacted: 'contatado',
+    qualificado: 'qualificado', qualified: 'qualificado',
+    proposta: 'proposta', proposal: 'proposta',
+    negociacao: 'negociacao', 'negociação': 'negociacao', negotiation: 'negociacao',
+    ganho: 'ganho', cliente: 'ganho', won: 'ganho', ativo: 'ganho', active: 'ganho',
+    perdido: 'perdido', inativo: 'perdido', lost: 'perdido', inactive: 'perdido',
+  };
+  return m[raw.toLowerCase().trim()] ?? 'ganho';
+}
+
+function normalizeSource(raw: string): LeadSource {
+  const m: Record<string, LeadSource> = {
+    site: 'site', website: 'site',
+    'indicacao': 'indicacao', 'indicação': 'indicacao', referral: 'indicacao',
+    whatsapp: 'whatsapp', instagram: 'instagram', facebook: 'facebook',
+    'google': 'google_ads', 'google ads': 'google_ads', google_ads: 'google_ads',
+    linkedin: 'linkedin',
+    evento: 'evento', event: 'evento',
+    email: 'email', 'e-mail': 'email',
+    telefone: 'telefone', phone: 'telefone',
+  };
+  return m[raw.toLowerCase().trim()] ?? 'outro';
+}
+
+function rowToFormData(row: Record<string, string>, mapping: Record<string, string>): ClientFormData {
+  const get = (fieldId: string) => {
+    const col = Object.entries(mapping).find(([, v]) => v === fieldId)?.[0];
+    return col ? (row[col] ?? '').trim() : '';
+  };
+  return {
+    name: get('name'),
+    email: get('email'),
+    phone: get('phone'),
+    whatsapp: get('whatsapp'),
+    company: get('company'),
+    tipo: get('tipo').toLowerCase().startsWith('pj') ? 'pj' : 'pf',
+    cpfCnpj: get('cpfCnpj'),
+    inscricaoEstadual: '',
+    indicadorIE: '',
+    source: get('source') ? normalizeSource(get('source')) : 'outro',
+    status: get('status') ? normalizeStatus(get('status')) : 'ganho',
+    notes: get('notes'),
+    tags: get('tags') ? get('tags').split(',').map(t => t.trim()).filter(Boolean) : [],
+    cep: get('cep'),
+    logradouro: get('logradouro'),
+    numero: get('numero'),
+    complemento: '',
+    bairro: get('bairro'),
+    municipio: get('municipio'),
+    uf: get('uf').toUpperCase().slice(0, 2),
+  };
+}
+
+interface ImportResult { created: number; skipped: number; errors: number }
+
+function ImportModal({
+  existingClients,
+  businessId,
+  onClose,
+  onDone,
+}: {
+  existingClients: Client[];
+  businessId: string;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [rows, setRows] = useState<Record<string, string>[]>([]);
+  const [headers, setHeaders] = useState<string[]>([]);
+  const [mapping, setMapping] = useState<Record<string, string>>({});
+  const [dragOver, setDragOver] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [result, setResult] = useState<ImportResult | null>(null);
+
+  const handleFile = (file: File) => {
+    Papa.parse<Record<string, string>>(file, {
+      header: true,
+      skipEmptyLines: true,
+      encoding: 'UTF-8',
+      complete: res => {
+        const hdrs = res.meta.fields ?? [];
+        setHeaders(hdrs);
+        setRows(res.data);
+        setMapping(autoMap(hdrs));
+        setStep(2);
+      },
+    });
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const file = e.dataTransfer.files[0];
+    if (file) handleFile(file);
+  };
+
+  const preview = useMemo(() => rows.slice(0, 5).map(r => rowToFormData(r, mapping)), [rows, mapping]);
+
+  const stats = useMemo(() => {
+    let valid = 0, dupes = 0, noName = 0;
+    for (const row of rows) {
+      const fd = rowToFormData(row, mapping);
+      if (!fd.name) { noName++; continue; }
+      if (findDuplicate(fd, existingClients)) { dupes++; continue; }
+      valid++;
+    }
+    return { valid, dupes, noName, total: rows.length };
+  }, [rows, mapping, existingClients]);
+
+  const handleImport = async () => {
+    setImporting(true);
+    setProgress(0);
+    let created = 0, skipped = 0, errors = 0;
+    const now = new Date().toISOString();
+
+    for (let i = 0; i < rows.length; i++) {
+      setProgress(Math.round(((i + 1) / rows.length) * 100));
+      try {
+        const fd = rowToFormData(rows[i], mapping);
+        if (!fd.name) { errors++; continue; }
+        if (findDuplicate(fd, existingClients)) { skipped++; continue; }
+        const payload: Record<string, unknown> = {
+          businessId,
+          name: fd.name,
+          email: fd.email || undefined,
+          phone: fd.phone || undefined,
+          whatsapp: fd.whatsapp || undefined,
+          company: fd.company || undefined,
+          tipo: fd.tipo,
+          cpfCnpj: fd.cpfCnpj || undefined,
+          source: fd.source,
+          status: fd.status,
+          notes: fd.notes || undefined,
+          tags: fd.tags.length ? fd.tags : undefined,
+          score: 0, isActive: true, totalSpent: 0, visitCount: 0,
+          createdAt: now, updatedAt: now,
+        };
+        if (fd.cep || fd.logradouro || fd.municipio) {
+          payload.endereco = {
+            cep: fd.cep || undefined,
+            logradouro: fd.logradouro || undefined,
+            numero: fd.numero || undefined,
+            bairro: fd.bairro || undefined,
+            municipio: fd.municipio || undefined,
+            uf: fd.uf || undefined,
+          };
+        }
+        await addDoc(collection(db, 'clients'), payload);
+        created++;
+      } catch { errors++; }
+    }
+
+    setResult({ created, skipped, errors });
+    setImporting(false);
+    onDone();
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={e => { if (e.target === e.currentTarget && !importing) onClose(); }}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 16 }}
+        transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+        className="w-full max-w-2xl bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 overflow-hidden flex flex-col max-h-[90vh]"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800 flex-shrink-0">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-blue-50 dark:bg-blue-500/10 flex items-center justify-center">
+              <Upload className="w-4 h-4 text-blue-500" />
+            </div>
+            <div>
+              <h2 className="font-semibold text-gray-900 dark:text-white text-sm">Importar clientes</h2>
+              <p className="text-[10px] text-gray-400">
+                {step === 1 ? 'Selecionar arquivo' : step === 2 ? 'Mapear colunas' : 'Revisar e importar'}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            {/* Step indicators */}
+            <div className="flex items-center gap-1">
+              {[1, 2, 3].map(s => (
+                <div key={s} className={cn('w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold transition-colors',
+                  step === s ? 'bg-red-600 text-white' :
+                  step > s  ? 'bg-emerald-500 text-white' :
+                  'bg-gray-100 dark:bg-gray-800 text-gray-400')}
+                >
+                  {step > s ? '✓' : s}
+                </div>
+              ))}
+            </div>
+            {!importing && (
+              <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto">
+
+          {/* STEP 1 — Upload */}
+          {step === 1 && (
+            <div className="p-6">
+              <div
+                onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={handleDrop}
+                onClick={() => document.getElementById('csv-file-input')?.click()}
+                className={cn(
+                  'border-2 border-dashed rounded-2xl p-10 flex flex-col items-center justify-center text-center cursor-pointer transition-all',
+                  dragOver
+                    ? 'border-red-400 bg-red-50 dark:bg-red-500/5'
+                    : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800/30'
+                )}
+              >
+                <Upload className="w-8 h-8 text-gray-300 dark:text-gray-600 mb-3" />
+                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Arraste um arquivo CSV ou clique para selecionar
+                </p>
+                <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                  Suporte a UTF-8, separador vírgula ou ponto-e-vírgula
+                </p>
+              </div>
+              <input
+                id="csv-file-input"
+                type="file"
+                accept=".csv,.txt"
+                className="hidden"
+                onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
+              />
+              <div className="mt-4 p-3 bg-blue-50 dark:bg-blue-500/10 rounded-xl flex items-start gap-2">
+                <FileText className="w-4 h-4 text-blue-500 flex-shrink-0 mt-0.5" />
+                <p className="text-xs text-blue-700 dark:text-blue-300">
+                  <strong>Dica:</strong> Use o botão "Exportar" para baixar um CSV de exemplo com as colunas corretas e usá-lo como template.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* STEP 2 — Mapear colunas */}
+          {step === 2 && (
+            <div className="p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <p className="text-sm text-gray-600 dark:text-gray-300">
+                  <strong className="text-gray-900 dark:text-white">{rows.length}</strong> linhas encontradas
+                </p>
+                <p className="text-xs text-gray-400">Mapeie cada coluna do CSV a um campo do sistema</p>
+              </div>
+
+              <div className="border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
+                <div className="grid grid-cols-[1fr_auto_1fr] gap-0 text-[10px] font-semibold text-gray-400 uppercase tracking-wider bg-gray-50 dark:bg-gray-800/60 px-4 py-2">
+                  <span>Coluna no CSV</span>
+                  <span className="text-center px-4">→</span>
+                  <span>Campo do sistema</span>
+                </div>
+                <div className="divide-y divide-gray-100 dark:divide-gray-800">
+                  {headers.map(h => (
+                    <div key={h} className="grid grid-cols-[1fr_auto_1fr] gap-0 items-center px-4 py-2.5">
+                      <div>
+                        <p className="text-xs font-medium text-gray-800 dark:text-gray-200 truncate">{h}</p>
+                        <p className="text-[10px] text-gray-400 truncate mt-0.5">
+                          ex: {(rows[0]?.[h] ?? '').slice(0, 30) || '—'}
+                        </p>
+                      </div>
+                      <div className="px-3 text-gray-300 dark:text-gray-600">→</div>
+                      <select
+                        value={mapping[h] ?? ''}
+                        onChange={e => setMapping(prev => ({ ...prev, [h]: e.target.value }))}
+                        className="w-full text-xs rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-red-500/40"
+                      >
+                        <option value="">— Ignorar —</option>
+                        {IMPORT_FIELDS.map(f => (
+                          <option key={f.id} value={f.id}>
+                            {f.label}{f.required ? ' *' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* STEP 3 — Preview + Import */}
+          {step === 3 && (
+            <div className="p-6 space-y-4">
+              {/* Summary counts */}
+              <div className="grid grid-cols-3 gap-3">
+                {[
+                  { label: 'Serão criados',  value: stats.valid,  color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
+                  { label: 'Duplicatas (pular)', value: stats.dupes, color: 'text-amber-600 dark:text-amber-400',   bg: 'bg-amber-50 dark:bg-amber-500/10' },
+                  { label: 'Sem nome (erro)', value: stats.noName, color: 'text-red-600 dark:text-red-400',    bg: 'bg-red-50 dark:bg-red-500/10' },
+                ].map(s => (
+                  <div key={s.label} className={cn('rounded-xl p-3 text-center', s.bg)}>
+                    <p className={cn('text-2xl font-bold', s.color)}>{s.value}</p>
+                    <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5">{s.label}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Preview table */}
+              {preview.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                    Preview (primeiras {preview.length} linhas)
+                  </p>
+                  <div className="border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead className="bg-gray-50 dark:bg-gray-800/60">
+                        <tr>
+                          {['Nome', 'E-mail', 'Telefone', 'Status', 'Origem'].map(h => (
+                            <th key={h} className="text-left px-3 py-2 text-[10px] font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                        {preview.map((fd, i) => (
+                          <tr key={i} className={cn(!fd.name && 'opacity-40')}>
+                            <td className="px-3 py-2 font-medium text-gray-800 dark:text-gray-200 truncate max-w-[120px]">{fd.name || '—'}</td>
+                            <td className="px-3 py-2 text-gray-500 truncate max-w-[120px]">{fd.email || '—'}</td>
+                            <td className="px-3 py-2 text-gray-500">{fd.phone || '—'}</td>
+                            <td className="px-3 py-2 text-gray-500">{STATUS_CONFIG[fd.status]?.label || fd.status}</td>
+                            <td className="px-3 py-2 text-gray-500">{SOURCE_LABELS[fd.source] || fd.source}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Progress / Result */}
+              {importing && (
+                <div className="space-y-2">
+                  <div className="flex justify-between text-xs text-gray-500">
+                    <span>Importando...</span>
+                    <span>{progress}%</span>
+                  </div>
+                  <div className="h-2 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
+                    <motion.div
+                      className="h-full bg-red-500 rounded-full"
+                      animate={{ width: `${progress}%` }}
+                      transition={{ duration: 0.3 }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {result && (
+                <div className="flex items-center gap-3 p-4 bg-emerald-50 dark:bg-emerald-500/10 rounded-xl border border-emerald-200 dark:border-emerald-500/20">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-500 flex-shrink-0" />
+                  <p className="text-sm text-emerald-700 dark:text-emerald-300">
+                    <strong>{result.created}</strong> criados · <strong>{result.skipped}</strong> duplicatas puladas · <strong>{result.errors}</strong> erros
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between gap-3 px-6 py-4 border-t border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/30 flex-shrink-0">
+          <button
+            onClick={() => { if (step > 1 && !importing && !result) setStep(s => (s - 1) as 1 | 2 | 3); }}
+            disabled={step === 1 || importing || !!result}
+            className="px-4 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors disabled:opacity-30"
+          >
+            Voltar
+          </button>
+
+          {result ? (
+            <button onClick={onClose} className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors">
+              Fechar
+            </button>
+          ) : step < 3 ? (
+            <button
+              disabled={step === 2 && !Object.values(mapping).includes('name')}
+              onClick={() => setStep(s => (s + 1) as 2 | 3)}
+              className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors disabled:opacity-40"
+            >
+              {step === 2 ? `Continuar — ${rows.length} linhas` : 'Continuar'}
+            </button>
+          ) : (
+            <button
+              onClick={handleImport}
+              disabled={importing || stats.valid === 0}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors disabled:opacity-40"
+            >
+              <Upload className="w-4 h-4" />
+              Importar {stats.valid} clientes
+            </button>
+          )}
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ─── Merge duplicates ────────────────────────────────────────────────────────
+
+function detectDuplicates(clients: Client[]): [Client, Client][] {
+  const active = clients.filter(c => c.isActive !== false && !c.mergedInto);
+  const pairs: [Client, Client][] = [];
+  const seen = new Set<string>();
+
+  const addPair = (a: Client, b: Client) => {
+    const key = [a.id, b.id].sort().join('|');
+    if (!seen.has(key)) { seen.add(key); pairs.push([a, b]); }
+  };
+
+  const byCpf  = new Map<string, Client[]>();
+  const byMail = new Map<string, Client[]>();
+  const byPhone = new Map<string, Client[]>();
+
+  for (const c of active) {
+    const cpf = digits(c.cpfCnpj);
+    if (cpf.length >= 6) { const g = byCpf.get(cpf) ?? []; g.push(c); byCpf.set(cpf, g); }
+
+    const mail = normEmail(c.email);
+    if (mail) { const g = byMail.get(mail) ?? []; g.push(c); byMail.set(mail, g); }
+
+    const ph = digits(c.phone || c.whatsapp || '').slice(-8);
+    if (ph.length === 8) { const g = byPhone.get(ph) ?? []; g.push(c); byPhone.set(ph, g); }
+  }
+
+  for (const group of [...byCpf.values(), ...byMail.values(), ...byPhone.values()]) {
+    for (let i = 0; i < group.length - 1; i++)
+      for (let j = i + 1; j < group.length; j++)
+        addPair(group[i], group[j]);
+  }
+
+  return pairs;
+}
+
+async function reassociateRelatedDocs(oldId: string, newId: string, businessId: string) {
+  const targets = [
+    { col: 'conversations', field: 'crmContactId' },
+    { col: 'appointments',  field: 'clientId' },
+    { col: 'sales',         field: 'clientId' },
+    { col: 'transactions',  field: 'clientId' },
+    { col: 'transactions',  field: 'contactId' },
+  ];
+  for (const { col, field } of targets) {
+    try {
+      const snap = await getDocs(query(
+        collection(db, col),
+        where('businessId', '==', businessId),
+        where(field, '==', oldId),
+      ));
+      if (snap.empty) continue;
+      const batch = writeBatch(db);
+      snap.docs.forEach(d => batch.update(d.ref, { [field]: newId, updatedAt: new Date().toISOString() }));
+      await batch.commit();
+    } catch { /* best-effort */ }
+  }
+}
+
+function MergeModal({
+  clients,
+  businessId,
+  onClose,
+  onDone,
+}: {
+  clients: Client[];
+  businessId: string;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const pairs = useMemo(() => detectDuplicates(clients), [clients]);
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  const [primaryIds, setPrimaryIds] = useState<Record<string, string>>({});
+  const [fillEmpty, setFillEmpty] = useState<Record<string, boolean>>({});
+  const [merging, setMerging] = useState<string | null>(null);
+  const [merged, setMerged] = useState<Set<string>>(new Set());
+
+  const activePairs = pairs.filter(([a, b]) => {
+    const key = [a.id, b.id].sort().join('|');
+    return !dismissed.has(key) && !merged.has(key);
+  });
+
+  const pairKey = (a: Client, b: Client) => [a.id, b.id].sort().join('|');
+
+  const handleMerge = async (a: Client, b: Client) => {
+    const key = pairKey(a, b);
+    const primaryId = primaryIds[key] ?? a.id;
+    const primary   = primaryId === a.id ? a : b;
+    const secondary = primaryId === a.id ? b : a;
+    const fill = fillEmpty[key] ?? true;
+
+    setMerging(key);
+    try {
+      const now = new Date().toISOString();
+      const updates: Record<string, unknown> = { updatedAt: now };
+
+      if (fill) {
+        if (!primary.email      && secondary.email)      updates.email      = secondary.email;
+        if (!primary.phone      && secondary.phone)      updates.phone      = secondary.phone;
+        if (!primary.whatsapp   && secondary.whatsapp)   updates.whatsapp   = secondary.whatsapp;
+        if (!primary.company    && secondary.company)    updates.company    = secondary.company;
+        if (!primary.cpfCnpj    && secondary.cpfCnpj)    updates.cpfCnpj    = secondary.cpfCnpj;
+        if (!primary.notes      && secondary.notes)      updates.notes      = secondary.notes;
+        if (!primary.endereco   && secondary.endereco)   updates.endereco   = secondary.endereco;
+
+        const allTags = [...new Set([...(primary.tags ?? []), ...(secondary.tags ?? [])])];
+        if (allTags.length) updates.tags = allTags;
+
+        if ((secondary.totalSpent ?? 0) > 0)
+          updates.totalSpent = (primary.totalSpent ?? 0) + (secondary.totalSpent ?? 0);
+        if ((secondary.visitCount ?? 0) > 0)
+          updates.visitCount = (primary.visitCount ?? 0) + (secondary.visitCount ?? 0);
+        if ((secondary.loyaltyPoints ?? 0) > 0)
+          updates.loyaltyPoints = (primary.loyaltyPoints ?? 0) + (secondary.loyaltyPoints ?? 0);
+
+        // Merge channel identities: secondary fills gaps in primary (primary takes precedence)
+        const mergedIdentities = {
+          ...(secondary.channelIdentities ?? {}),
+          ...(primary.channelIdentities ?? {}),
+        };
+        if (Object.keys(mergedIdentities).length) updates.channelIdentities = mergedIdentities;
+      }
+
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'clients', primary.id), updates);
+      batch.update(doc(db, 'clients', secondary.id), {
+        isActive: false,
+        mergedInto: primary.id,
+        mergedAt: now,
+        updatedAt: now,
+      });
+      await batch.commit();
+
+      // Await reassociation so conversations/sales/appointments point to the primary
+      // before the dialog closes. Each collection has its own try-catch — won't throw.
+      await reassociateRelatedDocs(secondary.id, primary.id, businessId);
+
+      setMerged(prev => new Set([...prev, key]));
+      onDone();
+    } catch (err) {
+      console.error('Merge error:', err);
+    } finally {
+      setMerging(null);
+    }
+  };
+
+  const ClientCard = ({ client, isPrimary, onSelect }: { client: Client; isPrimary: boolean; onSelect: () => void }) => (
+    <div
+      onClick={onSelect}
+      className={cn(
+        'flex-1 rounded-xl p-3 border-2 cursor-pointer transition-all',
+        isPrimary
+          ? 'border-emerald-400 dark:border-emerald-500 bg-emerald-50/50 dark:bg-emerald-500/5'
+          : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
+      )}
+    >
+      <div className="flex items-center gap-2 mb-2">
+        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+          {(client.name?.[0] ?? '?').toUpperCase()}
+        </div>
+        <div className="min-w-0">
+          <p className="text-xs font-semibold text-gray-900 dark:text-white truncate">{client.name}</p>
+          {client.company && <p className="text-[10px] text-gray-400 truncate">{client.company}</p>}
+        </div>
+        {isPrimary && (
+          <span className="ml-auto flex-shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400">
+            MANTER
+          </span>
+        )}
+      </div>
+      <div className="space-y-0.5 text-[10px] text-gray-500 dark:text-gray-400">
+        {client.email  && <p className="truncate">✉ {client.email}</p>}
+        {client.phone  && <p>📞 {client.phone}</p>}
+        {client.cpfCnpj && <p>📄 {client.cpfCnpj}</p>}
+        {(client.totalSpent ?? 0) > 0 && <p className="text-emerald-600 dark:text-emerald-400 font-medium">💰 {formatCurrency(client.totalSpent ?? 0)}</p>}
+        <p className="text-gray-300 dark:text-gray-600">Cadastro: {formatDate(client.createdAt)}</p>
+      </div>
+    </div>
+  );
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 16 }}
+        transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+        className="w-full max-w-xl bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 overflow-hidden flex flex-col max-h-[90vh]"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800 flex-shrink-0">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center">
+              <Users className="w-4 h-4 text-amber-500" />
+            </div>
+            <div>
+              <h2 className="font-semibold text-gray-900 dark:text-white text-sm">Duplicatas detectadas</h2>
+              <p className="text-[10px] text-gray-400">
+                {activePairs.length > 0 ? `${activePairs.length} par${activePairs.length > 1 ? 'es' : ''} encontrado${activePairs.length > 1 ? 's' : ''}` : 'Nenhuma duplicata pendente'}
+              </p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          {activePairs.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 px-6 text-center">
+              <CheckCircle2 className="w-10 h-10 text-emerald-400 mb-3" />
+              <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Tudo limpo!</p>
+              <p className="text-xs text-gray-400 mt-1">Nenhuma duplicata encontrada na base de clientes.</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-gray-100 dark:divide-gray-800">
+              {activePairs.map(([a, b]) => {
+                const key = pairKey(a, b);
+                const primaryId = primaryIds[key] ?? a.id;
+                const fill = fillEmpty[key] ?? true;
+                const isMerging = merging === key;
+
+                return (
+                  <div key={key} className="p-4 space-y-3">
+                    {/* Cards */}
+                    <div className="flex gap-2">
+                      <ClientCard client={a} isPrimary={primaryId === a.id}
+                        onSelect={() => setPrimaryIds(p => ({ ...p, [key]: a.id }))} />
+                      <div className="flex items-center flex-shrink-0 text-gray-300 dark:text-gray-600 font-light text-lg">VS</div>
+                      <ClientCard client={b} isPrimary={primaryId === b.id}
+                        onSelect={() => setPrimaryIds(p => ({ ...p, [key]: b.id }))} />
+                    </div>
+
+                    {/* Options */}
+                    <div className="flex items-center gap-3">
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={fill}
+                          onChange={e => setFillEmpty(p => ({ ...p, [key]: e.target.checked }))}
+                          className="w-3.5 h-3.5 rounded accent-red-500"
+                        />
+                        <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                          Copiar campos vazios + somar totais
+                        </span>
+                      </label>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setDismissed(p => new Set([...p, key]))}
+                        className="flex-1 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 text-xs font-medium text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                      >
+                        Ignorar este par
+                      </button>
+                      <button
+                        onClick={() => handleMerge(a, b)}
+                        disabled={isMerging}
+                        className="flex-1 px-3 py-2 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
+                      >
+                        {isMerging ? (
+                          <>
+                            <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 0.8, ease: 'linear' }}>
+                              <Star className="w-3 h-3" />
+                            </motion.div>
+                            Mesclando...
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle2 className="w-3 h-3" />
+                            Mesclar — manter {primaryId === a.id ? (a.name ?? '').split(' ')[0] : (b.name ?? '').split(' ')[0]}
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="px-6 py-3 border-t border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/30 flex-shrink-0">
+          <p className="text-[10px] text-gray-400 text-center">
+            Clicar no card verde seleciona qual registro será mantido. O outro é desativado e suas conversas, compras e agendamentos são transferidos.
+          </p>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ─── Loyalty Program ─────────────────────────────────────────────────────────
+
+function getClientTier(points: number, tiers: LoyaltyTier[]): LoyaltyTier | null {
+  const sorted = [...tiers].sort((a, b) => b.minPoints - a.minPoints);
+  return sorted.find(t => points >= t.minPoints) ?? null;
+}
+
+function TierBadge({ points, tiers }: { points: number; tiers: LoyaltyTier[] }) {
+  const tier = getClientTier(points, tiers);
+  if (!tier) return null;
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold border"
+      style={{ color: tier.color, backgroundColor: tier.color + '18', borderColor: tier.color + '50' }}
+    >
+      <Trophy className="w-2.5 h-2.5" />
+      {tier.name}
+    </span>
+  );
+}
+
+// ─── Loyalty Settings Modal ───────────────────────────────────────────────────
+
+function LoyaltySettingsModal({
+  current,
+  businessId,
+  onClose,
+  onSaved,
+}: {
+  current?: LoyaltyConfig;
+  businessId: string;
+  onClose: () => void;
+  onSaved: (cfg: LoyaltyConfig) => void;
+}) {
+  const [isEnabled, setIsEnabled] = useState(current?.isEnabled ?? false);
+  const [pointsPerReal, setPointsPerReal] = useState(String(current?.pointsPerReal ?? 1));
+  const [pointValue, setPointValue] = useState(String(current?.pointValueInCentavos ?? 1));
+  const [minRedeem, setMinRedeem] = useState(String(current?.minPointsToRedeem ?? 100));
+  const [expireDays, setExpireDays] = useState(String(current?.expirationDays ?? ''));
+  const [tiers, setTiers] = useState<LoyaltyTier[]>(current?.tiers ?? DEFAULT_LOYALTY_TIERS);
+  const [saving, setSaving] = useState(false);
+
+  const updateTier = (i: number, patch: Partial<LoyaltyTier>) =>
+    setTiers(prev => prev.map((t, idx) => idx === i ? { ...t, ...patch } : t));
+
+  const handleSave = async () => {
+    setSaving(true);
+    const parsePositive = (raw: string, fallback: number, min = 1) =>
+      Math.max(min, Number.isFinite(Number(raw)) && Number(raw) > 0 ? Number(raw) : fallback);
+    const cfg: LoyaltyConfig = {
+      isEnabled,
+      pointsPerReal:        parsePositive(pointsPerReal, 1, 0),
+      pointValueInCentavos: parsePositive(pointValue, 1),
+      minPointsToRedeem:    parsePositive(minRedeem, 100),
+      expirationDays: expireDays && Number.isFinite(Number(expireDays)) && Number(expireDays) > 0
+        ? Number(expireDays) : null,
+      tiers: tiers.filter(t => t.name.trim()).sort((a, b) => a.minPoints - b.minPoints),
+    };
+    try {
+      await updateDoc(doc(db, 'businesses', businessId), { 'settings.loyalty': cfg, updatedAt: new Date().toISOString() });
+      onSaved(cfg);
+      onClose();
+    } catch (err) {
+      console.error('Loyalty settings save error:', err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 16 }}
+        transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+        className="w-full max-w-lg bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 overflow-hidden flex flex-col max-h-[90vh]"
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800 flex-shrink-0">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center">
+              <Trophy className="w-4 h-4 text-amber-500" />
+            </div>
+            <h2 className="font-semibold text-gray-900 dark:text-white text-sm">Programa de Fidelidade</h2>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6 space-y-5">
+          {/* Enable toggle */}
+          <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-800/60 rounded-xl">
+            <div>
+              <p className="text-sm font-semibold text-gray-800 dark:text-gray-200">Ativar programa</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Clientes acumulam e resgatam pontos</p>
+            </div>
+            <button
+              onClick={() => setIsEnabled(v => !v)}
+              className={cn('w-11 h-6 rounded-full transition-colors relative', isEnabled ? 'bg-emerald-500' : 'bg-gray-300 dark:bg-gray-600')}
+            >
+              <span className={cn('absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform', isEnabled ? 'translate-x-5' : 'translate-x-0.5')} />
+            </button>
+          </div>
+
+          {/* Rules */}
+          <div className="space-y-3">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Regras de acúmulo e resgate</p>
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                { label: 'Pontos por R$1 gasto', value: pointsPerReal, set: setPointsPerReal, hint: 'ex: 1' },
+                { label: 'Centavos por ponto resgatado', value: pointValue, set: setPointValue, hint: 'ex: 1 = R$0,01/pt' },
+                { label: 'Mínimo para resgatar (pts)', value: minRedeem, set: setMinRedeem, hint: 'ex: 100' },
+                { label: 'Expiração (dias, vazio = nunca)', value: expireDays, set: setExpireDays, hint: 'ex: 365' },
+              ].map(f => (
+                <div key={f.label}>
+                  <label className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider block mb-1">{f.label}</label>
+                  <input
+                    type="number"
+                    value={f.value}
+                    onChange={e => f.set(e.target.value)}
+                    placeholder={f.hint}
+                    className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-400"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Tiers */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Tiers</p>
+              <button
+                onClick={() => setTiers(prev => [...prev, { name: '', minPoints: 0, color: '#6366F1', benefits: '' }])}
+                className="text-[10px] font-medium text-amber-600 dark:text-amber-400 hover:text-amber-700 flex items-center gap-1"
+              >
+                <PlusIcon className="w-3 h-3" /> Adicionar tier
+              </button>
+            </div>
+            <div className="space-y-2">
+              {tiers.map((tier, i) => (
+                <div key={i} className="flex items-center gap-2 p-3 bg-gray-50 dark:bg-gray-800/60 rounded-xl border border-gray-200 dark:border-gray-700">
+                  <input
+                    type="color"
+                    value={tier.color}
+                    onChange={e => updateTier(i, { color: e.target.value })}
+                    className="w-7 h-7 rounded-lg border-0 cursor-pointer bg-transparent flex-shrink-0"
+                  />
+                  <input
+                    value={tier.name}
+                    onChange={e => updateTier(i, { name: e.target.value })}
+                    placeholder="Nome (ex: Ouro)"
+                    className="flex-1 min-w-0 px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-900 dark:text-gray-100 focus:outline-none"
+                  />
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    <input
+                      type="number"
+                      value={tier.minPoints}
+                      onChange={e => updateTier(i, { minPoints: Number(e.target.value) })}
+                      className="w-20 px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-900 dark:text-gray-100 focus:outline-none"
+                      placeholder="Min pts"
+                    />
+                    <span className="text-[10px] text-gray-400">pts+</span>
+                  </div>
+                  <input
+                    value={tier.benefits ?? ''}
+                    onChange={e => updateTier(i, { benefits: e.target.value })}
+                    placeholder="Benefício"
+                    className="flex-1 min-w-0 px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-900 dark:text-gray-100 focus:outline-none"
+                  />
+                  <button onClick={() => setTiers(prev => prev.filter((_, idx) => idx !== i))} className="p-1 text-gray-400 hover:text-red-500 transition-colors flex-shrink-0">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex gap-2 justify-end px-6 py-4 border-t border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/30 flex-shrink-0">
+          <button onClick={onClose} className="px-4 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+            Cancelar
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-sm font-semibold transition-colors disabled:opacity-50"
+          >
+            {saving ? 'Salvando...' : 'Salvar programa'}
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ─── Points Adjust Modal ──────────────────────────────────────────────────────
+
+function PointsAdjustModal({
+  client,
+  businessId,
+  user,
+  onClose,
+  onDone,
+}: {
+  client: Client;
+  businessId: string;
+  user: { uid: string; name: string };
+  onClose: () => void;
+  onDone: (newBalance: number) => void;
+}) {
+  const [mode, setMode] = useState<'add' | 'subtract'>('add');
+  const [amount, setAmount] = useState('');
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const currentPts = client.loyaltyPoints ?? 0;
+  const delta = Number(amount) || 0;
+  const newBalance = mode === 'add' ? currentPts + delta : Math.max(0, currentPts - delta);
+
+  const handleSave = async () => {
+    if (!delta || !reason.trim()) return;
+    setSaving(true);
+    const now = new Date().toISOString();
+    const signedAmount = mode === 'add' ? delta : -delta;
+    try {
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'clients', client.id), { loyaltyPoints: newBalance, updatedAt: now });
+      const histRef = doc(collection(db, 'loyaltyHistory'));
+      const entry: Omit<LoyaltyHistoryEntry, 'id'> = {
+        clientId: client.id,
+        businessId,
+        type: 'manual',
+        amount: signedAmount,
+        balance: newBalance,
+        reason: reason.trim(),
+        createdBy: user.uid,
+        createdByName: user.name,
+        createdAt: now,
+      };
+      batch.set(histRef, entry);
+      await batch.commit();
+      onDone(newBalance);
+      onClose();
+    } catch (err) {
+      console.error('Points adjust error:', err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 12 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 12 }}
+        transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+        className="w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 overflow-hidden"
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800">
+          <div className="flex items-center gap-2">
+            <Gift className="w-4 h-4 text-amber-500" />
+            <h3 className="font-semibold text-gray-900 dark:text-white text-sm">Ajustar pontos</h3>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {/* Current balance */}
+          <div className="flex items-center justify-between p-3 bg-amber-50 dark:bg-amber-500/10 rounded-xl">
+            <p className="text-xs text-amber-700 dark:text-amber-300">Saldo atual de {client.name.split(' ')[0]}</p>
+            <p className="text-xl font-bold text-amber-700 dark:text-amber-300">{currentPts} pts</p>
+          </div>
+
+          {/* Add / Subtract toggle */}
+          <div className="flex gap-2">
+            {(['add', 'subtract'] as const).map(m => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className={cn('flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-sm font-semibold transition-all border',
+                  mode === m
+                    ? m === 'add' ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-red-500 text-white border-red-500'
+                    : 'border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800'
+                )}
+              >
+                {m === 'add' ? <PlusIcon className="w-3.5 h-3.5" /> : <Minus className="w-3.5 h-3.5" />}
+                {m === 'add' ? 'Adicionar' : 'Subtrair'}
+              </button>
+            ))}
+          </div>
+
+          <div>
+            <label className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider block mb-1">Quantidade de pontos</label>
+            <input
+              type="number"
+              min="1"
+              value={amount}
+              onChange={e => setAmount(e.target.value)}
+              placeholder="0"
+              className="w-full px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-lg font-bold text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-400 text-center"
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider block mb-1">Motivo *</label>
+            <input
+              value={reason}
+              onChange={e => setReason(e.target.value)}
+              placeholder="ex: Aniversário do cliente, resgate de brinde..."
+              className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-400"
+            />
+          </div>
+
+          {delta > 0 && (
+            <div className="flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-800/60 rounded-xl text-xs">
+              <span className="text-gray-500">Novo saldo:</span>
+              <span className={cn('font-bold', mode === 'add' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+                {newBalance} pts
+              </span>
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-2 px-5 pb-5">
+          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+            Cancelar
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving || !delta || !reason.trim()}
+            className="flex-1 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-sm font-semibold transition-colors disabled:opacity-40"
+          >
+            {saving ? 'Salvando...' : 'Confirmar'}
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ─── Loyalty History Section ──────────────────────────────────────────────────
+
+const HISTORY_TYPE_CFG: Record<LoyaltyHistoryEntry['type'], { label: string; color: string }> = {
+  add:      { label: '+', color: 'text-emerald-600 dark:text-emerald-400' },
+  subtract: { label: '−', color: 'text-red-500 dark:text-red-400' },
+  sale:     { label: '+', color: 'text-emerald-600 dark:text-emerald-400' },
+  redeem:   { label: '−', color: 'text-amber-600 dark:text-amber-400' },
+  expire:   { label: '−', color: 'text-gray-400' },
+  manual:   { label: '±', color: 'text-blue-500 dark:text-blue-400' },
+};
+
+function LoyaltyHistorySection({ clientId, businessId }: { clientId: string; businessId: string }) {
+  const { data: history = [], isLoading } = useQuery({
+    queryKey: ['loyalty-history', clientId],
+    queryFn: async (): Promise<LoyaltyHistoryEntry[]> => {
+      // No orderBy to avoid requiring a composite Firestore index — sort client-side
+      const snap = await getDocs(query(
+        collection(db, 'loyaltyHistory'),
+        where('businessId', '==', businessId),
+        where('clientId', '==', clientId),
+        firestoreLimit(30),
+      ));
+      return snap.docs
+        .map(d => ({ ...d.data(), id: d.id } as LoyaltyHistoryEntry))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        .slice(0, 15);
+    },
+    enabled: !!clientId && !!businessId,
+    staleTime: 60 * 1000,
+  });
+
+  if (isLoading) return <div className="h-8 shimmer rounded-lg" />;
+  if (!history.length) return (
+    <p className="text-xs text-gray-400 italic">Nenhuma movimentação ainda</p>
+  );
+
+  return (
+    <div className="space-y-1.5 mt-2">
+      {history.map(h => {
+        const cfg = HISTORY_TYPE_CFG[h.type];
+        return (
+          <div key={h.id} className="flex items-center gap-2">
+            <span className={cn('text-xs font-bold w-4 text-center flex-shrink-0', cfg.color)}>
+              {cfg.label}
+            </span>
+            <div className="flex-1 min-w-0">
+              <p className="text-[11px] text-gray-700 dark:text-gray-300 truncate">{h.reason}</p>
+              <p className="text-[9px] text-gray-400">{formatDate(h.createdAt)}</p>
+            </div>
+            <span className={cn('text-xs font-semibold flex-shrink-0', cfg.color)}>
+              {h.amount > 0 ? '+' : ''}{h.amount} pts
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Client Timeline ─────────────────────────────────────────────────────────
 
 type TimelineEventKind = 'conversation' | 'appointment' | 'sale' | 'transaction_in' | 'transaction_out';
@@ -432,30 +1951,31 @@ function ClientTimeline({ client, businessId }: { client: Client; businessId: st
         ))),
       ]);
 
-      convSnap?.docs.forEach(d => {
+      convSnap?.docs?.forEach(d => {
         const v = d.data();
         all.push({
           id: `conv_${d.id}`, kind: 'conversation',
           title: `Conversa via ${CH_LABEL[v.channel] ?? v.channel}`,
           subtitle: v.lastMessage ? String(v.lastMessage).slice(0, 70) : undefined,
           status: v.status,
-          timestamp: v.lastMessageAt || v.createdAt,
+          timestamp: v.lastMessageAt || v.createdAt || '',
         });
       });
 
-      apptSnap?.docs.forEach(d => {
+      apptSnap?.docs?.forEach(d => {
         const v = d.data();
+        const dateStr = v.date ? `${v.date}T${v.startTime ?? '00:00'}` : (v.createdAt || '');
         all.push({
           id: `appt_${d.id}`, kind: 'appointment',
           title: v.serviceName || 'Agendamento',
-          subtitle: v.professionalName ? `com ${v.professionalName} • ${v.date} ${v.startTime}` : `${v.date} às ${v.startTime}`,
+          subtitle: v.professionalName ? `com ${v.professionalName} • ${v.date} ${v.startTime}` : `${v.date ?? ''} às ${v.startTime ?? ''}`,
           amount: v.price,
           status: v.status,
-          timestamp: `${v.date}T${v.startTime ?? '00:00'}`,
+          timestamp: dateStr,
         });
       });
 
-      salesSnap?.docs.forEach(d => {
+      salesSnap?.docs?.forEach(d => {
         const v = d.data();
         const items: Array<{ description: string }> = v.items || [];
         all.push({
@@ -464,11 +1984,11 @@ function ClientTimeline({ client, businessId }: { client: Client; businessId: st
           subtitle: items.slice(0, 2).map(i => i.description).join(', ') || undefined,
           amount: v.total,
           status: v.status,
-          timestamp: v.createdAt,
+          timestamp: v.createdAt || '',
         });
       });
 
-      txSnap?.docs.forEach(d => {
+      txSnap?.docs?.forEach(d => {
         const v = d.data();
         all.push({
           id: `tx_${d.id}`, kind: v.type === 'receita' ? 'transaction_in' : 'transaction_out',
@@ -476,11 +1996,17 @@ function ClientTimeline({ client, businessId }: { client: Client; businessId: st
           subtitle: v.category || undefined,
           amount: v.amount,
           status: v.status,
-          timestamp: v.paymentDate || v.dueDate || v.createdAt,
+          timestamp: v.paymentDate || v.dueDate || v.createdAt || '',
         });
       });
 
-      all.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+      // Sort descending; empty timestamps go to end
+      all.sort((a, b) => {
+        if (!a.timestamp && !b.timestamp) return 0;
+        if (!a.timestamp) return 1;
+        if (!b.timestamp) return -1;
+        return b.timestamp.localeCompare(a.timestamp);
+      });
       const seen = new Set<string>();
       return all.filter(e => { if (seen.has(e.id)) return false; seen.add(e.id); return true; });
     },
@@ -576,9 +2102,23 @@ function ClientTimeline({ client, businessId }: { client: Client; businessId: st
 
 // ─── Client Detail Panel ──────────────────────────────────────────────────────
 
-function ClientDetailPanel({ client, onClose, onEdit }: { client: Client; onClose: () => void; onEdit: () => void }) {
-  const { business } = useAuth();
+function ClientDetailPanel({ client, onClose, onEdit, loyaltyConfig: loyaltyCfg }: { client: Client; onClose: () => void; onEdit: () => void; loyaltyConfig?: LoyaltyConfig }) {
+  const { business, user } = useAuth();
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<'perfil' | 'timeline'>('perfil');
+  const [showPointsAdjust, setShowPointsAdjust] = useState(false);
+  const [localPoints, setLocalPoints] = useState<number | null>(null);
+
+  // Reset local points state whenever the selected client changes
+  const prevClientId = useState(client.id);
+  if (prevClientId[0] !== client.id) {
+    prevClientId[1](client.id);
+    setLocalPoints(null);
+  }
+
+  const displayPoints = localPoints ?? client.loyaltyPoints ?? 0;
+  const tiers = loyaltyCfg?.tiers ?? DEFAULT_LOYALTY_TIERS;
+  const loyaltyEnabled = loyaltyCfg?.isEnabled ?? false;
   const statusCfg = STATUS_CONFIG[client.status] || STATUS_CONFIG.ganho;
 
   return (
@@ -675,16 +2215,63 @@ function ClientDetailPanel({ client, onClose, onEdit }: { client: Client; onClos
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Compras</p>
             <p className="text-lg font-bold text-gray-900 dark:text-white">{client.visitCount || 0}</p>
           </div>
-          {(client.loyaltyPoints || 0) > 0 && (
-            <div className="col-span-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800/30 rounded-xl p-3 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Gift className="w-4 h-4 text-amber-600 dark:text-amber-400" />
-                <p className="text-xs text-amber-700 dark:text-amber-300 font-medium">Pontos de fidelidade</p>
+          {(loyaltyEnabled || displayPoints > 0) && (
+            <div className="col-span-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800/30 rounded-xl p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Gift className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                  <p className="text-xs text-amber-700 dark:text-amber-300 font-medium">Pontos de fidelidade</p>
+                  <TierBadge points={displayPoints} tiers={tiers} />
+                </div>
+                <div className="flex items-center gap-2">
+                  <p className="text-lg font-bold text-amber-700 dark:text-amber-300">{displayPoints} pts</p>
+                  <button
+                    onClick={() => setShowPointsAdjust(true)}
+                    className="p-1 rounded-lg bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 hover:bg-amber-200 dark:hover:bg-amber-500/30 transition-colors"
+                    title="Ajustar pontos"
+                  >
+                    <Settings className="w-3 h-3" />
+                  </button>
+                </div>
               </div>
-              <p className="text-lg font-bold text-amber-700 dark:text-amber-300">{client.loyaltyPoints || 0} pts</p>
+              {/* Tier progress */}
+              {(() => {
+                const currentTier = getClientTier(displayPoints, tiers);
+                const sorted = [...tiers].sort((a, b) => a.minPoints - b.minPoints);
+                const nextTier = sorted.find(t => t.minPoints > displayPoints);
+                if (!nextTier || !currentTier) return null;
+                const range = nextTier.minPoints - currentTier.minPoints;
+                if (range === 0) return null;
+                const progress = Math.min(100, Math.max(0, ((displayPoints - currentTier.minPoints) / range) * 100));
+                return (
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[9px] text-amber-600 dark:text-amber-400">
+                      <span>{currentTier.name}</span>
+                      <span>{nextTier.minPoints - displayPoints} pts para {nextTier.name}</span>
+                    </div>
+                    <div className="h-1.5 bg-amber-100 dark:bg-amber-900/40 rounded-full overflow-hidden">
+                      <motion.div
+                        className="h-full rounded-full"
+                        style={{ backgroundColor: nextTier.color }}
+                        initial={{ width: 0 }}
+                        animate={{ width: `${progress}%` }}
+                        transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+                      />
+                    </div>
+                  </div>
+                );
+              })()}
+              {/* Histórico de pontos */}
+              <div className="border-t border-amber-100 dark:border-amber-800/30 pt-2">
+                <p className="text-[9px] font-semibold text-amber-600 dark:text-amber-400 uppercase tracking-wider mb-1.5">Histórico</p>
+                <LoyaltyHistorySection clientId={client.id} businessId={business?.id ?? ''} />
+              </div>
             </div>
           )}
         </div>
+
+        {/* Scores / Health */}
+        <ScoresSection client={client} />
 
         {/* Contacts */}
         <div className="space-y-2">
@@ -774,6 +2361,23 @@ function ClientDetailPanel({ client, onClose, onEdit }: { client: Client; onClos
         <ClientAgentMemoryPanel contactId={client.id} contactName={client.name} />
       </div>
       )} {/* end perfil tab */}
+
+      {/* Points adjust modal */}
+      <AnimatePresence>
+        {showPointsAdjust && user && (
+          <PointsAdjustModal
+            client={{ ...client, loyaltyPoints: displayPoints }}
+            businessId={business?.id ?? ''}
+            user={{ uid: user.uid, name: user.name }}
+            onClose={() => setShowPointsAdjust(false)}
+            onDone={newBalance => {
+              setLocalPoints(newBalance);
+              queryClient.invalidateQueries({ queryKey: ['loyalty-history', client.id] });
+              queryClient.invalidateQueries({ queryKey: ['clients', business?.id] });
+            }}
+          />
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
@@ -781,14 +2385,29 @@ function ClientDetailPanel({ client, onClose, onEdit }: { client: Client; onClos
 // ─── Main Module ─────────────────────────────────────────────────────────────
 
 export default function ClientsModule() {
-  const { business } = useAuth();
+  const { business, user } = useAuth();
   const queryClient = useQueryClient();
 
+  const [clientsView, setClientsView] = useState<'list' | 'table'>(() => {
+    if (typeof window === 'undefined') return 'list';
+    return (localStorage.getItem('clients_view') as 'list' | 'table') ?? 'list';
+  });
+  const handleClientsView = (v: 'list' | 'table') => {
+    setClientsView(v);
+    localStorage.setItem('clients_view', v);
+  };
   const [search, setSearch] = useState('');
   const [filterTipo, setFilterTipo] = useState<'all' | 'pf' | 'pj'>('all');
   const [filterStatus, setFilterStatus] = useState<LeadStatus | 'all'>('all');
   const [filterTags, setFilterTags] = useState<string[]>([]);
-  const [sortBy, setSortBy] = useState<'name' | 'totalSpent' | 'createdAt'>('name');
+  const [filterChurnRisk, setFilterChurnRisk] = useState<ChurnRiskLevel | 'all'>('all');
+  const [sortBy, setSortBy] = useState<'name' | 'totalSpent' | 'createdAt' | 'churnRisk'>('name');
+  const [showExport, setShowExport] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [showMerge, setShowMerge] = useState(false);
+  const [showLoyaltySettings, setShowLoyaltySettings] = useState(false);
+  const [loyaltyConfig, setLoyaltyConfig] = useState<LoyaltyConfig | undefined>(business?.settings?.loyalty);
+  const isAdmin = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
   const [showFilters, setShowFilters] = useState(false);
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
   const [showForm, setShowForm] = useState(false);
@@ -829,7 +2448,9 @@ export default function ClientsModule() {
         tipo: data.tipo,
         cpfCnpj: data.cpfCnpj.trim() || undefined,
         inscricaoEstadual: data.inscricaoEstadual.trim() || undefined,
-        indicadorIE: (data.indicadorIE || undefined) as '1' | '2' | '9' | undefined,
+        indicadorIE: (['1', '2', '9'] as const).includes(data.indicadorIE as '1' | '2' | '9')
+          ? (data.indicadorIE as '1' | '2' | '9')
+          : undefined,
         source: data.source,
         status: data.status,
         notes: data.notes.trim() || undefined,
@@ -890,8 +2511,8 @@ export default function ClientsModule() {
 
   // ─── Filtered & sorted list ──────────────────────────────────────────────────
   const filtered = useMemo(() => {
-    // Drop any malformed entries (corrupted docs missing name) before rendering.
-    let list = clients.filter(c => c && typeof c.name === 'string' && c.name.length > 0);
+    // Drop malformed entries and already-merged secondary records
+    let list = clients.filter(c => c && typeof c.name === 'string' && c.name.length > 0 && !c.mergedInto);
     const term = search.trim().toLowerCase();
     if (term) {
       list = list.filter(c =>
@@ -911,22 +2532,34 @@ export default function ClientsModule() {
         return wanted.every(w => cTags.includes(w));
       });
     }
+    if (filterChurnRisk !== 'all') {
+      list = list.filter(c => {
+        // Clients with no scores are treated as 'minimal' risk (not filtered out)
+        const risk = c.scores?.churnRisk ?? 0;
+        return getChurnLevel(risk) === filterChurnRisk;
+      });
+    }
 
     list.sort((a, b) => {
       if (sortBy === 'totalSpent') return (b.totalSpent || 0) - (a.totalSpent || 0);
       if (sortBy === 'createdAt') return (b.createdAt || '').localeCompare(a.createdAt || '');
+      if (sortBy === 'churnRisk') return (b.scores?.churnRisk ?? 0) - (a.scores?.churnRisk ?? 0);
       return a.name.localeCompare(b.name);
     });
 
     return list;
-  }, [clients, search, filterTipo, filterStatus, filterTags, sortBy]);
+  }, [clients, search, filterTipo, filterStatus, filterTags, filterChurnRisk, sortBy]);
+
+  // ─── Duplicate count (for badge) ─────────────────────────────────────────────
+  const dupeCount = useMemo(() => detectDuplicates(clients).length, [clients]);
 
   // ─── KPIs ────────────────────────────────────────────────────────────────────
   const kpis = useMemo(() => {
     const active = clients.filter(c => c.status === 'ganho').length;
     const pj = clients.filter(c => c.tipo === 'pj').length;
     const totalSpent = clients.reduce((s, c) => s + (c.totalSpent || 0), 0);
-    const avgTicket = active > 0 ? totalSpent / clients.filter(c => (c.totalSpent || 0) > 0).length : 0;
+    const withSpent = clients.filter(c => (c.totalSpent || 0) > 0);
+    const avgTicket = withSpent.length > 0 ? totalSpent / withSpent.length : 0;
     return { total: clients.length, active, pj, totalSpent, avgTicket };
   }, [clients]);
 
@@ -995,13 +2628,52 @@ export default function ClientsModule() {
           </h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">{clients.length} clientes cadastrados</p>
         </div>
-        <button
-          onClick={openCreate}
-          className="inline-flex items-center gap-2 px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded-xl transition-colors shadow-sm"
-        >
-          <Plus className="w-4 h-4" />
-          Novo cliente
-        </button>
+        <div className="flex items-center gap-2">
+          {isAdmin && (
+            <button
+              onClick={() => setShowLoyaltySettings(true)}
+              className="inline-flex items-center gap-2 px-4 py-2.5 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 text-sm font-medium rounded-xl transition-colors"
+              title="Configurar programa de fidelidade"
+            >
+              <Trophy className="w-4 h-4 text-amber-500" />
+              Fidelidade
+              {loyaltyConfig?.isEnabled && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />}
+            </button>
+          )}
+          {dupeCount > 0 && (
+            <button
+              onClick={() => setShowMerge(true)}
+              className="inline-flex items-center gap-2 px-4 py-2.5 border border-amber-300 dark:border-amber-500/40 text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10 hover:bg-amber-100 dark:hover:bg-amber-500/20 text-sm font-medium rounded-xl transition-colors"
+            >
+              <Users className="w-4 h-4" />
+              Duplicatas
+              <span className="bg-amber-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none">
+                {dupeCount}
+              </span>
+            </button>
+          )}
+          <button
+            onClick={() => setShowImport(true)}
+            className="inline-flex items-center gap-2 px-4 py-2.5 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 text-sm font-medium rounded-xl transition-colors"
+          >
+            <Upload className="w-4 h-4" />
+            Importar
+          </button>
+          <button
+            onClick={() => setShowExport(true)}
+            className="inline-flex items-center gap-2 px-4 py-2.5 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 text-sm font-medium rounded-xl transition-colors"
+          >
+            <FileDown className="w-4 h-4" />
+            Exportar
+          </button>
+          <button
+            onClick={openCreate}
+            className="inline-flex items-center gap-2 px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded-xl transition-colors shadow-sm"
+          >
+            <Plus className="w-4 h-4" />
+            Novo cliente
+          </button>
+        </div>
       </motion.div>
 
       {/* KPI Cards */}
@@ -1060,7 +2732,7 @@ export default function ClientsModule() {
           >
             <Filter className="w-4 h-4" />
             Filtros
-            {(filterTipo !== 'all' || filterStatus !== 'all' || filterTags.length > 0) && (
+            {(filterTipo !== 'all' || filterStatus !== 'all' || filterTags.length > 0 || filterChurnRisk !== 'all') && (
               <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
             )}
           </button>
@@ -1072,7 +2744,30 @@ export default function ClientsModule() {
             <option value="name">Nome A-Z</option>
             <option value="totalSpent">Maior valor</option>
             <option value="createdAt">Mais recentes</option>
+            <option value="churnRisk">Maior risco</option>
           </select>
+          <div className="flex items-center gap-0.5 p-0.5 bg-gray-100 dark:bg-gray-800 rounded-xl">
+            <button
+              onClick={() => handleClientsView('list')}
+              title="Visão lista"
+              className={cn('p-1.5 rounded-[10px] transition-all',
+                clientsView === 'list'
+                  ? 'bg-white dark:bg-white/[0.12] text-gray-900 dark:text-white shadow-sm'
+                  : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300'
+              )}>
+              <AlignJustify size={15} />
+            </button>
+            <button
+              onClick={() => handleClientsView('table')}
+              title="Visão tabela"
+              className={cn('p-1.5 rounded-[10px] transition-all',
+                clientsView === 'table'
+                  ? 'bg-white dark:bg-white/[0.12] text-gray-900 dark:text-white shadow-sm'
+                  : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300'
+              )}>
+              <LayoutList size={15} />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1124,6 +2819,30 @@ export default function ClientsModule() {
                   ))}
                 </div>
               </div>
+              {/* Churn Risk filter */}
+              <div>
+                <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2 block">Risco de churn</label>
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={() => setFilterChurnRisk('all')}
+                    className={cn('px-3 py-1.5 rounded-lg text-xs font-medium transition-colors',
+                      filterChurnRisk === 'all'
+                        ? 'bg-red-600 text-white'
+                        : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+                    )}>Todos</button>
+                  {(Object.entries(CHURN_CFG) as [ChurnRiskLevel, typeof CHURN_CFG[ChurnRiskLevel]][]).map(([key, cfg]) => (
+                    <button key={key} onClick={() => setFilterChurnRisk(key)}
+                      className={cn('inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors',
+                        filterChurnRisk === key
+                          ? `${cfg.bg} ${cfg.color} ring-1 ring-current`
+                          : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+                      )}>
+                      <span className={cn('w-1.5 h-1.5 rounded-full', cfg.dot)} />
+                      {cfg.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {allTags.length > 0 && (
                 <div>
                   <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2 block flex items-center justify-between">
@@ -1184,6 +2903,12 @@ export default function ClientsModule() {
                 {search ? 'Tente outros termos de busca' : 'Clique em "Novo cliente" para começar'}
               </p>
             </motion.div>
+          ) : clientsView === 'table' ? (
+            <ClientTableView
+              clients={filtered}
+              selectedClientId={selectedClient?.id ?? null}
+              onSelectClient={setSelectedClient}
+            />
           ) : (
             <div className="space-y-1.5 overflow-y-auto pr-1">
               {filtered.map((client, i) => {
@@ -1242,16 +2967,20 @@ export default function ClientsModule() {
                         <span className={cn('w-1 h-1 rounded-full', statusCfg.dot)} />
                         {statusCfg.label}
                       </span>
+                      <HealthBadge client={client} />
                       {(client.totalSpent || 0) > 0 && (
                         <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">
                           {formatCurrency(client.totalSpent || 0)}
                         </span>
                       )}
                       {(client.loyaltyPoints || 0) > 0 && (
-                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400">
-                          <Gift className="w-2.5 h-2.5" />
-                          {client.loyaltyPoints} pts
-                        </span>
+                        <>
+                          <TierBadge points={client.loyaltyPoints ?? 0} tiers={loyaltyConfig?.tiers ?? DEFAULT_LOYALTY_TIERS} />
+                          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400">
+                            <Gift className="w-2.5 h-2.5" />
+                            {client.loyaltyPoints} pts
+                          </span>
+                        </>
                       )}
                     </div>
 
@@ -1285,6 +3014,7 @@ export default function ClientsModule() {
                 client={selectedClient}
                 onClose={() => setSelectedClient(null)}
                 onEdit={() => openEdit(selectedClient)}
+                loyaltyConfig={loyaltyConfig}
               />
             </div>
           )}
@@ -1333,6 +3063,56 @@ export default function ClientsModule() {
               </div>
             </motion.div>
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Loyalty settings modal */}
+      <AnimatePresence>
+        {showLoyaltySettings && (
+          <LoyaltySettingsModal
+            current={loyaltyConfig}
+            businessId={business!.id}
+            onClose={() => setShowLoyaltySettings(false)}
+            onSaved={cfg => setLoyaltyConfig(cfg)}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Merge duplicates modal */}
+      <AnimatePresence>
+        {showMerge && (
+          <MergeModal
+            clients={clients}
+            businessId={business!.id}
+            onClose={() => setShowMerge(false)}
+            onDone={() => queryClient.invalidateQueries({ queryKey: ['clients', business?.id] })}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Import modal */}
+      <AnimatePresence>
+        {showImport && (
+          <ImportModal
+            existingClients={clients}
+            businessId={business!.id}
+            onClose={() => setShowImport(false)}
+            onDone={() => {
+              queryClient.invalidateQueries({ queryKey: ['clients', business?.id] });
+              setShowImport(false);
+            }}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Export modal */}
+      <AnimatePresence>
+        {showExport && (
+          <ExportModal
+            allClients={clients}
+            filteredClients={filtered}
+            onClose={() => setShowExport(false)}
+          />
         )}
       </AnimatePresence>
 

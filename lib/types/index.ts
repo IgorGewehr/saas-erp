@@ -248,6 +248,19 @@ export interface BusinessPromotion {
   isActive: boolean;
 }
 
+export interface LoyaltyTier {
+  name: string;        // "Bronze", "Prata", "Ouro"
+  minPoints: number;   // 0, 500, 2000
+  color: string;       // hex color
+  benefits?: string;   // "5% desconto em serviços"
+}
+
+export const DEFAULT_LOYALTY_TIERS: LoyaltyTier[] = [
+  { name: 'Bronze', minPoints: 0,    color: '#CD7F32', benefits: '' },
+  { name: 'Prata',  minPoints: 500,  color: '#9CA3AF', benefits: '' },
+  { name: 'Ouro',   minPoints: 2000, color: '#F59E0B', benefits: '' },
+];
+
 export interface LoyaltyConfig {
   isEnabled: boolean;
   /** Quantos pontos o cliente ganha por R$1,00 gasto (ex: 1) */
@@ -258,6 +271,21 @@ export interface LoyaltyConfig {
   minPointsToRedeem: number;
   /** Dias até expirar (null = não expira) */
   expirationDays?: number | null;
+  /** Tiers de fidelidade configuráveis */
+  tiers?: LoyaltyTier[];
+}
+
+export interface LoyaltyHistoryEntry {
+  id: string;
+  clientId: string;
+  businessId: string;
+  type: 'add' | 'subtract' | 'sale' | 'redeem' | 'expire' | 'manual';
+  amount: number;        // positive = ganhou, negative = usou/expirou
+  balance: number;       // saldo após a operação
+  reason: string;
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
 }
 
 export interface BusinessSettings {
@@ -282,6 +310,107 @@ export interface BusinessSettings {
   paymentGateway?: PaymentGatewayConfig;
   /** Política de no-show */
   noShowPolicy?: NoShowPolicy;
+  /** Pipeline do CRM (estágios customizáveis) */
+  crmPipeline?: CRMPipelineConfig;
+  /** SLA de conversas — tempo máximo de primeira resposta por prioridade */
+  conversationSLA?: {
+    enabled: boolean;
+    urgentMinutes: number;  // padrão: 30
+    highMinutes: number;    // padrão: 60
+    mediumMinutes: number;  // padrão: 240 (4h)
+    lowMinutes: number;     // padrão: 480 (8h)
+    warningPercent: number; // % de tempo restante para alertar (padrão: 20)
+  };
+  csatEnabled?: boolean;  // Enviar pesquisa de satisfação ao resolver conversa
+  routingRules?: RoutingRule[];
+}
+
+export interface RoutingRule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  conditions: {
+    channel?: string;       // 'whatsapp' | 'facebook' | 'instagram' | ''
+    keyword?: string;       // keyword na primeira mensagem
+    priority?: string;      // 'urgent' | 'high' | 'medium' | 'low' | ''
+  };
+  action: {
+    type: 'assign_sector' | 'assign_user' | 'set_priority';
+    sectorId?: string;
+    sectorName?: string;
+    userId?: string;
+    userName?: string;
+    priority?: string;
+  };
+  order: number;
+}
+
+/** Estágio customizável do pipeline de leads */
+export interface CRMStageConfig {
+  id: LeadStatus;          // ID canônico (igual ao valor de LeadStatus)
+  name: string;            // nome exibido (editável pelo usuário)
+  color: string;           // hex
+  order: number;
+  isVisible?: boolean;     // false = estágio oculto do kanban
+  isWon?: boolean;         // marca este estágio como "convertido"
+  isLost?: boolean;        // marca este estágio como "perdido"
+}
+
+export interface CRMPipelineConfig {
+  stages: CRMStageConfig[];
+}
+
+export type CRMAuditAction =
+  | 'contact_created' | 'contact_updated' | 'contact_deleted'
+  | 'status_changed' | 'tags_changed'
+  | 'deal_created' | 'deal_updated' | 'deal_deleted';
+
+export interface CRMAuditEntry {
+  id: string;
+  businessId: string;
+  contactId?: string;
+  dealId?: string;
+  action: CRMAuditAction;
+  userId: string;
+  userName: string;
+  details?: string;
+  createdAt: string;
+}
+
+export interface CRMSequenceStep {
+  id: string;
+  delayDays: number;
+  action: 'send_whatsapp' | 'create_task' | 'send_email' | 'add_tag' | 'notify_team';
+  content: string;
+  label?: string;
+}
+
+export interface CRMSequence {
+  id: string;
+  businessId: string;
+  name: string;
+  description?: string;
+  steps: CRMSequenceStep[];
+  isActive: boolean;
+  enrolledCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CRMSequenceEnrollment {
+  id: string;
+  businessId: string;
+  sequenceId: string;
+  sequenceName: string;
+  contactId: string;
+  contactName: string;
+  status: 'active' | 'completed' | 'paused' | 'cancelled';
+  currentStep: number;
+  enrolledAt: string;
+  nextStepAt?: string;
+  completedAt?: string;
+  enrolledByUserId: string;
+  enrolledByUserName: string;
 }
 
 export interface AiAgentSettings {
@@ -623,7 +752,14 @@ export interface Sale {
 export type TransactionType = 'receita' | 'despesa';
 export type TransactionStatus = 'pendente' | 'pago' | 'atrasado' | 'cancelado';
 
-export type RecurrenceFrequency = 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'yearly';
+export type RecurrenceFrequency = 'weekly' | 'biweekly' | 'biweekly_fixed' | 'monthly' | 'quarterly' | 'semiannual' | 'yearly';
+
+export interface TransactionRecurrenceEntry {
+  dueDate: string;   // nextDueDate at time of payment (ISO date)
+  paidDate: string;  // actual payment date (ISO date)
+  amount: number;    // amount paid
+  attachments?: Array<{ id: string; name: string; url: string; path: string; uploadedAt: string }>; // FIN-R25
+}
 
 export interface TransactionRecurrence {
   frequency: RecurrenceFrequency;
@@ -632,7 +768,12 @@ export interface TransactionRecurrence {
   isActive: boolean;
   parentTransactionId?: string; // original transaction that spawned this
   dayOfMonth?: number;       // fixed day of month for next occurrences (1-28)
+  secondDayOfMonth?: number; // second fixed day for 'biweekly_fixed' (1-28)
+  holidayAdjust?: 'none' | 'before' | 'after'; // FIN-R17: adjust nextDueDate to business day
+  lateFeePct?: number;       // FIN-R18: flat late fee % (e.g. 2 = 2%)
+  interestPctMonth?: number; // FIN-R18: monthly interest % pro-rata (e.g. 1 = 1%/month)
   label?: string;            // user-friendly name (e.g. "Aluguel")
+  history?: TransactionRecurrenceEntry[]; // log of past paid occurrences
 }
 
 export interface TransactionAttachment {
@@ -1604,6 +1745,10 @@ export interface Client {
   /** Saldo de pontos de fidelidade */
   loyaltyPoints?: number;
 
+  // ── Merge de duplicatas ────────────────────────────
+  mergedInto?: string;   // ID do cliente primário que absorveu este
+  mergedAt?: string;     // ISO timestamp do merge
+
   // ── Inteligência & AI Agent ────────────────────────
   profile?: ContactProfile;
   relationshipHistory?: RelationshipHistory;
@@ -1722,10 +1867,56 @@ export interface Conversation {
   labels?: string[];
   internalNotes?: number;
   tags?: string[];
+  firstResponseAt?: string;  // ISO — quando o primeiro msg outbound não-interna foi enviada
+  slaBreached?: boolean;     // true quando SLA venceu sem firstResponseAt
+  csatRating?: 1 | 2 | 3 | 4 | 5;  // avaliação de satisfação registrada pelo contato
+  csatSentAt?: string;       // ISO — quando a pesquisa CSAT foi enviada
+  assignmentHistory?: Array<{
+    assignedTo?: string;
+    assignedToName?: string;
+    assignedToSectorId?: string;
+    sectorName?: string;
+    changedBy: string;
+    changedByName: string;
+    changedAt: string;
+  }>;
   createdAt: string;
   updatedAt: string;
   isDeleted?: boolean;
   deletedAt?: string;
+}
+
+export interface CSATResponse {
+  id: string;
+  businessId: string;
+  conversationId: string;
+  contactName: string;
+  channel: string;
+  rating: 1 | 2 | 3 | 4 | 5;
+  comment?: string;
+  assignedTo?: string;
+  assignedToName?: string;
+  respondedAt: string;
+}
+
+export interface ConversationView {
+  id: string;
+  businessId: string;
+  name: string;
+  emoji?: string;
+  filters: {
+    channel?: string;
+    status?: string;
+    sectorId?: string;
+    assignedTo?: string;
+    priority?: string;
+    label?: string;
+    slaStatus?: string;
+    unreadOnly?: boolean;
+  };
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
 }
 
 export interface ConversationMessage {
@@ -2096,12 +2287,21 @@ export interface SegmentFilter {
   value: string | string[] | number | boolean;
 }
 
+/** Grupo de filtros — condições AND dentro do grupo; grupos combinados com OR */
+export interface SegmentFilterGroup {
+  id: string;
+  filters: SegmentFilter[];
+}
+
 export interface Segment {
   id: string;
   businessId: string;
   name: string;
   description?: string;
+  /** @deprecated use filterGroups. Treated as a single AND group. */
   filters: SegmentFilter[];
+  /** OR entre grupos; AND dentro de cada grupo */
+  filterGroups?: SegmentFilterGroup[];
   contactCount?: number;
   lastCalculatedAt?: string;
   createdBy: string;
@@ -2425,7 +2625,8 @@ export type NotificationType =
   | 'task_overdue'
   | 'task_mentioned'
   | 'appointment_reminder'
-  | 'review_received';
+  | 'review_received'
+  | 'conversation_assigned';
 
 export interface AppNotification {
   id: string;

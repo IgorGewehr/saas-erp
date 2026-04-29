@@ -9,7 +9,7 @@ import {
   Brain, TrendingUp, TrendingDown, AlertTriangle, Heart,
   DollarSign, Target, Shield, Zap, Star, BarChart3,
   ThumbsUp, ThumbsDown, Timer, UserCheck, Ban, ArrowRight,
-  Sparkles, Eye, MapPin, Hash,
+  Eye, MapPin, Hash, History,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -18,12 +18,13 @@ import {
   STATUS_LABELS, STATUS_COLORS, ACTIVITY_LABELS, ACTIVITY_COLORS,
   PROFILE_CONFIG, TONE_CONFIG, SENSITIVITY_CONFIG,
   getScoreColor, getChurnLabel, formatDaysSince, relativeTime,
+  getStageLabel, getStageColors, DEFAULT_CRM_PIPELINE,
 } from './shared';
 import { SourceIcon } from './SourceIcon';
 import { TagPicker } from './TagSystem';
-import { collection, query, where, orderBy, getDocs } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, limit } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
-import type { CRMContact, CRMActivity, CRMActivityType, ContactScores, FormResponse } from '@/lib/types';
+import type { CRMContact, CRMActivity, CRMActivityType, CRMStageConfig, ContactScores, FormResponse, CRMAuditEntry } from '@/lib/types';
 
 const ACTIVITY_ICONS_MAP: Record<CRMActivityType, React.ReactNode> = {
   ligacao: <Phone size={12} />, email: <Mail size={12} />, reuniao: <Calendar size={12} />,
@@ -107,9 +108,10 @@ function InsightChip({ text, variant = 'neutral' }: { text: string; variant?: 'p
 
 // ── Main Panel ─────────────────────────────────────────────────────────────
 
-export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete, onTagsChange, onSchedule, onOpenConversations }: {
+export function LeadDetailPanel({ contact, activities, stages, onClose, onEdit, onDelete, onTagsChange, onSchedule, onOpenConversations }: {
   contact: CRMContact;
   activities: CRMActivity[];
+  stages?: CRMStageConfig[];
   onClose: () => void;
   onEdit: () => void;
   onDelete: () => void;
@@ -129,18 +131,40 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
   // Fetch form responses for this contact
   const [formResponses, setFormResponses] = useState<FormResponse[]>([]);
   useEffect(() => {
+    setFormResponses([]);
     if (!contact.businessId || !contact.id) return;
+    let cancelled = false;
     getDocs(query(
       collection(db, 'formResponses'),
       where('businessId', '==', contact.businessId),
       where('clientId', '==', contact.id),
     )).then(snap => {
-      setFormResponses(snap.docs.map(d => ({ ...d.data(), id: d.id } as FormResponse)));
-    }).catch(() => {});
+      if (!cancelled) setFormResponses(snap.docs.map(d => ({ ...d.data(), id: d.id } as FormResponse)));
+    }).catch(err => console.error('[CRM] Form responses fetch error:', err));
+    return () => { cancelled = true; };
   }, [contact.businessId, contact.id]);
 
+  // Fetch audit log for this contact
+  const [auditLog, setAuditLog] = useState<CRMAuditEntry[]>([]);
+  useEffect(() => {
+    setAuditLog([]);
+    if (!contact.businessId || !contact.id) return;
+    let cancelled = false;
+    getDocs(query(
+      collection(db, 'crmAuditLog'),
+      where('businessId', '==', contact.businessId),
+      where('contactId', '==', contact.id),
+      orderBy('createdAt', 'desc'),
+      limit(15),
+    )).then(snap => {
+      if (!cancelled) setAuditLog(snap.docs.map(d => ({ ...d.data(), id: d.id } as CRMAuditEntry)));
+    }).catch(err => console.error('[CRM] Audit log fetch error:', err));
+    return () => { cancelled = true; };
+  }, [contact.businessId, contact.id]);
+
+  const effectiveStages = stages ?? DEFAULT_CRM_PIPELINE;
   const currentTags = contact.tags || [];
-  const sc = STATUS_COLORS[contact.status];
+  const sc = getStageColors(effectiveStages, contact.status);
   const profileCfg = contact.profile ? PROFILE_CONFIG[contact.profile] : null;
   const rh = contact.relationshipHistory;
   const bi = contact.behavioralInsights;
@@ -199,7 +223,7 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
               <p className="text-[11px] text-gray-400 dark:text-gray-500">{contact.role ? `${contact.role} · ` : ''}{contact.company}</p>
             )}
             <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-              <Chip label={STATUS_LABELS[contact.status]} size="small" sx={{ backgroundColor: sc.bg, color: sc.text, fontWeight: 600, fontSize: '0.6rem', height: 20 }} />
+              <Chip label={getStageLabel(effectiveStages, contact.status)} size="small" sx={{ backgroundColor: sc.bg, color: sc.text, fontWeight: 600, fontSize: '0.6rem', height: 20 }} />
               {profileCfg && (
                 <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-md border', profileCfg.bg, profileCfg.text, profileCfg.border)}>
                   {profileCfg.label}
@@ -214,17 +238,6 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
           </div>
         </div>
 
-        {/* ── AI Summary Card ─────────────────────────────────── */}
-        {contact.aiSummary && (
-          <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
-            className="relative p-3.5 rounded-xl bg-gradient-to-br from-violet-500/5 to-blue-500/5 dark:from-violet-500/10 dark:to-blue-500/10 border border-violet-200/50 dark:border-violet-500/20">
-            <div className="flex items-center gap-1.5 mb-2">
-              <Sparkles size={12} className="text-violet-500" />
-              <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400 uppercase tracking-wider">{t('crm.form.aiSummary', 'Resumo IA')}</span>
-            </div>
-            <p className="text-xs text-gray-700 dark:text-gray-300 leading-relaxed">{contact.aiSummary}</p>
-          </motion.div>
-        )}
 
         {/* ── Suggested Action ────────────────────────────────── */}
         {contact.suggestedAction && (
@@ -561,6 +574,43 @@ export function LeadDetailPanel({ contact, activities, onClose, onEdit, onDelete
             </div>
           )}
         </div>
+
+        {/* ── Audit Log / History ─────────────────────────────── */}
+        {auditLog.length > 0 && (
+          <div className="space-y-2">
+            <SectionHeader icon={<History size={11} />} label={t('crm.detail.auditLog', 'Histórico de Alterações')} />
+            <div className="space-y-0">
+              {auditLog.map((entry, i) => {
+                const actionLabels: Record<string, { label: string; color: string }> = {
+                  contact_created: { label: 'Criado', color: 'text-emerald-500' },
+                  contact_updated: { label: 'Editado', color: 'text-blue-500' },
+                  contact_deleted: { label: 'Excluído', color: 'text-red-500' },
+                  status_changed: { label: 'Status', color: 'text-violet-500' },
+                  tags_changed: { label: 'Tags', color: 'text-amber-500' },
+                  deal_created: { label: 'Deal criado', color: 'text-emerald-500' },
+                  deal_updated: { label: 'Deal editado', color: 'text-blue-500' },
+                  deal_deleted: { label: 'Deal excluído', color: 'text-red-500' },
+                };
+                const cfg = actionLabels[entry.action] ?? { label: entry.action, color: 'text-gray-400' };
+                return (
+                  <motion.div key={entry.id} initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.03 * i }}
+                    className="flex items-start gap-2.5 py-1.5 border-b border-gray-50 dark:border-white/[0.04] last:border-0">
+                    <div className="w-1.5 h-1.5 rounded-full bg-gray-300 dark:bg-gray-600 mt-1.5 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className={cn('text-[10px] font-bold', cfg.color)}>{cfg.label}</span>
+                        {entry.details && <span className="text-[10px] text-gray-500 dark:text-gray-400 truncate">{entry.details}</span>}
+                      </div>
+                      <p className="text-[10px] text-gray-400 dark:text-gray-600 mt-0.5">
+                        {entry.userName} · {relativeTime(entry.createdAt)}
+                      </p>
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
     </motion.div>
   );
