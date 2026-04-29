@@ -71,6 +71,11 @@ import {
   Activity,
   Bot,
   BotOff,
+  BarChart3,
+  TrendingUp,
+  Timer,
+  ThumbsUp,
+  MessageSquareOff,
   SlidersHorizontal,
   Bookmark,
   BookmarkCheck,
@@ -1941,6 +1946,181 @@ function CSATDashboard({ businessId, onClose }: { businessId: string; onClose: (
   );
 }
 
+// ─── Conversation Analytics Panel ────────────────────────────────────────────
+
+function AnalyticsBar({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
+  const pct = max > 0 ? (value / max) * 100 : 0;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-gray-500 dark:text-gray-400 truncate max-w-[70%]">{label}</span>
+        <span className="font-semibold text-gray-800 dark:text-gray-200">{value}</span>
+      </div>
+      <div className="h-1.5 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
+        <motion.div initial={{ width: 0 }} animate={{ width: `${pct}%` }} transition={{ duration: 0.5 }}
+          className="h-full rounded-full" style={{ backgroundColor: color }} />
+      </div>
+    </div>
+  );
+}
+
+function ConversationAnalyticsPanel({ conversations, members, onClose }: {
+  conversations: Conversation[];
+  members: User[];
+  onClose: () => void;
+}) {
+  const [period, setPeriod] = useState<7 | 30 | 90>(30);
+
+  const since = useMemo(() => Date.now() - period * 86_400_000, [period]);
+  const inPeriod = useMemo(() => conversations.filter(c => new Date(c.createdAt).getTime() >= since), [conversations, since]);
+
+  // KPIs
+  const total = inPeriod.length;
+  const resolved = inPeriod.filter(c => c.status === 'resolved').length;
+  const resolutionRate = total > 0 ? Math.round((resolved / total) * 100) : 0;
+
+  const avgFirstResponseMin = useMemo(() => {
+    const withResponse = inPeriod.filter(c => c.firstResponseAt && c.createdAt);
+    if (!withResponse.length) return null;
+    const totalMin = withResponse.reduce((s, c) => s + (new Date(c.firstResponseAt!).getTime() - new Date(c.createdAt).getTime()) / 60_000, 0);
+    return Math.round(totalMin / withResponse.length);
+  }, [inPeriod]);
+
+  // Volume by channel
+  const byChannel = useMemo(() => {
+    const map: Record<string, number> = {};
+    inPeriod.forEach(c => { map[c.channel] = (map[c.channel] ?? 0) + 1; });
+    return Object.entries(map).sort((a, b) => b[1] - a[1]);
+  }, [inPeriod]);
+
+  // Volume by day (last 7 days)
+  const byDay = useMemo(() => {
+    const days: { label: string; count: number }[] = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(Date.now() - i * 86_400_000);
+      const label = d.toLocaleDateString('pt-BR', { weekday: 'short' });
+      const dayStr = d.toISOString().slice(0, 10);
+      const count = conversations.filter(c => c.createdAt?.startsWith(dayStr)).length;
+      days.push({ label, count });
+    }
+    return days;
+  }, [conversations]);
+  const maxDay = Math.max(...byDay.map(d => d.count), 1);
+
+  // By agent
+  const byAgent = useMemo(() => {
+    const map: Record<string, { name: string; count: number; resolved: number }> = {};
+    inPeriod.forEach(c => {
+      if (!c.assignedTo) return;
+      if (!map[c.assignedTo]) map[c.assignedTo] = { name: c.assignedToName ?? 'Desconhecido', count: 0, resolved: 0 };
+      map[c.assignedTo].count++;
+      if (c.status === 'resolved') map[c.assignedTo].resolved++;
+    });
+    return Object.entries(map).sort((a, b) => b[1].count - a[1].count).slice(0, 5);
+  }, [inPeriod]);
+  const maxAgent = Math.max(...byAgent.map(([, v]) => v.count), 1);
+
+  const CHANNEL_COLORS: Record<string, string> = { whatsapp: '#25D366', facebook: '#0866FF', instagram: '#E1306C' };
+
+  return (
+    <motion.div initial={{ opacity: 0, x: 320 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 320 }}
+      transition={{ type: 'spring', stiffness: 350, damping: 30 }}
+      className="fixed inset-y-0 right-0 w-full max-w-sm bg-white dark:bg-[#0a0e17] border-l border-gray-100 dark:border-white/[0.06] shadow-2xl z-40 flex flex-col">
+      <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-white/[0.06] shrink-0">
+        <div className="flex items-center gap-2.5">
+          <BarChart3 className="w-4 h-4 text-red-500" />
+          <h2 className="font-display font-bold text-sm text-gray-900 dark:text-white">Analytics</h2>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-0.5 bg-gray-100 dark:bg-white/[0.06] rounded-lg p-0.5">
+            {([7, 30, 90] as const).map(p => (
+              <button key={p} onClick={() => setPeriod(p)}
+                className={cn('px-2.5 py-1 rounded-md text-[10px] font-semibold transition-all',
+                  period === p ? 'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 shadow-sm' : 'text-gray-400')}>
+                {p}d
+              </button>
+            ))}
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400"><X className="w-4 h-4" /></button>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+        {/* KPI Cards */}
+        <div className="grid grid-cols-2 gap-2.5">
+          {[
+            { label: 'Total', value: total, icon: <MessageSquare className="w-4 h-4" />, color: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-50 dark:bg-blue-500/10' },
+            { label: 'Resolvidas', value: resolved, icon: <CheckCircle className="w-4 h-4" />, color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
+            { label: 'Taxa resolução', value: `${resolutionRate}%`, icon: <TrendingUp className="w-4 h-4" />, color: 'text-violet-600 dark:text-violet-400', bg: 'bg-violet-50 dark:bg-violet-500/10' },
+            { label: 'Tempo 1ª resp.', value: avgFirstResponseMin != null ? `${avgFirstResponseMin}min` : '-', icon: <Timer className="w-4 h-4" />, color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-500/10' },
+          ].map(k => (
+            <div key={k.label} className="p-3 rounded-xl bg-white dark:bg-white/[0.03] border border-gray-100 dark:border-gray-700/50">
+              <div className={cn('w-7 h-7 rounded-lg flex items-center justify-center mb-2', k.bg, k.color)}>{k.icon}</div>
+              <p className="text-[10px] text-gray-400 dark:text-gray-500">{k.label}</p>
+              <p className={cn('text-lg font-bold', k.color)}>{k.value}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* Volume últimos 7 dias */}
+        <div>
+          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">Volume / dia (7d)</p>
+          <div className="flex items-end gap-1.5 h-16">
+            {byDay.map(({ label, count }) => (
+              <div key={label} className="flex-1 flex flex-col items-center gap-1">
+                <motion.div initial={{ height: 0 }} animate={{ height: `${(count / maxDay) * 52}px` }}
+                  transition={{ duration: 0.5 }} className="w-full bg-red-500/70 dark:bg-red-400/60 rounded-t-sm min-h-[2px]" />
+                <span className="text-[9px] text-gray-400">{label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Por canal */}
+        {byChannel.length > 0 && (
+          <div>
+            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2.5">Por canal</p>
+            <div className="space-y-2">
+              {byChannel.map(([ch, count]) => (
+                <AnalyticsBar key={ch} label={ch.charAt(0).toUpperCase() + ch.slice(1)} value={count}
+                  max={total} color={CHANNEL_COLORS[ch] ?? '#6B7280'} />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Por agente */}
+        {byAgent.length > 0 && (
+          <div>
+            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2.5">Por agente</p>
+            <div className="space-y-2">
+              {byAgent.map(([uid, { name, count, resolved: res }]) => (
+                <div key={uid} className="space-y-1">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-gray-600 dark:text-gray-400 truncate max-w-[60%]">{name}</span>
+                    <span className="text-gray-400">{res}/{count} resolvidas</span>
+                  </div>
+                  <div className="h-1.5 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
+                    <motion.div initial={{ width: 0 }} animate={{ width: `${(count / maxAgent) * 100}%` }}
+                      transition={{ duration: 0.5 }} className="h-full bg-violet-500/70 rounded-full" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {inPeriod.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-12 text-gray-300 dark:text-gray-600">
+            <BarChart3 size={32} strokeWidth={1.5} className="mb-2" />
+            <p className="text-sm">Sem dados no período</p>
+          </div>
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
 // ─── Status Filter Tabs ──────────────────────────────────────────────────────
 
 function StatusFilterBar({
@@ -2545,6 +2725,7 @@ export default function ConversasModule() {
   useEffect(() => { setSLAConfig(business?.settings?.conversationSLA ?? SLA_DEFAULT_CONFIG); }, [business?.settings?.conversationSLA]);
   const [showSLASettings, setShowSLASettings] = useState(false);
   const [showCSATDashboard, setShowCSATDashboard] = useState(false);
+  const [showAnalytics, setShowAnalytics] = useState(false);
   const csatEnabled = !!business?.settings?.csatEnabled;
   const [members, setMembers] = useState<User[]>([]);
   useEffect(() => {
@@ -3776,6 +3957,16 @@ export default function ConversasModule() {
                     </motion.button>
                   </>
                 )}
+                <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+                  onClick={() => setShowAnalytics(v => !v)}
+                  title="Analytics de conversas"
+                  className={cn('w-8 h-8 rounded-xl flex items-center justify-center transition-colors',
+                    showAnalytics
+                      ? 'bg-red-50 dark:bg-red-500/10 text-red-500 dark:text-red-400'
+                      : 'bg-gray-100 dark:bg-white/[0.06] text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                  )}>
+                  <BarChart3 className="w-4 h-4" />
+                </motion.button>
                 <motion.button
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
@@ -4388,6 +4579,17 @@ export default function ConversasModule() {
         )}
         {showCSATDashboard && business?.id && (
           <CSATDashboard businessId={business.id} onClose={() => setShowCSATDashboard(false)} />
+        )}
+        {showAnalytics && (
+          <>
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/20 z-30" onClick={() => setShowAnalytics(false)} />
+            <ConversationAnalyticsPanel
+              conversations={conversations}
+              members={members}
+              onClose={() => setShowAnalytics(false)}
+            />
+          </>
         )}
         {showSLASettings && isAdmin && business?.id && (
           <SLASettingsDialog
