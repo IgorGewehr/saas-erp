@@ -61,6 +61,7 @@ import {
   XCircle,
   PauseCircle,
   PlayCircle,
+  StopCircle,
   CalendarDays,
   ChevronsRight,
   Lock,
@@ -733,6 +734,18 @@ export default function FinancialModule() {
     queryClient.invalidateQueries({ queryKey: ['transactions', business?.id] });
   }, [business?.id, queryClient, transactions]);
 
+  // cancelCurrent=true → encerra série e cancela o vencimento atual
+  // cancelCurrent=false → encerra série e mantém o vencimento atual como pendente
+  const handleEndSeries = useCallback(async (txId: string, cancelCurrent: boolean) => {
+    const updates: Record<string, unknown> = {
+      'recurrence.isActive': false,
+      updatedAt: new Date().toISOString(),
+    };
+    if (cancelCurrent) updates.status = 'cancelado';
+    await updateDoc(doc(db, 'transactions', txId), updates);
+    queryClient.invalidateQueries({ queryKey: ['transactions', business?.id] });
+  }, [business?.id, queryClient]);
+
   const handleSaveAlerts = useCallback(async () => {
     if (!business?.id) return;
     setIsSavingAlerts(true);
@@ -1376,6 +1389,7 @@ export default function FinancialModule() {
                 onResume={handleResumeRecurrence}
                 onMarkPaid={handleMarkRecurringPaid}
                 onSkip={handleSkipRecurrence}
+                onEndSeries={handleEndSeries}
               />
             )}
 
@@ -1470,6 +1484,18 @@ export default function FinancialModule() {
             <X size={18} className="text-gray-400 dark:text-gray-500" />
           </button>
         </div>
+
+        {/* Série recorrente banner — visível apenas ao editar transação com recorrência ativa */}
+        {editingTransaction?.recurrence?.isActive && (
+          <div className="mx-6 mb-1 mt-0 px-3 py-2 rounded-xl bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/50 flex items-center gap-2">
+            <Repeat size={14} className="text-blue-500 dark:text-blue-400 shrink-0" />
+            <span className="text-xs font-medium text-blue-700 dark:text-blue-300">
+              Lançamento recorrente —{' '}
+              <strong>{RECURRENCE_LABELS[editingTransaction.recurrence.frequency] ?? editingTransaction.recurrence.frequency}</strong>
+              {editingTransaction.recurrence.dayOfMonth ? `, dia ${editingTransaction.recurrence.dayOfMonth}` : ''}
+            </span>
+          </div>
+        )}
 
         <DialogContent sx={{ pt: 2.5, pb: 2 }}>
           <div className="space-y-4">
@@ -1707,6 +1733,31 @@ export default function FinancialModule() {
                         />
                       </div>
                     )}
+
+                    {/* Preview das próximas ocorrências */}
+                    {(() => {
+                      const base = formDueDate || formPaymentDate || new Date().toISOString().slice(0, 10);
+                      const dayNum = formRecurrenceDay ? Math.min(parseInt(formRecurrenceDay, 10), 28) : undefined;
+                      const dates: string[] = [];
+                      let cur = base;
+                      for (let i = 0; i < 5; i++) {
+                        cur = computeNextDueDate(cur, formRecurrenceFrequency, dayNum);
+                        if (formRecurrenceEndDate && cur > formRecurrenceEndDate) break;
+                        dates.push(cur);
+                      }
+                      if (!dates.length) return null;
+                      return (
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-[10px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider shrink-0">Próximas:</span>
+                          {dates.map((d, i) => (
+                            <span key={i} className="text-[11px] font-medium text-slate-600 dark:text-gray-300 bg-slate-100 dark:bg-gray-800 px-2 py-0.5 rounded-full">
+                              {d.slice(5).replace('-', '/')}/{d.slice(2, 4)}
+                            </span>
+                          ))}
+                          {!formRecurrenceEndDate && <span className="text-[10px] text-slate-400 dark:text-gray-500">…</span>}
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
               </div>
@@ -2260,11 +2311,19 @@ function OverviewContent({
 
   const upcomingRecurrences = useMemo(() => {
     const in3Days = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
-    return transactions.filter(t => 
-      t.recurrence?.isActive && 
-      t.recurrence.nextDueDate && 
+    return transactions.filter(t =>
+      t.recurrence?.isActive &&
+      t.recurrence.nextDueDate &&
       t.recurrence.nextDueDate <= in3Days
     );
+  }, [transactions]);
+
+  const recurringNext7Days = useMemo(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    const in7Days = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+    return transactions
+      .filter(t => t.recurrence?.isActive && t.recurrence.nextDueDate && t.recurrence.nextDueDate >= today && t.recurrence.nextDueDate <= in7Days)
+      .sort((a, b) => (a.recurrence!.nextDueDate!).localeCompare(b.recurrence!.nextDueDate!));
   }, [transactions]);
 
   const overdueCount = transactions.filter(t =>
@@ -2321,6 +2380,50 @@ function OverviewContent({
             <button onClick={() => setDismissedRecurringBanner(true)} className="text-amber-400 hover:text-amber-600 dark:hover:text-amber-300 transition-colors p-1">
               <X size={14} />
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Próximos vencimentos recorrentes — 7 dias */}
+      {recurringNext7Days.length > 0 && (
+        <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl overflow-hidden shadow-sm">
+          <div className="px-5 py-3 border-b border-slate-100 dark:border-gray-800 flex items-center gap-2">
+            <Repeat size={15} className="text-blue-500 dark:text-blue-400" />
+            <h3 className="text-sm font-display font-bold text-slate-800 dark:text-gray-100">Próximos vencimentos recorrentes</h3>
+            <span className="ml-auto text-xs text-slate-400 dark:text-gray-500 font-medium">próximos 7 dias</span>
+          </div>
+          <div className="divide-y divide-slate-50 dark:divide-gray-800">
+            {recurringNext7Days.map(tx => {
+              const today = new Date().toISOString().slice(0, 10);
+              const diff = Math.round((new Date(tx.recurrence!.nextDueDate! + 'T00:00:00').getTime() - new Date(today + 'T00:00:00').getTime()) / 86400000);
+              const dueLabel = diff === 0 ? 'Hoje' : diff === 1 ? 'Amanhã' : `em ${diff}d`;
+              const isUrgent = diff <= 3;
+              return (
+                <div key={tx.id} className="flex items-center gap-3 px-5 py-3 hover:bg-slate-50 dark:hover:bg-gray-800/40 transition-colors">
+                  <div className={cn('w-12 h-10 rounded-xl flex flex-col items-center justify-center border shrink-0', isUrgent ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800' : 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800')}>
+                    <span className={cn('text-[10px] font-bold leading-none', isUrgent ? 'text-red-600 dark:text-red-400' : 'text-blue-600 dark:text-blue-400')}>{dueLabel}</span>
+                    <span className={cn('text-[9px] leading-none mt-0.5 opacity-70', isUrgent ? 'text-red-600 dark:text-red-400' : 'text-blue-600 dark:text-blue-400')}>
+                      {tx.recurrence!.nextDueDate!.slice(5).replace('-', '/')}
+                    </span>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-slate-800 dark:text-gray-100 truncate">{tx.recurrence?.label || tx.description}</p>
+                    <p className="text-[11px] text-slate-400 dark:text-gray-500">{RECURRENCE_LABELS[tx.recurrence?.frequency || 'monthly']} · {tx.category || '—'}</p>
+                  </div>
+                  <p className={cn('text-sm font-bold shrink-0 mr-2', tx.type === 'receita' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+                    {tx.type === 'receita' ? '+' : '-'}{showBalances ? formatCurrency(tx.amount) : 'R$ ****'}
+                  </p>
+                  <button
+                    onClick={() => onMarkPaid(tx.id)}
+                    title="Quitar agora"
+                    className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900/40 transition-colors shrink-0"
+                  >
+                    <CheckCircle2 size={12} />
+                    Quitar
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -6265,6 +6368,7 @@ function RecurringContent({
   onResume,
   onMarkPaid,
   onSkip,
+  onEndSeries,
 }: {
   transactions: Transaction[];
   showBalances: boolean;
@@ -6273,12 +6377,15 @@ function RecurringContent({
   onResume: (txId: string) => Promise<void>;
   onMarkPaid: (txId: string) => Promise<void>;
   onSkip: (txId: string) => Promise<void>;
+  onEndSeries: (txId: string, cancelCurrent: boolean) => Promise<void>;
 }) {
   const [filter, setFilter] = useState<RecurringFilter>('all');
   const [pausingId, setPausingId] = useState<string | null>(null);
   const [resumingId, setResumingId] = useState<string | null>(null);
   const [payingId, setPayingId] = useState<string | null>(null);
   const [skippingId, setSkippingId] = useState<string | null>(null);
+  const [endingId, setEndingId] = useState<string | null>(null); // txId showing end-series confirm
+  const [endingSaving, setEndingSaving] = useState(false);
 
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
@@ -6449,12 +6556,47 @@ function RecurringContent({
                   <button
                     onClick={() => handlePause(tx)}
                     disabled={pausingId === tx.id}
-                    title="Pausar recorrência"
+                    title="Pausar recorrência temporariamente"
                     className="p-1.5 text-slate-400 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg transition-colors disabled:opacity-50"
                   >
-                    {pausingId === tx.id ? <Loader2 size={14} className="animate-spin" /> : <XCircle size={14} />}
+                    {pausingId === tx.id ? <Loader2 size={14} className="animate-spin" /> : <PauseCircle size={14} />}
+                  </button>
+
+                  {/* Encerrar série */}
+                  <button
+                    onClick={() => setEndingId(endingId === tx.id ? null : tx.id)}
+                    title="Encerrar série recorrente"
+                    className={cn('p-1.5 rounded-lg transition-colors', endingId === tx.id ? 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400' : 'text-slate-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20')}
+                  >
+                    <StopCircle size={14} />
                   </button>
                 </div>
+
+                {/* End-series confirmation panel */}
+                {endingId === tx.id && (
+                  <div className="mt-3 p-3 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 space-y-2">
+                    <p className="text-xs font-semibold text-red-700 dark:text-red-300">Encerrar esta série recorrente?</p>
+                    <div className="flex flex-col gap-1.5">
+                      <button
+                        disabled={endingSaving}
+                        onClick={async () => { setEndingSaving(true); try { await onEndSeries(tx.id, false); setEndingId(null); } finally { setEndingSaving(false); } }}
+                        className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white dark:bg-gray-800 border border-red-200 dark:border-red-700 text-xs font-medium text-slate-700 dark:text-gray-200 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors disabled:opacity-50 text-left"
+                      >
+                        {endingSaving ? <Loader2 size={12} className="animate-spin shrink-0" /> : <StopCircle size={12} className="text-amber-500 shrink-0" />}
+                        <span>Encerrar e <strong>manter</strong> o vencimento atual como pendente</span>
+                      </button>
+                      <button
+                        disabled={endingSaving}
+                        onClick={async () => { setEndingSaving(true); try { await onEndSeries(tx.id, true); setEndingId(null); } finally { setEndingSaving(false); } }}
+                        className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white dark:bg-gray-800 border border-red-200 dark:border-red-700 text-xs font-medium text-slate-700 dark:text-gray-200 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors disabled:opacity-50 text-left"
+                      >
+                        {endingSaving ? <Loader2 size={12} className="animate-spin shrink-0" /> : <XCircle size={12} className="text-red-500 shrink-0" />}
+                        <span>Encerrar e <strong>cancelar</strong> o vencimento atual</span>
+                      </button>
+                      <button onClick={() => setEndingId(null)} className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-gray-300 text-center py-1 transition-colors">Cancelar</button>
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })}
