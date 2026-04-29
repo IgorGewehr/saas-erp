@@ -1857,6 +1857,90 @@ function BatchTagInput({ onAdd, existingTags }: { onAdd: (tag: string) => void; 
   );
 }
 
+// ─── CSAT Dashboard ──────────────────────────────────────────────────────────
+
+import type { CSATResponse } from '@/lib/types';
+
+function CSATDashboard({ businessId, onClose }: { businessId: string; onClose: () => void }) {
+  const [responses, setResponses] = useState<CSATResponse[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!businessId) return;
+    getDocs(query(collection(db, 'csatResponses'), where('businessId', '==', businessId), orderBy('respondedAt', 'desc'), limit(100)))
+      .then(snap => { setResponses(snap.docs.map(d => ({ ...d.data(), id: d.id } as CSATResponse))); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, [businessId]);
+
+  const avg = responses.length > 0 ? (responses.reduce((s, r) => s + r.rating, 0) / responses.length).toFixed(1) : '-';
+  const dist = [5, 4, 3, 2, 1].map(n => ({ n, count: responses.filter(r => r.rating === n).length }));
+  const max = Math.max(...dist.map(d => d.count), 1);
+  const COLORS = ['text-emerald-600', 'text-emerald-500', 'text-amber-500', 'text-orange-500', 'text-red-500'];
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm"
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <motion.div initial={{ opacity: 0, scale: 0.95, y: 8 }} animate={{ opacity: 1, scale: 1, y: 0 }}
+        className="w-full max-w-sm bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800">
+          <div>
+            <h2 className="font-bold text-sm text-gray-900 dark:text-white">Satisfação dos Clientes</h2>
+            <p className="text-[10px] text-gray-400">{responses.length} avaliação(ões) recebida(s)</p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          {loading ? (
+            <div className="space-y-2">{[0,1,2].map(i => <div key={i} className="h-8 rounded-lg shimmer" />)}</div>
+          ) : responses.length === 0 ? (
+            <div className="text-center py-6 text-gray-400">
+              <p className="text-2xl mb-1">⭐</p>
+              <p className="text-sm">Nenhuma avaliação ainda</p>
+              <p className="text-xs mt-1 text-gray-300">Ative o CSAT e resolva conversas para receber avaliações</p>
+            </div>
+          ) : (
+            <>
+              <div className="text-center">
+                <p className="text-4xl font-bold text-gray-900 dark:text-white">{avg}</p>
+                <div className="flex justify-center gap-0.5 mt-1">
+                  {[1,2,3,4,5].map(n => (
+                    <span key={n} className={parseFloat(avg) >= n ? 'text-amber-400' : 'text-gray-200 dark:text-gray-700'} style={{ fontSize: 18 }}>★</span>
+                  ))}
+                </div>
+                <p className="text-xs text-gray-400 mt-0.5">média geral</p>
+              </div>
+              <div className="space-y-1.5">
+                {dist.map(({ n, count }, i) => (
+                  <div key={n} className="flex items-center gap-2">
+                    <span className={cn('text-xs font-bold w-3', COLORS[i])}>{n}</span>
+                    <div className="flex-1 h-2 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
+                      <motion.div initial={{ width: 0 }} animate={{ width: `${(count / max) * 100}%` }} transition={{ duration: 0.5, delay: i * 0.06 }}
+                        className={cn('h-full rounded-full', i === 0 ? 'bg-emerald-500' : i === 1 ? 'bg-emerald-400' : i === 2 ? 'bg-amber-400' : i === 3 ? 'bg-orange-400' : 'bg-red-400')} />
+                    </div>
+                    <span className="text-xs text-gray-400 w-4 text-right">{count}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                {responses.filter(r => r.comment).slice(0, 5).map(r => (
+                  <div key={r.id} className="p-2.5 rounded-xl bg-gray-50 dark:bg-white/[0.03] border border-gray-100 dark:border-gray-800">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <span className="text-amber-400 text-xs">{'★'.repeat(r.rating)}</span>
+                      <span className="text-[10px] text-gray-400">{r.contactName}</span>
+                    </div>
+                    <p className="text-xs text-gray-600 dark:text-gray-400 line-clamp-2">{r.comment}</p>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 // ─── Status Filter Tabs ──────────────────────────────────────────────────────
 
 function StatusFilterBar({
@@ -2460,6 +2544,8 @@ export default function ConversasModule() {
   );
   useEffect(() => { setSLAConfig(business?.settings?.conversationSLA ?? SLA_DEFAULT_CONFIG); }, [business?.settings?.conversationSLA]);
   const [showSLASettings, setShowSLASettings] = useState(false);
+  const [showCSATDashboard, setShowCSATDashboard] = useState(false);
+  const csatEnabled = !!business?.settings?.csatEnabled;
   const [members, setMembers] = useState<User[]>([]);
   useEffect(() => {
     if (!business?.id) return;
@@ -3343,15 +3429,29 @@ export default function ConversasModule() {
   // ── Update conversation status ─────────────────────────────────────────────
 
   const updateConversationStatus = useCallback(async (conversationId: string, status: ConversationStatus) => {
+    const now = new Date().toISOString();
     try {
-      await updateDoc(doc(db, 'conversations', conversationId), {
-        status,
-        updatedAt: new Date().toISOString(),
-      });
+      await updateDoc(doc(db, 'conversations', conversationId), { status, updatedAt: now });
+
+      // Send CSAT survey when resolving, if enabled and not already sent
+      if (status === 'resolved' && business?.settings?.csatEnabled) {
+        const conv = conversations.find(c => c.id === conversationId);
+        if (conv && !conv.csatSentAt) {
+          const csatMsg = '⭐ Como foi seu atendimento? Responda com um número de 1 a 5.\n1 = Péssimo  2 = Ruim  3 = Regular  4 = Bom  5 = Excelente';
+          await addDoc(collection(db, 'conversationMessages'), {
+            conversationId, businessId: business.id, channel: conv.channel,
+            direction: 'outbound', content: csatMsg,
+            status: 'sending', senderName: 'Sistema', isCsat: true, sentAt: now,
+          });
+          await updateDoc(doc(db, 'conversations', conversationId), {
+            lastMessage: csatMsg, lastMessageAt: now, lastMessageDirection: 'outbound', csatSentAt: now, updatedAt: now,
+          });
+        }
+      }
     } catch (err) {
       console.error('Error updating conversation status:', err);
     }
-  }, []);
+  }, [business?.id, business?.settings?.csatEnabled, conversations]);
 
   // ── Send message ───────────────────────────────────────────────────────────
 
@@ -3648,16 +3748,33 @@ export default function ConversasModule() {
                   <CheckSquare className="w-4 h-4" />
                 </motion.button>
                 {isAdmin && (
-                  <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
-                    onClick={() => setShowSLASettings(true)}
-                    title="Configurar SLA"
-                    className={cn('w-8 h-8 rounded-xl flex items-center justify-center transition-colors',
-                      slaConfig.enabled
-                        ? 'bg-red-50 dark:bg-red-500/10 text-red-500 dark:text-red-400'
-                        : 'bg-gray-100 dark:bg-white/[0.06] text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-                    )}>
-                    <Clock className="w-4 h-4" />
-                  </motion.button>
+                  <>
+                    <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+                      onClick={() => setShowSLASettings(true)}
+                      title="Configurar SLA"
+                      className={cn('w-8 h-8 rounded-xl flex items-center justify-center transition-colors',
+                        slaConfig.enabled
+                          ? 'bg-red-50 dark:bg-red-500/10 text-red-500 dark:text-red-400'
+                          : 'bg-gray-100 dark:bg-white/[0.06] text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                      )}>
+                      <Clock className="w-4 h-4" />
+                    </motion.button>
+                    <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+                      onClick={async () => {
+                        if (!business?.id) return;
+                        await updateDoc(doc(db, 'businesses', business.id), { 'settings.csatEnabled': !csatEnabled, updatedAt: new Date().toISOString() });
+                        toast.success(!csatEnabled ? 'CSAT ativado' : 'CSAT desativado');
+                      }}
+                      title={csatEnabled ? 'CSAT ativo — clique para desativar / ver dashboard' : 'Ativar CSAT'}
+                      onDoubleClick={() => setShowCSATDashboard(true)}
+                      className={cn('w-8 h-8 rounded-xl flex items-center justify-center transition-colors',
+                        csatEnabled
+                          ? 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400'
+                          : 'bg-gray-100 dark:bg-white/[0.06] text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                      )}>
+                      <span className="text-sm leading-none">⭐</span>
+                    </motion.button>
+                  </>
                 )}
                 <motion.button
                   whileHover={{ scale: 1.05 }}
@@ -4268,6 +4385,9 @@ export default function ConversasModule() {
               <BatchTagInput onAdd={handleBatchTag} existingTags={allLabels} />
             </motion.div>
           </motion.div>
+        )}
+        {showCSATDashboard && business?.id && (
+          <CSATDashboard businessId={business.id} onClose={() => setShowCSATDashboard(false)} />
         )}
         {showSLASettings && isAdmin && business?.id && (
           <SLASettingsDialog
