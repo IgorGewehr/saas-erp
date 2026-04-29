@@ -95,8 +95,29 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
   const pendingCount = counts.pending ?? 0;
   const [dispatching, setDispatching] = useState(false);
   const [resuming, setResuming] = useState(false);
+  const [cancelingSchedule, setCancelingSchedule] = useState(false);
   const canDispatch = broadcast.status === 'draft' && (broadcast.recipients?.length ?? 0) > 0;
   const canResume = broadcast.status === 'paused' && pendingCount > 0;
+  const isScheduled = broadcast.status === 'scheduled';
+
+  const handleCancelSchedule = async () => {
+    if (!isScheduled) return;
+    if (!confirm('Cancelar agendamento e voltar para rascunho?')) return;
+    setCancelingSchedule(true);
+    try {
+      const { updateDoc, deleteField, doc: docRef } = await import('firebase/firestore');
+      await updateDoc(docRef(db, 'broadcasts', broadcast.id), {
+        status: 'draft',
+        scheduledAt: deleteField(),
+        updatedAt: new Date().toISOString(),
+      });
+      toast.success('Agendamento cancelado.');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao cancelar');
+    } finally {
+      setCancelingSchedule(false);
+    }
+  };
 
   const handleDispatch = async () => {
     if (!canDispatch) return;
@@ -259,6 +280,25 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
             );
           })}
         </div>
+
+        {/* Scheduled toolbar — só quando scheduled */}
+        {isScheduled && broadcast.scheduledAt && (
+          <div className="px-5 py-2.5 bg-blue-50 dark:bg-blue-500/5 border-b border-blue-100 dark:border-blue-500/10 flex items-center justify-between">
+            <span className="text-xs text-blue-700 dark:text-blue-400">
+              <Clock className="w-3 h-3 inline mr-1 -mt-0.5" />
+              Agendada para {new Date(broadcast.scheduledAt).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}
+            </span>
+            <button
+              type="button"
+              onClick={handleCancelSchedule}
+              disabled={cancelingSchedule}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold border border-blue-300 dark:border-blue-500/30 text-blue-700 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-500/10 disabled:opacity-50 transition-colors"
+            >
+              {cancelingSchedule ? <Loader2 className="w-3 h-3 animate-spin" /> : <X className="w-3 h-3" />}
+              Cancelar agendamento
+            </button>
+          </div>
+        )}
 
         {/* Dispatch toolbar — só quando draft */}
         {canDispatch && (

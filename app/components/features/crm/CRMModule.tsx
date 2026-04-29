@@ -1204,6 +1204,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
   const [formTemplate, setFormTemplate] = useState<TemplateSelection | null>(null);
   const [formContent, setFormContent] = useState('');
   const [formEmailSubject, setFormEmailSubject] = useState('');
+  const [formScheduledAt, setFormScheduledAt] = useState(''); // datetime-local string ou ''
   const [saving, setSaving] = useState(false);
   const { user, business } = useAuth();
   // Detecta features disponíveis a partir de business.settings/channels
@@ -1293,6 +1294,22 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       // Email e Baileys forçam messageType=text; outros canais respeitam a escolha
       const isBaileysSend = formChannel === 'whatsapp' && formViaBaileys;
       const effectiveMsgType = (formChannel === 'email' || isBaileysSend) ? 'text' : formMsgType;
+      // Agendamento: se formScheduledAt está no futuro, status='scheduled'
+      let scheduledAtIso: string | undefined;
+      if (formScheduledAt) {
+        const dt = new Date(formScheduledAt);
+        if (isNaN(dt.getTime())) {
+          toast.error('Data/hora de agendamento inválida.');
+          return;
+        }
+        if (dt.getTime() <= Date.now()) {
+          toast.error('Data/hora de agendamento deve estar no futuro.');
+          return;
+        }
+        scheduledAtIso = dt.toISOString();
+      }
+      const initialStatus: BroadcastStatus = scheduledAtIso ? 'scheduled' : 'draft';
+
       const payload: Record<string, unknown> = {
         businessId,
         name: formName.trim(),
@@ -1306,7 +1323,8 @@ function CampaignsTab({ businessId }: { businessId: string }) {
         messageContent: effectiveMsgType === 'text' ? formContent.trim() : undefined,
         emailSubject: formChannel === 'email' ? formEmailSubject.trim() : undefined,
         viaBaileys: isBaileysSend,
-        status: 'draft' as BroadcastStatus,
+        scheduledAt: scheduledAtIso,
+        status: initialStatus,
         stats: { total: recipientsTotal, sent: 0, delivered: 0, read: 0, failed: 0, replied: 0 },
         createdBy: user.uid,
         createdByName: user.name,
@@ -1325,6 +1343,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       setFormContent('');
       setFormEmailSubject('');
       setFormViaBaileys(false);
+      setFormScheduledAt('');
     } catch (err) {
       console.error('[CRM:Campaigns] Error creating broadcast:', err);
       toast.error(t('crm.toast.errorCreateCampaign', 'Erro ao criar campanha'));
@@ -1454,6 +1473,18 @@ function CampaignsTab({ businessId }: { businessId: string }) {
               size="small"
             />
           )}
+          {/* Agendamento opcional — se preenchido, broadcast começa em status='scheduled'
+              e é disparado automaticamente quando o cron processar (a cada 1min). */}
+          <TextField
+            label="Agendar para (opcional)"
+            type="datetime-local"
+            value={formScheduledAt}
+            onChange={(e) => setFormScheduledAt(e.target.value)}
+            InputLabelProps={{ shrink: true }}
+            helperText={formScheduledAt ? 'Será disparada automaticamente no horário marcado' : 'Deixe vazio para disparar manualmente'}
+            fullWidth
+            size="small"
+          />
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}><Button onClick={() => setShowNew(false)}>{t('crm.action.cancel', 'Cancelar')}</Button><Button onClick={handleCreate} variant="contained" disabled={saving || !formName.trim()} sx={{ bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' }, borderRadius: '0.75rem' }}>{saving ? t('crm.action.creating', 'Criando...') : t('crm.action.create', 'Criar')}</Button></DialogActions>
       </Dialog>

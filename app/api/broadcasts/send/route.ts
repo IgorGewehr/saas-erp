@@ -172,9 +172,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    // Verify authentication and business ownership
-    const authResult = await verifyAuth(req, businessId);
-    if (isAuthError(authResult)) return authResult;
+    // Auth: CRON_SECRET bypass (para process-scheduled trigger interno) OU user auth normal
+    const cronSecret = req.headers.get('x-cron-secret');
+    const isCronCall = !!cronSecret && !!process.env.CRON_SECRET && cronSecret === process.env.CRON_SECRET;
+    if (!isCronCall) {
+      const authResult = await verifyAuth(req, businessId);
+      if (isAuthError(authResult)) return authResult;
+    }
 
     const recipients = normalizeRecipients(rawRecipients as InboundRecipient[], channel);
     if (!recipients.length) {
