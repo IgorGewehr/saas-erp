@@ -11,7 +11,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
-import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
+import { checkRateLimit, checkBusinessRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import type { Broadcast, BroadcastMessage, BroadcastRecipient, UserRole } from '@/lib/types';
 
@@ -47,6 +47,15 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     const role = authResult.role as UserRole;
     if ((ROLE_HIERARCHY[role] || 0) < ROLE_HIERARCHY['operator']) {
       return NextResponse.json({ error: 'Forbidden — operator role required' }, { status: 403 });
+    }
+
+    // Rate limit por business (5.13): 10 retries/hora — anti-abuse
+    const bizLimit = checkBusinessRateLimit('broadcast-retry', businessId, 10, 3_600_000);
+    if (!bizLimit.allowed) {
+      return NextResponse.json(
+        { error: 'Limite de retries atingido para este negócio. Aguarde antes de tentar novamente.' },
+        { status: 429 },
+      );
     }
 
     // Busca broadcast original

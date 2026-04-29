@@ -15,7 +15,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
-import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
+import { checkRateLimit, checkBusinessRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import type {
   BroadcastList,
@@ -160,6 +160,16 @@ export async function POST(req: NextRequest) {
   const role = authResult.role as UserRole;
   if ((ROLE_HIERARCHY[role] || 0) < ROLE_HIERARCHY['operator']) {
     return NextResponse.json({ error: 'Forbidden — operator role required' }, { status: 403 });
+  }
+
+  // Rate limit por business (5.13): 50 listas/hora — anti-abuse
+  // (cada lista pode ter até 10k recipientes ≈ 1MB, então flood lota o Firestore).
+  const bizLimit = checkBusinessRateLimit('broadcast-lists-post', businessId, 50, 3_600_000);
+  if (!bizLimit.allowed) {
+    return NextResponse.json(
+      { error: 'Limite de criação de listas atingido para este negócio. Aguarde antes de criar outra.' },
+      { status: 429 },
+    );
   }
 
   try {

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { decryptToken } from '@/lib/utils/encryption';
-import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
+import { checkRateLimit, checkBusinessRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { sendBaileysBroadcastMessage } from '@/app/api/whatsapp/baileys-manager';
@@ -194,6 +194,17 @@ export async function POST(req: NextRequest) {
     if (!isCronCall) {
       const authResult = await verifyAuth(req, businessId);
       if (isAuthError(authResult)) return authResult;
+
+      // Rate limit por business (5.13): 30 broadcasts/hora — anti-abuse
+      // independente do IP (atacante pode rotacionar IPs mas não tokens).
+      // Cron interno bypassa (pode ter pile-up de scheduled broadcasts).
+      const bizLimit = checkBusinessRateLimit('broadcast-send', businessId, 30, 3_600_000);
+      if (!bizLimit.allowed) {
+        return NextResponse.json(
+          { error: 'Limite de envios atingido para este negócio. Aguarde antes de disparar outra campanha.' },
+          { status: 429 }
+        );
+      }
     }
 
     // Defesa em profundidade: valida que broadcast.businessId === body.businessId
