@@ -2142,12 +2142,21 @@ export interface SegmentFilter {
   value: string | string[] | number | boolean;
 }
 
+/** Grupo de filtros — condições AND dentro do grupo; grupos combinados com OR */
+export interface SegmentFilterGroup {
+  id: string;
+  filters: SegmentFilter[];
+}
+
 export interface Segment {
   id: string;
   businessId: string;
   name: string;
   description?: string;
+  /** @deprecated use filterGroups. Treated as a single AND group. */
   filters: SegmentFilter[];
+  /** OR entre grupos; AND dentro de cada grupo */
+  filterGroups?: SegmentFilterGroup[];
   contactCount?: number;
   lastCalculatedAt?: string;
   createdBy: string;

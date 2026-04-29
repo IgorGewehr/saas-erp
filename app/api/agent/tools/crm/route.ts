@@ -353,7 +353,19 @@ async function segmentQuery(businessId: string, segmentId: string, limit?: numbe
 
   const snap = await q.limit(cap * 2).get();
   const candidates = snap.docs.map((d) => ({ ...(d.data() as Client), id: d.id }));
-  const filtered = candidates.filter((c) => pending.every((f) => evalFilterInMemory(c, f))).slice(0, cap);
+
+  let filtered: Client[];
+  if (segment.filterGroups?.length) {
+    // OR between groups, AND within each group
+    filtered = candidates.filter((c) =>
+      segment.filterGroups!.some((group) =>
+        group.filters.every((f) => evalFilterInMemory(c, f))
+      )
+    ).slice(0, cap);
+  } else {
+    // Legacy: all filters AND
+    filtered = candidates.filter((c) => pending.every((f) => evalFilterInMemory(c, f))).slice(0, cap);
+  }
 
   return { segment, contacts: filtered };
 }

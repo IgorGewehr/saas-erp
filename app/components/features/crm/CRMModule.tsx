@@ -724,6 +724,437 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
 }
 
 // ==========================================
+// SEGMENTS TAB — OR/AND filter builder
+// ==========================================
+
+type SegFieldType = 'string' | 'number' | 'select' | 'tags' | 'lifecycle' | 'tipo';
+
+interface SegFieldDef {
+  id: string;
+  label: string;
+  type: SegFieldType;
+  options?: { value: string; label: string }[];
+}
+
+const SEGMENT_FIELDS: SegFieldDef[] = [
+  { id: 'status', label: 'Status', type: 'select',
+    options: ALL_STATUSES.map(s => ({ value: s, label: STATUS_LABELS[s] })) },
+  { id: 'source', label: 'Origem', type: 'select',
+    options: ALL_SOURCES.map(s => ({ value: s, label: SOURCE_LABELS[s] })) },
+  { id: 'tipo', label: 'Tipo (PF/PJ)', type: 'select',
+    options: [{ value: 'pf', label: 'Pessoa Física' }, { value: 'pj', label: 'Pessoa Jurídica' }] },
+  { id: 'lifecycleStage', label: 'Etapa do ciclo', type: 'select',
+    options: [
+      { value: 'new_lead', label: 'Novo Lead' }, { value: 'contacted', label: 'Contatado' },
+      { value: 'qualified', label: 'Qualificado' }, { value: 'proposal', label: 'Proposta' },
+      { value: 'negotiation', label: 'Negociação' }, { value: 'customer', label: 'Cliente' },
+      { value: 'churned', label: 'Churned' },
+    ] },
+  { id: 'score', label: 'Score geral', type: 'number' },
+  { id: 'scores.churnRisk', label: 'Risco de churn (%)', type: 'number' },
+  { id: 'scores.overall', label: 'Score IA', type: 'number' },
+  { id: 'totalSpent', label: 'Total gasto (R$)', type: 'number' },
+  { id: 'visitCount', label: 'Nº de compras', type: 'number' },
+  { id: 'tags', label: 'Tags', type: 'tags' },
+  { id: 'company', label: 'Empresa (contém)', type: 'string' },
+];
+
+const OPS_BY_TYPE: Record<SegFieldType, { value: SegmentFilterOperator; label: string }[]> = {
+  string:    [{ value: 'contains', label: 'contém' }, { value: 'not_contains', label: 'não contém' }, { value: 'eq', label: '=' }, { value: 'neq', label: '≠' }],
+  number:    [{ value: 'gt', label: '>' }, { value: 'lt', label: '<' }, { value: 'eq', label: '=' }, { value: 'neq', label: '≠' }],
+  select:    [{ value: 'eq', label: '=' }, { value: 'neq', label: '≠' }],
+  tags:      [{ value: 'contains', label: 'inclui tag' }, { value: 'not_contains', label: 'não inclui tag' }],
+  lifecycle: [{ value: 'eq', label: '=' }, { value: 'neq', label: '≠' }],
+  tipo:      [{ value: 'eq', label: '=' }],
+};
+
+function getNestedVal(obj: unknown, path: string): unknown {
+  return path.split('.').reduce((acc, k) =>
+    (acc != null && typeof acc === 'object' ? (acc as Record<string, unknown>)[k] : undefined), obj);
+}
+
+function evalFilter(contact: CRMContact, filter: SegmentFilter): boolean {
+  const val = getNestedVal(contact, filter.field);
+  if (Array.isArray(val)) {
+    const arr = val as string[];
+    if (filter.operator === 'contains') return arr.includes(filter.value as string);
+    if (filter.operator === 'not_contains') return !arr.includes(filter.value as string);
+    return false;
+  }
+  switch (filter.operator) {
+    case 'eq': return val === filter.value;
+    case 'neq': return val !== filter.value;
+    case 'gt': return typeof val === 'number' && typeof filter.value === 'number' && val > filter.value;
+    case 'lt': return typeof val === 'number' && typeof filter.value === 'number' && val < filter.value;
+    case 'contains': return typeof val === 'string' && typeof filter.value === 'string' && val.toLowerCase().includes((filter.value as string).toLowerCase());
+    case 'not_contains': return !(typeof val === 'string' && typeof filter.value === 'string' && val.toLowerCase().includes((filter.value as string).toLowerCase()));
+    default: return false;
+  }
+}
+
+function matchesSegmentGroups(contact: CRMContact, filterGroups: SegmentFilterGroup[]): boolean {
+  if (!filterGroups.length) return true;
+  return filterGroups.some(group => group.filters.every(f => evalFilter(contact, f)));
+}
+
+function makeFilter(): SegmentFilter { return { field: 'status', operator: 'eq', value: 'novo' }; }
+function makeGroup(): SegmentFilterGroup { return { id: crypto.randomUUID(), filters: [makeFilter()] }; }
+
+function FilterRow({ filter, onChange, onRemove }: {
+  filter: SegmentFilter;
+  onChange: (f: SegmentFilter) => void;
+  onRemove: () => void;
+}) {
+  const fieldDef = SEGMENT_FIELDS.find(f => f.id === filter.field) ?? SEGMENT_FIELDS[0];
+  const ops = OPS_BY_TYPE[fieldDef.type];
+
+  const handleFieldChange = (fieldId: string) => {
+    const def = SEGMENT_FIELDS.find(f => f.id === fieldId) ?? SEGMENT_FIELDS[0];
+    const firstOp = OPS_BY_TYPE[def.type][0].value;
+    const defaultVal = def.type === 'number' ? 0 : (def.options?.[0]?.value ?? '');
+    onChange({ field: fieldId, operator: firstOp, value: defaultVal });
+  };
+
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <select value={filter.field} onChange={e => handleFieldChange(e.target.value)}
+        className="px-2 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-700 dark:text-gray-300 focus:outline-none">
+        {SEGMENT_FIELDS.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+      </select>
+      <select value={filter.operator} onChange={e => onChange({ ...filter, operator: e.target.value as SegmentFilterOperator })}
+        className="px-2 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-700 dark:text-gray-300 focus:outline-none">
+        {ops.map(op => <option key={op.value} value={op.value}>{op.label}</option>)}
+      </select>
+      {fieldDef.options ? (
+        <select value={filter.value as string} onChange={e => onChange({ ...filter, value: e.target.value })}
+          className="flex-1 min-w-0 px-2 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-700 dark:text-gray-300 focus:outline-none">
+          {fieldDef.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      ) : (
+        <input type={fieldDef.type === 'number' ? 'number' : 'text'}
+          value={filter.value as string | number}
+          onChange={e => onChange({ ...filter, value: fieldDef.type === 'number' ? Number(e.target.value) : e.target.value })}
+          className="flex-1 min-w-0 px-2 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-700 dark:text-gray-300 focus:outline-none"
+          placeholder={fieldDef.type === 'number' ? '0' : 'valor...'} />
+      )}
+      <button onClick={onRemove} className="p-1 text-gray-300 dark:text-gray-600 hover:text-red-500 transition-colors flex-shrink-0">
+        <X size={13} />
+      </button>
+    </div>
+  );
+}
+
+import type { Segment, SegmentFilter, SegmentFilterGroup, SegmentFilterOperator } from '@/lib/types';
+
+function SegmentsTab({ contacts, businessId, userId, userName }: {
+  contacts: CRMContact[];
+  businessId: string;
+  userId: string;
+  userName: string;
+}) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState<Segment | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<Segment | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  // Form state
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [filterGroups, setFilterGroups] = useState<SegmentFilterGroup[]>([makeGroup()]);
+
+  const { data: segments = [], isLoading } = useQuery({
+    queryKey: ['segments', businessId],
+    queryFn: async () => {
+      const snap = await getDocs(query(
+        collection(db, 'segments'),
+        where('businessId', '==', businessId),
+        orderBy('createdAt', 'desc'),
+      ));
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Segment));
+    },
+    enabled: !!businessId,
+    staleTime: 2 * 60 * 1000,
+  });
+
+  const openCreate = () => {
+    setEditing(null);
+    setName(''); setDescription('');
+    setFilterGroups([makeGroup()]);
+    setShowForm(true);
+  };
+
+  const openEdit = (seg: Segment) => {
+    setEditing(seg);
+    setName(seg.name);
+    setDescription(seg.description ?? '');
+    setFilterGroups(
+      seg.filterGroups?.length
+        ? seg.filterGroups
+        : [{ id: crypto.randomUUID(), filters: seg.filters.length ? seg.filters : [makeFilter()] }]
+    );
+    setShowForm(true);
+  };
+
+  const liveCount = useMemo(() => {
+    const groups = filterGroups.filter(g => g.filters.length > 0);
+    if (!groups.length) return contacts.length;
+    return contacts.filter(c => matchesSegmentGroups(c, groups)).length;
+  }, [contacts, filterGroups]);
+
+  const handleSave = async () => {
+    if (!name.trim()) return;
+    setSaving(true);
+    const now = new Date().toISOString();
+    const groups = filterGroups.filter(g => g.filters.length > 0);
+    const payload: Omit<Segment, 'id'> = {
+      businessId,
+      name: name.trim(),
+      description: description.trim() || undefined,
+      filters: groups[0]?.filters ?? [],
+      filterGroups: groups,
+      contactCount: liveCount,
+      lastCalculatedAt: now,
+      createdBy: userId,
+      createdAt: editing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    try {
+      if (editing) {
+        await updateDoc(doc(db, 'segments', editing.id), payload);
+      } else {
+        await addDoc(collection(db, 'segments'), payload);
+      }
+      queryClient.invalidateQueries({ queryKey: ['segments', businessId] });
+      toast.success(editing ? 'Segmento atualizado' : 'Segmento criado');
+      setShowForm(false);
+    } catch (err) {
+      console.error('Segment save error:', err);
+      toast.error('Erro ao salvar segmento');
+    } finally { setSaving(false); }
+  };
+
+  const handleDelete = async (seg: Segment) => {
+    try {
+      await deleteDoc(doc(db, 'segments', seg.id));
+      queryClient.invalidateQueries({ queryKey: ['segments', businessId] });
+      toast.success('Segmento excluído');
+      setDeleteConfirm(null);
+    } catch { toast.error('Erro ao excluir'); }
+  };
+
+  const updateGroup = (gIdx: number, patch: Partial<SegmentFilterGroup>) =>
+    setFilterGroups(prev => prev.map((g, i) => i === gIdx ? { ...g, ...patch } : g));
+
+  const addFilter = (gIdx: number) =>
+    updateGroup(gIdx, { filters: [...filterGroups[gIdx].filters, makeFilter()] });
+
+  const updateFilter = (gIdx: number, fIdx: number, f: SegmentFilter) =>
+    updateGroup(gIdx, { filters: filterGroups[gIdx].filters.map((ff, i) => i === fIdx ? f : ff) });
+
+  const removeFilter = (gIdx: number, fIdx: number) => {
+    const newFilters = filterGroups[gIdx].filters.filter((_, i) => i !== fIdx);
+    if (newFilters.length === 0) {
+      setFilterGroups(prev => prev.filter((_, i) => i !== gIdx));
+    } else {
+      updateGroup(gIdx, { filters: newFilters });
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-base font-display font-bold text-gray-900 dark:text-gray-100">Segmentos</h3>
+          <p className="text-xs text-gray-400 mt-0.5">Grupos de contatos com filtros AND/OR para usar em campanhas</p>
+        </div>
+        <button onClick={openCreate}
+          className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded-xl transition-colors">
+          <Plus size={14} />Novo segmento
+        </button>
+      </div>
+
+      {/* List */}
+      {isLoading ? (
+        <div className="space-y-3">{[0,1,2].map(i => <div key={i} className="h-20 rounded-2xl shimmer" />)}</div>
+      ) : segments.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16 text-center">
+          <div className="w-14 h-14 rounded-2xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center mb-3">
+            <Filter size={22} className="text-gray-400" />
+          </div>
+          <p className="text-sm font-semibold text-gray-600 dark:text-gray-400">Nenhum segmento criado</p>
+          <p className="text-xs text-gray-400 mt-1">Crie segmentos para usar em campanhas com filtros avançados</p>
+        </div>
+      ) : (
+        <div className="space-y-2.5">
+          {segments.map(seg => {
+            const count = contacts.filter(c =>
+              matchesSegmentGroups(c, seg.filterGroups?.length ? seg.filterGroups : [{ id: '', filters: seg.filters }])
+            ).length;
+            const groupCount = seg.filterGroups?.length ?? 1;
+            return (
+              <motion.div key={seg.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+                className="flex items-center gap-4 p-4 bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl hover:shadow-sm transition-shadow">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{seg.name}</h4>
+                    <span className="text-[10px] font-medium text-gray-400 bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded-full">
+                      {groupCount} grupo{groupCount !== 1 ? 's' : ''} {groupCount > 1 ? '· OR' : ''}
+                    </span>
+                  </div>
+                  {seg.description && <p className="text-xs text-gray-400 truncate">{seg.description}</p>}
+                </div>
+                <div className="text-center flex-shrink-0">
+                  <p className="text-xl font-bold text-red-600 dark:text-red-400">{count}</p>
+                  <p className="text-[10px] text-gray-400">contatos</p>
+                </div>
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  <button onClick={() => openEdit(seg)}
+                    className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors">
+                    <Edit3 size={14} />
+                  </button>
+                  <button onClick={() => setDeleteConfirm(seg)}
+                    className="p-2 rounded-lg hover:bg-red-50 dark:hover:bg-red-500/10 text-gray-400 hover:text-red-500 transition-colors">
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </motion.div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Create/Edit modal */}
+      <AnimatePresence>
+        {showForm && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={e => { if (e.target === e.currentTarget) setShowForm(false); }}>
+            <motion.div initial={{ opacity: 0, scale: 0.95, y: 16 }} animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 16 }} transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+              className="w-full max-w-xl bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 flex flex-col max-h-[90vh]">
+              {/* Header */}
+              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800 flex-shrink-0">
+                <h3 className="font-semibold text-gray-900 dark:text-white text-sm">
+                  {editing ? 'Editar segmento' : 'Novo segmento'}
+                </h3>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs font-semibold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-500/10 px-2.5 py-1 rounded-full">
+                    {liveCount} contatos
+                  </span>
+                  <button onClick={() => setShowForm(false)} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400">
+                    <X size={15} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-6 space-y-4">
+                {/* Name + description */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="col-span-2">
+                    <label className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider block mb-1">Nome *</label>
+                    <input value={name} onChange={e => setName(e.target.value)} placeholder="Ex: Leads quentes qualificados"
+                      className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/30" />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider block mb-1">Descrição (opcional)</label>
+                    <input value={description} onChange={e => setDescription(e.target.value)} placeholder="Para que serve este segmento..."
+                      className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/30" />
+                  </div>
+                </div>
+
+                {/* Filter groups */}
+                <div className="space-y-3">
+                  <p className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Filtros</p>
+
+                  {filterGroups.map((group, gIdx) => (
+                    <React.Fragment key={group.id}>
+                      {gIdx > 0 && (
+                        <div className="flex items-center gap-3">
+                          <div className="flex-1 h-px bg-gray-200 dark:bg-gray-700" />
+                          <span className="text-[10px] font-bold text-red-500 bg-red-50 dark:bg-red-500/10 px-2 py-1 rounded-full">OU</span>
+                          <div className="flex-1 h-px bg-gray-200 dark:bg-gray-700" />
+                        </div>
+                      )}
+                      <div className="border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
+                        {/* Group header */}
+                        <div className="flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-800/60">
+                          <p className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                            {filterGroups.length > 1 ? `Grupo ${gIdx + 1} — todas as condições` : 'Todas as condições'}
+                          </p>
+                          {filterGroups.length > 1 && (
+                            <button onClick={() => setFilterGroups(prev => prev.filter((_, i) => i !== gIdx))}
+                              className="text-[10px] text-red-500 hover:text-red-700 font-medium">Remover grupo</button>
+                          )}
+                        </div>
+                        {/* Filters */}
+                        <div className="p-3 space-y-2">
+                          {group.filters.map((f, fIdx) => (
+                            <React.Fragment key={fIdx}>
+                              {fIdx > 0 && (
+                                <p className="text-[9px] font-bold text-gray-400 uppercase px-1">E</p>
+                              )}
+                              <FilterRow
+                                filter={f}
+                                onChange={newF => updateFilter(gIdx, fIdx, newF)}
+                                onRemove={() => removeFilter(gIdx, fIdx)}
+                              />
+                            </React.Fragment>
+                          ))}
+                          <button onClick={() => addFilter(gIdx)}
+                            className="text-xs font-medium text-red-600 dark:text-red-400 hover:text-red-700 flex items-center gap-1 mt-1">
+                            <Plus size={11} />Adicionar condição
+                          </button>
+                        </div>
+                      </div>
+                    </React.Fragment>
+                  ))}
+
+                  <button onClick={() => setFilterGroups(prev => [...prev, makeGroup()])}
+                    className="w-full py-2 rounded-xl border-2 border-dashed border-red-200 dark:border-red-500/20 text-xs font-semibold text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/5 transition-colors flex items-center justify-center gap-1.5">
+                    <Plus size={12} />Adicionar grupo (OU)
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex gap-2 justify-end px-6 py-4 border-t border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/30 flex-shrink-0">
+                <button onClick={() => setShowForm(false)} className="px-4 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+                  Cancelar
+                </button>
+                <button onClick={handleSave} disabled={saving || !name.trim()}
+                  className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors disabled:opacity-40">
+                  {saving ? 'Salvando...' : editing ? 'Atualizar' : 'Criar segmento'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Delete confirm */}
+      <AnimatePresence>
+        {deleteConfirm && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
+              className="w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl shadow-2xl p-6">
+              <p className="text-sm font-semibold text-gray-900 dark:text-white mb-1">Excluir segmento?</p>
+              <p className="text-xs text-gray-500 mb-5"><strong>{deleteConfirm.name}</strong> será removido permanentemente.</p>
+              <div className="flex gap-2">
+                <button onClick={() => setDeleteConfirm(null)} className="flex-1 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-400">Cancelar</button>
+                <button onClick={() => handleDelete(deleteConfirm)} className="flex-1 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold">Excluir</button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+// ==========================================
 // CAMPAIGNS TAB (kept inline — self-contained with onSnapshot)
 // ==========================================
 
@@ -975,6 +1406,7 @@ export default function CRMModule() {
     { key: 'kanban', label: t('crm.tab.kanban', 'Pipeline'), icon: <Layers size={15} />, desc: t('crm.tab.kanban_desc', 'Kanban de leads') },
     { key: 'atividades', label: t('crm.tab.activities', 'Atividades'), icon: <Activity size={15} />, desc: t('crm.tab.activities_desc', 'Tarefas e follow-ups') },
     { key: 'campanhas', label: t('crm.tab.campaigns', 'Campanhas'), icon: <Send size={15} />, desc: t('crm.tab.campaigns_desc', 'Broadcasts') },
+    { key: 'segmentos', label: t('crm.tab.segments', 'Segmentos'), icon: <Filter size={15} />, desc: t('crm.tab.segments_desc', 'Filtros AND/OR') },
     { key: 'metricas', label: t('crm.tab.metrics', 'Inteligência'), icon: <Brain size={15} />, desc: t('crm.tab.metrics_desc', 'Scores e insights') },
     { key: 'automacoes', label: t('crm.tab.automations', 'Automações'), icon: <Zap size={15} />, desc: t('crm.tab.automations_desc', 'Regras automáticas') },
     { key: 'formularios', label: t('crm.tab.forms', 'Formulários'), icon: <FileText size={15} />, desc: t('crm.tab.forms_desc', 'Fichas de anamnese') },
@@ -1295,6 +1727,17 @@ export default function CRMModule() {
             {activeTab === 'campanhas' && (
               <div className="flex-1 overflow-y-auto min-h-0">
                 <CampaignsTab businessId={business?.id || ''} />
+              </div>
+            )}
+
+            {activeTab === 'segmentos' && (
+              <div className="flex-1 overflow-y-auto min-h-0 p-1">
+                <SegmentsTab
+                  contacts={contacts}
+                  businessId={business?.id || ''}
+                  userId={user?.uid || ''}
+                  userName={user?.name || ''}
+                />
               </div>
             )}
 
