@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
-import { collection, query, where, onSnapshot, addDoc, updateDoc, deleteDoc, doc, getDocs } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, addDoc, updateDoc, deleteDoc, doc, getDocs, increment } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import type { CRMSequence, CRMSequenceStep, CRMSequenceEnrollment, CRMContact } from '@/lib/types';
 import {
@@ -199,7 +199,7 @@ export default function SequenciasTab({ businessId, userId, userName, contacts }
     const unsub = onSnapshot(
       query(collection(db, 'crmSequences'), where('businessId', '==', businessId)),
       snap => setSequences(snap.docs.map(d => ({ ...d.data(), id: d.id } as CRMSequence))),
-      () => {},
+      err => console.error('[Seq] sequences snapshot error:', err),
     );
     return () => unsub();
   }, [businessId]);
@@ -209,7 +209,7 @@ export default function SequenciasTab({ businessId, userId, userName, contacts }
     const unsub = onSnapshot(
       query(collection(db, 'crmEnrollments'), where('businessId', '==', businessId)),
       snap => setEnrollments(snap.docs.map(d => ({ ...d.data(), id: d.id } as CRMSequenceEnrollment))),
-      () => {},
+      err => console.error('[Seq] enrollments snapshot error:', err),
     );
     return () => unsub();
   }, [businessId]);
@@ -257,8 +257,8 @@ export default function SequenciasTab({ businessId, userId, userName, contacts }
         status: 'active', currentStep: 0, enrolledAt: now, nextStepAt: nextDate,
         enrolledByUserId: userId, enrolledByUserName: userName,
       });
-      // Bump enrolledCount
-      await updateDoc(doc(db, 'crmSequences', sequence.id), { enrolledCount: (sequence.enrolledCount ?? 0) + 1, updatedAt: now });
+      // Bump enrolledCount atomically to handle concurrent enrollments
+      await updateDoc(doc(db, 'crmSequences', sequence.id), { enrolledCount: increment(1), updatedAt: now });
       // Create scheduled activities for each step
       let cumDays = 0;
       for (const step of sequence.steps) {
@@ -283,8 +283,23 @@ export default function SequenciasTab({ businessId, userId, userName, contacts }
   const handleCancelEnrollment = useCallback(async (enr: CRMSequenceEnrollment) => {
     try {
       await updateDoc(doc(db, 'crmEnrollments', enr.id), { status: 'cancelled', updatedAt: new Date().toISOString() });
+      // Delete pending (not yet completed) activities created by this sequence enrollment
+      const prefix = `[Seq: ${enr.sequenceName}]`;
+      const actSnap = await getDocs(query(
+        collection(db, 'crmActivities'),
+        where('businessId', '==', enr.businessId),
+        where('contactId', '==', enr.contactId),
+      ));
+      const orphans = actSnap.docs.filter(d => {
+        const data = d.data();
+        return !data.isCompleted && typeof data.title === 'string' && data.title.startsWith(prefix);
+      });
+      await Promise.all(orphans.map(d => deleteDoc(d.ref)));
       toast.success('Inscrição cancelada');
-    } catch { toast.error('Erro ao cancelar'); }
+    } catch (err) {
+      console.error('[Seq] Cancel enrollment error:', err);
+      toast.error('Erro ao cancelar');
+    }
   }, []);
 
   const activeEnrollments = enrollments.filter(e => e.status === 'active');

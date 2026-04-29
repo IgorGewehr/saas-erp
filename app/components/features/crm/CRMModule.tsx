@@ -26,11 +26,12 @@ import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
 import { db } from '@/lib/config/firebase';
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot, increment, writeBatch } from 'firebase/firestore';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   CRMContact, CRMDeal, CRMPipelineStage, CRMStageConfig, CRMPipelineConfig, CRMActivity, CRMActivityType,
   LeadStatus, LeadSource, User, Broadcast, BroadcastStatus, ContactProfile, CRMAuditAction,
+  Segment, SegmentFilter, SegmentFilterGroup, SegmentFilterOperator,
 } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
 
@@ -41,7 +42,7 @@ import {
   BROADCAST_STATUS_LABELS, ALL_PRESET_TAGS, getTagConfig, relativeTime,
   applyPhoneMask, stripPhoneMask, parseCurrencyInput, formatCurrencyInput,
   PROFILE_CONFIG, getScoreColor, getChurnLabel,
-  DEFAULT_CRM_PIPELINE, getVisibleStages, getStageLabel,
+  DEFAULT_CRM_PIPELINE, getVisibleStages, getStageLabel, getWonStageId,
   type CRMTab,
 } from './shared';
 import { KanbanBoard } from './KanbanBoard';
@@ -433,9 +434,10 @@ function ActivitiesTab({ activities, onEdit, onDelete, onToggle, onNew }: {
 
 const ROTTING_DAYS_THRESHOLD = 7;
 
-function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
+function MetricsTab({ deals, contacts, activities, stages, isDark, metrics, wonStatusId = 'ganho' }: {
   deals: CRMDeal[]; contacts: CRMContact[]; activities: CRMActivity[]; stages: CRMPipelineStage[]; isDark: boolean;
   metrics: { totalValue: number; weightedValue: number; avgDealSize: number; activeDeals: number; conversionRate: number; wonValue: number; wonDeals: number; rottingCount: number };
+  wonStatusId?: LeadStatus;
 }) {
   const { t } = useTranslation();
   const funnelData = useMemo(() => stages.map((s) => { const sd = deals.filter((d) => d.stage === s.id); return { name: t('crm.stage.' + s.id, s.name), value: sd.length, dealValue: sd.reduce((a, d) => a + d.value, 0), fill: s.color }; }), [deals, stages, t]);
@@ -471,7 +473,7 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics }: {
   }, [deals]);
 
   const hasForecast = forecastData.some(m => m.weighted > 0 || m.optimistic > 0);
-  const convRate = contacts.length > 0 ? ((contacts.filter((c) => c.status === 'ganho').length / contacts.length) * 100).toFixed(1) : '0';
+  const convRate = contacts.length > 0 ? ((contacts.filter((c) => c.status === wonStatusId).length / contacts.length) * 100).toFixed(1) : '0';
   const avgScore = contacts.length > 0 ? (contacts.reduce((s, c) => s + (c.scores?.overall ?? c.score), 0) / contacts.length).toFixed(0) : '0';
   const tooltipStyle = { borderRadius: '12px', border: isDark ? '1px solid #374151' : '1px solid #E2E8F0', backgroundColor: isDark ? '#111827' : '#fff', color: isDark ? '#F1F5F9' : '#0F172A' };
 
@@ -875,8 +877,6 @@ function FilterRow({ filter, onChange, onRemove }: {
   );
 }
 
-import type { Segment, SegmentFilter, SegmentFilterGroup, SegmentFilterOperator } from '@/lib/types';
-
 function SegmentsTab({ contacts, businessId, userId, userName }: {
   contacts: CRMContact[];
   businessId: string;
@@ -923,7 +923,7 @@ function SegmentsTab({ contacts, businessId, userId, userName }: {
     setFilterGroups(
       seg.filterGroups?.length
         ? seg.filterGroups
-        : [{ id: crypto.randomUUID(), filters: seg.filters.length ? seg.filters : [makeFilter()] }]
+        : [{ id: crypto.randomUUID(), filters: seg.filters?.length ? seg.filters : [makeFilter()] }]
     );
     setShowForm(true);
   };
@@ -1466,6 +1466,7 @@ function CRMExportModal({ contacts, stages, onClose }: { contacts: CRMContact[];
       if (col.key === 'tagsStr') val = (c.tags ?? []).join(', ');
       else if (col.key === 'stageName') val = getStageLabel(stages, c.status);
       else if (col.key === 'source') val = SOURCE_LABELS[c.source] ?? c.source;
+      else if (col.key === 'createdAt') val = formatDate(c.createdAt) || '';
       else val = String((c as unknown as Record<string, unknown>)[col.key] ?? '');
       return esc(val);
     }).join(';'));
@@ -1590,7 +1591,11 @@ function CRMImportModal({ onClose, businessId, onImported }: { onClose: () => vo
     setImporting(true);
     const now = new Date().toISOString();
     try {
+      const BATCH_SIZE = 400; // Firestore batch max is 500
       let count = 0;
+      let batch = writeBatch(db);
+      let batchCount = 0;
+
       for (const row of rawData) {
         const contact: Record<string, unknown> = { businessId, tipo: 'pf', createdAt: now, updatedAt: now, score: 0, status: 'novo' as LeadStatus, source: 'outro' as LeadSource };
         for (const [header, fieldKey] of Object.entries(mapping)) {
@@ -1604,9 +1609,16 @@ function CRMImportModal({ onClose, businessId, onImported }: { onClose: () => vo
           else contact[fieldKey] = raw;
         }
         if (!contact.name) continue;
-        await addDoc(collection(db, 'clients'), contact);
+        batch.set(doc(collection(db, 'clients')), contact);
         count++;
+        batchCount++;
+        if (batchCount >= BATCH_SIZE) {
+          await batch.commit();
+          batch = writeBatch(db);
+          batchCount = 0;
+        }
       }
+      if (batchCount > 0) await batch.commit();
       toast.success(`${count} contato(s) importado(s) com sucesso!`);
       onImported();
       onClose();
@@ -1746,6 +1758,10 @@ export default function CRMModule() {
 
   const isAdmin = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
   const [pipelineConfig, setPipelineConfig] = useState<CRMPipelineConfig | undefined>(business?.settings?.crmPipeline);
+  // Sync with remote business changes (e.g. another admin saves pipeline from another device)
+  useEffect(() => {
+    setPipelineConfig(business?.settings?.crmPipeline);
+  }, [business?.settings?.crmPipeline]);
   const [showPipelineSettings, setShowPipelineSettings] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
@@ -1840,7 +1856,7 @@ export default function CRMModule() {
   }, [business?.id, user, editingContact, queryClient]);
 
   const handleDeleteContact = useCallback(async () => {
-    if (!deleteContactConfirm || !business?.id) return;
+    if (!deleteContactConfirm || !business?.id || !user) return;
     try {
       // Cascade: delete deals linked to this contact
       const dealsSnap = await getDocs(query(collection(db, 'crmDeals'), where('businessId', '==', business.id), where('contactId', '==', deleteContactConfirm.id)));
@@ -1849,7 +1865,7 @@ export default function CRMModule() {
       const activitiesSnap = await getDocs(query(collection(db, 'crmActivities'), where('businessId', '==', business.id), where('contactId', '==', deleteContactConfirm.id)));
       for (const a of activitiesSnap.docs) await deleteDoc(doc(db, 'crmActivities', a.id));
       // Delete the contact itself
-      void logAudit({ businessId: business.id, userId: user!.uid, userName: user!.name, action: 'contact_deleted', contactId: deleteContactConfirm.id, details: deleteContactConfirm.name });
+      void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'contact_deleted', contactId: deleteContactConfirm.id, details: deleteContactConfirm.name });
       await deleteDoc(doc(db, 'clients', deleteContactConfirm.id));
       toast.success(t('crm.toast.contactDeleted', 'Contato excluído'));
       queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
@@ -1857,7 +1873,7 @@ export default function CRMModule() {
       queryClient.invalidateQueries({ queryKey: ['crmActivities', business.id] });
       setDeleteContactConfirm(null);
     } catch (err) { console.error('[CRM] Error deleting contact:', err); toast.error(t('crm.toast.errorDelete', 'Erro ao excluir')); }
-  }, [deleteContactConfirm, business?.id, queryClient]);
+  }, [deleteContactConfirm, business?.id, user, queryClient, t]);
 
   const handleSaveDeal = useCallback(async (data: Partial<CRMDeal>) => {
     if (!business?.id || !user) return; const now = new Date().toISOString();
@@ -2144,7 +2160,8 @@ export default function CRMModule() {
             {activeTab === 'metricas' && (
               <div className="flex-1 overflow-y-auto min-h-0">
                 <MetricsTab deals={deals} contacts={contacts} activities={activities}
-                  stages={PIPELINE_STAGES} isDark={isDark} metrics={pipelineMetrics} />
+                  stages={PIPELINE_STAGES} isDark={isDark} metrics={pipelineMetrics}
+                  wonStatusId={getWonStageId(stages)} />
               </div>
             )}
             {activeTab === 'automacoes' && (
