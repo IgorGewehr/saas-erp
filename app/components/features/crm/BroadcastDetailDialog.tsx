@@ -77,8 +77,11 @@ export default function BroadcastDetailDialog({ broadcast, onClose, onRetryCreat
   }, [messages, statusFilter]);
 
   const failedCount = counts.failed ?? 0;
+  const pendingCount = counts.pending ?? 0;
   const [dispatching, setDispatching] = useState(false);
+  const [resuming, setResuming] = useState(false);
   const canDispatch = broadcast.status === 'draft';
+  const canResume = broadcast.status === 'paused' && pendingCount > 0;
 
   const handleDispatch = async () => {
     if (!canDispatch) return;
@@ -116,6 +119,59 @@ export default function BroadcastDetailDialog({ broadcast, onClose, onRetryCreat
       toast.error(err instanceof Error ? err.message : 'Erro ao disparar campanha');
     } finally {
       setDispatching(false);
+    }
+  };
+
+  const handleResume = async () => {
+    if (!canResume) return;
+    if (!confirm(`Retomar campanha com ${pendingCount} contato(s) pendentes?`)) return;
+    setResuming(true);
+    try {
+      const token = await getAuth().currentUser?.getIdToken();
+      // Passo 1: prepara o broadcast (volta pra draft com recipients = pendentes)
+      const prepRes = await fetch(`/api/broadcasts/${broadcast.id}/resume`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ businessId: broadcast.businessId }),
+      });
+      const prepData = await prepRes.json();
+      if (!prepRes.ok) throw new Error(prepData.error || `HTTP ${prepRes.status}`);
+
+      // Passo 2: dispara o envio. Não usa broadcast.recipients direto pois o
+      // doc local pode estar stale — o resume endpoint já gravou os pendentes.
+      // Lê do prepData ou re-busca; aqui usamos os pendentes que estavam no doc
+      // local (mais robusto pra evitar race).
+      const recipients = (prepData.recipients as Array<Record<string, unknown>>) ?? broadcast.recipients ?? [];
+      const sendBody: Record<string, unknown> = {
+        businessId: broadcast.businessId,
+        broadcastId: broadcast.id,
+        channel: broadcast.channel,
+        recipients,
+        sendRate: broadcast.sendRate ?? 10,
+      };
+      if (broadcast.templateName) sendBody.templateName = broadcast.templateName;
+      if (broadcast.templateLanguage) sendBody.templateLanguage = broadcast.templateLanguage;
+      if (broadcast.templateParams) sendBody.templateParams = broadcast.templateParams;
+      if (broadcast.messageContent) sendBody.messageContent = broadcast.messageContent;
+      if (broadcast.emailSubject) sendBody.emailSubject = broadcast.emailSubject;
+      if (broadcast.viaBaileys) sendBody.viaBaileys = true;
+
+      const sendRes = await fetch('/api/broadcasts/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(sendBody),
+      });
+      const sendData = await sendRes.json();
+      if (!sendRes.ok) throw new Error(sendData.error || `HTTP ${sendRes.status}`);
+      const summary = sendData.paused
+        ? `Pausada novamente após ${sendData.stats.sent} envio(s)`
+        : `Retomada concluída — ${sendData.stats.sent} enviadas, ${sendData.stats.failed} falharam`;
+      toast.success(summary);
+    } catch (err) {
+      console.error('[BroadcastDetail] resume failed:', err);
+      toast.error(err instanceof Error ? err.message : 'Erro ao retomar campanha');
+    } finally {
+      setResuming(false);
     }
   };
 
@@ -201,6 +257,24 @@ export default function BroadcastDetailDialog({ broadcast, onClose, onRetryCreat
               className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50 transition-colors"
             >
               {dispatching ? <><Loader2 className="w-3 h-3 animate-spin" /> Disparando...</> : <><Send className="w-3 h-3" /> Disparar agora</>}
+            </button>
+          </div>
+        )}
+
+        {/* Resume toolbar — só quando paused com pendentes */}
+        {canResume && (
+          <div className="px-5 py-2.5 bg-amber-50 dark:bg-amber-500/5 border-b border-amber-100 dark:border-amber-500/10 flex items-center justify-between">
+            <span className="text-xs text-amber-700 dark:text-amber-400">
+              <Clock className="w-3 h-3 inline mr-1 -mt-0.5" />
+              Pausada — {pendingCount} contato(s) pendentes
+            </span>
+            <button
+              type="button"
+              onClick={handleResume}
+              disabled={resuming}
+              className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[11px] font-semibold bg-amber-600 hover:bg-amber-700 text-white disabled:opacity-50 transition-colors"
+            >
+              {resuming ? <><Loader2 className="w-3 h-3 animate-spin" /> Retomando...</> : <><Send className="w-3 h-3" /> Retomar envio</>}
             </button>
           </div>
         )}
