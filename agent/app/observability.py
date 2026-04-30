@@ -15,7 +15,14 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from importlib.metadata import version as _pkg_version, PackageNotFoundError as _PNF
+
 from .config import Settings, get_settings, langsmith_project_name
+
+try:
+    _AGENT_VERSION = _pkg_version("servicepro-agent")
+except _PNF:
+    _AGENT_VERSION = "dev"
 
 
 # ─── LangSmith metadata builders ─────────────────────────────────────────────
@@ -53,7 +60,7 @@ def build_run_config(
         "channel": channel,
         "env": env,
         "model_default": model,
-        "agent_version": "0.2.0",  # bump this when prompts/graph change materially
+        "agent_version": _AGENT_VERSION,
     }
     if message_id:
         metadata["message_id"] = message_id

@@ -51,8 +51,15 @@ except Exception:  # pragma: no cover — LangSmith is optional
 
 log = get_logger("nodes")
 
-# Token cost lookup (USD per 1M tokens) for popular models — used for the audit log only.
+# Token cost lookup (USD per 1M tokens) — used for audit log / budget tracking only.
+# Kept in sync with https://openai.com/api/pricing/
+# Tiers: nano (router) < mini (planner) < full (fallback)
 PRICING: dict[str, tuple[float, float]] = {
+    # GPT-5.4 series (current default)
+    "gpt-5.4-nano":   (0.10,  0.40),
+    "gpt-5.4-mini":   (0.40,  1.60),
+    "gpt-5.4":        (2.50, 10.00),
+    # GPT-4o series (legacy / fallback names)
     "gpt-4o":         (2.50, 10.00),
     "gpt-4o-mini":    (0.15,  0.60),
     "gpt-4-turbo":    (10.00, 30.00),

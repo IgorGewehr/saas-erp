@@ -1,6 +1,6 @@
 [project]
 name = "servicepro-agent"
-version = "0.1.0"
+version = "0.2.0"
 description = "Autonomous AI agent for ServicePro — LangGraph-powered concierge for orders & appointments."
 requires-python = ">=3.11"
 dependencies = [
