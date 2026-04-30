@@ -587,6 +587,20 @@ export async function POST(req: NextRequest) {
               // UNSUBSCRIBE_SECRET ausente — manda sem footer (degradação graciosa)
             }
           }
+          // Fallback de texto puro para clientes que não renderizam HTML
+          // (também é o body do multipart text/plain; nodemailer envia ambos
+          // quando ambos estão presentes — best practice de email).
+          const textFallback = messageWithFooter
+            .replace(/<\/(p|div|h[1-6]|li)[^>]*>/gi, '\n')
+            .replace(/<br\s*\/?>/gi, '\n')
+            .replace(/<[^>]+>/g, '')
+            .replace(/&nbsp;/g, ' ')
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+
           // resolvedPhoneNumberId carrega a URL do notification-server, token é a API key
           response = await fetch(`${resolvedPhoneNumberId}/api/send-email`, {
             method: 'POST',
@@ -598,7 +612,12 @@ export async function POST(req: NextRequest) {
               appId: businessData.settings?.notificationServer?.appId || businessId,
               email: recipient.recipientId,
               subject: emailSubject || 'Mensagem',
-              message: messageWithFooter,
+              // `message` = text fallback (multipart text/plain).
+              // `html` = corpo rico com footer de descadastro (multipart text/html).
+              // Notification-server passa ambos pro nodemailer — clientes modernos
+              // renderizam o HTML, antigos veem o text.
+              message: textFallback,
+              html: messageWithFooter,
             }),
           });
         }
