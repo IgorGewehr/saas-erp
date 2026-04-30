@@ -2478,6 +2478,32 @@ export interface BroadcastList {
   updatedAt: string;
 }
 
+/**
+ * Registro de opt-out de marketing por contato. Compartilhado entre canais —
+ * uma entrada `email|john@x.com` bloqueia também eventuais campanhas para o
+ * mesmo email no futuro, mesmo que o contato CRM seja apagado/recriado.
+ *
+ * Document ID = `${businessId}_${channel}_${identifier_normalizado}` para
+ * lookup O(1) sem query (e idempotência — múltiplos opt-outs do mesmo email
+ * sobrescrevem o mesmo doc).
+ */
+export type OptOutChannel = 'email' | 'whatsapp' | 'all';
+export type OptOutSource = 'unsubscribe-link' | 'whatsapp-keyword' | 'manual' | 'bounce' | 'complaint';
+
+export interface MarketingOptOut {
+  id: string;
+  businessId: string;
+  channel: OptOutChannel;
+  /** Email lowercase OU phoneNumber E.164 (sem +). */
+  identifier: string;
+  source: OptOutSource;
+  optedOutAt: string;
+  /** ID do broadcast/campanha que originou o opt-out (rastreabilidade). */
+  broadcastId?: string;
+  /** Texto da resposta do usuário quando source='whatsapp-keyword'. */
+  reasonText?: string;
+}
+
 export const LIFECYCLE_STAGE_LABELS: Record<LifecycleStage, string> = {
   new_lead: 'Novo Lead',
   contacted: 'Contatado',

@@ -615,6 +615,30 @@
         { "fieldPath": "businessId", "order": "ASCENDING" },
         { "fieldPath": "importedAt", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "marketingOptOuts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "channel", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "broadcastLists",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "broadcasts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "scheduledAt", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

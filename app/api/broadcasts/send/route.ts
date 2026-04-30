@@ -5,7 +5,8 @@ import { checkRateLimit, checkBusinessRateLimit, getClientIp } from '@/lib/utils
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { sendBaileysBroadcastMessage } from '@/app/api/whatsapp/baileys-manager';
-import type { BroadcastTemplateParam } from '@/lib/types';
+import { generateUnsubscribeToken } from '@/lib/utils/unsubscribeToken';
+import type { BroadcastTemplateParam, OptOutChannel } from '@/lib/types';
 
 /** Compara strings em tempo constante — evita timing attack na CRON_SECRET. */
 function safeEqual(a: string, b: string): boolean {
@@ -217,9 +218,54 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Broadcast does not belong to this business' }, { status: 403 });
     }
 
-    const recipients = normalizeRecipients(rawRecipients as InboundRecipient[], channel);
-    if (!recipients.length) {
+    const allRecipients = normalizeRecipients(rawRecipients as InboundRecipient[], channel);
+    if (!allRecipients.length) {
       return NextResponse.json({ error: 'No valid recipients (missing phoneNumber/email)' }, { status: 400 });
+    }
+
+    // Filtra recipientes que fizeram opt-out de marketing (5.11).
+    // Lookup O(1) por Set — a coleção marketingOptOuts é compartilhada por tenant.
+    // 'all' channel bloqueia em qualquer canal (preferência forte).
+    const optOutChannel: OptOutChannel = channel === 'email' ? 'email' : 'whatsapp';
+    const OPT_OUT_HARD_LIMIT = 50_000;
+    let optOutSet: Set<string> = new Set();
+    let optOutLookupOk = true;
+    try {
+      const optOutSnap = await adminDb.collection('marketingOptOuts')
+        .where('businessId', '==', businessId)
+        .where('channel', 'in', [optOutChannel, 'all'])
+        .limit(OPT_OUT_HARD_LIMIT)
+        .get();
+      optOutSet = new Set(optOutSnap.docs.map(d => (d.data().identifier as string).toLowerCase()));
+      // Alerta se atingimos o cap — admin precisa migrar para solução com paginação/Redis.
+      if (optOutSnap.size >= OPT_OUT_HARD_LIMIT * 0.9) {
+        console.warn(`[Broadcast] opt-out set near cap (${optOutSnap.size}/${OPT_OUT_HARD_LIMIT}) — alguns opt-outs podem ser ignorados.`);
+      }
+    } catch (err) {
+      // Composite index ausente ou Firestore down. Compliance LGPD: fail-CLOSED em
+      // erro de index (sinal de admin não configurou) — bloqueia o envio para forçar
+      // o fix. Para outros erros (timeout, transitório), fail-open com warning.
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (errMsg.toLowerCase().includes('index')) {
+        console.error('[Broadcast] opt-out lookup failed — composite index missing:', errMsg);
+        return NextResponse.json({
+          error: 'Composite index ausente para marketingOptOuts(businessId, channel). Configure no Firebase Console — link na mensagem original. Envio bloqueado por compliance.',
+          firestoreError: errMsg,
+        }, { status: 500 });
+      }
+      console.warn('[Broadcast] opt-out lookup failed (transient), sending to all recipients:', err);
+      optOutLookupOk = false;
+    }
+    void optOutLookupOk; // evita unused — mantido pra observabilidade futura
+    const recipients = optOutSet.size === 0
+      ? allRecipients
+      : allRecipients.filter(r => !optOutSet.has(r.recipientId.toLowerCase()));
+    const optedOutCount = allRecipients.length - recipients.length;
+    if (!recipients.length) {
+      return NextResponse.json({
+        error: `Todos os ${allRecipients.length} recipientes optaram por não receber (opt-out).`,
+        optedOutCount,
+      }, { status: 400 });
     }
 
     // Fetch access token server-side from the business document
@@ -485,6 +531,26 @@ export async function POST(req: NextRequest) {
             }),
           });
         } else if (channel === 'email') {
+          // Footer obrigatório de descadastro (5.11 / compliance LGPD).
+          // Best-effort: se UNSUBSCRIBE_SECRET não estiver configurado, manda
+          // sem footer (loga warning fora do loop pra evitar spam).
+          let messageWithFooter = messageContent || '';
+          try {
+            const unsubToken = generateUnsubscribeToken(businessId, 'email', recipient.recipientId);
+            const rawBase = process.env.NEXT_PUBLIC_APP_URL || `http://localhost:${process.env.PORT || 3000}`;
+            // Anti-XSS: rejeita protocolos não-HTTP(S) (javascript:, data:, etc.)
+            // que poderiam virar payload no <a href>. Também limpa trailing slash.
+            const baseUrl = /^https?:\/\//i.test(rawBase) ? rawBase.replace(/\/+$/, '') : '';
+            if (!baseUrl) throw new Error('NEXT_PUBLIC_APP_URL must start with http(s)://');
+            const unsubUrl = `${baseUrl}/unsubscribe?token=${encodeURIComponent(unsubToken)}`;
+            messageWithFooter = `${messageWithFooter}\n<hr style="border:none;border-top:1px solid #eee;margin:24px 0"/>` +
+              `<p style="font-size:11px;color:#888;font-family:Arial,sans-serif;line-height:1.5">` +
+              `Você está recebendo este email porque foi adicionado à lista de comunicações. ` +
+              `<a href="${unsubUrl}" style="color:#888;text-decoration:underline">Cancelar inscrição</a>` +
+              `</p>`;
+          } catch {
+            // UNSUBSCRIBE_SECRET ausente — manda sem footer (degradação graciosa)
+          }
           // resolvedPhoneNumberId carrega a URL do notification-server, token é a API key
           response = await fetch(`${resolvedPhoneNumberId}/api/send-email`, {
             method: 'POST',
@@ -496,7 +562,7 @@ export async function POST(req: NextRequest) {
               appId: businessData.settings?.notificationServer?.appId || businessId,
               email: recipient.recipientId,
               subject: emailSubject || 'Mensagem',
-              message: messageContent || '',
+              message: messageWithFooter,
             }),
           });
         }

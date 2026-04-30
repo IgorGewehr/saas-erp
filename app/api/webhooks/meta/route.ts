@@ -20,6 +20,7 @@ import { decryptToken } from '@/lib/utils/encryption';
 import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { FieldValue } from 'firebase-admin/firestore';
+import { isOptOutKeyword } from '@/lib/utils/optOutKeywords';
 
 // ─── Firebase Storage for media uploads ──────────────────────────────────────
 
@@ -566,6 +567,31 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
           replyToMessageId: msg.context?.id,
           timestamp: new Date(parseInt(msg.timestamp) * 1000).toISOString(),
         });
+
+        // 5.11 — Auto opt-out por keyword: se mensagem é só "PARAR"/"STOP"/etc.,
+        // grava em marketingOptOuts. O agent ainda pode responder confirmando
+        // (mensagem não é descartada — só evita futuras campanhas).
+        if (isOptOutKeyword(extracted.content)) {
+          try {
+            const businessId = await resolveBusinessId('whatsapp', phoneNumberId);
+            if (businessId) {
+              const identifier = msg.from.toLowerCase(); // E.164 sem +
+              const docId = `${businessId}_whatsapp_${identifier.replace(/[^a-z0-9._@+-]/g, '_').slice(0, 200)}`;
+              await adminDb.collection('marketingOptOuts').doc(docId).set({
+                id: docId,
+                businessId,
+                channel: 'whatsapp',
+                identifier,
+                source: 'whatsapp-keyword',
+                optedOutAt: new Date().toISOString(),
+                reasonText: extracted.content?.slice(0, 100),
+              });
+              console.log(`[Meta Webhook] Recorded WhatsApp opt-out for ${identifier} (keyword: "${extracted.content}")`);
+            }
+          } catch (optOutErr) {
+            console.error('[Meta Webhook] Failed to record opt-out:', optOutErr);
+          }
+        }
       }
     }
 
