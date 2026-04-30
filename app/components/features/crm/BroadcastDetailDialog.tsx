@@ -63,9 +63,14 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
   }, [initialBroadcast.id]);
 
   // Real-time listener das mensagens deste broadcast (limit 500 — UI prática para listas grandes)
+  // IMPORTANTE: o where('businessId', '==', ...) é obrigatório pelas Firestore Rules
+  // (isOwnBusiness exige que cada doc tenha businessId == userBusinessId). Sem ele,
+  // a query é rejeitada upfront com "Missing or insufficient permissions" mesmo
+  // que todos os docs satisfaçam a regra individualmente.
   useEffect(() => {
     const q = query(
       collection(db, 'broadcastMessages'),
+      where('businessId', '==', broadcast.businessId),
       where('broadcastId', '==', broadcast.id),
       orderBy('createdAt', 'asc'),
       firestoreLimit(500),
@@ -82,7 +87,7 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
       }
     );
     return () => unsub();
-  }, [broadcast.id]);
+  }, [broadcast.id, broadcast.businessId]);
 
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: messages.length, pending: 0, sent: 0, delivered: 0, read: 0, failed: 0 };
