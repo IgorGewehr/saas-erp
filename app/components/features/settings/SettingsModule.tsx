@@ -89,6 +89,7 @@ import type { Business, User as UserType, InviteCode, UserRole, UserStatus, Inte
 import { WHATSAPP_TEMPLATE_CATALOG, renderTemplatePreview } from '@/lib/constants/whatsapp-template-catalog';
 import { getAuth } from 'firebase/auth';
 import NotificationServerSection from './NotificationServerConfig';
+import WhatsAppProfileSection from './WhatsAppProfileSection';
 import { CachedImage } from '@/app/components/ui/CachedImage';
 import SidebarEditorTab from './SidebarEditorTab';
 import {
@@ -6409,6 +6410,11 @@ function CanaisTab() {
                 )}
               </div>
             </div>
+
+            {/* Perfil WhatsApp Business — editar foto, sobre, descrição etc. */}
+            {isCloudApi && business?.id && (
+              <WhatsAppProfileSection businessId={business.id} />
+            )}
 
             {/* Template catalog — só aparece se Cloud está conectado */}
             {isCloudApi && business?.id && (
