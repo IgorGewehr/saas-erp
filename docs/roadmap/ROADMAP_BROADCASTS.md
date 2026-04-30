@@ -279,14 +279,22 @@ por prioridade (mais crítico → menos crítico). Marcar `[x]` quando entregar.
 
 ### Baixo / refinamento
 
-- [ ] **5.7 — Templates com HEADER** `code-only` · 2h
+- [⏸️] **5.7 — Templates com HEADER** → ver [BROADCASTS_PARKING_LOT.md](./BROADCASTS_PARKING_LOT.md)
   Suportar templates Meta com componentes além do body (header de texto/imagem,
   botões). Requer extensão do tipo `BroadcastTemplateParam` e mudança no
   `resolveTemplateComponents`.
 
-- [ ] **5.8 — Variáveis com CSV columns** `code-only` · 2h
-  No template selector, permitir mapear `{{N}}` para colunas extras do CSV
-  (não só `name/phone/email`). Requer manter colunas brutas em `BroadcastRecipient`.
+- [x] **5.8 — Variáveis com CSV columns** `code-only` · 2h ✅
+  Tipo `BroadcastTemplateParam` ganha `{ kind: 'csvColumn'; column: string }`.
+  `BroadcastRecipient.customColumns?: Record<string, string>` preserva colunas
+  extras do CSV (lowercase keys, valores trimmed). RecipientListInput identifica
+  colunas não-reservadas (header ≠ nome/telefone/email/whatsapp) e exibe badge
+  violet "N colunas extras" no stats. TemplateSelector recebe `csvColumns` prop
+  e adiciona optgroup "Colunas do CSV" no select de mapeamento. Backend
+  `resolveTemplateComponents` resolve via `recipient.customColumns?.[column]`,
+  fallback para string vazia. Auditoria fix: dedup de header CSV (primeiro vence,
+  não último), e quando `audienceType` sai de 'list', csvColumns são limpas e
+  params do template csvColumn voltam para 'literal' vazio (operador re-decide).
 
 - [x] **5.9 — Race fix: re-check pause após sleep** `code-only` · 30min ✅
   Pause check agora roda a CADA iteração (depois do sleep da anterior), em vez
@@ -300,9 +308,54 @@ por prioridade (mais crítico → menos crítico). Marcar `[x]` quando entregar.
 
 ### Compliance / qualidade (sem prazo definido)
 
-- [ ] **5.11 — Opt-out automático com link de descadastro**
-- [ ] **5.12 — Compliance LGPD** (consentimento explícito antes de mandar)
-- [ ] **5.13 — Rate limit por business** (anti-abuse, hoje só por IP)
-- [ ] **5.14 — A/B testing de templates**
-- [ ] **5.15 — Métricas agregadas** (CTR, taxa de entrega, tempo médio até leitura)
-- [ ] **5.16 — Segmentação avançada** (UI completa para `Segment`)
+- [x] **5.11 — Opt-out automático com link de descadastro** ✅
+  Coleção `marketingOptOuts` (doc ID `${businessId}_${channel}_${identifier}` →
+  idempotente). Helper `generateUnsubscribeToken` / `verifyUnsubscribeToken`
+  (HMAC-SHA256, secret `UNSUBSCRIBE_SECRET`, validade 1 ano).
+  Endpoint público `/api/unsubscribe` (GET valida → POST grava). Page
+  `/unsubscribe` com Suspense + confirmação por botão (anti email prefetch).
+  Footer automático em emails de broadcast (HTML inline, baseUrl validado
+  contra protocolos não-http). Filtro pré-loop em `/api/broadcasts/send` —
+  fail-CLOSED em erro de index (compliance), fail-open em erro transitório.
+  Webhook Meta detecta keywords (PARAR/STOP/SAIR/CANCELAR/etc.) e grava
+  opt-out com `source: 'whatsapp-keyword'`. Composite index novo:
+  `marketingOptOuts(businessId, channel)`. Hard cap 50k opt-outs/business
+  (admin alertado por log se aproximar do cap).
+- [x] **5.12 — Compliance LGPD** (consentimento explícito antes de mandar) ✅
+  Tipo `ConsentBasis = 'explicit' | 'legitimate-interest' | 'transactional'`.
+  Campos novos no `Broadcast`: `consentBasis`, `consentSource`, `consentAcknowledgedAt`,
+  `consentAcknowledgedBy`. UI obriga seleção + checkbox de auto-confirmação no
+  dialog "Nova Campanha" (botão "Criar" desabilitado até preencher).
+  Backend valida `consentBasis` em `/api/broadcasts/send` (400 se ausente) E em
+  `/api/broadcasts/process-scheduled` ANTES do CAS (evita órfão em 'sending'
+  para broadcasts legados — admin é avisado via status='failed').
+  Snapshot per-msg em `BroadcastMessage.consentBasis` (auditoria por mensagem).
+  Painel de detalhes (`BroadcastDetailDialog`) exibe base legal + origem + quem
+  aprovou. Footer de descadastro NÃO é injetado em `consentBasis='transactional'`
+  (LGPD não exige opt-out em comunicações transacionais).
+
+  ⚠️ **Migration**: campanhas criadas antes do 5.12 ficam sem `consentBasis` →
+  enviar dispara 400. Cron auto-marca scheduled legados como `failed` com
+  `errorMessage` explicativa. Admin precisa recriar a campanha.
+- [x] **5.13 — Rate limit por business** (anti-abuse, hoje só por IP) ✅
+  Helper `checkBusinessRateLimit(endpoint, businessId, limit, windowMs)` em
+  `lib/utils/rateLimit.ts` (key prefix `business:`). Aplicado em endpoints de
+  alto volume com janela 1h:
+  - `/api/broadcasts/send`: 30/h (cron bypass)
+  - `/api/broadcasts/[id]/retry-failed`: 10/h
+  - `/api/broadcasts/[id]/resume`: 10/h
+  - `/api/broadcast-lists` POST: 50/h
+  - `/api/conversations/send`: 300/h (descoberto na auditoria — atacante com
+    token rotacionando IPs poderia esgotar quotas Meta API)
+  - `/api/v1/conversations/send`: 300/h (API pública via API key — mesmo risco)
+  IP-based limits mantidos (defense in depth).
+- [⏸️] **5.14 — A/B testing de templates** → ver [BROADCASTS_PARKING_LOT.md](./BROADCASTS_PARKING_LOT.md)
+- [x] **5.15 — Métricas agregadas** (CTR, taxa de entrega, tempo médio até leitura) ✅
+  Helper puro `calculateBroadcastMetrics(messages)` em `lib/utils/broadcastMetrics.ts`
+  retorna counts + taxas (delivery/read/failure) + tempos médios até entrega/leitura.
+  Componente `BroadcastMetricsPanel` (3 barras visuais + 2 KPIs de tempo) integrado
+  no `BroadcastDetailDialog` (cálculo client-side via `messages[]` do onSnapshot).
+  Card de campanha em `CampaignsTab` refatorado: barras mini para delivered/read
+  + contagem de falhas (só se > 0). Taxa de falha calculada sobre **processadas**
+  (sent + failed), não sobre total — evita diluição com pile-up de pending.
+- [⏸️] **5.16 — Segmentação avançada** (UI completa para `Segment`) → ver [BROADCASTS_PARKING_LOT.md](./BROADCASTS_PARKING_LOT.md)
