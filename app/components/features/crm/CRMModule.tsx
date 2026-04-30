@@ -1238,6 +1238,14 @@ function CampaignsTab({ businessId }: { businessId: string }) {
   const [formContent, setFormContent] = useState('');
   const [formEmailSubject, setFormEmailSubject] = useState('');
   const [formScheduledAt, setFormScheduledAt] = useState(''); // datetime-local string ou ''
+  /**
+   * Limite opcional de recipientes a enviar (slice from start).
+   * undefined = todos os recipients da lista. Útil para:
+   *  - Teste com sub-conjunto antes do envio total
+   *  - Envio escalonado (100 hoje, 100 amanhã)
+   *  - Respeitar quota Baileys (~200/dia recomendado)
+   */
+  const [formRecipientLimit, setFormRecipientLimit] = useState<number | ''>('');
   const [saving, setSaving] = useState(false);
   // ── Listas reusáveis (BroadcastList) ────────────────────────────────────────
   // savedLists: cache local; selectedListId: lista carregada agora;
@@ -1357,11 +1365,20 @@ function CampaignsTab({ businessId }: { businessId: string }) {
     setSaving(true);
     try {
       const now = new Date().toISOString();
-      const recipientsTotal = formAudienceType === 'list' ? formRecipients.length : 0;
+      // Aplica limite de envio (slice do início). Vazio/undefined = enviar
+      // todos. Útil para testes ou envio escalonado (ex: respeitar quota
+      // Baileys ~200/dia).
+      const limitNum = typeof formRecipientLimit === 'number' && formRecipientLimit > 0
+        ? formRecipientLimit
+        : null;
+      const sourceRecipients = limitNum
+        ? formRecipients.slice(0, limitNum)
+        : formRecipients;
+      const recipientsTotal = formAudienceType === 'list' ? sourceRecipients.length : 0;
       // Limpa undefined dentro de cada recipient (Firestore aceita undefined no top-level via SDK
       // mas armazena como null em arrays — preferimos omitir o campo)
       const cleanRecipients: BroadcastRecipient[] = formAudienceType === 'list'
-        ? formRecipients.map(r => {
+        ? sourceRecipients.map(r => {
             const cleaned: BroadcastRecipient = {};
             if (r.contactId) cleaned.contactId = r.contactId;
             if (r.name) cleaned.name = r.name;
@@ -1469,6 +1486,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       setFormEmailSubject('');
       setFormViaBaileys(false);
       setFormScheduledAt('');
+      setFormRecipientLimit('');
       setSelectedListId('');
       setSaveAsList(false);
       setListSaveName('');
@@ -1801,6 +1819,52 @@ function CampaignsTab({ businessId }: { businessId: string }) {
               </div>
             );
           })()}
+          {/* Limite de envio — só faz sentido com lista direta (recipients
+              resolvidos client-side). Para outros audienceTypes os recipients
+              são resolvidos no backend; aplicar limite lá ficaria fora do
+              escopo desta UI. */}
+          {formAudienceType === 'list' && formRecipients.length > 0 && (
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-0.5">
+                    Limite de envio
+                  </p>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                    {(() => {
+                      const limit = typeof formRecipientLimit === 'number' && formRecipientLimit > 0
+                        ? Math.min(formRecipientLimit, formRecipients.length)
+                        : formRecipients.length;
+                      return limit === formRecipients.length
+                        ? `Enviar para todos os ${formRecipients.length} recipientes da lista`
+                        : `Enviar para os primeiros ${limit} de ${formRecipients.length} recipientes`;
+                    })()}
+                  </p>
+                </div>
+                <input
+                  type="number"
+                  min={1}
+                  max={formRecipients.length}
+                  value={formRecipientLimit}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === '') { setFormRecipientLimit(''); return; }
+                    const n = parseInt(v, 10);
+                    if (Number.isFinite(n) && n > 0) {
+                      setFormRecipientLimit(Math.min(n, formRecipients.length));
+                    }
+                  }}
+                  placeholder="todos"
+                  className="w-24 px-2.5 py-1.5 text-xs text-center bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-lg text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400"
+                />
+              </div>
+              {formChannel === 'whatsapp' && formViaBaileys && (
+                <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-2 leading-relaxed">
+                  ⚠️ Baileys recomenda no máximo <strong>200 envios/dia</strong> para reduzir risco de banimento.
+                </p>
+              )}
+            </div>
+          )}
           {/* Tipo de mensagem aparece só para canais Meta sem Baileys.
               Email = sempre texto livre. Baileys = sempre texto livre (sem template). */}
           {formChannel !== 'email' && !(formChannel === 'whatsapp' && formViaBaileys) && (
