@@ -1231,6 +1231,8 @@ function CampaignsTab({ businessId }: { businessId: string }) {
   const [formAudienceType, setFormAudienceType] = useState<'all_contacts' | 'tags' | 'manual' | 'list'>('list');
   const [formTags, setFormTags] = useState('');
   const [formRecipients, setFormRecipients] = useState<BroadcastRecipient[]>([]);
+  /** 5.8: nomes de colunas extras detectadas no último CSV importado — vão pro TemplateSelector. */
+  const [formCsvColumns, setFormCsvColumns] = useState<string[]>([]);
   const [formMsgType, setFormMsgType] = useState<'template' | 'text'>('template');
   const [formTemplate, setFormTemplate] = useState<TemplateSelection | null>(null);
   const [formContent, setFormContent] = useState('');
@@ -1365,6 +1367,10 @@ function CampaignsTab({ businessId }: { businessId: string }) {
             if (r.name) cleaned.name = r.name;
             if (r.phoneNumber) cleaned.phoneNumber = r.phoneNumber;
             if (r.email) cleaned.email = r.email;
+            // 5.8: preserva colunas CSV extras (necessárias se template usar csvColumn).
+            if (r.customColumns && Object.keys(r.customColumns).length > 0) {
+              cleaned.customColumns = r.customColumns;
+            }
             return cleaned;
           })
         : [];
@@ -1457,6 +1463,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       setShowNew(false);
       setFormName('');
       setFormRecipients([]);
+      setFormCsvColumns([]);
       setFormTemplate(null);
       setFormContent('');
       setFormEmailSubject('');
@@ -1571,6 +1578,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                   if (list && list.type !== newDesiredType && list.type !== 'mixed') {
                     setSelectedListId('');
                     setFormRecipients([]);
+                    setFormCsvColumns([]);
                     setRecipientResetKey(k => k + 1);
                     toast.info(`Lista "${list.name}" não é compatível com canal ${c}. Selecione outra ou cole nova lista.`);
                   }
@@ -1584,6 +1592,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                     || (newDesiredType === 'email' && !firstHasEmail);
                   if (incompatible) {
                     setFormRecipients([]);
+                    setFormCsvColumns([]);
                     setRecipientResetKey(k => k + 1);
                   }
                 }
@@ -1641,7 +1650,28 @@ function CampaignsTab({ businessId }: { businessId: string }) {
           )}
           <FormControl fullWidth size="small">
             <InputLabel>{t('crm.form.audience', 'Audiência')}</InputLabel>
-            <Select value={formAudienceType} label={t('crm.form.audience', 'Audiência')} onChange={(e) => setFormAudienceType(e.target.value as typeof formAudienceType)}>
+            <Select value={formAudienceType} label={t('crm.form.audience', 'Audiência')} onChange={(e) => {
+              const next = e.target.value as typeof formAudienceType;
+              setFormAudienceType(next);
+              // 5.8: csvColumns só fazem sentido para audienceType='list' (recipients
+              // CSV importados). Se troca para all_contacts/tags/manual, limpa
+              // colunas (e o TemplateSelector vai ocultar o optgroup) — evita
+              // template stale apontando para colunas que não existem.
+              if (next !== 'list' && formCsvColumns.length > 0) {
+                setFormCsvColumns([]);
+                // Se template já mapeou csvColumn, remapeia esses params para
+                // 'literal' vazio — força operador a re-decidir antes de criar.
+                if (formTemplate?.params.some(p => p.kind === 'csvColumn')) {
+                  setFormTemplate({
+                    ...formTemplate,
+                    params: formTemplate.params.map(p =>
+                      p.kind === 'csvColumn' ? { kind: 'literal', value: '' } : p
+                    ),
+                  });
+                  toast.info('Mapeamentos de colunas CSV foram resetados — audiência mudou.');
+                }
+              }
+            }}>
               <MenuItem value="list">Lista direta (cole ou CSV)</MenuItem>
               <MenuItem value="all_contacts">{t('crm.form.all', 'Todos os contatos CRM')}</MenuItem>
               <MenuItem value="tags">{t('crm.form.byTags', 'Por tags')}</MenuItem>
@@ -1667,6 +1697,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                         setSelectedListId(id);
                         if (!id) {
                           setFormRecipients([]);
+                          setFormCsvColumns([]);
                           setRecipientResetKey(k => k + 1);
                           return;
                         }
@@ -1677,6 +1708,14 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                             desiredType === 'phone' ? !!r.phoneNumber : !!r.email
                           );
                           setFormRecipients(compatible);
+                          // 5.8: extrai colunas extras únicas dos recipients da lista salva
+                          const cols = new Set<string>();
+                          for (const r of compatible) {
+                            if (r.customColumns) {
+                              for (const k of Object.keys(r.customColumns)) cols.add(k);
+                            }
+                          }
+                          setFormCsvColumns(Array.from(cols));
                           if (compatible.length < list.recipients.length) {
                             toast.info(`${list.recipients.length - compatible.length} recipiente(s) ignorados (incompatíveis com canal ${formChannel}).`);
                           }
@@ -1711,6 +1750,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                       onClick={() => {
                         setSelectedListId('');
                         setFormRecipients([]);
+                        setFormCsvColumns([]);
                         setRecipientResetKey(k => k + 1);
                       }}
                       className="text-xs font-semibold text-blue-700 dark:text-blue-300 hover:underline whitespace-nowrap"
@@ -1723,7 +1763,11 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                     <RecipientListInput
                       key={`recipient-input-${recipientResetKey}-${desiredType}`}
                       mode={desiredType}
-                      onChange={(recipients) => setFormRecipients(recipients)}
+                      onChange={(recipients, stats) => {
+                        setFormRecipients(recipients);
+                        // 5.8: armazena colunas extras pra disponibilizar no TemplateSelector.
+                        setFormCsvColumns(stats.csvColumns);
+                      }}
                       existingClients={existingClients}
                     />
                     {formRecipients.length > 0 && (
@@ -1773,6 +1817,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
               onChange={setFormTemplate}
               sampleRecipient={formRecipients[0]}
               channel={formChannel}
+              csvColumns={formCsvColumns}
             />
           ) : formChannel === 'email' ? (
             <div>

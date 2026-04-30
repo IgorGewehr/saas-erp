@@ -30,6 +30,8 @@ interface ParsedLine {
   phoneNumber?: string;
   email?: string;
   error?: string;
+  /** Colunas extras do CSV preservadas para uso em template params (5.8). */
+  customColumns?: Record<string, string>;
 }
 
 interface ListStats {
@@ -37,7 +39,12 @@ interface ListStats {
   invalid: number;
   duplicates: number;
   linkedToCrm: number;
+  /** Nomes das colunas extras detectadas no CSV (ordenadas como aparecem). */
+  csvColumns: string[];
 }
+
+/** Headers reservados — não viram csvColumn extra. */
+const RESERVED_HEADERS = new Set(['nome', 'name', 'telefone', 'phone', 'whatsapp', 'celular', 'email', 'e-mail']);
 
 // Regex razoavelmente estrito — exige TLD com 2+ chars alfabéticos
 const EMAIL_RE = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
@@ -159,7 +166,26 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
           contactId,
           name: inferredName,
           ...(mode === 'phone' ? { phoneNumber: line.phoneNumber } : { email: line.email }),
+          // 5.8: propaga colunas extras do CSV (ex: produto, desconto) para
+          // permitir mapeamento em template params no backend.
+          ...(line.customColumns && Object.keys(line.customColumns).length > 0
+            ? { customColumns: line.customColumns }
+            : {}),
         });
+      }
+
+      // Coleta TODAS as colunas extras únicas (preserva ordem de primeira aparição)
+      // para o parent listar na UI de template params.
+      const seenCols = new Set<string>();
+      const csvColumns: string[] = [];
+      for (const line of lines) {
+        if (!line.customColumns) continue;
+        for (const k of Object.keys(line.customColumns)) {
+          if (!seenCols.has(k)) {
+            seenCols.add(k);
+            csvColumns.push(k);
+          }
+        }
       }
 
       return {
@@ -169,6 +195,7 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
           invalid: lines.filter(l => l.error).length,
           duplicates,
           linkedToCrm,
+          csvColumns,
         },
       };
     },
@@ -223,19 +250,53 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
       const phoneIdx = headers.findIndex(h => /^(telefone|phone|whatsapp)$/.test(h));
       const emailIdx = headers.findIndex(h => /^(email|e-?mail)$/.test(h));
 
+      // 5.8: identifica colunas extras (não-reservadas) para preservar como customColumns.
+      // Headers em lowercase já foram normalizados pelo parseCsv.
+      // Dedup por key — se CSV tem 2 colunas com mesmo header, mantém apenas a PRIMEIRA
+      // (comportamento determinístico; último-vence causaria mapeamento misterioso).
+      const extraColIdxs: { name: string; idx: number }[] = [];
+      const seenKeys = new Set<string>();
+      headers.forEach((h, idx) => {
+        if (!h) return;
+        if (RESERVED_HEADERS.has(h)) return;
+        const key = h.trim().toLowerCase();
+        if (!key) return;
+        if (seenKeys.has(key)) return;
+        seenKeys.add(key);
+        extraColIdxs.push({ name: key, idx });
+      });
+
       const lines: ParsedLine[] = rows.map(cells => {
         const name = nameIdx >= 0 ? cells[nameIdx] : (cells.length > 1 ? cells[0] : undefined);
+        // Coleta valores das colunas extras (string vazia → omite)
+        const customColumns: Record<string, string> = {};
+        for (const { name: colName, idx } of extraColIdxs) {
+          const v = cells[idx];
+          if (v && v.trim()) customColumns[colName] = v.trim();
+        }
+        const hasExtras = Object.keys(customColumns).length > 0;
+
         if (mode === 'phone') {
           const rawPhone = phoneIdx >= 0 ? cells[phoneIdx] : cells[cells.length === 1 ? 0 : 1];
           if (!rawPhone) return { raw: cells.join(','), error: 'Telefone vazio' };
           const phone = normalizePhone(rawPhone);
           if (!phone) return { raw: rawPhone, error: 'Telefone inválido' };
-          return { raw: rawPhone, name: name && name !== rawPhone ? name : undefined, phoneNumber: phone };
+          return {
+            raw: rawPhone,
+            name: name && name !== rawPhone ? name : undefined,
+            phoneNumber: phone,
+            ...(hasExtras ? { customColumns } : {}),
+          };
         } else {
           const rawEmail = emailIdx >= 0 ? cells[emailIdx] : cells[cells.length === 1 ? 0 : 1];
           if (!rawEmail) return { raw: cells.join(','), error: 'Email vazio' };
           if (!EMAIL_RE.test(rawEmail.trim())) return { raw: rawEmail, error: 'Email inválido' };
-          return { raw: rawEmail, name: name && name !== rawEmail ? name : undefined, email: rawEmail.trim() };
+          return {
+            raw: rawEmail,
+            name: name && name !== rawEmail ? name : undefined,
+            email: rawEmail.trim(),
+            ...(hasExtras ? { customColumns } : {}),
+          };
         }
       });
       updateAndNotify(lines);
@@ -249,7 +310,7 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
     setTextValue('');
     setCsvFileName(null);
     setParsedLines([]);
-    onChange([], { valid: 0, invalid: 0, duplicates: 0, linkedToCrm: 0 });
+    onChange([], { valid: 0, invalid: 0, duplicates: 0, linkedToCrm: 0, csvColumns: [] });
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -329,6 +390,11 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
           {stats.linkedToCrm > 0 && (
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 font-semibold">
               {stats.linkedToCrm} vinculados ao CRM
+            </span>
+          )}
+          {stats.csvColumns.length > 0 && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-violet-50 dark:bg-violet-500/10 text-violet-700 dark:text-violet-400 font-semibold" title={stats.csvColumns.join(', ')}>
+              {stats.csvColumns.length} {stats.csvColumns.length === 1 ? 'coluna extra' : 'colunas extras'}
             </span>
           )}
         </div>

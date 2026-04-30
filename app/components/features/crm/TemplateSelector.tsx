@@ -17,7 +17,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getAuth } from 'firebase/auth';
-import { Loader2, AlertTriangle, Check, Sparkles, Type as TypeIcon, User as UserIcon, Phone, Mail } from 'lucide-react';
+import { Loader2, AlertTriangle, Check, Sparkles, Type as TypeIcon, User as UserIcon, Phone, Mail, Database } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { BroadcastRecipient, BroadcastTemplateParam } from '@/lib/types';
 
@@ -42,6 +42,8 @@ interface Props {
   sampleRecipient?: BroadcastRecipient;
   /** Canal da campanha — usado para filtrar opções de field (ex: oculta email em WA). */
   channel?: 'whatsapp' | 'facebook' | 'instagram' | 'email';
+  /** 5.8: nomes de colunas extras do CSV — viram opções de mapeamento de variáveis. */
+  csvColumns?: string[];
   className?: string;
 }
 
@@ -88,11 +90,15 @@ function renderPreview(body: string, params: BroadcastTemplateParam[], sample?: 
       if (p.field === 'phoneNumber') return sample.phoneNumber || '[sem telefone]';
       if (p.field === 'email') return sample.email || '[sem email]';
     }
+    if (p.kind === 'csvColumn') {
+      if (!sample?.customColumns) return `[${p.column}]`;
+      return sample.customColumns[p.column] || `[${p.column}]`;
+    }
     return matched;
   });
 }
 
-export default function TemplateSelector({ businessId, value, onChange, sampleRecipient, channel, className }: Props) {
+export default function TemplateSelector({ businessId, value, onChange, sampleRecipient, channel, csvColumns, className }: Props) {
   const [templates, setTemplates] = useState<WhatsAppTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -242,12 +248,18 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
                   {`{{${i + 1}}}`}
                 </span>
                 <select
-                  value={p.kind === 'literal' ? '__literal' : `field:${p.field}`}
+                  value={
+                    p.kind === 'literal' ? '__literal'
+                    : p.kind === 'field' ? `field:${p.field}`
+                    : `csv:${p.column}`
+                  }
                   onChange={e => {
                     const v = e.target.value;
                     if (v === '__literal') updateParam(i, { kind: 'literal', value: '' });
                     else if (v.startsWith('field:')) {
                       updateParam(i, { kind: 'field', field: v.slice(6) as 'name' | 'phoneNumber' | 'email' });
+                    } else if (v.startsWith('csv:')) {
+                      updateParam(i, { kind: 'csvColumn', column: v.slice(4) });
                     }
                   }}
                   className={cn(inputCls, 'w-auto flex-shrink-0')}
@@ -256,6 +268,13 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
                   {fieldOptions.map(o => (
                     <option key={o.value} value={`field:${o.value}`}>{o.label}</option>
                   ))}
+                  {csvColumns && csvColumns.length > 0 && (
+                    <optgroup label="Colunas do CSV">
+                      {csvColumns.map(col => (
+                        <option key={col} value={`csv:${col}`}>↳ {col}</option>
+                      ))}
+                    </optgroup>
+                  )}
                 </select>
                 {p.kind === 'literal' ? (
                   <input
@@ -264,10 +283,15 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
                     onChange={e => updateParam(i, { kind: 'literal', value: e.target.value })}
                     className={inputCls}
                   />
-                ) : (
+                ) : p.kind === 'field' ? (
                   <span className="flex-1 inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-500/10 rounded-lg">
                     {ALL_FIELD_OPTIONS.find(o => o.value === p.field)?.icon}
                     Resolvido por recipiente
+                  </span>
+                ) : (
+                  <span className="flex-1 inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] text-violet-700 dark:text-violet-400 bg-violet-50 dark:bg-violet-500/10 rounded-lg">
+                    <Database className="w-3 h-3" />
+                    coluna CSV: <code className="font-mono">{p.column}</code>
                   </span>
                 )}
               </div>
@@ -330,6 +354,7 @@ export function isTemplateSelectionValid(
   }
   for (const p of sel.params) {
     if (p.kind === 'literal' && !p.value.trim()) return false;
+    if (p.kind === 'csvColumn' && !p.column.trim()) return false;
   }
   return true;
 }

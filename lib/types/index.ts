@@ -2370,6 +2370,12 @@ export interface BroadcastRecipient {
   /** Telefone em formato E.164 (apenas dígitos). Para canais WhatsApp. */
   phoneNumber?: string;
   email?: string;
+  /**
+   * Colunas extras vindas de CSV importado (5.8). Chaves são nomes de
+   * coluna normalizados (lowercase), valores são strings cruas. Disponível
+   * para mapear `{{N}}` em templates Meta via `BroadcastTemplateParam.csvColumn`.
+   */
+  customColumns?: Record<string, string>;
 }
 
 /**
@@ -2378,10 +2384,14 @@ export interface BroadcastRecipient {
  *
  * - `literal`: valor fixo igual para todos (ex: "R$ 100" ou "BlackFriday2026")
  * - `field`: lê do recipiente — name / phoneNumber / email
+ * - `csvColumn`: lê de uma coluna extra do CSV importado (ex: "produto", "desconto").
+ *   `column` é o nome da coluna normalizado (lowercase). Resolvido via
+ *   `recipient.customColumns[column]` no backend; vai vazio se ausente.
  */
 export type BroadcastTemplateParam =
   | { kind: 'literal'; value: string }
-  | { kind: 'field'; field: 'name' | 'phoneNumber' | 'email' };
+  | { kind: 'field'; field: 'name' | 'phoneNumber' | 'email' }
+  | { kind: 'csvColumn'; column: string };
 
 export interface BroadcastStats {
   total: number;

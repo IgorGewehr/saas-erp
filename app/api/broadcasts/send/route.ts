@@ -45,6 +45,8 @@ interface InboundRecipient {
   phoneNumber?: string;
   email?: string;
   recipientId?: string;
+  /** 5.8: colunas extras do CSV — preservadas para template params kind='csvColumn'. */
+  customColumns?: Record<string, string>;
 }
 
 interface NormalizedRecipient {
@@ -52,6 +54,7 @@ interface NormalizedRecipient {
   name?: string;
   recipientId: string;  // phone digits ou email — chave do envio
   email?: string;
+  customColumns?: Record<string, string>;
 }
 
 function sleep(ms: number) {
@@ -66,7 +69,7 @@ function sleep(ms: number) {
  */
 function resolveTemplateComponents(
   params: unknown,
-  recipient: { name?: string; recipientId: string; email?: string },
+  recipient: { name?: string; recipientId: string; email?: string; customColumns?: Record<string, string> },
 ): unknown[] {
   if (!Array.isArray(params) || params.length === 0) return [];
 
@@ -84,6 +87,11 @@ function resolveTemplateComponents(
       if (p.field === 'name') return recipient.name || '';
       if (p.field === 'phoneNumber') return recipient.recipientId;
       if (p.field === 'email') return recipient.email || '';
+    }
+    if (p.kind === 'csvColumn') {
+      // 5.8: lê coluna extra do recipient. Vai vazio se ausente — template
+      // será renderizado com placeholder, mas Meta API não vai falhar.
+      return recipient.customColumns?.[p.column] || '';
     }
     return '';
   });
@@ -113,6 +121,9 @@ function normalizeRecipients(
       name: r.name || r.contactName,
       recipientId,
       email: r.email,
+      ...(r.customColumns && Object.keys(r.customColumns).length > 0
+        ? { customColumns: r.customColumns }
+        : {}),
     });
   }
   return out;
