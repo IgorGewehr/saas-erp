@@ -20,7 +20,7 @@
 
 import { useState, useRef, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Upload, ClipboardPaste, AlertTriangle, Check, X } from 'lucide-react';
+import { Upload, ClipboardPaste, AlertTriangle, Check, X, ChevronDown, Link as LinkIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { BroadcastRecipient, Client } from '@/lib/types';
 
@@ -121,9 +121,32 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
   const [textValue, setTextValue] = useState('');
   const [csvFileName, setCsvFileName] = useState<string | null>(null);
   const [parsedLines, setParsedLines] = useState<ParsedLine[]>([]);
+  const [expandedSection, setExpandedSection] = useState<'valid' | 'invalid' | 'duplicates' | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const indexOfErrors = useMemo(() => parsedLines.filter(l => l.error), [parsedLines]);
+  /**
+   * Categoriza as linhas em 3 buckets para os painéis expansíveis:
+   *  - validLines: passaram parse + não são duplicadas (entram no envio)
+   *  - invalidLines: parse falhou (formato inválido)
+   *  - duplicateLines: parse OK mas chave já vista (segunda+ ocorrência)
+   * Linkagem ao CRM é feita em buildRecipients (filtro por phone/email match).
+   */
+  const categorizedLines = useMemo(() => {
+    const valid: ParsedLine[] = [];
+    const invalid: ParsedLine[] = [];
+    const duplicates: ParsedLine[] = [];
+    const seen = new Set<string>();
+    for (const line of parsedLines) {
+      if (line.error) { invalid.push(line); continue; }
+      const rawKey = mode === 'phone' ? line.phoneNumber : line.email;
+      if (!rawKey) { invalid.push(line); continue; }
+      const key = mode === 'email' ? rawKey.toLowerCase() : rawKey;
+      if (seen.has(key)) { duplicates.push(line); continue; }
+      seen.add(key);
+      valid.push(line);
+    }
+    return { valid, invalid, duplicates };
+  }, [parsedLines, mode]);
 
   /** Aplica dedup, valida e produz array de BroadcastRecipient + stats. */
   const buildRecipients = useCallback(
@@ -212,13 +235,57 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
     [buildRecipients, onChange]
   );
 
+  /**
+   * Heurística de extração de nome no paste mode.
+   *
+   * Formatos comuns aceitos:
+   *   "(54) 99959-5528 - Cembranel Beauty & Barber"
+   *   "54 99959-5528  Cembranel Beauty"
+   *   "Cembranel Beauty: 54999595528"
+   *   "5499959-5528 — Cembranel"
+   *
+   * Estratégia: extrai a substring que parece o phone (sequência de digits
+   * com possíveis separadores parens/spaces/dashes/dots) e usa o RESTANTE
+   * como nome candidato, descartando separadores ao redor.
+   */
+  const PHONE_SUBSTRING_RE = /(?:\+?\d[\d\s().-]{8,20}\d)/;
+
+  const extractNameFromToken = useCallback((token: string): string | undefined => {
+    // Remove a sequência de phone do token e usa o resto como nome candidato
+    const phoneMatch = token.match(PHONE_SUBSTRING_RE);
+    if (!phoneMatch) return undefined;
+    const rest = token.replace(phoneMatch[0], '')
+      // Limpa separadores nas pontas (- — , : • | etc.) e espaços
+      .replace(/^[\s\-—,:•|]+|[\s\-—,:•|]+$/g, '')
+      .trim();
+    // Filtra ruído: nomes muito curtos (< 2 chars), só dígitos, ou só símbolos
+    if (rest.length < 2) return undefined;
+    if (/^\d+$/.test(rest)) return undefined;
+    if (!/[a-zA-ZÀ-ú]/.test(rest)) return undefined;
+    return rest.slice(0, 120); // cap de segurança
+  }, []);
+
+  const extractEmailFromToken = useCallback((token: string): { email?: string; name?: string } => {
+    const match = token.match(/[\w.+-]+@[\w-]+\.[\w.-]+/);
+    if (!match) return {};
+    const email = match[0];
+    const rest = token.replace(email, '')
+      .replace(/^[\s\-—,:•|<>()]+|[\s\-—,:•|<>()]+$/g, '')
+      .trim();
+    const name = rest.length >= 2 && /[a-zA-ZÀ-ú]/.test(rest) ? rest.slice(0, 120) : undefined;
+    return { email, name };
+  }, []);
+
   /** Parse texto colado: 1 por linha, ou separado por vírgula/ponto-vírgula. */
   const handleTextChange = useCallback(
     (raw: string) => {
       setTextValue(raw);
-      // Quebra por linha, vírgula ou ponto-vírgula
+      // Quebra por linha ou ponto-e-vírgula. Vírgula NÃO é separador porque
+      // costuma aparecer dentro de nomes ("Cembranel, Ltda" / "(54) 99-5528,
+      // Loja"). Operador que quiser separar por vírgula deve trocar por
+      // ponto-e-vírgula ou linha.
       const tokens = raw
-        .split(/[\n,;]/)
+        .split(/[\n;]/)
         .map(t => t.trim())
         .filter(t => t.length > 0);
 
@@ -226,16 +293,20 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
         if (mode === 'phone') {
           const phone = normalizePhone(token);
           if (!phone) return { raw: token, error: 'Telefone inválido' };
-          return { raw: token, phoneNumber: phone };
+          const name = extractNameFromToken(token);
+          return { raw: token, phoneNumber: phone, ...(name ? { name } : {}) };
         } else {
-          const trimmed = token.trim();
-          if (!EMAIL_RE.test(trimmed)) return { raw: token, error: 'Email inválido' };
-          return { raw: token, email: trimmed };
+          // Email mode: extrai email + nome opcional do token.
+          // Aceita formatos: "joao@x.com", "Joao Silva <joao@x.com>",
+          // "Joao Silva - joao@x.com", "joao@x.com (Joao Silva)" etc.
+          const { email, name } = extractEmailFromToken(token);
+          if (!email || !EMAIL_RE.test(email)) return { raw: token, error: 'Email inválido' };
+          return { raw: token, email, ...(name ? { name } : {}) };
         }
       });
       updateAndNotify(lines);
     },
-    [mode, updateAndNotify]
+    [mode, updateAndNotify, extractNameFromToken, extractEmailFromToken],
   );
 
   /** Parse arquivo CSV. */
@@ -310,6 +381,7 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
     setTextValue('');
     setCsvFileName(null);
     setParsedLines([]);
+    setExpandedSection(null);
     onChange([], { valid: 0, invalid: 0, duplicates: 0, linkedToCrm: 0, csvColumns: [] });
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
@@ -371,25 +443,39 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
         </div>
       )}
 
-      {/* Stats */}
+      {/* Stats — badges clicáveis: click expande painel com a lista */}
       {parsedLines.length > 0 && (
-        <div className="flex items-center gap-3 flex-wrap text-[10px]">
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 font-semibold">
-            <Check className="w-2.5 h-2.5" /> {stats.valid} válidos
-          </span>
+        <div className="flex items-center gap-2 flex-wrap text-[10px]">
+          <BadgeButton
+            active={expandedSection === 'valid'}
+            onClick={() => setExpandedSection(s => s === 'valid' ? null : 'valid')}
+            count={stats.valid}
+            label="válidos"
+            tone="emerald"
+            icon={<Check className="w-2.5 h-2.5" />}
+          />
           {stats.invalid > 0 && (
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 font-semibold">
-              <AlertTriangle className="w-2.5 h-2.5" /> {stats.invalid} inválidos
-            </span>
+            <BadgeButton
+              active={expandedSection === 'invalid'}
+              onClick={() => setExpandedSection(s => s === 'invalid' ? null : 'invalid')}
+              count={stats.invalid}
+              label="inválidos"
+              tone="red"
+              icon={<AlertTriangle className="w-2.5 h-2.5" />}
+            />
           )}
           {stats.duplicates > 0 && (
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 font-semibold">
-              {stats.duplicates} duplicados
-            </span>
+            <BadgeButton
+              active={expandedSection === 'duplicates'}
+              onClick={() => setExpandedSection(s => s === 'duplicates' ? null : 'duplicates')}
+              count={stats.duplicates}
+              label="duplicados"
+              tone="amber"
+            />
           )}
           {stats.linkedToCrm > 0 && (
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 font-semibold">
-              {stats.linkedToCrm} vinculados ao CRM
+              <LinkIcon className="w-2.5 h-2.5" /> {stats.linkedToCrm} vinculados ao CRM
             </span>
           )}
           {stats.csvColumns.length > 0 && (
@@ -400,27 +486,157 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
         </div>
       )}
 
-      {/* Error preview */}
+      {/* Painel expansível — mostra a lista da seção ativa */}
       <AnimatePresence>
-        {indexOfErrors.length > 0 && (
-          <motion.div initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }}
-            className="px-3 py-2 rounded-lg bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20">
-            <p className="text-[10px] font-semibold text-red-700 dark:text-red-400 mb-1">
-              {indexOfErrors.length} {indexOfErrors.length === 1 ? 'entrada inválida' : 'entradas inválidas'}:
-            </p>
-            <div className="space-y-0.5 max-h-24 overflow-y-auto">
-              {indexOfErrors.slice(0, 10).map((l, i) => (
-                <div key={i} className="text-[10px] text-red-600 dark:text-red-400 font-mono truncate">
-                  &quot;{l.raw}&quot; — {l.error}
-                </div>
-              ))}
-              {indexOfErrors.length > 10 && (
-                <div className="text-[10px] text-red-500 italic">…e mais {indexOfErrors.length - 10}</div>
-              )}
-            </div>
+        {expandedSection && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className={cn(
+              'overflow-hidden rounded-lg border',
+              expandedSection === 'valid' && 'border-emerald-200 dark:border-emerald-500/20 bg-emerald-50 dark:bg-emerald-500/5',
+              expandedSection === 'invalid' && 'border-red-200 dark:border-red-500/20 bg-red-50 dark:bg-red-500/5',
+              expandedSection === 'duplicates' && 'border-amber-200 dark:border-amber-500/20 bg-amber-50 dark:bg-amber-500/5',
+            )}
+          >
+            <RecipientPanel
+              section={expandedSection}
+              lines={
+                expandedSection === 'valid' ? categorizedLines.valid
+                : expandedSection === 'invalid' ? categorizedLines.invalid
+                : categorizedLines.duplicates
+              }
+              mode={mode}
+              onClose={() => setExpandedSection(null)}
+            />
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+}
+
+// ─── Sub-components ──────────────────────────────────────────────────────────
+
+const BADGE_TONES = {
+  emerald: {
+    base: 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
+    active: 'ring-2 ring-emerald-400 bg-emerald-100 dark:bg-emerald-500/20',
+  },
+  red: {
+    base: 'bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400',
+    active: 'ring-2 ring-red-400 bg-red-100 dark:bg-red-500/20',
+  },
+  amber: {
+    base: 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400',
+    active: 'ring-2 ring-amber-400 bg-amber-100 dark:bg-amber-500/20',
+  },
+} as const;
+
+interface BadgeButtonProps {
+  active: boolean;
+  onClick: () => void;
+  count: number;
+  label: string;
+  tone: keyof typeof BADGE_TONES;
+  icon?: React.ReactNode;
+}
+function BadgeButton({ active, onClick, count, label, tone, icon }: BadgeButtonProps) {
+  const cfg = BADGE_TONES[tone];
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-semibold transition-all cursor-pointer',
+        cfg.base,
+        active && cfg.active,
+        'hover:brightness-105',
+      )}
+      title={`Clique para ${active ? 'ocultar' : 'ver'} a lista`}
+    >
+      {icon}
+      {count} {label}
+      <ChevronDown className={cn('w-2.5 h-2.5 transition-transform', active && 'rotate-180')} />
+    </button>
+  );
+}
+
+interface RecipientPanelProps {
+  section: 'valid' | 'invalid' | 'duplicates';
+  lines: ParsedLine[];
+  mode: 'phone' | 'email';
+  onClose: () => void;
+}
+function RecipientPanel({ section, lines, mode, onClose }: RecipientPanelProps) {
+  const titles = {
+    valid: 'Recipientes válidos',
+    invalid: 'Entradas inválidas',
+    duplicates: 'Duplicados (ignorados no envio)',
+  };
+  const colors = {
+    valid: 'text-emerald-700 dark:text-emerald-400',
+    invalid: 'text-red-700 dark:text-red-400',
+    duplicates: 'text-amber-700 dark:text-amber-400',
+  };
+
+  if (lines.length === 0) {
+    return (
+      <div className="px-3 py-2 text-[10px] text-gray-500 dark:text-gray-400">
+        Nenhum item nesta categoria.
+      </div>
+    );
+  }
+
+  // Limita scroll quando lista for grande (>20)
+  const maxVisible = lines.length > 20 ? 20 : lines.length;
+
+  return (
+    <div className="px-3 py-2 space-y-1.5">
+      <div className="flex items-center justify-between">
+        <p className={cn('text-[10px] font-bold uppercase tracking-wider', colors[section])}>
+          {titles[section]} ({lines.length})
+        </p>
+        <button
+          type="button"
+          onClick={onClose}
+          className="p-0.5 rounded hover:bg-black/5 dark:hover:bg-white/5 text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
+          aria-label="Fechar"
+        >
+          <X className="w-3 h-3" />
+        </button>
+      </div>
+      <div
+        className="space-y-0.5 overflow-y-auto pr-1"
+        style={{ maxHeight: `${Math.min(maxVisible * 22, 240)}px` }}
+      >
+        {lines.map((l, i) => (
+          <RecipientLineRow key={i} line={l} mode={mode} section={section} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RecipientLineRow({ line, mode, section }: { line: ParsedLine; mode: 'phone' | 'email'; section: 'valid' | 'invalid' | 'duplicates' }) {
+  // Formato exibido: phone/email "primário" + nome se houver + erro se inválido
+  const primary = mode === 'phone' ? line.phoneNumber : line.email;
+  return (
+    <div className="flex items-center gap-2 text-[10px] font-mono">
+      {section === 'invalid' ? (
+        <>
+          <span className="text-red-500 dark:text-red-400 truncate">&quot;{line.raw}&quot;</span>
+          <span className="text-red-500/70 italic shrink-0">— {line.error}</span>
+        </>
+      ) : (
+        <>
+          <span className="text-gray-700 dark:text-gray-300 tabular-nums">{primary || line.raw}</span>
+          {line.name && (
+            <span className="text-gray-500 dark:text-gray-500 font-sans truncate">· {line.name}</span>
+          )}
+        </>
+      )}
     </div>
   );
 }

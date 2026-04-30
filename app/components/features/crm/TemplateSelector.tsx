@@ -122,8 +122,30 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
           cache: 'no-store',
         });
         if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          if (!cancelled) setError(data.error || `HTTP ${res.status}`);
+          // Endpoint enriquecido (commit c5e8aaa+) retorna `error` + flags
+          // (isTokenExpired/isPermissionError/isRateLimited) quando upstream Meta
+          // falha. Mensagens curtas e direcionadas baseadas no cenário.
+          const data = await res.json().catch(() => ({} as {
+            error?: string;
+            isTokenExpired?: boolean;
+            isPermissionError?: boolean;
+            isRateLimited?: boolean;
+          }));
+          if (!cancelled) {
+            if (data.isTokenExpired) {
+              setError('Token do WhatsApp expirou. Reconecte em Configurações → Canais.');
+            } else if (data.isRateLimited) {
+              setError('Meta API rate-limited. Tente novamente em alguns minutos.');
+            } else if (res.status === 400 && /não está conectado|configure/i.test(data.error || '')) {
+              // WhatsApp Cloud não conectado — não é erro do usuário, é estado de config
+              setError('WhatsApp Cloud não conectado. Configure em Settings → Canais para enviar templates.');
+            } else if (res.status === 502 && !data.error) {
+              // Resposta antiga sem detalhes — provavelmente deploy não atualizado
+              setError('Servidor do WhatsApp inacessível. Verifique a conexão do canal Cloud.');
+            } else {
+              setError(data.error || `HTTP ${res.status}`);
+            }
+          }
           return;
         }
         const data = await res.json();
