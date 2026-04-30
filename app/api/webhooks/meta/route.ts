@@ -1204,6 +1204,24 @@ async function getDecryptedPageToken(businessId: string): Promise<string | null>
 // ─── Firestore Helpers ────────────────────────────────────────────────────────
 
 /**
+ * Formata phone E.164 (sem `+`) para exibição amigável BR.
+ * Ex: "5554996785446" → "+55 54 99678-5446"
+ *     "5511999998888" → "+55 11 99999-8888"
+ *     "555499675546"  → "+55 54 9967-5546" (sem 9 inicial — celular antigo)
+ * Não-BR: retorna `+{phone}` sem formatação.
+ */
+function formatBrPhoneForDisplay(phone: string): string {
+  if (!phone) return '';
+  if (phone.length === 13 && phone.startsWith('55')) {
+    return `+${phone.slice(0, 2)} ${phone.slice(2, 4)} ${phone.slice(4, 9)}-${phone.slice(9)}`;
+  }
+  if (phone.length === 12 && phone.startsWith('55')) {
+    return `+${phone.slice(0, 2)} ${phone.slice(2, 4)} ${phone.slice(4, 8)}-${phone.slice(8)}`;
+  }
+  return `+${phone}`;
+}
+
+/**
  * Saves an inbound message to Firestore.
  *
  * 1. Resolves the businessId from the channel identifier
@@ -1298,14 +1316,22 @@ async function saveInboundMessage(params: InboundMessageParams) {
 
     if (convSnap.empty) {
       // Create new conversation
+      // Para WhatsApp, popula `contactPhone` com o externalId formatado.
+      // O Baileys já fazia isso (baileys-manager.ts:340), mas o webhook Cloud
+      // antes só populava no auto-link CRM (mais abaixo) — então conversas
+      // sem contato CRM ficavam com contactPhone vazio e o header da UI não
+      // exibia o número.
+      const isWhatsApp = params.channel === 'whatsapp';
+      const formattedPhone = isWhatsApp ? formatBrPhoneForDisplay(params.externalId) : undefined;
       const newConvRef = await adminDb.collection('conversations').add({
         businessId,
         channel: params.channel,
         // All Meta webhooks come from the official APIs (Embedded Signup). Tag it so
         // the UI can distinguish from Baileys (WhatsApp Web).
-        ...(params.channel === 'whatsapp' ? { connectedVia: 'embedded_signup' } : {}),
+        ...(isWhatsApp ? { connectedVia: 'embedded_signup' } : {}),
         contactName: params.senderName ?? params.externalId,
         contactExternalId: params.externalId,
+        ...(formattedPhone ? { contactPhone: formattedPhone } : {}),
         ...(params.senderAvatarUrl ? { contactAvatarUrl: params.senderAvatarUrl } : {}),
         status: 'open',
         lastMessage: params.conversationPreview || params.content || '[Midia]',

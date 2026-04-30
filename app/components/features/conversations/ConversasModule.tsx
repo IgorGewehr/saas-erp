@@ -3720,8 +3720,17 @@ export default function ConversasModule() {
   }, [business?.id]);
 
   const handleOpenContact = useCallback((conv: Conversation) => {
-    // Navigate to the clients page — they can find/edit there
-    setActivePage('Clientes');
+    // Se conversa está vinculada a um cliente CRM, marca o ID em sessionStorage
+    // para que ClientsModule abra o detalhe ao montar. Sem vínculo, redireciona
+    // para Clientes mostrando toast com instrução pra vincular antes.
+    if (conv.crmContactId) {
+      try {
+        sessionStorage.setItem('aevo:preselectClientId', conv.crmContactId);
+      } catch { /* sessionStorage indisponível — degradação graciosa */ }
+      setActivePage('Clientes');
+    } else {
+      toast.info('Este contato ainda não está vinculado a um cliente. Use "Vincular cliente" no header.');
+    }
   }, [setActivePage]);
 
   const handleExportHistory = useCallback(async (conv: Conversation) => {

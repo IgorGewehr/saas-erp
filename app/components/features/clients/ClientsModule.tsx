@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Users, Plus, Search, Filter, X, Edit2, Trash2, Phone, Mail,
@@ -2429,6 +2429,26 @@ export default function ClientsModule() {
     enabled: !!business?.id,
     staleTime: 3 * 60 * 1000,
   });
+
+  // ─── Pré-seleção via sessionStorage ─────────────────────────────────────────
+  // Usado pelo Conversas → "Ver/editar contato" para abrir o cliente direto
+  // quando navega pra cá. Limpa o storage após consumir (não persiste entre
+  // navegações repetidas).
+  useEffect(() => {
+    if (!clients.length || selectedClient) return;
+    let preselectId: string | null = null;
+    try {
+      preselectId = sessionStorage.getItem('aevo:preselectClientId');
+    } catch { /* indisponível */ }
+    if (!preselectId) return;
+    const target = clients.find(c => c.id === preselectId);
+    if (target) {
+      setSelectedClient(target);
+    }
+    try {
+      sessionStorage.removeItem('aevo:preselectClientId');
+    } catch { /* ok */ }
+  }, [clients, selectedClient]);
 
   // ─── Mutations ──────────────────────────────────────────────────────────────
   const { mutate: saveClient, isPending: isSaving } = useMutation({
