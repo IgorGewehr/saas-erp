@@ -115,7 +115,10 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
   const [pausing, setPausing] = useState(false);
   const [cancelingSchedule, setCancelingSchedule] = useState(false);
   const canDispatch = broadcast.status === 'draft' && (broadcast.recipients?.length ?? 0) > 0;
-  const canResume = broadcast.status === 'paused' && pendingCount > 0;
+  // Resume: confia no status do broadcast doc, não em pendingCount (que pode
+  // ainda não ter carregado se o snapshot está atrasado/bloqueado por index).
+  // O endpoint /resume é idempotente e responde graciosamente se não houver pendentes.
+  const canResume = broadcast.status === 'paused';
   const isScheduled = broadcast.status === 'scheduled';
   const isStuckSending = broadcast.status === 'sending';
   // Heurística pra "campanha presa": status='sending' + 0 messages criadas + startedAt > 2min
@@ -602,12 +605,14 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
           </div>
         )}
 
-        {/* Resume toolbar — só quando paused com pendentes */}
+        {/* Resume toolbar — sempre que status='paused'. Se pendingCount=0
+            (snapshot ainda carregando ou index pendente), o endpoint /resume
+            usa adminDb e responde com a contagem real. */}
         {canResume && (
-          <div className="px-5 py-2.5 bg-amber-50 dark:bg-amber-500/5 border-b border-amber-100 dark:border-amber-500/10 flex items-center justify-between">
+          <div className="px-5 py-2.5 bg-amber-50 dark:bg-amber-500/5 border-b border-amber-100 dark:border-amber-500/10 flex items-center justify-between gap-3 flex-wrap">
             <span className="text-xs text-amber-700 dark:text-amber-400">
               <Clock className="w-3 h-3 inline mr-1 -mt-0.5" />
-              Pausada — {pendingCount} contato(s) pendentes
+              Pausada {pendingCount > 0 ? <>— {pendingCount} contato(s) pendentes</> : <>— clique em Retomar para continuar</>}
             </span>
             <button
               type="button"
