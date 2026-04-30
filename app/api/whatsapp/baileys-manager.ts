@@ -21,6 +21,7 @@ import QRCode from 'qrcode';
 import pino from 'pino';
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from '@/lib/config/firebaseAdmin';
+import { getAlternativeBrazilianPhone } from '@/lib/utils/phoneAlternatives';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -311,7 +312,7 @@ async function handleInboundMessage(
   }
 
   try {
-    const altPhone = getAlternativePhone(senderPhone);
+    const altPhone = getAlternativeBrazilianPhone(senderPhone);
     let convSnap = await adminDb.collection('conversations')
       .where('businessId', '==', businessId)
       .where('channel', '==', 'whatsapp')
@@ -498,20 +499,6 @@ async function handleOutboundStatusUpdate(
 export function getConnectedSession(businessId: string): BaileysSession | null {
   const session = sessions.get(businessId);
   return session?.isConnected ? session : null;
-}
-
-function getAlternativePhone(phone: string): string | null {
-  if (!phone.startsWith('55')) return null;
-  const withoutCountry = phone.substring(2);
-  if (withoutCountry.length < 10) return null;
-  const ddd = withoutCountry.substring(0, 2);
-  const number = withoutCountry.substring(2);
-  if (number.length === 8) {
-    return `55${ddd}9${number}`;
-  } else if (number.length === 9 && number.startsWith('9')) {
-    return `55${ddd}${number.substring(1)}`;
-  }
-  return null;
 }
 
 export function destroySession(businessId: string) {
