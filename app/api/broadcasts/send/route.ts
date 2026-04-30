@@ -157,6 +157,12 @@ async function preCreateBroadcastMessages(
       if (r.email) payload.email = r.email;
       // 5.12 LGPD: snapshot da base legal por mensagem para auditoria.
       if (consentBasis) payload.consentBasis = consentBasis;
+      // 5.8: persiste customColumns para que resume/retry consigam reconstruir
+      // recipients com as variáveis de template intactas (sem isso, pause+resume
+      // de campanha com csvColumn dispara mensagens com placeholders vazios).
+      if (r.customColumns && Object.keys(r.customColumns).length > 0) {
+        payload.customColumns = r.customColumns;
+      }
       batch.set(docRef, payload);
       ids.push(docRef.id);
     }

@@ -106,6 +106,11 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       if (m.contactName) r.name = m.contactName;
       if (m.email) r.email = m.email;
       else r.phoneNumber = m.recipientId;
+      // 5.8: preserva customColumns para template params kind='csvColumn'
+      // resolverem corretamente no próximo dispatch.
+      if (m.customColumns && Object.keys(m.customColumns).length > 0) {
+        r.customColumns = m.customColumns;
+      }
       return r;
     });
 

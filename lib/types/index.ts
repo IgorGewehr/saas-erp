@@ -2491,6 +2491,8 @@ export interface BroadcastMessage {
   readAt?: string;
   /** Snapshot da base legal LGPD no momento do envio (rastreabilidade per-msg). */
   consentBasis?: ConsentBasis;
+  /** Snapshot das colunas extras do CSV (5.8) para reconstrução em resume/retry. */
+  customColumns?: Record<string, string>;
   createdAt: string;
 }
 

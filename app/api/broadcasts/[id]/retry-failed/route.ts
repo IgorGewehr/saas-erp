@@ -88,6 +88,10 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       if (m.contactName) r.name = m.contactName;
       if (m.email) r.email = m.email;
       else r.phoneNumber = m.recipientId;
+      // 5.8: preserva customColumns para template params kind='csvColumn'
+      if (m.customColumns && Object.keys(m.customColumns).length > 0) {
+        r.customColumns = m.customColumns;
+      }
       return r;
     });
 
@@ -122,6 +126,15 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     if (original.messageContent) newBroadcastData.messageContent = original.messageContent;
     if (original.emailSubject) newBroadcastData.emailSubject = original.emailSubject;
     if (original.viaBaileys) newBroadcastData.viaBaileys = true;
+    // 5.12 LGPD: copia base legal do original — sem isso, o /send rejeitaria
+    // o retry com 400 "broadcast sem consentBasis". Atualiza ack para o
+    // operador atual (auditoria de quem aprovou o retry, especificamente).
+    if (original.consentBasis) {
+      newBroadcastData.consentBasis = original.consentBasis;
+      if (original.consentSource) newBroadcastData.consentSource = original.consentSource;
+      newBroadcastData.consentAcknowledgedAt = now;
+      newBroadcastData.consentAcknowledgedBy = authResult.uid;
+    }
 
     const newRef = await adminDb.collection('broadcasts').add(newBroadcastData);
 
