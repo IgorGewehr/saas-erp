@@ -71,6 +71,27 @@ export function checkRateLimit(
 }
 
 /**
+ * Business-scoped rate limit. Use em endpoints sensíveis (broadcasts, etc.)
+ * para limitar abuso por tenant — útil quando atacante rota requests por
+ * múltiplos IPs/proxies mas mantém o mesmo Bearer token de um business.
+ *
+ * Convenção de chave: `business:${endpoint}:${businessId}` para isolar
+ * limites entre endpoints (ex: send vs retry).
+ *
+ * Usar em conjunto com `checkRateLimit(IP)` (defense in depth):
+ *   const ipLimit = checkRateLimit(`broadcast:${ip}`, 5, 60_000);
+ *   const bizLimit = checkBusinessRateLimit('broadcast-send', businessId, 30, 3_600_000);
+ */
+export function checkBusinessRateLimit(
+  endpoint: string,
+  businessId: string,
+  limit: number,
+  windowMs: number = 3_600_000, // default 1h — janela maior que IP limit
+): RateLimitResult {
+  return checkRateLimit(`business:${endpoint}:${businessId}`, limit, windowMs);
+}
+
+/**
  * Helper to extract client IP from Next.js request.
  */
 export function getClientIp(req: Request): string {

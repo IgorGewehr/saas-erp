@@ -41,9 +41,20 @@ export async function GET(req: NextRequest) {
     const cloudFromNew = bizData?.channels?.whatsappCloud;
     const cloudFromLegacy = bizData?.channels?.whatsapp;
     const isLegacyBaileys = cloudFromLegacy?.connectedVia === 'baileys';
-    const waConfig = cloudFromNew ?? (isLegacyBaileys ? null : cloudFromLegacy);
+    // ?? só dispara em null/undefined; usamos checagem explícita para tratar
+    // objeto vazio {} ou parcialmente populado como ausente
+    const cloudIsValid = cloudFromNew && cloudFromNew.isConnected && cloudFromNew.accessToken && cloudFromNew.phoneNumberId;
+    const legacyIsValidCloud = !isLegacyBaileys && cloudFromLegacy && cloudFromLegacy.isConnected && cloudFromLegacy.accessToken && cloudFromLegacy.phoneNumberId;
+    const waConfig = cloudIsValid ? cloudFromNew : (legacyIsValidCloud ? cloudFromLegacy : null);
 
-    if (!waConfig?.isConnected || !waConfig?.phoneNumberId || !waConfig?.accessToken) {
+    if (!waConfig) {
+      console.warn('[WhatsApp Templates] No valid Cloud config for business', businessId, {
+        hasNew: !!cloudFromNew,
+        hasLegacy: !!cloudFromLegacy,
+        legacyIsBaileys: isLegacyBaileys,
+        newConnected: cloudFromNew?.isConnected,
+        legacyConnected: cloudFromLegacy?.isConnected,
+      });
       return NextResponse.json(
         { error: 'WhatsApp Cloud não está conectado. Configure em Configurações → Canais.' },
         { status: 400 },

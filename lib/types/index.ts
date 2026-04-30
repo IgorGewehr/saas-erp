@@ -358,6 +358,39 @@ export interface BusinessSettings {
   };
   csatEnabled?: boolean;  // Enviar pesquisa de satisfação ao resolver conversa
   routingRules?: RoutingRule[];
+  /** Configuração do servidor de notificações externo (broadcasts de email, SMS, etc.) */
+  notificationServer?: NotificationServerConfig;
+}
+
+/**
+ * Configuração de SMTP por business para envio de email via notification-server.
+ *
+ * Arquitetura: a URL do notification-server e a apiKey de auth ficam em env vars
+ * globais do saas-erp (NOTIFICATION_SERVER_URL e NOTIFICATION_SERVER_API_KEY),
+ * compartilhadas entre todos os businesses. O que varia por business é apenas
+ * o **SMTP** (cada cliente usa seu próprio remetente: Gmail, Outlook, SendGrid,
+ * provedor próprio etc.).
+ *
+ * Saas-erp envia as credenciais SMTP no body do POST /api/send-email; o
+ * notification-server é stateless (não armazena SMTP per-tenant no Firebase).
+ *
+ * `smtp.pass` é criptografada via `encryptToken` (AES-256-GCM com ENCRYPTION_KEY)
+ * antes de gravar no Firestore. Decifrada server-side no momento do envio.
+ */
+export interface NotificationServerConfig {
+  isConfigured: boolean;
+  configuredAt?: string;
+  smtp?: {
+    host: string;            // ex: smtp.gmail.com
+    port: number;            // ex: 587 (STARTTLS) ou 465 (SSL/TLS)
+    secure: boolean;         // true para porta 465, false para 587
+    user: string;            // usuário/email de auth
+    pass: string;            // ENCRIPTADA — sempre passa por encryptToken antes de salvar
+    from: string;            // remetente exibido (ex: "BJJEasy <contato@bjjeasy.com>")
+  };
+  lastTestedAt?: string;
+  lastTestStatus?: 'ok' | 'failed';
+  lastTestDetail?: string;
 }
 
 export interface RoutingRule {
@@ -2350,7 +2383,38 @@ export interface Segment {
 // ============================================
 
 export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent' | 'paused' | 'failed';
-export type BroadcastAudienceType = 'segment' | 'tags' | 'all_contacts' | 'manual';
+export type BroadcastAudienceType = 'segment' | 'tags' | 'all_contacts' | 'manual' | 'list';
+
+/** Recipiente direto de uma lista (paste/CSV) — não exige contato CRM. */
+export interface BroadcastRecipient {
+  /** Auto-vinculado se número/email bater com cliente CRM existente. */
+  contactId?: string;
+  name?: string;
+  /** Telefone em formato E.164 (apenas dígitos). Para canais WhatsApp. */
+  phoneNumber?: string;
+  email?: string;
+  /**
+   * Colunas extras vindas de CSV importado (5.8). Chaves são nomes de
+   * coluna normalizados (lowercase), valores são strings cruas. Disponível
+   * para mapear `{{N}}` em templates Meta via `BroadcastTemplateParam.csvColumn`.
+   */
+  customColumns?: Record<string, string>;
+}
+
+/**
+ * Mapeamento de variável de template WhatsApp ({{1}}, {{2}}, etc.) para um valor
+ * resolvido por recipiente no momento do envio.
+ *
+ * - `literal`: valor fixo igual para todos (ex: "R$ 100" ou "BlackFriday2026")
+ * - `field`: lê do recipiente — name / phoneNumber / email
+ * - `csvColumn`: lê de uma coluna extra do CSV importado (ex: "produto", "desconto").
+ *   `column` é o nome da coluna normalizado (lowercase). Resolvido via
+ *   `recipient.customColumns[column]` no backend; vai vazio se ausente.
+ */
+export type BroadcastTemplateParam =
+  | { kind: 'literal'; value: string }
+  | { kind: 'field'; field: 'name' | 'phoneNumber' | 'email' }
+  | { kind: 'csvColumn'; column: string };
 
 export interface BroadcastStats {
   total: number;
@@ -2361,24 +2425,65 @@ export interface BroadcastStats {
   replied: number;
 }
 
+/** Canais suportados em broadcasts — inclui email (não disponível em conversations). */
+export type BroadcastChannel = ConversationChannel | 'email';
+
+/**
+ * Base legal do envio (LGPD art. 7º). Persistido em cada `Broadcast` para
+ * que, em caso de auditoria/multa, o tenant possa justificar por que
+ * enviou para aquele recipiente.
+ *
+ * - `explicit`: opt-in explícito (formulário com checkbox, double opt-in).
+ *   Mais forte, recomendado para listas frias.
+ * - `legitimate-interest`: relação prévia (cliente que comprou recentemente,
+ *   lead que pediu cotação). Aceitável para comunicações relacionadas ao
+ *   produto/serviço já contratado.
+ * - `transactional`: notificação operacional (confirmação de pedido,
+ *   alteração de status, fatura). Não é "marketing" — sem opt-out exigido.
+ */
+export type ConsentBasis = 'explicit' | 'legitimate-interest' | 'transactional';
+
+export const CONSENT_BASIS_LABELS: Record<ConsentBasis, string> = {
+  'explicit': 'Opt-in explícito (formulário/checkbox)',
+  'legitimate-interest': 'Interesse legítimo (cliente/lead com relação prévia)',
+  'transactional': 'Comunicação transacional (não-marketing)',
+};
+
 export interface Broadcast {
   id: string;
   businessId: string;
   name: string;
-  channel: ConversationChannel;
+  channel: BroadcastChannel;
   audienceType: BroadcastAudienceType;
   audienceSegmentId?: string;
   audienceTags?: string[];
   audienceContactIds?: string[];
+  /** Lista direta de recipientes (paste/CSV) — usado quando audienceType === 'list'. */
+  recipients?: BroadcastRecipient[];
+  /** ID do broadcast original quando este é um retry — auditoria. */
+  retryOf?: string;
+  /** Quando true e channel === 'whatsapp', envia via Baileys (WhatsApp Web) em vez de Cloud API. */
+  viaBaileys?: boolean;
   messageType: 'template' | 'text';
   templateName?: string;
   templateLanguage?: string;
-  templateParams?: unknown[];
+  /** Mapeamento de variáveis ({{1}}, {{2}}, ...) — resolvido per-recipiente no envio. */
+  templateParams?: BroadcastTemplateParam[];
   messageContent?: string;
+  /** Assunto para canal email (broadcasts via notification-server). */
+  emailSubject?: string;
   scheduledAt?: string;
   sendRate?: number;
   status: BroadcastStatus;
   stats: BroadcastStats;
+  /** Base legal LGPD do envio. Obrigatório a partir de 5.12. */
+  consentBasis?: ConsentBasis;
+  /** Descrição livre da fonte do consentimento (ex: "Form X 2026-01", "Importado de Mailchimp"). */
+  consentSource?: string;
+  /** Timestamp ISO em que o operador confirmou ter base legal antes de criar a campanha. */
+  consentAcknowledgedAt?: string;
+  /** UID do operador que confirmou — auditoria de quem aprovou cada envio. */
+  consentAcknowledgedBy?: string;
   createdBy: string;
   createdByName: string;
   startedAt?: string;
@@ -2393,16 +2498,76 @@ export interface BroadcastMessage {
   id: string;
   broadcastId: string;
   businessId: string;
-  contactId: string;
-  contactName: string;
+  /** Opcional — só preenchido quando recipiente foi vinculado a um cliente CRM. */
+  contactId?: string;
+  /** Opcional — pode vir do CRM, da lista importada ou ficar vazio. */
+  contactName?: string;
+  /** Identificador externo do recipiente (telefone E.164 para WA, endereço para email). */
   recipientId: string;
+  /** Email do recipiente — preenchido em broadcasts de canal email. */
+  email?: string;
   status: BroadcastMessageStatus;
   externalMessageId?: string;
   errorMessage?: string;
   sentAt?: string;
   deliveredAt?: string;
   readAt?: string;
+  /** Snapshot da base legal LGPD no momento do envio (rastreabilidade per-msg). */
+  consentBasis?: ConsentBasis;
+  /** Snapshot das colunas extras do CSV (5.8) para reconstrução em resume/retry. */
+  customColumns?: Record<string, string>;
   createdAt: string;
+}
+
+/**
+ * Lista de recipientes salva e reusável em campanhas futuras.
+ * Útil quando o usuário quer reaproveitar a mesma lista (ex: clientes inativos,
+ * leads de webinar) sem precisar colar/importar a cada nova campanha.
+ *
+ * Tipo (`phone` | `email` | `mixed`) é derivado do conteúdo na criação para
+ * permitir filtrar listas compatíveis com o canal escolhido na UI.
+ */
+export type BroadcastListType = 'phone' | 'email' | 'mixed';
+
+export interface BroadcastList {
+  id: string;
+  businessId: string;
+  name: string;
+  description?: string;
+  type: BroadcastListType;
+  recipients: BroadcastRecipient[];
+  /** Cache do tamanho — atualizado junto com `recipients`. */
+  recipientCount: number;
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Registro de opt-out de marketing por contato. Compartilhado entre canais —
+ * uma entrada `email|john@x.com` bloqueia também eventuais campanhas para o
+ * mesmo email no futuro, mesmo que o contato CRM seja apagado/recriado.
+ *
+ * Document ID = `${businessId}_${channel}_${identifier_normalizado}` para
+ * lookup O(1) sem query (e idempotência — múltiplos opt-outs do mesmo email
+ * sobrescrevem o mesmo doc).
+ */
+export type OptOutChannel = 'email' | 'whatsapp' | 'all';
+export type OptOutSource = 'unsubscribe-link' | 'whatsapp-keyword' | 'manual' | 'bounce' | 'complaint';
+
+export interface MarketingOptOut {
+  id: string;
+  businessId: string;
+  channel: OptOutChannel;
+  /** Email lowercase OU phoneNumber E.164 (sem +). */
+  identifier: string;
+  source: OptOutSource;
+  optedOutAt: string;
+  /** ID do broadcast/campanha que originou o opt-out (rastreabilidade). */
+  broadcastId?: string;
+  /** Texto da resposta do usuário quando source='whatsapp-keyword'. */
+  reasonText?: string;
 }
 
 export const LIFECYCLE_STAGE_LABELS: Record<LifecycleStage, string> = {

@@ -88,6 +88,7 @@ import {
 import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector, Service, WorkingHours, DaySchedule, UseCase } from '@/lib/types';
 import { WHATSAPP_TEMPLATE_CATALOG, renderTemplatePreview } from '@/lib/constants/whatsapp-template-catalog';
 import { getAuth } from 'firebase/auth';
+import NotificationServerSection from './NotificationServerConfig';
 import { CachedImage } from '@/app/components/ui/CachedImage';
 import SidebarEditorTab from './SidebarEditorTab';
 import {
@@ -5205,6 +5206,26 @@ function EnterpriseTab() {
               </div>
             </div>
 
+            {/* ── Notification Server (broadcasts de email) ── */}
+            {business?.id && (
+              <div>
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-2">
+                    <Mail className="w-4.5 h-4.5 text-gray-500 dark:text-gray-400" />
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Servidor de Notificações</h3>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">Configure o servidor externo que dispara campanhas de email</p>
+                    </div>
+                  </div>
+                </div>
+                <NotificationServerSection
+                  businessId={business.id}
+                  current={(business as Business & { settings?: { notificationServer?: import('@/lib/types').NotificationServerConfig } }).settings?.notificationServer}
+                  onChange={refreshUser}
+                />
+              </div>
+            )}
+
             {/* ── API Keys Section ── */}
             <div>
               <div className="flex items-center justify-between mb-4">
@@ -6063,14 +6084,16 @@ function CanaisTab() {
     let attention = false;
     let phoneDisplay = '';
     if (channels) {
-      // Lê o novo campo whatsappCloud OU whatsappBaileys; fallback para legado whatsapp
+      // Lê o novo campo whatsappCloud OU whatsappBaileys; fallback para legado whatsapp.
+      // Cada canal cai no fallback legado SÓ se o seu próprio campo novo estiver ausente —
+      // permite Cloud e Baileys coexistirem durante migração de dados legados.
       const cloud = channels.whatsappCloud;
       const baileys = channels.whatsappBaileys;
       const legacy = channels.whatsapp;
-      const hasNewFields = !!(cloud || baileys);
-      // Considera conectado se qualquer um dos novos campos está ativo, OU se só temos legado
-      const cloudActive = cloud?.isConnected || (!hasNewFields && legacy?.isConnected && legacy.connectedVia !== 'baileys');
-      const baileysActive = baileys?.isConnected || (!hasNewFields && legacy?.isConnected && legacy.connectedVia === 'baileys');
+      const cloudActive = cloud?.isConnected
+        || (!cloud && legacy?.isConnected && legacy.connectedVia !== 'baileys');
+      const baileysActive = baileys?.isConnected
+        || (!baileys && legacy?.isConnected && legacy.connectedVia === 'baileys');
       if (cloudActive || baileysActive) {
         setWaConnected(true);
         if (cloudActive) {
@@ -6340,13 +6363,12 @@ function CanaisTab() {
         const cloudCfg = channels?.whatsappCloud;
         const baileysCfg = channels?.whatsappBaileys;
         const legacy = channels?.whatsapp;
-        const hasNewFields = !!(cloudCfg || baileysCfg);
-        // isCloudApi: novo campo cloudCfg ativo, OU legado ativo sem connectedVia (e sem novo campo Baileys)
+        // Fallback legado é per-channel: Cloud fica ativo via legado se cloudCfg ausente,
+        // Baileys via legado se baileysCfg ausente. Permite os dois coexistirem.
         const isCloudApi = !!(cloudCfg?.isConnected
-          || (!hasNewFields && legacy?.isConnected && !legacy.connectedVia));
-        // isBaileys: novo campo baileysCfg ativo, OU legado com connectedVia=baileys
+          || (!cloudCfg && legacy?.isConnected && legacy.connectedVia !== 'baileys'));
         const isBaileys = !!(baileysCfg?.isConnected
-          || (!hasNewFields && legacy?.isConnected && legacy.connectedVia === 'baileys'));
+          || (!baileysCfg && legacy?.isConnected && legacy.connectedVia === 'baileys'));
         const wabaId = cloudCfg?.wabaId || cloudCfg?.businessAccountId
           || (legacy as { wabaId?: string; businessAccountId?: string } | undefined)?.wabaId
           || (legacy as { wabaId?: string; businessAccountId?: string } | undefined)?.businessAccountId;

@@ -21,6 +21,7 @@ import QRCode from 'qrcode';
 import pino from 'pino';
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from '@/lib/config/firebaseAdmin';
+import { getAlternativeBrazilianPhone } from '@/lib/utils/phoneAlternatives';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -156,6 +157,65 @@ async function updateFirestoreConnection(businessId: string, phoneNumber: string
   }
 }
 
+// ─── Public: send simple text message via Baileys ────────────────────────────
+
+/**
+ * Envia uma mensagem de texto simples via Baileys.
+ *
+ * Diferente de `sendWhatsAppBaileys` em conversations/send, esta versão é
+ * voltada a broadcasts: recebe o número diretamente (já em E.164) e não
+ * precisa fazer lookup em conversations.
+ *
+ * Lança erro se a sessão não está conectada ou se o número não tem WhatsApp.
+ */
+export async function sendBaileysBroadcastMessage(
+  businessId: string,
+  phoneNumber: string,
+  text: string,
+): Promise<{ externalMessageId: string }> {
+  const session = sessions.get(businessId);
+  if (!session?.sock) {
+    throw new Error('WhatsApp Web não está conectado. Reconecte escaneando o QR Code em Configurações.');
+  }
+  if (!session.isConnected) {
+    throw new Error('WhatsApp Web está reconectando. Tente novamente em alguns segundos.');
+  }
+
+  // phoneNumber já vem em E.164 (apenas dígitos) do RecipientListInput
+  const digits = phoneNumber.replace(/\D/g, '');
+  if (!/^[1-9]\d{7,14}$/.test(digits)) {
+    throw new Error(`Número inválido: ${phoneNumber}`);
+  }
+
+  // onWhatsApp resolve o JID canônico (lida com 9º dígito BR) e indica se número
+  // tem WhatsApp. Em caso de erro de rede ou !exists, deixamos o sendMessage falhar
+  // naturalmente — evita anti-pattern de string-match no error message.
+  const candidateJid = `${digits}@s.whatsapp.net`;
+  let targetJid = candidateJid;
+  let knownNotOnWhatsApp = false;
+  try {
+    const [result] = await session.sock.onWhatsApp(candidateJid);
+    if (result?.exists && result.jid) {
+      targetJid = result.jid;
+    } else if (result && !result.exists) {
+      knownNotOnWhatsApp = true;
+    }
+  } catch (err) {
+    // Erro de rede no check — não bloqueia, o sendMessage falhará se necessário
+    console.warn('[Baileys Broadcast] onWhatsApp check falhou, tentando envio direto:', err);
+  }
+
+  if (knownNotOnWhatsApp) {
+    throw new Error(`Número ${digits} não está cadastrado no WhatsApp`);
+  }
+
+  const sent = await session.sock.sendMessage(targetJid, { text });
+  // Random suffix evita colisão se sent.key.id ausente em mensagens consecutivas
+  const externalMessageId = sent?.key?.id
+    || `baileys_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  return { externalMessageId };
+}
+
 // ─── Firestore: save inbound message ─────────────────────────────────────────
 
 async function handleInboundMessage(
@@ -252,7 +312,7 @@ async function handleInboundMessage(
   }
 
   try {
-    const altPhone = getAlternativePhone(senderPhone);
+    const altPhone = getAlternativeBrazilianPhone(senderPhone);
     let convSnap = await adminDb.collection('conversations')
       .where('businessId', '==', businessId)
       .where('channel', '==', 'whatsapp')
@@ -439,20 +499,6 @@ async function handleOutboundStatusUpdate(
 export function getConnectedSession(businessId: string): BaileysSession | null {
   const session = sessions.get(businessId);
   return session?.isConnected ? session : null;
-}
-
-function getAlternativePhone(phone: string): string | null {
-  if (!phone.startsWith('55')) return null;
-  const withoutCountry = phone.substring(2);
-  if (withoutCountry.length < 10) return null;
-  const ddd = withoutCountry.substring(0, 2);
-  const number = withoutCountry.substring(2);
-  if (number.length === 8) {
-    return `55${ddd}9${number}`;
-  } else if (number.length === 9 && number.startsWith('9')) {
-    return `55${ddd}${number.substring(1)}`;
-  }
-  return null;
 }
 
 export function destroySession(businessId: string) {

@@ -78,6 +78,49 @@ services:
     profiles:
       - tunnel
 
+  # Cron interno — dispara endpoints scheduled do saas-erp.
+  # Self-contained (não depende de cron-job.org externo). Roda sempre.
+  #   - process-scheduled (broadcasts):  a cada 1 minuto
+  #   - agent/scheduled/run (agente IA): a cada 1 hora
+  # Ambos autenticam com Authorization: Bearer ${CRON_SECRET}
+  # Usa o nome do serviço Docker (`app:3000`) na rede interna — não vai
+  # pelo Cloudflare/internet (mais rápido e não consome quota tunnel).
+  cron:
+    image: alpine:3.19
+    container_name: servicepro-cron
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      - CRON_SECRET=${CRON_SECRET}
+    command: |
+      sh -c '
+        apk add --no-cache curl > /dev/null 2>&1
+        echo "[cron] iniciado — process-scheduled a cada 1min, agent a cada 1h"
+        TICK=0
+        while true; do
+          # broadcasts: a cada 1 minuto
+          curl -fsS -m 30 -o /dev/null \
+            -H "Authorization: Bearer $$CRON_SECRET" \
+            http://app:3000/api/broadcasts/process-scheduled \
+            || echo "[cron] process-scheduled falhou em $$(date -Iseconds)"
+
+          # agente IA: a cada 60 ticks (1h)
+          if [ $$((TICK % 60)) -eq 0 ]; then
+            curl -fsS -m 60 -o /dev/null \
+              -H "Authorization: Bearer $$CRON_SECRET" \
+              http://app:3000/api/agent/scheduled/run \
+              || echo "[cron] agent/scheduled/run falhou em $$(date -Iseconds)"
+          fi
+
+          TICK=$$((TICK + 1))
+          sleep 60
+        done
+      '
+    networks:
+      - app-net
+
 networks:
   app-net:
     driver: bridge
