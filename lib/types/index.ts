@@ -2549,6 +2549,12 @@ export interface Broadcast {
   createdByName: string;
   startedAt?: string;
   completedAt?: string;
+  /** Mensagem de erro última (ex: campanha legada sem consentBasis, falha geral). */
+  errorMessage?: string;
+  /** Timestamp ISO do último reset manual (auditoria). */
+  lastResetAt?: string;
+  /** UID do admin que resetou (auditoria). */
+  lastResetBy?: string;
   createdAt: string;
   updatedAt: string;
 }

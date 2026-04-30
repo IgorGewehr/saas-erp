@@ -20,7 +20,7 @@ import { getAuth } from 'firebase/auth';
 import { db } from '@/lib/config/firebase';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
-import { X, RefreshCw, Loader2, AlertTriangle, Check, CheckCheck, Clock, Send, Shield } from 'lucide-react';
+import { X, RefreshCw, Loader2, AlertTriangle, Check, CheckCheck, Clock, Send, Shield, RotateCcw, Trash2 } from 'lucide-react';
 import type { Broadcast, BroadcastMessage, BroadcastMessageStatus } from '@/lib/types';
 import { CONSENT_BASIS_LABELS } from '@/lib/types';
 import BroadcastMetricsPanel from './BroadcastMetricsPanel';
@@ -37,9 +37,11 @@ interface Props {
   broadcast: Broadcast;
   onClose: () => void;
   onRetryCreated?: (newBroadcastId: string) => void;
+  /** Chamado depois de apagar — para o pai remover da lista/fechar painel. */
+  onDeleted?: (broadcastId: string) => void;
 }
 
-export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onClose, onRetryCreated }: Props) {
+export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onClose, onRetryCreated, onDeleted }: Props) {
   // Real-time do próprio broadcast doc — prop inicial é só seed.
   // Sem isso, status/recipients ficam stale após dispatch/resume e UI mostra
   // botões errados (ex: "Disparar agora" após envio bem-sucedido).
@@ -103,10 +105,19 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
    */
   const [dispatchAmount, setDispatchAmount] = useState<number | null>(null);
   const [resuming, setResuming] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [cancelingSchedule, setCancelingSchedule] = useState(false);
   const canDispatch = broadcast.status === 'draft' && (broadcast.recipients?.length ?? 0) > 0;
   const canResume = broadcast.status === 'paused' && pendingCount > 0;
   const isScheduled = broadcast.status === 'scheduled';
+  const isStuckSending = broadcast.status === 'sending';
+  // Heurística pra "campanha presa": status='sending' + 0 messages criadas + startedAt > 2min
+  // ou simplesmente status='sending' (operador pode forçar reset mesmo enquanto processa).
+  const stuckMinutes = broadcast.startedAt
+    ? Math.floor((Date.now() - new Date(broadcast.startedAt).getTime()) / 60_000)
+    : 0;
+  const looksStuck = isStuckSending && (messages.length === 0 || stuckMinutes >= 2);
 
   const handleCancelSchedule = async () => {
     if (!isScheduled) return;
@@ -233,6 +244,65 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
     }
   };
 
+  const handleReset = async () => {
+    if (!isStuckSending && !canResume) return;
+    const msgWarning = messages.length > 0
+      ? `Isto APAGARÁ ${messages.length} mensagem(ns) já registrada(s) (incluindo enviadas/entregues/lidas).\n\n`
+      : '';
+    if (!confirm(
+      `Resetar a campanha "${broadcast.name}"?\n\n${msgWarning}A campanha voltará para Rascunho e ficará pronta para disparar novamente.`
+    )) return;
+    setResetting(true);
+    try {
+      const token = await getAuth().currentUser?.getIdToken();
+      const res = await fetch(`/api/broadcasts/${broadcast.id}/reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ businessId: broadcast.businessId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      toast.success(data.message || 'Campanha resetada.');
+    } catch (err) {
+      console.error('[BroadcastDetail] reset failed:', err);
+      toast.error(err instanceof Error ? err.message : 'Erro ao resetar campanha');
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (broadcast.status === 'sending') {
+      toast.warn('Use "Resetar" antes de apagar uma campanha em envio.');
+      return;
+    }
+    const msgInfo = messages.length > 0
+      ? `Isto também apagará ${messages.length} mensagem(ns) registrada(s).\n\n`
+      : '';
+    if (!confirm(
+      `Apagar PERMANENTEMENTE a campanha "${broadcast.name}"?\n\n${msgInfo}Esta ação não pode ser desfeita.`
+    )) return;
+    setDeleting(true);
+    try {
+      const token = await getAuth().currentUser?.getIdToken();
+      const url = `/api/broadcasts/${broadcast.id}?businessId=${encodeURIComponent(broadcast.businessId)}`;
+      const res = await fetch(url, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      toast.success(data.message || 'Campanha apagada.');
+      onDeleted?.(broadcast.id);
+      onClose();
+    } catch (err) {
+      console.error('[BroadcastDetail] delete failed:', err);
+      toast.error(err instanceof Error ? err.message : 'Erro ao apagar campanha');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const handleRetryFailed = async () => {
     if (failedCount === 0) return;
     if (!confirm(`Criar nova campanha de retry com ${failedCount} contato(s) que falharam?`)) return;
@@ -262,17 +332,28 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
       <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }}
         className="w-full max-w-3xl max-h-[90vh] bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden flex flex-col">
-        {/* Header */}
-        <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+        {/* Header — usa recipients.length como fonte primária (broadcastMessages
+            podem ter sido apagadas em reset, mas recipients persiste). */}
+        <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between gap-3">
           <div className="min-w-0">
             <h3 className="font-bold text-base text-gray-900 dark:text-gray-100 truncate">{broadcast.name}</h3>
             <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
-              <span className="capitalize">{broadcast.channel}</span> · {messages.length} recipientes · status: <span className="font-semibold">{broadcast.status}</span>
+              <span className="capitalize">{broadcast.channel}</span> · {(broadcast.recipients?.length ?? messages.length)} recipientes · status: <span className="font-semibold">{broadcast.status}</span>
             </p>
           </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400">
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button
+              onClick={handleDelete}
+              disabled={deleting || broadcast.status === 'sending'}
+              title={broadcast.status === 'sending' ? 'Resete antes de apagar' : 'Apagar campanha'}
+              className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+            </button>
+            <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* 5.12 — Auditoria LGPD */}
@@ -421,6 +502,47 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
             </div>
           );
         })()}
+
+        {/* Sending/stuck toolbar — campanha em processamento. Oferece reset
+            quando aparenta estar travada (sem msgs criadas ou >2min sem progresso). */}
+        {isStuckSending && (
+          <div className={cn(
+            'px-5 py-2.5 border-b flex items-center justify-between gap-3 flex-wrap',
+            looksStuck
+              ? 'bg-orange-50 dark:bg-orange-500/5 border-orange-100 dark:border-orange-500/10'
+              : 'bg-blue-50 dark:bg-blue-500/5 border-blue-100 dark:border-blue-500/10',
+          )}>
+            <span className={cn(
+              'text-xs',
+              looksStuck ? 'text-orange-700 dark:text-orange-400' : 'text-blue-700 dark:text-blue-400',
+            )}>
+              {looksStuck ? (
+                <>
+                  <AlertTriangle className="w-3 h-3 inline mr-1 -mt-0.5" />
+                  Campanha parece travada — {messages.length === 0
+                    ? 'nenhuma mensagem foi registrada'
+                    : `sem progresso há ${stuckMinutes}min`}
+                </>
+              ) : (
+                <>
+                  <Loader2 className="w-3 h-3 inline mr-1 -mt-0.5 animate-spin" />
+                  Em processamento — {counts.sent ?? 0} enviadas / {pendingCount} pendentes
+                </>
+              )}
+            </span>
+            {looksStuck && (
+              <button
+                type="button"
+                onClick={handleReset}
+                disabled={resetting}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-orange-600 hover:bg-orange-700 text-white disabled:opacity-50 transition-colors"
+              >
+                {resetting ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
+                Resetar campanha
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Resume toolbar — só quando paused com pendentes */}
         {canResume && (
