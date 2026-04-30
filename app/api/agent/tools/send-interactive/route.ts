@@ -104,13 +104,15 @@ export async function POST(req: NextRequest) {
           });
         } catch (listErr) {
           console.warn('[send-interactive] listMessage blocked, falling back to plain text:', (listErr as Error).message);
-          // Build a plain-text version: header + numbered rows per section
+          // Plain-text fallback: numbered times only — no redundant service/price per line.
+          // The user types the number or the time string; agent picks it up from context.
           const lines: string[] = [p.body, ''];
+          let rowIndex = 1;
           for (const section of p.sections) {
             lines.push(`*${section.title}*`);
             for (const row of section.rows) {
-              const desc = row.description ? ` — ${row.description}` : '';
-              lines.push(`• ${row.title}${desc}`);
+              lines.push(`${rowIndex}. ${row.title}`);
+              rowIndex++;
             }
           }
           if (p.footer) lines.push('', p.footer);

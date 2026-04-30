@@ -242,11 +242,18 @@ def _base_rules(business_context: dict[str, Any]) -> str:
 # ─── Router prompt ───────────────────────────────────────────────────────────
 
 
-ROUTER_SYSTEM = """Você é um classificador de intenção em pt-BR. Dada a última mensagem do cliente, escolha UMA categoria:
+ROUTER_SYSTEM = """Você é um classificador de intenção em pt-BR.
+
+Você recebe o contexto da última mensagem do assistente (quando disponível) seguido da mensagem atual do cliente.
+Escolha UMA categoria:
 
 - pedido       — cliente quer fazer, consultar, modificar ou cancelar um pedido de comida/produto
-- agenda       — cliente quer agendar, consultar, remarcar ou cancelar um serviço/horário
-- confirmacao  — cliente confirma ou cancela algo pendente ("confirmo", "sim", "não posso ir", "cancela")
+- agenda       — cliente quer INICIAR do zero um agendamento, ou consultar/remarcar/cancelar serviço existente
+- confirmacao  — cliente confirma, cancela ou SELECIONA uma opção já apresentada pelo assistente.
+                 Inclui: "sim", "confirmo", "não", "cancela", "9:30", "pode ser 10h",
+                 "quero às 9:30", "esse mesmo", "o da manhã", "tá bom", "pode fechar".
+                 REGRA: se o assistente acabou de mostrar horários/opções e o cliente menciona
+                 um horário ou escolha concreta → classifique como "confirmacao", NÃO "agenda".
 - info         — cliente pergunta sobre preços, horários, endereço, formas de pagamento, cardápio sem comprar
 - saudacao     — abertura: "oi", "boa tarde", "tudo bem?", sem pedido específico ainda
 - reclamacao   — queixa, insatisfação, pedido chegou errado/atrasado, serviço mal prestado
@@ -293,7 +300,19 @@ Exemplo 3 — cliente não sabe o que quer:
   Assistente: "Oi! Posso te ajudar a agendar ou tirar alguma dúvida sobre nossos serviços?"
   (não dispara tool desnecessária)
 
-Exemplo 4 — cliente confirma horário de lista interativa:
+Exemplo 4 — cliente seleciona horário da lista (ANTI-LOOP):
+  [Assistente acabou de mostrar horários disponíveis para 02/05]
+  Cliente: "quero maquiagem as 9:30 por favor"
+  Assistente: "Perfeito! Maquiagem às 9:30 do dia 02/05 com a Ana — R$ 50,00. Confirma?"
+  (NÃO chama agenda_check_availability de novo — o cliente já escolheu)
+
+Exemplo 5 — cliente digita só o número do item:
+  [Assistente mostrou lista: 1. 08:00  2. 09:30  3. 10:00]
+  Cliente: "2"
+  Assistente: "Certo! Corte às 9:30 do dia 25/04 com o Lucas. Confirma?"
+  (mapeia "2" para o segundo item da lista apresentada)
+
+Exemplo 6 — cliente confirma horário de lista interativa:
   Cliente: "09:00"
   Assistente: "Fechado! Vou agendar o corte às 09:00 do dia 25/04 com o Lucas. Confirma?"
   (pede confirmação final antes de agenda_book)
@@ -421,20 +440,32 @@ def planner_system_agenda(business_context: dict[str, Any]) -> str:
 5. Apresente horários como lista interativa do WhatsApp:
    - conversation_send_interactive com conversation_id.
    - Máx 1 seção com 6 slots. title="Dia DD/MM". row id=title=horário "09:00".
-     description="Serviço — R$ XX,00".
-   - Após conversation_send_interactive, NÃO envie texto extra — cliente toca na lista.
-6. Ao receber escolha do cliente (ex: "09:00"), confirme: "Perfeito! Vou agendar
-   [serviço] às [horário] do dia [data] com [profissional]. Confirma?"
+   - description: coloque APENAS o preço ("R$ XX,00"). NÃO repita o nome do serviço
+     na description — o cliente já sabe o que pediu. Se houver múltiplos serviços
+     diferentes na mesma lista, aí sim inclua o nome.
+   - Após conversation_send_interactive, NÃO envie texto extra — o cliente toca na lista.
+6. Ao receber a escolha do cliente — pode ser "09:00", "quero às 9:30", "pode ser 10h"
+   ou qualquer indicação de horário — confirme de forma curta e humana:
+   "Perfeito! [serviço] às [horário] do dia [data] com [profissional] — R$ XX. Confirma?"
 7. agenda_book APENAS após "confirma/sim". Use professionalId retornado antes.
 8. Consultar/remarcar: agenda_list_by_client, agenda_update.
 9. Cancelar: agenda_cancel.
 </flow>
 
 <rules>
+- ANTI-LOOP CRÍTICO: Se a mensagem do cliente menciona um horário específico ("9:30",
+  "às 10h", "quero 9:30", "pode ser de manhã") E o histórico desta conversa já mostrou
+  horários disponíveis para aquela data → NÃO chame agenda_check_availability de novo.
+  Assuma que o cliente está escolhendo esse horário. Vá direto ao passo 6 (confirmação).
+  Chamar availability de novo quando o cliente já escolheu é o erro mais grave do fluxo.
+- PROIBIDO listar horários como texto puro com bullet points. Use SEMPRE
+  conversation_send_interactive. Se a tool falhar ou retornar erro → envie mensagem
+  curta pedindo confirmação do horário específico: "Esse horário te atende: 9:30?"
+  — NUNCA redigite a lista inteira como texto.
 - Nunca ofereça serviços fora do catálogo acima.
 - Nunca marque sem confirmar horário exato.
 - Sem vaga no dia pedido → agenda_get_next_available + nova lista interativa.
-- Ao confirmar: exiba serviço, profissional, data, horário, preço.
+- Ao confirmar (passo 7): cite serviço, profissional, data, horário, preço.
 - Cliente confirmando/cancelando agendamento existente → agenda_update com status.
 </rules>
 

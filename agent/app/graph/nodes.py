@@ -100,10 +100,25 @@ async def router_node(state: AgentState) -> dict[str, Any]:
             user_message = m.content if isinstance(m.content, str) else str(m.content)
             break
 
+    # Include last assistant turn for slot-selection disambiguation:
+    # "quero às 9:30" looks like a new booking request without context,
+    # but is clearly a selection if the assistant just listed slots.
+    last_assistant = ""
+    for m in reversed(state.get("messages", [])):
+        if isinstance(m, AIMessage) and not getattr(m, "tool_calls", None):
+            last_assistant = (m.content if isinstance(m.content, str) else str(m.content))[:200]
+            break
+
+    context_input = (
+        f"[Assistente disse]: {last_assistant}\n[Cliente responde]: {user_message}"
+        if last_assistant
+        else user_message
+    )
+
     t0 = time.time()
     result = await _invoke_with_retry(llm, [
         SystemMessage(content=prompts.ROUTER_SYSTEM),
-        HumanMessage(content=user_message),
+        HumanMessage(content=context_input),
     ])
     latency = int((time.time() - t0) * 1000)
 
