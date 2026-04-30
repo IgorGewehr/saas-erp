@@ -1192,6 +1192,33 @@ function SegmentsTab({ contacts, businessId, userId, userName }: {
 // CAMPAIGNS TAB (kept inline — self-contained with onSnapshot)
 // ==========================================
 
+/** Mini-barra de taxa para o card de campanha. */
+function CampaignMiniBar({ label, rate, counts, color }: {
+  label: string;
+  rate: number;
+  counts: string;
+  color: 'blue' | 'purple';
+}) {
+  const cfg = color === 'blue'
+    ? { bar: 'bg-blue-500', text: 'text-blue-700 dark:text-blue-400' }
+    : { bar: 'bg-purple-500', text: 'text-purple-700 dark:text-purple-400' };
+  const pct = Math.max(0, Math.min(1, rate)) * 100;
+  return (
+    <div>
+      <div className="flex items-center justify-between text-[11px] mb-1">
+        <span className="text-gray-500 dark:text-gray-400">{label}</span>
+        <span className="tabular-nums">
+          <span className={cn('font-bold', cfg.text)}>{Math.round(pct)}%</span>
+          <span className="ml-1 text-gray-400">· {counts}</span>
+        </span>
+      </div>
+      <div className="h-1 rounded-full bg-gray-100 dark:bg-gray-800 overflow-hidden">
+        <div className={cn('h-full rounded-full transition-all duration-500', cfg.bar)} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+}
+
 function CampaignsTab({ businessId }: { businessId: string }) {
   const { t } = useTranslation();
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
@@ -1457,7 +1484,67 @@ function CampaignsTab({ businessId }: { businessId: string }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between"><div><h3 className="text-base font-bold text-gray-900 dark:text-gray-100 font-display">{t('crm.campaign.title', 'Campanhas')}</h3><p className="text-xs text-gray-500 dark:text-gray-400">{broadcasts.length} {t('crm.campaign.campaignsSuffix', 'campanha{{s}}', { s: broadcasts.length !== 1 ? 's' : '' })}</p></div><button onClick={() => setShowNew(true)} className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-red-600 to-red-500 shadow-lg shadow-red-500/25"><Plus size={16} />{t('crm.action.newCampaign', 'Nova Campanha')}</button></div>
       {broadcasts.length === 0 ? <div className="text-center py-16 bg-white dark:bg-gray-900/50 rounded-2xl border border-gray-200 dark:border-gray-700/50"><Send className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-3" /><p className="text-sm font-semibold text-gray-600 dark:text-gray-400">{t('crm.campaign.none', 'Nenhuma campanha')}</p></div>
-      : <div className="space-y-3">{broadcasts.map((b) => { const sc = BROADCAST_STATUS_LABELS[b.status]; return <motion.div key={b.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} onClick={() => setOpenBroadcast(b)} className="bg-white dark:bg-gray-900/50 rounded-2xl border border-gray-200 dark:border-gray-700/50 p-5 hover:shadow-md transition-shadow cursor-pointer"><div className="flex items-center gap-2"><h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{b.name}</h4><span className={cn('text-[10px] font-semibold px-2 py-0.5 rounded-full', sc.bg, sc.color)}>{t('crm.broadcastStatus.' + b.status, sc.label)}</span></div><div className="flex items-center gap-3 mt-1.5 text-xs text-gray-400"><span className="capitalize">{b.channel}</span><span>·</span><span>{formatDate(b.createdAt)}</span></div>{b.stats.total > 0 && <div className="mt-3 grid grid-cols-4 gap-3">{[{ l: t('crm.campaign.total', 'Total'), v: b.stats.total, c: '' }, { l: t('crm.campaign.sent', 'Enviadas'), v: b.stats.sent, c: 'text-emerald-600 dark:text-emerald-400' }, { l: t('crm.campaign.delivered', 'Entregues'), v: `${Math.round((b.stats.delivered / b.stats.total) * 100)}%`, c: 'text-blue-600 dark:text-blue-400' }, { l: t('crm.campaign.read', 'Lidas'), v: `${b.stats.delivered > 0 ? Math.round((b.stats.read / b.stats.delivered) * 100) : 0}%`, c: 'text-purple-600 dark:text-purple-400' }].map((s) => <div key={s.l}><p className="text-[10px] text-gray-400 uppercase tracking-wider">{s.l}</p><p className={cn('text-sm font-bold text-gray-900 dark:text-gray-100', s.c)}>{s.v}</p></div>)}</div>}</motion.div>; })}</div>}
+      : <div className="space-y-3">{broadcasts.map((b) => {
+          const sc = BROADCAST_STATUS_LABELS[b.status];
+          // Taxas derivadas: deliveryRate sobre sent (não total), readRate sobre delivered.
+          const deliveryRate = b.stats.sent > 0 ? b.stats.delivered / b.stats.sent : 0;
+          const readRate = b.stats.delivered > 0 ? b.stats.read / b.stats.delivered : 0;
+          // Taxa de falha sobre PROCESSADAS (sent + failed), não sobre total —
+          // evita diluição quando há pile-up de pending no cron.
+          const processed = b.stats.sent + b.stats.failed;
+          const failureRate = processed > 0 ? b.stats.failed / processed : 0;
+          return (
+            <motion.div
+              key={b.id}
+              initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+              onClick={() => setOpenBroadcast(b)}
+              className="bg-white dark:bg-gray-900/50 rounded-2xl border border-gray-200 dark:border-gray-700/50 p-5 hover:shadow-md transition-shadow cursor-pointer"
+            >
+              <div className="flex items-center gap-2">
+                <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{b.name}</h4>
+                <span className={cn('text-[10px] font-semibold px-2 py-0.5 rounded-full', sc.bg, sc.color)}>
+                  {t('crm.broadcastStatus.' + b.status, sc.label)}
+                </span>
+              </div>
+              <div className="flex items-center gap-3 mt-1.5 text-xs text-gray-400">
+                <span className="capitalize">{b.channel}</span>
+                <span>·</span>
+                <span>{formatDate(b.createdAt)}</span>
+                {b.stats.total > 0 && <><span>·</span><span>{b.stats.total} {b.stats.total !== 1 ? 'recipientes' : 'recipiente'}</span></>}
+              </div>
+              {b.stats.total > 0 && (
+                <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-2.5">
+                  {/* Linha 1: barras visuais com taxa */}
+                  <CampaignMiniBar
+                    label={t('crm.campaign.delivered', 'Entregues')}
+                    rate={deliveryRate}
+                    counts={`${b.stats.delivered}/${b.stats.sent || b.stats.total}`}
+                    color="blue"
+                  />
+                  <CampaignMiniBar
+                    label={t('crm.campaign.read', 'Lidas')}
+                    rate={readRate}
+                    counts={`${b.stats.read}/${b.stats.delivered || b.stats.total}`}
+                    color="purple"
+                  />
+                  {/* Linha 2: enviadas + falhas (falhas só se > 0) */}
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-gray-500 dark:text-gray-400">{t('crm.campaign.sent', 'Enviadas')}</span>
+                    <span className="font-semibold text-emerald-700 dark:text-emerald-400 tabular-nums">{b.stats.sent}</span>
+                  </div>
+                  {b.stats.failed > 0 ? (
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-gray-500 dark:text-gray-400">Falhas</span>
+                      <span className="font-semibold text-red-600 dark:text-red-400 tabular-nums">
+                        {b.stats.failed} <span className="text-[10px] text-red-500/70">({Math.round(failureRate * 100)}%)</span>
+                      </span>
+                    </div>
+                  ) : <div />}
+                </div>
+              )}
+            </motion.div>
+          );
+        })}</div>}
       <AnimatePresence>{openBroadcast && <BroadcastDetailDialog broadcast={openBroadcast} onClose={() => setOpenBroadcast(null)} onRetryCreated={() => setOpenBroadcast(null)} />}</AnimatePresence>
       <Dialog open={showNew} onClose={() => setShowNew(false)} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: '1rem' } }}>
         <DialogTitle sx={{ fontWeight: 700, fontFamily: '"Plus Jakarta Sans", sans-serif' }}>{t('crm.dialog.newCampaign', 'Nova Campanha')}</DialogTitle>

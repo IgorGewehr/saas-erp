@@ -23,6 +23,7 @@ import { cn } from '@/lib/utils';
 import { X, RefreshCw, Loader2, AlertTriangle, Check, CheckCheck, Clock, Send, Shield } from 'lucide-react';
 import type { Broadcast, BroadcastMessage, BroadcastMessageStatus } from '@/lib/types';
 import { CONSENT_BASIS_LABELS } from '@/lib/types';
+import BroadcastMetricsPanel from './BroadcastMetricsPanel';
 
 const STATUS_CFG: Record<BroadcastMessageStatus, { label: string; color: string; icon: React.ReactNode }> = {
   pending:   { label: 'Pendente',  color: 'text-gray-500 bg-gray-100 dark:bg-white/[0.06]',                      icon: <Clock className="w-3 h-3" /> },
@@ -378,6 +379,13 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
               {retrying ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
               Reenviar falhados
             </button>
+          </div>
+        )}
+
+        {/* 5.15 — Métricas agregadas (taxa entrega/leitura/falha + tempos médios) */}
+        {messages.length > 0 && (
+          <div className="px-5 py-3 border-b border-gray-100 dark:border-gray-800">
+            <BroadcastMetricsPanel messages={messages} />
           </div>
         )}
 
