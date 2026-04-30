@@ -1944,11 +1944,10 @@ function CampaignsTab({ businessId }: { businessId: string }) {
             </div>
           )}
 
-          {/* Velocidade de envio (throttle anti-spam) — só pra audienceType=list,
-              que é onde o operador tem controle direto da lista. Para outros
-              tipos (tags/all_contacts) o throttle vale mas usamos defaults. */}
-          {formAudienceType === 'list' && formRecipients.length > 0 && (
-            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3 space-y-3">
+          {/* Velocidade de envio (throttle anti-spam) — sempre visível.
+              Operador pode pré-configurar antes de colar a lista. Estimativa
+              de tempo aparece só quando há recipientes (count > 0). */}
+          <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3 space-y-3">
               <div className="flex items-center justify-between">
                 <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
                   Velocidade de envio
@@ -2044,17 +2043,19 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                 </div>
               )}
 
-              {/* Estimativa de tempo total */}
-              <ThrottleEstimate
-                recipientCount={
-                  typeof formRecipientLimit === 'number' && formRecipientLimit > 0
-                    ? Math.min(formRecipientLimit, formRecipients.length)
-                    : formRecipients.length
-                }
-                throttle={formThrottle}
-              />
+              {/* Estimativa só aparece com count > 0 (lista colada).
+                  Antes disso, operador vê só os presets/inputs. */}
+              {formRecipients.length > 0 && (
+                <ThrottleEstimate
+                  recipientCount={
+                    typeof formRecipientLimit === 'number' && formRecipientLimit > 0
+                      ? Math.min(formRecipientLimit, formRecipients.length)
+                      : formRecipients.length
+                  }
+                  throttle={formThrottle}
+                />
+              )}
             </div>
-          )}
 
           {/* Tipo de mensagem aparece só para canais Meta sem Baileys.
               Email = sempre texto livre. Baileys = sempre texto livre (sem template). */}
