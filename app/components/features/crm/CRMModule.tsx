@@ -30,9 +30,12 @@ import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDo
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   CRMContact, CRMDeal, CRMPipelineStage, CRMStageConfig, CRMPipelineConfig, CRMActivity, CRMActivityType,
-  LeadStatus, LeadSource, User, Broadcast, BroadcastStatus, ContactProfile, CRMAuditAction,
+  LeadStatus, LeadSource, User, Broadcast, BroadcastStatus, BroadcastRecipient, Client, ContactProfile, CRMAuditAction,
   Segment, SegmentFilter, SegmentFilterGroup, SegmentFilterOperator,
+  BroadcastList, ConsentBasis,
 } from '@/lib/types';
+import { CONSENT_BASIS_LABELS } from '@/lib/types';
+import { getAuth } from 'firebase/auth';
 import { ROLE_HIERARCHY } from '@/lib/types';
 
 // ── Extracted sub-components ────────────────────────────────────────────────
@@ -45,6 +48,10 @@ import {
   DEFAULT_CRM_PIPELINE, getVisibleStages, getStageLabel, getWonStageId,
   type CRMTab,
 } from './shared';
+import RecipientListInput from './RecipientListInput';
+import BroadcastDetailDialog from './BroadcastDetailDialog';
+import TemplateSelector, { type TemplateSelection, isTemplateSelectionValid } from './TemplateSelector';
+import EmailBodyEditor from './EmailBodyEditor';
 import { KanbanBoard } from './KanbanBoard';
 import { LeadTableView } from './LeadTableView';
 import { LeadDetailPanel } from './LeadDetailPanel';
@@ -1185,20 +1192,118 @@ function SegmentsTab({ contacts, businessId, userId, userName }: {
 // CAMPAIGNS TAB (kept inline — self-contained with onSnapshot)
 // ==========================================
 
+/** Mini-barra de taxa para o card de campanha. */
+function CampaignMiniBar({ label, rate, counts, color }: {
+  label: string;
+  rate: number;
+  counts: string;
+  color: 'blue' | 'purple';
+}) {
+  const cfg = color === 'blue'
+    ? { bar: 'bg-blue-500', text: 'text-blue-700 dark:text-blue-400' }
+    : { bar: 'bg-purple-500', text: 'text-purple-700 dark:text-purple-400' };
+  const pct = Math.max(0, Math.min(1, rate)) * 100;
+  return (
+    <div>
+      <div className="flex items-center justify-between text-[11px] mb-1">
+        <span className="text-gray-500 dark:text-gray-400">{label}</span>
+        <span className="tabular-nums">
+          <span className={cn('font-bold', cfg.text)}>{Math.round(pct)}%</span>
+          <span className="ml-1 text-gray-400">· {counts}</span>
+        </span>
+      </div>
+      <div className="h-1 rounded-full bg-gray-100 dark:bg-gray-800 overflow-hidden">
+        <div className={cn('h-full rounded-full transition-all duration-500', cfg.bar)} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+}
+
 function CampaignsTab({ businessId }: { businessId: string }) {
   const { t } = useTranslation();
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
   const [loading, setLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
+  const [openBroadcast, setOpenBroadcast] = useState<Broadcast | null>(null);
   const [formName, setFormName] = useState('');
-  const [formChannel, setFormChannel] = useState<'whatsapp' | 'facebook' | 'instagram'>('whatsapp');
-  const [formAudienceType, setFormAudienceType] = useState<'all_contacts' | 'tags' | 'manual'>('all_contacts');
+  const [formChannel, setFormChannel] = useState<'whatsapp' | 'facebook' | 'instagram' | 'email'>('whatsapp');
+  const [formViaBaileys, setFormViaBaileys] = useState(false);
+  const [formAudienceType, setFormAudienceType] = useState<'all_contacts' | 'tags' | 'manual' | 'list'>('list');
   const [formTags, setFormTags] = useState('');
+  const [formRecipients, setFormRecipients] = useState<BroadcastRecipient[]>([]);
+  /** 5.8: nomes de colunas extras detectadas no último CSV importado — vão pro TemplateSelector. */
+  const [formCsvColumns, setFormCsvColumns] = useState<string[]>([]);
   const [formMsgType, setFormMsgType] = useState<'template' | 'text'>('template');
-  const [formTemplate, setFormTemplate] = useState('');
+  const [formTemplate, setFormTemplate] = useState<TemplateSelection | null>(null);
   const [formContent, setFormContent] = useState('');
+  const [formEmailSubject, setFormEmailSubject] = useState('');
+  const [formScheduledAt, setFormScheduledAt] = useState(''); // datetime-local string ou ''
   const [saving, setSaving] = useState(false);
-  const { user } = useAuth();
+  // ── Listas reusáveis (BroadcastList) ────────────────────────────────────────
+  // savedLists: cache local; selectedListId: lista carregada agora;
+  // saveAsList + listSaveName: persistir o set atual após criar a campanha.
+  const [savedLists, setSavedLists] = useState<BroadcastList[]>([]);
+  const [selectedListId, setSelectedListId] = useState<string>('');
+  const [saveAsList, setSaveAsList] = useState(false);
+  const [listSaveName, setListSaveName] = useState('');
+  const [recipientResetKey, setRecipientResetKey] = useState(0);
+  // ── LGPD: base legal obrigatória (5.12) ─────────────────────────────────────
+  // consentBasis define a justificativa LGPD do envio. consentSource é texto
+  // livre (ex: "Form da landing X"). consentAck flag de auto-confirmação.
+  const [formConsentBasis, setFormConsentBasis] = useState<'' | 'explicit' | 'legitimate-interest' | 'transactional'>('');
+  const [formConsentSource, setFormConsentSource] = useState('');
+  const [formConsentAck, setFormConsentAck] = useState(false);
+  const { user, business } = useAuth();
+  // Detecta features disponíveis a partir de business.settings/channels
+  type BusinessExtended = NonNullable<typeof business> & {
+    settings?: { notificationServer?: { isConfigured?: boolean } };
+    channels?: {
+      whatsappBaileys?: { isConnected?: boolean };
+      whatsapp?: { isConnected?: boolean; connectedVia?: string };
+    };
+  };
+  const biz = business as BusinessExtended | undefined;
+  const notificationServerReady = !!biz?.settings?.notificationServer?.isConfigured;
+  // Baileys disponível: campo novo isolado OU legacy com connectedVia=baileys
+  const baileysReady = !!(
+    biz?.channels?.whatsappBaileys?.isConnected
+    || (biz?.channels?.whatsapp?.connectedVia === 'baileys' && biz?.channels?.whatsapp?.isConnected)
+  );
+
+  // Carrega listas reusáveis salvas (atualiza ao abrir o dialog de Nova Campanha)
+  const refreshSavedLists = useCallback(async () => {
+    if (!businessId) return;
+    try {
+      const token = await getAuth().currentUser?.getIdToken();
+      if (!token) return;
+      const res = await fetch(`/api/broadcast-lists?businessId=${encodeURIComponent(businessId)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setSavedLists(Array.isArray(data.lists) ? data.lists : []);
+    } catch (err) {
+      console.error('[CRM:Campaigns] Failed to load broadcast lists:', err);
+    }
+  }, [businessId]);
+
+  useEffect(() => {
+    if (showNew) refreshSavedLists();
+  }, [showNew, refreshSavedLists]);
+
+  // Carrega clientes para o auto-link do RecipientListInput (cache compartilhado com pipeline tab)
+  const { data: existingClients = [] } = useQuery<Client[]>({
+    queryKey: ['clients', businessId],
+    queryFn: async () => {
+      if (!businessId) return [];
+      const q = query(collection(db, 'clients'), where('businessId', '==', businessId));
+      const snap = await getDocs(q);
+      return snap.docs.map(d => ({ ...(d.data() as Client), id: d.id }));
+    },
+    enabled: !!businessId,
+    staleTime: 30 * 1000, // 30s — clientes recém-criados aparecem rápido pro auto-link
+    gcTime: 5 * 60 * 1000,
+  });
 
   useEffect(() => {
     if (!businessId) return;
@@ -1208,9 +1313,176 @@ function CampaignsTab({ businessId }: { businessId: string }) {
   }, [businessId]);
 
   const handleCreate = async () => {
-    if (!businessId || !user || !formName.trim()) return; setSaving(true);
-    try { const now = new Date().toISOString(); await addDoc(collection(db, 'broadcasts'), { businessId, name: formName.trim(), channel: formChannel, audienceType: formAudienceType, audienceTags: formAudienceType === 'tags' ? formTags.split(',').map(t => t.trim()).filter(Boolean) : [], messageType: formMsgType, templateName: formMsgType === 'template' ? formTemplate.trim() : undefined, messageContent: formMsgType === 'text' ? formContent.trim() : undefined, status: 'draft' as BroadcastStatus, stats: { total: 0, sent: 0, delivered: 0, read: 0, failed: 0, replied: 0 }, createdBy: user.uid, createdByName: user.name, createdAt: now, updatedAt: now }); toast.success(t('crm.toast.campaignCreated', 'Campanha criada')); setShowNew(false); setFormName(''); }
-    catch (err) { console.error('[CRM:Campaigns] Error creating broadcast:', err); toast.error(t('crm.toast.errorCreateCampaign', 'Erro ao criar campanha')); } finally { setSaving(false); }
+    if (!businessId || !user || !formName.trim()) return;
+    if (formAudienceType === 'list' && formRecipients.length === 0) {
+      toast.error('Adicione pelo menos um recipiente na lista.');
+      return;
+    }
+    // 5.12 — LGPD: base legal obrigatória + auto-confirmação do operador
+    if (!formConsentBasis) {
+      toast.error('Selecione a base legal LGPD antes de criar a campanha.');
+      return;
+    }
+    if (!formConsentAck) {
+      toast.error('Confirme que você possui base legal para enviar antes de prosseguir.');
+      return;
+    }
+    // Email: nunca usa template, sempre texto livre + assunto
+    if (formChannel === 'email') {
+      if (!formEmailSubject.trim()) { toast.error('Digite o assunto do email.'); return; }
+      // EmailBodyEditor produz HTML — validamos se há texto real, não só tags vazias.
+      const emailBodyText = formContent.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim();
+      if (!emailBodyText) { toast.error('Digite o corpo do email.'); return; }
+    } else if (formChannel === 'whatsapp' && formViaBaileys) {
+      // Baileys: sem template — só texto livre
+      if (!formContent.trim()) { toast.error('Digite o conteúdo da mensagem.'); return; }
+    } else {
+      if (formMsgType === 'template' && !isTemplateSelectionValid(formTemplate)) {
+        toast.error('Selecione um template e preencha todas as variáveis.');
+        return;
+      }
+      if (formMsgType === 'text' && !formContent.trim()) {
+        toast.error('Digite o conteúdo da mensagem.');
+        return;
+      }
+    }
+    // Firestore tem limite de 1 MiB por documento. Estimativa conservadora ~80% do limite.
+    if (formAudienceType === 'list') {
+      const recipientsSizeEstimate = JSON.stringify(formRecipients).length;
+      if (recipientsSizeEstimate > 800_000) {
+        toast.error(`Lista muito grande (${formRecipients.length} contatos, ~${Math.round(recipientsSizeEstimate / 1024)}KB). Limite por campanha: ~10.000 contatos. Divida em múltiplas.`);
+        return;
+      }
+    }
+    setSaving(true);
+    try {
+      const now = new Date().toISOString();
+      const recipientsTotal = formAudienceType === 'list' ? formRecipients.length : 0;
+      // Limpa undefined dentro de cada recipient (Firestore aceita undefined no top-level via SDK
+      // mas armazena como null em arrays — preferimos omitir o campo)
+      const cleanRecipients: BroadcastRecipient[] = formAudienceType === 'list'
+        ? formRecipients.map(r => {
+            const cleaned: BroadcastRecipient = {};
+            if (r.contactId) cleaned.contactId = r.contactId;
+            if (r.name) cleaned.name = r.name;
+            if (r.phoneNumber) cleaned.phoneNumber = r.phoneNumber;
+            if (r.email) cleaned.email = r.email;
+            // 5.8: preserva colunas CSV extras (necessárias se template usar csvColumn).
+            if (r.customColumns && Object.keys(r.customColumns).length > 0) {
+              cleaned.customColumns = r.customColumns;
+            }
+            return cleaned;
+          })
+        : [];
+      // Email e Baileys forçam messageType=text; outros canais respeitam a escolha
+      const isBaileysSend = formChannel === 'whatsapp' && formViaBaileys;
+      const effectiveMsgType = (formChannel === 'email' || isBaileysSend) ? 'text' : formMsgType;
+      // Agendamento: se formScheduledAt está no futuro, status='scheduled'
+      let scheduledAtIso: string | undefined;
+      if (formScheduledAt) {
+        const dt = new Date(formScheduledAt);
+        if (isNaN(dt.getTime())) {
+          toast.error('Data/hora de agendamento inválida.');
+          return;
+        }
+        if (dt.getTime() <= Date.now()) {
+          toast.error('Data/hora de agendamento deve estar no futuro.');
+          return;
+        }
+        scheduledAtIso = dt.toISOString();
+      }
+      const initialStatus: BroadcastStatus = scheduledAtIso ? 'scheduled' : 'draft';
+
+      const payload: Record<string, unknown> = {
+        businessId,
+        name: formName.trim(),
+        channel: formChannel,
+        audienceType: formAudienceType,
+        audienceTags: formAudienceType === 'tags' ? formTags.split(',').map(t => t.trim()).filter(Boolean) : [],
+        messageType: effectiveMsgType,
+        templateName: effectiveMsgType === 'template' && formTemplate ? formTemplate.name : undefined,
+        templateLanguage: effectiveMsgType === 'template' && formTemplate ? formTemplate.language : undefined,
+        templateParams: effectiveMsgType === 'template' && formTemplate ? formTemplate.params : undefined,
+        messageContent: effectiveMsgType === 'text' ? formContent.trim() : undefined,
+        emailSubject: formChannel === 'email' ? formEmailSubject.trim() : undefined,
+        viaBaileys: isBaileysSend,
+        scheduledAt: scheduledAtIso,
+        status: initialStatus,
+        stats: { total: recipientsTotal, sent: 0, delivered: 0, read: 0, failed: 0, replied: 0 },
+        // 5.12 LGPD — base legal + auditoria de quem aprovou
+        consentBasis: formConsentBasis,
+        consentSource: formConsentSource.trim() || undefined,
+        consentAcknowledgedAt: now,
+        consentAcknowledgedBy: user.uid,
+        createdBy: user.uid,
+        createdByName: user.name,
+        createdAt: now,
+        updatedAt: now,
+      };
+      if (formAudienceType === 'list') payload.recipients = cleanRecipients;
+      // Remove undefineds em primeiro nível
+      Object.keys(payload).forEach(k => payload[k] === undefined && delete payload[k]);
+      await addDoc(collection(db, 'broadcasts'), payload);
+
+      // Salva lista reusável (best-effort — falha aqui não invalida a campanha já criada).
+      // Só roda quando audienceType=list, há recipientes e usuário marcou o checkbox
+      // sem ter usado uma lista pré-existente (evita duplicar a mesma lista).
+      if (
+        formAudienceType === 'list' &&
+        saveAsList &&
+        !selectedListId &&
+        cleanRecipients.length > 0 &&
+        listSaveName.trim()
+      ) {
+        try {
+          const token = await getAuth().currentUser?.getIdToken();
+          if (token) {
+            const res = await fetch('/api/broadcast-lists', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+              body: JSON.stringify({
+                businessId,
+                name: listSaveName.trim(),
+                recipients: cleanRecipients,
+              }),
+            });
+            if (res.ok) {
+              toast.success('Lista salva para reuso');
+            } else {
+              const err = await res.json().catch(() => ({}));
+              toast.error(`Lista não foi salva: ${err.error || 'erro desconhecido'}`);
+            }
+          }
+        } catch (err) {
+          console.error('[CRM:Campaigns] Failed to save broadcast list:', err);
+          toast.error('Lista não foi salva (campanha foi criada normalmente).');
+        }
+      }
+
+      toast.success(t('crm.toast.campaignCreated', 'Campanha criada'));
+      setShowNew(false);
+      setFormName('');
+      setFormRecipients([]);
+      setFormCsvColumns([]);
+      setFormTemplate(null);
+      setFormContent('');
+      setFormEmailSubject('');
+      setFormViaBaileys(false);
+      setFormScheduledAt('');
+      setSelectedListId('');
+      setSaveAsList(false);
+      setListSaveName('');
+      setRecipientResetKey(k => k + 1);
+      // Reset LGPD states (operador deve re-confirmar a cada nova campanha)
+      setFormConsentBasis('');
+      setFormConsentSource('');
+      setFormConsentAck(false);
+    } catch (err) {
+      console.error('[CRM:Campaigns] Error creating broadcast:', err);
+      toast.error(t('crm.toast.errorCreateCampaign', 'Erro ao criar campanha'));
+    } finally {
+      setSaving(false);
+    }
   };
 
   if (loading) return <div className="space-y-4">{[0, 1, 2].map(i => <div key={i} className="h-24 rounded-2xl shimmer" />)}</div>;
@@ -1219,18 +1491,420 @@ function CampaignsTab({ businessId }: { businessId: string }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between"><div><h3 className="text-base font-bold text-gray-900 dark:text-gray-100 font-display">{t('crm.campaign.title', 'Campanhas')}</h3><p className="text-xs text-gray-500 dark:text-gray-400">{broadcasts.length} {t('crm.campaign.campaignsSuffix', 'campanha{{s}}', { s: broadcasts.length !== 1 ? 's' : '' })}</p></div><button onClick={() => setShowNew(true)} className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-red-600 to-red-500 shadow-lg shadow-red-500/25"><Plus size={16} />{t('crm.action.newCampaign', 'Nova Campanha')}</button></div>
       {broadcasts.length === 0 ? <div className="text-center py-16 bg-white dark:bg-gray-900/50 rounded-2xl border border-gray-200 dark:border-gray-700/50"><Send className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-3" /><p className="text-sm font-semibold text-gray-600 dark:text-gray-400">{t('crm.campaign.none', 'Nenhuma campanha')}</p></div>
-      : <div className="space-y-3">{broadcasts.map((b) => { const sc = BROADCAST_STATUS_LABELS[b.status]; return <motion.div key={b.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="bg-white dark:bg-gray-900/50 rounded-2xl border border-gray-200 dark:border-gray-700/50 p-5 hover:shadow-md transition-shadow"><div className="flex items-center gap-2"><h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{b.name}</h4><span className={cn('text-[10px] font-semibold px-2 py-0.5 rounded-full', sc.bg, sc.color)}>{t('crm.broadcastStatus.' + b.status, sc.label)}</span></div><div className="flex items-center gap-3 mt-1.5 text-xs text-gray-400"><span className="capitalize">{b.channel}</span><span>·</span><span>{formatDate(b.createdAt)}</span></div>{b.stats.total > 0 && <div className="mt-3 grid grid-cols-4 gap-3">{[{ l: t('crm.campaign.total', 'Total'), v: b.stats.total, c: '' }, { l: t('crm.campaign.sent', 'Enviadas'), v: b.stats.sent, c: 'text-emerald-600 dark:text-emerald-400' }, { l: t('crm.campaign.delivered', 'Entregues'), v: `${Math.round((b.stats.delivered / b.stats.total) * 100)}%`, c: 'text-blue-600 dark:text-blue-400' }, { l: t('crm.campaign.read', 'Lidas'), v: `${b.stats.delivered > 0 ? Math.round((b.stats.read / b.stats.delivered) * 100) : 0}%`, c: 'text-purple-600 dark:text-purple-400' }].map((s) => <div key={s.l}><p className="text-[10px] text-gray-400 uppercase tracking-wider">{s.l}</p><p className={cn('text-sm font-bold text-gray-900 dark:text-gray-100', s.c)}>{s.v}</p></div>)}</div>}</motion.div>; })}</div>}
+      : <div className="space-y-3">{broadcasts.map((b) => {
+          const sc = BROADCAST_STATUS_LABELS[b.status];
+          // Taxas derivadas: deliveryRate sobre sent (não total), readRate sobre delivered.
+          const deliveryRate = b.stats.sent > 0 ? b.stats.delivered / b.stats.sent : 0;
+          const readRate = b.stats.delivered > 0 ? b.stats.read / b.stats.delivered : 0;
+          // Taxa de falha sobre PROCESSADAS (sent + failed), não sobre total —
+          // evita diluição quando há pile-up de pending no cron.
+          const processed = b.stats.sent + b.stats.failed;
+          const failureRate = processed > 0 ? b.stats.failed / processed : 0;
+          return (
+            <motion.div
+              key={b.id}
+              initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+              onClick={() => setOpenBroadcast(b)}
+              className="bg-white dark:bg-gray-900/50 rounded-2xl border border-gray-200 dark:border-gray-700/50 p-5 hover:shadow-md transition-shadow cursor-pointer"
+            >
+              <div className="flex items-center gap-2">
+                <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{b.name}</h4>
+                <span className={cn('text-[10px] font-semibold px-2 py-0.5 rounded-full', sc.bg, sc.color)}>
+                  {t('crm.broadcastStatus.' + b.status, sc.label)}
+                </span>
+              </div>
+              <div className="flex items-center gap-3 mt-1.5 text-xs text-gray-400">
+                <span className="capitalize">{b.channel}</span>
+                <span>·</span>
+                <span>{formatDate(b.createdAt)}</span>
+                {b.stats.total > 0 && <><span>·</span><span>{b.stats.total} {b.stats.total !== 1 ? 'recipientes' : 'recipiente'}</span></>}
+              </div>
+              {b.stats.total > 0 && (
+                <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-2.5">
+                  {/* Linha 1: barras visuais com taxa */}
+                  <CampaignMiniBar
+                    label={t('crm.campaign.delivered', 'Entregues')}
+                    rate={deliveryRate}
+                    counts={`${b.stats.delivered}/${b.stats.sent || b.stats.total}`}
+                    color="blue"
+                  />
+                  <CampaignMiniBar
+                    label={t('crm.campaign.read', 'Lidas')}
+                    rate={readRate}
+                    counts={`${b.stats.read}/${b.stats.delivered || b.stats.total}`}
+                    color="purple"
+                  />
+                  {/* Linha 2: enviadas + falhas (falhas só se > 0) */}
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-gray-500 dark:text-gray-400">{t('crm.campaign.sent', 'Enviadas')}</span>
+                    <span className="font-semibold text-emerald-700 dark:text-emerald-400 tabular-nums">{b.stats.sent}</span>
+                  </div>
+                  {b.stats.failed > 0 ? (
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-gray-500 dark:text-gray-400">Falhas</span>
+                      <span className="font-semibold text-red-600 dark:text-red-400 tabular-nums">
+                        {b.stats.failed} <span className="text-[10px] text-red-500/70">({Math.round(failureRate * 100)}%)</span>
+                      </span>
+                    </div>
+                  ) : <div />}
+                </div>
+              )}
+            </motion.div>
+          );
+        })}</div>}
+      <AnimatePresence>{openBroadcast && <BroadcastDetailDialog broadcast={openBroadcast} onClose={() => setOpenBroadcast(null)} onRetryCreated={() => setOpenBroadcast(null)} />}</AnimatePresence>
       <Dialog open={showNew} onClose={() => setShowNew(false)} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: '1rem' } }}>
         <DialogTitle sx={{ fontWeight: 700, fontFamily: '"Plus Jakarta Sans", sans-serif' }}>{t('crm.dialog.newCampaign', 'Nova Campanha')}</DialogTitle>
         <DialogContent className="space-y-4 !pt-2">
           <TextField label={t('crm.form.name', 'Nome')} value={formName} onChange={(e) => setFormName(e.target.value)} fullWidth size="small" />
-          <FormControl fullWidth size="small"><InputLabel>{t('crm.form.channel', 'Canal')}</InputLabel><Select value={formChannel} label={t('crm.form.channel', 'Canal')} onChange={(e) => setFormChannel(e.target.value as typeof formChannel)}><MenuItem value="whatsapp">WhatsApp</MenuItem><MenuItem value="facebook">Messenger</MenuItem><MenuItem value="instagram">Instagram</MenuItem></Select></FormControl>
-          <FormControl fullWidth size="small"><InputLabel>{t('crm.form.audience', 'Audiência')}</InputLabel><Select value={formAudienceType} label={t('crm.form.audience', 'Audiência')} onChange={(e) => setFormAudienceType(e.target.value as typeof formAudienceType)}><MenuItem value="all_contacts">{t('crm.form.all', 'Todos')}</MenuItem><MenuItem value="tags">{t('crm.form.byTags', 'Por tags')}</MenuItem><MenuItem value="manual">{t('crm.form.manual', 'Manual')}</MenuItem></Select></FormControl>
+          <FormControl fullWidth size="small">
+            <InputLabel>{t('crm.form.channel', 'Canal')}</InputLabel>
+            <Select
+              value={formChannel}
+              label={t('crm.form.channel', 'Canal')}
+              onChange={(e) => {
+                const c = e.target.value as typeof formChannel;
+                setFormChannel(c);
+                // Email: força text, limpa template (Meta templates não se aplicam)
+                if (c === 'email') setFormMsgType('text');
+                // viaBaileys só faz sentido com whatsapp — limpa flag em outros canais
+                if (c !== 'whatsapp') setFormViaBaileys(false);
+                // Lista carregada pode virar incompatível ao trocar canal
+                // (ex: lista 'phone' selecionada e usuário muda para email).
+                // Limpa selectedListId + formRecipients quando incompatível.
+                const newDesiredType = c === 'email' ? 'email' : 'phone';
+                if (selectedListId) {
+                  const list = savedLists.find(l => l.id === selectedListId);
+                  if (list && list.type !== newDesiredType && list.type !== 'mixed') {
+                    setSelectedListId('');
+                    setFormRecipients([]);
+                    setFormCsvColumns([]);
+                    setRecipientResetKey(k => k + 1);
+                    toast.info(`Lista "${list.name}" não é compatível com canal ${c}. Selecione outra ou cole nova lista.`);
+                  }
+                }
+                // Mesmo sem lista, recipients colados manualmente podem ser do tipo errado
+                // (ex: colou phones, troca para email). Resetamos para evitar confusão.
+                if (formRecipients.length > 0 && !selectedListId) {
+                  const firstHasPhone = !!formRecipients[0].phoneNumber;
+                  const firstHasEmail = !!formRecipients[0].email;
+                  const incompatible = (newDesiredType === 'phone' && !firstHasPhone)
+                    || (newDesiredType === 'email' && !firstHasEmail);
+                  if (incompatible) {
+                    setFormRecipients([]);
+                    setFormCsvColumns([]);
+                    setRecipientResetKey(k => k + 1);
+                  }
+                }
+              }}
+            >
+              <MenuItem value="whatsapp">WhatsApp</MenuItem>
+              <MenuItem value="facebook">Messenger</MenuItem>
+              <MenuItem value="instagram">Instagram</MenuItem>
+              <MenuItem value="email" disabled={!notificationServerReady}>
+                Email {!notificationServerReady && '(configure notification-server)'}
+              </MenuItem>
+            </Select>
+          </FormControl>
+          {/* Toggle Cloud vs Baileys — só aparece se ambos disponíveis */}
+          {formChannel === 'whatsapp' && baileysReady && (
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">Modo de envio</p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setFormViaBaileys(false)}
+                  className={cn(
+                    'flex-1 px-3 py-2 text-xs rounded-lg border-2 transition-colors text-left',
+                    !formViaBaileys
+                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-500/10'
+                      : 'border-gray-200 dark:border-gray-700 hover:border-blue-300',
+                  )}
+                >
+                  <p className="font-bold text-gray-900 dark:text-gray-100">WhatsApp Business (Cloud)</p>
+                  <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5">Oficial Meta · requer template aprovado</p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFormViaBaileys(true)}
+                  className={cn(
+                    'flex-1 px-3 py-2 text-xs rounded-lg border-2 transition-colors text-left',
+                    formViaBaileys
+                      ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10'
+                      : 'border-gray-200 dark:border-gray-700 hover:border-emerald-300',
+                  )}
+                >
+                  <p className="font-bold text-gray-900 dark:text-gray-100">WhatsApp Web (Baileys)</p>
+                  <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5">Texto livre · sem template</p>
+                </button>
+              </div>
+              {formViaBaileys && (
+                <div className="mt-2 px-2.5 py-1.5 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20">
+                  <p className="text-[10px] text-amber-700 dark:text-amber-400 leading-relaxed">
+                    ⚠️ <strong>Risco de banimento:</strong> envios em massa via Baileys violam ToS do WhatsApp.
+                    Use com moderação (recomendado: ≤200 msgs/dia, delay ≥2s entre envios).
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+          <FormControl fullWidth size="small">
+            <InputLabel>{t('crm.form.audience', 'Audiência')}</InputLabel>
+            <Select value={formAudienceType} label={t('crm.form.audience', 'Audiência')} onChange={(e) => {
+              const next = e.target.value as typeof formAudienceType;
+              setFormAudienceType(next);
+              // 5.8: csvColumns só fazem sentido para audienceType='list' (recipients
+              // CSV importados). Se troca para all_contacts/tags/manual, limpa
+              // colunas (e o TemplateSelector vai ocultar o optgroup) — evita
+              // template stale apontando para colunas que não existem.
+              if (next !== 'list' && formCsvColumns.length > 0) {
+                setFormCsvColumns([]);
+                // Se template já mapeou csvColumn, remapeia esses params para
+                // 'literal' vazio — força operador a re-decidir antes de criar.
+                if (formTemplate?.params.some(p => p.kind === 'csvColumn')) {
+                  setFormTemplate({
+                    ...formTemplate,
+                    params: formTemplate.params.map(p =>
+                      p.kind === 'csvColumn' ? { kind: 'literal', value: '' } : p
+                    ),
+                  });
+                  toast.info('Mapeamentos de colunas CSV foram resetados — audiência mudou.');
+                }
+              }
+            }}>
+              <MenuItem value="list">Lista direta (cole ou CSV)</MenuItem>
+              <MenuItem value="all_contacts">{t('crm.form.all', 'Todos os contatos CRM')}</MenuItem>
+              <MenuItem value="tags">{t('crm.form.byTags', 'Por tags')}</MenuItem>
+              <MenuItem value="manual">{t('crm.form.manual', 'Manual')}</MenuItem>
+            </Select>
+          </FormControl>
           {formAudienceType === 'tags' && <TextField label={t('crm.form.tags', 'Tags')} value={formTags} onChange={(e) => setFormTags(e.target.value)} fullWidth size="small" />}
-          <FormControl fullWidth size="small"><InputLabel>{t('crm.form.type', 'Tipo')}</InputLabel><Select value={formMsgType} label={t('crm.form.type', 'Tipo')} onChange={(e) => setFormMsgType(e.target.value as typeof formMsgType)}><MenuItem value="template">{t('crm.form.template', 'Template')}</MenuItem><MenuItem value="text">{t('crm.form.text', 'Texto')}</MenuItem></Select></FormControl>
-          {formMsgType === 'template' ? <TextField label="Template" value={formTemplate} onChange={(e) => setFormTemplate(e.target.value)} fullWidth size="small" /> : <TextField label={t('crm.form.content', 'Conteúdo')} value={formContent} onChange={(e) => setFormContent(e.target.value)} fullWidth multiline rows={3} size="small" />}
+          {formAudienceType === 'list' && (() => {
+            const desiredType = formChannel === 'email' ? 'email' : 'phone';
+            // Filtra listas compatíveis com canal atual: 'mixed' serve para ambos.
+            const compatibleLists = savedLists.filter(l => l.type === desiredType || l.type === 'mixed');
+            const activeList = selectedListId ? savedLists.find(l => l.id === selectedListId) : null;
+            return (
+              <div className="space-y-3">
+                {compatibleLists.length > 0 && (
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Carregar lista salva</InputLabel>
+                    <Select
+                      value={selectedListId}
+                      label="Carregar lista salva"
+                      onChange={(e) => {
+                        const id = e.target.value as string;
+                        setSelectedListId(id);
+                        if (!id) {
+                          setFormRecipients([]);
+                          setFormCsvColumns([]);
+                          setRecipientResetKey(k => k + 1);
+                          return;
+                        }
+                        const list = savedLists.find(l => l.id === id);
+                        if (list) {
+                          // Filtra recipientes incompatíveis (lista mixed em canal phone só usa phone)
+                          const compatible = list.recipients.filter(r =>
+                            desiredType === 'phone' ? !!r.phoneNumber : !!r.email
+                          );
+                          setFormRecipients(compatible);
+                          // 5.8: extrai colunas extras únicas dos recipients da lista salva
+                          const cols = new Set<string>();
+                          for (const r of compatible) {
+                            if (r.customColumns) {
+                              for (const k of Object.keys(r.customColumns)) cols.add(k);
+                            }
+                          }
+                          setFormCsvColumns(Array.from(cols));
+                          if (compatible.length < list.recipients.length) {
+                            toast.info(`${list.recipients.length - compatible.length} recipiente(s) ignorados (incompatíveis com canal ${formChannel}).`);
+                          }
+                          // Pré-preenche checkbox como falso — já existe, não duplica
+                          setSaveAsList(false);
+                          setListSaveName('');
+                        }
+                      }}
+                    >
+                      <MenuItem value="">— nenhuma (digitar/colar abaixo) —</MenuItem>
+                      {compatibleLists.map(l => (
+                        <MenuItem key={l.id} value={l.id}>
+                          {l.name} ({l.recipientCount})
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                )}
+
+                {activeList ? (
+                  <div className="flex items-center justify-between gap-3 p-3 rounded-xl bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/20">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-blue-700 dark:text-blue-300 truncate">
+                        Usando lista: {activeList.name}
+                      </p>
+                      <p className="text-[11px] text-blue-600/80 dark:text-blue-400/80">
+                        {formRecipients.length} recipiente(s) · criada por {activeList.createdByName}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedListId('');
+                        setFormRecipients([]);
+                        setFormCsvColumns([]);
+                        setRecipientResetKey(k => k + 1);
+                      }}
+                      className="text-xs font-semibold text-blue-700 dark:text-blue-300 hover:underline whitespace-nowrap"
+                    >
+                      Trocar lista
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <RecipientListInput
+                      key={`recipient-input-${recipientResetKey}-${desiredType}`}
+                      mode={desiredType}
+                      onChange={(recipients, stats) => {
+                        setFormRecipients(recipients);
+                        // 5.8: armazena colunas extras pra disponibilizar no TemplateSelector.
+                        setFormCsvColumns(stats.csvColumns);
+                      }}
+                      existingClients={existingClients}
+                    />
+                    {formRecipients.length > 0 && (
+                      <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3 space-y-2">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={saveAsList}
+                            onChange={(e) => setSaveAsList(e.target.checked)}
+                            className="w-4 h-4 rounded accent-red-600"
+                          />
+                          <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">
+                            Salvar como lista reusável
+                          </span>
+                        </label>
+                        {saveAsList && (
+                          <TextField
+                            label="Nome da lista"
+                            value={listSaveName}
+                            onChange={(e) => setListSaveName(e.target.value.slice(0, 120))}
+                            placeholder="Ex: Clientes inativos · jan/2026"
+                            fullWidth
+                            size="small"
+                            inputProps={{ maxLength: 120 }}
+                          />
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })()}
+          {/* Tipo de mensagem aparece só para canais Meta sem Baileys.
+              Email = sempre texto livre. Baileys = sempre texto livre (sem template). */}
+          {formChannel !== 'email' && !(formChannel === 'whatsapp' && formViaBaileys) && (
+            <FormControl fullWidth size="small"><InputLabel>{t('crm.form.type', 'Tipo')}</InputLabel><Select value={formMsgType} label={t('crm.form.type', 'Tipo')} onChange={(e) => setFormMsgType(e.target.value as typeof formMsgType)}><MenuItem value="template">{t('crm.form.template', 'Template')}</MenuItem><MenuItem value="text">{t('crm.form.text', 'Texto')}</MenuItem></Select></FormControl>
+          )}
+          {formChannel === 'email' && (
+            <TextField label="Assunto do email" value={formEmailSubject} onChange={(e) => setFormEmailSubject(e.target.value)} fullWidth size="small" />
+          )}
+          {/* TemplateSelector só para Cloud (não-email, não-baileys) com tipo template */}
+          {formChannel !== 'email' && !(formChannel === 'whatsapp' && formViaBaileys) && formMsgType === 'template' ? (
+            <TemplateSelector
+              businessId={businessId}
+              value={formTemplate}
+              onChange={setFormTemplate}
+              sampleRecipient={formRecipients[0]}
+              channel={formChannel}
+              csvColumns={formCsvColumns}
+            />
+          ) : formChannel === 'email' ? (
+            <div>
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">Corpo do email</p>
+              <EmailBodyEditor
+                value={formContent}
+                onChange={setFormContent}
+                placeholder="Escreva o corpo do email — use a barra de formatação para negrito, links e listas."
+                minRows={8}
+              />
+            </div>
+          ) : (
+            <TextField
+              label={t('crm.form.content', 'Conteúdo')}
+              value={formContent}
+              onChange={(e) => setFormContent(e.target.value)}
+              fullWidth
+              multiline
+              rows={3}
+              size="small"
+            />
+          )}
+          {/* Agendamento opcional — se preenchido, broadcast começa em status='scheduled'
+              e é disparado automaticamente quando o cron processar (a cada 1min). */}
+          <TextField
+            label="Agendar para (opcional)"
+            type="datetime-local"
+            value={formScheduledAt}
+            onChange={(e) => setFormScheduledAt(e.target.value)}
+            InputLabelProps={{ shrink: true }}
+            helperText={formScheduledAt
+              ? `Disparo automático no horário marcado (fuso: ${Intl.DateTimeFormat().resolvedOptions().timeZone})`
+              : 'Deixe vazio para disparar manualmente'}
+            fullWidth
+            size="small"
+          />
+
+          {/* 5.12 LGPD — base legal do envio (obrigatório) */}
+          <div className="rounded-xl border-2 border-amber-200 dark:border-amber-500/30 bg-amber-50/50 dark:bg-amber-500/5 p-3 space-y-3">
+            <div className="flex items-start gap-2">
+              <Shield className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-bold text-amber-900 dark:text-amber-200">Base legal LGPD</p>
+                <p className="text-[10px] text-amber-700 dark:text-amber-300/80 leading-relaxed mt-0.5">
+                  Você precisa ter uma base legal válida para enviar essa campanha.
+                  Esta informação fica registrada em auditoria.
+                </p>
+              </div>
+            </div>
+            <FormControl fullWidth size="small" required>
+              <InputLabel>Base legal *</InputLabel>
+              <Select
+                value={formConsentBasis}
+                label="Base legal *"
+                onChange={(e) => setFormConsentBasis(e.target.value as typeof formConsentBasis)}
+              >
+                <MenuItem value="">Selecione…</MenuItem>
+                {(Object.keys(CONSENT_BASIS_LABELS) as ConsentBasis[]).map(k => (
+                  <MenuItem key={k} value={k}>{CONSENT_BASIS_LABELS[k]}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <TextField
+              label="Origem do consentimento (opcional)"
+              value={formConsentSource}
+              onChange={(e) => setFormConsentSource(e.target.value.slice(0, 200))}
+              placeholder="Ex: Form da landing X · jan/2026"
+              fullWidth
+              size="small"
+              inputProps={{ maxLength: 200 }}
+              helperText="Texto livre — descreva onde os contatos consentiram receber comunicações."
+            />
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={formConsentAck}
+                onChange={(e) => setFormConsentAck(e.target.checked)}
+                className="w-4 h-4 mt-0.5 rounded accent-amber-600 flex-shrink-0"
+              />
+              <span className="text-[11px] text-amber-900 dark:text-amber-200 leading-relaxed">
+                Confirmo que possuo base legal para enviar esta campanha aos
+                recipientes selecionados, conforme LGPD art. 7º.
+              </span>
+            </label>
+          </div>
         </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2 }}><Button onClick={() => setShowNew(false)}>{t('crm.action.cancel', 'Cancelar')}</Button><Button onClick={handleCreate} variant="contained" disabled={saving || !formName.trim()} sx={{ bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' }, borderRadius: '0.75rem' }}>{saving ? t('crm.action.creating', 'Criando...') : t('crm.action.create', 'Criar')}</Button></DialogActions>
+        <DialogActions sx={{ px: 3, pb: 2 }}><Button onClick={() => setShowNew(false)}>{t('crm.action.cancel', 'Cancelar')}</Button><Button onClick={handleCreate} variant="contained" disabled={saving || !formName.trim() || !formConsentBasis || !formConsentAck} sx={{ bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' }, borderRadius: '0.75rem' }}>{saving ? t('crm.action.creating', 'Criando...') : t('crm.action.create', 'Criar')}</Button></DialogActions>
       </Dialog>
     </div>
   );

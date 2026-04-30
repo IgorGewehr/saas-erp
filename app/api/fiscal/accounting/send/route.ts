@@ -1,4 +1,29 @@
+/**
+ * POST /api/fiscal/accounting/send
+ *
+ * Envia documentos fiscais (NFe/NFCe/NFSe) do mês selecionado para o email
+ * do contador via notification-server.
+ *
+ * Arquitetura (alinhada à refatoração de broadcasts):
+ *  - URL e API key do notification-server vêm de env vars globais:
+ *    NOTIFICATION_SERVER_URL + NOTIFICATION_SERVER_API_KEY
+ *  - SMTP per-business em `business.settings.notificationServer.smtp`
+ *    (host/port/user/pass criptografada/from). Mesma config usada por
+ *    /api/broadcasts/send (channel=email).
+ *  - Auth: Firebase Bearer token + ownership do business.
+ *
+ * Body:
+ *   { businessId, businessName, businessCnpj, month, year,
+ *     accountingEmail, documents[] }
+ *
+ * Sem URL/key vindas do client (eram aceitas antes — falha de segurança).
+ */
+
 import { NextRequest, NextResponse } from 'next/server';
+import { adminDb } from '@/lib/config/firebaseAdmin';
+import { decryptToken } from '@/lib/utils/encryption';
+import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
+import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 
 const MONTH_NAMES = [
   'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
@@ -12,8 +37,6 @@ interface AccountingSendBody {
   month: number;
   year: number;
   accountingEmail: string;
-  notificationServerUrl: string;
-  notificationServerKey: string;
   documents: {
     type: string;
     number?: number;
@@ -27,31 +50,82 @@ interface AccountingSendBody {
 }
 
 export async function POST(request: NextRequest) {
-  try {
-    const body: AccountingSendBody = await request.json();
+  // Rate limit defensivo: 5 envios/min por IP (operação cara — vários XMLs)
+  const clientIp = getClientIp(request);
+  const { allowed } = checkRateLimit(`fiscal-accounting:${clientIp}`, 5, 60_000);
+  if (!allowed) {
+    return NextResponse.json({ error: 'Aguarde antes de enviar novamente.' }, { status: 429 });
+  }
 
-    // Validate required fields
-    if (!body.accountingEmail) {
-      return NextResponse.json({ error: 'Email do contador e obrigatorio.' }, { status: 400 });
+  let body: AccountingSendBody;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'JSON inválido.' }, { status: 400 });
+  }
+
+  // Validações básicas
+  if (!body.businessId) {
+    return NextResponse.json({ error: 'businessId obrigatório.' }, { status: 400 });
+  }
+  if (!body.accountingEmail) {
+    return NextResponse.json({ error: 'Email do contador é obrigatório.' }, { status: 400 });
+  }
+  if (!body.month || body.month < 1 || body.month > 12) {
+    return NextResponse.json({ error: 'Mês inválido.' }, { status: 400 });
+  }
+  if (!body.year || body.year < 2020 || body.year > 2099) {
+    return NextResponse.json({ error: 'Ano inválido.' }, { status: 400 });
+  }
+
+  // Auth + ownership — sem isso, qualquer um chamando o endpoint conseguia
+  // enviar emails arbitrários (a antiga versão do endpoint nem checava auth).
+  const authResult = await verifyAuth(request, body.businessId);
+  if (isAuthError(authResult)) return authResult;
+
+  // Configuração GLOBAL do notification-server (mesma para todos os tenants)
+  const nsUrl = (process.env.NOTIFICATION_SERVER_URL || '').replace(/\/+$/, '');
+  const nsApiKey = process.env.NOTIFICATION_SERVER_API_KEY || '';
+  if (!nsUrl || !nsApiKey) {
+    console.error('[Accounting Send] NOTIFICATION_SERVER_URL/API_KEY ausentes no .env');
+    return NextResponse.json({
+      error: 'Servidor de notificação não configurado no servidor (.env). Contate o administrador.',
+    }, { status: 500 });
+  }
+  if (!/^https?:\/\//i.test(nsUrl)) {
+    return NextResponse.json({
+      error: 'NOTIFICATION_SERVER_URL inválida (precisa iniciar com http:// ou https://).',
+    }, { status: 500 });
+  }
+
+  try {
+    // SMTP per-business — obrigatório (cada cliente tem seu próprio remetente)
+    const bizSnap = await adminDb.collection('businesses').doc(body.businessId).get();
+    if (!bizSnap.exists) {
+      return NextResponse.json({ error: 'Business não encontrado.' }, { status: 404 });
     }
-    if (!body.notificationServerUrl) {
-      return NextResponse.json({ error: 'URL do servidor de notificacao nao configurada.' }, { status: 400 });
+    const bizData = bizSnap.data()!;
+    const nsConfig = bizData?.settings?.notificationServer;
+    if (!nsConfig?.isConfigured || !nsConfig?.smtp?.host || !nsConfig?.smtp?.user || !nsConfig?.smtp?.pass) {
+      return NextResponse.json({
+        error: 'SMTP do business não configurado. Acesse Configurações → Enterprise → SMTP de Email.',
+      }, { status: 400 });
     }
-    if (!body.notificationServerKey) {
-      return NextResponse.json({ error: 'API key do servidor de notificacao nao configurada.' }, { status: 400 });
-    }
-    if (!body.month || body.month < 1 || body.month > 12) {
-      return NextResponse.json({ error: 'Mes invalido.' }, { status: 400 });
-    }
-    if (!body.year || body.year < 2020 || body.year > 2099) {
-      return NextResponse.json({ error: 'Ano invalido.' }, { status: 400 });
+
+    let smtpPass: string;
+    try {
+      smtpPass = await decryptToken(nsConfig.smtp.pass);
+    } catch {
+      return NextResponse.json({
+        error: 'Erro ao descriptografar senha SMTP — refaça a configuração do business.',
+      }, { status: 500 });
     }
 
     const docs = body.documents || [];
     const monthName = MONTH_NAMES[body.month - 1];
     const period = `${monthName} ${body.year}`;
 
-    // Separate by type
+    // Separa por tipo
     const nfes = docs.filter(d => d.type === 'nfe');
     const nfces = docs.filter(d => d.type === 'nfce');
     const nfses = docs.filter(d => d.type === 'nfse');
@@ -61,7 +135,7 @@ export async function POST(request: NextRequest) {
     const totalNfse = nfses.reduce((s, d) => s + (d.totalValue || 0), 0);
     const totalGeral = totalNfe + totalNfce + totalNfse;
 
-    // Build SPED summary text
+    // SPED summary
     const spedLines: string[] = [
       `|0000|LECD|${String(body.month).padStart(2, '0')}${body.year}|${body.businessCnpj?.replace(/\D/g, '') || ''}|${body.businessName || ''}|`,
       `|0001|0|`,
@@ -82,7 +156,7 @@ export async function POST(request: NextRequest) {
 
     for (const d of docs) {
       spedLines.push(
-        `${d.type.toUpperCase()} #${d.number || '-'} | Serie: ${d.series || '-'} | Chave: ${d.accessKey || '-'} | Valor: R$ ${(d.totalValue || 0).toFixed(2)} | Data: ${d.issueDate || '-'} | Cliente: ${d.clientName || '-'}`
+        `${d.type.toUpperCase()} #${d.number || '-'} | Serie: ${d.series || '-'} | Chave: ${d.accessKey || '-'} | Valor: R$ ${(d.totalValue || 0).toFixed(2)} | Data: ${d.issueDate || '-'} | Cliente: ${d.clientName || '-'}`,
       );
     }
 
@@ -91,15 +165,13 @@ export async function POST(request: NextRequest) {
     const spedContent = spedLines.join('\n');
     const spedFilename = `SPED_EFD_${body.year}${String(body.month).padStart(2, '0')}_${(body.businessCnpj || '').replace(/\D/g, '')}.txt`;
 
-    // Build attachments array
+    // Anexos: SPED + XMLs
     const attachments: { filename: string; contentBase64: string }[] = [
       {
         filename: spedFilename,
         contentBase64: Buffer.from(spedContent, 'utf-8').toString('base64'),
       },
     ];
-
-    // Add XML attachments
     for (const d of docs) {
       if (d.xml) {
         const xmlFilename = `${d.type.toUpperCase()}_${String(d.number || 0).padStart(9, '0')}.xml`;
@@ -110,7 +182,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Build email HTML
+    // HTML do email
     const htmlBody = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <div style="background: linear-gradient(135deg, #DC2626, #991B1B); padding: 24px; border-radius: 12px 12px 0 0;">
@@ -118,7 +190,7 @@ export async function POST(request: NextRequest) {
           <p style="color: rgba(255,255,255,0.8); margin: 8px 0 0; font-size: 14px;">${body.businessName || 'Empresa'}</p>
         </div>
         <div style="background: #f9fafb; padding: 24px; border: 1px solid #e5e7eb; border-top: none;">
-          <h2 style="font-size: 16px; color: #374151; margin: 0 0 16px;">Resumo do Periodo</h2>
+          <h2 style="font-size: 16px; color: #374151; margin: 0 0 16px;">Resumo do Período</h2>
           <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
             <tr style="border-bottom: 1px solid #e5e7eb;">
               <td style="padding: 8px 0; color: #6b7280;">NF-e</td>
@@ -153,39 +225,50 @@ export async function POST(request: NextRequest) {
 
     const textBody = `Documentos Fiscais - ${period}\n${body.businessName}\n\nNF-e: ${nfes.length} docs (R$ ${totalNfe.toFixed(2)})\nNFC-e: ${nfces.length} docs (R$ ${totalNfce.toFixed(2)})\nNFSe: ${nfses.length} docs (R$ ${totalNfse.toFixed(2)})\nTotal: ${docs.length} docs (R$ ${totalGeral.toFixed(2)})\n\nAnexos: ${attachments.length} arquivo(s)`;
 
-    // Send email via notification server
-    const emailPayload = {
-      to: body.accountingEmail,
-      subject: `Documentos Fiscais - ${period} - ${body.businessName || 'Empresa'}`,
-      html: htmlBody,
-      text: textBody,
-      attachments,
-      industrial: true,
-    };
-
-    const emailResponse = await fetch(`${body.notificationServerUrl}/api/send-email`, {
+    // Envia via notification-server — formato alinhado ao endpoint atual:
+    // { appId, email, subject, message, html, attachments, smtp }
+    const emailResponse = await fetch(`${nsUrl}/api/send-email`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': body.notificationServerKey,
+        'x-api-key': nsApiKey,
       },
-      body: JSON.stringify(emailPayload),
+      body: JSON.stringify({
+        appId: body.businessId,
+        email: body.accountingEmail,
+        subject: `Documentos Fiscais - ${period} - ${body.businessName || 'Empresa'}`,
+        message: textBody,
+        html: htmlBody,
+        attachments,
+        // SMTP do business — NS prioriza esse sobre Firestore/env globais
+        smtp: {
+          host: nsConfig.smtp.host,
+          port: nsConfig.smtp.port,
+          secure: !!nsConfig.smtp.secure,
+          user: nsConfig.smtp.user,
+          pass: smtpPass,
+          from: nsConfig.smtp.from || nsConfig.smtp.user,
+        },
+      }),
     });
 
     if (!emailResponse.ok) {
       const errorData = await emailResponse.json().catch(() => ({}));
+      console.error('[Accounting Send] NS retornou erro:', emailResponse.status, errorData);
       return NextResponse.json(
-        { error: 'Erro ao enviar email para contabilidade.', details: errorData },
+        { error: errorData.error || 'Erro ao enviar email para contabilidade.', details: errorData },
         { status: emailResponse.status },
       );
     }
 
+    const responseData = await emailResponse.json().catch(() => ({}));
     return NextResponse.json({
       success: true,
       sent: true,
       to: body.accountingEmail,
-      subject: emailPayload.subject,
+      subject: `Documentos Fiscais - ${period} - ${body.businessName || 'Empresa'}`,
       attachmentsCount: attachments.length,
+      jobId: responseData.jobId, // útil pra rastrear bounces
       summary: {
         nfe: { count: nfes.length, total: totalNfe },
         nfce: { count: nfces.length, total: totalNfce },

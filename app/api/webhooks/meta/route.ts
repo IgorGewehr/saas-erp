@@ -20,6 +20,8 @@ import { decryptToken } from '@/lib/utils/encryption';
 import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { FieldValue } from 'firebase-admin/firestore';
+import { isOptOutKeyword } from '@/lib/utils/optOutKeywords';
+import { getAlternativeBrazilianPhone } from '@/lib/utils/phoneAlternatives';
 
 // ─── Firebase Storage for media uploads ──────────────────────────────────────
 
@@ -566,6 +568,31 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
           replyToMessageId: msg.context?.id,
           timestamp: new Date(parseInt(msg.timestamp) * 1000).toISOString(),
         });
+
+        // 5.11 — Auto opt-out por keyword: se mensagem é só "PARAR"/"STOP"/etc.,
+        // grava em marketingOptOuts. O agent ainda pode responder confirmando
+        // (mensagem não é descartada — só evita futuras campanhas).
+        if (isOptOutKeyword(extracted.content)) {
+          try {
+            const businessId = await resolveBusinessId('whatsapp', phoneNumberId);
+            if (businessId) {
+              const identifier = msg.from.toLowerCase(); // E.164 sem +
+              const docId = `${businessId}_whatsapp_${identifier.replace(/[^a-z0-9._@+-]/g, '_').slice(0, 200)}`;
+              await adminDb.collection('marketingOptOuts').doc(docId).set({
+                id: docId,
+                businessId,
+                channel: 'whatsapp',
+                identifier,
+                source: 'whatsapp-keyword',
+                optedOutAt: new Date().toISOString(),
+                reasonText: extracted.content?.slice(0, 100),
+              });
+              console.log(`[Meta Webhook] Recorded WhatsApp opt-out for ${identifier} (keyword: "${extracted.content}")`);
+            }
+          } catch (optOutErr) {
+            console.error('[Meta Webhook] Failed to record opt-out:', optOutErr);
+          }
+        }
       }
     }
 
@@ -1245,12 +1272,27 @@ async function saveInboundMessage(params: InboundMessageParams) {
 
   try {
     // 3. Find or create conversation
-    const convSnap = await adminDb.collection('conversations')
+    let convSnap = await adminDb.collection('conversations')
       .where('businessId', '==', businessId)
       .where('channel', '==', params.channel)
       .where('contactExternalId', '==', params.externalId)
       .limit(1)
       .get();
+
+    // Fuzzy fallback: WhatsApp BR tem variação com/sem 9 inicial — tenta o
+    // formato alternativo antes de criar nova conversa. Sem isso, mesmo
+    // contato vira 2 conversas (uma por formato), confundindo o operador.
+    if (convSnap.empty && params.channel === 'whatsapp') {
+      const altPhone = getAlternativeBrazilianPhone(params.externalId);
+      if (altPhone) {
+        convSnap = await adminDb.collection('conversations')
+          .where('businessId', '==', businessId)
+          .where('channel', '==', 'whatsapp')
+          .where('contactExternalId', '==', altPhone)
+          .limit(1)
+          .get();
+      }
+    }
 
     let conversationId: string;
 
@@ -1283,53 +1325,52 @@ async function saveInboundMessage(params: InboundMessageParams) {
           ? 'channelIdentities.facebook'
           : 'channelIdentities.instagram';
 
-        const contactSnap = await adminDb.collection('clients')
-          .where('businessId', '==', businessId)
-          .where(channelField, '==', params.externalId)
-          .limit(1)
-          .get();
+        // Fuzzy match: para WhatsApp tenta tanto o formato recebido quanto o
+        // alternativo (com/sem 9 inicial BR). Pra outros canais (FB/IG), só exato.
+        const altPhoneForLink = params.channel === 'whatsapp'
+          ? getAlternativeBrazilianPhone(params.externalId)
+          : null;
+        const candidates = altPhoneForLink ? [params.externalId, altPhoneForLink] : [params.externalId];
 
-        if (!contactSnap.empty) {
-          const contact = contactSnap.docs[0];
-          const contactData = contact.data();
-          // Update conversation with CRM contact reference
+        let matchedContact: FirebaseFirestore.DocumentSnapshot | null = null;
+        for (const candidate of candidates) {
+          const snap = await adminDb.collection('clients')
+            .where('businessId', '==', businessId)
+            .where(channelField, '==', candidate)
+            .limit(1)
+            .get();
+          if (!snap.empty) { matchedContact = snap.docs[0]; break; }
+        }
+
+        // Fallback adicional para WhatsApp: match por campo `phone` (compatibilidade
+        // com clientes importados antes da estrutura channelIdentities).
+        if (!matchedContact && params.channel === 'whatsapp') {
+          for (const candidate of candidates) {
+            const snap = await adminDb.collection('clients')
+              .where('businessId', '==', businessId)
+              .where('phone', '==', candidate)
+              .limit(1)
+              .get();
+            if (!snap.empty) { matchedContact = snap.docs[0]; break; }
+          }
+        }
+
+        if (matchedContact) {
+          const contactData = matchedContact.data()!;
           await adminDb.doc(`conversations/${conversationId}`).update({
-            crmContactId: contact.id,
+            crmContactId: matchedContact.id,
             contactName: contactData.name || params.senderName || params.externalId,
             contactPhone: contactData.phone || (params.channel === 'whatsapp' ? params.externalId : null),
           });
-          // Update CRM contact with last conversation reference
-          await adminDb.doc(`clients/${contact.id}`).update({
+          await adminDb.doc(`clients/${matchedContact.id}`).update({
             lastConversationId: conversationId,
             lastConversationAt: now,
+            // Preserva o formato exato vindo do webhook em channelIdentities
+            // (útil quando o registro original tinha formato alternativo).
+            ...(params.channel === 'whatsapp' ? { 'channelIdentities.whatsapp': params.externalId } : {}),
             updatedAt: now,
           });
-          console.log('[Meta Webhook] Linked conversation to CRM contact:', contact.id);
-        } else {
-          // Also try matching by phone for WhatsApp
-          if (params.channel === 'whatsapp') {
-            const phoneSnap = await adminDb.collection('clients')
-              .where('businessId', '==', businessId)
-              .where('phone', '==', params.externalId)
-              .limit(1)
-              .get();
-            if (!phoneSnap.empty) {
-              const contact = phoneSnap.docs[0];
-              const contactData = contact.data();
-              await adminDb.doc(`conversations/${conversationId}`).update({
-                crmContactId: contact.id,
-                contactName: contactData.name || params.senderName || params.externalId,
-                contactPhone: params.externalId,
-              });
-              await adminDb.doc(`clients/${contact.id}`).update({
-                lastConversationId: conversationId,
-                lastConversationAt: now,
-                'channelIdentities.whatsapp': params.externalId,
-                updatedAt: now,
-              });
-              console.log('[Meta Webhook] Linked conversation to CRM contact by phone:', contact.id);
-            }
-          }
+          console.log('[Meta Webhook] Linked conversation to CRM contact:', matchedContact.id);
         }
       } catch (linkErr) {
         // Non-fatal — don't break message processing if CRM link fails
@@ -1566,6 +1607,59 @@ async function updateMessageStatus(params: {
     }
   } catch (err) {
     console.error('[Meta Webhook] Error updating message status:', err);
+  }
+
+  // Espelhamento em broadcastMessages — Fase 1 do roadmap de broadcasts.
+  // Mensagens enviadas via /api/broadcasts/send criam doc em broadcastMessages
+  // (não em conversationMessages), então tentamos atualizar lá também.
+  await updateBroadcastMessageStatus(params).catch(err =>
+    console.error('[Meta Webhook] Error updating broadcastMessage status:', err)
+  );
+}
+
+/** Atualiza um BroadcastMessage por externalMessageId — invocado a partir de updateMessageStatus. */
+async function updateBroadcastMessageStatus(params: {
+  businessId: string;
+  messageId: string;
+  status: string;
+  timestamp: string;
+  errors?: Array<{ code: number; title: string }>;
+}): Promise<void> {
+  const snap = await adminDb.collection('broadcastMessages')
+    .where('externalMessageId', '==', params.messageId)
+    .where('businessId', '==', params.businessId)
+    .limit(1)
+    .get();
+  if (snap.empty) return;
+
+  const doc = snap.docs[0];
+  const current = doc.data();
+  const currentOrder = STATUS_ORDER[current.status] ?? -1;
+  const newOrder = STATUS_ORDER[params.status] ?? -1;
+  // Status regression guard — nunca volta atrás (exceto 'failed' que sempre aplica)
+  if (params.status !== 'failed' && newOrder <= currentOrder) return;
+
+  const update: Record<string, string | number> = { status: params.status };
+  if (params.status === 'delivered') update.deliveredAt = params.timestamp;
+  if (params.status === 'read') {
+    update.readAt = params.timestamp;
+    if (!current.deliveredAt) update.deliveredAt = params.timestamp;
+  }
+  if (params.status === 'failed' && params.errors?.length) {
+    const firstError = params.errors[0];
+    update.errorMessage = firstError.title;
+  }
+
+  await doc.ref.update(update);
+
+  // Atualiza stats agregados no Broadcast pai (incremento de delivered/read)
+  if (current.broadcastId && (params.status === 'delivered' || params.status === 'read')) {
+    const field = params.status === 'delivered' ? 'stats.delivered' : 'stats.read';
+    const { FieldValue } = await import('firebase-admin/firestore');
+    await adminDb.collection('broadcasts').doc(current.broadcastId).update({
+      [field]: FieldValue.increment(1),
+      updatedAt: new Date().toISOString(),
+    }).catch(() => {/* doc pode ter sido deletado */});
   }
 }
 

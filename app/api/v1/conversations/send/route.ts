@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
+import { checkBusinessRateLimit } from '@/lib/utils/rateLimit';
 
 // =============================================================================
 // POST /api/v1/conversations/send — Send a message via a conversation channel
@@ -8,6 +9,14 @@ import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middlew
 export async function POST(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:conversations']);
   if (isApiKeyError(auth)) return auth;
+
+  // Rate limit por business (5.13): 300 msgs/hora — mesma janela do internal
+  // /api/conversations/send. Aplicado AQUI para evitar Firestore writes antes
+  // do internal call quando atacante com API key abusa do volume.
+  const bizLimit = checkBusinessRateLimit('v1-conversation-send', auth.businessId, 300, 3_600_000);
+  if (!bizLimit.allowed) {
+    return apiError('Rate limit exceeded for this business. Slow down.', 429);
+  }
 
   try {
     const body = await req.json().catch(() => null);

@@ -407,7 +407,8 @@ function StatusDot({ status }: { status: ConversationStatus }) {
         'inline-block w-2 h-2 rounded-full flex-shrink-0',
         status === 'open' && 'bg-emerald-400',
         status === 'waiting' && 'bg-amber-400',
-        status === 'resolved' && 'bg-gray-400',
+        // Resolvida: cinza azulado (slate) com brilho compatível em dark mode
+        status === 'resolved' && 'bg-slate-400 dark:bg-slate-300',
       )}
     />
   );
@@ -2258,15 +2259,15 @@ function NewConversationDialog({
     whatsappBaileys?: { isConnected?: boolean };
   }) | undefined;
   // Novo modelo: campos isolados whatsappCloud + whatsappBaileys.
-  // Fallback para o legado channels.whatsapp se nenhum dos novos estiver presente.
+  // Cada canal cai no fallback legado SÓ se o seu próprio campo novo estiver ausente —
+  // assim Cloud e Baileys podem coexistir mesmo durante a migração de dados legados.
   const cloudCfg = channels?.whatsappCloud;
   const baileysCfg = channels?.whatsappBaileys;
   const legacyWa = channels?.whatsapp as ((NonNullable<typeof channels>['whatsapp']) & { connectedVia?: string }) | undefined;
-  const hasNewFields = !!(cloudCfg || baileysCfg);
   const baileysAvailable = !!baileysCfg?.isConnected
-    || (!hasNewFields && !!legacyWa?.isConnected && legacyWa.connectedVia === 'baileys');
+    || (!baileysCfg && !!legacyWa?.isConnected && legacyWa.connectedVia === 'baileys');
   const cloudAvailable = !!(cloudCfg?.isConnected && cloudCfg.accessToken)
-    || (!hasNewFields && !!legacyWa?.isConnected && legacyWa.connectedVia !== 'baileys' && !!legacyWa.accessToken);
+    || (!cloudCfg && !!legacyWa?.isConnected && legacyWa.connectedVia !== 'baileys' && !!legacyWa.accessToken);
   const fbConnected = !!channels?.facebook?.isConnected;
   const igConnected = !!channels?.instagram?.isConnected;
 
@@ -4358,21 +4359,47 @@ export default function ConversasModule() {
     if (!business?.id || templatesLoading) return;
     setTemplatesLoading(true);
     setTemplatesError(null);
+    // hello_world é auto-aprovado pela Meta em toda WABA — sempre disponível como fallback.
+    // Garante que o usuário sempre tem ao menos UM template para abrir janela de 24h.
+    const helloWorldFallback = {
+      name: 'hello_world',
+      language: 'en_US',
+      category: 'UTILITY',
+      preview: 'Hello World',
+      hasVariables: false,
+    };
+    const ensureHelloWorld = (list: Array<{ name: string; language: string; category: string; preview: string; hasVariables: boolean }>) => {
+      const has = list.some(t => t.name.toLowerCase() === 'hello_world');
+      return has ? list : [helloWorldFallback, ...list];
+    };
     try {
       const auth = getAuth();
       const token = await auth.currentUser?.getIdToken();
+      if (!token) {
+        setTemplatesError('Sessão expirada. Faça login novamente.');
+        setTemplateList([helloWorldFallback]);
+        return;
+      }
       const res = await fetch(`/api/channels/whatsapp-templates?businessId=${business.id}`, {
         headers: { Authorization: `Bearer ${token}` },
+        cache: 'no-store',
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setTemplatesError(data.error || 'Erro ao carregar templates.');
+        const msg = data.error || `Falha ao carregar templates (HTTP ${res.status}).`;
+        console.error('[Conversations] Templates fetch failed:', { status: res.status, body: data });
+        // Mesmo em erro, oferece hello_world para o usuário poder reengajar
+        setTemplateList([helloWorldFallback]);
+        setTemplatesError(`${msg} Você ainda pode usar hello_world.`);
         return;
       }
       const data = await res.json();
-      setTemplateList(data.templates || []);
-    } catch {
-      setTemplatesError('Erro ao carregar templates.');
+      setTemplateList(ensureHelloWorld(data.templates || []));
+    } catch (err) {
+      console.error('[Conversations] Templates fetch threw:', err);
+      const msg = err instanceof Error ? `Erro: ${err.message}` : 'Erro ao carregar templates.';
+      setTemplateList([helloWorldFallback]);
+      setTemplatesError(`${msg} Você ainda pode usar hello_world.`);
     } finally {
       setTemplatesLoading(false);
     }
@@ -5526,8 +5553,14 @@ export default function ConversasModule() {
                             <span className="text-xs">Carregando templates...</span>
                           </div>
                         )}
-                        {templatesError && !templatesLoading && (
+                        {templatesError && !templatesLoading && templateList.length === 0 && (
                           <div className="text-xs text-red-500 dark:text-red-400 text-center py-3 px-2">
+                            {templatesError}
+                          </div>
+                        )}
+                        {templatesError && !templatesLoading && templateList.length > 0 && (
+                          <div className="text-[10px] text-amber-600 dark:text-amber-400 px-2 py-1.5 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20">
+                            <AlertTriangle className="w-3 h-3 inline mr-1 -mt-0.5" />
                             {templatesError}
                           </div>
                         )}

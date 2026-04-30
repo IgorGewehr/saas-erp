@@ -88,6 +88,7 @@ import {
 import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector, Service, WorkingHours, DaySchedule, UseCase } from '@/lib/types';
 import { WHATSAPP_TEMPLATE_CATALOG, renderTemplatePreview } from '@/lib/constants/whatsapp-template-catalog';
 import { getAuth } from 'firebase/auth';
+import NotificationServerSection from './NotificationServerConfig';
 import { CachedImage } from '@/app/components/ui/CachedImage';
 import SidebarEditorTab from './SidebarEditorTab';
 import {
@@ -1795,9 +1796,9 @@ function FiscalTab() {
   const [isSavingCfop, setIsSavingCfop] = useState(false);
 
   // ── Accounting state ──
+  // notificationServerUrl/Key foram removidos: agora vêm de env vars globais
+  // (NOTIFICATION_SERVER_URL/API_KEY) e o SMTP é per-business em Enterprise.
   const [accountingEmail, setAccountingEmail] = useState('');
-  const [notificationServerUrl, setNotificationServerUrl] = useState('');
-  const [notificationServerKey, setNotificationServerKey] = useState('');
   const [isSavingAccounting, setIsSavingAccounting] = useState(false);
 
   // ── Certificate state ──
@@ -1863,8 +1864,6 @@ function FiscalTab() {
       setCfopPurchases(cfops.defaultPurchases || '1102');
     }
     if (f.accountingEmail) setAccountingEmail(f.accountingEmail);
-    if (fAny.notificationServerUrl) setNotificationServerUrl(fAny.notificationServerUrl as string);
-    if (fAny.notificationServerKey) setNotificationServerKey(fAny.notificationServerKey as string);
   }, [business]);
 
   // ── Fiscal save helpers ──
@@ -1994,10 +1993,8 @@ function FiscalTab() {
     try {
       await saveFiscalField({
         accountingEmail: accountingEmail.trim(),
-        notificationServerUrl: notificationServerUrl.trim(),
-        notificationServerKey: notificationServerKey.trim(),
       });
-      toast.success(t('settings.fiscal.accountingSaved', 'Configurações de contabilidade salvas!'));
+      toast.success(t('settings.fiscal.accountingSaved', 'Email do contador salvo!'));
     } catch { toast.error(t('settings.fiscal.accountSaveError', 'Erro ao salvar')); }
     finally { setIsSavingAccounting(false); }
   };
@@ -2543,7 +2540,8 @@ function FiscalTab() {
       <SectionCard title={t('settings.fiscal.accountingTitle', 'Contabilidade')} icon={FileText}>
         <div className="space-y-4">
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            Configure o envio automatico de XMLs e SPED para seu contador.
+            Configure o email do contador para envio automático de XMLs + SPED.
+            O envio usa o SMTP configurado em <strong>Enterprise → SMTP de Email</strong>.
           </p>
           <div className="grid grid-cols-1 gap-4">
             <FormField label={t('settings.fiscal.accountantEmail', 'Email do Contador')} tooltip={t('settings.fiscal.accountantEmailTooltip', 'Email para envio dos documentos fiscais')}>
@@ -2557,30 +2555,16 @@ function FiscalTab() {
               />
             </FormField>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <FormField label={t('settings.fiscal.webhookUrl', 'URL Servidor de Notificação')} tooltip={t('settings.fiscal.webhookUrlTooltip', 'URL da API de envio de emails')}>
-              <input
-                value={notificationServerUrl}
-                onChange={(e) => setNotificationServerUrl(e.target.value)}
-                placeholder="https://notification.example.com"
-                className={inputClasses}
-                disabled={!canEditFiscal}
-              />
-            </FormField>
-            <FormField label={t('settings.fiscal.webhookKey', 'API Key Notificação')} tooltip={t('settings.fiscal.webhookKeyTooltip', 'Chave de autenticação do servidor')}>
-              <input
-                type="password"
-                value={notificationServerKey}
-                onChange={(e) => setNotificationServerKey(e.target.value)}
-                placeholder="API key..."
-                className={inputClasses}
-                disabled={!canEditFiscal}
-              />
-            </FormField>
+          <div className="rounded-lg bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/20 p-3 text-xs text-blue-700 dark:text-blue-400 flex gap-2">
+            <span>ℹ️</span>
+            <span>
+              O servidor de notificação e suas credenciais agora são gerenciados de forma global pelo administrador.
+              Você só precisa configurar o <strong>SMTP da sua empresa</strong> em Configurações → Enterprise → SMTP de Email.
+            </span>
           </div>
           {canEditFiscal && (
             <div className="flex justify-end">
-              <SaveButton onClick={handleSaveAccounting} loading={isSavingAccounting} label={t('settings.fiscal.saveAccounting', 'Salvar Contabilidade')} variant="secondary" />
+              <SaveButton onClick={handleSaveAccounting} loading={isSavingAccounting} label={t('settings.fiscal.saveAccounting', 'Salvar')} variant="secondary" />
             </div>
           )}
         </div>
@@ -5205,6 +5189,26 @@ function EnterpriseTab() {
               </div>
             </div>
 
+            {/* ── Notification Server (broadcasts de email) ── */}
+            {business?.id && (
+              <div>
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-2">
+                    <Mail className="w-4.5 h-4.5 text-gray-500 dark:text-gray-400" />
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Servidor de Notificações</h3>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">Configure o servidor externo que dispara campanhas de email</p>
+                    </div>
+                  </div>
+                </div>
+                <NotificationServerSection
+                  businessId={business.id}
+                  current={(business as Business & { settings?: { notificationServer?: import('@/lib/types').NotificationServerConfig } }).settings?.notificationServer}
+                  onChange={refreshUser}
+                />
+              </div>
+            )}
+
             {/* ── API Keys Section ── */}
             <div>
               <div className="flex items-center justify-between mb-4">
@@ -5591,8 +5595,24 @@ function WhatsAppTemplateCatalog({ businessId, wabaId }: { businessId: string; w
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) {
-        if (res.status === 401) toast.error('Sem permissão para listar templates');
-        else if (res.status !== 404) console.error('[Catalog] HTTP', res.status);
+        // Endpoint enriquecido (commit 707cbdd+): retorna error + metaCode +
+        // flags isTokenExpired/isPermissionError/isRateLimited quando upstream
+        // (Meta) falha. Antes só logava status code sem contexto.
+        const data = await res.json().catch(() => ({} as { error?: string; isTokenExpired?: boolean; isRateLimited?: boolean; metaCode?: number }));
+        const message = data.error || `HTTP ${res.status}`;
+        if (data.isTokenExpired) {
+          toast.error('Token do WhatsApp expirou — reconecte o canal em Configurações → Canais.', { autoClose: 8000 });
+        } else if (data.isRateLimited) {
+          toast.warn('Meta API rate-limited — aguarde alguns minutos.');
+        } else if (res.status === 401) {
+          toast.error('Sem permissão: ' + message);
+        } else if (res.status === 400 && /não está conectado|configure/i.test(message)) {
+          // WhatsApp Cloud não configurado — mensagem informativa, não erro técnico
+          console.info('[Catalog]', message);
+        } else if (res.status !== 404) {
+          console.error('[Catalog] HTTP', res.status, '·', message, data.metaCode ? `(meta code ${data.metaCode})` : '');
+          toast.error(message);
+        }
         return;
       }
       const data = await res.json();
@@ -6063,14 +6083,16 @@ function CanaisTab() {
     let attention = false;
     let phoneDisplay = '';
     if (channels) {
-      // Lê o novo campo whatsappCloud OU whatsappBaileys; fallback para legado whatsapp
+      // Lê o novo campo whatsappCloud OU whatsappBaileys; fallback para legado whatsapp.
+      // Cada canal cai no fallback legado SÓ se o seu próprio campo novo estiver ausente —
+      // permite Cloud e Baileys coexistirem durante migração de dados legados.
       const cloud = channels.whatsappCloud;
       const baileys = channels.whatsappBaileys;
       const legacy = channels.whatsapp;
-      const hasNewFields = !!(cloud || baileys);
-      // Considera conectado se qualquer um dos novos campos está ativo, OU se só temos legado
-      const cloudActive = cloud?.isConnected || (!hasNewFields && legacy?.isConnected && legacy.connectedVia !== 'baileys');
-      const baileysActive = baileys?.isConnected || (!hasNewFields && legacy?.isConnected && legacy.connectedVia === 'baileys');
+      const cloudActive = cloud?.isConnected
+        || (!cloud && legacy?.isConnected && legacy.connectedVia !== 'baileys');
+      const baileysActive = baileys?.isConnected
+        || (!baileys && legacy?.isConnected && legacy.connectedVia === 'baileys');
       if (cloudActive || baileysActive) {
         setWaConnected(true);
         if (cloudActive) {
@@ -6340,13 +6362,12 @@ function CanaisTab() {
         const cloudCfg = channels?.whatsappCloud;
         const baileysCfg = channels?.whatsappBaileys;
         const legacy = channels?.whatsapp;
-        const hasNewFields = !!(cloudCfg || baileysCfg);
-        // isCloudApi: novo campo cloudCfg ativo, OU legado ativo sem connectedVia (e sem novo campo Baileys)
+        // Fallback legado é per-channel: Cloud fica ativo via legado se cloudCfg ausente,
+        // Baileys via legado se baileysCfg ausente. Permite os dois coexistirem.
         const isCloudApi = !!(cloudCfg?.isConnected
-          || (!hasNewFields && legacy?.isConnected && !legacy.connectedVia));
-        // isBaileys: novo campo baileysCfg ativo, OU legado com connectedVia=baileys
+          || (!cloudCfg && legacy?.isConnected && legacy.connectedVia !== 'baileys'));
         const isBaileys = !!(baileysCfg?.isConnected
-          || (!hasNewFields && legacy?.isConnected && legacy.connectedVia === 'baileys'));
+          || (!baileysCfg && legacy?.isConnected && legacy.connectedVia === 'baileys'));
         const wabaId = cloudCfg?.wabaId || cloudCfg?.businessAccountId
           || (legacy as { wabaId?: string; businessAccountId?: string } | undefined)?.wabaId
           || (legacy as { wabaId?: string; businessAccountId?: string } | undefined)?.businessAccountId;
