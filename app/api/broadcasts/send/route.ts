@@ -315,6 +315,10 @@ export async function POST(req: NextRequest) {
 
     let token: string;
     let resolvedPhoneNumberId = phoneNumberId;
+    // Branch email: SMTP per-business é resolvido aqui e reusado no loop.
+    // Decifra apenas 1 vez antes do loop (não 1 vez por recipient).
+    let emailSmtpPass: string | undefined;
+    let emailSmtpConfig: { host: string; port: number; secure: boolean; user: string; from: string } | undefined;
 
     if (channel === 'whatsapp' && viaBaileys) {
       // Branch Baileys: valida que a sessão está ativa
@@ -357,14 +361,46 @@ export async function POST(req: NextRequest) {
       }
       token = await decryptToken(channels.facebook.pageAccessToken);
     } else if (channel === 'email') {
-      // Email broadcasts são delegados ao notification-server externo
-      const nsConfig = businessData.settings?.notificationServer;
-      if (!nsConfig?.isConfigured || !nsConfig?.url || !nsConfig?.apiKey) {
-        return NextResponse.json({ error: 'Notification server não configurado' }, { status: 400 });
+      // Email broadcasts são delegados ao notification-server externo.
+      // URL e API key são GLOBAIS (env vars do saas-erp) — compartilhadas
+      // entre todos os businesses. Apenas o SMTP é per-business (cada cliente
+      // usa seu próprio remetente: Gmail/Outlook/SendGrid/etc.).
+      const nsUrl = (process.env.NOTIFICATION_SERVER_URL || '').replace(/\/+$/, '');
+      const nsApiKey = process.env.NOTIFICATION_SERVER_API_KEY || '';
+      if (!nsUrl || !nsApiKey) {
+        return NextResponse.json({
+          error: 'Servidor não configurado: NOTIFICATION_SERVER_URL/API_KEY ausentes no .env',
+        }, { status: 500 });
       }
-      token = await decryptToken(nsConfig.apiKey);
-      // Para o branch email, "phoneNumberId" carrega a URL base — reuso do parâmetro
-      resolvedPhoneNumberId = nsConfig.url.replace(/\/$/, '');
+      if (!/^https?:\/\//i.test(nsUrl)) {
+        return NextResponse.json({
+          error: 'NOTIFICATION_SERVER_URL deve começar com http:// ou https://',
+        }, { status: 500 });
+      }
+      // SMTP per-business — obrigatório
+      const nsConfig = businessData.settings?.notificationServer;
+      if (!nsConfig?.isConfigured || !nsConfig?.smtp?.host || !nsConfig?.smtp?.user || !nsConfig?.smtp?.pass) {
+        return NextResponse.json({
+          error: 'SMTP do business não configurado. Acesse Configurações → Enterprise → SMTP de Email.',
+        }, { status: 400 });
+      }
+      // Decifra a senha SMTP (encriptada com encryptToken)
+      try {
+        emailSmtpPass = await decryptToken(nsConfig.smtp.pass);
+      } catch {
+        return NextResponse.json({
+          error: 'Erro ao descriptografar senha SMTP — refazer config do business',
+        }, { status: 500 });
+      }
+      emailSmtpConfig = {
+        host: nsConfig.smtp.host,
+        port: nsConfig.smtp.port,
+        secure: !!nsConfig.smtp.secure,
+        user: nsConfig.smtp.user,
+        from: nsConfig.smtp.from || nsConfig.smtp.user,
+      };
+      token = nsApiKey;
+      resolvedPhoneNumberId = nsUrl; // reuso do parâmetro pra carregar URL do NS
     } else {
       return NextResponse.json({ error: `Invalid channel: ${channel}` }, { status: 400 });
     }
@@ -601,7 +637,8 @@ export async function POST(req: NextRequest) {
             .replace(/\n{3,}/g, '\n\n')
             .trim();
 
-          // resolvedPhoneNumberId carrega a URL do notification-server, token é a API key
+          // resolvedPhoneNumberId = NS URL global; token = API key global do NS.
+          // SMTP do business vai NO BODY — NS é stateless, não busca SMTP no Firebase.
           response = await fetch(`${resolvedPhoneNumberId}/api/send-email`, {
             method: 'POST',
             headers: {
@@ -609,7 +646,7 @@ export async function POST(req: NextRequest) {
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-              appId: businessData.settings?.notificationServer?.appId || businessId,
+              appId: businessId,
               email: recipient.recipientId,
               subject: emailSubject || 'Mensagem',
               // `message` = text fallback (multipart text/plain).
@@ -618,6 +655,15 @@ export async function POST(req: NextRequest) {
               // renderizam o HTML, antigos veem o text.
               message: textFallback,
               html: messageWithFooter,
+              // SMTP credentials do business — NS prioriza esse sobre Firestore/env globais.
+              smtp: emailSmtpConfig && emailSmtpPass ? {
+                host: emailSmtpConfig.host,
+                port: emailSmtpConfig.port,
+                secure: emailSmtpConfig.secure,
+                user: emailSmtpConfig.user,
+                pass: emailSmtpPass,
+                from: emailSmtpConfig.from,
+              } : undefined,
             }),
           });
         }

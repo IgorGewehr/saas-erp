@@ -1,13 +1,15 @@
 'use client';
 
 /**
- * NotificationServerConfig — UI para configurar o notification-server externo
- * que processa broadcasts de email (e potencialmente outros canais no futuro).
+ * NotificationServerConfig — UI para configurar o SMTP do business para
+ * envio de email via notification-server externo.
  *
- * Endpoints chamados:
- *  - POST   /api/channels/notification-server  → salva
- *  - GET    /api/channels/notification-server  → testa conexão
- *  - DELETE /api/channels/notification-server  → desconecta
+ * Arquitetura: URL e API key do notification-server vivem em env vars
+ * globais (NOTIFICATION_SERVER_URL + NOTIFICATION_SERVER_API_KEY) — esta UI
+ * só gerencia as credenciais SMTP do business (cada cliente usa seu próprio
+ * remetente: Gmail, Outlook, SendGrid, provedor próprio etc.).
+ *
+ * `pass` é criptografada server-side antes de gravar no Firestore.
  */
 
 import { useEffect, useState } from 'react';
@@ -25,32 +27,46 @@ interface Props {
   onChange: () => void;
 }
 
+const PORT_OPTIONS = [
+  { value: 587, label: '587 — STARTTLS (recomendado)' },
+  { value: 465, label: '465 — SSL/TLS' },
+  { value: 25,  label: '25 — sem TLS (não use em produção)' },
+  { value: 2525, label: '2525 — alternativa (alguns providers)' },
+];
+
 export default function NotificationServerSection({ businessId, current, onChange }: Props) {
-  const [url, setUrl] = useState(current?.url || '');
-  const [apiKey, setApiKey] = useState('');
-  const [appId, setAppId] = useState(current?.appId || '');
-  const [showKey, setShowKey] = useState(false);
+  const [host, setHost] = useState(current?.smtp?.host || '');
+  const [port, setPort] = useState<number>(current?.smtp?.port || 587);
+  const [secure, setSecure] = useState<boolean>(current?.smtp?.secure ?? false);
+  const [user, setUser] = useState(current?.smtp?.user || '');
+  const [pass, setPass] = useState('');
+  const [from, setFrom] = useState(current?.smtp?.from || '');
+  const [showPass, setShowPass] = useState(false);
+
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
   const [editing, setEditing] = useState(!current?.isConfigured);
 
   useEffect(() => {
-    setUrl(current?.url || '');
-    setAppId(current?.appId || '');
+    setHost(current?.smtp?.host || '');
+    setPort(current?.smtp?.port || 587);
+    setSecure(current?.smtp?.secure ?? false);
+    setUser(current?.smtp?.user || '');
+    setFrom(current?.smtp?.from || '');
     setEditing(!current?.isConfigured);
-  }, [current?.url, current?.appId, current?.isConfigured]);
+  }, [current?.smtp?.host, current?.smtp?.port, current?.smtp?.secure, current?.smtp?.user, current?.smtp?.from, current?.isConfigured]);
 
   const isConfigured = !!current?.isConfigured;
   const lastTestStatus = current?.lastTestStatus;
 
   const handleSave = async () => {
-    if (!url.trim() || !apiKey.trim()) {
-      toast.error('URL e API key são obrigatórios');
+    if (!host.trim() || !user.trim() || !from.trim()) {
+      toast.error('Host, usuário e remetente são obrigatórios');
       return;
     }
-    try { new URL(url); } catch {
-      toast.error('URL inválida');
+    if (!pass.trim() && !isConfigured) {
+      toast.error('Senha SMTP é obrigatória na primeira configuração');
       return;
     }
     setSaving(true);
@@ -59,12 +75,23 @@ export default function NotificationServerSection({ businessId, current, onChang
       const res = await fetch('/api/channels/notification-server', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ businessId, url: url.trim(), apiKey: apiKey.trim(), appId: appId.trim() || undefined }),
+        body: JSON.stringify({
+          businessId,
+          smtp: {
+            host: host.trim(),
+            port,
+            secure,
+            user: user.trim(),
+            // pass: vazia = mantém a anterior (UX comum em telas de credenciais)
+            pass: pass.trim(),
+            from: from.trim(),
+          },
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      toast.success('Notification server configurado!');
-      setApiKey(''); // limpa campo sensível
+      toast.success('Configuração SMTP salva!');
+      setPass(''); // limpa campo sensível
       setEditing(false);
       onChange();
     } catch (err) {
@@ -96,7 +123,7 @@ export default function NotificationServerSection({ businessId, current, onChang
   };
 
   const handleDisconnect = async () => {
-    if (!confirm('Desconectar o notification-server? Broadcasts de email serão bloqueados até reconectar.')) return;
+    if (!confirm('Remover SMTP do business? Broadcasts de email serão bloqueados até reconfigurar.')) return;
     setDisconnecting(true);
     try {
       const token = await getAuth().currentUser?.getIdToken();
@@ -105,10 +132,11 @@ export default function NotificationServerSection({ businessId, current, onChang
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      toast.success('Notification server desconectado');
-      setUrl('');
-      setApiKey('');
-      setAppId('');
+      toast.success('SMTP desconectado');
+      setHost('');
+      setUser('');
+      setPass('');
+      setFrom('');
       setEditing(true);
       onChange();
     } catch (err) {
@@ -133,7 +161,7 @@ export default function NotificationServerSection({ businessId, current, onChang
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h4 className="text-sm font-bold text-gray-900 dark:text-gray-100">Notification Server</h4>
+                <h4 className="text-sm font-bold text-gray-900 dark:text-gray-100">SMTP de Email</h4>
                 {isConfigured && (
                   <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
                     <Check className="w-2.5 h-2.5" /> Configurado
@@ -146,7 +174,8 @@ export default function NotificationServerSection({ businessId, current, onChang
                 )}
               </div>
               <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
-                Servidor externo que processa broadcasts de email (SMTP/Gmail). Necessário para campanhas de email.
+                Credenciais SMTP usadas para enviar emails de campanhas e notificações.
+                Cada empresa configura seu próprio remetente.
               </p>
             </div>
           </div>
@@ -158,12 +187,22 @@ export default function NotificationServerSection({ businessId, current, onChang
           <motion.div key="status" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="p-5 space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <p className="text-[9px] font-bold text-gray-400 uppercase mb-1">URL</p>
-                <p className="text-xs text-gray-700 dark:text-gray-300 font-mono truncate">{current?.url}</p>
+                <p className="text-[9px] font-bold text-gray-400 uppercase mb-1">Host</p>
+                <p className="text-xs text-gray-700 dark:text-gray-300 font-mono truncate">{current?.smtp?.host}</p>
               </div>
               <div>
-                <p className="text-[9px] font-bold text-gray-400 uppercase mb-1">App ID</p>
-                <p className="text-xs text-gray-700 dark:text-gray-300 font-mono truncate">{current?.appId || businessId}</p>
+                <p className="text-[9px] font-bold text-gray-400 uppercase mb-1">Porta</p>
+                <p className="text-xs text-gray-700 dark:text-gray-300 font-mono">
+                  {current?.smtp?.port}{current?.smtp?.secure ? ' (SSL/TLS)' : ' (STARTTLS)'}
+                </p>
+              </div>
+              <div>
+                <p className="text-[9px] font-bold text-gray-400 uppercase mb-1">Usuário</p>
+                <p className="text-xs text-gray-700 dark:text-gray-300 font-mono truncate">{current?.smtp?.user}</p>
+              </div>
+              <div>
+                <p className="text-[9px] font-bold text-gray-400 uppercase mb-1">Remetente</p>
+                <p className="text-xs text-gray-700 dark:text-gray-300 truncate">{current?.smtp?.from}</p>
               </div>
             </div>
             {current?.lastTestedAt && (
@@ -172,6 +211,7 @@ export default function NotificationServerSection({ businessId, current, onChang
                 <span className={lastTestStatus === 'ok' ? 'text-emerald-500' : 'text-red-500'}>
                   {lastTestStatus === 'ok' ? 'OK' : 'falhou'}
                 </span>
+                {current.lastTestDetail && <span className="text-gray-400"> ({current.lastTestDetail})</span>}
               </p>
             )}
             <div className="flex gap-2 pt-1">
@@ -198,49 +238,84 @@ export default function NotificationServerSection({ businessId, current, onChang
           </motion.div>
         ) : (
           <motion.div key="edit" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="p-5 space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="ns-host" className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 block">Servidor SMTP *</label>
+                <input
+                  id="ns-host"
+                  type="text"
+                  placeholder="smtp.gmail.com"
+                  value={host}
+                  onChange={e => setHost(e.target.value)}
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label htmlFor="ns-port" className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 block">Porta *</label>
+                <select
+                  id="ns-port"
+                  value={port}
+                  onChange={e => {
+                    const newPort = Number(e.target.value);
+                    setPort(newPort);
+                    // Auto-toggle SSL/TLS based on port (UX hint, user pode override)
+                    setSecure(newPort === 465);
+                  }}
+                  className={inputCls}>
+                  {PORT_OPTIONS.map(o => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
             <div>
-              <label htmlFor="ns-url" className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 block">URL do servidor *</label>
+              <label htmlFor="ns-user" className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 block">Usuário (login SMTP) *</label>
               <input
-                id="ns-url"
-                type="url"
-                placeholder="https://notifications.empresa.com.br"
-                value={url}
-                onChange={e => setUrl(e.target.value)}
+                id="ns-user"
+                type="email"
+                placeholder="contato@suaempresa.com"
+                value={user}
+                onChange={e => setUser(e.target.value)}
                 className={inputCls}
+                autoComplete="username"
               />
             </div>
             <div>
-              <label htmlFor="ns-key" className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 block">
-                API Key * <span className="font-normal text-gray-400">(não exibida depois de salva)</span>
+              <label htmlFor="ns-pass" className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 block">
+                Senha SMTP * <span className="font-normal text-gray-400">(App Password no Gmail)</span>
               </label>
               <div className="relative">
                 <input
-                  id="ns-key"
-                  type={showKey ? 'text' : 'password'}
-                  placeholder={isConfigured ? 'Deixe em branco para manter a key atual' : 'sua-api-key-aqui'}
-                  value={apiKey}
-                  onChange={e => setApiKey(e.target.value)}
+                  id="ns-pass"
+                  type={showPass ? 'text' : 'password'}
+                  placeholder={isConfigured ? 'Deixe em branco para manter a senha atual' : 'Sua senha SMTP'}
+                  value={pass}
+                  onChange={e => setPass(e.target.value)}
                   className={cn(inputCls, 'pr-10')}
                   autoComplete="new-password"
                 />
                 <button
                   type="button"
-                  onClick={() => setShowKey(s => !s)}
+                  onClick={() => setShowPass(s => !s)}
                   className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                  aria-label={showKey ? 'Ocultar API key' : 'Mostrar API key'}>
-                  {showKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  aria-label={showPass ? 'Ocultar senha' : 'Mostrar senha'}>
+                  {showPass ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                 </button>
               </div>
+              <p className="text-[10px] text-gray-400 mt-1">
+                Gmail: gere App Password em myaccount.google.com/apppasswords (precisa de 2FA ativado).
+              </p>
             </div>
             <div>
-              <label htmlFor="ns-appid" className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 block">
-                App ID <span className="font-normal text-gray-400">(opcional — usa businessId por default)</span>
+              <label htmlFor="ns-from" className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 block">
+                Remetente (From) * <span className="font-normal text-gray-400">— como aparece pro destinatário</span>
               </label>
               <input
-                id="ns-appid"
-                placeholder={businessId}
-                value={appId}
-                onChange={e => setAppId(e.target.value)}
+                id="ns-from"
+                type="text"
+                placeholder='Sua Empresa <contato@suaempresa.com>'
+                value={from}
+                onChange={e => setFrom(e.target.value)}
                 className={inputCls}
               />
             </div>
@@ -248,14 +323,14 @@ export default function NotificationServerSection({ businessId, current, onChang
             <div className="flex gap-2 pt-1">
               <button
                 onClick={handleSave}
-                disabled={saving || !url.trim() || (!apiKey.trim() && !isConfigured)}
+                disabled={saving || !host.trim() || !user.trim() || !from.trim() || (!pass.trim() && !isConfigured)}
                 className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-red-600 hover:bg-red-700 text-white disabled:opacity-50 transition-colors">
                 {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
-                {isConfigured ? 'Atualizar' : 'Conectar'}
+                {isConfigured ? 'Atualizar' : 'Salvar'}
               </button>
               {isConfigured && (
                 <button
-                  onClick={() => { setEditing(false); setApiKey(''); }}
+                  onClick={() => { setEditing(false); setPass(''); }}
                   className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors">
                   Cancelar
                 </button>

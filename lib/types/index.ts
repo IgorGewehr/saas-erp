@@ -362,15 +362,35 @@ export interface BusinessSettings {
   notificationServer?: NotificationServerConfig;
 }
 
-/** Configuração do notification-server externo para broadcasts de email. */
+/**
+ * Configuração de SMTP por business para envio de email via notification-server.
+ *
+ * Arquitetura: a URL do notification-server e a apiKey de auth ficam em env vars
+ * globais do saas-erp (NOTIFICATION_SERVER_URL e NOTIFICATION_SERVER_API_KEY),
+ * compartilhadas entre todos os businesses. O que varia por business é apenas
+ * o **SMTP** (cada cliente usa seu próprio remetente: Gmail, Outlook, SendGrid,
+ * provedor próprio etc.).
+ *
+ * Saas-erp envia as credenciais SMTP no body do POST /api/send-email; o
+ * notification-server é stateless (não armazena SMTP per-tenant no Firebase).
+ *
+ * `smtp.pass` é criptografada via `encryptToken` (AES-256-GCM com ENCRYPTION_KEY)
+ * antes de gravar no Firestore. Decifrada server-side no momento do envio.
+ */
 export interface NotificationServerConfig {
-  url: string;            // base URL (ex: https://notify.empresa.com.br)
-  apiKey: string;         // criptografada via encryptToken
-  appId?: string;         // identificador no notification-server (default: businessId)
   isConfigured: boolean;
   configuredAt?: string;
+  smtp?: {
+    host: string;            // ex: smtp.gmail.com
+    port: number;            // ex: 587 (STARTTLS) ou 465 (SSL/TLS)
+    secure: boolean;         // true para porta 465, false para 587
+    user: string;            // usuário/email de auth
+    pass: string;            // ENCRIPTADA — sempre passa por encryptToken antes de salvar
+    from: string;            // remetente exibido (ex: "BJJEasy <contato@bjjeasy.com>")
+  };
   lastTestedAt?: string;
   lastTestStatus?: 'ok' | 'failed';
+  lastTestDetail?: string;
 }
 
 export interface RoutingRule {

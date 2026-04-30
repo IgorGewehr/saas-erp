@@ -32,7 +32,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { adminDb } from '@/lib/config/firebaseAdmin';
-import { decryptToken } from '@/lib/utils/encryption';
 import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 
 interface BouncePayload {
@@ -84,12 +83,18 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const bizSnap = await adminDb.collection('businesses').doc(payload.businessId).get();
-    const nsConfig = bizSnap.data()?.settings?.notificationServer;
-    if (!nsConfig?.apiKey) {
-      return NextResponse.json({ error: 'Notification server not configured' }, { status: 404 });
+    // Arquitetura nova (broadcasts 5.x): apiKey é GLOBAL no .env do saas-erp,
+    // não mais per-business. Notification-server assina o webhook com a mesma
+    // INTERNAL_API_KEY (= NOTIFICATION_SERVER_API_KEY aqui).
+    //
+    // O business ainda é identificado no payload (businessId) para localizar
+    // o BroadcastMessage correto e validar tenant isolation; mas a auth do
+    // webhook em si é global.
+    const apiKey = process.env.NOTIFICATION_SERVER_API_KEY || '';
+    if (!apiKey) {
+      console.error('[email-bounce] NOTIFICATION_SERVER_API_KEY ausente no .env');
+      return NextResponse.json({ error: 'Server misconfigured' }, { status: 500 });
     }
-    const apiKey = await decryptToken(nsConfig.apiKey);
     const expectedSig = crypto.createHmac('sha256', apiKey).update(rawBody).digest('hex');
 
     // timing-safe compare
