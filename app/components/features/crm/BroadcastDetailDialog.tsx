@@ -62,12 +62,31 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
     return () => unsub();
   }, [initialBroadcast.id]);
 
-  // Real-time listener das mensagens deste broadcast (limit 500 — UI prática para listas grandes)
-  // IMPORTANTE: o where('businessId', '==', ...) é obrigatório pelas Firestore Rules
-  // (isOwnBusiness exige que cada doc tenha businessId == userBusinessId). Sem ele,
-  // a query é rejeitada upfront com "Missing or insufficient permissions" mesmo
-  // que todos os docs satisfaçam a regra individualmente.
+  // Carga das mensagens em duas etapas:
+  //  1. Tenta onSnapshot (real-time, UX ideal)
+  //  2. Se snapshot falhar (sem index, rules, etc) OU vier vazio com stats > 0,
+  //     fallback para fetch via /api/broadcasts/[id]/messages (admin SDK).
+  // Re-fetch a cada 5s enquanto status='sending' para refletir progresso mesmo
+  // quando o snapshot está bloqueado.
   useEffect(() => {
+    let snapshotErrored = false;
+
+    const fetchViaApi = async () => {
+      try {
+        const token = await getAuth().currentUser?.getIdToken();
+        const url = `/api/broadcasts/${broadcast.id}/messages?businessId=${encodeURIComponent(broadcast.businessId)}&limit=500`;
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const apiMessages = (data.messages || []) as BroadcastMessage[];
+        setMessages(apiMessages);
+      } catch (err) {
+        console.error('[BroadcastDetail] API fallback failed:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
     const q = query(
       collection(db, 'broadcastMessages'),
       where('businessId', '==', broadcast.businessId),
@@ -78,16 +97,37 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
     const unsub = onSnapshot(
       q,
       (snap) => {
-        setMessages(snap.docs.map(d => ({ ...(d.data() as BroadcastMessage), id: d.id })));
+        const docs = snap.docs.map(d => ({ ...(d.data() as BroadcastMessage), id: d.id }));
+        setMessages(docs);
         setLoading(false);
+        // Se snapshot voltou vazio mas o broadcast.stats indica que deveria haver
+        // mensagens (sent/failed > 0), tenta API. Pode acontecer se index ainda
+        // não está deployado e snapshot dá empty silenciosamente.
+        const expected = (broadcast.stats?.sent || 0) + (broadcast.stats?.failed || 0);
+        if (docs.length === 0 && expected > 0) {
+          fetchViaApi();
+        }
       },
       (err) => {
-        console.error('[BroadcastDetail] snapshot error:', err);
-        setLoading(false);
+        // Index ausente, rules bloqueando, etc — usa API fallback
+        console.warn('[BroadcastDetail] snapshot error, using API fallback:', err);
+        snapshotErrored = true;
+        fetchViaApi();
       }
     );
-    return () => unsub();
-  }, [broadcast.id, broadcast.businessId]);
+
+    // Polling complementar enquanto envio ativo (status='sending'): garante
+    // visibilidade de progresso mesmo se snapshot estiver bloqueado.
+    let pollTimer: ReturnType<typeof setInterval> | undefined;
+    if (broadcast.status === 'sending' || snapshotErrored) {
+      pollTimer = setInterval(fetchViaApi, 5_000);
+    }
+
+    return () => {
+      unsub();
+      if (pollTimer) clearInterval(pollTimer);
+    };
+  }, [broadcast.id, broadcast.businessId, broadcast.status, broadcast.stats?.sent, broadcast.stats?.failed]);
 
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: messages.length, pending: 0, sent: 0, delivered: 0, read: 0, failed: 0 };
