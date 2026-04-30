@@ -20,8 +20,9 @@ import { getAuth } from 'firebase/auth';
 import { db } from '@/lib/config/firebase';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
-import { X, RefreshCw, Loader2, AlertTriangle, Check, CheckCheck, Clock, Send } from 'lucide-react';
+import { X, RefreshCw, Loader2, AlertTriangle, Check, CheckCheck, Clock, Send, Shield } from 'lucide-react';
 import type { Broadcast, BroadcastMessage, BroadcastMessageStatus } from '@/lib/types';
+import { CONSENT_BASIS_LABELS } from '@/lib/types';
 
 const STATUS_CFG: Record<BroadcastMessageStatus, { label: string; color: string; icon: React.ReactNode }> = {
   pending:   { label: 'Pendente',  color: 'text-gray-500 bg-gray-100 dark:bg-white/[0.06]',                      icon: <Clock className="w-3 h-3" /> },
@@ -254,6 +255,32 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
             <X className="w-4 h-4" />
           </button>
         </div>
+
+        {/* 5.12 — Auditoria LGPD */}
+        {broadcast.consentBasis && (
+          <div className="px-5 py-2.5 bg-amber-50/60 dark:bg-amber-500/5 border-b border-amber-100 dark:border-amber-500/10">
+            <div className="flex items-start gap-2">
+              <Shield className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+              <div className="min-w-0 flex-1 text-[11px] leading-relaxed">
+                <p className="text-amber-900 dark:text-amber-200">
+                  <span className="font-semibold">Base legal:</span>{' '}
+                  {CONSENT_BASIS_LABELS[broadcast.consentBasis]}
+                </p>
+                {broadcast.consentSource && (
+                  <p className="text-amber-700/80 dark:text-amber-300/80">
+                    Origem: {broadcast.consentSource}
+                  </p>
+                )}
+                {broadcast.consentAcknowledgedAt && (
+                  <p className="text-amber-600/70 dark:text-amber-400/70 text-[10px] mt-0.5">
+                    Aprovado em {new Date(broadcast.consentAcknowledgedAt).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}
+                    {broadcast.createdByName ? ` por ${broadcast.createdByName}` : ''}
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Stats agregadas */}
         <div className="px-5 py-3 border-b border-gray-100 dark:border-gray-800 grid grid-cols-5 gap-2 text-center">

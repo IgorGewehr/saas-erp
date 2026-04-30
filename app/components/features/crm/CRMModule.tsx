@@ -32,8 +32,9 @@ import type {
   CRMContact, CRMDeal, CRMPipelineStage, CRMStageConfig, CRMPipelineConfig, CRMActivity, CRMActivityType,
   LeadStatus, LeadSource, User, Broadcast, BroadcastStatus, BroadcastRecipient, Client, ContactProfile, CRMAuditAction,
   Segment, SegmentFilter, SegmentFilterGroup, SegmentFilterOperator,
-  BroadcastList,
+  BroadcastList, ConsentBasis,
 } from '@/lib/types';
+import { CONSENT_BASIS_LABELS } from '@/lib/types';
 import { getAuth } from 'firebase/auth';
 import { ROLE_HIERARCHY } from '@/lib/types';
 
@@ -1217,6 +1218,12 @@ function CampaignsTab({ businessId }: { businessId: string }) {
   const [saveAsList, setSaveAsList] = useState(false);
   const [listSaveName, setListSaveName] = useState('');
   const [recipientResetKey, setRecipientResetKey] = useState(0);
+  // ── LGPD: base legal obrigatória (5.12) ─────────────────────────────────────
+  // consentBasis define a justificativa LGPD do envio. consentSource é texto
+  // livre (ex: "Form da landing X"). consentAck flag de auto-confirmação.
+  const [formConsentBasis, setFormConsentBasis] = useState<'' | 'explicit' | 'legitimate-interest' | 'transactional'>('');
+  const [formConsentSource, setFormConsentSource] = useState('');
+  const [formConsentAck, setFormConsentAck] = useState(false);
   const { user, business } = useAuth();
   // Detecta features disponíveis a partir de business.settings/channels
   type BusinessExtended = NonNullable<typeof business> & {
@@ -1280,6 +1287,15 @@ function CampaignsTab({ businessId }: { businessId: string }) {
     if (!businessId || !user || !formName.trim()) return;
     if (formAudienceType === 'list' && formRecipients.length === 0) {
       toast.error('Adicione pelo menos um recipiente na lista.');
+      return;
+    }
+    // 5.12 — LGPD: base legal obrigatória + auto-confirmação do operador
+    if (!formConsentBasis) {
+      toast.error('Selecione a base legal LGPD antes de criar a campanha.');
+      return;
+    }
+    if (!formConsentAck) {
+      toast.error('Confirme que você possui base legal para enviar antes de prosseguir.');
       return;
     }
     // Email: nunca usa template, sempre texto livre + assunto
@@ -1360,6 +1376,11 @@ function CampaignsTab({ businessId }: { businessId: string }) {
         scheduledAt: scheduledAtIso,
         status: initialStatus,
         stats: { total: recipientsTotal, sent: 0, delivered: 0, read: 0, failed: 0, replied: 0 },
+        // 5.12 LGPD — base legal + auditoria de quem aprovou
+        consentBasis: formConsentBasis,
+        consentSource: formConsentSource.trim() || undefined,
+        consentAcknowledgedAt: now,
+        consentAcknowledgedBy: user.uid,
         createdBy: user.uid,
         createdByName: user.name,
         createdAt: now,
@@ -1418,6 +1439,10 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       setSaveAsList(false);
       setListSaveName('');
       setRecipientResetKey(k => k + 1);
+      // Reset LGPD states (operador deve re-confirmar a cada nova campanha)
+      setFormConsentBasis('');
+      setFormConsentSource('');
+      setFormConsentAck(false);
     } catch (err) {
       console.error('[CRM:Campaigns] Error creating broadcast:', err);
       toast.error(t('crm.toast.errorCreateCampaign', 'Erro ao criar campanha'));
@@ -1697,8 +1722,57 @@ function CampaignsTab({ businessId }: { businessId: string }) {
             fullWidth
             size="small"
           />
+
+          {/* 5.12 LGPD — base legal do envio (obrigatório) */}
+          <div className="rounded-xl border-2 border-amber-200 dark:border-amber-500/30 bg-amber-50/50 dark:bg-amber-500/5 p-3 space-y-3">
+            <div className="flex items-start gap-2">
+              <Shield className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-bold text-amber-900 dark:text-amber-200">Base legal LGPD</p>
+                <p className="text-[10px] text-amber-700 dark:text-amber-300/80 leading-relaxed mt-0.5">
+                  Você precisa ter uma base legal válida para enviar essa campanha.
+                  Esta informação fica registrada em auditoria.
+                </p>
+              </div>
+            </div>
+            <FormControl fullWidth size="small" required>
+              <InputLabel>Base legal *</InputLabel>
+              <Select
+                value={formConsentBasis}
+                label="Base legal *"
+                onChange={(e) => setFormConsentBasis(e.target.value as typeof formConsentBasis)}
+              >
+                <MenuItem value="">Selecione…</MenuItem>
+                {(Object.keys(CONSENT_BASIS_LABELS) as ConsentBasis[]).map(k => (
+                  <MenuItem key={k} value={k}>{CONSENT_BASIS_LABELS[k]}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <TextField
+              label="Origem do consentimento (opcional)"
+              value={formConsentSource}
+              onChange={(e) => setFormConsentSource(e.target.value.slice(0, 200))}
+              placeholder="Ex: Form da landing X · jan/2026"
+              fullWidth
+              size="small"
+              inputProps={{ maxLength: 200 }}
+              helperText="Texto livre — descreva onde os contatos consentiram receber comunicações."
+            />
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={formConsentAck}
+                onChange={(e) => setFormConsentAck(e.target.checked)}
+                className="w-4 h-4 mt-0.5 rounded accent-amber-600 flex-shrink-0"
+              />
+              <span className="text-[11px] text-amber-900 dark:text-amber-200 leading-relaxed">
+                Confirmo que possuo base legal para enviar esta campanha aos
+                recipientes selecionados, conforme LGPD art. 7º.
+              </span>
+            </label>
+          </div>
         </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2 }}><Button onClick={() => setShowNew(false)}>{t('crm.action.cancel', 'Cancelar')}</Button><Button onClick={handleCreate} variant="contained" disabled={saving || !formName.trim()} sx={{ bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' }, borderRadius: '0.75rem' }}>{saving ? t('crm.action.creating', 'Criando...') : t('crm.action.create', 'Criar')}</Button></DialogActions>
+        <DialogActions sx={{ px: 3, pb: 2 }}><Button onClick={() => setShowNew(false)}>{t('crm.action.cancel', 'Cancelar')}</Button><Button onClick={handleCreate} variant="contained" disabled={saving || !formName.trim() || !formConsentBasis || !formConsentAck} sx={{ bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' }, borderRadius: '0.75rem' }}>{saving ? t('crm.action.creating', 'Criando...') : t('crm.action.create', 'Criar')}</Button></DialogActions>
       </Dialog>
     </div>
   );

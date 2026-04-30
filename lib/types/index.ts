@@ -2395,6 +2395,27 @@ export interface BroadcastStats {
 /** Canais suportados em broadcasts — inclui email (não disponível em conversations). */
 export type BroadcastChannel = ConversationChannel | 'email';
 
+/**
+ * Base legal do envio (LGPD art. 7º). Persistido em cada `Broadcast` para
+ * que, em caso de auditoria/multa, o tenant possa justificar por que
+ * enviou para aquele recipiente.
+ *
+ * - `explicit`: opt-in explícito (formulário com checkbox, double opt-in).
+ *   Mais forte, recomendado para listas frias.
+ * - `legitimate-interest`: relação prévia (cliente que comprou recentemente,
+ *   lead que pediu cotação). Aceitável para comunicações relacionadas ao
+ *   produto/serviço já contratado.
+ * - `transactional`: notificação operacional (confirmação de pedido,
+ *   alteração de status, fatura). Não é "marketing" — sem opt-out exigido.
+ */
+export type ConsentBasis = 'explicit' | 'legitimate-interest' | 'transactional';
+
+export const CONSENT_BASIS_LABELS: Record<ConsentBasis, string> = {
+  'explicit': 'Opt-in explícito (formulário/checkbox)',
+  'legitimate-interest': 'Interesse legítimo (cliente/lead com relação prévia)',
+  'transactional': 'Comunicação transacional (não-marketing)',
+};
+
 export interface Broadcast {
   id: string;
   businessId: string;
@@ -2422,6 +2443,14 @@ export interface Broadcast {
   sendRate?: number;
   status: BroadcastStatus;
   stats: BroadcastStats;
+  /** Base legal LGPD do envio. Obrigatório a partir de 5.12. */
+  consentBasis?: ConsentBasis;
+  /** Descrição livre da fonte do consentimento (ex: "Form X 2026-01", "Importado de Mailchimp"). */
+  consentSource?: string;
+  /** Timestamp ISO em que o operador confirmou ter base legal antes de criar a campanha. */
+  consentAcknowledgedAt?: string;
+  /** UID do operador que confirmou — auditoria de quem aprovou cada envio. */
+  consentAcknowledgedBy?: string;
   createdBy: string;
   createdByName: string;
   startedAt?: string;
@@ -2450,6 +2479,8 @@ export interface BroadcastMessage {
   sentAt?: string;
   deliveredAt?: string;
   readAt?: string;
+  /** Snapshot da base legal LGPD no momento do envio (rastreabilidade per-msg). */
+  consentBasis?: ConsentBasis;
   createdAt: string;
 }
 

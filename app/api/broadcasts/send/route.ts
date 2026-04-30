@@ -123,6 +123,7 @@ async function preCreateBroadcastMessages(
   businessId: string,
   broadcastId: string,
   recipients: NormalizedRecipient[],
+  consentBasis?: string,
 ): Promise<string[]> {
   const ids: string[] = [];
   const now = new Date().toISOString();
@@ -143,6 +144,8 @@ async function preCreateBroadcastMessages(
       if (r.contactId) payload.contactId = r.contactId;
       if (r.name) payload.contactName = r.name;
       if (r.email) payload.email = r.email;
+      // 5.12 LGPD: snapshot da base legal por mensagem para auditoria.
+      if (consentBasis) payload.consentBasis = consentBasis;
       batch.set(docRef, payload);
       ids.push(docRef.id);
     }
@@ -214,8 +217,20 @@ export async function POST(req: NextRequest) {
     if (!broadcastSnap.exists) {
       return NextResponse.json({ error: 'Broadcast not found' }, { status: 404 });
     }
-    if (broadcastSnap.data()?.businessId !== businessId) {
+    const broadcastData = broadcastSnap.data();
+    if (broadcastData?.businessId !== businessId) {
       return NextResponse.json({ error: 'Broadcast does not belong to this business' }, { status: 403 });
+    }
+
+    // 5.12 LGPD: bloqueia envio se broadcast não tem base legal registrada.
+    // Validação é no SERVER (não confia só no client) — campanhas legadas
+    // (criadas antes de 5.12) precisam ser deletadas/recriadas para enviar.
+    const consentBasis = broadcastData?.consentBasis as string | undefined;
+    const VALID_CONSENT_BASES = ['explicit', 'legitimate-interest', 'transactional'];
+    if (!consentBasis || !VALID_CONSENT_BASES.includes(consentBasis)) {
+      return NextResponse.json({
+        error: 'Broadcast sem base legal LGPD registrada (consentBasis ausente ou inválida). Recrie a campanha após o update do sistema.',
+      }, { status: 400 });
     }
 
     const allRecipients = normalizeRecipients(rawRecipients as InboundRecipient[], channel);
@@ -373,7 +388,7 @@ export async function POST(req: NextRequest) {
 
     // Pré-cria 1 doc broadcastMessages por recipiente (status 'pending').
     // Os IDs ficam alinhados ao array para update direto no loop.
-    const messageDocIds = await preCreateBroadcastMessages(businessId, broadcastId, recipients);
+    const messageDocIds = await preCreateBroadcastMessages(businessId, broadcastId, recipients, consentBasis);
 
     const results: { contactId?: string; recipientId: string; status: string; externalMessageId?: string; error?: string }[] = [];
     const updatePromises: Promise<unknown>[] = [];
@@ -534,22 +549,26 @@ export async function POST(req: NextRequest) {
           // Footer obrigatório de descadastro (5.11 / compliance LGPD).
           // Best-effort: se UNSUBSCRIBE_SECRET não estiver configurado, manda
           // sem footer (loga warning fora do loop pra evitar spam).
+          // 5.12: pula o footer para comunicações transacionais — esses não
+          // são marketing (LGPD não exige opt-out) e o link confunde clientes.
           let messageWithFooter = messageContent || '';
-          try {
-            const unsubToken = generateUnsubscribeToken(businessId, 'email', recipient.recipientId);
-            const rawBase = process.env.NEXT_PUBLIC_APP_URL || `http://localhost:${process.env.PORT || 3000}`;
-            // Anti-XSS: rejeita protocolos não-HTTP(S) (javascript:, data:, etc.)
-            // que poderiam virar payload no <a href>. Também limpa trailing slash.
-            const baseUrl = /^https?:\/\//i.test(rawBase) ? rawBase.replace(/\/+$/, '') : '';
-            if (!baseUrl) throw new Error('NEXT_PUBLIC_APP_URL must start with http(s)://');
-            const unsubUrl = `${baseUrl}/unsubscribe?token=${encodeURIComponent(unsubToken)}`;
-            messageWithFooter = `${messageWithFooter}\n<hr style="border:none;border-top:1px solid #eee;margin:24px 0"/>` +
-              `<p style="font-size:11px;color:#888;font-family:Arial,sans-serif;line-height:1.5">` +
-              `Você está recebendo este email porque foi adicionado à lista de comunicações. ` +
-              `<a href="${unsubUrl}" style="color:#888;text-decoration:underline">Cancelar inscrição</a>` +
-              `</p>`;
-          } catch {
-            // UNSUBSCRIBE_SECRET ausente — manda sem footer (degradação graciosa)
+          if (consentBasis !== 'transactional') {
+            try {
+              const unsubToken = generateUnsubscribeToken(businessId, 'email', recipient.recipientId);
+              const rawBase = process.env.NEXT_PUBLIC_APP_URL || `http://localhost:${process.env.PORT || 3000}`;
+              // Anti-XSS: rejeita protocolos não-HTTP(S) (javascript:, data:, etc.)
+              // que poderiam virar payload no <a href>. Também limpa trailing slash.
+              const baseUrl = /^https?:\/\//i.test(rawBase) ? rawBase.replace(/\/+$/, '') : '';
+              if (!baseUrl) throw new Error('NEXT_PUBLIC_APP_URL must start with http(s)://');
+              const unsubUrl = `${baseUrl}/unsubscribe?token=${encodeURIComponent(unsubToken)}`;
+              messageWithFooter = `${messageWithFooter}\n<hr style="border:none;border-top:1px solid #eee;margin:24px 0"/>` +
+                `<p style="font-size:11px;color:#888;font-family:Arial,sans-serif;line-height:1.5">` +
+                `Você está recebendo este email porque foi adicionado à lista de comunicações. ` +
+                `<a href="${unsubUrl}" style="color:#888;text-decoration:underline">Cancelar inscrição</a>` +
+                `</p>`;
+            } catch {
+              // UNSUBSCRIBE_SECRET ausente — manda sem footer (degradação graciosa)
+            }
           }
           // resolvedPhoneNumberId carrega a URL do notification-server, token é a API key
           response = await fetch(`${resolvedPhoneNumberId}/api/send-email`, {

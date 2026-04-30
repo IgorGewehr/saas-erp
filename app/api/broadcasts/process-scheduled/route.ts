@@ -41,6 +41,24 @@ function isAuthorized(req: NextRequest): boolean {
 }
 
 async function processBroadcast(b: Broadcast): Promise<{ ok: boolean; error?: string }> {
+  // 5.12 LGPD: bloqueia broadcasts legados (sem consentBasis) ANTES do CAS.
+  // Sem isso, broadcast viraria status='sending' e o /api/broadcasts/send
+  // depois rejeitaria — deixando o doc órfão em 'sending' permanente.
+  const VALID_CONSENT_BASES = ['explicit', 'legitimate-interest', 'transactional'];
+  if (!b.consentBasis || !VALID_CONSENT_BASES.includes(b.consentBasis)) {
+    // Marca como failed para sair do loop do cron e dar visibilidade ao admin.
+    try {
+      await adminDb.collection('broadcasts').doc(b.id).update({
+        status: 'failed',
+        errorMessage: 'Broadcast legado sem base legal LGPD (consentBasis ausente). Recrie a campanha após o update do sistema.',
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (markErr) {
+      console.error('[process-scheduled] Failed to mark legacy broadcast as failed:', markErr);
+    }
+    return { ok: false, error: 'missing-consent-basis (legacy broadcast)' };
+  }
+
   // CAS atômica: só dispara se ainda está em 'scheduled'. Evita race quando
   // usuário clica "Cancelar agendamento" entre a query e o dispatch.
   const ref = adminDb.collection('broadcasts').doc(b.id);
