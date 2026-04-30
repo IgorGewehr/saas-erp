@@ -5587,8 +5587,24 @@ function WhatsAppTemplateCatalog({ businessId, wabaId }: { businessId: string; w
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) {
-        if (res.status === 401) toast.error('Sem permissão para listar templates');
-        else if (res.status !== 404) console.error('[Catalog] HTTP', res.status);
+        // Endpoint enriquecido (commit 707cbdd+): retorna error + metaCode +
+        // flags isTokenExpired/isPermissionError/isRateLimited quando upstream
+        // (Meta) falha. Antes só logava status code sem contexto.
+        const data = await res.json().catch(() => ({} as { error?: string; isTokenExpired?: boolean; isRateLimited?: boolean; metaCode?: number }));
+        const message = data.error || `HTTP ${res.status}`;
+        if (data.isTokenExpired) {
+          toast.error('Token do WhatsApp expirou — reconecte o canal em Configurações → Canais.', { autoClose: 8000 });
+        } else if (data.isRateLimited) {
+          toast.warn('Meta API rate-limited — aguarde alguns minutos.');
+        } else if (res.status === 401) {
+          toast.error('Sem permissão: ' + message);
+        } else if (res.status === 400 && /não está conectado|configure/i.test(message)) {
+          // WhatsApp Cloud não configurado — mensagem informativa, não erro técnico
+          console.info('[Catalog]', message);
+        } else if (res.status !== 404) {
+          console.error('[Catalog] HTTP', res.status, '·', message, data.metaCode ? `(meta code ${data.metaCode})` : '');
+          toast.error(message);
+        }
         return;
       }
       const data = await res.json();

@@ -6,6 +6,60 @@ import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 const META_GRAPH = 'https://graph.facebook.com/v21.0';
 
 /**
+ * Interpreta o body de erro da Meta Graph API e retorna um payload útil
+ * para o cliente, com mensagem em PT-BR e detecção de cenários comuns.
+ *
+ * Códigos Meta comuns:
+ *   190 — Token expirado/invalidado (precisa reconectar Embedded Signup)
+ *   200 — Permissão insuficiente (token sem scope correto)
+ *   100 — Parâmetro inválido (geralmente WABA/phoneNumberId errado)
+ *   368 — Bloqueio temporário da conta
+ *   80007 — Rate limit da WABA
+ */
+function parseMetaError(body: string): {
+  code?: number;
+  type?: string;
+  message?: string;
+  fbtrace_id?: string;
+  userMessage: string;
+  isTokenExpired: boolean;
+  isPermissionError: boolean;
+  isRateLimited: boolean;
+} {
+  let parsed: { error?: { code?: number; type?: string; message?: string; fbtrace_id?: string } } = {};
+  try { parsed = JSON.parse(body); } catch { /* not JSON */ }
+  const err = parsed.error || {};
+  const code = err.code;
+  const message = err.message;
+
+  const isTokenExpired = code === 190;
+  const isPermissionError = code === 200 || code === 10;
+  const isRateLimited = code === 4 || code === 80007 || code === 17 || code === 32;
+
+  let userMessage = message || 'Erro desconhecido na API da Meta';
+  if (isTokenExpired) {
+    userMessage = 'Token do WhatsApp expirou. Reconecte o canal em Configurações → Canais → WhatsApp.';
+  } else if (isPermissionError) {
+    userMessage = 'Sem permissão para acessar a WABA. Reconecte o WhatsApp para renovar os escopos.';
+  } else if (isRateLimited) {
+    userMessage = 'Muitas requisições à Meta API. Aguarde alguns minutos e tente novamente.';
+  } else if (code === 100) {
+    userMessage = 'WABA ou número de telefone inválido — verifique a configuração do canal WhatsApp.';
+  }
+
+  return {
+    code,
+    type: err.type,
+    message,
+    fbtrace_id: err.fbtrace_id,
+    userMessage,
+    isTokenExpired,
+    isPermissionError,
+    isRateLimited,
+  };
+}
+
+/**
  * GET /api/channels/whatsapp-templates?businessId=xxx
  *
  * Fetches approved WhatsApp message templates for a business from Meta Graph API.
@@ -81,6 +135,7 @@ export async function GET(req: NextRequest) {
 
     if (!wabaId) {
       // Try treating stored ID as a phone number ID → fetch its parent WABA
+      let lastErrorBody = '';
       const phoneRes = await fetch(
         `${META_GRAPH}/${phoneNumberId}?fields=id,whatsapp_business_account`,
         {
@@ -92,6 +147,8 @@ export async function GET(req: NextRequest) {
       if (phoneRes.ok) {
         const phoneData = await phoneRes.json();
         wabaId = phoneData?.whatsapp_business_account?.id;
+      } else {
+        lastErrorBody = await phoneRes.text().catch(() => '');
       }
 
       // Fallback: stored ID might itself be a WABA ID (legacy data before meta-signup fix)
@@ -105,14 +162,28 @@ export async function GET(req: NextRequest) {
         );
         if (wabaTestRes.ok) {
           wabaId = phoneNumberId; // stored ID is actually the WABA ID
+        } else if (!lastErrorBody) {
+          lastErrorBody = await wabaTestRes.text().catch(() => '');
         }
       }
 
       if (!wabaId) {
-        console.error('[WhatsApp Templates] Could not resolve WABA ID for phoneNumberId:', phoneNumberId);
+        const meta = parseMetaError(lastErrorBody);
+        console.error('[WhatsApp Templates] Could not resolve WABA ID', {
+          phoneNumberId,
+          businessId,
+          metaCode: meta.code,
+          metaMessage: meta.message,
+          fbtrace_id: meta.fbtrace_id,
+        });
         return NextResponse.json(
-          { error: 'Não foi possível obter informações do número do WhatsApp.' },
-          { status: 502 },
+          {
+            error: meta.userMessage,
+            metaCode: meta.code,
+            isTokenExpired: meta.isTokenExpired,
+            isPermissionError: meta.isPermissionError,
+          },
+          { status: meta.isTokenExpired || meta.isPermissionError ? 401 : 502 },
         );
       }
 
@@ -131,11 +202,25 @@ export async function GET(req: NextRequest) {
     );
 
     if (!templatesRes.ok) {
-      const err = await templatesRes.text();
-      console.error('[WhatsApp Templates] Failed to list templates:', err);
+      const errBody = await templatesRes.text().catch(() => '');
+      const meta = parseMetaError(errBody);
+      console.error('[WhatsApp Templates] Failed to list templates', {
+        wabaId,
+        businessId,
+        httpStatus: templatesRes.status,
+        metaCode: meta.code,
+        metaMessage: meta.message,
+        fbtrace_id: meta.fbtrace_id,
+      });
       return NextResponse.json(
-        { error: 'Não foi possível listar os templates do WhatsApp.' },
-        { status: 502 },
+        {
+          error: meta.userMessage,
+          metaCode: meta.code,
+          isTokenExpired: meta.isTokenExpired,
+          isPermissionError: meta.isPermissionError,
+          isRateLimited: meta.isRateLimited,
+        },
+        { status: meta.isTokenExpired || meta.isPermissionError ? 401 : meta.isRateLimited ? 429 : 502 },
       );
     }
 
