@@ -1796,9 +1796,9 @@ function FiscalTab() {
   const [isSavingCfop, setIsSavingCfop] = useState(false);
 
   // ── Accounting state ──
+  // notificationServerUrl/Key foram removidos: agora vêm de env vars globais
+  // (NOTIFICATION_SERVER_URL/API_KEY) e o SMTP é per-business em Enterprise.
   const [accountingEmail, setAccountingEmail] = useState('');
-  const [notificationServerUrl, setNotificationServerUrl] = useState('');
-  const [notificationServerKey, setNotificationServerKey] = useState('');
   const [isSavingAccounting, setIsSavingAccounting] = useState(false);
 
   // ── Certificate state ──
@@ -1864,8 +1864,6 @@ function FiscalTab() {
       setCfopPurchases(cfops.defaultPurchases || '1102');
     }
     if (f.accountingEmail) setAccountingEmail(f.accountingEmail);
-    if (fAny.notificationServerUrl) setNotificationServerUrl(fAny.notificationServerUrl as string);
-    if (fAny.notificationServerKey) setNotificationServerKey(fAny.notificationServerKey as string);
   }, [business]);
 
   // ── Fiscal save helpers ──
@@ -1995,10 +1993,8 @@ function FiscalTab() {
     try {
       await saveFiscalField({
         accountingEmail: accountingEmail.trim(),
-        notificationServerUrl: notificationServerUrl.trim(),
-        notificationServerKey: notificationServerKey.trim(),
       });
-      toast.success(t('settings.fiscal.accountingSaved', 'Configurações de contabilidade salvas!'));
+      toast.success(t('settings.fiscal.accountingSaved', 'Email do contador salvo!'));
     } catch { toast.error(t('settings.fiscal.accountSaveError', 'Erro ao salvar')); }
     finally { setIsSavingAccounting(false); }
   };
@@ -2544,7 +2540,8 @@ function FiscalTab() {
       <SectionCard title={t('settings.fiscal.accountingTitle', 'Contabilidade')} icon={FileText}>
         <div className="space-y-4">
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            Configure o envio automatico de XMLs e SPED para seu contador.
+            Configure o email do contador para envio automático de XMLs + SPED.
+            O envio usa o SMTP configurado em <strong>Enterprise → SMTP de Email</strong>.
           </p>
           <div className="grid grid-cols-1 gap-4">
             <FormField label={t('settings.fiscal.accountantEmail', 'Email do Contador')} tooltip={t('settings.fiscal.accountantEmailTooltip', 'Email para envio dos documentos fiscais')}>
@@ -2558,30 +2555,16 @@ function FiscalTab() {
               />
             </FormField>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <FormField label={t('settings.fiscal.webhookUrl', 'URL Servidor de Notificação')} tooltip={t('settings.fiscal.webhookUrlTooltip', 'URL da API de envio de emails')}>
-              <input
-                value={notificationServerUrl}
-                onChange={(e) => setNotificationServerUrl(e.target.value)}
-                placeholder="https://notification.example.com"
-                className={inputClasses}
-                disabled={!canEditFiscal}
-              />
-            </FormField>
-            <FormField label={t('settings.fiscal.webhookKey', 'API Key Notificação')} tooltip={t('settings.fiscal.webhookKeyTooltip', 'Chave de autenticação do servidor')}>
-              <input
-                type="password"
-                value={notificationServerKey}
-                onChange={(e) => setNotificationServerKey(e.target.value)}
-                placeholder="API key..."
-                className={inputClasses}
-                disabled={!canEditFiscal}
-              />
-            </FormField>
+          <div className="rounded-lg bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/20 p-3 text-xs text-blue-700 dark:text-blue-400 flex gap-2">
+            <span>ℹ️</span>
+            <span>
+              O servidor de notificação e suas credenciais agora são gerenciados de forma global pelo administrador.
+              Você só precisa configurar o <strong>SMTP da sua empresa</strong> em Configurações → Enterprise → SMTP de Email.
+            </span>
           </div>
           {canEditFiscal && (
             <div className="flex justify-end">
-              <SaveButton onClick={handleSaveAccounting} loading={isSavingAccounting} label={t('settings.fiscal.saveAccounting', 'Salvar Contabilidade')} variant="secondary" />
+              <SaveButton onClick={handleSaveAccounting} loading={isSavingAccounting} label={t('settings.fiscal.saveAccounting', 'Salvar')} variant="secondary" />
             </div>
           )}
         </div>

@@ -1127,22 +1127,52 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
   };
 
   // ── Export to Accounting ──
+  // Busca TODOS os tipos de docs (NFe + NFCe + NFSe) do mês — não só do tipo
+  // da aba atual. Antes só enviava o tipo da aba ativa, então o operador
+  // tinha que clicar 3x pra mandar tudo.
+  // URL/key do notification-server vêm de env vars globais no backend.
+  // SMTP per-business é resolvido no backend a partir de business.settings.notificationServer.smtp.
   const handleAccountingSend = async () => {
     if (!business) return;
     const accountingEmail = business.fiscal?.accountingEmail;
-    const notificationServerUrl = (business.fiscal as Record<string, unknown>)?.notificationServerUrl as string | undefined;
-    const notificationServerKey = (business.fiscal as Record<string, unknown>)?.notificationServerKey as string | undefined;
-    if (!accountingEmail) { toast.error(t('fiscal.accounting.noEmail', 'Email do contador não configurado. Acesse Configurações > Fiscal.')); return; }
-    if (!notificationServerUrl || !notificationServerKey) { toast.error(t('fiscal.accounting.notificationNotConfigured', 'Servidor de notificação não configurado.')); return; }
+    if (!accountingEmail) {
+      toast.error(t('fiscal.accounting.noEmail', 'Email do contador não configurado. Acesse Configurações → Fiscal.'));
+      return;
+    }
+    type BusinessExt = NonNullable<typeof business> & {
+      settings?: { notificationServer?: { isConfigured?: boolean; smtp?: { host?: string } } };
+    };
+    const nsCfg = (business as BusinessExt).settings?.notificationServer;
+    if (!nsCfg?.isConfigured || !nsCfg?.smtp?.host) {
+      toast.error(t('fiscal.accounting.smtpNotConfigured', 'SMTP do business não configurado. Acesse Configurações → Enterprise → SMTP de Email.'));
+      return;
+    }
 
     setIsAccountingSending(true);
     try {
-      // Filter docs for the selected month/year
-      const monthDocs = (documents || []).filter((d: FiscalDocument) => {
+      // Carrega TODOS os tipos (não só o tipo da aba). Query separada porque
+      // `documents` em estado é filtrado por type (where('type', '==', type)).
+      const allTypesQuery = query(
+        collection(db, 'fiscalDocuments'),
+        where('businessId', '==', business.id),
+      );
+      const allTypesSnap = await getDocs(allTypesQuery);
+      const allDocs: FiscalDocument[] = allTypesSnap.docs.map((d) => ({
+        ...d.data(),
+        id: d.id,
+      })) as FiscalDocument[];
+
+      const monthDocs = allDocs.filter((d) => {
         if (d.status !== 'autorizada') return false;
         const date = new Date(d.issueDate || d.createdAt);
         return date.getMonth() + 1 === accountingMonth && date.getFullYear() === accountingYear;
       });
+
+      if (monthDocs.length === 0) {
+        toast.warn(t('fiscal.accounting.noDocsInPeriod', 'Nenhum documento autorizado encontrado no período selecionado.'));
+        setIsAccountingSending(false);
+        return;
+      }
 
       const res = await fetch('/api/fiscal/accounting/send', {
         method: 'POST',
@@ -1154,9 +1184,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
           month: accountingMonth,
           year: accountingYear,
           accountingEmail,
-          notificationServerUrl,
-          notificationServerKey,
-          documents: monthDocs.map((d: FiscalDocument) => ({
+          documents: monthDocs.map((d) => ({
             type: d.type,
             number: d.number,
             series: d.series,
