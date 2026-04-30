@@ -20,7 +20,7 @@ import { getAuth } from 'firebase/auth';
 import { db } from '@/lib/config/firebase';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
-import { X, RefreshCw, Loader2, AlertTriangle, Check, CheckCheck, Clock, Send, Shield, RotateCcw, Trash2 } from 'lucide-react';
+import { X, RefreshCw, Loader2, AlertTriangle, Check, CheckCheck, Clock, Send, Shield, RotateCcw, Trash2, Pause } from 'lucide-react';
 import type { Broadcast, BroadcastMessage, BroadcastMessageStatus } from '@/lib/types';
 import { CONSENT_BASIS_LABELS } from '@/lib/types';
 import BroadcastMetricsPanel from './BroadcastMetricsPanel';
@@ -107,6 +107,7 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
   const [resuming, setResuming] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [pausing, setPausing] = useState(false);
   const [cancelingSchedule, setCancelingSchedule] = useState(false);
   const canDispatch = broadcast.status === 'draft' && (broadcast.recipients?.length ?? 0) > 0;
   const canResume = broadcast.status === 'paused' && pendingCount > 0;
@@ -181,10 +182,43 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
       toast.success(summary);
       setDispatchAmount(null);
     } catch (err) {
-      console.error('[BroadcastDetail] dispatch failed:', err);
-      toast.error(err instanceof Error ? err.message : 'Erro ao disparar campanha');
+      // "Failed to fetch" / TypeError = client desconectou (timeout proxy ~5min,
+      // throttle longo, conexão perdida). O backend continua processando: o
+      // status do broadcast e os broadcastMessages são a fonte da verdade
+      // (sincronizados via onSnapshot). NÃO marca como erro nesse caso.
+      const isNetworkAbort = err instanceof TypeError
+        || (err instanceof Error && /failed to fetch|network|aborted/i.test(err.message));
+      if (isNetworkAbort) {
+        console.warn('[BroadcastDetail] dispatch fetch timed out client-side — backend continua processando');
+        toast.info('Envio em andamento — pode demorar. Acompanhe o progresso aqui (atualiza em tempo real). Use "Pausar" se precisar interromper.');
+      } else {
+        console.error('[BroadcastDetail] dispatch failed:', err);
+        toast.error(err instanceof Error ? err.message : 'Erro ao disparar campanha');
+      }
     } finally {
       setDispatching(false);
+    }
+  };
+
+  const handlePause = async () => {
+    if (broadcast.status !== 'sending') return;
+    if (!confirm(`Pausar a campanha "${broadcast.name}"?\n\nMensagens já em envio concluem; demais ficam pendentes (use Retomar depois).`)) return;
+    setPausing(true);
+    try {
+      const token = await getAuth().currentUser?.getIdToken();
+      const res = await fetch(`/api/broadcasts/${broadcast.id}/pause`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ businessId: broadcast.businessId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      toast.success(data.message || 'Pausa solicitada.');
+    } catch (err) {
+      console.error('[BroadcastDetail] pause failed:', err);
+      toast.error(err instanceof Error ? err.message : 'Erro ao pausar campanha');
+    } finally {
+      setPausing(false);
     }
   };
 
@@ -237,8 +271,16 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
         : `Retomada concluída — ${sendData.stats.sent} enviadas, ${sendData.stats.failed} falharam`;
       toast.success(summary);
     } catch (err) {
-      console.error('[BroadcastDetail] resume failed:', err);
-      toast.error(err instanceof Error ? err.message : 'Erro ao retomar campanha');
+      // Mesmo padrão do dispatch: timeout client não é falha real
+      const isNetworkAbort = err instanceof TypeError
+        || (err instanceof Error && /failed to fetch|network|aborted/i.test(err.message));
+      if (isNetworkAbort) {
+        console.warn('[BroadcastDetail] resume fetch timed out client-side — backend continua processando');
+        toast.info('Retomada em andamento — acompanhe o progresso aqui (atualiza em tempo real).');
+      } else {
+        console.error('[BroadcastDetail] resume failed:', err);
+        toast.error(err instanceof Error ? err.message : 'Erro ao retomar campanha');
+      }
     } finally {
       setResuming(false);
     }
@@ -503,8 +545,8 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
           );
         })()}
 
-        {/* Sending/stuck toolbar — campanha em processamento. Oferece reset
-            quando aparenta estar travada (sem msgs criadas ou >2min sem progresso). */}
+        {/* Sending/stuck toolbar — campanha em processamento. Mostra Pausar
+            sempre que sending; mostra Resetar adicional quando aparenta travada. */}
         {isStuckSending && (
           <div className={cn(
             'px-5 py-2.5 border-b flex items-center justify-between gap-3 flex-wrap',
@@ -530,17 +572,28 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
                 </>
               )}
             </span>
-            {looksStuck && (
+            <div className="flex items-center gap-1.5">
               <button
                 type="button"
-                onClick={handleReset}
-                disabled={resetting}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-orange-600 hover:bg-orange-700 text-white disabled:opacity-50 transition-colors"
+                onClick={handlePause}
+                disabled={pausing}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-amber-600 hover:bg-amber-700 text-white disabled:opacity-50 transition-colors"
               >
-                {resetting ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
-                Resetar campanha
+                {pausing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Pause className="w-3 h-3" />}
+                Pausar
               </button>
-            )}
+              {looksStuck && (
+                <button
+                  type="button"
+                  onClick={handleReset}
+                  disabled={resetting}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-orange-600 hover:bg-orange-700 text-white disabled:opacity-50 transition-colors"
+                >
+                  {resetting ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
+                  Resetar
+                </button>
+              )}
+            </div>
           </div>
         )}
 
