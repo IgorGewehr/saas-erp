@@ -133,6 +133,7 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
         channel: broadcast.channel,
         recipients: broadcast.recipients ?? [],
         sendRate: broadcast.sendRate ?? 10,
+        ...(broadcast.throttle ? { throttle: broadcast.throttle } : {}),
       };
       if (broadcast.templateName) body.templateName = broadcast.templateName;
       if (broadcast.templateLanguage) body.templateLanguage = broadcast.templateLanguage;
@@ -188,6 +189,7 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
         channel: broadcast.channel,
         recipients,
         sendRate: broadcast.sendRate ?? 10,
+        ...(broadcast.throttle ? { throttle: broadcast.throttle } : {}),
       };
       if (broadcast.templateName) sendBody.templateName = broadcast.templateName;
       if (broadcast.templateLanguage) sendBody.templateLanguage = broadcast.templateLanguage;

@@ -206,6 +206,12 @@ export async function POST(req: NextRequest) {
       phoneNumberId,
       /** Quando true, envia via Baileys (WhatsApp Web) em vez de Cloud API. Só vale para channel === 'whatsapp'. */
       viaBaileys = false,
+      /**
+       * Throttle anti-spam: delay aleatório entre msgs + batches com pausa
+       * longa. Quando presente, sobrepõe sendRate. Compatível com {sendRate}
+       * antigo — ausência cai no comportamento legado.
+       */
+      throttle,
     } = body;
 
     if (!businessId || !broadcastId || !rawRecipients?.length) {
@@ -405,7 +411,35 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Invalid channel: ${channel}` }, { status: 400 });
     }
 
-    const delayMs = Math.max(1000 / sendRate, 50); // minimum 50ms between messages
+    /**
+     * Resolução de throttle:
+     *  1) Se body.throttle vier (UI nova): usa delays aleatórios + batches.
+     *  2) Senão, fallback ao sendRate antigo (msgs/seg fixo).
+     *
+     * pickDelay: gera int aleatório uniforme em [min, max] ms.
+     */
+    const sanitizedThrottle: import('@/lib/types').SendThrottle | null =
+      throttle && typeof throttle === 'object' &&
+      Number.isFinite(throttle.delayMinMs) && Number.isFinite(throttle.delayMaxMs) &&
+      throttle.delayMinMs >= 0 && throttle.delayMaxMs >= throttle.delayMinMs
+        ? {
+            delayMinMs: Math.min(throttle.delayMinMs, 600_000),
+            delayMaxMs: Math.min(throttle.delayMaxMs, 600_000),
+            ...(throttle.batchSize > 0 ? { batchSize: Math.min(throttle.batchSize, 1000) } : {}),
+            ...(throttle.batchPauseMinMs > 0 ? { batchPauseMinMs: Math.min(throttle.batchPauseMinMs, 3_600_000) } : {}),
+            ...(throttle.batchPauseMaxMs > 0 ? { batchPauseMaxMs: Math.min(throttle.batchPauseMaxMs, 3_600_000) } : {}),
+          }
+        : null;
+    const fallbackDelayMs = Math.max(1000 / sendRate, 50);
+    function pickDelay(min: number, max: number): number {
+      if (max <= min) return min;
+      return min + Math.floor(Math.random() * (max - min + 1));
+    }
+    function nextMessageDelay(): number {
+      if (sanitizedThrottle) return pickDelay(sanitizedThrottle.delayMinMs, sanitizedThrottle.delayMaxMs);
+      return fallbackDelayMs;
+    }
+    const delayMs = fallbackDelayMs; // mantido pra compat com pause-check (TTL cap)
 
     // Idempotência: CAS draft/sent/failed → sending. Bloqueia duplo-clique e re-trigger.
     const broadcastRef = adminDb.collection('broadcasts').doc(broadcastId);
@@ -531,8 +565,22 @@ export async function POST(req: NextRequest) {
             })
           );
         }
-        // Throttle mais agressivo para Baileys (recomenda-se 2-5s)
-        await sleep(Math.max(delayMs, 2000));
+        // Throttle: usa o configurado (com aleatoriedade), mas força mínimo
+        // de 2s pra Baileys mesmo se o operador configurou menor — protege
+        // o número contra banimento por envio uniformemente rápido.
+        const baileysDelay = Math.max(nextMessageDelay(), 2000);
+        await sleep(baileysDelay);
+        // Pausa de batch (se configurada) — Baileys também respeita
+        if (sanitizedThrottle?.batchSize && sanitizedThrottle.batchSize > 0
+            && (i + 1) % sanitizedThrottle.batchSize === 0
+            && i + 1 < recipients.length) {
+          const batchPause = pickDelay(
+            sanitizedThrottle.batchPauseMinMs ?? 60_000,
+            sanitizedThrottle.batchPauseMaxMs ?? 180_000,
+          );
+          console.log(`[Broadcast] batch pause: ${Math.round(batchPause / 1000)}s after msg ${i + 1}`);
+          await sleep(batchPause);
+        }
         continue;
       }
 
@@ -723,8 +771,22 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // Throttle
-      await sleep(delayMs);
+      // Throttle entre msgs: delay aleatório se throttle configurado, senão
+      // delayMs fixo (sendRate legado).
+      await sleep(nextMessageDelay());
+      // Pausa de batch — só dispara quando atingiu múltiplo do batchSize e
+      // ainda há mais msgs pra enviar. Se for a última do batch+última do
+      // envio total, pula a pausa (não tem motivo).
+      if (sanitizedThrottle?.batchSize && sanitizedThrottle.batchSize > 0
+          && (i + 1) % sanitizedThrottle.batchSize === 0
+          && i + 1 < recipients.length) {
+        const batchPause = pickDelay(
+          sanitizedThrottle.batchPauseMinMs ?? 60_000,
+          sanitizedThrottle.batchPauseMaxMs ?? 180_000,
+        );
+        console.log(`[Broadcast] batch pause: ${Math.round(batchPause / 1000)}s after msg ${i + 1}`);
+        await sleep(batchPause);
+      }
     }
 
     // Garante que todos os updates do loop completaram antes de gravar stats agregadas.

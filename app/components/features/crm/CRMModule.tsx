@@ -32,9 +32,9 @@ import type {
   CRMContact, CRMDeal, CRMPipelineStage, CRMStageConfig, CRMPipelineConfig, CRMActivity, CRMActivityType,
   LeadStatus, LeadSource, User, Broadcast, BroadcastStatus, BroadcastRecipient, Client, ContactProfile, CRMAuditAction,
   Segment, SegmentFilter, SegmentFilterGroup, SegmentFilterOperator,
-  BroadcastList, ConsentBasis,
+  BroadcastList, ConsentBasis, SendThrottle, ThrottlePresetKey,
 } from '@/lib/types';
-import { CONSENT_BASIS_LABELS } from '@/lib/types';
+import { CONSENT_BASIS_LABELS, THROTTLE_PRESETS } from '@/lib/types';
 import { getAuth } from 'firebase/auth';
 import { ROLE_HIERARCHY } from '@/lib/types';
 
@@ -1192,6 +1192,66 @@ function SegmentsTab({ contacts, businessId, userId, userName }: {
 // CAMPAIGNS TAB (kept inline — self-contained with onSnapshot)
 // ==========================================
 
+/**
+ * Input numérico que mostra/edita valor em SEGUNDOS mas armazena em MS.
+ * Usado nos campos de delay/pausa do throttle do broadcast.
+ */
+function ThrottleInput({ label, valueMs, onChangeMs }: {
+  label: string;
+  valueMs: number;
+  onChangeMs: (ms: number) => void;
+}) {
+  return (
+    <div>
+      <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 block">
+        {label}
+      </label>
+      <input
+        type="number"
+        min={0}
+        max={3600}
+        value={Math.round(valueMs / 1000)}
+        onChange={(e) => {
+          const n = parseInt(e.target.value, 10);
+          if (Number.isFinite(n) && n >= 0) onChangeMs(n * 1000);
+        }}
+        className="w-full px-2.5 py-1.5 text-xs bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-lg text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400"
+      />
+    </div>
+  );
+}
+
+/**
+ * Estimativa de tempo total do envio com base no throttle + count.
+ * Usa o ponto médio dos delays (avg = (min + max) / 2).
+ */
+function ThrottleEstimate({ recipientCount, throttle }: {
+  recipientCount: number;
+  throttle: SendThrottle;
+}) {
+  if (recipientCount <= 0) return null;
+  const avgDelay = (throttle.delayMinMs + throttle.delayMaxMs) / 2;
+  let totalMs = avgDelay * (recipientCount - 1); // delays entre msgs
+  if (throttle.batchSize && throttle.batchSize > 0 && throttle.batchPauseMinMs && throttle.batchPauseMaxMs) {
+    const numBatches = Math.floor((recipientCount - 1) / throttle.batchSize);
+    const avgBatchPause = (throttle.batchPauseMinMs + throttle.batchPauseMaxMs) / 2;
+    totalMs += numBatches * avgBatchPause;
+  }
+  // Formata
+  const totalSec = Math.round(totalMs / 1000);
+  const min = Math.floor(totalSec / 60);
+  const hr = Math.floor(min / 60);
+  const formatted = hr >= 1
+    ? `~${hr}h ${min % 60}min`
+    : min >= 1 ? `~${min}min ${totalSec % 60}s`
+    : `~${totalSec}s`;
+  return (
+    <p className="text-[10px] text-gray-500 dark:text-gray-400 leading-relaxed">
+      ⏱ Tempo estimado de envio: <strong className="text-gray-700 dark:text-gray-300">{formatted}</strong> para {recipientCount} mensagens (média).
+    </p>
+  );
+}
+
 /** Mini-barra de taxa para o card de campanha. */
 function CampaignMiniBar({ label, rate, counts, color }: {
   label: string;
@@ -1246,6 +1306,12 @@ function CampaignsTab({ businessId }: { businessId: string }) {
    *  - Respeitar quota Baileys (~200/dia recomendado)
    */
   const [formRecipientLimit, setFormRecipientLimit] = useState<number | ''>('');
+  /**
+   * Throttle (anti-spam): delay aleatório entre msgs + batches com pausa longa.
+   * Default = preset 'human'. Operador pode trocar preset OU customizar valores.
+   */
+  const [formThrottlePreset, setFormThrottlePreset] = useState<ThrottlePresetKey | 'custom'>('human');
+  const [formThrottle, setFormThrottle] = useState<SendThrottle>(THROTTLE_PRESETS.human.throttle);
   const [saving, setSaving] = useState(false);
   // ── Listas reusáveis (BroadcastList) ────────────────────────────────────────
   // savedLists: cache local; selectedListId: lista carregada agora;
@@ -1410,6 +1476,15 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       }
       const initialStatus: BroadcastStatus = scheduledAtIso ? 'scheduled' : 'draft';
 
+      // Throttle: limpa campos de batch undefined antes de gravar (Firestore
+      // não armazena undefined em arrays/objects de forma consistente).
+      const throttleClean: SendThrottle = { delayMinMs: formThrottle.delayMinMs, delayMaxMs: formThrottle.delayMaxMs };
+      if (formThrottle.batchSize && formThrottle.batchSize > 0) {
+        throttleClean.batchSize = formThrottle.batchSize;
+        if (formThrottle.batchPauseMinMs) throttleClean.batchPauseMinMs = formThrottle.batchPauseMinMs;
+        if (formThrottle.batchPauseMaxMs) throttleClean.batchPauseMaxMs = formThrottle.batchPauseMaxMs;
+      }
+
       const payload: Record<string, unknown> = {
         businessId,
         name: formName.trim(),
@@ -1417,6 +1492,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
         audienceType: formAudienceType,
         audienceTags: formAudienceType === 'tags' ? formTags.split(',').map(t => t.trim()).filter(Boolean) : [],
         messageType: effectiveMsgType,
+        throttle: throttleClean,
         templateName: effectiveMsgType === 'template' && formTemplate ? formTemplate.name : undefined,
         templateLanguage: effectiveMsgType === 'template' && formTemplate ? formTemplate.language : undefined,
         templateParams: effectiveMsgType === 'template' && formTemplate ? formTemplate.params : undefined,
@@ -1487,6 +1563,8 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       setFormViaBaileys(false);
       setFormScheduledAt('');
       setFormRecipientLimit('');
+      setFormThrottlePreset('human');
+      setFormThrottle(THROTTLE_PRESETS.human.throttle);
       setSelectedListId('');
       setSaveAsList(false);
       setListSaveName('');
@@ -1865,6 +1943,119 @@ function CampaignsTab({ businessId }: { businessId: string }) {
               )}
             </div>
           )}
+
+          {/* Velocidade de envio (throttle anti-spam) — só pra audienceType=list,
+              que é onde o operador tem controle direto da lista. Para outros
+              tipos (tags/all_contacts) o throttle vale mas usamos defaults. */}
+          {formAudienceType === 'list' && formRecipients.length > 0 && (
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                  Velocidade de envio
+                </p>
+                <span className="text-[10px] text-gray-400">anti-spam / simulação humana</span>
+              </div>
+
+              {/* Preset buttons */}
+              <div className="grid grid-cols-3 gap-2">
+                {(Object.keys(THROTTLE_PRESETS) as ThrottlePresetKey[]).map(key => {
+                  const preset = THROTTLE_PRESETS[key];
+                  const isActive = formThrottlePreset === key;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => {
+                        setFormThrottlePreset(key);
+                        setFormThrottle({ ...preset.throttle });
+                      }}
+                      className={cn(
+                        'px-2 py-2 text-left rounded-lg border-2 transition-colors',
+                        isActive
+                          ? key === 'fast' ? 'border-blue-400 bg-blue-50 dark:bg-blue-500/10'
+                            : key === 'human' ? 'border-emerald-400 bg-emerald-50 dark:bg-emerald-500/10'
+                            : 'border-amber-400 bg-amber-50 dark:bg-amber-500/10'
+                          : 'border-gray-200 dark:border-gray-700 hover:border-gray-300',
+                      )}
+                    >
+                      <p className="text-[10px] font-bold text-gray-900 dark:text-gray-100 leading-tight">
+                        {preset.label}
+                      </p>
+                      <p className="text-[9px] text-gray-500 dark:text-gray-400 mt-0.5 leading-tight">
+                        {preset.description}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Botão customizar */}
+              <button
+                type="button"
+                onClick={() => setFormThrottlePreset(p => p === 'custom' ? 'human' : 'custom')}
+                className="text-[10px] font-semibold text-red-600 dark:text-red-400 hover:underline"
+              >
+                {formThrottlePreset === 'custom' ? '↑ Voltar pros presets' : '⚙ Personalizar valores'}
+              </button>
+
+              {/* Inputs customizados */}
+              {formThrottlePreset === 'custom' && (
+                <div className="grid grid-cols-2 gap-3 pt-2 border-t border-gray-100 dark:border-gray-800">
+                  <ThrottleInput
+                    label="Delay mín entre msgs (s)"
+                    valueMs={formThrottle.delayMinMs}
+                    onChangeMs={(ms) => setFormThrottle(t => ({ ...t, delayMinMs: ms }))}
+                  />
+                  <ThrottleInput
+                    label="Delay máx entre msgs (s)"
+                    valueMs={formThrottle.delayMaxMs}
+                    onChangeMs={(ms) => setFormThrottle(t => ({ ...t, delayMaxMs: ms }))}
+                  />
+                  <div className="col-span-2">
+                    <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 block">
+                      Tamanho do lote <span className="font-normal normal-case">(0 = sem batching)</span>
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={1000}
+                      value={formThrottle.batchSize ?? 0}
+                      onChange={(e) => {
+                        const n = parseInt(e.target.value, 10);
+                        setFormThrottle(t => ({ ...t, batchSize: Number.isFinite(n) && n >= 0 ? n : 0 }));
+                      }}
+                      className="w-full px-2.5 py-1.5 text-xs bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-lg text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400"
+                    />
+                  </div>
+                  {(formThrottle.batchSize ?? 0) > 0 && (
+                    <>
+                      <ThrottleInput
+                        label="Pausa mín entre lotes (s)"
+                        valueMs={formThrottle.batchPauseMinMs ?? 60_000}
+                        onChangeMs={(ms) => setFormThrottle(t => ({ ...t, batchPauseMinMs: ms }))}
+                      />
+                      <ThrottleInput
+                        label="Pausa máx entre lotes (s)"
+                        valueMs={formThrottle.batchPauseMaxMs ?? 180_000}
+                        onChangeMs={(ms) => setFormThrottle(t => ({ ...t, batchPauseMaxMs: ms }))}
+                      />
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* Estimativa de tempo total */}
+              <ThrottleEstimate
+                recipientCount={
+                  typeof formRecipientLimit === 'number' && formRecipientLimit > 0
+                    ? Math.min(formRecipientLimit, formRecipients.length)
+                    : formRecipients.length
+                }
+                throttle={formThrottle}
+              />
+            </div>
+          )}
+
           {/* Tipo de mensagem aparece só para canais Meta sem Baileys.
               Email = sempre texto livre. Baileys = sempre texto livre (sem template). */}
           {formChannel !== 'email' && !(formChannel === 'whatsapp' && formViaBaileys) && (
