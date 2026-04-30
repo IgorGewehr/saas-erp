@@ -88,6 +88,7 @@ async function processBroadcast(b: Broadcast): Promise<{ ok: boolean; error?: st
     recipients: b.recipients ?? [],
     sendRate: b.sendRate ?? 10,
   };
+  if (b.throttle) body.throttle = b.throttle;
   if (b.templateName) body.templateName = b.templateName;
   if (b.templateLanguage) body.templateLanguage = b.templateLanguage;
   if (b.templateParams) body.templateParams = b.templateParams;

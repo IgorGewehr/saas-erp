@@ -2449,6 +2449,60 @@ export const CONSENT_BASIS_LABELS: Record<ConsentBasis, string> = {
   'transactional': 'Comunicação transacional (não-marketing)',
 };
 
+/**
+ * Configuração de throttling/anti-spam para o envio de broadcasts.
+ *
+ * Substitui o `sendRate` fixo (mensagens/segundo) por delays aleatórios que
+ * simulam comportamento humano e batches com pausas longas para reduzir
+ * detecção de spam (especialmente em Baileys, onde envio uniforme rápido é
+ * sinal claro de bot).
+ *
+ *   delayMin/MaxMs: delay aleatório entre cada mensagem (em ms).
+ *     Picked uniformly. Ex: min=5000, max=15000 → 5–15s humanizado.
+ *
+ *   batchSize: quantas msgs em cada lote antes de pausa longa.
+ *     0/undefined = sem batching. Ex: 30 → pausa a cada 30 msgs.
+ *
+ *   batchPauseMin/MaxMs: pausa aleatória entre lotes (em ms).
+ *     Ex: min=120000, max=300000 → pausa de 2–5min entre grupos.
+ */
+export interface SendThrottle {
+  delayMinMs: number;
+  delayMaxMs: number;
+  batchSize?: number;
+  batchPauseMinMs?: number;
+  batchPauseMaxMs?: number;
+}
+
+/** Presets prontos — usuário escolhe o perfil ou customiza valores. */
+export const THROTTLE_PRESETS = {
+  fast: {
+    label: 'Rápido (Cloud — sem risco)',
+    description: 'Sem delay simulado. Use só com WhatsApp Cloud / Email.',
+    throttle: { delayMinMs: 100, delayMaxMs: 500 } satisfies SendThrottle,
+  },
+  human: {
+    label: 'Humano (recomendado)',
+    description: 'Simula digitação humana. Pausa longa a cada 30 msgs.',
+    throttle: {
+      delayMinMs: 5_000, delayMaxMs: 15_000,
+      batchSize: 30,
+      batchPauseMinMs: 120_000, batchPauseMaxMs: 300_000,
+    } satisfies SendThrottle,
+  },
+  conservative: {
+    label: 'Conservador (Baileys — alto risco)',
+    description: 'Mais lento, batches menores. Indicado pra Baileys em volume.',
+    throttle: {
+      delayMinMs: 15_000, delayMaxMs: 45_000,
+      batchSize: 20,
+      batchPauseMinMs: 300_000, batchPauseMaxMs: 900_000,
+    } satisfies SendThrottle,
+  },
+} as const;
+
+export type ThrottlePresetKey = keyof typeof THROTTLE_PRESETS;
+
 export interface Broadcast {
   id: string;
   businessId: string;
@@ -2473,7 +2527,14 @@ export interface Broadcast {
   /** Assunto para canal email (broadcasts via notification-server). */
   emailSubject?: string;
   scheduledAt?: string;
+  /** @deprecated Use `throttle` em vez disso. Mantido pra compatibilidade. */
   sendRate?: number;
+  /**
+   * Configuração de delay/batch entre envios. Quando presente, sobrepõe
+   * `sendRate` no backend. Permite simular digitação humana (delays
+   * aleatórios) e batches com pausas longas para reduzir detecção de spam.
+   */
+  throttle?: SendThrottle;
   status: BroadcastStatus;
   stats: BroadcastStats;
   /** Base legal LGPD do envio. Obrigatório a partir de 5.12. */

@@ -206,6 +206,20 @@ export async function POST(req: NextRequest) {
       phoneNumberId,
       /** Quando true, envia via Baileys (WhatsApp Web) em vez de Cloud API. Só vale para channel === 'whatsapp'. */
       viaBaileys = false,
+      /**
+       * Throttle anti-spam: delay aleatório entre msgs + batches com pausa
+       * longa. Quando presente, sobrepõe sendRate. Compatível com {sendRate}
+       * antigo — ausência cai no comportamento legado.
+       */
+      throttle,
+      /**
+       * Quando definido, dispara apenas os primeiros N recipientes desta
+       * vez. Pré-cria broadcastMessages para TODOS (assim resume funciona
+       * naturalmente), mas só processa os primeiros N no loop. Status
+       * final fica 'paused' — operador retoma com os restantes via botão
+       * "Retomar".
+       */
+      maxRecipients,
     } = body;
 
     if (!businessId || !broadcastId || !rawRecipients?.length) {
@@ -405,7 +419,35 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Invalid channel: ${channel}` }, { status: 400 });
     }
 
-    const delayMs = Math.max(1000 / sendRate, 50); // minimum 50ms between messages
+    /**
+     * Resolução de throttle:
+     *  1) Se body.throttle vier (UI nova): usa delays aleatórios + batches.
+     *  2) Senão, fallback ao sendRate antigo (msgs/seg fixo).
+     *
+     * pickDelay: gera int aleatório uniforme em [min, max] ms.
+     */
+    const sanitizedThrottle: import('@/lib/types').SendThrottle | null =
+      throttle && typeof throttle === 'object' &&
+      Number.isFinite(throttle.delayMinMs) && Number.isFinite(throttle.delayMaxMs) &&
+      throttle.delayMinMs >= 0 && throttle.delayMaxMs >= throttle.delayMinMs
+        ? {
+            delayMinMs: Math.min(throttle.delayMinMs, 600_000),
+            delayMaxMs: Math.min(throttle.delayMaxMs, 600_000),
+            ...(throttle.batchSize > 0 ? { batchSize: Math.min(throttle.batchSize, 1000) } : {}),
+            ...(throttle.batchPauseMinMs > 0 ? { batchPauseMinMs: Math.min(throttle.batchPauseMinMs, 3_600_000) } : {}),
+            ...(throttle.batchPauseMaxMs > 0 ? { batchPauseMaxMs: Math.min(throttle.batchPauseMaxMs, 3_600_000) } : {}),
+          }
+        : null;
+    const fallbackDelayMs = Math.max(1000 / sendRate, 50);
+    function pickDelay(min: number, max: number): number {
+      if (max <= min) return min;
+      return min + Math.floor(Math.random() * (max - min + 1));
+    }
+    function nextMessageDelay(): number {
+      if (sanitizedThrottle) return pickDelay(sanitizedThrottle.delayMinMs, sanitizedThrottle.delayMaxMs);
+      return fallbackDelayMs;
+    }
+    const delayMs = fallbackDelayMs; // mantido pra compat com pause-check (TTL cap)
 
     // Idempotência: CAS draft/sent/failed → sending. Bloqueia duplo-clique e re-trigger.
     const broadcastRef = adminDb.collection('broadcasts').doc(broadcastId);
@@ -441,7 +483,27 @@ export async function POST(req: NextRequest) {
 
     // Pré-cria 1 doc broadcastMessages por recipiente (status 'pending').
     // Os IDs ficam alinhados ao array para update direto no loop.
+    // IMPORTANTE: pré-criamos para TODOS os recipients, mesmo quando o operador
+    // optou por dispatch parcial (maxRecipients < total). Os que não forem
+    // processados nesta rodada ficam pending → resume retoma normalmente.
     const messageDocIds = await preCreateBroadcastMessages(businessId, broadcastId, recipients, consentBasis);
+
+    // Dispatch parcial: trunca o iteration target. Total stats refletem o
+    // recorte (truncado). Status final = 'paused' (mesmo fluxo do pause manual).
+    const totalRecipients = recipients.length;
+    const sanitizedMaxRecipients = Number.isFinite(maxRecipients) && maxRecipients > 0 && maxRecipients < totalRecipients
+      ? Math.floor(maxRecipients)
+      : null;
+    const recipientsToProcess = sanitizedMaxRecipients !== null
+      ? recipients.slice(0, sanitizedMaxRecipients)
+      : recipients;
+    const messageDocIdsToProcess = sanitizedMaxRecipients !== null
+      ? messageDocIds.slice(0, sanitizedMaxRecipients)
+      : messageDocIds;
+    const isPartialDispatch = sanitizedMaxRecipients !== null;
+    if (isPartialDispatch) {
+      console.log(`[Broadcast] partial dispatch: processing ${recipientsToProcess.length}/${totalRecipients} recipients`);
+    }
 
     const results: { contactId?: string; recipientId: string; status: string; externalMessageId?: string; error?: string }[] = [];
     const updatePromises: Promise<unknown>[] = [];
@@ -482,9 +544,9 @@ export async function POST(req: NextRequest) {
     }
 
     let wasPaused = false;
-    for (let i = 0; i < recipients.length; i++) {
-      const recipient = recipients[i];
-      const messageDocId = messageDocIds[i];
+    for (let i = 0; i < recipientsToProcess.length; i++) {
+      const recipient = recipientsToProcess[i];
+      const messageDocId = messageDocIdsToProcess[i];
       let response;
 
       // Check a cada iteração — depois do sleep da anterior. Cache TTL evita
@@ -531,8 +593,22 @@ export async function POST(req: NextRequest) {
             })
           );
         }
-        // Throttle mais agressivo para Baileys (recomenda-se 2-5s)
-        await sleep(Math.max(delayMs, 2000));
+        // Throttle: usa o configurado (com aleatoriedade), mas força mínimo
+        // de 2s pra Baileys mesmo se o operador configurou menor — protege
+        // o número contra banimento por envio uniformemente rápido.
+        const baileysDelay = Math.max(nextMessageDelay(), 2000);
+        await sleep(baileysDelay);
+        // Pausa de batch (se configurada) — Baileys também respeita
+        if (sanitizedThrottle?.batchSize && sanitizedThrottle.batchSize > 0
+            && (i + 1) % sanitizedThrottle.batchSize === 0
+            && i + 1 < recipientsToProcess.length) {
+          const batchPause = pickDelay(
+            sanitizedThrottle.batchPauseMinMs ?? 60_000,
+            sanitizedThrottle.batchPauseMaxMs ?? 180_000,
+          );
+          console.log(`[Broadcast] batch pause: ${Math.round(batchPause / 1000)}s after msg ${i + 1}`);
+          await sleep(batchPause);
+        }
         continue;
       }
 
@@ -723,8 +799,22 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // Throttle
-      await sleep(delayMs);
+      // Throttle entre msgs: delay aleatório se throttle configurado, senão
+      // delayMs fixo (sendRate legado).
+      await sleep(nextMessageDelay());
+      // Pausa de batch — só dispara quando atingiu múltiplo do batchSize e
+      // ainda há mais msgs pra enviar. Se for a última do batch+última do
+      // envio total, pula a pausa (não tem motivo).
+      if (sanitizedThrottle?.batchSize && sanitizedThrottle.batchSize > 0
+          && (i + 1) % sanitizedThrottle.batchSize === 0
+          && i + 1 < recipientsToProcess.length) {
+        const batchPause = pickDelay(
+          sanitizedThrottle.batchPauseMinMs ?? 60_000,
+          sanitizedThrottle.batchPauseMaxMs ?? 180_000,
+        );
+        console.log(`[Broadcast] batch pause: ${Math.round(batchPause / 1000)}s after msg ${i + 1}`);
+        await sleep(batchPause);
+      }
     }
 
     // Garante que todos os updates do loop completaram antes de gravar stats agregadas.
@@ -741,21 +831,26 @@ export async function POST(req: NextRequest) {
     const pendingCount = recipients.length - sent - failed;
 
     try {
-      // Quando pausado, mantém status='paused' (não overwrite para 'sent'/'failed').
-      // Mensagens não-processadas continuam como 'pending' em broadcastMessages —
-      // permite retomada futura ou retry-failed só nas que falharam.
-      const finalStatus = wasPaused
+      // Status final:
+      //   - 'paused' se pause manual no meio do loop OU dispatch parcial
+      //     (operador escolheu enviar só X de Y; o resto fica pendente
+      //     pra retomar via /api/broadcasts/[id]/resume)
+      //   - 'failed' só se TODAS as msgs processadas falharam
+      //   - 'sent' caso contrário
+      // recipientsToProcess.length é o que de fato foi iterado nesta rodada.
+      const isParcialOuPaused = wasPaused || isPartialDispatch;
+      const finalStatus = isParcialOuPaused
         ? 'paused'
-        : (failed === recipients.length ? 'failed' : 'sent');
+        : (failed === recipientsToProcess.length ? 'failed' : 'sent');
       const finalUpdate: Record<string, unknown> = {
         'stats.sent': sent,
         'stats.failed': failed,
-        'stats.total': recipients.length,
+        'stats.total': totalRecipients,
         status: finalStatus,
         updatedAt: new Date().toISOString(),
       };
-      // Só seta completedAt quando realmente concluiu (não pausou)
-      if (!wasPaused) finalUpdate.completedAt = new Date().toISOString();
+      // Só seta completedAt quando realmente concluiu (não pausou nem foi parcial)
+      if (!isParcialOuPaused) finalUpdate.completedAt = new Date().toISOString();
       await adminDb.collection('broadcasts').doc(broadcastId).update(finalUpdate);
     } catch (statsErr) {
       console.error('[Broadcast] Failed to update stats:', statsErr);
@@ -764,9 +859,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       broadcastId,
-      paused: wasPaused,
+      paused: wasPaused || isPartialDispatch,
+      partial: isPartialDispatch,
       stats: {
-        total: recipients.length,
+        total: totalRecipients,
+        processed: recipientsToProcess.length,
         sent,
         failed,
         pending: pendingCount,
