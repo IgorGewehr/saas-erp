@@ -90,6 +90,7 @@ import { WHATSAPP_TEMPLATE_CATALOG, renderTemplatePreview } from '@/lib/constant
 import { getAuth } from 'firebase/auth';
 import NotificationServerSection from './NotificationServerConfig';
 import WhatsAppProfileSection from './WhatsAppProfileSection';
+import QuickRepliesTab from './QuickRepliesTab';
 import { CachedImage } from '@/app/components/ui/CachedImage';
 import SidebarEditorTab from './SidebarEditorTab';
 import {
@@ -116,7 +117,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'setores' | 'enterprise' | 'canais' | 'modo' | 'agente' | 'cofre' | 'interface';
+type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'setores' | 'enterprise' | 'canais' | 'modo' | 'agente' | 'cofre' | 'interface' | 'respostas';
 
 interface CertStatus {
   hasCertificate: boolean;
@@ -6936,6 +6937,7 @@ export default function SettingsModule() {
     { id: 'usuarios'   as Tab, label: t('settings.tabs.usuarios', 'Usuários'),   icon: Users      },
     { id: 'setores'    as Tab, label: t('settings.tabs.setores',  'Setores'),    icon: Layers     },
     { id: 'canais'     as Tab, label: t('settings.tabs.canais',   'Canais'),     icon: Plug2      },
+    { id: 'respostas'  as Tab, label: t('settings.tabs.respostas', 'Respostas'), icon: Zap        },
     { id: 'enterprise' as Tab, label: t('settings.tabs.enterprise', 'Enterprise'), icon: Blocks     },
   ];
 
@@ -7056,6 +7058,7 @@ export default function SettingsModule() {
         {activeTab === 'setores'    && <SectorsTab key="setores" />}
 
         {activeTab === 'canais'     && <CanaisTab key="canais" />}
+        {activeTab === 'respostas'  && <QuickRepliesTab key="respostas" />}
         {activeTab === 'enterprise' && <EnterpriseTab key="enterprise" />}
       </AnimatePresence>
     </motion.div>
