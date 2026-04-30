@@ -212,6 +212,14 @@ export async function POST(req: NextRequest) {
        * antigo — ausência cai no comportamento legado.
        */
       throttle,
+      /**
+       * Quando definido, dispara apenas os primeiros N recipientes desta
+       * vez. Pré-cria broadcastMessages para TODOS (assim resume funciona
+       * naturalmente), mas só processa os primeiros N no loop. Status
+       * final fica 'paused' — operador retoma com os restantes via botão
+       * "Retomar".
+       */
+      maxRecipients,
     } = body;
 
     if (!businessId || !broadcastId || !rawRecipients?.length) {
@@ -475,7 +483,27 @@ export async function POST(req: NextRequest) {
 
     // Pré-cria 1 doc broadcastMessages por recipiente (status 'pending').
     // Os IDs ficam alinhados ao array para update direto no loop.
+    // IMPORTANTE: pré-criamos para TODOS os recipients, mesmo quando o operador
+    // optou por dispatch parcial (maxRecipients < total). Os que não forem
+    // processados nesta rodada ficam pending → resume retoma normalmente.
     const messageDocIds = await preCreateBroadcastMessages(businessId, broadcastId, recipients, consentBasis);
+
+    // Dispatch parcial: trunca o iteration target. Total stats refletem o
+    // recorte (truncado). Status final = 'paused' (mesmo fluxo do pause manual).
+    const totalRecipients = recipients.length;
+    const sanitizedMaxRecipients = Number.isFinite(maxRecipients) && maxRecipients > 0 && maxRecipients < totalRecipients
+      ? Math.floor(maxRecipients)
+      : null;
+    const recipientsToProcess = sanitizedMaxRecipients !== null
+      ? recipients.slice(0, sanitizedMaxRecipients)
+      : recipients;
+    const messageDocIdsToProcess = sanitizedMaxRecipients !== null
+      ? messageDocIds.slice(0, sanitizedMaxRecipients)
+      : messageDocIds;
+    const isPartialDispatch = sanitizedMaxRecipients !== null;
+    if (isPartialDispatch) {
+      console.log(`[Broadcast] partial dispatch: processing ${recipientsToProcess.length}/${totalRecipients} recipients`);
+    }
 
     const results: { contactId?: string; recipientId: string; status: string; externalMessageId?: string; error?: string }[] = [];
     const updatePromises: Promise<unknown>[] = [];
@@ -516,9 +544,9 @@ export async function POST(req: NextRequest) {
     }
 
     let wasPaused = false;
-    for (let i = 0; i < recipients.length; i++) {
-      const recipient = recipients[i];
-      const messageDocId = messageDocIds[i];
+    for (let i = 0; i < recipientsToProcess.length; i++) {
+      const recipient = recipientsToProcess[i];
+      const messageDocId = messageDocIdsToProcess[i];
       let response;
 
       // Check a cada iteração — depois do sleep da anterior. Cache TTL evita
@@ -573,7 +601,7 @@ export async function POST(req: NextRequest) {
         // Pausa de batch (se configurada) — Baileys também respeita
         if (sanitizedThrottle?.batchSize && sanitizedThrottle.batchSize > 0
             && (i + 1) % sanitizedThrottle.batchSize === 0
-            && i + 1 < recipients.length) {
+            && i + 1 < recipientsToProcess.length) {
           const batchPause = pickDelay(
             sanitizedThrottle.batchPauseMinMs ?? 60_000,
             sanitizedThrottle.batchPauseMaxMs ?? 180_000,
@@ -779,7 +807,7 @@ export async function POST(req: NextRequest) {
       // envio total, pula a pausa (não tem motivo).
       if (sanitizedThrottle?.batchSize && sanitizedThrottle.batchSize > 0
           && (i + 1) % sanitizedThrottle.batchSize === 0
-          && i + 1 < recipients.length) {
+          && i + 1 < recipientsToProcess.length) {
         const batchPause = pickDelay(
           sanitizedThrottle.batchPauseMinMs ?? 60_000,
           sanitizedThrottle.batchPauseMaxMs ?? 180_000,
@@ -803,21 +831,26 @@ export async function POST(req: NextRequest) {
     const pendingCount = recipients.length - sent - failed;
 
     try {
-      // Quando pausado, mantém status='paused' (não overwrite para 'sent'/'failed').
-      // Mensagens não-processadas continuam como 'pending' em broadcastMessages —
-      // permite retomada futura ou retry-failed só nas que falharam.
-      const finalStatus = wasPaused
+      // Status final:
+      //   - 'paused' se pause manual no meio do loop OU dispatch parcial
+      //     (operador escolheu enviar só X de Y; o resto fica pendente
+      //     pra retomar via /api/broadcasts/[id]/resume)
+      //   - 'failed' só se TODAS as msgs processadas falharam
+      //   - 'sent' caso contrário
+      // recipientsToProcess.length é o que de fato foi iterado nesta rodada.
+      const isParcialOuPaused = wasPaused || isPartialDispatch;
+      const finalStatus = isParcialOuPaused
         ? 'paused'
-        : (failed === recipients.length ? 'failed' : 'sent');
+        : (failed === recipientsToProcess.length ? 'failed' : 'sent');
       const finalUpdate: Record<string, unknown> = {
         'stats.sent': sent,
         'stats.failed': failed,
-        'stats.total': recipients.length,
+        'stats.total': totalRecipients,
         status: finalStatus,
         updatedAt: new Date().toISOString(),
       };
-      // Só seta completedAt quando realmente concluiu (não pausou)
-      if (!wasPaused) finalUpdate.completedAt = new Date().toISOString();
+      // Só seta completedAt quando realmente concluiu (não pausou nem foi parcial)
+      if (!isParcialOuPaused) finalUpdate.completedAt = new Date().toISOString();
       await adminDb.collection('broadcasts').doc(broadcastId).update(finalUpdate);
     } catch (statsErr) {
       console.error('[Broadcast] Failed to update stats:', statsErr);
@@ -826,9 +859,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       broadcastId,
-      paused: wasPaused,
+      paused: wasPaused || isPartialDispatch,
+      partial: isPartialDispatch,
       stats: {
-        total: recipients.length,
+        total: totalRecipients,
+        processed: recipientsToProcess.length,
         sent,
         failed,
         pending: pendingCount,

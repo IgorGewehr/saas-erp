@@ -96,6 +96,12 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
   const failedCount = counts.failed ?? 0;
   const pendingCount = counts.pending ?? 0;
   const [dispatching, setDispatching] = useState(false);
+  /**
+   * Quantidade a disparar nesta rodada. `null` = enviar todos (default).
+   * Quando definido para N < total, status final fica 'paused' e operador
+   * usa Retomar pra mandar o resto.
+   */
+  const [dispatchAmount, setDispatchAmount] = useState<number | null>(null);
   const [resuming, setResuming] = useState(false);
   const [cancelingSchedule, setCancelingSchedule] = useState(false);
   const canDispatch = broadcast.status === 'draft' && (broadcast.recipients?.length ?? 0) > 0;
@@ -123,7 +129,13 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
 
   const handleDispatch = async () => {
     if (!canDispatch) return;
-    if (!confirm(`Disparar campanha "${broadcast.name}" para ${broadcast.recipients?.length ?? 0} contato(s)?`)) return;
+    const total = broadcast.recipients?.length ?? 0;
+    const limit = dispatchAmount && dispatchAmount > 0 && dispatchAmount < total ? dispatchAmount : null;
+    const targetCount = limit ?? total;
+    const confirmMsg = limit
+      ? `Disparar primeira parte da campanha "${broadcast.name}" — ${limit} de ${total} contato(s)?\n\nOs ${total - limit} restantes ficarão pendentes e podem ser enviados depois via "Retomar".`
+      : `Disparar campanha "${broadcast.name}" para ${total} contato(s)?`;
+    if (!confirm(confirmMsg)) return;
     setDispatching(true);
     try {
       const token = await getAuth().currentUser?.getIdToken();
@@ -134,6 +146,7 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
         recipients: broadcast.recipients ?? [],
         sendRate: broadcast.sendRate ?? 10,
         ...(broadcast.throttle ? { throttle: broadcast.throttle } : {}),
+        ...(limit ? { maxRecipients: limit } : {}),
       };
       if (broadcast.templateName) body.templateName = broadcast.templateName;
       if (broadcast.templateLanguage) body.templateLanguage = broadcast.templateLanguage;
@@ -149,10 +162,13 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      const summary = data.paused
-        ? `Pausada após ${data.stats.sent} envio(s)`
-        : `Concluída — ${data.stats.sent} enviadas, ${data.stats.failed} falharam`;
+      const summary = data.partial
+        ? `Parte enviada — ${data.stats.sent}/${targetCount} disparadas. ${data.stats.pending} pendentes (use Retomar).`
+        : data.paused
+          ? `Pausada após ${data.stats.sent} envio(s)`
+          : `Concluída — ${data.stats.sent} enviadas, ${data.stats.failed} falharam`;
       toast.success(summary);
+      setDispatchAmount(null);
     } catch (err) {
       console.error('[BroadcastDetail] dispatch failed:', err);
       toast.error(err instanceof Error ? err.message : 'Erro ao disparar campanha');
@@ -330,23 +346,81 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
           </div>
         )}
 
-        {/* Dispatch toolbar — só quando draft */}
-        {canDispatch && (
-          <div className="px-5 py-2.5 bg-emerald-50 dark:bg-emerald-500/5 border-b border-emerald-100 dark:border-emerald-500/10 flex items-center justify-between">
-            <span className="text-xs text-emerald-700 dark:text-emerald-400">
-              <Send className="w-3 h-3 inline mr-1 -mt-0.5" />
-              Pronto para disparar — {broadcast.recipients?.length ?? 0} contato(s)
-            </span>
-            <button
-              type="button"
-              onClick={handleDispatch}
-              disabled={dispatching}
-              className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50 transition-colors"
-            >
-              {dispatching ? <><Loader2 className="w-3 h-3 animate-spin" /> Disparando...</> : <><Send className="w-3 h-3" /> Disparar agora</>}
-            </button>
-          </div>
-        )}
+        {/* Dispatch toolbar — só quando draft. Inclui opção de envio parcial. */}
+        {canDispatch && (() => {
+          const total = broadcast.recipients?.length ?? 0;
+          const targetCount = dispatchAmount && dispatchAmount > 0 && dispatchAmount < total ? dispatchAmount : total;
+          const isPartial = targetCount < total;
+          // Presets de porcentagem
+          const presets: { label: string; value: number }[] = [
+            { label: '25%', value: Math.max(1, Math.floor(total * 0.25)) },
+            { label: '50%', value: Math.max(1, Math.floor(total * 0.5)) },
+            { label: '75%', value: Math.max(1, Math.floor(total * 0.75)) },
+            { label: '100%', value: total },
+          ];
+          return (
+            <div className="px-5 py-3 bg-emerald-50 dark:bg-emerald-500/5 border-b border-emerald-100 dark:border-emerald-500/10 space-y-2">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <span className="text-xs text-emerald-700 dark:text-emerald-400">
+                  <Send className="w-3 h-3 inline mr-1 -mt-0.5" />
+                  {isPartial
+                    ? <>Disparar <strong>{targetCount}</strong> de {total} contato(s) · {total - targetCount} ficam pendentes</>
+                    : <>Pronto para disparar — {total} contato(s)</>
+                  }
+                </span>
+                <button
+                  type="button"
+                  onClick={handleDispatch}
+                  disabled={dispatching}
+                  className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50 transition-colors"
+                >
+                  {dispatching
+                    ? <><Loader2 className="w-3 h-3 animate-spin" /> Disparando...</>
+                    : <><Send className="w-3 h-3" /> {isPartial ? `Disparar ${targetCount}` : 'Disparar agora'}</>
+                  }
+                </button>
+              </div>
+              {/* Linha 2: presets % + input numérico */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[10px] font-bold text-emerald-700/70 dark:text-emerald-400/70 uppercase tracking-wider">
+                  Quantos:
+                </span>
+                {presets.map(p => (
+                  <button
+                    key={p.label}
+                    type="button"
+                    onClick={() => setDispatchAmount(p.value === total ? null : p.value)}
+                    className={cn(
+                      'px-2 py-0.5 rounded-md text-[10px] font-semibold border transition-colors',
+                      targetCount === p.value
+                        ? 'bg-emerald-600 text-white border-emerald-600'
+                        : 'border-emerald-200 dark:border-emerald-500/20 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-500/10',
+                    )}
+                  >
+                    {p.label} ({p.value})
+                  </button>
+                ))}
+                <span className="text-[10px] text-emerald-700/70 dark:text-emerald-400/70 ml-1">ou</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={total}
+                  value={dispatchAmount ?? ''}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === '') { setDispatchAmount(null); return; }
+                    const n = parseInt(v, 10);
+                    if (Number.isFinite(n) && n > 0) {
+                      setDispatchAmount(Math.min(n, total));
+                    }
+                  }}
+                  placeholder={`todos (${total})`}
+                  className="w-20 px-2 py-0.5 text-[10px] text-center bg-white dark:bg-white/[0.04] border border-emerald-200 dark:border-emerald-500/20 rounded-md text-emerald-900 dark:text-emerald-200 focus:outline-none focus:ring-1 focus:ring-emerald-400"
+                />
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Resume toolbar — só quando paused com pendentes */}
         {canResume && (
