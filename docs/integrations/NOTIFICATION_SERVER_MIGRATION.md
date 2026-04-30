@@ -1,13 +1,16 @@
 # Notification Server — Migração para integração com saas-erp (broadcasts)
 
-> Relatório de mudanças necessárias no repositório `notification-server`
-> (rodando em `c:\Users\Gustavo\Documents\Automa\notification-server`) para
-> integrar 100% com a feature de **broadcasts/campanhas** do saas-erp.
+> **Status: ✅ APLICADO** — commits `6fd24ca` (notification-server) +
+> `6e67af8` / `XXX` (saas-erp). Documento mantido como referência arquitetural.
 >
-> **Estado atual:** servidor funcional, suporta envio de email/WhatsApp/bulk
-> com auth via `INTERNAL_API_KEY`, multi-tenant via `appId`, SMTP configurável
-> por tenant via Firestore. **Gaps:** HTML rendering, jobId estável, webhook
-> de bounce.
+> Mudanças aplicadas no repositório `notification-server`
+> (`c:\Users\Gustavo\Documents\Automa\notification-server`) para integração
+> com a feature de **broadcasts/campanhas** do saas-erp.
+>
+> **Estado pós-migração:** servidor retorna `jobId` em envios imediatos,
+> reporta bounces via webhook HMAC-assinado, suporta HTML multipart.
+> **Apenas email** é integrado — WhatsApp do saas-erp roda nativo (Baileys
+> dentro do próprio app), notification-server fica só pro painel admin.
 
 ---
 
@@ -357,20 +360,38 @@ Mudança grande, sem retorno imediato. Documentado para futuro.
 
 Em ordem de prioridade:
 
-- [ ] **Gap 2.A** — Em `/api/send-email`: gerar `jobId` em envio imediato e
-      retornar `{ success: true, jobId, messageId }`.
-- [ ] **Gap 2.B** — Mesmo tratamento em `/api/send-whatsapp` (jobId estável,
-      retornar `{ success: true, jobId }`).
-- [ ] **Gap 2.C** — Em `/api/send-bulk`: array de results com jobId por
-      destinatário. (Opcional para broadcasts, que usam `/api/send-email`
-      individualmente — `send-bulk` não é usado pelo saas-erp).
-- [ ] **Gap 3.A** — Adicionar `SAAS_ERP_URL` e `SAAS_ERP_WEBHOOK_SECRET` em
-      `.env.example` + `.env` de produção.
-- [ ] **Gap 3.B** — Implementar `reportEmailBounce()` helper.
-- [ ] **Gap 3.C** — Hook de bounce síncrono no catch do `/api/send-email`.
+- [x] **Gap 2.A** — Em `/api/send-email`: gera `jobId` em envio imediato e
+      retorna `{ success: true, jobId, messageId }`. ✅
+- [ ] **Gap 2.B** — Mesmo tratamento em `/api/send-whatsapp`. **Skip** —
+      saas-erp usa Baileys nativo, esse endpoint só serve painel admin.
+- [ ] **Gap 2.C** — `/api/send-bulk` retornar jobIds. **Skip** — saas-erp
+      itera `/api/send-email` individualmente (controle de pause/throttle).
+- [x] **Gap 3.A** — Adicionar `SAAS_ERP_URL` e `SAAS_ERP_WEBHOOK_SECRET` em
+      `.env.example`. ✅ — falta atualizar `.env` de produção (ação manual).
+- [x] **Gap 3.B** — Implementar `reportEmailBounce()` helper + classifyEmailError(). ✅
+- [x] **Gap 3.C** — Hook de bounce síncrono no catch do `/api/send-email`. ✅
 - [ ] **Gap 3.D** — (parking lot) DSN parsing async via IMAP.
-- [ ] **Atualizar `README.md`** documentando o novo `jobId` no retorno e a
-      var `SAAS_ERP_URL`.
+- [ ] **Atualizar `README.md`** documentando novo `jobId` e `SAAS_ERP_URL`.
+
+### ⚠️ Ação manual necessária em produção
+
+No servidor onde rodam os containers do notification-server:
+
+```bash
+# 1. Edite o .env de produção
+cd /caminho/para/notification-server
+nano .env
+
+# 2. Adicione (no final do arquivo):
+SAAS_ERP_URL=https://aevo.tensorroot.com
+SAAS_ERP_WEBHOOK_SECRET=          # vazio = usa INTERNAL_API_KEY (recomendado)
+
+# 3. Pull do código + restart:
+git pull
+docker compose up -d --build
+```
+
+Sem essas vars, o servidor continua funcionando — só não reporta bounces.
 
 ---
 
