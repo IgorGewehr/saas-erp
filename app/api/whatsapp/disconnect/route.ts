@@ -9,6 +9,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import path from 'path';
 import fs from 'fs';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
+import { destroySession } from '../baileys-manager';
 
 const SESSIONS_DIR = path.join(process.cwd(), 'whatsapp-sessions');
 
@@ -21,6 +22,9 @@ export async function POST(req: NextRequest) {
 
     const authResult = await verifyAuth(req, businessId);
     if (isAuthError(authResult)) return authResult;
+
+    // Kill in-memory socket first so auto-restart doesn't fire while files are gone
+    destroySession(businessId);
 
     // Clear session files
     const sessionDir = path.join(SESSIONS_DIR, businessId);

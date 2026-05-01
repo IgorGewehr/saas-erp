@@ -44,6 +44,7 @@ export interface BaileysSession {
   listeners: Set<(data: Record<string, unknown>) => void>;
   isConnected: boolean;
   lastQr: string | null;
+  isDestroyed: boolean;
 }
 
 // ─── Global Singleton Map ────────────────────────────────────────────────────
@@ -505,6 +506,11 @@ export function destroySession(businessId: string) {
   const session = sessions.get(businessId);
   if (!session) return;
 
+  // Mark destroyed BEFORE sock.end() so the async connection.close handler
+  // sees isDestroyed=true and skips any auto-restart logic.
+  session.isDestroyed = true;
+  sessions.delete(businessId);
+
   for (const listener of session.listeners) {
     try { listener({ type: 'stream_end' }); } catch { /* ignore */ }
   }
@@ -513,8 +519,6 @@ export function destroySession(businessId: string) {
   if (session.sock) {
     try { session.sock.end(undefined); } catch { /* ignore */ }
   }
-
-  sessions.delete(businessId);
 }
 
 /**
@@ -548,6 +552,7 @@ export async function createBaileysSession(
     listeners: new Set(),
     isConnected: false,
     lastQr: null,
+    isDestroyed: false,
   };
 
   sessions.set(businessId, session);
@@ -651,6 +656,9 @@ export async function createBaileysSession(
       }
 
       if (connection === 'close') {
+        // Session was destroyed externally (e.g. disconnect endpoint) — do not restart.
+        if (session.isDestroyed) return;
+
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
 
