@@ -221,13 +221,19 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
     if (!confirm('Cancelar agendamento e voltar para rascunho?')) return;
     setCancelingSchedule(true);
     try {
-      const { updateDoc, deleteField, doc: docRef } = await import('firebase/firestore');
-      await updateDoc(docRef(db, 'broadcasts', broadcast.id), {
-        status: 'draft',
-        scheduledAt: deleteField(),
-        updatedAt: new Date().toISOString(),
+      // Usa endpoint dedicado com runTransaction. updateDoc client-side direto
+      // tinha race com o cron /process-scheduled (cron CAS scheduled→sending
+      // podia rodar entre a leitura do cliente e o update, deixando broadcast
+      // disparado depois do operador "cancelar").
+      const token = await getAuth().currentUser?.getIdToken();
+      const res = await fetch(`/api/broadcasts/${broadcast.id}/cancel-schedule`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ businessId: broadcast.businessId }),
       });
-      toast.success('Agendamento cancelado.');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      toast.success(data.message || 'Agendamento cancelado.');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Erro ao cancelar');
     } finally {

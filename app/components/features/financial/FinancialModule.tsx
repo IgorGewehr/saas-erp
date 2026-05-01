@@ -3360,18 +3360,23 @@ function EnterpriseFinancialCards({
       });
   }, [broadcasts, transactions]);
 
-  // CLV Top 10
+  // CLV Top 10 — agrega por cliente. Aceita transação que tenha contactId
+  // (caminho CRM/webhook) OU clientId (caminho PDV/Sale). Antes filtrava só
+  // por contactId, então vendas do PDV nunca apareciam no CLV — bug crítico
+  // do tier Enterprise. Como Client e CRMContact são a MESMA coleção
+  // (lib/types/index.ts:1832 — CRMContact = Client), ambos resolvem certo.
   const clvTop10 = useMemo(() => {
     const contactRevenue: Record<string, { name: string; total: number; count: number }> = {};
     transactions
-      .filter(tx => tx.type === 'receita' && tx.status === 'pago' && tx.contactId)
+      .filter(tx => tx.type === 'receita' && tx.status === 'pago' && (tx.contactId || tx.clientId))
       .forEach(tx => {
-        if (!contactRevenue[tx.contactId!]) {
-          const contact = crmContacts.find(c => c.id === tx.contactId);
-          contactRevenue[tx.contactId!] = { name: contact?.name || tx.clientName || t('financial.enterprise.unknown', 'Desconhecido'), total: 0, count: 0 };
+        const key = tx.contactId || tx.clientId!;
+        if (!contactRevenue[key]) {
+          const contact = crmContacts.find(c => c.id === key);
+          contactRevenue[key] = { name: contact?.name || tx.clientName || t('financial.enterprise.unknown', 'Desconhecido'), total: 0, count: 0 };
         }
-        contactRevenue[tx.contactId!].total += tx.amount;
-        contactRevenue[tx.contactId!].count += 1;
+        contactRevenue[key].total += tx.amount;
+        contactRevenue[key].count += 1;
       });
     return Object.entries(contactRevenue)
       .sort(([, a], [, b]) => b.total - a.total)
