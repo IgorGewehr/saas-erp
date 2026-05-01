@@ -1230,12 +1230,20 @@ function detectDuplicates(clients: Client[]): [Client, Client][] {
 }
 
 async function reassociateRelatedDocs(oldId: string, newId: string, businessId: string) {
+  // Cobrir TODAS as coleções que apontam pra Client. Sem isso, merge deixa
+  // crmDeals/crmActivities/kanbanCards/loyaltyHistory órfãos apontando pro
+  // doc desativado. Conversations.contactName também é denormalizado e fica
+  // stale (atualização separada após o merge — ver nameToPropagate abaixo).
   const targets = [
-    { col: 'conversations', field: 'crmContactId' },
-    { col: 'appointments',  field: 'clientId' },
-    { col: 'sales',         field: 'clientId' },
-    { col: 'transactions',  field: 'clientId' },
-    { col: 'transactions',  field: 'contactId' },
+    { col: 'conversations',  field: 'crmContactId' },
+    { col: 'appointments',   field: 'clientId' },
+    { col: 'sales',          field: 'clientId' },
+    { col: 'transactions',   field: 'clientId' },
+    { col: 'transactions',   field: 'contactId' },
+    { col: 'crmDeals',       field: 'contactId' },
+    { col: 'crmActivities',  field: 'contactId' },
+    { col: 'kanbanCards',    field: 'contactId' },
+    { col: 'loyaltyHistory', field: 'clientId' },
   ];
   for (const { col, field } of targets) {
     try {
@@ -1245,10 +1253,41 @@ async function reassociateRelatedDocs(oldId: string, newId: string, businessId: 
         where(field, '==', oldId),
       ));
       if (snap.empty) continue;
+      // Chunk em batches de 400 (limite Firestore é 500, deixa folga)
+      const docs = snap.docs;
+      for (let i = 0; i < docs.length; i += 400) {
+        const slice = docs.slice(i, i + 400);
+        const batch = writeBatch(db);
+        slice.forEach(d => batch.update(d.ref, { [field]: newId, updatedAt: new Date().toISOString() }));
+        await batch.commit();
+      }
+    } catch (err) {
+      console.warn(`[Clients merge] reassociate ${col}.${field} failed:`, err);
+    }
+  }
+}
+
+/**
+ * Atualiza Conversation.contactName em todas as conversas reassociadas pro
+ * client primário (campos denormalizados ficavam stale após merge).
+ */
+async function propagateContactNameToConversations(clientId: string, newName: string, businessId: string) {
+  try {
+    const snap = await getDocs(query(
+      collection(db, 'conversations'),
+      where('businessId', '==', businessId),
+      where('crmContactId', '==', clientId),
+    ));
+    if (snap.empty) return;
+    const docs = snap.docs;
+    for (let i = 0; i < docs.length; i += 400) {
+      const slice = docs.slice(i, i + 400);
       const batch = writeBatch(db);
-      snap.docs.forEach(d => batch.update(d.ref, { [field]: newId, updatedAt: new Date().toISOString() }));
+      slice.forEach(d => batch.update(d.ref, { contactName: newName, updatedAt: new Date().toISOString() }));
       await batch.commit();
-    } catch { /* best-effort */ }
+    }
+  } catch (err) {
+    console.warn('[Clients merge] propagate contactName failed:', err);
   }
 }
 
@@ -1329,6 +1368,11 @@ function MergeModal({
       // Await reassociation so conversations/sales/appointments point to the primary
       // before the dialog closes. Each collection has its own try-catch — won't throw.
       await reassociateRelatedDocs(secondary.id, primary.id, businessId);
+      // Propaga nome do primary nas conversas reassociadas (denorm fica stale)
+      const finalName = (primary.name || '').trim();
+      if (finalName) {
+        await propagateContactNameToConversations(primary.id, finalName, businessId);
+      }
 
       setMerged(prev => new Set([...prev, key]));
       onDone();
