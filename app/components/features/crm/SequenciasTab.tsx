@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
-import { collection, query, where, onSnapshot, addDoc, updateDoc, deleteDoc, doc, getDocs, increment } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, addDoc, updateDoc, deleteDoc, doc, getDocs, increment, writeBatch } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import type { CRMSequence, CRMSequenceStep, CRMSequenceEnrollment, CRMContact } from '@/lib/types';
 import {
@@ -245,21 +245,32 @@ export default function SequenciasTab({ businessId, userId, userName, contacts }
     const contact = contacts.find(c => c.id === contactId);
     if (!contact) return;
     const now = new Date().toISOString();
-    // Compute nextStepAt based on first step delay
     const firstStep = sequence.steps[0];
     const nextDate = firstStep
       ? new Date(Date.now() + firstStep.delayDays * 86_400_000).toISOString()
       : now;
     try {
-      await addDoc(collection(db, 'crmEnrollments'), {
+      // Antes: enrollment add → updateDoc enrolledCount → for-loop addDoc
+      // de cada activity. Falha no meio do loop deixava enrollment com só
+      // algumas activities — zumbis difíceis de detectar/limpar. Agora tudo
+      // vai num writeBatch (atômico). Limite Firestore = 500 ops; pra
+      // sequência típica (≤20 steps) cabe folgado.
+      const batch = writeBatch(db);
+
+      const enrollmentRef = doc(collection(db, 'crmEnrollments'));
+      batch.set(enrollmentRef, {
         businessId, sequenceId: sequence.id, sequenceName: sequence.name,
         contactId: contact.id, contactName: contact.name,
         status: 'active', currentStep: 0, enrolledAt: now, nextStepAt: nextDate,
         enrolledByUserId: userId, enrolledByUserName: userName,
       });
-      // Bump enrolledCount atomically to handle concurrent enrollments
-      await updateDoc(doc(db, 'crmSequences', sequence.id), { enrolledCount: increment(1), updatedAt: now });
-      // Create scheduled activities for each step
+
+      // enrolledCount no mesmo batch (incremento atômico mesmo em concorrência)
+      batch.update(doc(db, 'crmSequences', sequence.id), {
+        enrolledCount: increment(1),
+        updatedAt: now,
+      });
+
       let cumDays = 0;
       for (const step of sequence.steps) {
         cumDays += step.delayDays;
@@ -268,33 +279,57 @@ export default function SequenciasTab({ businessId, userId, userName, contacts }
           : step.action === 'send_email' ? 'email'
           : step.action === 'create_task' ? 'tarefa'
           : 'nota';
-        await addDoc(collection(db, 'crmActivities'), {
+        const actRef = doc(collection(db, 'crmActivities'));
+        batch.set(actRef, {
           businessId, contactId: contact.id,
+          enrollmentId: enrollmentRef.id, // facilita cleanup no cancel
           type: actType, title: `[Seq: ${sequence.name}] ${step.label ?? ACTION_CONFIG[step.action].label}`,
           notes: step.content,
           scheduledAt, isCompleted: false, createdAt: now, updatedAt: now,
           assignedTo: userId, assignedToName: userName,
         });
       }
+
+      await batch.commit();
       toast.success(`${contact.name} inscrito em "${sequence.name}"`);
     } catch (err) { console.error('[Seq] Enroll error:', err); toast.error('Erro ao inscrever contato'); }
   }, [businessId, contacts, userId, userName]);
 
   const handleCancelEnrollment = useCallback(async (enr: CRMSequenceEnrollment) => {
     try {
-      await updateDoc(doc(db, 'crmEnrollments', enr.id), { status: 'cancelled', updatedAt: new Date().toISOString() });
-      // Delete pending (not yet completed) activities created by this sequence enrollment
-      const prefix = `[Seq: ${enr.sequenceName}]`;
+      const now = new Date().toISOString();
+      const batch = writeBatch(db);
+      // Marca enrollment como cancelado
+      batch.update(doc(db, 'crmEnrollments', enr.id), { status: 'cancelled', updatedAt: now });
+      // DECREMENTA enrolledCount — antes faltava esse passo, count crescia
+      // perpetuamente sem refletir cancelamentos.
+      batch.update(doc(db, 'crmSequences', enr.sequenceId), {
+        enrolledCount: increment(-1),
+        updatedAt: now,
+      });
+      await batch.commit();
+
+      // Limpa activities pendentes — usa enrollmentId quando disponível, mas
+      // mantém fallback no prefixo do título pra enrollments antigas (sem campo).
       const actSnap = await getDocs(query(
         collection(db, 'crmActivities'),
         where('businessId', '==', enr.businessId),
         where('contactId', '==', enr.contactId),
       ));
+      const prefix = `[Seq: ${enr.sequenceName}]`;
       const orphans = actSnap.docs.filter(d => {
-        const data = d.data();
-        return !data.isCompleted && typeof data.title === 'string' && data.title.startsWith(prefix);
+        const data = d.data() as { isCompleted?: boolean; title?: string; enrollmentId?: string };
+        if (data.isCompleted) return false;
+        if (data.enrollmentId === enr.id) return true;
+        return typeof data.title === 'string' && data.title.startsWith(prefix);
       });
-      await Promise.all(orphans.map(d => deleteDoc(d.ref)));
+      // Chunk de deletes em batches
+      for (let i = 0; i < orphans.length; i += 400) {
+        const slice = orphans.slice(i, i + 400);
+        const delBatch = writeBatch(db);
+        slice.forEach(d => delBatch.delete(d.ref));
+        await delBatch.commit();
+      }
       toast.success('Inscrição cancelada');
     } catch (err) {
       console.error('[Seq] Cancel enrollment error:', err);
