@@ -280,6 +280,25 @@ export function primaryConnectionDocId(businessId: string, type: ChannelConnecti
   return `${businessId}__${type}__primary`;
 }
 
+/**
+ * Garante que existe uma connection Baileys 'business' primária pro businessId.
+ * Cria do zero se nem businesses.channels.whatsappBaileys existe (caso de
+ * primeiro QR scan em tenant novo).
+ *
+ * Retorna a connection garantida (campos populados), ideal pra usar como
+ * identificador de sessão Baileys.
+ */
+export async function ensurePrimaryBaileysBusinessConnection(
+  businessId: string,
+): Promise<ChannelConnection> {
+  const result = await ensurePrimaryBusinessConnection(
+    businessId,
+    'whatsapp_baileys',
+    () => ({ displayName: 'WhatsApp Web' }),
+  );
+  return result.connection;
+}
+
 // ─── Writes ────────────────────────────────────────────────────────────────
 
 /**

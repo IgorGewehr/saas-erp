@@ -393,7 +393,15 @@ export async function POST(req: NextRequest) {
         }
 
         if (isBaileys) {
-          result = await sendWhatsAppBaileys(businessId, recipientId, content, conversationId, mediaOpts);
+          // resolvedConnectionId vem do bloco anterior que carregou a connection
+          // a partir de conversation.channelConnectionId. Quando presente, usa
+          // a sessão Baileys daquela conexão específica (essencial pra canais
+          // pessoais de operador na Phase 2). Se ausente, sendWhatsAppBaileys
+          // resolve pra primary business automaticamente.
+          result = await sendWhatsAppBaileys(
+            businessId, recipientId, content, conversationId, mediaOpts,
+            resolvedConnectionId || undefined,
+          );
         } else {
           // Resolve config Cloud: novo campo whatsappCloud > legado whatsapp
           const cloudConfig = channels.whatsappCloud ?? channels.whatsapp;
@@ -477,8 +485,13 @@ async function sendWhatsAppBaileys(
   content: string,
   conversationId: string,
   mediaOpts?: MediaOptions,
+  connectionId?: string,
 ): Promise<{ externalMessageId: string }> {
-  const session = sessions.get(businessId);
+  // Resolve qual sessão usar. Se connectionId fornecido (canal específico
+  // da conversa via Phase 2), alvo direto. Senão, usa a primary business.
+  const { ensurePrimaryBaileysBusinessConnection } = await import('@/lib/services/channels/channelConnections');
+  const sessionKey = connectionId || (await ensurePrimaryBaileysBusinessConnection(businessId)).id;
+  const session = sessions.get(sessionKey);
 
   if (!session || !session.sock) {
     throw new Error('WhatsApp Web não está conectado. Reconecte escaneando o QR Code em Configurações.');
