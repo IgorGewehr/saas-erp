@@ -243,13 +243,46 @@ export async function POST(req: NextRequest) {
     }
 
     const businessData = businessSnap.data();
-    const channels: ChannelCredentials | undefined = businessData?.channels;
+    let channels: ChannelCredentials | undefined = businessData?.channels;
+    // ID da connection usada (preferido) ou null (fallback legacy). Carregado
+    // logo abaixo a partir de conversation.channelConnectionId.
+    let resolvedConnectionId: string | null = null;
+
+    // Refactor multi-canal Fase 1: prefere ler config da channelConnections quando
+    // a conversation tem channelConnectionId. Cai para businesses.channels apenas
+    // quando a conversa é pré-refactor (campo undefined).
+    if (conversationId) {
+      try {
+        const convSnap = await adminDb.doc(`conversations/${conversationId}`).get();
+        const convChannelConnId = convSnap.data()?.channelConnectionId as string | undefined;
+        if (convChannelConnId) {
+          const { adminDb: _adminDb } = await import('@/lib/config/firebaseAdmin');
+          const connSnap = await _adminDb.collection('channelConnections').doc(convChannelConnId).get();
+          if (connSnap.exists) {
+            const { buildLegacyChannelsFromConnection } = await import('@/lib/services/channels/channelConnections');
+            const conn = { ...(connSnap.data() as import('@/lib/types').ChannelConnection), id: connSnap.id };
+            // Sobrescreve apenas o tipo correspondente; preserva outros canais
+            // do businesses.channels caso existam (ex: enviar via WA mantendo
+            // FB/IG no objeto se o caller precisasse).
+            const fromConn = buildLegacyChannelsFromConnection(conn);
+            channels = { ...(channels || {}), ...fromConn };
+            resolvedConnectionId = conn.id;
+          }
+        }
+      } catch (err) {
+        console.warn('[Send] Failed to resolve channels via channelConnections, using legacy:', err);
+      }
+    }
 
     if (!channels) {
       return NextResponse.json(
         { error: 'Nenhum canal de comunicação configurado para esta empresa', code: 'disconnected' },
         { status: 400 },
       );
+    }
+    // Log defensivo da origem dos credentials — útil pra depurar quando há ambos
+    if (resolvedConnectionId) {
+      console.log(`[Send] Using channelConnection: ${resolvedConnectionId} (channel: ${channel})`);
     }
 
     // ── Channel connectivity pre-check ──────────────────────────────────────

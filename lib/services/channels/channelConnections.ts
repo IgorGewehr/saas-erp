@@ -314,3 +314,71 @@ export function canUserManageConnection(
 }
 
 export type { ChannelOwnerType };
+
+// ─── Backwards-compat shim ─────────────────────────────────────────────────
+
+/**
+ * Constrói um objeto ChannelCredentials-shaped a partir de uma ChannelConnection,
+ * pra reusar as funções legadas de send (sendWhatsApp, sendFacebookMessenger, etc)
+ * sem ter que refatorá-las completamente. Cobre apenas o tipo da connection
+ * (não acumula múltiplos tipos num único objeto).
+ */
+export function buildLegacyChannelsFromConnection(
+  conn: ChannelConnection,
+): ChannelCredentials {
+  const out: ChannelCredentials = {};
+  if (conn.type === 'whatsapp_cloud') {
+    out.whatsappCloud = {
+      isConnected: !!conn.isConnected,
+      phoneNumberId: conn.phoneNumberId || '',
+      accessToken: conn.accessToken || '',
+      wabaId: conn.wabaId,
+      displayName: conn.displayName,
+      displayPhoneNumber: conn.phoneNumber,
+      tokenExpiresAt: conn.tokenExpiresAt,
+      connectedAt: conn.connectedAt,
+      disconnectedAt: conn.disconnectedAt,
+    };
+    // Mantém também `whatsapp` legado preenchido pra que callers que ainda lêem
+    // `channels.whatsapp` (fluxo legado) continuem funcionando.
+    out.whatsapp = {
+      isConnected: !!conn.isConnected,
+      phoneNumberId: conn.phoneNumberId || '',
+      businessAccountId: conn.wabaId || '',
+      accessToken: conn.accessToken || '',
+      wabaId: conn.wabaId,
+      displayName: conn.displayName,
+      displayPhoneNumber: conn.phoneNumber,
+      phoneNumber: conn.phoneNumber,
+      tokenExpiresAt: conn.tokenExpiresAt,
+      connectedAt: conn.connectedAt,
+      disconnectedAt: conn.disconnectedAt,
+    };
+  } else if (conn.type === 'whatsapp_baileys') {
+    out.whatsappBaileys = {
+      isConnected: !!conn.isConnected,
+      phoneNumber: conn.phoneNumber || '',
+      displayPhoneNumber: conn.phoneNumber,
+      connectedAt: conn.connectedAt,
+      disconnectedAt: conn.disconnectedAt,
+    };
+  } else if (conn.type === 'facebook') {
+    out.facebook = {
+      isConnected: !!conn.isConnected,
+      pageId: conn.pageId || '',
+      pageAccessToken: conn.pageAccessToken || '',
+      pageName: conn.pageName,
+      connectedAt: conn.connectedAt,
+      disconnectedAt: conn.disconnectedAt,
+    };
+  } else if (conn.type === 'instagram') {
+    out.instagram = {
+      isConnected: !!conn.isConnected,
+      accountId: conn.igAccountId || '',
+      accountName: conn.igAccountName,
+      connectedAt: conn.connectedAt,
+      disconnectedAt: conn.disconnectedAt,
+    };
+  }
+  return out;
+}
