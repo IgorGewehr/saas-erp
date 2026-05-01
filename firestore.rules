@@ -673,6 +673,65 @@ service cloud.firestore {
     }
 
     // ============================================
+    // CHANNEL CONNECTIONS COLLECTION
+    // Cada doc é uma conexão de canal (WhatsApp Cloud, WhatsApp Baileys,
+    // Facebook, Instagram). Pode pertencer ao business ('business' ownerType,
+    // canal compartilhado) ou a um usuário específico ('user', canal pessoal
+    // do operador, suportado apenas em Baileys).
+    // ============================================
+    match /channelConnections/{connectionId} {
+      // Read:
+      //   - admin/founder: tudo
+      //   - operator+: connections 'business' OU connections 'user' do próprio uid
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && (
+                    isAdmin()
+                    || (resource.data.ownerType == 'business' && isOperator())
+                    || (resource.data.ownerType == 'user'
+                        && resource.data.ownerId == request.auth.uid)
+                  );
+
+      // Create:
+      //   - admin/founder: connections de qualquer ownerType
+      //   - operator+: apenas connections 'user' com ownerId == próprio uid
+      // Garante que não dá pra criar canal pessoal alheio.
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && (
+                      isAdmin()
+                      || (request.resource.data.ownerType == 'user'
+                          && request.resource.data.ownerId == request.auth.uid
+                          && isOperator())
+                    );
+
+      // Update:
+      //   - admin/founder: pode tudo
+      //   - operator+: só seu próprio canal 'user' (e não pode mudar ownership)
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && incomingBelongsToBusiness()
+                    && request.resource.data.ownerType == resource.data.ownerType
+                    && request.resource.data.ownerId == resource.data.ownerId
+                    && (
+                      isAdmin()
+                      || (resource.data.ownerType == 'user'
+                          && resource.data.ownerId == request.auth.uid)
+                    );
+
+      // Delete:
+      //   - admin/founder: qualquer
+      //   - operator+: só própria 'user' connection
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && (
+                      isAdmin()
+                      || (resource.data.ownerType == 'user'
+                          && resource.data.ownerId == request.auth.uid)
+                    );
+    }
+
+    // ============================================
     // WEBHOOK FAILURES COLLECTION (Dead-letter queue)
     // ============================================
     match /webhookFailures/{docId} {
