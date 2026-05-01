@@ -4,6 +4,7 @@ import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
+import { useCurrencyFormat } from './CurrencyContext';
 import { useTranslation } from 'react-i18next';
 import { collection, query, where, orderBy, getDocs, addDoc, deleteDoc, doc, writeBatch } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
@@ -42,6 +43,7 @@ const STATUS_LABELS: Record<ItemStatus, string> = {
 };
 
 export default function ConciliacaoTab({ businessId, transactions, bankAccounts }: Props) {
+  const formatCurrency = useCurrencyFormat();
   const { t } = useTranslation();
   const { user } = useAuth();
   const fileRef = useRef<HTMLInputElement>(null);

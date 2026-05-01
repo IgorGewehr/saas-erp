@@ -102,6 +102,8 @@ import { toast } from 'react-toastify';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
+import { CurrencyProvider, useCurrencyFormat } from './CurrencyContext';
+import CurrencyToggle from './CurrencyToggle';
 import {
   exportTransactionsCSV,
   exportTransactionsPDF,
@@ -251,7 +253,8 @@ const RECURRENCE_LABELS: Record<string, string> = {
 // COMPONENT
 // ==========================================
 
-export default function FinancialModule() {
+function FinancialModuleBody() {
+  const formatCurrency = useCurrencyFormat();
   const { t } = useTranslation();
   const { isDark } = useTheme();
   const { business, user, sectors } = useAuth();
@@ -1398,6 +1401,7 @@ export default function FinancialModule() {
                 {showBalances ? <Eye size={16} className="text-slate-500 dark:text-gray-400" /> : <EyeOff size={16} className="text-slate-500 dark:text-gray-400" />}
               </IconButton>
             </Tooltip>
+            <CurrencyToggle />
             <motion.button
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
@@ -2505,6 +2509,7 @@ function OverviewContent({
   onGoToDAS: () => void;
   businessId: string;
 }) {
+  const formatCurrency = useCurrencyFormat();
   const { t } = useTranslation();
   const hiddenValue = '******';
   const [dashboardPeriod, setDashboardPeriod] = useState<DashboardPeriod>('30d');
@@ -3281,6 +3286,7 @@ function EnterpriseFinancialCards({
   showBalances: boolean;
   isDark: boolean;
 }) {
+  const formatCurrency = useCurrencyFormat();
   const { t } = useTranslation();
   const hiddenValue = '******';
 
@@ -3600,6 +3606,7 @@ function CashFlowProjection({
   bankAccounts: BankAccount[];
   businessName: string;
 }) {
+  const formatCurrency = useCurrencyFormat();
   const { isDark } = useTheme();
   const [viewMode, setViewMode]   = useState<'daily' | 'weekly'>('weekly');
   const [horizon,  setHorizon]    = useState<30 | 60 | 90>(30);
@@ -3900,6 +3907,7 @@ function CashFlowProjection({
 // ==========================================
 
 function AuditLogView({ businessId }: { businessId?: string }) {
+  const formatCurrency = useCurrencyFormat();
   const [logs, setLogs] = useState<import('@/lib/types').FinancialAuditLog[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -4078,6 +4086,7 @@ function competenciaLabel(c: string): string {
 }
 
 function DASContent({ transactions, businessId }: { transactions: Transaction[]; businessId: string }) {
+  const formatCurrency = useCurrencyFormat();
   const { user } = useAuth();
   const { isDark } = useTheme();
   const queryClient = useQueryClient();
@@ -4443,6 +4452,7 @@ function DASContent({ transactions, businessId }: { transactions: Transaction[];
 
 // Widget for OverviewContent dashboard
 function DASWidget({ businessId, onGoToDAS }: { businessId: string; onGoToDAS: () => void }) {
+  const formatCurrency = useCurrencyFormat();
   const [record, setRecord] = useState<DasRecord | null | undefined>(undefined);
 
   useEffect(() => {
@@ -4522,6 +4532,7 @@ function BudgetContent({
   transactions: Transaction[];
   businessId: string;
 }) {
+  const formatCurrency = useCurrencyFormat();
   const { user, business } = useAuth();
   const queryClient = useQueryClient();
   const { isDark } = useTheme();
@@ -4995,6 +5006,7 @@ function InstallmentGroupDialog({
   onPayAll: () => Promise<void>;
   showBalances: boolean;
 }) {
+  const formatCurrency = useCurrencyFormat();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingDate, setEditingDate] = useState('');
   const [saving, setSaving] = useState<string | null>(null);
@@ -5210,6 +5222,7 @@ function TransactionsContent({
   onSaveFilters: () => void;
   onClearFilters: () => void;
 }) {
+  const formatCurrency = useCurrencyFormat();
   const { t } = useTranslation();
   const { sectors } = useAuth();
   const [showFilters, setShowFilters] = useState(false);
@@ -5551,6 +5564,7 @@ function CommissionsContent({
   showBalances: boolean;
   businessName: string;
 }) {
+  const formatCurrency = useCurrencyFormat();
   const { business } = useAuth();
   const queryClient = useQueryClient();
   const [period, setPeriod] = useState<CommissionPeriod>('mes');
@@ -5934,6 +5948,7 @@ const DEDUCAO_CATEGORIES = new Set(['Impostos']);
 const FINANCEIRO_RECEITA_CATEGORIES = new Set(['Juros']);
 
 function DREContent({ transactions, businessName }: { transactions: Transaction[]; businessName: string }) {
+  const formatCurrency = useCurrencyFormat();
   const { sectors } = useAuth();
   const [period, setPeriod] = useState<DrePeriod>('mensal');
   const [selectedMonth, setSelectedMonth] = useState(() => {
@@ -6509,6 +6524,7 @@ function BankAccountsContent({
   onEdit: (account: BankAccount) => void;
   onDelete: (id: string) => void;
 }) {
+  const formatCurrency = useCurrencyFormat();
   const { t } = useTranslation();
   const activeAccounts = accounts.filter((a) => a.isActive);
   const totalBalance = activeAccounts.reduce((s, a) => s + a.balance, 0);
@@ -6707,6 +6723,7 @@ function RecurringContent({
   onEndSeries: (txId: string, cancelCurrent: boolean) => Promise<void>;
   onAdjustValue: (txId: string, mode: 'pct' | 'fixed', value: number) => Promise<void>;
 }) {
+  const formatCurrency = useCurrencyFormat();
   const { isDark } = useTheme();
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState<RecurringFilter>('all');
@@ -7885,5 +7902,18 @@ function RecurringContent({
         </DialogActions>
       </Dialog>
     </div>
+  );
+}
+
+/**
+ * Wrapper que injeta o CurrencyProvider em volta do FinancialModuleBody.
+ * Mantemos o body como função separada pra que `useCurrencyFormat()` possa
+ * ser chamado dentro dele e seus filhos vendo o context corretamente.
+ */
+export default function FinancialModule() {
+  return (
+    <CurrencyProvider>
+      <FinancialModuleBody />
+    </CurrencyProvider>
   );
 }
