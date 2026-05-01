@@ -103,8 +103,11 @@ export async function GET(req: NextRequest) {
       closed = true;
       session?.listeners.delete(listener);
 
+      // CRÍTICO: passa sessionKey explicitamente. Antes era destroySession(businessId)
+      // sem connectionId — destruía a primary business mesmo quando o user fechou
+      // o modal de canal pessoal, sequestrando a sessão da empresa.
       if (session && session.listeners.size === 0 && !session.isConnected) {
-        destroySession(businessId);
+        void destroySession(businessId, sessionKey);
       }
     },
   });

@@ -113,28 +113,74 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: stri
   }
 
   try {
-    // Mata sessão em memória + arquivos do disco (se for Baileys)
+    // Mata sessão em memória + arquivos do disco (se for Baileys).
+    // destroySession é await aqui — sem ele, o Baileys ainda mantém handles
+    // abertos no sessionDir. Em Windows, rmSync logo após dispara EBUSY.
+    // Pequeno delay extra cobre handles assíncronos do useMultiFileAuthState
+    // que talvez ainda estejam fechando.
     if (conn.type === 'whatsapp_baileys') {
       try {
         await destroySession(conn.businessId, id);
       } catch (destroyErr) {
         console.warn('[connections DELETE] destroySession failed:', destroyErr);
       }
+      // Aguarda 100ms pra handles do Baileys auth state liberarem
+      await new Promise((r) => setTimeout(r, 100));
       const dir = path.join(SESSIONS_DIR, id);
-      if (fs.existsSync(dir)) {
+      // Retry-on-EBUSY: 3 tentativas com backoff curto (cobre Windows)
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (!fs.existsSync(dir)) break;
         try {
           fs.rmSync(dir, { recursive: true, force: true });
+          break;
         } catch (rmErr) {
-          console.warn('[connections DELETE] rmSync failed:', rmErr);
+          const isLast = attempt === 2;
+          if (isLast) {
+            console.warn('[connections DELETE] rmSync failed after retries:', rmErr);
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
         }
       }
+    }
+
+    // Antes de apagar/desativar, desvincula conversations apontando pra esta
+    // connection — senão ficam órfãs com channelConnectionId pra doc inexistente,
+    // o que faz send/route.ts cair pro fallback legacy silencioso e mensagens
+    // podem ir pelo canal-empresa por engano.
+    try {
+      const { FieldValue } = await import('firebase-admin/firestore');
+      const orphanSnap = await adminDb.collection('conversations')
+        .where('businessId', '==', conn.businessId)
+        .where('channelConnectionId', '==', id)
+        .get();
+      // Chunk em batches (Firestore: 500 ops max)
+      for (let i = 0; i < orphanSnap.docs.length; i += 400) {
+        const slice = orphanSnap.docs.slice(i, i + 400);
+        const batch = adminDb.batch();
+        for (const d of slice) {
+          batch.update(d.ref, {
+            channelConnectionId: FieldValue.delete(),
+            updatedAt: new Date().toISOString(),
+          });
+        }
+        await batch.commit();
+      }
+      if (orphanSnap.size > 0) {
+        console.log(`[connections DELETE] Unlinked ${orphanSnap.size} conversation(s) from connection ${id}`);
+      }
+    } catch (unlinkErr) {
+      console.error('[connections DELETE] Failed to unlink conversations:', unlinkErr);
+      return NextResponse.json({
+        error: 'Falha ao desvincular conversações. Tente novamente.',
+      }, { status: 500 });
     }
 
     // Para business-primary connections, NÃO apaga o doc — apenas marca
     // isActive=false e isConnected=false. Senão, perderíamos referência
     // histórica de conversations vinculadas a ele.
-    // Para 'user' connections, podemos apagar o doc inteiro porque conversations
-    // nunca foram criadas via canal pessoal antes da Phase 2.
+    // Para 'user' connections, apaga o doc inteiro (conversations já foram
+    // desvinculadas acima, então sem órfãos).
     if (conn.ownerType === 'business' && conn.isPrimary) {
       await updateConnection(id, {
         isConnected: false,

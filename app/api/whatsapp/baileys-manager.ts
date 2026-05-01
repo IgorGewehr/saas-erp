@@ -82,10 +82,16 @@ async function resolveConnectionIdForBaileys(
 /**
  * Espelho local do connectionId em Map<businessId, connectionId> pra paths
  * síncronos que precisam da chave (ex: callers legados que só têm businessId
- * em mãos). Populado depois que resolveConnectionIdForBaileys roda. Cache
- * leve — invalidado quando session é destruída.
+ * em mãos). Populado depois que resolveConnectionIdForBaileys roda.
+ *
+ * Como `sessions`, vive em globalThis pra sobreviver HMR em dev — sem isso
+ * o cache zerava em cada reload e getConnectedSession(businessId) retornava
+ * null mesmo com sessão viva no Map global.
  */
-const businessToConnectionId = new Map<string, string>();
+if (!globalSessions.__baileysBusinessToConn) {
+  globalSessions.__baileysBusinessToConn = new Map<string, string>();
+}
+const businessToConnectionId = globalSessions.__baileysBusinessToConn as Map<string, string>;
 function rememberBusinessKey(businessId: string, connectionId: string): void {
   businessToConnectionId.set(businessId, connectionId);
 }
@@ -364,6 +370,7 @@ export async function sendBaileysBroadcastMessage(
 
 async function handleInboundMessage(
   businessId: string,
+  connectionId: string,
   waMessage: WAMessage,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sock: any,
@@ -480,6 +487,11 @@ async function handleInboundMessage(
         businessId,
         channel: 'whatsapp',
         connectedVia: 'baileys',
+        // Vincula a conversa ao canal específico que recebeu a msg.
+        // Essencial pra reply: send/route.ts resolve a sessão correta a
+        // partir desse campo. Sem isso, send caía pra primary business
+        // mesmo quando a msg veio em canal pessoal (ownerType='user').
+        channelConnectionId: connectionId,
         contactName,
         contactPhone: formatPhone(senderPhone),
         contactExternalId: senderPhone,
@@ -532,6 +544,12 @@ async function handleInboundMessage(
       }
       if (avatarUrl && !existingConv.contactAvatarUrl) {
         convUpdate.contactAvatarUrl = avatarUrl;
+      }
+      // Backfill / correção do channelConnectionId — Baileys é autoritativo
+      // (sabemos exatamente qual sessão entregou a msg). Atualiza se ausente
+      // OU se diferente (caso de migração de canal-empresa pra pessoal).
+      if (existingConv.channelConnectionId !== connectionId) {
+        convUpdate.channelConnectionId = connectionId;
       }
 
       await adminDb.collection('conversations').doc(conversationId).update(convUpdate);
@@ -713,17 +731,28 @@ export async function createBaileysSession(
   const newDir = path.join(SESSIONS_DIR, sessionKey);
   const legacyDir = path.join(SESSIONS_DIR, businessId);
   if (legacyDir !== newDir && fs.existsSync(legacyDir) && !fs.existsSync(newDir)) {
+    let migrated = false;
     try {
       fs.renameSync(legacyDir, newDir);
       console.log(`[Baileys] Migrated session dir: ${businessId} → ${sessionKey}`);
+      migrated = true;
     } catch (renameErr) {
       try {
         fs.cpSync(legacyDir, newDir, { recursive: true });
         fs.rmSync(legacyDir, { recursive: true, force: true });
         console.log(`[Baileys] Copied session dir: ${businessId} → ${sessionKey}`);
+        migrated = true;
       } catch (cpErr) {
-        console.error('[Baileys] Failed to migrate session dir:', renameErr, cpErr);
+        console.error('[Baileys] CRITICAL: Failed to migrate session dir:', renameErr, cpErr);
       }
+    }
+    if (!migrated) {
+      // Cleanup do dir parcial se cpSync deixou algo
+      try { if (fs.existsSync(newDir)) fs.rmSync(newDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      throw new Error(
+        `Falha ao migrar sessão Baileys (${businessId} → ${sessionKey}). ` +
+        `Re-escaneie o QR Code em Configurações → Canais.`
+      );
     }
   }
   const sessionDir = newDir;
@@ -797,7 +826,7 @@ export async function createBaileysSession(
             if (Date.now() - tsMs > 5 * 60 * 1000) continue; // older than 5 min → skip
           }
 
-          await handleInboundMessage(businessId, waMsg, sock);
+          await handleInboundMessage(businessId, sessionKey, waMsg, sock);
         } catch (err) {
           console.error('[Baileys] Erro ao processar mensagem:', err);
         }
