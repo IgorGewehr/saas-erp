@@ -76,12 +76,21 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
         const token = await getAuth().currentUser?.getIdToken();
         const url = `/api/broadcasts/${broadcast.id}/messages?businessId=${encodeURIComponent(broadcast.businessId)}&limit=500`;
         const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        // 404 = route não compilada ainda (dev server precisa restart depois
+        // de adicionar nova route). Não polui console com error.
+        if (res.status === 404) {
+          console.warn('[BroadcastDetail] /messages route não disponível (404) — dev server pode precisar restart');
+          return;
+        }
+        if (!res.ok) {
+          console.warn(`[BroadcastDetail] /messages retornou HTTP ${res.status}`);
+          return;
+        }
         const data = await res.json();
         const apiMessages = (data.messages || []) as BroadcastMessage[];
-        setMessages(apiMessages);
+        if (apiMessages.length > 0) setMessages(apiMessages);
       } catch (err) {
-        console.error('[BroadcastDetail] API fallback failed:', err);
+        console.warn('[BroadcastDetail] API fallback failed:', err);
       } finally {
         setLoading(false);
       }
