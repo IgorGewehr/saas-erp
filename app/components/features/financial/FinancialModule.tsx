@@ -104,6 +104,7 @@ import { cn } from '@/lib/utils';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
 import { CurrencyProvider, useCurrencyFormat } from './CurrencyContext';
 import CurrencyToggle from './CurrencyToggle';
+import RecurrenceDetailDialog from './RecurrenceDetailDialog';
 import {
   exportTransactionsCSV,
   exportTransactionsPDF,
@@ -6738,6 +6739,7 @@ function RecurringContent({
   const [adjustValue, setAdjustValue] = useState('');
   const [adjustSaving, setAdjustSaving] = useState(false);
   const [historyExpandedId, setHistoryExpandedId] = useState<string | null>(null);
+  const [detailTxId, setDetailTxId] = useState<string | null>(null);
   const [latePayingId, setLatePayingId] = useState<string | null>(null);
   const [lateConfirmedAmount, setLateConfirmedAmount] = useState('');
   const [viewMode, setViewMode] = useState<'list' | 'calendar'>('list');
@@ -7156,11 +7158,20 @@ function RecurringContent({
                     <Percent size={14} />
                   </button>
 
-                  {/* Histórico de ocorrências */}
+                  {/* Detalhes (modal completo: histórico + próximas + config) */}
+                  <button
+                    onClick={() => setDetailTxId(tx.id)}
+                    title="Ver histórico, próximas e configuração"
+                    className="p-1.5 rounded-lg transition-colors text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20"
+                  >
+                    <BarChart3 size={14} />
+                  </button>
+
+                  {/* Histórico inline (legado — atalho rápido) */}
                   {(tx.recurrence?.history?.length ?? 0) > 0 && (
                     <button
                       onClick={() => setHistoryExpandedId(historyExpandedId === tx.id ? null : tx.id)}
-                      title="Ver histórico de pagamentos"
+                      title="Ver histórico inline (atalho)"
                       className={cn('p-1.5 rounded-lg transition-colors', historyExpandedId === tx.id ? 'bg-slate-200 dark:bg-gray-700 text-slate-600 dark:text-gray-300' : 'text-slate-400 hover:text-slate-600 dark:hover:text-gray-300 hover:bg-slate-100 dark:hover:bg-gray-800')}
                     >
                       <History size={14} />
@@ -7901,6 +7912,27 @@ function RecurringContent({
             startIcon={bulkSaving ? <Loader2 size={14} className="animate-spin" /> : <StopCircle size={14} />}>Confirmar encerramento</Button>
         </DialogActions>
       </Dialog>
+
+      {/* Modal completo de detalhe da recorrência */}
+      <AnimatePresence>
+        {detailTxId && (() => {
+          const tx = transactions.find(t => t.id === detailTxId);
+          if (!tx) return null;
+          return (
+            <RecurrenceDetailDialog
+              transaction={tx}
+              onClose={() => setDetailTxId(null)}
+              onPause={onPause}
+              onResume={onResume}
+              onEndSeries={onEndSeries}
+              onAdjustValue={onAdjustValue}
+              onMarkPaid={onMarkPaid}
+              onSkip={onSkip}
+              onEdit={(t) => { onEdit(t); setDetailTxId(null); }}
+            />
+          );
+        })()}
+      </AnimatePresence>
     </div>
   );
 }
