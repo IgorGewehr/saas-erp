@@ -150,6 +150,36 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
     failed.sort((a, b) => (b.sentAt || b.createdAt || '').localeCompare(a.sentAt || a.createdAt || ''));
     return failed[0].errorMessage || null;
   }, [messages]);
+
+  // Detecta erro específico de Baileys offline pra mostrar botão de reconnect
+  const isBaileysOffline = !!latestFailedError
+    && /WhatsApp Web não está conectado|reconectando \(timeout/i.test(latestFailedError);
+
+  const handleBaileysReconnect = async () => {
+    setReconnecting(true);
+    try {
+      const token = await getAuth().currentUser?.getIdToken();
+      const res = await fetch('/api/whatsapp/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ businessId: broadcast.businessId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || data.error || `HTTP ${res.status}`);
+      if (data.status === 'no_session') {
+        toast.warn('Sessão WhatsApp não existe no servidor. Reconecte via Configurações (escaneando QR Code).');
+      } else if (data.status === 'already_active') {
+        toast.info(data.isConnected ? 'Sessão já ativa.' : 'Sessão em reconexão...');
+      } else {
+        toast.success('Restauração da sessão iniciada. Aguarde alguns segundos e tente novamente.');
+      }
+    } catch (err) {
+      console.error('[BroadcastDetail] reconnect failed:', err);
+      toast.error(err instanceof Error ? err.message : 'Erro ao reconectar');
+    } finally {
+      setReconnecting(false);
+    }
+  };
   const [dispatching, setDispatching] = useState(false);
   /**
    * Quantidade a disparar nesta rodada. `null` = enviar todos (default).
@@ -161,6 +191,7 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
   const [resetting, setResetting] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [pausing, setPausing] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
   const [cancelingSchedule, setCancelingSchedule] = useState(false);
   const canDispatch = broadcast.status === 'draft' && (broadcast.recipients?.length ?? 0) > 0;
   // Resume: confia no status do broadcast doc, não em pendingCount (que pode
@@ -686,6 +717,17 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
                 {latestFailedError && (
                   <div className="mt-1.5 text-[11px] leading-relaxed text-red-800 dark:text-red-300 bg-red-100/60 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 rounded-md px-2 py-1.5">
                     <span className="font-semibold">Erro:</span> {latestFailedError}
+                    {isBaileysOffline && (
+                      <button
+                        type="button"
+                        onClick={handleBaileysReconnect}
+                        disabled={reconnecting}
+                        className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-600 hover:bg-red-700 text-white text-[10px] font-semibold disabled:opacity-50"
+                      >
+                        {reconnecting ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                        Tentar reconectar
+                      </button>
+                    )}
                   </div>
                 )}
               </div>

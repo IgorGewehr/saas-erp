@@ -174,36 +174,57 @@ export async function sendBaileysBroadcastMessage(
   text: string,
 ): Promise<{ externalMessageId: string }> {
   let session = sessions.get(businessId);
+  console.log('[Baileys Broadcast] Initial session check:', {
+    businessId,
+    hasSession: !!session,
+    hasSock: !!session?.sock,
+    isConnected: session?.isConnected,
+    mapSize: sessions.size,
+  });
 
-  // Lazy restore: se sessão não está em memória mas existe no disco (caso
-  // típico após restart do server), tenta restaurar automaticamente em vez
-  // de falhar. Evita que o operador precise re-escanear o QR Code.
-  if (!session?.sock) {
+  // Lazy restore: se sessão não está em memória OU está mas o sock não conectou
+  // (caso típico após restart do server), tenta restaurar automaticamente em
+  // vez de falhar. Evita que o operador precise re-escanear o QR Code.
+  if (!session?.sock || !session.isConnected) {
     const sessionDir = path.join(SESSIONS_DIR, businessId);
     const hasSessionFiles = fs.existsSync(sessionDir)
       && fs.readdirSync(sessionDir).some((f) => f.endsWith('.json'));
+    console.log('[Baileys Broadcast] Session files on disk:', { sessionDir, hasSessionFiles });
+
     if (hasSessionFiles) {
-      console.log(`[Baileys Broadcast] Lazy-restoring session for business: ${businessId}`);
-      try {
-        await createBaileysSession(businessId, 'restore');
-        // Aguarda até 5s pela conexão completar antes de prosseguir
-        const startedAt = Date.now();
-        while (Date.now() - startedAt < 5_000) {
-          const s = sessions.get(businessId);
-          if (s?.isConnected) break;
-          await new Promise(r => setTimeout(r, 200));
+      // Se já há uma session no map mas sock não conectou (restore em andamento
+      // ou travado), aguarda direto sem chamar createBaileysSession de novo
+      // (que é idempotente mas iniciaria loop).
+      if (!session) {
+        console.log(`[Baileys Broadcast] Lazy-restoring session for business: ${businessId}`);
+        try {
+          await createBaileysSession(businessId, 'restore');
+        } catch (err) {
+          console.error('[Baileys Broadcast] Lazy restore failed:', err);
         }
-        session = sessions.get(businessId);
-      } catch (err) {
-        console.error('[Baileys Broadcast] Lazy restore failed:', err);
       }
+
+      // Aguarda até 30s pela conexão completar
+      const startedAt = Date.now();
+      const TIMEOUT_MS = 30_000;
+      while (Date.now() - startedAt < TIMEOUT_MS) {
+        const s = sessions.get(businessId);
+        if (s?.isConnected) {
+          console.log(`[Baileys Broadcast] Session connected after ${Date.now() - startedAt}ms`);
+          session = s;
+          break;
+        }
+        await new Promise(r => setTimeout(r, 250));
+      }
+      session = sessions.get(businessId);
     }
+
     if (!session?.sock) {
       throw new Error('WhatsApp Web não está conectado. Reconecte escaneando o QR Code em Configurações.');
     }
-  }
-  if (!session.isConnected) {
-    throw new Error('WhatsApp Web está reconectando. Tente novamente em alguns segundos.');
+    if (!session.isConnected) {
+      throw new Error('WhatsApp Web está reconectando (timeout 30s). Aguarde a conexão completar e tente novamente.');
+    }
   }
 
   // phoneNumber já vem em E.164 (apenas dígitos) do RecipientListInput
