@@ -173,9 +173,34 @@ export async function sendBaileysBroadcastMessage(
   phoneNumber: string,
   text: string,
 ): Promise<{ externalMessageId: string }> {
-  const session = sessions.get(businessId);
+  let session = sessions.get(businessId);
+
+  // Lazy restore: se sessão não está em memória mas existe no disco (caso
+  // típico após restart do server), tenta restaurar automaticamente em vez
+  // de falhar. Evita que o operador precise re-escanear o QR Code.
   if (!session?.sock) {
-    throw new Error('WhatsApp Web não está conectado. Reconecte escaneando o QR Code em Configurações.');
+    const sessionDir = path.join(SESSIONS_DIR, businessId);
+    const hasSessionFiles = fs.existsSync(sessionDir)
+      && fs.readdirSync(sessionDir).some((f) => f.endsWith('.json'));
+    if (hasSessionFiles) {
+      console.log(`[Baileys Broadcast] Lazy-restoring session for business: ${businessId}`);
+      try {
+        await createBaileysSession(businessId, 'restore');
+        // Aguarda até 5s pela conexão completar antes de prosseguir
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < 5_000) {
+          const s = sessions.get(businessId);
+          if (s?.isConnected) break;
+          await new Promise(r => setTimeout(r, 200));
+        }
+        session = sessions.get(businessId);
+      } catch (err) {
+        console.error('[Baileys Broadcast] Lazy restore failed:', err);
+      }
+    }
+    if (!session?.sock) {
+      throw new Error('WhatsApp Web não está conectado. Reconecte escaneando o QR Code em Configurações.');
+    }
   }
   if (!session.isConnected) {
     throw new Error('WhatsApp Web está reconectando. Tente novamente em alguns segundos.');

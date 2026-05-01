@@ -115,12 +115,21 @@ function AppLayoutContent({ children }: { children: React.ReactNode }) {
     if (isAuthReady && !firebaseUser) router.replace('/login');
   }, [isAuthReady, firebaseUser, router]);
 
-  // Auto-restore WhatsApp Baileys session after server restart
+  // Auto-restore WhatsApp Baileys session after server restart.
+  // Verifica AMBOS os campos:
+  //   - channels.whatsappBaileys (campo atual, escrito pelo baileys-manager)
+  //   - channels.whatsapp + connectedVia==='baileys' (legado, manter compat)
+  // Sem isso, restart do dev server deixa a sessão fora da memória e
+  // qualquer envio falha com "WhatsApp Web não está conectado".
   useEffect(() => {
     if (!firebaseUser || !business?.id || waRestored.current) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const waChannel = (business as any)?.channels?.whatsapp as { isConnected?: boolean; connectedVia?: string } | undefined;
-    if (!waChannel?.isConnected || waChannel.connectedVia !== 'baileys') return;
+    const channels = (business as any)?.channels as Record<string, { isConnected?: boolean; connectedVia?: string }> | undefined;
+    const baileys = channels?.whatsappBaileys;
+    const legacy = channels?.whatsapp;
+    const isBaileysConnected = baileys?.isConnected === true
+      || (legacy?.isConnected === true && legacy?.connectedVia === 'baileys');
+    if (!isBaileysConnected) return;
     waRestored.current = true;
     (async () => {
       try {
