@@ -940,6 +940,15 @@ async function updateMessageAfterSend(
     const msgSnap = await msgRef.get();
 
     if (msgSnap.exists) {
+      // Multi-tenant guard: messageDocId vem do client; sem essa checagem,
+      // operador A poderia passar um docId do tenant B e marcar a mensagem
+      // dele como sent/com externalMessageId controlado. adminDb ignora rules.
+      if (msgSnap.data()?.businessId !== businessId) {
+        console.warn(
+          `[Send Message] Cross-tenant messageDocId rejected: ${messageId} (caller=${businessId}, owner=${msgSnap.data()?.businessId})`,
+        );
+        return;
+      }
       await msgRef.update({
         status: 'sent',
         externalMessageId,
