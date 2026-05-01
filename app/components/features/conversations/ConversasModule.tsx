@@ -3218,6 +3218,35 @@ function LinkContactDrawer({
     try {
       const now = new Date().toISOString();
       const phoneDigits = digits(conversation.contactPhone || conversation.contactExternalId);
+
+      // Antes de criar: verifica se já existe cliente com mesmo telefone
+      // (compara últimos 8 dígitos com DDD batendo — cobre variação BR de
+      // 9º dígito e código do país). Sem isso, conversa criava Client novo
+      // mesmo se o operador já tinha cadastrado o mesmo humano antes.
+      if (phoneDigits) {
+        const existing = clients.find(c => {
+          const candidates = [c.phone, c.whatsapp].filter(Boolean) as string[];
+          for (const cand of candidates) {
+            const candDigits = digits(cand);
+            if (!candDigits) continue;
+            const candLast8 = candDigits.slice(-8);
+            const newLast8 = phoneDigits.slice(-8);
+            if (candLast8 && candLast8 === newLast8) {
+              // Confere DDD bate (evita falso positivo entre cidades)
+              const candDdd = candDigits.replace(/^55/, '').slice(0, 2);
+              const newDdd = phoneDigits.replace(/^55/, '').slice(0, 2);
+              if (candDdd === newDdd) return true;
+            }
+          }
+          return false;
+        });
+        if (existing && !existing.mergedInto && !(existing as { deletedAt?: string }).deletedAt) {
+          console.log('[Conversations] Quick-create: cliente existente encontrado, linkando em vez de criar:', existing.id);
+          await link(existing.id);
+          return;
+        }
+      }
+
       const payload: Record<string, unknown> = {
         businessId,
         name: (conversation.customContactName ?? conversation.contactName) || 'Novo contato',

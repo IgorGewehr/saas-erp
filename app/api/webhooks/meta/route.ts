@@ -1467,7 +1467,11 @@ async function saveInboundMessage(params: InboundMessageParams) {
 
       console.log('[Meta Webhook] Updated conversation:', conversationId);
 
-      // Auto-link to CRM if not already linked
+      // Auto-link to CRM if not already linked.
+      // Antes este branch só tentava match exato, enquanto o branch "nova
+      // conversa" usava fuzzy (channelIdentities + phone + getAlternativeBrazilianPhone).
+      // Resultado: contatos legacy salvos sem 9º dígito ficavam permanentemente
+      // não-linkados se a conversa já existia. Agora aplica a mesma lógica fuzzy.
       if (!existingData.crmContactId) {
         try {
           const channelField = params.channel === 'whatsapp'
@@ -1476,20 +1480,39 @@ async function saveInboundMessage(params: InboundMessageParams) {
             ? 'channelIdentities.facebook'
             : 'channelIdentities.instagram';
 
-          const contactSnap = await adminDb.collection('clients')
-            .where('businessId', '==', businessId)
-            .where(channelField, '==', params.externalId)
-            .limit(1)
-            .get();
+          const altPhoneForLink = params.channel === 'whatsapp'
+            ? getAlternativeBrazilianPhone(params.externalId)
+            : null;
+          const candidates = altPhoneForLink ? [params.externalId, altPhoneForLink] : [params.externalId];
 
-          if (!contactSnap.empty) {
-            const contact = contactSnap.docs[0];
+          let matchedContact: FirebaseFirestore.DocumentSnapshot | null = null;
+          for (const candidate of candidates) {
+            const snap = await adminDb.collection('clients')
+              .where('businessId', '==', businessId)
+              .where(channelField, '==', candidate)
+              .limit(1)
+              .get();
+            if (!snap.empty) { matchedContact = snap.docs[0]; break; }
+          }
+          if (!matchedContact && params.channel === 'whatsapp') {
+            for (const candidate of candidates) {
+              const snap = await adminDb.collection('clients')
+                .where('businessId', '==', businessId)
+                .where('phone', '==', candidate)
+                .limit(1)
+                .get();
+              if (!snap.empty) { matchedContact = snap.docs[0]; break; }
+            }
+          }
+
+          if (matchedContact) {
             await adminDb.doc(`conversations/${conversationId}`).update({
-              crmContactId: contact.id,
+              crmContactId: matchedContact.id,
             });
-            await adminDb.doc(`clients/${contact.id}`).update({
+            await adminDb.doc(`clients/${matchedContact.id}`).update({
               lastConversationId: conversationId,
               lastConversationAt: now,
+              ...(params.channel === 'whatsapp' ? { 'channelIdentities.whatsapp': params.externalId } : {}),
               updatedAt: now,
             });
           }
