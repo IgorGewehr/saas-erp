@@ -59,6 +59,26 @@ export async function POST(req: NextRequest) {
         updates['channels.whatsapp.disconnectedAt'] = now;
       }
       await updateDoc(doc(db, 'businesses', businessId), updates);
+
+      // Sync channelConnections — marca a connection Baileys primária como
+      // desconectada. Sem isso, queries do canal continuam achando isConnected=
+      // true e UI/send route ficam confusos.
+      try {
+        const { adminDb } = await import('@/lib/config/firebaseAdmin');
+        const { primaryConnectionDocId } = await import('@/lib/services/channels/channelConnections');
+        const connRef = adminDb.collection('channelConnections')
+          .doc(primaryConnectionDocId(businessId, 'whatsapp_baileys'));
+        const connSnap = await connRef.get();
+        if (connSnap.exists) {
+          await connRef.update({
+            isConnected: false,
+            disconnectedAt: now,
+            updatedAt: now,
+          });
+        }
+      } catch (syncErr) {
+        console.warn('[WA Baileys] channelConnections disconnect sync failed:', syncErr);
+      }
     } catch (err) {
       console.error('[WA Baileys] Firestore disconnect error:', err);
     }

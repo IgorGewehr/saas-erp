@@ -152,6 +152,16 @@ async function updateFirestoreConnection(businessId: string, phoneNumber: string
       },
       updatedAt: new Date().toISOString(),
     });
+
+    // Sync channelConnections — mantém a connection Baileys primária com
+    // estado correto. ensurePrimaryBusinessConnection é idempotente: cria se
+    // ausente OU atualiza isConnected/connectedAt/phoneNumber se já existe.
+    try {
+      const { ensureBusinessConnectionsFromLegacy } = await import('@/lib/services/channels/channelConnections');
+      await ensureBusinessConnectionsFromLegacy(businessId);
+    } catch (syncErr) {
+      console.warn('[Baileys] channelConnections sync after connect failed:', syncErr);
+    }
   } catch (err) {
     console.error('[Baileys] Firestore connection update error:', err);
   }

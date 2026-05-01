@@ -706,17 +706,23 @@ service cloud.firestore {
                     );
 
       // Update:
-      //   - admin/founder: pode tudo
-      //   - operator+: só seu próprio canal 'user' (e não pode mudar ownership)
+      //   - admin/founder: pode tudo, INCLUSIVE mudar ownerType/ownerId
+      //     (cenário: operador saiu, admin transfere canal-user pra ownerType=
+      //     'business' ou pra outro operador. Sem essa permissão precisaria
+      //     deletar+recriar e perder histórico).
+      //   - operator+: só seu próprio canal 'user' E não pode mudar ownership
+      //     (anti-escalation: operator não vira admin do próprio canal).
       allow update: if isAuthenticated()
                     && isOwnBusiness()
                     && incomingBelongsToBusiness()
-                    && request.resource.data.ownerType == resource.data.ownerType
-                    && request.resource.data.ownerId == resource.data.ownerId
                     && (
                       isAdmin()
-                      || (resource.data.ownerType == 'user'
-                          && resource.data.ownerId == request.auth.uid)
+                      || (
+                        resource.data.ownerType == 'user'
+                        && resource.data.ownerId == request.auth.uid
+                        && request.resource.data.ownerType == resource.data.ownerType
+                        && request.resource.data.ownerId == resource.data.ownerId
+                      )
                     );
 
       // Delete:

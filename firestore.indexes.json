@@ -670,6 +670,14 @@
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "type", "order": "ASCENDING" },
+        { "fieldPath": "phoneNumber", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "channelConnections",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "type", "order": "ASCENDING" },
         { "fieldPath": "pageId", "order": "ASCENDING" }
       ]
     },

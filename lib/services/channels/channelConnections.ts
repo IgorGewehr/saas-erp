@@ -121,10 +121,20 @@ export async function findPrimaryConnection(
 // ─── Migration helpers ─────────────────────────────────────────────────────
 
 /**
+ * Resultado de `ensureBusinessConnectionsFromLegacy` — distingue connections
+ * recém-criadas das pré-existentes pra logging/contadores precisos.
+ */
+export interface EnsureResult {
+  connection: ChannelConnection;
+  wasCreated: boolean;
+}
+
+/**
  * Lê `businesses/{id}.channels.*` e cria channelConnections espelhadas
- * (ownerType='business', isPrimary=true). Idempotente — se já existe
- * connection do mesmo type+businessId+isPrimary=true, retorna ela em vez
- * de criar.
+ * (ownerType='business', isPrimary=true). Idempotente E concorrência-safe —
+ * usa doc ID determinístico `${businessId}_${type}_primary` com create-or-noop
+ * via runTransaction, então duas chamadas concorrentes pra mesmo business
+ * (ex: dois webhooks simultâneos) não criam duplicatas.
  *
  * Usado em duas situações:
  *   1. Lazy migration: webhook/send chama quando não acha connection ainda.
@@ -132,110 +142,142 @@ export async function findPrimaryConnection(
  */
 export async function ensureBusinessConnectionsFromLegacy(
   businessId: string,
-): Promise<ChannelConnection[]> {
+): Promise<EnsureResult[]> {
   const bizSnap = await adminDb.collection('businesses').doc(businessId).get();
   if (!bizSnap.exists) return [];
   const channels = (bizSnap.data()?.channels || {}) as ChannelCredentials;
-  const out: ChannelConnection[] = [];
-  const now = new Date().toISOString();
+  const results: EnsureResult[] = [];
 
   // Cloud: prefere whatsappCloud, fallback whatsapp legacy
   const cloud = channels.whatsappCloud || channels.whatsapp;
   if (cloud?.phoneNumberId) {
-    const existing = await findPrimaryConnection(businessId, 'whatsapp_cloud');
-    if (!existing) {
-      out.push(await createConnection({
-        businessId,
-        type: 'whatsapp_cloud',
-        ownerType: 'business',
-        displayName: cloud.displayName || cloud.displayPhoneNumber || 'WhatsApp',
-        phoneNumber: cloud.displayPhoneNumber || (cloud as { phoneNumber?: string }).phoneNumber,
-        phoneNumberId: cloud.phoneNumberId,
-        wabaId: (cloud as { wabaId?: string }).wabaId || (cloud as { businessAccountId?: string }).businessAccountId,
-        accessToken: cloud.accessToken,
-        tokenExpiresAt: cloud.tokenExpiresAt,
-        isConnected: !!cloud.isConnected,
-        isActive: true,
-        isPrimary: true,
-        connectedAt: cloud.connectedAt,
-        createdAt: now,
-        updatedAt: now,
-      }));
-    } else {
-      out.push(existing);
-    }
+    results.push(await ensurePrimaryBusinessConnection(businessId, 'whatsapp_cloud', () => ({
+      displayName: cloud.displayName || cloud.displayPhoneNumber || 'WhatsApp',
+      phoneNumber: cloud.displayPhoneNumber || (cloud as { phoneNumber?: string }).phoneNumber,
+      phoneNumberId: cloud.phoneNumberId,
+      wabaId: (cloud as { wabaId?: string }).wabaId || (cloud as { businessAccountId?: string }).businessAccountId,
+      accessToken: cloud.accessToken,
+      tokenExpiresAt: cloud.tokenExpiresAt,
+      isConnected: !!cloud.isConnected,
+      connectedAt: cloud.connectedAt,
+    })));
   }
 
   if (channels.whatsappBaileys?.phoneNumber) {
-    const existing = await findPrimaryConnection(businessId, 'whatsapp_baileys');
-    if (!existing) {
-      const b = channels.whatsappBaileys;
-      out.push(await createConnection({
-        businessId,
-        type: 'whatsapp_baileys',
-        ownerType: 'business',
-        displayName: b.displayPhoneNumber || b.phoneNumber || 'WhatsApp Web',
-        phoneNumber: b.phoneNumber,
-        isConnected: !!b.isConnected,
-        isActive: true,
-        isPrimary: true,
-        connectedAt: b.connectedAt,
-        createdAt: now,
-        updatedAt: now,
-      }));
-    } else {
-      out.push(existing);
-    }
+    const b = channels.whatsappBaileys;
+    results.push(await ensurePrimaryBusinessConnection(businessId, 'whatsapp_baileys', () => ({
+      displayName: b.displayPhoneNumber || b.phoneNumber || 'WhatsApp Web',
+      phoneNumber: b.phoneNumber,
+      isConnected: !!b.isConnected,
+      connectedAt: b.connectedAt,
+    })));
   }
 
   if (channels.facebook?.pageId) {
-    const existing = await findPrimaryConnection(businessId, 'facebook');
-    if (!existing) {
-      const f = channels.facebook;
-      out.push(await createConnection({
-        businessId,
-        type: 'facebook',
-        ownerType: 'business',
-        displayName: f.pageName || 'Facebook Messenger',
-        pageId: f.pageId,
-        pageAccessToken: f.pageAccessToken,
-        pageName: f.pageName,
-        isConnected: !!f.isConnected,
-        isActive: true,
-        isPrimary: true,
-        connectedAt: f.connectedAt,
-        createdAt: now,
-        updatedAt: now,
-      }));
-    } else {
-      out.push(existing);
-    }
+    const f = channels.facebook;
+    results.push(await ensurePrimaryBusinessConnection(businessId, 'facebook', () => ({
+      displayName: f.pageName || 'Facebook Messenger',
+      pageId: f.pageId,
+      pageAccessToken: f.pageAccessToken,
+      pageName: f.pageName,
+      isConnected: !!f.isConnected,
+      connectedAt: f.connectedAt,
+    })));
   }
 
   if (channels.instagram?.accountId) {
-    const existing = await findPrimaryConnection(businessId, 'instagram');
-    if (!existing) {
-      const i = channels.instagram;
-      out.push(await createConnection({
-        businessId,
-        type: 'instagram',
-        ownerType: 'business',
-        displayName: i.accountName || 'Instagram',
-        igAccountId: i.accountId,
-        igAccountName: i.accountName,
-        isConnected: !!i.isConnected,
-        isActive: true,
-        isPrimary: true,
-        connectedAt: i.connectedAt,
-        createdAt: now,
-        updatedAt: now,
-      }));
-    } else {
-      out.push(existing);
-    }
+    const i = channels.instagram;
+    results.push(await ensurePrimaryBusinessConnection(businessId, 'instagram', () => ({
+      displayName: i.accountName || 'Instagram',
+      igAccountId: i.accountId,
+      igAccountName: i.accountName,
+      isConnected: !!i.isConnected,
+      connectedAt: i.connectedAt,
+    })));
   }
 
-  return out;
+  return results;
+}
+
+/**
+ * Helper interno: garante a connection 'business' primária pra um (businessId,
+ * type), criando atomicamente via transação com doc ID determinístico.
+ *
+ * Doc ID = `${businessId}_${type}_primary`. Garante unicidade por
+ * (businessId, type) no nível do Firestore — concurrent writes mergem em vez
+ * de criar duplicatas.
+ */
+async function ensurePrimaryBusinessConnection(
+  businessId: string,
+  type: ChannelConnectionType,
+  buildPayload: () => Partial<ChannelConnection>,
+): Promise<EnsureResult> {
+  const docId = primaryConnectionDocId(businessId, type);
+  const ref = adminDb.collection(COLLECTION).doc(docId);
+  const now = new Date().toISOString();
+
+  return await adminDb.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const partial = buildPayload();
+
+    if (snap.exists) {
+      // Doc já existe — atualiza credentials/state vindos do legado
+      // (token rotation, isConnected mudou, etc) sem mexer em campos de
+      // metadata como displayName customizado pelo operador.
+      const existing = snap.data() as ChannelConnection;
+      const merge: Record<string, unknown> = stripUndefined({
+        // Credentials vindas do legado SEMPRE prevalecem (rotação de token)
+        accessToken: partial.accessToken,
+        tokenExpiresAt: partial.tokenExpiresAt,
+        pageAccessToken: partial.pageAccessToken,
+        // Identificadores externos (não devem mudar, mas se mudou aceita)
+        phoneNumberId: partial.phoneNumberId,
+        pageId: partial.pageId,
+        igAccountId: partial.igAccountId,
+        wabaId: partial.wabaId,
+        // Estado
+        isConnected: partial.isConnected ?? existing.isConnected,
+        connectedAt: partial.connectedAt,
+        // displayName: só sobrescreve se ainda é o default ('Canal' ou vazio)
+        ...(existing.displayName && existing.displayName !== 'Canal'
+          ? {}
+          : { displayName: partial.displayName }),
+        updatedAt: now,
+      });
+      tx.update(ref, merge);
+      return {
+        connection: { ...existing, ...merge, id: snap.id } as ChannelConnection,
+        wasCreated: false,
+      };
+    }
+
+    // Doc não existe — cria do zero
+    const data: Omit<ChannelConnection, 'id'> = stripUndefined({
+      businessId,
+      type,
+      ownerType: 'business',
+      displayName: partial.displayName || 'Canal',
+      ...partial,
+      isActive: true,
+      isPrimary: true,
+      isConnected: partial.isConnected ?? false,
+      createdAt: now,
+      updatedAt: now,
+    } as Omit<ChannelConnection, 'id'>);
+    tx.set(ref, data);
+    return {
+      connection: { ...(data as ChannelConnection), id: docId },
+      wasCreated: true,
+    };
+  });
+}
+
+/**
+ * Doc ID determinístico pra connection 'business' primária. Garante que
+ * concurrent writes pra mesma (business, type) atinjam o mesmo doc.
+ */
+export function primaryConnectionDocId(businessId: string, type: ChannelConnectionType): string {
+  return `${businessId}__${type}__primary`;
 }
 
 // ─── Writes ────────────────────────────────────────────────────────────────

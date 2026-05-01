@@ -1008,9 +1008,10 @@ async function resolveChannelContext(
     // Lazy migration: cria channelConnections espelhando businesses.channels.*
     // assíncrono pra não atrasar webhook. Idempotente.
     void ensureBusinessConnectionsFromLegacy(businessId)
-      .then((created) => {
-        if (created.length > 0) {
-          console.log(`[Meta Webhook] Lazy-migrated ${created.length} channel connection(s) for ${businessId}`);
+      .then((results) => {
+        const newCount = results.filter(r => r.wasCreated).length;
+        if (newCount > 0) {
+          console.log(`[Meta Webhook] Lazy-migrated ${newCount} new channel connection(s) for ${businessId}`);
         }
       })
       .catch((err) => {
@@ -1491,10 +1492,13 @@ async function saveInboundMessage(params: InboundMessageParams) {
         isDeleted: false,
         deletedAt: null,
       };
-      // Backfill channelConnectionId em conversas pré-refactor que ainda não têm
-      // o campo populado. Preenche apenas se já temos resolvido E a conversa
-      // existente não tem (não sobrescreve mapeamento intencional).
-      if (channelConnectionId && !existingData.channelConnectionId) {
+      // Backfill / correção de channelConnectionId. Preenche se ausente; também
+      // corrige se diferente do resolvido — o webhook é autoritativo (sabemos
+      // exatamente qual phoneNumberId/pageId/igAccountId entregou esta msg).
+      // Antes só preenchia quando ausente, e mapeamentos errados ficavam
+      // permanentes. Agora reflete a fonte real do tráfego.
+      if (channelConnectionId
+          && existingData.channelConnectionId !== channelConnectionId) {
         enrichUpdate.channelConnectionId = channelConnectionId;
       }
       // Default placeholder names used as fallback when profile fetch fails on first message.

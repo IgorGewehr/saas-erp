@@ -31,6 +31,7 @@ import type { Conversation, ChannelConnection } from '@/lib/types';
 interface Stats {
   businesses: number;
   connectionsCreated: number;
+  connectionsAlreadyExisted: number;
   conversationsBackfilled: number;
   conversationsSkipped: number;
 }
@@ -39,6 +40,7 @@ async function main() {
   const stats: Stats = {
     businesses: 0,
     connectionsCreated: 0,
+    connectionsAlreadyExisted: 0,
     conversationsBackfilled: 0,
     conversationsSkipped: 0,
   };
@@ -53,11 +55,12 @@ async function main() {
     stats.businesses++;
     const businessId = bizDoc.id;
     try {
-      const created = await ensureBusinessConnectionsFromLegacy(businessId);
-      const newOnes = created.filter(c => !c.id || true); // ensureBusinessConnectionsFromLegacy retorna mix
+      const results = await ensureBusinessConnectionsFromLegacy(businessId);
+      const newOnes = results.filter(r => r.wasCreated);
       stats.connectionsCreated += newOnes.length;
+      stats.connectionsAlreadyExisted += results.length - newOnes.length;
       if (newOnes.length > 0) {
-        console.log(`[migrate]   ${businessId}: ${newOnes.length} connection(s) garantida(s)`);
+        console.log(`[migrate]   ${businessId}: ${newOnes.length} new, ${results.length - newOnes.length} já existentes`);
       }
     } catch (err) {
       console.error(`[migrate] ❌ ${businessId}:`, err);
