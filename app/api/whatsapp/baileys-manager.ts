@@ -483,6 +483,25 @@ async function handleInboundMessage(
     let conversationId: string;
 
     if (convSnap.empty) {
+      // Auto-assign para canais pessoais (ownerType='user'): a conversa que
+      // chega num canal pessoal pertence ao owner do canal por default.
+      // Outros operators continuam vendo (até implementarmos rule server-side
+      // pra restringir), mas a atribuição inicial fica clara.
+      let initialAssignedTo: string | undefined;
+      let initialAssignedToName: string | undefined;
+      try {
+        const connSnap = await adminDb.collection('channelConnections').doc(connectionId).get();
+        const connData = connSnap.data();
+        if (connData?.ownerType === 'user' && connData.ownerId) {
+          initialAssignedTo = connData.ownerId as string;
+          // Tenta puxar nome do owner pra denormalizar
+          try {
+            const userSnap = await adminDb.collection('users').doc(initialAssignedTo).get();
+            initialAssignedToName = (userSnap.data()?.name as string) || undefined;
+          } catch { /* opcional */ }
+        }
+      } catch { /* connection lookup falhou — sem auto-assign */ }
+
       const newConvRef = await adminDb.collection('conversations').add({
         businessId,
         channel: 'whatsapp',
@@ -496,6 +515,8 @@ async function handleInboundMessage(
         contactPhone: formatPhone(senderPhone),
         contactExternalId: senderPhone,
         ...(avatarUrl ? { contactAvatarUrl: avatarUrl } : {}),
+        ...(initialAssignedTo ? { assignedTo: initialAssignedTo } : {}),
+        ...(initialAssignedToName ? { assignedToName: initialAssignedToName } : {}),
         status: 'open',
         lastMessage: displayText,
         lastMessageAt: timestamp,
