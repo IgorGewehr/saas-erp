@@ -142,6 +142,14 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
 
   const failedCount = counts.failed ?? 0;
   const pendingCount = counts.pending ?? 0;
+  // Erro mais recente entre as mensagens falhadas — exibido no banner pra não
+  // exigir scroll e abrir a lista pra descobrir a causa.
+  const latestFailedError = useMemo(() => {
+    const failed = messages.filter(m => m.status === 'failed' && m.errorMessage);
+    if (failed.length === 0) return null;
+    failed.sort((a, b) => (b.sentAt || b.createdAt || '').localeCompare(a.sentAt || a.createdAt || ''));
+    return failed[0].errorMessage || null;
+  }, [messages]);
   const [dispatching, setDispatching] = useState(false);
   /**
    * Quantidade a disparar nesta rodada. `null` = enviar todos (default).
@@ -665,21 +673,31 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
           </div>
         )}
 
-        {/* Failed retry toolbar */}
+        {/* Failed retry toolbar — inclui o erro mais recente no próprio banner
+            pra evitar scroll/clique adicional pra descobrir a causa. */}
         {failedCount > 0 && (
-          <div className="px-5 py-2.5 bg-red-50 dark:bg-red-500/5 border-b border-red-100 dark:border-red-500/10 flex items-center justify-between">
-            <span className="text-xs text-red-700 dark:text-red-400">
-              <AlertTriangle className="w-3 h-3 inline mr-1 -mt-0.5" />
-              {failedCount} contato(s) falharam no envio
-            </span>
-            <button
-              onClick={handleRetryFailed}
-              disabled={retrying}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-red-600 hover:bg-red-700 text-white disabled:opacity-50"
-            >
-              {retrying ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-              Reenviar falhados
-            </button>
+          <div className="px-5 py-2.5 bg-red-50 dark:bg-red-500/5 border-b border-red-100 dark:border-red-500/10">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <span className="text-xs text-red-700 dark:text-red-400 font-medium">
+                  <AlertTriangle className="w-3 h-3 inline mr-1 -mt-0.5" />
+                  {failedCount} contato(s) falharam no envio
+                </span>
+                {latestFailedError && (
+                  <div className="mt-1.5 text-[11px] leading-relaxed text-red-800 dark:text-red-300 bg-red-100/60 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 rounded-md px-2 py-1.5">
+                    <span className="font-semibold">Erro:</span> {latestFailedError}
+                  </div>
+                )}
+              </div>
+              <button
+                onClick={handleRetryFailed}
+                disabled={retrying}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-red-600 hover:bg-red-700 text-white disabled:opacity-50 flex-shrink-0"
+              >
+                {retrying ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                Reenviar falhados
+              </button>
+            </div>
           </div>
         )}
 
