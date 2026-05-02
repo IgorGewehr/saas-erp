@@ -67,33 +67,22 @@ export async function POST(req: NextRequest) {
       fs.rmSync(legacyDir, { recursive: true, force: true });
     }
 
-    // Update Firestore
+    // Update Firestore via Admin SDK — usar cliente Firebase aqui falhava silenciosamente
+    // contra as security rules (sem auth context no server), deixando a UI presa em
+    // "Conectado" mesmo após o disconnect. Admin SDK bypassa rules.
+    const { adminDb } = await import('@/lib/config/firebaseAdmin');
+    const now = new Date().toISOString();
+
+    let firestoreError: unknown = null;
     try {
-      const { initializeApp, getApps, getApp } = await import('firebase/app');
-      const { getFirestore, doc, updateDoc } = await import('firebase/firestore');
-
-      const firebaseConfig = {
-        apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-        authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-        projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-        storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-        messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-        appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
-      };
-      const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
-      const db = getFirestore(app);
-
-      const now = new Date().toISOString();
-
-      // Determina se é canal-empresa ou pessoal — só busi atualiza businesses.channels
-      const { adminDb } = await import('@/lib/config/firebaseAdmin');
+      // Determina se é canal-empresa ou pessoal — só business atualiza businesses.channels
       const connSnap = await adminDb.collection('channelConnections').doc(sessionKey).get();
       const isBusiness = !connSnap.exists || connSnap.data()?.ownerType !== 'user';
 
       if (isBusiness) {
         // Atualiza o novo campo isolado (whatsappBaileys) e o legado (apenas se ainda for Baileys)
         const bizSnap = await adminDb.doc(`businesses/${businessId}`).get();
-        const legacy = bizSnap.data()?.channels?.whatsapp;
+        const legacy = bizSnap.data()?.channels?.whatsapp as { connectedVia?: string } | undefined;
         const updates: Record<string, unknown> = {
           'channels.whatsappBaileys.isConnected': false,
           'channels.whatsappBaileys.disconnectedAt': now,
@@ -103,26 +92,29 @@ export async function POST(req: NextRequest) {
           updates['channels.whatsapp.isConnected'] = false;
           updates['channels.whatsapp.disconnectedAt'] = now;
         }
-        await updateDoc(doc(db, 'businesses', businessId), updates);
+        await adminDb.doc(`businesses/${businessId}`).update(updates);
       }
 
       // Sync channelConnections — marca a connection Baileys (a do sessionKey)
       // como desconectada. Funciona pra business E user channels.
-      try {
-        if (connSnap.exists) {
-          await connSnap.ref.update({
-            isConnected: false,
-            disconnectedAt: now,
-            updatedAt: now,
-          });
-        }
-      } catch (syncErr) {
-        console.warn('[WA Baileys] channelConnections disconnect sync failed:', syncErr);
+      if (connSnap.exists) {
+        await connSnap.ref.update({
+          isConnected: false,
+          disconnectedAt: now,
+          updatedAt: now,
+        });
       }
     } catch (err) {
       console.error('[WA Baileys] Firestore disconnect error:', err);
+      firestoreError = err;
     }
 
+    if (firestoreError) {
+      return NextResponse.json(
+        { error: 'Sessão encerrada, mas falha ao atualizar Firestore. Recarregue a página.' },
+        { status: 500 },
+      );
+    }
     return NextResponse.json({ success: true });
   } catch (err) {
     console.error('[WA Baileys] Disconnect error:', err);

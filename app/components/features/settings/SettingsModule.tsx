@@ -5984,11 +5984,17 @@ function CanaisTab() {
       if (channel === 'whatsapp' && via === 'baileys') {
         // Baileys: chama API que limpa session files e atualiza Firestore
         const token = await getAuth().currentUser?.getIdToken();
-        await fetch('/api/whatsapp/disconnect', {
+        const res = await fetch('/api/whatsapp/disconnect', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify({ businessId: business.id }),
         });
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({}));
+          toast.error(errBody.error || 'Falha ao desconectar WhatsApp Web');
+          setDisconnecting(null);
+          return;
+        }
       } else if (channel === 'whatsapp' && via === 'cloud') {
         // Cloud: desconecta o novo campo + legado se for Cloud
         const channelsAny = (business as Business & { channels?: { whatsapp?: { connectedVia?: string } } }).channels;
