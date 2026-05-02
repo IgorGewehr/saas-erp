@@ -267,6 +267,15 @@ export async function POST(req: NextRequest) {
             const fromConn = buildLegacyChannelsFromConnection(conn);
             channels = { ...(channels || {}), ...fromConn };
             resolvedConnectionId = conn.id;
+          } else {
+            // Conexão referenciada não existe (deletada, doc órfão por unlink
+            // que falhou). Retorna erro claro em vez de cair pro Cloud da
+            // empresa silenciosamente — operador esperava enviar pelo canal
+            // específico e ficaria confuso vendo a mensagem ir pelo outro.
+            return NextResponse.json({
+              error: 'O canal usado por esta conversa foi removido. Recarregue a página ou atribua a conversa a outro canal.',
+              code: 'connection_not_found',
+            }, { status: 410 });
           }
         }
       } catch (err) {

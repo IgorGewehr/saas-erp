@@ -193,6 +193,41 @@ function getMediaLabel(type: string | null): string {
 
 // ─── Firestore: update connection status ─────────────────────────────────────
 
+/**
+ * Marca a conexão como desconectada no Firestore. Usado quando a sessão é
+ * encerrada por evento server-side (loggedOut do telefone, falha após
+ * MAX_AUTO_RESTARTS, etc) — sem isso, channelConnections + businesses.channels
+ * ficam dizendo isConnected=true mesmo com a sessão morta, e UI/send query
+ * resultam em comportamento confuso ("conectado" mas envio falha).
+ */
+async function persistDisconnect(businessId: string, connectionId: string): Promise<void> {
+  const now = new Date().toISOString();
+  // Atualiza connection doc (modelo novo)
+  try {
+    const { updateConnection } = await import('@/lib/services/channels/channelConnections');
+    await updateConnection(connectionId, {
+      isConnected: false,
+      disconnectedAt: now,
+    });
+  } catch (err) {
+    console.warn('[Baileys] persistDisconnect: connection update failed:', err);
+  }
+  // Atualiza businesses.channels.whatsappBaileys (legado) só se for business connection
+  try {
+    const connSnap = await adminDb.collection('channelConnections').doc(connectionId).get();
+    const isBusinessConn = !connSnap.exists || connSnap.data()?.ownerType !== 'user';
+    if (isBusinessConn) {
+      await adminDb.collection('businesses').doc(businessId).update({
+        'channels.whatsappBaileys.isConnected': false,
+        'channels.whatsappBaileys.disconnectedAt': now,
+        updatedAt: now,
+      });
+    }
+  } catch (err) {
+    console.warn('[Baileys] persistDisconnect: legacy businesses update failed:', err);
+  }
+}
+
 async function updateFirestoreConnection(
   businessId: string,
   phoneNumber: string | null,
@@ -904,6 +939,12 @@ export async function createBaileysSession(
 
         if (statusCode === DisconnectReason.loggedOut) {
           broadcast(session, { type: 'disconnected', reason: 'logged_out' });
+          // Sincroniza Firestore antes de destruir — sem isso UI continua
+          // mostrando "Conectado" e send tenta usar sessão fantasma. Não-await
+          // pra não bloquear o cleanup, mas garante que o write dispara.
+          void persistDisconnect(businessId, sessionKey).catch((err) => {
+            console.error('[Baileys] Failed to persist logout state:', err);
+          });
           clearSessionDir(sessionDir);
           void destroySession(businessId, sessionKey);
           return;
@@ -921,6 +962,7 @@ export async function createBaileysSession(
             startSocket(!keepSession).catch((err) => {
               console.error('[Baileys] Auto-restart falhou:', err);
               broadcast(session, { type: 'error', message: 'Falha ao reconectar. Tente novamente.' });
+              void persistDisconnect(businessId, sessionKey).catch(() => {});
               void destroySession(businessId, sessionKey);
             });
           }, delay);
@@ -928,6 +970,7 @@ export async function createBaileysSession(
         }
 
         broadcast(session, { type: 'error', message: 'Conexao fechada pelo WhatsApp. Tente novamente.' });
+        void persistDisconnect(businessId, sessionKey).catch(() => {});
         void destroySession(businessId, sessionKey);
       }
     });
