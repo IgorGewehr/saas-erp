@@ -355,21 +355,21 @@ export default function AgentHeroInput({
           </div>
         </motion.div>
 
-        {/* ── Conversation panel ─────────────────────────────────────────── */}
+        {/* ── Conversation panel — altura fixa, scroll apenas interno ──── */}
         <AnimatePresence>
           {hasConversation && (
             <motion.div
               key="conversation"
-              initial={{ opacity: 0, y: 10, height: 0 }}
-              animate={{ opacity: 1, y: 0, height: 'auto' }}
-              exit={{ opacity: 0, y: -8, height: 0 }}
-              transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-              className="mt-4 overflow-hidden"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+              className="mt-3"
             >
-              <div className="rounded-2xl bg-white/80 dark:bg-gray-900/60 backdrop-blur-xl border border-gray-200/70 dark:border-gray-700/50 shadow-sm overflow-hidden">
+              <div className="rounded-2xl bg-white/80 dark:bg-gray-900/60 backdrop-blur-xl border border-gray-200/60 dark:border-gray-700/40 shadow-sm flex flex-col h-[340px]">
                 <div
                   ref={scrollRef}
-                  className="px-4 py-4 space-y-3 max-h-[420px] overflow-y-auto"
+                  className="flex-1 min-h-0 px-4 py-3 space-y-2 overflow-y-auto"
                 >
                   {messages.map((m, idx) => (
                     <MessageBubble
@@ -382,15 +382,12 @@ export default function AgentHeroInput({
 
                   {isLoading && (
                     <motion.div
-                      initial={{ opacity: 0, y: 4 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className="flex items-center gap-2 px-1"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="flex items-center gap-2 px-1 py-1"
                     >
-                      <div className="w-6 h-6 rounded-md bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
-                        <Loader2 className="w-3.5 h-3.5 text-gray-500 dark:text-gray-400 animate-spin" />
-                      </div>
-                      <span className="text-xs text-gray-500 dark:text-gray-400 inline-flex items-center gap-2">
-                        <span>Pensando</span>
+                      <span className="text-xs text-gray-400 dark:text-gray-500 inline-flex items-center gap-1.5">
+                        Pensando
                         <span className="inline-flex gap-0.5">
                           {[0, 1, 2].map(i => (
                             <motion.span
@@ -445,68 +442,73 @@ function MessageBubble({
 }) {
   const isUser = msg.role === 'user';
   const hasTools = (msg.toolCalls?.length || 0) > 0;
+  const toolLabel = hasTools
+    ? `${msg.toolCalls!.length} ${msg.toolCalls!.length > 1 ? 'ações' : 'ação'}${msg.durationMs ? ` · ${(msg.durationMs / 1000).toFixed(1)}s` : ''}${msg.costUsd && msg.costUsd > 0 ? ` · $${msg.costUsd.toFixed(4)}` : ''}`
+    : null;
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 6, scale: 0.98 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-      className={cn('flex', isUser ? 'justify-end' : 'justify-start')}
+      initial={{ opacity: 0, y: 5 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+      className={cn('flex flex-col', isUser ? 'items-end' : 'items-start')}
     >
+      {/* Bubble */}
       <div
         className={cn(
-          'max-w-[88%] rounded-2xl px-3.5 py-2.5 text-sm break-words',
+          'max-w-[86%] rounded-2xl px-3.5 py-2 text-[13px] break-words',
           isUser
-            ? 'bg-red-600 text-white rounded-br-md whitespace-pre-wrap'
+            ? 'bg-red-600 text-white rounded-tr-sm'
             : msg.isFallback
-              ? 'bg-amber-50/80 dark:bg-amber-950/30 text-amber-900 dark:text-amber-200 border border-amber-200/60 dark:border-amber-900/40 rounded-bl-md whitespace-pre-wrap'
-              : 'bg-gray-100/80 dark:bg-gray-800/80 text-gray-800 dark:text-gray-200 rounded-bl-md',
+              ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 border border-amber-200/60 dark:border-amber-900/40 rounded-tl-sm'
+              : 'bg-gray-100 dark:bg-gray-800 text-gray-800 dark:text-gray-200 rounded-tl-sm',
         )}
       >
-        {isUser || msg.isFallback ? (
-          msg.content
+        {isUser ? (
+          <span className="whitespace-pre-wrap leading-relaxed">{msg.content}</span>
+        ) : msg.isFallback ? (
+          <span className="whitespace-pre-wrap leading-relaxed">{msg.content}</span>
         ) : (
           <RenderMarkdown source={msg.content} />
         )}
-        {hasTools && !isUser && (
-          <div className="mt-1.5 pt-1.5 border-t border-gray-200/60 dark:border-gray-700/40">
-            <button
-              onClick={onToggleExpand}
-              className="text-[10px] opacity-70 hover:opacity-100 flex items-center gap-1 text-gray-500 dark:text-gray-400"
-            >
-              {msg.toolCalls!.length} {msg.toolCalls!.length > 1 ? 'ações' : 'ação'}
-              {msg.durationMs && ` · ${(msg.durationMs / 1000).toFixed(1)}s`}
-              {msg.costUsd !== undefined && msg.costUsd > 0 && ` · $${msg.costUsd.toFixed(4)}`}
-              {isExpanded ? <ChevronUp className="w-2.5 h-2.5" /> : <ChevronDown className="w-2.5 h-2.5" />}
-            </button>
-            <AnimatePresence>
-              {isExpanded && (
-                <motion.ul
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="mt-1 space-y-0.5 overflow-hidden"
-                >
-                  {msg.toolCalls!.map((t, i) => (
-                    <li
-                      key={i}
-                      className={cn(
-                        'text-[10px] font-mono px-1.5 py-0.5 rounded',
-                        t.error
-                          ? 'bg-red-100 dark:bg-red-500/10 text-red-800 dark:text-red-300'
-                          : 'bg-white/70 dark:bg-gray-700/40 text-gray-600 dark:text-gray-300',
-                      )}
-                    >
-                      {t.name}
-                      {t.error && ` — ⚠ ${t.error}`}
-                    </li>
-                  ))}
-                </motion.ul>
-              )}
-            </AnimatePresence>
-          </div>
-        )}
       </div>
+
+      {/* Tool calls footer — fora da bubble, bem discreto */}
+      {hasTools && !isUser && (
+        <div className="mt-1 px-1">
+          <button
+            onClick={onToggleExpand}
+            className="inline-flex items-center gap-1 text-[10px] text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+          >
+            {isExpanded ? <ChevronUp className="w-2.5 h-2.5" /> : <ChevronDown className="w-2.5 h-2.5" />}
+            {toolLabel}
+          </button>
+          <AnimatePresence>
+            {isExpanded && (
+              <motion.ul
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                className="mt-0.5 space-y-0.5 overflow-hidden"
+              >
+                {msg.toolCalls!.map((t, i) => (
+                  <li
+                    key={i}
+                    className={cn(
+                      'text-[10px] font-mono px-1.5 py-0.5 rounded',
+                      t.error
+                        ? 'bg-red-100 dark:bg-red-500/10 text-red-700 dark:text-red-300'
+                        : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400',
+                    )}
+                  >
+                    {t.name}{t.error && ` — ⚠ ${t.error}`}
+                  </li>
+                ))}
+              </motion.ul>
+            )}
+          </AnimatePresence>
+        </div>
+      )}
     </motion.div>
   );
 }
