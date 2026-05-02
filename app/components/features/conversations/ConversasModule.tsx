@@ -4375,27 +4375,45 @@ export default function ConversasModule() {
       orderBy('lastMessageAt', 'desc'),
     );
 
-    const unsub = onSnapshot(q, (snap) => {
-      clearTimeout(loadingTimeout);
-      const data = snap.docs
-        .map((d) => ({ ...d.data(), id: d.id } as Conversation & { isDeleted?: boolean }))
-        .filter((c) => !c.isDeleted);
-      setConversations(data);
-      setIsLoadingConversations(false);
+    let unsub: (() => void) | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryCount = 0;
 
-      // Update selected conversation if it exists in the new data
-      setSelectedConversation((prev) => {
-        if (!prev) return prev;
-        const updated = data.find((c) => c.id === prev.id);
-        return updated || prev;
+    const subscribe = () => {
+      unsub = onSnapshot(q, (snap) => {
+        clearTimeout(loadingTimeout);
+        retryCount = 0; // reset on success
+        const data = snap.docs
+          .map((d) => ({ ...d.data(), id: d.id } as Conversation & { isDeleted?: boolean }))
+          .filter((c) => !c.isDeleted);
+        setConversations(data);
+        setIsLoadingConversations(false);
+
+        setSelectedConversation((prev) => {
+          if (!prev) return prev;
+          const updated = data.find((c) => c.id === prev.id);
+          return updated || prev;
+        });
+      }, (err) => {
+        clearTimeout(loadingTimeout);
+        console.error('[Conversations] onSnapshot error:', err);
+        setIsLoadingConversations(false);
+        // Reinicia o listener automaticamente — erros transitórios (índice ainda
+        // construindo, rede instável) matam o listener; retry garante que ele
+        // volte assim que o problema resolver.
+        const delay = Math.min(3000 * Math.pow(2, retryCount), 30_000);
+        retryCount++;
+        retryTimer = setTimeout(subscribe, delay);
       });
-    }, (err) => {
-      clearTimeout(loadingTimeout);
-      console.error('[Conversations] onSnapshot error:', err);
-      setIsLoadingConversations(false);
-    });
+    };
 
-    return () => { clearTimeout(loadingTimeout); unsub(); };
+    subscribe();
+
+    return () => {
+      clearTimeout(loadingTimeout);
+      if (retryTimer) clearTimeout(retryTimer);
+      unsub?.();
+    };
   }, [business?.id]);
 
   // ── Load channel connections (Phase 2: badges + filter) ───────────────────
