@@ -547,7 +547,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
       const res = await fetch('/api/fiscal/emit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
-        body: JSON.stringify({ type: 'nfce', data: payload }),
+        body: JSON.stringify({ type: 'nfce', businessId: business.id, ...payload }),
       });
 
       const result = await res.json();
@@ -693,7 +693,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
       const res = await fetch('/api/fiscal/emit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
-        body: JSON.stringify({ type: 'nfe', data: payload }),
+        body: JSON.stringify({ type: 'nfe', businessId: business.id, ...payload }),
       });
 
       const result = await res.json();
