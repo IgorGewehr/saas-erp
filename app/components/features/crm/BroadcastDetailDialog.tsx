@@ -13,7 +13,7 @@
  * Meta processa delivered/read.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { collection, doc, query, where, orderBy, onSnapshot, limit as firestoreLimit } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
@@ -50,6 +50,22 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<BroadcastMessageStatus | 'all'>('all');
   const [retrying, setRetrying] = useState(false);
+
+  // Lock the tab scroll container while open (the app scroll host is an inner
+  // overflow-y-auto div, not document.body)
+  const backdropRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let el: HTMLElement | null = backdropRef.current?.parentElement ?? null;
+    while (el) {
+      const { overflowY } = window.getComputedStyle(el);
+      if (overflowY === 'auto' || overflowY === 'scroll') break;
+      el = el.parentElement;
+    }
+    if (!el) return;
+    const prev = el.style.overflowY;
+    el.style.overflowY = 'hidden';
+    return () => { el!.style.overflowY = prev; };
+  }, []);
 
   // Listener do broadcast doc (sincroniza status, recipients, stats)
   useEffect(() => {
@@ -471,7 +487,7 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
   };
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+    <motion.div ref={backdropRef} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
       <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }}

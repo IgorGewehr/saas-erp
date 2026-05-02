@@ -807,15 +807,25 @@ function NotePreviewModal({
     return () => document.removeEventListener('keydown', handler);
   }, [onClose]);
 
-  // Lock body scroll while modal is open so the page behind doesn't scroll
+  // Lock the tab's scroll container while the modal is open.
+  // The app scroll host is an inner div (overflow-y-auto), not document.body.
+  const backdropRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => { document.body.style.overflow = prev; };
+    let el: HTMLElement | null = backdropRef.current?.parentElement ?? null;
+    while (el) {
+      const { overflowY } = window.getComputedStyle(el);
+      if (overflowY === 'auto' || overflowY === 'scroll') break;
+      el = el.parentElement;
+    }
+    if (!el) return;
+    const prev = el.style.overflowY;
+    el.style.overflowY = 'hidden';
+    return () => { el!.style.overflowY = prev; };
   }, []);
 
   return (
     <motion.div
+      ref={backdropRef}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}

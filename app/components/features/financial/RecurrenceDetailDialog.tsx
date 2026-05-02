@@ -21,7 +21,7 @@
  * cuida da persistência. Esse modal é puramente apresentação + dispatch.
  */
 
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import {
   X, Clock, History as HistoryIcon, Calendar as CalendarIcon, Settings2,
@@ -141,11 +141,21 @@ export default function RecurrenceDetailDialog({
   const isActive = recurrence?.isActive ?? false;
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
-  // Lock body scroll while modal is open so the page behind doesn't scroll
+  // Lock the tab's scroll container while the modal is open.
+  // The app uses an inner div (overflow-y-auto) as the scroll host, not document.body,
+  // so we walk up the DOM from the backdrop element to find and freeze it.
+  const backdropRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => { document.body.style.overflow = prev; };
+    let el: HTMLElement | null = backdropRef.current?.parentElement ?? null;
+    while (el) {
+      const { overflowY } = window.getComputedStyle(el);
+      if (overflowY === 'auto' || overflowY === 'scroll') break;
+      el = el.parentElement;
+    }
+    if (!el) return;
+    const prev = el.style.overflowY;
+    el.style.overflowY = 'hidden';
+    return () => { el!.style.overflowY = prev; };
   }, []);
 
   const [tab, setTab] = useState<Tab>('historico');
@@ -270,6 +280,7 @@ export default function RecurrenceDetailDialog({
 
   return (
     <motion.div
+      ref={backdropRef}
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
