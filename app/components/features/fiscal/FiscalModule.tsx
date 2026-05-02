@@ -196,6 +196,8 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
 
   if (!doc) return null;
 
+  const items = doc.items ?? [];
+
   const statusTimeline = [
     {
       label: t('fiscal.detail.timeline.criado', 'Criado'),
@@ -237,6 +239,12 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
     if (!doc) return;
     if (cancelReason.trim().length < 15) {
       toast.error(t('fiscal.cancel.minCharsError', 'A justificativa deve ter no mínimo 15 caracteres.'));
+      return;
+    }
+    // Documentos antigos podem ter sido salvos sem chave de acesso (bug pré-fix).
+    // Sem chave, o cancelamento na SEFAZ é impossível — orientar o usuário.
+    if (!doc.accessKey || doc.accessKey.replace(/\D/g, '').length !== 44) {
+      toast.error(t('fiscal.cancel.noAccessKey', 'Esta nota não tem chave de acesso registrada (registro antigo). Cancele direto no portal SEFAZ.'));
       return;
     }
 
@@ -487,7 +495,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
                       </tr>
                     </thead>
                     <tbody>
-                      {doc.items.map((item: FiscalItem, idx: number) => (
+                      {items.map((item: FiscalItem, idx: number) => (
                         <tr key={idx} className="border-t border-border/40">
                           <td className="text-sm text-foreground px-4 py-2.5">
                             <span className="font-medium">{item.description}</span>
@@ -527,48 +535,48 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
             </div>
 
             {/* Tax Breakdown */}
-            {doc.items.some((item) => item.taxes) && (
+            {items.some((item) => item.taxes) && (
               <div>
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
                   {t('fiscal.detail.impostos', 'Impostos')}
                 </p>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  {doc.items.some((i) => i.taxes?.icms) && (
+                  {items.some((i) => i.taxes?.icms) && (
                     <div className="p-3 rounded-lg bg-muted/30">
                       <p className="text-xs text-muted-foreground">ICMS</p>
                       <p className="text-sm font-semibold text-foreground">
                         {formatCurrency(
-                          doc.items.reduce((sum, i) => sum + (i.taxes?.icms?.valor || 0), 0),
+                          items.reduce((sum, i) => sum + (i.taxes?.icms?.valor || 0), 0),
                         )}
                       </p>
                     </div>
                   )}
-                  {doc.items.some((i) => i.taxes?.pis) && (
+                  {items.some((i) => i.taxes?.pis) && (
                     <div className="p-3 rounded-lg bg-muted/30">
                       <p className="text-xs text-muted-foreground">PIS</p>
                       <p className="text-sm font-semibold text-foreground">
                         {formatCurrency(
-                          doc.items.reduce((sum, i) => sum + (i.taxes?.pis?.valor || 0), 0),
+                          items.reduce((sum, i) => sum + (i.taxes?.pis?.valor || 0), 0),
                         )}
                       </p>
                     </div>
                   )}
-                  {doc.items.some((i) => i.taxes?.cofins) && (
+                  {items.some((i) => i.taxes?.cofins) && (
                     <div className="p-3 rounded-lg bg-muted/30">
                       <p className="text-xs text-muted-foreground">COFINS</p>
                       <p className="text-sm font-semibold text-foreground">
                         {formatCurrency(
-                          doc.items.reduce((sum, i) => sum + (i.taxes?.cofins?.valor || 0), 0),
+                          items.reduce((sum, i) => sum + (i.taxes?.cofins?.valor || 0), 0),
                         )}
                       </p>
                     </div>
                   )}
-                  {doc.items.some((i) => i.taxes?.iss) && (
+                  {items.some((i) => i.taxes?.iss) && (
                     <div className="p-3 rounded-lg bg-muted/30">
                       <p className="text-xs text-muted-foreground">ISS</p>
                       <p className="text-sm font-semibold text-foreground">
                         {formatCurrency(
-                          doc.items.reduce((sum, i) => sum + (i.taxes?.iss?.valor || 0), 0),
+                          items.reduce((sum, i) => sum + (i.taxes?.iss?.valor || 0), 0),
                         )}
                       </p>
                     </div>
