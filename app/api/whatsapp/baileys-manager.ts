@@ -75,7 +75,8 @@ export interface BaileysSession {
       oldAppend: number;        // type=append e mais velho que 5min
     };
     processed: number;
-    saved: number;
+    saved: number;       // handleInboundMessage completou sem throw
+    earlyReturn: number; // handleInboundMessage retornou cedo (LID sem resolução, etc)
     lastRawJid: string | null;
     lastMsgTypes: string[];     // últimos 5 tipos de waMsg.message que chegaram
     lastError: string | null;
@@ -452,9 +453,9 @@ async function handleInboundMessage(
   waMessage: WAMessage,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sock: any,
-): Promise<void> {
+): Promise<boolean> {
   const rawJid = waMessage.key.remoteJid;
-  if (!rawJid) return;
+  if (!rawJid) return false;
 
   // ── Resolve phone number from JID ──
   // Baileys can send @lid (Linked Device ID) instead of @s.whatsapp.net.
@@ -473,38 +474,49 @@ async function handleInboundMessage(
     const key = waMessage.key as any;
     const session = sessions.get(connectionId);
 
-    // 1. Nosso mapa LID→phone (populado por contacts.upsert)
+    // Cadeia de resolução LID → telefone (Baileys 7+):
+    // 1. lidToPhone map (contacts.upsert)
+    // 2. participantAlt / remoteJidAlt / participant (campos do proto)
+    // 3. sock.onWhatsApp() — consulta o WA para resolver o LID em tempo real
+    const participantAlt = key.participantAlt as string | undefined;
+    const remoteJidAlt = key.remoteJidAlt as string | undefined;
+    const keyParticipant = waMessage.key.participant;
+    const msgParticipant = key.participant as string | undefined;
+
     const mappedPhone = session?.lidToPhone.get(rawJid);
+    const resolvedJid = [participantAlt, remoteJidAlt, keyParticipant, msgParticipant]
+      .find(j => j && (j.includes('@s.whatsapp.net') || j.includes('@lid')));
+
     if (mappedPhone && /^\d{10,15}$/.test(mappedPhone)) {
       senderPhone = mappedPhone;
+    } else if (resolvedJid?.includes('@s.whatsapp.net')) {
+      senderPhone = resolvedJid.replace('@s.whatsapp.net', '');
+      jidForProfile = resolvedJid;
+      // Memoriza no mapa para próximas mensagens deste LID
+      if (session) session.lidToPhone.set(rawJid, senderPhone);
     } else {
-      // 2. participantAlt (campo novo do Baileys 7 — prioridade sobre remoteJidAlt)
-      const participantAlt = key.participantAlt as string | undefined;
-      const remoteJidAlt = key.remoteJidAlt as string | undefined;
-      const keyParticipant = waMessage.key.participant;
-      const msgParticipant = key.participant as string | undefined;
-
-      const resolved = [participantAlt, remoteJidAlt, keyParticipant, msgParticipant]
-        .find(j => j && j.includes('@s.whatsapp.net'));
-
-      if (resolved) {
-        senderPhone = resolved.replace('@s.whatsapp.net', '');
-        jidForProfile = resolved;
-      } else {
-        // Última tentativa: tenta o mapa com variantes do LID
-        const lidDigits = rawJid.replace('@lid', '');
-        const mappedFallback = session?.lidToPhone.get(lidDigits);
-        if (mappedFallback && /^\d{10,15}$/.test(mappedFallback)) {
-          senderPhone = mappedFallback;
-        } else {
-          console.warn('[Baileys] @lid sem resolução de telefone. Ignorando:', rawJid, { participantAlt, remoteJidAlt });
-          return;
+      // Fallback: resolve via sock.onWhatsApp (consulta WhatsApp)
+      // Funciona mesmo sem contacts.upsert populado.
+      let resolved = false;
+      try {
+        const results = await sock.onWhatsApp(rawJid);
+        const match = results?.find((r: { exists?: boolean; jid?: string }) => r.exists && r.jid?.includes('@s.whatsapp.net'));
+        if (match?.jid) {
+          senderPhone = match.jid.replace('@s.whatsapp.net', '');
+          jidForProfile = match.jid;
+          if (session) session.lidToPhone.set(rawJid, senderPhone);
+          resolved = true;
         }
+      } catch { /* onWhatsApp pode falhar — segue para drop */ }
+
+      if (!resolved) {
+        console.warn('[Baileys] @lid sem resolução:', rawJid, { participantAlt, remoteJidAlt });
+        return false;
       }
     }
   } else if (rawJid.endsWith('@g.us')) {
     // Group message — should already be filtered but just in case
-    return;
+    return false;
   } else {
     // Unknown suffix — extract digits
     senderPhone = rawJid.replace(/@.*$/, '');
@@ -513,7 +525,7 @@ async function handleInboundMessage(
   // Validate: senderPhone must look like a phone number (10-15 digits)
   if (!/^\d{10,15}$/.test(senderPhone)) {
     console.warn('[Baileys] Invalid phone extracted from JID:', { rawJid, senderPhone });
-    return;
+    return false;
   }
 
   const messageId = waMessage.key.id || `wa_${Date.now()}`;
@@ -524,7 +536,7 @@ async function handleInboundMessage(
   const msgContent = waMessage.message;
   const text = extractMessageText(msgContent);
   const mediaType = extractMediaType(msgContent);
-  if (!text && !mediaType) return;
+  if (!text && !mediaType) return false;
 
   const displayText = text || getMediaLabel(mediaType);
   const now = new Date().toISOString();
@@ -536,7 +548,7 @@ async function handleInboundMessage(
       .where('businessId', '==', businessId)
       .limit(1)
       .get();
-    if (!dupSnap.empty) return;
+    if (!dupSnap.empty) return false;
   } catch (err) {
     console.error('[Baileys] Erro ao verificar duplicata:', err);
   }
@@ -740,10 +752,10 @@ async function handleInboundMessage(
     } catch (agentErr) {
       console.warn('[Baileys] Agent dispatch import/call failed:', agentErr);
     }
+    return true;
   } catch (err) {
     console.error('[Baileys] Erro ao salvar mensagem inbound:', err);
-    // Propaga para que o outer catch em messages.upsert registre em _dbg.lastError
-    throw err;
+    throw err; // outer catch registra em _dbg.lastError
   }
 }
 
@@ -934,7 +946,7 @@ export async function createBaileysSession(
     _dbg: {
       upsertFired: 0, upsertNotify: 0,
       filtered: { fromMe: 0, noMsg: 0, group: 0, lid: 0, statusBroadcast: 0, protocolMsg: 0, reactionMsg: 0, oldAppend: 0 },
-      processed: 0, saved: 0,
+      processed: 0, saved: 0, earlyReturn: 0,
       lastRawJid: null, lastMsgTypes: [], lastError: null, lastErrorAt: null,
       contactsUpserted: 0,
     },
@@ -1020,8 +1032,12 @@ export async function createBaileysSession(
           }
 
           session._dbg.processed++;
-          await handleInboundMessage(businessId, sessionKey, waMsg, sock);
-          session._dbg.saved++; // só chega aqui se handleInboundMessage não jogou
+          const savedOk = await handleInboundMessage(businessId, sessionKey, waMsg, sock);
+          if (savedOk) {
+            session._dbg.saved++;
+          } else {
+            session._dbg.earlyReturn++;
+          }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           session._dbg.lastError = msg;
