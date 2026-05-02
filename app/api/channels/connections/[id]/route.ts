@@ -67,7 +67,22 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
 
   // Campos restritos a admin
   if (isAdmin) {
-    if (typeof body.isPrimary === 'boolean') patch.isPrimary = body.isPrimary;
+    if (typeof body.isPrimary === 'boolean') {
+      // Phase 3 audit P0.1: isPrimary=true só faz sentido em business connections.
+      // Sem este guard, admin (intencional ou bug de UI) podia marcar canal 'user'
+      // como primary, criando 2 primaries simultâneas e quebrando findPrimary.
+      // Considera tanto o type atual da connection (quando ownerType não muda)
+      // quanto o type-no-update (quando admin transfer ownership na mesma chamada).
+      const finalOwnerType = (body.ownerType && (body.ownerType === 'business' || body.ownerType === 'user'))
+        ? body.ownerType
+        : conn.ownerType;
+      if (body.isPrimary === true && finalOwnerType !== 'business') {
+        return NextResponse.json({
+          error: 'Apenas canais da empresa (ownerType=business) podem ser marcados como principal.',
+        }, { status: 400 });
+      }
+      patch.isPrimary = body.isPrimary;
+    }
     if (typeof body.isActive === 'boolean') patch.isActive = body.isActive;
     if (body.ownerType && (body.ownerType === 'business' || body.ownerType === 'user')) {
       patch.ownerType = body.ownerType;
@@ -219,14 +234,19 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: stri
           .get();
         const candidates = candidatesSnap.docs
           .filter((d) => d.id !== id && !d.data().isPrimary);
-        // Prefere conexões connected; senão primeira ativa
-        const promoted = candidates.find((d) => d.data().isConnected) || candidates[0];
+        // Phase 3 audit P1.3: APENAS promove uma connected. Promover desconectada
+        // criava UX confuso (PRINCIPAL + Desconectado simultâneos) e send fallback
+        // pegava sessão morta. Se nenhuma connected, deixa sem primary; o
+        // ensurePrimaryBusinessConnection cria fresh quando necessário.
+        const promoted = candidates.find((d) => d.data().isConnected);
         if (promoted) {
           await promoted.ref.update({
             isPrimary: true,
             updatedAt: new Date().toISOString(),
           });
           console.log(`[connections DELETE] Auto-promoted ${promoted.id} to primary after disabling ${id}`);
+        } else if (candidates.length > 0) {
+          console.warn(`[connections DELETE] ${candidates.length} candidate(s) disponíveis mas nenhuma conectada — sem auto-promote (admin precisa promover manualmente após reconectar)`);
         }
       } catch (promoteErr) {
         console.warn('[connections DELETE] Failed to auto-promote replacement primary:', promoteErr);

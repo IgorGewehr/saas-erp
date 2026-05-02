@@ -526,10 +526,15 @@ async function handleInboundMessage(
       return legacy;
     };
 
+    // Phase 3 audit P1.1: orderBy lastMessageAt desc — quando há 2+ legacies
+    // sem channelConnectionId (tenant pré-migração), pegamos a mais recente
+    // como representativa do thread "vivo". Sem isso, Firestore não garante
+    // ordem estável e backfill virava aleatório.
     let candidates = (await adminDb.collection('conversations')
       .where('businessId', '==', businessId)
       .where('channel', '==', 'whatsapp')
       .where('contactExternalId', '==', senderPhone)
+      .orderBy('lastMessageAt', 'desc')
       .limit(5)
       .get()).docs;
 
@@ -538,6 +543,7 @@ async function handleInboundMessage(
         .where('businessId', '==', businessId)
         .where('channel', '==', 'whatsapp')
         .where('contactExternalId', '==', altPhone)
+        .orderBy('lastMessageAt', 'desc')
         .limit(5)
         .get()).docs;
     }

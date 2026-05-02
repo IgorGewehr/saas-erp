@@ -1374,10 +1374,12 @@ async function saveInboundMessage(params: InboundMessageParams) {
       return legacy;
     };
 
+    // Phase 3 audit P1.1: orderBy pra escolha estável quando há 2+ legacies.
     let candidateDocs = (await adminDb.collection('conversations')
       .where('businessId', '==', businessId)
       .where('channel', '==', params.channel)
       .where('contactExternalId', '==', params.externalId)
+      .orderBy('lastMessageAt', 'desc')
       .limit(5)
       .get()).docs;
 
@@ -1389,6 +1391,7 @@ async function saveInboundMessage(params: InboundMessageParams) {
           .where('businessId', '==', businessId)
           .where('channel', '==', 'whatsapp')
           .where('contactExternalId', '==', altPhone)
+          .orderBy('lastMessageAt', 'desc')
           .limit(5)
           .get()).docs;
       }

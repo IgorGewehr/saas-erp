@@ -2384,10 +2384,24 @@ function NewConversationDialog({
       setChannelMode('cloud');
       setMessageMode('template');
     }
-    // Auto-select default connection: primeira da lista (business primary
-    // se houver, senão a primeira disponível).
-    setSelectedConnectionId(availableBaileysConnections[0]?.id ?? null);
-  }, [open, baileysAvailable, cloudAvailable, availableBaileysConnections]);
+  }, [open, baileysAvailable, cloudAvailable]);
+
+  // Phase 3 audit P1.4: revalida selectedConnectionId quando channelMode muda
+  // OU quando a lista de connections atualiza (ex: admin adicionou outra
+  // entre o open e o submit). Sem isso, ID stale dum canal removido pode
+  // ser submetido e criar conv com vínculo quebrado.
+  useEffect(() => {
+    if (!open) return;
+    if (channelMode !== 'baileys') {
+      setSelectedConnectionId(null);
+      return;
+    }
+    setSelectedConnectionId(prev => {
+      // Mantém seleção atual se ainda válida; senão escolhe primary/primeira
+      if (prev && availableBaileysConnections.some(c => c.id === prev)) return prev;
+      return availableBaileysConnections[0]?.id ?? null;
+    });
+  }, [open, channelMode, availableBaileysConnections]);
 
   // When switching to cloud+template, fetch templates
   useEffect(() => {
@@ -2482,13 +2496,18 @@ function NewConversationDialog({
   const canSend = useMemo(() => {
     if (sending) return false;
     if (!normalizePhone(phoneInput)) return false;
+    // Phase 3 audit P1.5: bloqueia envio Baileys quando não há canal disponível.
+    // Antes o submit prosseguia e caía no fallback do send/route.ts retornando
+    // erro genérico. Agora botão fica disabled até o user reconectar/aguardar.
+    if (channelMode === 'baileys' && availableBaileysConnections.length === 0) return false;
+    if (channelMode === 'baileys' && !selectedConnectionId) return false;
     if (channelMode === 'cloud' && messageMode === 'template') {
       if (!selectedTemplate) return false;
       if (templateVars.some(v => !v.trim())) return false;
       return true;
     }
     return messageText.trim().length > 0;
-  }, [sending, phoneInput, channelMode, messageMode, selectedTemplate, templateVars, messageText]);
+  }, [sending, phoneInput, channelMode, messageMode, selectedTemplate, templateVars, messageText, availableBaileysConnections.length, selectedConnectionId]);
 
   const handleSend = async () => {
     if (!business?.id || !user) return;
