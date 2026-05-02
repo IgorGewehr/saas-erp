@@ -1524,6 +1524,7 @@ function Composer({
   onKeyDown,
   inputRef,
   channel,
+  connectedVia,
   isSending,
   attachment,
   onAttachmentSelect,
@@ -1540,6 +1541,7 @@ function Composer({
   onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
   channel: ConversationChannel;
+  connectedVia?: string;
   isSending: boolean;
   attachment: File | null;
   onAttachmentSelect: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -1551,7 +1553,7 @@ function Composer({
   onSnippetClick?: () => void;
 }) {
   const { t } = useTranslation();
-  const cfg = CHANNEL_CONFIG[channel];
+  const cfg = getConvConfig({ channel, connectedVia: connectedVia as 'baileys' | 'embedded_signup' | undefined });
   const hasContent = value.trim().length > 0 || !!attachment;
   const isDisabled = disabled || false;
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -6164,6 +6166,7 @@ export default function ConversasModule() {
                   onKeyDown={handleKeyDown}
                   inputRef={inputRef}
                   channel={selectedConversation.channel}
+                  connectedVia={selectedConversation.connectedVia}
                   isSending={isSending}
                   attachment={attachment}
                   onAttachmentSelect={handleFileSelect}
