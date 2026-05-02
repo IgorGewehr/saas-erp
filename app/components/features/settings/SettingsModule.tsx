@@ -6732,12 +6732,13 @@ function BaileysDebugButton({ businessId }: { businessId: string }) {
     if (!businessId) return;
     setLoading(true);
     try {
-      const { getAuth } = await import('firebase/auth');
-      const token = await getAuth().currentUser?.getIdToken();
+      const { auth } = await import('@/lib/config/firebase');
+      const token = await auth.currentUser?.getIdToken();
       const res = await fetch(`/api/whatsapp/debug?businessId=${businessId}`, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${token ?? ''}` },
       });
-      setData(await res.json());
+      const text = await res.text();
+      setData(JSON.parse(text));
     } catch (e) {
       setData({ error: String(e) });
     } finally {
