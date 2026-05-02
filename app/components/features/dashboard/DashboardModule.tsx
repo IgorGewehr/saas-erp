@@ -236,11 +236,12 @@ export default function DashboardModule() {
 
   // ── Render ───────────────────────────────────────────────────────────────
   return (
+    <div className="h-full overflow-y-auto">
     <motion.div
       variants={stagger}
       initial="hidden"
       animate="visible"
-      className="max-w-7xl mx-auto h-full flex flex-col justify-center gap-y-10 sm:gap-y-14 px-4 sm:px-5 lg:px-7"
+      className="max-w-7xl mx-auto min-h-full flex flex-col justify-center gap-y-10 sm:gap-y-14 px-4 sm:px-5 lg:px-7 py-8"
     >
       {/* ━━━ Hero with AI input ━━━ */}
       <motion.section variants={fadeUp}>
@@ -349,6 +350,7 @@ export default function DashboardModule() {
         </div>
       </motion.section>
     </motion.div>
+    </div>
   );
 }
 

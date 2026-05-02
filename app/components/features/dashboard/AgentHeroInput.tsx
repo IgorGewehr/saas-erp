@@ -366,7 +366,7 @@ export default function AgentHeroInput({
               transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
               className="mt-3"
             >
-              <div className="rounded-2xl bg-white/80 dark:bg-gray-900/60 backdrop-blur-xl border border-gray-200/60 dark:border-gray-700/40 shadow-sm flex flex-col h-[340px]">
+              <div className="rounded-2xl bg-white/80 dark:bg-gray-900/60 backdrop-blur-xl border border-gray-200/60 dark:border-gray-700/40 shadow-sm flex flex-col h-[280px] sm:h-[340px] lg:h-[380px]">
                 <div
                   ref={scrollRef}
                   className="flex-1 min-h-0 px-4 py-3 space-y-2 overflow-y-auto"
