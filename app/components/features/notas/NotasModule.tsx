@@ -807,6 +807,13 @@ function NotePreviewModal({
     return () => document.removeEventListener('keydown', handler);
   }, [onClose]);
 
+  // Lock body scroll while modal is open so the page behind doesn't scroll
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+
   return (
     <motion.div
       initial={{ opacity: 0 }}

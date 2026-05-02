@@ -21,7 +21,7 @@
  * cuida da persistência. Esse modal é puramente apresentação + dispatch.
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import {
   X, Clock, History as HistoryIcon, Calendar as CalendarIcon, Settings2,
@@ -140,6 +140,13 @@ export default function RecurrenceDetailDialog({
   const history = useMemo(() => recurrence?.history ?? [], [recurrence]);
   const isActive = recurrence?.isActive ?? false;
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
+
+  // Lock body scroll while modal is open so the page behind doesn't scroll
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, []);
 
   const [tab, setTab] = useState<Tab>('historico');
 
