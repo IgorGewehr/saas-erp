@@ -104,6 +104,38 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // Pre-load services list — web visitors frequently ask "what services do you have?"
+  type ServiceSnapshot = { id: string; name: string; price: number; duration: number; category?: string; description?: string };
+  let servicesList: ServiceSnapshot[] = [];
+  const useCase = business.settings?.useCase || 'servicos';
+  if (useCase === 'servicos') {
+    try {
+      const servicesSnap = await adminDb.collection('services')
+        .where('businessId', '==', business.id)
+        .where('isActive', '==', true)
+        .get();
+      servicesList = servicesSnap.docs.map(d => {
+        const s = d.data();
+        return {
+          id: d.id,
+          name: s.name as string,
+          price: (s.price as number) || 0,
+          duration: (s.duration as number) || 60,
+          ...(s.category ? { category: s.category as string } : {}),
+          ...(s.description ? { description: s.description as string } : {}),
+        };
+      });
+    } catch { /* non-fatal — agent falls back to agenda_list_services tool */ }
+  }
+
+  // Compute today's effective opening hours (applies holidays + seasonal overrides)
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const holidays = business.settings?.aiAgent?.calendar?.holidays || [];
+  const isClosedToday = holidays.includes(todayIso);
+  const seasonalHours = business.settings?.aiAgent?.calendar?.seasonalHours || [];
+  const activeSeason = seasonalHours.find((s) => todayIso >= s.fromDate && todayIso <= s.toDate);
+  const effectiveHours = activeSeason?.hours || business.settings?.openingHours || null;
+
   // Build agent payload — channel='web' so send_final_message is skipped
   const agentPayload = {
     message_id: `web_${sessionId}_${Date.now()}`,
@@ -114,13 +146,26 @@ export async function POST(req: NextRequest) {
     channel: 'web',
     recipient_id: sessionId, // not used for web, but required by schema
     history: history.slice(-10), // last 10 turns
-    use_case: business.settings?.useCase || 'servicos',
+    use_case: useCase,
     business_name: business.nomeFantasia || business.razaoSocial,
     business_description: business.settings?.aiAgent?.businessDescription || null,
     tone: business.settings?.aiAgent?.tone || 'friendly',
     pedidos_settings: business.settings?.aiAgent?.pedidos || null,
     agenda_settings: business.settings?.aiAgent?.agenda || null,
     client_memory: null,
+    // Business operational context (Wave 7 — policy-aware)
+    opening_hours: effectiveHours,
+    address: business.endereco || null,
+    services_list: servicesList.length > 0 ? servicesList : null,
+    current_date: todayIso,
+    policies: business.settings?.aiAgent?.policies || null,
+    sla: business.settings?.aiAgent?.sla || null,
+    is_closed_today: isClosedToday,
+    seasonal_label: activeSeason?.label || null,
+    delivery_zones: business.settings?.aiAgent?.deliveryZones || null,
+    accepted_payment_methods: business.settings?.aiAgent?.acceptedPaymentMethods || null,
+    team_capacity: business.settings?.aiAgent?.teamCapacity || null,
+    upsell_rules: (business.settings?.aiAgent?.upsellRules || []).filter((r) => r.isActive),
   };
 
   const raw = JSON.stringify(agentPayload);

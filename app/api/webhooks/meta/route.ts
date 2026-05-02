@@ -1615,6 +1615,8 @@ async function saveInboundMessage(params: InboundMessageParams) {
     console.log('[Meta Webhook] Saved inbound message for conversation:', conversationId);
 
     // Dispatch to AI agent (true fire-and-forget — do NOT await, debounce runs inside).
+    // Meta webhooks only deliver messages FROM the contact (never operator notes or
+    // outbound messages), so isInternal is always false here.
     try {
       const { dispatchInboundToAgent } = await import('@/lib/agent/dispatch');
       dispatchInboundToAgent(adminDb, {
@@ -1628,6 +1630,8 @@ async function saveInboundMessage(params: InboundMessageParams) {
         recipientId: params.externalId,
         // Meta wamid/mid — needed for combined read-receipt + typing indicator
         externalMessageId: params.messageId,
+        // Meta webhooks are always contact-originated inbound — never internal notes
+        isInternal: false,
       }).catch(agentErr => console.warn('[Meta Webhook] Agent dispatch failed:', agentErr));
     } catch (agentErr) {
       console.warn('[Meta Webhook] Agent dispatch failed:', agentErr);

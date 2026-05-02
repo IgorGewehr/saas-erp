@@ -44,6 +44,8 @@ export interface BaileysSession {
   listeners: Set<(data: Record<string, unknown>) => void>;
   isConnected: boolean;
   lastQr: string | null;
+  /** Marcado true em destroySession() para que o handler de connection.close pule o auto-restart. */
+  isDestroyed: boolean;
   /** ID da channelConnection associada — chave da sessão no Map. */
   connectionId: string;
   /** Tenant. handleInboundMessage usa pra atribuir msgs entrantes. */
@@ -632,6 +634,8 @@ async function handleInboundMessage(
     try {
       const { dispatchInboundToAgent } = await import('@/lib/agent/dispatch');
       _baileysDlog(`[Baileys] dispatchInboundToAgent imported OK`);
+      // Baileys messages.upsert only fires for !fromMe messages (filtered at line ~877),
+      // so these are always contact-originated inbound — never internal operator notes.
       dispatchInboundToAgent(adminDb, {
         businessId,
         conversationId,
@@ -641,6 +645,9 @@ async function handleInboundMessage(
         contactName,
         contactPhone: senderPhone,
         recipientId: senderPhone,
+        // Baileys listener filters fromMe=true before calling handleInboundMessage,
+        // so this is always a contact message, never an internal note.
+        isInternal: false,
       }).catch(agentErr => console.warn('[Baileys] Agent dispatch promise rejected:', agentErr));
     } catch (agentErr) {
       console.warn('[Baileys] Agent dispatch import/call failed:', agentErr);
@@ -747,6 +754,10 @@ export async function destroySession(businessId: string, connectionId?: string):
   const session = sessions.get(sessionKey);
   if (!session) return;
 
+  // Mark destroyed BEFORE sock.end() so the async connection.close handler
+  // sees isDestroyed=true and skips any auto-restart logic.
+  session.isDestroyed = true;
+
   for (const listener of session.listeners) {
     try { listener({ type: 'stream_end' }); } catch { /* ignore */ }
   }
@@ -826,6 +837,7 @@ export async function createBaileysSession(
     listeners: new Set(),
     isConnected: false,
     lastQr: null,
+    isDestroyed: false,
     connectionId: sessionKey,
     businessId,
   };
@@ -932,6 +944,9 @@ export async function createBaileysSession(
       }
 
       if (connection === 'close') {
+        // Session was destroyed externally (e.g. disconnect endpoint) — do not restart.
+        if (session.isDestroyed) return;
+
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
 

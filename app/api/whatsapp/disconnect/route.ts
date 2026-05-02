@@ -9,6 +9,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import path from 'path';
 import fs from 'fs';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
+import { destroySession } from '../baileys-manager';
 
 const SESSIONS_DIR = path.join(process.cwd(), 'whatsapp-sessions');
 
@@ -48,6 +49,11 @@ export async function POST(req: NextRequest) {
       const { ensurePrimaryBaileysBusinessConnection } = await import('@/lib/services/channels/channelConnections');
       sessionKey = (await ensurePrimaryBaileysBusinessConnection(businessId)).id;
     }
+
+    // Kill in-memory socket FIRST — sets isDestroyed=true antes do sock.end(),
+    // garantindo que o handler async de connection.close pule auto-restart e
+    // não abra socket novo enquanto os arquivos estão sendo apagados.
+    await destroySession(businessId, sessionKey);
 
     // Clear session files (no diretório novo). Diretório legado é tratado
     // como já-migrado (a sessão é a do connectionId).

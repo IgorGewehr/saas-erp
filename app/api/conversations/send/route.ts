@@ -268,14 +268,39 @@ export async function POST(req: NextRequest) {
             channels = { ...(channels || {}), ...fromConn };
             resolvedConnectionId = conn.id;
           } else {
-            // Conexão referenciada não existe (deletada, doc órfão por unlink
-            // que falhou). Retorna erro claro em vez de cair pro Cloud da
-            // empresa silenciosamente — operador esperava enviar pelo canal
-            // específico e ficaria confuso vendo a mensagem ir pelo outro.
-            return NextResponse.json({
-              error: 'O canal usado por esta conversa foi removido. Recarregue a página ou atribua a conversa a outro canal.',
-              code: 'connection_not_found',
-            }, { status: 410 });
+            // Conexão referenciada foi deletada (doc órfão por unlink que falhou).
+            // Tenta fallback automático para a primary Baileys connection do business
+            // antes de falhar — evita que o operador fique sem canal quando a conn
+            // específica foi removida mas o businessId ainda tem uma conexão ativa.
+            console.warn(
+              `[Send] channelConnection ${convChannelConnId} not found (deleted?), ` +
+              `attempting fallback to primary Baileys connection for business ${businessId}`
+            );
+            try {
+              const { ensurePrimaryBaileysBusinessConnection } = await import('@/lib/services/channels/channelConnections');
+              const primaryConn = await ensurePrimaryBaileysBusinessConnection(businessId);
+              const primarySnap = await _adminDb.collection('channelConnections').doc(primaryConn.id).get();
+              if (primarySnap.exists) {
+                const { buildLegacyChannelsFromConnection } = await import('@/lib/services/channels/channelConnections');
+                const conn = { ...(primarySnap.data() as import('@/lib/types').ChannelConnection), id: primarySnap.id };
+                const fromConn = buildLegacyChannelsFromConnection(conn);
+                channels = { ...(channels || {}), ...fromConn };
+                resolvedConnectionId = conn.id;
+                console.warn(`[Send] Fallback succeeded — using primary connection ${conn.id}`);
+              } else {
+                // Primary connection also missing — fail gracefully
+                return NextResponse.json({
+                  error: 'O canal usado por esta conversa foi removido e não há canal primário disponível. Reconecte um canal em Configurações.',
+                  code: 'connection_not_found',
+                }, { status: 410 });
+              }
+            } catch (fallbackErr) {
+              console.error('[Send] Fallback to primary connection failed:', fallbackErr);
+              return NextResponse.json({
+                error: 'O canal usado por esta conversa foi removido. Recarregue a página ou atribua a conversa a outro canal.',
+                code: 'connection_not_found',
+              }, { status: 410 });
+            }
           }
         }
       } catch (err) {
@@ -445,6 +470,10 @@ export async function POST(req: NextRequest) {
     }
 
     // Update or create the message record in Firestore
+    // NOTE: this route intentionally does NOT call dispatchInboundToAgent.
+    // It handles OUTBOUND messages only (operator → contact, or agent → contact).
+    // Agent dispatch is exclusively the responsibility of the inbound webhook handlers
+    // (meta/route.ts and baileys-manager.ts) after they persist a contact-originated message.
     const docIdToUpdate = messageDocId || messageId;
     if (docIdToUpdate) {
       await updateMessageAfterSend(docIdToUpdate, result.externalMessageId, businessId);

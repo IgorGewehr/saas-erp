@@ -2066,6 +2066,7 @@ export default function AgendaModule() {
       const q = query(
         collection(db, 'services'),
         where('businessId', '==', business.id),
+        where('isActive', '==', true),
         orderBy('name', 'asc')
       );
       const snap = await getDocs(q);
@@ -2220,7 +2221,8 @@ export default function AgendaModule() {
 
   const handleDeleteService = useCallback(async (id: string) => {
     if (!business?.id) return;
-    await deleteDoc(doc(db, 'services', id));
+    const now = new Date().toISOString();
+    await updateDoc(doc(db, 'services', id), { isActive: false, deletedAt: now, updatedAt: now });
     queryClient.invalidateQueries({ queryKey: ['services', business.id] });
     setSnackbar({ open: true, message: t('agenda.serviceDeleted', 'Serviço excluído.'), severity: 'info' });
   }, [business?.id, queryClient, t]);
@@ -2236,7 +2238,7 @@ export default function AgendaModule() {
       const endTime = addDurationToTime(data.startTime, data.duration);
       const serviceColor = services.find((s) => s.id === data.serviceId)?.color || data.color || '#3B82F6';
 
-      // Soft conflict warning (does not block saving)
+      // Hard conflict block — salva somente se não há conflito
       if (data.professionalId) {
         const conflictResult = checkConflicts(
           data.professionalId,
@@ -2248,9 +2250,10 @@ export default function AgendaModule() {
         if (conflictResult.hasConflict) {
           setSnackbar({
             open: true,
-            message: `${t('agenda.warning', 'Aviso')}: ${conflictResult.message}`,
-            severity: 'warning',
+            message: `${t('agenda.conflictBlocked', 'Conflito de horário')}: ${conflictResult.message}`,
+            severity: 'error',
           });
+          return; // Hard block — operador deve corrigir o horário antes de salvar
         }
       }
 
@@ -2357,6 +2360,27 @@ export default function AgendaModule() {
           // Recurring series — one shared recurrenceId links all instances.
           const recurrenceId = `rec_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
           const dates = generateRecurrenceDates(data.date, freq, occurrences);
+
+          // Validate ALL dates for conflicts before committing any — no partial series
+          if (data.professionalId) {
+            const conflictingDates: string[] = [];
+            for (const d of dates) {
+              const r = checkConflicts(data.professionalId, d, data.startTime, endTime);
+              if (r.hasConflict) {
+                conflictingDates.push(`${d} (${r.message})`);
+              }
+            }
+            if (conflictingDates.length > 0) {
+              const preview = conflictingDates.slice(0, 3).join('; ') + (conflictingDates.length > 3 ? ` +${conflictingDates.length - 3}…` : '');
+              setSnackbar({
+                open: true,
+                message: `${t('agenda.recurrenceConflict', 'Conflito na série')}: ${preview}`,
+                severity: 'error',
+              });
+              return; // Abort — zero docs written
+            }
+          }
+
           const batch = writeBatch(db);
           for (const d of dates) {
             const ref = doc(collection(db, 'appointments'));

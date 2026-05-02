@@ -40,6 +40,12 @@ export interface InboundDispatchInput {
    * indicator is skipped on WhatsApp (FB/IG fall back to standalone typing_on).
    */
   externalMessageId?: string;
+  /**
+   * Set to true when the message is an internal operator note (not from the
+   * contact). Internal notes must NEVER be dispatched to the AI agent —
+   * they are operator-only annotations not visible to the contact.
+   */
+  isInternal?: boolean;
 }
 
 /**
@@ -53,6 +59,21 @@ export async function dispatchInboundToAgent(
 ): Promise<void> {
   if (!SECRET) {
     dlog('[agent/dispatch] AGENT_SHARED_SECRET not set, skipping');
+    return;
+  }
+
+  // Hard gate: internal operator notes must never reach the AI agent.
+  // They are not visible to the contact and should not influence agent replies.
+  if (input.isInternal) {
+    dlog(`[agent/dispatch] SKIP: isInternal=true — operator note, not a contact message`);
+    return;
+  }
+
+  // Also guard against accidentally dispatching empty messages (e.g. media-only
+  // messages whose text could not be extracted). The agent cannot do anything
+  // useful with an empty message string.
+  if (!input.message || input.message.trim() === '') {
+    dlog(`[agent/dispatch] SKIP: empty message body — nothing to dispatch`);
     return;
   }
 
