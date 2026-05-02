@@ -687,11 +687,15 @@ async function handleInboundMessage(
       if (avatarUrl && !existingConv.contactAvatarUrl) {
         convUpdate.contactAvatarUrl = avatarUrl;
       }
-      // Backfill / correção do channelConnectionId — Baileys é autoritativo
-      // (sabemos exatamente qual sessão entregou a msg). Atualiza se ausente
-      // OU se diferente (caso de migração de canal-empresa pra pessoal).
+      // Backfill / correção do channelConnectionId e connectedVia — Baileys é
+      // autoritativo (sabemos exatamente qual sessão entregou a msg). Atualiza
+      // connectedVia também para que a UI mostre "WhatsApp Web" e não "WhatsApp
+      // Business" em conversas que migraram do legado Cloud para Baileys.
       if (existingConv.channelConnectionId !== connectionId) {
         convUpdate.channelConnectionId = connectionId;
+      }
+      if (existingConv.connectedVia !== 'baileys') {
+        convUpdate.connectedVia = 'baileys';
       }
 
       await adminDb.collection('conversations').doc(conversationId).update(convUpdate);
@@ -738,6 +742,8 @@ async function handleInboundMessage(
     }
   } catch (err) {
     console.error('[Baileys] Erro ao salvar mensagem inbound:', err);
+    // Propaga para que o outer catch em messages.upsert registre em _dbg.lastError
+    throw err;
   }
 }
 
@@ -1015,7 +1021,7 @@ export async function createBaileysSession(
 
           session._dbg.processed++;
           await handleInboundMessage(businessId, sessionKey, waMsg, sock);
-          session._dbg.saved++;
+          session._dbg.saved++; // só chega aqui se handleInboundMessage não jogou
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           session._dbg.lastError = msg;
