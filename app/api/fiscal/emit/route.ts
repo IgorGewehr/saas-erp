@@ -13,6 +13,7 @@ import {
   getPISCOFINSDefaults,
 } from '@/lib/fiscal/number-sequence';
 import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
+import { decryptToken } from '@/lib/utils/encryption';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -135,11 +136,12 @@ export async function POST(request: NextRequest) {
     const icmsDefaults = getICMSDefaults(crt);
     const pisCofsDefaults = getPISCOFINSDefaults(crt, fiscal.taxRegime);
 
-    // Resolve environment: read from the per-document-type config, fall back to nfeConfig
+    // Resolve environment: prefer per-document-type config, fall back to nfeConfig,
+    // then to fiscal.environment (raiz, salva pelo botão "Salvar Ambiente" no Settings).
     const rawEnvironment =
       type === 'nfce'
-        ? (fiscal.nfceConfig?.environment ?? fiscal.nfeConfig?.environment)
-        : fiscal.nfeConfig?.environment;
+        ? (fiscal.nfceConfig?.environment ?? fiscal.nfeConfig?.environment ?? fiscal.environment)
+        : (fiscal.nfeConfig?.environment ?? fiscal.environment);
     const ambiente: SefazAmbiente = resolveAmbiente(rawEnvironment);
 
     // 6. Build items with tax blocks -------------------------------------------
@@ -248,6 +250,17 @@ export async function POST(request: NextRequest) {
       };
     });
 
+    // Em homologação, o primeiro item de NFe/NFCe DEVE ter descrição literal
+    // exigida pela SEFAZ (Manual de Integração 7.0, item 7.4.4).
+    if (
+      (type === 'nfe' || type === 'nfce') &&
+      ambiente === 'homologacao' &&
+      items[0]?.produto
+    ) {
+      (items[0].produto as Record<string, unknown>).descricao =
+        'NOTA FISCAL EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL';
+    }
+
     // 7. CFOP auto-adjustment for interstate operations -------------------------
     //    5xxx = intrastate, 6xxx = interstate — SEFAZ rejects mismatches
     const ufEmitente = business.endereco?.uf?.toUpperCase() || '';
@@ -262,10 +275,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate inscricaoEstadual (required for NF-e)
-    if (type === 'nfe' && !fiscal.inscricaoEstadual) {
+    // IE/IM podem estar em fiscal.* (canônico) ou na raiz do business (legado/UI Empresa).
+    // IE: aceita só dígitos ou a literal "ISENTO" (MEI). Outros formatos são limpos.
+    const ieRaw = String(fiscal.inscricaoEstadual || business.inscricaoEstadual || '').trim();
+    const inscricaoEstadual = ieRaw.toUpperCase() === 'ISENTO' ? 'ISENTO' : ieRaw.replace(/\D/g, '');
+    const inscricaoMunicipal = String(fiscal.inscricaoMunicipal || business.inscricaoMunicipal || '').replace(/\D/g, '');
+
+    // Validate inscricaoEstadual (required for NF-e and NFC-e)
+    if ((type === 'nfe' || type === 'nfce') && !inscricaoEstadual) {
       return NextResponse.json(
-        { error: 'Inscrição Estadual não configurada. Configure em Configurações → Fiscal.' },
+        { error: 'Inscrição Estadual não configurada. Configure em Configurações → Empresa.' },
         { status: 400 },
       );
     }
@@ -276,6 +295,15 @@ export async function POST(request: NextRequest) {
       if (!codigoMun || codigoMun === '0000000' || codigoMun.replace(/\D/g, '').length !== 7) {
         return NextResponse.json(
           { error: 'Código IBGE do município não configurado ou inválido. Configure em Configurações → Fiscal.' },
+          { status: 400 },
+        );
+      }
+
+      // CEP do emitente: schema TCEP da NFe exige exatamente 8 dígitos.
+      const cepEmit = String(business.endereco?.cep || '').replace(/\D/g, '');
+      if (cepEmit.length !== 8) {
+        return NextResponse.json(
+          { error: `CEP do emitente inválido (${cepEmit.length} dígitos). Configure um CEP de 8 dígitos em Configurações → Empresa.` },
           { status: 400 },
         );
       }
@@ -300,8 +328,8 @@ export async function POST(request: NextRequest) {
       cnpj: business.cnpj?.replace(/\D/g, ''),
       nome: business.razaoSocial,
       nomeFantasia: business.nomeFantasia,
-      inscricaoEstadual: fiscal.inscricaoEstadual,
-      inscricaoMunicipal: fiscal.inscricaoMunicipal || undefined,
+      inscricaoEstadual,
+      inscricaoMunicipal: inscricaoMunicipal || undefined,
       crt,
     };
 
@@ -349,9 +377,9 @@ export async function POST(request: NextRequest) {
 
     // -- NFS-e ----------------------------------------------------------------
     if (type === 'nfse') {
-      if (!fiscal.inscricaoMunicipal) {
+      if (!inscricaoMunicipal) {
         return NextResponse.json(
-          { error: 'Inscricao Municipal nao configurada. Configure em Configuracoes → Fiscal.' },
+          { error: 'Inscricao Municipal nao configurada. Configure em Configuracoes → Empresa.' },
           { status: 400 },
         );
       }
@@ -373,7 +401,7 @@ export async function POST(request: NextRequest) {
         codigoMunicipioEmissao: String(fiscal.ibgeCodigoMunicipio),
         prestador: {
           cnpj: business.cnpj?.replace(/\D/g, ''),
-          inscricaoMunicipal: fiscal.inscricaoMunicipal,
+          inscricaoMunicipal,
           nome: business.razaoSocial,
           nomeFantasia: business.nomeFantasia,
           simplesNacional: isSimples ? '1' : '2',
@@ -447,8 +475,13 @@ export async function POST(request: NextRequest) {
 
     // -- NFC-e ----------------------------------------------------------------
     if (type === 'nfce') {
-      // Validate NFC-e specific fields (CSC)
-      if (!fiscal.nfceConfig?.cscId || !fiscal.nfceConfig?.cscToken) {
+      // Validate NFC-e specific fields (CSC). Token is stored encrypted
+      // in cscTokenEncrypted (preferred); legacy plaintext cscToken is a fallback.
+      const cscTokenPlain = fiscal.nfceConfig?.cscTokenEncrypted
+        ? await decryptToken(fiscal.nfceConfig.cscTokenEncrypted)
+        : fiscal.nfceConfig?.cscToken || '';
+
+      if (!fiscal.nfceConfig?.cscId || !cscTokenPlain) {
         return NextResponse.json(
           { error: 'CSC (Codigo de Seguranca do Contribuinte) nao configurado para NFC-e.' },
           { status: 400 },
@@ -479,7 +512,7 @@ export async function POST(request: NextRequest) {
         transporte: { modFrete: '9' },
         csc: {
           id: fiscal.nfceConfig.cscId,
-          token: fiscal.nfceConfig.cscToken,
+          token: cscTokenPlain,
         },
         informacoesAdicionais: data.informacoesAdicionais
           ? { contribuinte: data.informacoesAdicionais }
@@ -494,26 +527,29 @@ export async function POST(request: NextRequest) {
         await commitInvoiceNumber(businessId, 'nfce', number);
       }
 
-      // Persist fiscal document
-      if (result.chaveAcesso) {
-        await adminDb.collection('fiscalDocuments').add(
-          stripEmpty({
-            businessId,
-            type: 'nfce',
-            number,
-            series,
-            accessKey: result.chaveAcesso,
-            protocol: result.protocolo,
-            status:
-              result.status === 'autorizado' ? 'autorizada' : result.status,
-            xml: result.xml,
-            sefazResponse: result,
-            totalValue: totalNF,
-            createdAt: now,
-            updatedAt: now,
-          }),
-        );
-      }
+      // Persist fiscal document — sempre (autorizada, rejeitada ou processando)
+      // pra que o usuário consulte o histórico mesmo em caso de falha.
+      await adminDb.collection('fiscalDocuments').add(
+        stripEmpty({
+          businessId,
+          type: 'nfce',
+          number,
+          series,
+          accessKey: result.chaveAcesso || null,
+          protocol: result.protocolo || null,
+          status:
+            result.status === 'autorizado' ? 'autorizada' : result.status,
+          statusMessage: result.motivoStatus || result.erros?.[0] || null,
+          clientName: data.nomeConsumidor || null,
+          clientCpfCnpj: data.cpfConsumidor?.replace(/\D/g, '') || null,
+          xml: result.xml || null,
+          sefazResponse: result,
+          totalValue: totalNF,
+          issueDate: now,
+          createdAt: now,
+          updatedAt: now,
+        }),
+      );
 
       return NextResponse.json(
         { success: result.success, data: result },
@@ -604,32 +640,32 @@ export async function POST(request: NextRequest) {
       await commitInvoiceNumber(businessId, 'nfe', number);
     }
 
-    // Persist fiscal document
-    if (result.chaveAcesso) {
-      await adminDb.collection('fiscalDocuments').add(
-        stripEmpty({
-          businessId,
-          type: 'nfe',
-          number,
-          series,
-          accessKey: result.chaveAcesso,
-          protocol: result.protocolo,
-          status:
-            result.status === 'autorizado'
-              ? 'autorizada'
-              : result.status === 'processando'
-                ? 'processando'
-                : result.status,
-          xml: result.xml,
-          sefazResponse: result,
-          totalValue: totalNF,
-          recipientName: data.recipient?.name,
-          recipientDocument: data.recipient?.document?.replace(/\D/g, ''),
-          createdAt: now,
-          updatedAt: now,
-        }),
-      );
-    }
+    // Persist fiscal document — sempre (autorizada, rejeitada ou processando).
+    await adminDb.collection('fiscalDocuments').add(
+      stripEmpty({
+        businessId,
+        type: 'nfe',
+        number,
+        series,
+        accessKey: result.chaveAcesso || null,
+        protocol: result.protocolo || null,
+        status:
+          result.status === 'autorizado'
+            ? 'autorizada'
+            : result.status === 'processando'
+              ? 'processando'
+              : result.status,
+        statusMessage: result.motivoStatus || result.erros?.[0] || null,
+        clientName: data.recipient?.name || null,
+        clientCpfCnpj: data.recipient?.document?.replace(/\D/g, '') || null,
+        xml: result.xml || null,
+        sefazResponse: result,
+        totalValue: totalNF,
+        issueDate: now,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
 
     return NextResponse.json(
       { success: result.success, data: result },
