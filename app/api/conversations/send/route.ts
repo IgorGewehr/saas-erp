@@ -421,9 +421,16 @@ export async function POST(req: NextRequest) {
         } else if (convVia === 'embedded_signup') {
           isBaileys = false;
         } else {
-          // Conversation sem connectedVia (dados antigos): cai no comportamento legado
-          const waLegacy = channels.whatsapp as (typeof channels.whatsapp & { connectedVia?: string }) | undefined;
-          isBaileys = waLegacy?.connectedVia === 'baileys' && !channels.whatsappCloud;
+          // Fallback 1: a channelConnection resolvida era whatsapp_baileys →
+          // buildLegacyChannelsFromConnection popula whatsappBaileys (não whatsapp.connectedVia).
+          // Se whatsappBaileys está conectado e temos um resolvedConnectionId, é Baileys.
+          if (channels.whatsappBaileys?.isConnected && resolvedConnectionId) {
+            isBaileys = true;
+          } else {
+            // Fallback 2: conversa antiga sem connectedVia — lê campo legado
+            const waLegacy = channels.whatsapp as (typeof channels.whatsapp & { connectedVia?: string }) | undefined;
+            isBaileys = waLegacy?.connectedVia === 'baileys' && !channels.whatsappCloud;
+          }
         }
 
         if (isBaileys) {
