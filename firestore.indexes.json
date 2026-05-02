@@ -777,7 +777,7 @@
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "conversationId", "order": "ASCENDING" },
-        { "fieldPath": "sentAt", "order": "DESCENDING" }
+        { "fieldPath": "sentAt", "order": "ASCENDING" }
       ]
     }
   ],
