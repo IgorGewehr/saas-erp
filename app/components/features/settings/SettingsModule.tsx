@@ -6380,6 +6380,24 @@ function CanaisTab() {
         const wabaId = cloudCfg?.wabaId || cloudCfg?.businessAccountId
           || (legacy as { wabaId?: string; businessAccountId?: string } | undefined)?.wabaId
           || (legacy as { wabaId?: string; businessAccountId?: string } | undefined)?.businessAccountId;
+
+        // Número do Baileys lido direto de baileysCfg — independente do waPhoneNumber
+        // que pode estar com o número do Cloud quando ambos estão ativos.
+        const baileysPhoneDisplay = (() => {
+          const raw = baileysCfg?.displayPhoneNumber || baileysCfg?.phoneNumber || '';
+          if (!raw) return '';
+          if (raw.startsWith('+')) return raw;
+          // E.164 BR — aplica 9º dígito se necessário
+          let digits = raw.replace(/\D/g, '');
+          if (digits.length === 12 && digits.startsWith('55') && digits[4] >= '6') {
+            digits = digits.slice(0, 4) + '9' + digits.slice(4);
+          }
+          if (digits.length === 13 && digits.startsWith('55')) {
+            return `+${digits.slice(0,2)} ${digits.slice(2,4)} ${digits.slice(4,9)}-${digits.slice(9)}`;
+          }
+          return `+${digits}`;
+        })();
+
         return (
           <>
             <div className={cn(
@@ -6480,8 +6498,8 @@ function CanaisTab() {
                           </span>
                         )}
                       </div>
-                      {isBaileys && waPhoneNumber ? (
-                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{waPhoneNumber}</p>
+                      {isBaileys && baileysPhoneDisplay ? (
+                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{baileysPhoneDisplay}</p>
                       ) : (
                         <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Envie mensagens livres sem aprovação de templates · Ideal para iniciar contatos</p>
                       )}
