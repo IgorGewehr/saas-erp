@@ -2292,11 +2292,18 @@ function NewConversationDialog({
   onClose,
   onCreated,
   clients,
+  connections,
+  myConnectionIds,
 }: {
   open: boolean;
   onClose: () => void;
   onCreated: (conversation: Conversation) => void;
   clients: Client[];
+  /** Phase 3.2: connections visíveis pro user (business + próprias 'user').
+   *  Usado pra montar dropdown "Enviar de" quando há múltiplas. */
+  connections: import('@/lib/types').ChannelConnection[];
+  /** IDs das connections 'user' do operador atual — pra exibir badge. */
+  myConnectionIds: Set<string>;
 }) {
   const { business, user } = useAuth();
   const channels = business?.channels as (NonNullable<typeof business>['channels'] & {
@@ -2317,6 +2324,9 @@ function NewConversationDialog({
   const igConnected = !!channels?.instagram?.isConnected;
 
   const [channelMode, setChannelMode] = useState<'baileys' | 'cloud'>('baileys');
+  // Phase 3.2: ID da channelConnection escolhida pra "Enviar de". Quando há
+  // 1 só, auto-seleciona. Quando há N, dropdown deixa user escolher.
+  const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
   const [phoneInput, setPhoneInput] = useState('');
   const [nameInput, setNameInput] = useState('');
   const [clientSearch, setClientSearch] = useState('');
@@ -2328,6 +2338,22 @@ function NewConversationDialog({
   const [templateVars, setTemplateVars] = useState<string[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
   const [sending, setSending] = useState(false);
+
+  // Phase 3.2: connections disponíveis pra "Enviar de" — só Baileys (Cloud
+  // é sempre 1 por business via Embedded Signup, escolha trivial).
+  // Filtra: ativas + connected + tipo correto. Sort: business primary primeiro,
+  // depois business secundárias, depois user (pessoais).
+  const availableBaileysConnections = useMemo(() => {
+    return connections
+      .filter(c => c.type === 'whatsapp_baileys' && c.isActive && c.isConnected)
+      .sort((a, b) => {
+        if (a.ownerType === 'business' && b.ownerType !== 'business') return -1;
+        if (a.ownerType !== 'business' && b.ownerType === 'business') return 1;
+        if (a.isPrimary && !b.isPrimary) return -1;
+        if (!a.isPrimary && b.isPrimary) return 1;
+        return a.displayName.localeCompare(b.displayName);
+      });
+  }, [connections]);
 
   // Reset everything on open and pick best default channel
   useEffect(() => {
@@ -2346,7 +2372,10 @@ function NewConversationDialog({
       setChannelMode('cloud');
       setMessageMode('template');
     }
-  }, [open, baileysAvailable, cloudAvailable]);
+    // Auto-select default connection: primeira da lista (business primary
+    // se houver, senão a primeira disponível).
+    setSelectedConnectionId(availableBaileysConnections[0]?.id ?? null);
+  }, [open, baileysAvailable, cloudAvailable, availableBaileysConnections]);
 
   // When switching to cloud+template, fetch templates
   useEffect(() => {
@@ -2493,11 +2522,17 @@ function NewConversationDialog({
       const now = new Date().toISOString();
       const displayName = (selectedClient?.name) || nameInput.trim() || phoneE164;
 
+      // Phase 3.2: vincula a conversa à channelConnection escolhida — essencial
+      // pra que send/route.ts use a sessão correta no reply (especialmente
+      // quando há múltiplas Baileys-empresa ou quando user escolhe pessoal).
+      const effectiveConnectionId = channelMode === 'baileys' ? selectedConnectionId : null;
+
       // Create conversation document
       const convData: Record<string, unknown> = {
         businessId: business.id,
         channel: 'whatsapp',
         connectedVia: channelMode === 'baileys' ? 'baileys' : 'embedded_signup',
+        ...(effectiveConnectionId ? { channelConnectionId: effectiveConnectionId } : {}),
         contactName: displayName,
         contactPhone: phoneE164,
         contactExternalId: phoneE164,
@@ -2656,6 +2691,37 @@ function NewConversationDialog({
                   )}
                 </div>
               </div>
+
+              {/* Phase 3.2: dropdown "Enviar de" — só aparece se Baileys e há
+                  >1 connection disponível. Quando 1 só, é trivial e auto-selecionada. */}
+              {channelMode === 'baileys' && availableBaileysConnections.length > 1 && (
+                <div>
+                  <p className="text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">Enviar de</p>
+                  <div className="relative">
+                    <select
+                      value={selectedConnectionId || ''}
+                      onChange={(e) => setSelectedConnectionId(e.target.value || null)}
+                      className={cn(inputCls, 'appearance-none pr-8 cursor-pointer')}
+                    >
+                      {availableBaileysConnections.map(c => {
+                        const prefix = c.ownerType === 'user'
+                          ? '[Pessoal] '
+                          : c.isPrimary ? '[Principal] ' : '[Empresa] ';
+                        return (
+                          <option key={c.id} value={c.id}>
+                            {prefix}{c.displayName}
+                            {c.phoneNumber ? ` · +${c.phoneNumber}` : ''}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
+                  </div>
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">
+                    O contato verá o número escolhido como remetente.
+                  </p>
+                </div>
+              )}
 
               {/* Contact section */}
               <div>
@@ -6005,6 +6071,8 @@ export default function ConversasModule() {
             setShowMobileThread(true);
           }}
           clients={clientsList}
+          connections={channelConnections}
+          myConnectionIds={myConnectionIds}
         />
         {showRoutingRules && isAdmin && business?.id && (
           <RoutingRulesDialog
