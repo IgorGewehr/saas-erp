@@ -27,9 +27,8 @@ import {
   MapPin,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
-import { collection, getDocs, query, where, doc, setDoc } from 'firebase/firestore';
-import { db, storage } from '@/lib/config/firebase';
-import { ref as storageRef, getDownloadURL } from 'firebase/storage';
+import { collection, getDocs, query, where } from 'firebase/firestore';
+import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import type { FiscalDocType, PaymentMethod, CRMContact } from '@/lib/types';
 import { NfseServicoCombobox } from './NfseServicoCombobox';
@@ -92,18 +91,6 @@ interface PaymentForm {
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const PAYMENT_SEFAZ_CODES: Record<PaymentMethod, string> = {
-  dinheiro: '01',
-  pix: '17',
-  credito: '03',
-  debito: '04',
-  boleto: '15',
-  creditoLoja: '05',
-  semPagamento: '90',
-  pontos: '99',
-  gift_card: '99',
-  outros: '99',
-};
 
 const NFE_NATUREZAS = [
   'Venda de mercadoria',
@@ -325,35 +312,10 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
     }
   };
 
-  // ── Get certificate from Firebase Storage ──
-  const getCertificate = async (): Promise<{ pfxBase64: string; password: string }> => {
-    const cert = business?.fiscal?.certificate;
-    const pwdEncoded = business?.fiscal?.certPasswordEncrypted;
-    if (!cert?.storagePath || !pwdEncoded) {
-      throw new Error(t('fiscal.emit.errors.certRequired', 'Certificado digital não configurado. Acesse Configurações > Fiscal.'));
-    }
-    const fileRef = storageRef(storage, cert.storagePath);
-    const downloadUrl = await getDownloadURL(fileRef);
-    const response = await fetch(downloadUrl);
-    const buffer = await response.arrayBuffer();
-    const bytes = new Uint8Array(buffer);
-    let binary = '';
-    for (let i = 0; i < bytes.byteLength; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
-    const pfxBase64 = btoa(binary);
-    // Decode password tolerating older data that may have been stored as plain text
-    // or with invalid base64 (e.g. passwords with non-Latin1 chars that broke btoa).
-    let password: string;
-    try {
-      password = atob(pwdEncoded);
-    } catch {
-      password = pwdEncoded;
-    }
-    return { pfxBase64, password };
-  };
-
   // ── Emit Handlers ──
+  // Certificate is loaded server-side via getCertificadoPayload(businessId).
+  // The encrypted password (`fiscal.certPasswordEncrypted`) only the API can
+  // decrypt — never read it from the client.
 
   const handleEmitNFSe = async () => {
     if (!business || !user) return;
@@ -437,7 +399,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
       }
 
       // Backend already saves the fiscal document to Firestore on success.
-      // No need to call saveFiscalDoc or increment nextNumber here.
+      // Backend já persiste fiscalDocument e incrementa nextNumber.
       const sefazData = result.data;
       toast.success(
         sefazData?.status === 'autorizado'
@@ -464,89 +426,8 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
 
     setIsEmitting(true);
     try {
-      const certificado = await getCertificate();
-      const fiscalConfig = business.fiscal;
-      const nextNumber = fiscalConfig?.nfceConfig?.nextNumber || 1;
-      const cleanCnpj = (business.cnpj || '').replace(/\D/g, '');
-      const crtBusiness = business.crt as '1' | '2' | '3' | '4';
-      const crtSefaz = (crtBusiness === '3' || crtBusiness === '4') ? '3' : crtBusiness as '1' | '2';
-      const isSimples = crtBusiness === '1' || crtBusiness === '2';
-      const emitEndereco = business.endereco;
-      const ibgeCod = emitEndereco?.codigoMunicipio || fiscalConfig?.ibgeCodigoMunicipio || '';
-
-      const payload = {
-        emitente: {
-          cnpj: cleanCnpj,
-          nome: business.razaoSocial || business.nomeFantasia,
-          nomeFantasia: business.nomeFantasia || undefined,
-          inscricaoEstadual: (fiscalConfig?.inscricaoEstadual || business.inscricaoEstadual || '').replace(/\D/g, ''),
-          crt: crtSefaz,
-          endereco: {
-            logradouro: emitEndereco?.logradouro || '',
-            numero: emitEndereco?.numero || 'S/N',
-            complemento: emitEndereco?.complemento || undefined,
-            bairro: emitEndereco?.bairro || '',
-            codigoMunicipio: ibgeCod,
-            municipio: emitEndereco?.municipio || '',
-            uf: emitEndereco?.uf || 'SP',
-            cep: (emitEndereco?.cep || '').replace(/\D/g, ''),
-          },
-        },
-        consumidor: nfceConsumidorCpf ? {
-          cpf: nfceConsumidorCpf.replace(/\D/g, ''),
-          nome: nfceConsumidorNome || undefined,
-        } : undefined,
-        numero: nextNumber,
-        serie: String(fiscalConfig?.nfceConfig?.series || '1'),
-        ufEmitente: emitEndereco?.uf || 'SP',
-        itens: nfceItems.filter(i => i.description.trim()).map((item, idx) => ({
-          numero: idx + 1,
-          produto: {
-            codigo: String(idx + 1),
-            cEAN: item.gtin || 'SEM GTIN',
-            descricao: item.description,
-            ncm: item.ncm || '00000000',
-            cest: item.cest || undefined,
-            cfop: item.cfop || '5102',
-            unidade: item.unit || 'UN',
-            quantidade: item.quantity,
-            valorUnitario: item.unitPrice,
-            valorTotal: parseFloat((item.quantity * item.unitPrice).toFixed(2)),
-            cEANTrib: item.gtin || 'SEM GTIN',
-            unidadeTrib: item.unit || 'UN',
-            quantidadeTrib: item.quantity,
-            valorUnitarioTrib: item.unitPrice,
-            indTot: '1',
-          },
-          imposto: {
-            icms: isSimples
-              ? { orig: item.icmsOrigem || '0', csosn: '400' }
-              : { orig: item.icmsOrigem || '0', cst: '00', modBC: '3', valorBC: parseFloat((item.quantity * item.unitPrice).toFixed(2)), aliquota: 18, valor: 0 },
-            pis: { cst: isSimples ? '07' : '01' },
-            cofins: { cst: isSimples ? '07' : '01' },
-          },
-        })),
-        pagamento: {
-          indicadorPagamento: '0',
-          formas: nfcePayments.map(p => ({
-            tipo: PAYMENT_SEFAZ_CODES[p.method],
-            valor: p.amount || total,
-          })),
-        },
-        transporte: { modFrete: '9' },
-        ...(fiscalConfig?.nfceConfig?.cscId ? {
-          csc: {
-            id: fiscalConfig.nfceConfig.cscId,
-            token: fiscalConfig.nfceConfig.cscToken || '',
-          },
-        } : {}),
-        ...(nfceInfoAdicionais.trim() ? { informacoesAdicionais: nfceInfoAdicionais.trim() } : {}),
-        certificado,
-      };
-
       // Build the API body (flat, English-named fields). The backend rebuilds
-      // the SEFAZ-format payload internally from these. The `payload` constant
-      // above keeps the SEFAZ shape for the local saveFiscalDoc record.
+      // o payload SEFAZ a partir destes campos + Firestore (emitente, certificado, CSC).
       const firstPayment = nfcePayments[0];
       const apiBody = {
         type: 'nfce' as const,
@@ -567,7 +448,6 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
         cpfConsumidor: nfceConsumidorCpf ? nfceConsumidorCpf.replace(/\D/g, '') : undefined,
         nomeConsumidor: nfceConsumidorNome || undefined,
         informacoesAdicionais: nfceInfoAdicionais.trim() || undefined,
-        certificado,
       };
 
       const res = await fetch('/api/fiscal/emit', {
@@ -578,20 +458,11 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
 
       const result = await res.json();
       if (!res.ok || !result.success) {
-        toast.error(result.details?.motivoStatus || result.details?.erros?.[0] || result.error || 'Erro ao emitir NFCe');
-        await saveFiscalDoc('nfce', nextNumber, 'rejeitada', result, payload);
+        toast.error(result.data?.motivoStatus || result.data?.erros?.[0] || result.details || result.error || 'Erro ao emitir NFCe');
         return;
       }
 
-      await saveFiscalDoc('nfce', nextNumber, result.data.status === 'autorizado' ? 'autorizada' : 'processando', result.data, payload);
-
-      if (business.fiscal?.nfceConfig) {
-        await setDoc(doc(db, 'businesses', business.id), {
-          fiscal: { nfceConfig: { ...business.fiscal.nfceConfig, nextNumber: nextNumber + 1 } },
-          updatedAt: new Date().toISOString(),
-        }, { merge: true });
-      }
-
+      // Backend já persiste fiscalDocument e incrementa nextNumber via commitInvoiceNumber.
       toast.success(t('fiscal.emit.success.nfce', 'NFCe emitida com sucesso!'));
       onSuccess?.();
       onClose();
@@ -621,16 +492,6 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
 
     setIsEmitting(true);
     try {
-      const certificado = await getCertificate();
-      const fiscalConfig = business.fiscal;
-      const nextNumber = fiscalConfig?.nfeConfig?.nextNumber || 1;
-      const cleanCnpj = (business.cnpj || '').replace(/\D/g, '');
-      const crtBusiness = business.crt as '1' | '2' | '3' | '4';
-      const crtSefaz = (crtBusiness === '3' || crtBusiness === '4') ? '3' : crtBusiness as '1' | '2';
-      const isSimples = crtBusiness === '1' || crtBusiness === '2';
-      const emitEndereco = business.endereco;
-      const ibgeCod = emitEndereco?.codigoMunicipio || fiscalConfig?.ibgeCodigoMunicipio || '';
-
       const destinatarioEndereco = nfeRecipientAddress.logradouro && nfeRecipientAddress.codigoMunicipio
         ? {
             logradouro: nfeRecipientAddress.logradouro,
@@ -643,78 +504,6 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
             cep: nfeRecipientAddress.cep.replace(/\D/g, ''),
           }
         : undefined;
-
-      const payload = {
-        emitente: {
-          cnpj: cleanCnpj,
-          nome: business.razaoSocial || business.nomeFantasia,
-          nomeFantasia: business.nomeFantasia || undefined,
-          inscricaoEstadual: (fiscalConfig?.inscricaoEstadual || business.inscricaoEstadual || '').replace(/\D/g, ''),
-          crt: crtSefaz,
-          endereco: {
-            logradouro: emitEndereco?.logradouro || '',
-            numero: emitEndereco?.numero || 'S/N',
-            complemento: emitEndereco?.complemento || undefined,
-            bairro: emitEndereco?.bairro || '',
-            codigoMunicipio: ibgeCod,
-            municipio: emitEndereco?.municipio || '',
-            uf: emitEndereco?.uf || 'SP',
-            cep: (emitEndereco?.cep || '').replace(/\D/g, ''),
-          },
-        },
-        destinatario: {
-          ...(isDestPJ ? { cnpj: cleanDestDoc } : { cpf: cleanDestDoc }),
-          nome: nfeRecipientName,
-          inscricaoEstadual: nfeRecipientIE || undefined,
-          indicadorIE: nfeRecipientIndicadorIE,
-          ...(destinatarioEndereco ? { endereco: destinatarioEndereco } : {}),
-        },
-        numero: nextNumber,
-        serie: String(fiscalConfig?.nfeConfig?.series || '1'),
-        naturezaOperacao: nfeNatureza,
-        tipoOperacao: '1',
-        finalidade: nfeFinalidade,
-        consumidorFinal: isDestPJ ? '0' : '1',
-        presencaComprador: '9',
-        ufEmitente: emitEndereco?.uf || 'SP',
-        itens: nfeItems.filter(i => i.description.trim()).map((item, idx) => ({
-          numero: idx + 1,
-          produto: {
-            codigo: String(idx + 1),
-            cEAN: item.gtin || 'SEM GTIN',
-            descricao: item.description,
-            ncm: item.ncm || '00000000',
-            cest: item.cest || undefined,
-            cfop: item.cfop || '5102',
-            unidade: item.unit || 'UN',
-            quantidade: item.quantity,
-            valorUnitario: item.unitPrice,
-            valorTotal: parseFloat((item.quantity * item.unitPrice).toFixed(2)),
-            cEANTrib: item.gtin || 'SEM GTIN',
-            unidadeTrib: item.unit || 'UN',
-            quantidadeTrib: item.quantity,
-            valorUnitarioTrib: item.unitPrice,
-            indTot: '1',
-          },
-          imposto: {
-            icms: isSimples
-              ? { orig: item.icmsOrigem || '0', csosn: '400' }
-              : { orig: item.icmsOrigem || '0', cst: '00', modBC: '3', valorBC: parseFloat((item.quantity * item.unitPrice).toFixed(2)), aliquota: 18, valor: 0 },
-            pis: { cst: isSimples ? '07' : '01' },
-            cofins: { cst: isSimples ? '07' : '01' },
-          },
-        })),
-        transporte: { modFrete: '9' },
-        pagamento: {
-          indicadorPagamento: '0',
-          formas: nfePayments.map(p => ({
-            tipo: PAYMENT_SEFAZ_CODES[p.method],
-            valor: p.amount || itemsTotal(nfeItems),
-          })),
-        },
-        ...(nfeInfoAdicionais.trim() ? { informacoesAdicionais: nfeInfoAdicionais.trim() } : {}),
-        certificado,
-      };
 
       // Build the API body (flat, English-named). Backend rebuilds SEFAZ format.
       const firstNfePayment = nfePayments[0];
@@ -746,7 +535,6 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
         consumidorFinal: isDestPJ ? 0 : 1,
         presencaComprador: 9,
         informacoesAdicionais: nfeInfoAdicionais.trim() || undefined,
-        certificado,
       };
 
       const res = await fetch('/api/fiscal/emit', {
@@ -757,20 +545,11 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
 
       const result = await res.json();
       if (!res.ok || !result.success) {
-        toast.error(result.details?.motivoStatus || result.details?.erros?.[0] || result.error || 'Erro ao emitir NFe');
-        await saveFiscalDoc('nfe', nextNumber, 'rejeitada', result, payload);
+        toast.error(result.data?.motivoStatus || result.data?.erros?.[0] || result.details || result.error || 'Erro ao emitir NFe');
         return;
       }
 
-      await saveFiscalDoc('nfe', nextNumber, result.data.status === 'autorizado' ? 'autorizada' : 'processando', result.data, payload);
-
-      if (business.fiscal?.nfeConfig) {
-        await setDoc(doc(db, 'businesses', business.id), {
-          fiscal: { nfeConfig: { ...business.fiscal.nfeConfig, nextNumber: nextNumber + 1 } },
-          updatedAt: new Date().toISOString(),
-        }, { merge: true });
-      }
-
+      // Backend já persiste fiscalDocument e incrementa nextNumber via commitInvoiceNumber.
       toast.success(result.data.status === 'autorizado' ? t('fiscal.emit.success.nfeAutorizada', 'NFe emitida com sucesso!') : t('fiscal.emit.success.nfeAguardando', 'NFe enviada, aguardando autorização'));
       onSuccess?.();
       onClose();
@@ -783,44 +562,6 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
   };
 
   // ── Save fiscal doc to Firestore ──
-  const saveFiscalDoc = async (
-    docType: FiscalDocType,
-    number: number,
-    status: string,
-    sefazResponse: Record<string, unknown>,
-    originalPayload: Record<string, unknown>,
-  ) => {
-    if (!business) return;
-    const docRef = doc(collection(db, 'fiscalDocuments'));
-    const sefazData = (sefazResponse as Record<string, unknown>).data as Record<string, unknown> | undefined;
-
-    await setDoc(docRef, {
-      businessId: business.id,
-      type: docType,
-      number,
-      series: docType === 'nfse' ? 'NFSE' : '1',
-      accessKey: sefazData?.chaveAcesso || null,
-      protocol: sefazData?.protocolo || null,
-      status,
-      statusMessage: sefazData?.motivoStatus || null,
-      totalValue: docType === 'nfse'
-        ? (originalPayload as { valores?: { valorServicos?: number } }).valores?.valorServicos || 0
-        : (originalPayload as { itens?: { produto?: { valorTotal?: number } }[] }).itens?.reduce(
-            (sum: number, i: { produto?: { valorTotal?: number } }) => sum + (i.produto?.valorTotal || 0), 0
-          ) || 0,
-      clientName: docType === 'nfse'
-        ? (originalPayload as { tomador?: { nome?: string } }).tomador?.nome
-        : (originalPayload as { destinatario?: { nome?: string } }).destinatario?.nome
-          || (originalPayload as { consumidor?: { nome?: string } }).consumidor?.nome
-          || 'Consumidor',
-      issueDate: new Date().toISOString(),
-      xml: sefazData?.xml || null,
-      sefazResponse: sefazData || null,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
-  };
-
   const handleEmit = () => {
     if (type === 'nfse') handleEmitNFSe();
     else if (type === 'nfce') handleEmitNFCe();
