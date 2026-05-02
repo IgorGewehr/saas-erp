@@ -6738,7 +6738,11 @@ function BaileysDebugButton({ businessId }: { businessId: string }) {
         headers: { Authorization: `Bearer ${token ?? ''}` },
       });
       const text = await res.text();
-      setData(JSON.parse(text));
+      try {
+        setData(JSON.parse(text));
+      } catch {
+        setData({ rawResponse: text, status: res.status });
+      }
     } catch (e) {
       setData({ error: String(e) });
     } finally {
