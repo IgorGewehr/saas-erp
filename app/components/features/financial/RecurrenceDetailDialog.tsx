@@ -153,9 +153,13 @@ export default function RecurrenceDetailDialog({
       el = el.parentElement;
     }
     if (!el) return;
-    const prev = el.style.overflowY;
+    const prevOverflow = el.style.overflowY;
+    const prevScroll   = el.scrollTop;
     el.style.overflowY = 'hidden';
-    return () => { el!.style.overflowY = prev; };
+    return () => {
+      el!.style.overflowY = prevOverflow;
+      el!.scrollTop = prevScroll;
+    };
   }, []);
 
   const [tab, setTab] = useState<Tab>('historico');

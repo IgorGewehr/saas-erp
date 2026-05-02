@@ -62,9 +62,13 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
       el = el.parentElement;
     }
     if (!el) return;
-    const prev = el.style.overflowY;
+    const prevOverflow = el.style.overflowY;
+    const prevScroll   = el.scrollTop;
     el.style.overflowY = 'hidden';
-    return () => { el!.style.overflowY = prev; };
+    return () => {
+      el!.style.overflowY = prevOverflow;
+      el!.scrollTop = prevScroll;
+    };
   }, []);
 
   // Listener do broadcast doc (sincroniza status, recipients, stats)
@@ -491,7 +495,7 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
       <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }}
-        className="w-full max-w-3xl max-h-[90vh] bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden flex flex-col">
+        className="w-full max-w-3xl h-[90vh] bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden flex flex-col">
         {/* Header — usa recipients.length como fonte primária (broadcastMessages
             podem ter sido apagadas em reset, mas recipients persiste). */}
         <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between gap-3">
