@@ -2,31 +2,12 @@
 // SEFAZ API Gateway — connects to external fiscal emission service
 // Server-side only (uses process.env secrets)
 
-import * as https from 'https';
-import * as http from 'http';
-
 const SEFAZ_API_URL = process.env.SEFAZ_API_URL || 'https://emissao.tensorroot.com';
 const SEFAZ_API_KEY = process.env.SEFAZ_API_KEY || '';
 
-// ---------------------------------------------------------------------------
-// Connection Pooling — reuse TCP connections across requests
-// ---------------------------------------------------------------------------
-
-const httpsAgent = new https.Agent({
-  keepAlive: true,
-  keepAliveMsecs: 30_000,
-  maxSockets: 10,
-});
-
-const httpAgent = new http.Agent({
-  keepAlive: true,
-  keepAliveMsecs: 30_000,
-  maxSockets: 10,
-});
-
-function getAgent(url: string) {
-  return url.startsWith('https') ? httpsAgent : httpAgent;
-}
+// Node 18+ `fetch` is undici-based and reuses TCP connections via its
+// global pool. Custom http/https.Agent instances are NOT compatible with
+// undici's `dispatcher` (they lack `.dispatch()`), so we rely on defaults.
 
 // ---------------------------------------------------------------------------
 // Mock Mode — for development/testing without real SEFAZ calls
@@ -171,7 +152,7 @@ async function sefazRequest<T = SefazResponse>(
     try {
       console.log(`[SEFAZ] ${operation} attempt ${attempt}/${MAX_RETRIES} → ${endpoint}`);
 
-      const fetchOptions: RequestInit & { agent?: unknown } = {
+      const fetchOptions: RequestInit = {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -180,8 +161,6 @@ async function sefazRequest<T = SefazResponse>(
         body: JSON.stringify(payload),
         signal: controller.signal,
       };
-      // Node.js fetch supports agent via undici — for environments that support it
-      try { (fetchOptions as Record<string, unknown>).dispatcher = getAgent(url); } catch { /* ignore */ }
 
       const response = await fetch(url, fetchOptions);
 
