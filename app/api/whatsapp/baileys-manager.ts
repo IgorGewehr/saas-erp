@@ -34,7 +34,15 @@ const RESTARTABLE_CODES = new Set([
   DisconnectReason.connectionReplaced,
 ]);
 
-const MAX_AUTO_RESTARTS = 5;
+// Códigos que indicam logout real — a sessão foi revogada e NÃO deve ser reiniciada.
+// Qualquer outro código (incluindo undefined = rede caiu) deve tentar restart.
+const PERMANENT_DISCONNECT_CODES = new Set([
+  DisconnectReason.loggedOut,
+  DisconnectReason.multideviceMismatch,
+  DisconnectReason.forbidden,
+]);
+
+const MAX_AUTO_RESTARTS = 8;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -901,6 +909,10 @@ export async function createBaileysSession(
       generateHighQualityLinkPreview: false,
       markOnlineOnConnect: false,
       defaultQueryTimeoutMs: 60_000,
+      // Keep-alive ping a cada 25s evita que o WA feche a conexão por inatividade
+      keepAliveIntervalMs: 25_000,
+      // Backoff em retries de request (ex: envio de msg com rede instável)
+      retryRequestDelayMs: 500,
     });
 
     session.sock = sock;
@@ -984,11 +996,9 @@ export async function createBaileysSession(
 
         console.warn('[Baileys] Conexao fechada:', { statusCode, message: lastDisconnect?.error?.message });
 
-        if (statusCode === DisconnectReason.loggedOut) {
+        // Logout real: sessão revogada pelo WA — limpar e não tentar restart.
+        if (PERMANENT_DISCONNECT_CODES.has(statusCode)) {
           broadcast(session, { type: 'disconnected', reason: 'logged_out' });
-          // Sincroniza Firestore antes de destruir — sem isso UI continua
-          // mostrando "Conectado" e send tenta usar sessão fantasma. Não-await
-          // pra não bloquear o cleanup, mas garante que o write dispara.
           void persistDisconnect(businessId, sessionKey).catch((err) => {
             console.error('[Baileys] Failed to persist logout state:', err);
           });
@@ -997,15 +1007,24 @@ export async function createBaileysSession(
           return;
         }
 
-        if (RESTARTABLE_CODES.has(statusCode) && restartCount < MAX_AUTO_RESTARTS) {
+        // Qualquer outro fechamento (incluindo statusCode=undefined, que indica
+        // queda de rede sem código específico) é tratado como restartable.
+        // Antes: undefined caia no destroySession — o usuário precisava re-escanear
+        // QR a cada oscilação de rede. Agora: tenta reconectar com backoff exponencial.
+        if (restartCount < MAX_AUTO_RESTARTS) {
           restartCount++;
-          const delay = Math.min(1000 * restartCount, 5000);
-          console.log(`[Baileys] Auto-restart ${restartCount}/${MAX_AUTO_RESTARTS} em ${delay}ms (code: ${statusCode})`);
+          // Backoff exponencial com jitter: 1s, 2s, 4s, 8s, 16s, 30s, 30s, 30s
+          const baseDelay = Math.min(1000 * Math.pow(2, restartCount - 1), 30_000);
+          const jitter = Math.floor(Math.random() * 1000);
+          const delay = baseDelay + jitter;
+          console.log(`[Baileys] Auto-restart ${restartCount}/${MAX_AUTO_RESTARTS} em ${delay}ms (code: ${statusCode ?? 'undefined'})`);
 
           broadcast(session, { type: 'status', status: 'reconnecting', attempt: restartCount });
 
           setTimeout(() => {
-            const keepSession = statusCode === DisconnectReason.restartRequired;
+            // restartRequired pede pra manter credenciais; outros casos limpam socket mas
+            // mantêm session dir (não é loggedOut, só reconecta)
+            const keepSession = statusCode === DisconnectReason.restartRequired || statusCode === undefined;
             startSocket(!keepSession).catch((err) => {
               console.error('[Baileys] Auto-restart falhou:', err);
               broadcast(session, { type: 'error', message: 'Falha ao reconectar. Tente novamente.' });
@@ -1016,7 +1035,9 @@ export async function createBaileysSession(
           return;
         }
 
-        broadcast(session, { type: 'error', message: 'Conexao fechada pelo WhatsApp. Tente novamente.' });
+        // Esgotou MAX_AUTO_RESTARTS — desiste e informa o operador.
+        console.error(`[Baileys] Esgotou ${MAX_AUTO_RESTARTS} tentativas de restart (último code: ${statusCode})`);
+        broadcast(session, { type: 'error', message: 'Não foi possível reconectar após várias tentativas. Verifique sua conexão e re-escaneie o QR Code.' });
         void persistDisconnect(businessId, sessionKey).catch(() => {});
         void destroySession(businessId, sessionKey);
       }
