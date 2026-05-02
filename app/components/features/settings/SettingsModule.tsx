@@ -6825,8 +6825,19 @@ function WhatsAppQrModal({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [businessId]);
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
+  // Lock body scroll enquanto o modal está aberto — evita rolagem fantasma atrás do backdrop
+  useEffect(() => {
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = previous; };
+  }, []);
+
+  if (typeof document === 'undefined') return null;
+
+  // Portal pra document.body — sai do containing block do <motion.div> ancestral
+  // (Framer Motion aplica transform, que faz fixed se comportar como absolute).
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4" onClick={onClose}>
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
       <div
         className="relative z-10 w-full max-w-sm bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-black/[0.06] dark:border-white/[0.08] overflow-hidden"
@@ -6908,7 +6919,8 @@ function WhatsAppQrModal({
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
