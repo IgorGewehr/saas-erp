@@ -111,6 +111,14 @@ export async function POST(req: NextRequest) {
   const autonomous = !!business.settings?.aiAgent?.operator?.autonomousMode;
   const sessionId = body.sessionId || `${uid}_${Date.now()}`;
 
+  // Compute today's effective opening hours (applies holidays + seasonal overrides)
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const holidays = business.settings?.aiAgent?.calendar?.holidays || [];
+  const isClosedToday = holidays.includes(todayIso);
+  const seasonalHours = business.settings?.aiAgent?.calendar?.seasonalHours || [];
+  const activeSeason = seasonalHours.find((s) => todayIso >= s.fromDate && todayIso <= s.toDate);
+  const effectiveHours = activeSeason?.hours || business.settings?.openingHours || null;
+
   // 5. Build agent payload
   const payload = {
     message_id: `op_${crypto.randomUUID()}`,
@@ -128,10 +136,20 @@ export async function POST(req: NextRequest) {
     pedidos_settings: business.settings?.aiAgent?.pedidos || null,
     agenda_settings: business.settings?.aiAgent?.agenda || null,
     client_memory: null,
-    opening_hours: business.settings?.openingHours || null,
+    // Business operational context (Wave 7 — policy-aware)
+    opening_hours: effectiveHours,
     address: business.endereco || null,
     services_list: null,
-    current_date: new Date().toISOString().slice(0, 10),
+    current_date: todayIso,
+    policies: business.settings?.aiAgent?.policies || null,
+    sla: business.settings?.aiAgent?.sla || null,
+    is_closed_today: isClosedToday,
+    seasonal_label: activeSeason?.label || null,
+    delivery_zones: business.settings?.aiAgent?.deliveryZones || null,
+    accepted_payment_methods: business.settings?.aiAgent?.acceptedPaymentMethods || null,
+    team_capacity: business.settings?.aiAgent?.teamCapacity || null,
+    upsell_rules: (business.settings?.aiAgent?.upsellRules || []).filter((r) => r.isActive),
+    // Operator-specific identity fields
     operator_user_id: uid,
     operator_user_name: user.name,
     operator_user_role: role,

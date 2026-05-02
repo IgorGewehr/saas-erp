@@ -634,6 +634,8 @@ async function handleInboundMessage(
     try {
       const { dispatchInboundToAgent } = await import('@/lib/agent/dispatch');
       _baileysDlog(`[Baileys] dispatchInboundToAgent imported OK`);
+      // Baileys messages.upsert only fires for !fromMe messages (filtered at line ~877),
+      // so these are always contact-originated inbound — never internal operator notes.
       dispatchInboundToAgent(adminDb, {
         businessId,
         conversationId,
@@ -643,6 +645,9 @@ async function handleInboundMessage(
         contactName,
         contactPhone: senderPhone,
         recipientId: senderPhone,
+        // Baileys listener filters fromMe=true before calling handleInboundMessage,
+        // so this is always a contact message, never an internal note.
+        isInternal: false,
       }).catch(agentErr => console.warn('[Baileys] Agent dispatch promise rejected:', agentErr));
     } catch (agentErr) {
       console.warn('[Baileys] Agent dispatch import/call failed:', agentErr);

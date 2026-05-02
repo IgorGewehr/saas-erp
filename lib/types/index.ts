@@ -794,6 +794,11 @@ export interface Appointment {
   notes?: string;
   color?: string;
   recurrenceId?: string;
+  // Origem (rastreabilidade quando criado via webhook/agent)
+  channelType?: 'whatsapp' | 'whatsapp_baileys' | 'facebook' | 'instagram' | 'web' | 'manual';
+  conversationId?: string;
+  // Idempotência para evitar duplicate bookings em retry/race
+  idempotencyKey?: string;
   // Agent-driven automation tracking (idempotência)
   reminderSentAt?: string;
   confirmationRequestedAt?: string;
@@ -818,6 +823,9 @@ export interface Service {
   color: string;
   commissionRate?: number; // Commission % override for this service (0–100). Takes precedence over professional's commissionRate
   formTemplateId?: string; // Intake form auto-requested when this service is booked
+  operatorIds?: string[];  // UIDs autorizados a executar o serviço (vazio = todos profissionais ativos)
+  sectorId?: string;       // Setor responsável (visibility/atribuição)
+  deletedAt?: string;      // Soft-delete timestamp (ISO) — preenchido em vez de deleteDoc
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
