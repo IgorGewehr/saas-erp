@@ -4,7 +4,6 @@ import {
   initializeFirestore,
   getFirestore,
   persistentLocalCache,
-  persistentMultipleTabManager,
   Firestore,
 } from 'firebase/firestore';
 import { getStorage, FirebaseStorage } from 'firebase/storage';
@@ -39,7 +38,7 @@ if (!g._fb_db) {
   // in <50ms instead of waiting for a network round trip.
   try {
     g._fb_db = initializeFirestore(g._fb_app, {
-      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+      localCache: persistentLocalCache(),
     });
   } catch {
     g._fb_db = getFirestore(g._fb_app);
