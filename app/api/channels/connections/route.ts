@@ -125,6 +125,32 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Phase 3.1: business pode ter múltiplas connections do mesmo type (ex: 2+
+  // Baileys-empresa). isPrimary é setado APENAS na primeira. Adicionais ficam
+  // isPrimary=false; admin pode promover via PATCH se quiser trocar a default.
+  let willBePrimary = ownerType === 'business';
+  if (ownerType === 'business') {
+    const existingPrimary = await adminDb.collection('channelConnections')
+      .where('businessId', '==', businessId)
+      .where('type', '==', type)
+      .where('ownerType', '==', 'business')
+      .where('isPrimary', '==', true)
+      .limit(1)
+      .get();
+    if (!existingPrimary.empty) {
+      // Já existe primary — esta vira secundária
+      willBePrimary = false;
+    }
+  }
+
+  // Cloud/FB/IG: limitação do Embedded Signup permite só 1 conexão oficial
+  // por business. Bloqueia tentativas de criar adicional via API.
+  if (ownerType === 'business' && type !== 'whatsapp_baileys' && !willBePrimary) {
+    return NextResponse.json({
+      error: `${type === 'whatsapp_cloud' ? 'WhatsApp Business Cloud' : type === 'facebook' ? 'Facebook' : 'Instagram'} permite apenas 1 conexão por empresa via Embedded Signup. Desconecte a atual antes de adicionar outra.`,
+    }, { status: 409 });
+  }
+
   const now = new Date().toISOString();
   const userSnap = await adminDb.collection('users').doc(uid).get();
   const userName = (userSnap.data()?.name as string) || '';
@@ -139,7 +165,7 @@ export async function POST(req: NextRequest) {
       phoneNumber: body.phoneNumber,
       isConnected: false,
       isActive: true,
-      isPrimary: ownerType === 'business', // user channels não viram primary
+      isPrimary: willBePrimary,
       createdAt: now,
       updatedAt: now,
       createdBy: uid,

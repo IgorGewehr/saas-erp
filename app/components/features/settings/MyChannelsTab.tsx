@@ -21,7 +21,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Smartphone, Plus, Loader2, X, Check, AlertCircle, QrCode,
-  Trash2, RefreshCw, Building2, User as UserIcon, Edit3,
+  Trash2, RefreshCw, Building2, User as UserIcon, Edit3, Star,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -79,6 +79,19 @@ export default function MyChannelsTab() {
   }, [qrConnectionId, fetchConnections]);
 
   const handleCreatePersonal = async () => {
+    return createConnection('user');
+  };
+
+  /**
+   * Phase 3.1: admin pode adicionar canais Baileys da EMPRESA (não-pessoais).
+   * Quando já existe primary, esta vira secundária — admin promove via UI.
+   */
+  const handleCreateBusinessChannel = async () => {
+    if (!isAdmin) return;
+    return createConnection('business');
+  };
+
+  const createConnection = async (ownerKind: 'user' | 'business') => {
     if (!businessId) return;
     setCreating(true);
     try {
@@ -90,7 +103,8 @@ export default function MyChannelsTab() {
         body: JSON.stringify({
           businessId,
           type: 'whatsapp_baileys',
-          ownerType: 'user',
+          ownerType: ownerKind,
+          ...(ownerKind === 'business' ? { displayName: 'WhatsApp Empresa' } : {}),
         }),
       });
       const data = await res.json();
@@ -111,6 +125,31 @@ export default function MyChannelsTab() {
       toast.error(err instanceof Error ? err.message : 'Falha ao criar canal');
     } finally {
       setCreating(false);
+    }
+  };
+
+  /**
+   * Phase 3.1: promove uma connection a primary. Backend faz demote da
+   * primary atual automaticamente (PATCH com isPrimary=true).
+   */
+  const handleSetPrimary = async (conn: ChannelConnection) => {
+    try {
+      const { getAuth } = await import('firebase/auth');
+      const token = await getAuth().currentUser?.getIdToken();
+      const res = await fetch(`/api/channels/connections/${conn.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ isPrimary: true }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      toast.success('Canal definido como principal.');
+      await fetchConnections();
+    } catch (err) {
+      console.error('[MyChannelsTab] set primary failed:', err);
+      toast.error(err instanceof Error ? err.message : 'Falha ao alterar canal principal');
     }
   };
 
@@ -165,8 +204,20 @@ export default function MyChannelsTab() {
     }
   };
 
-  // Separa em duas seções: canais empresa (compartilhados) e pessoais
-  const businessChannels = connections.filter(c => c.ownerType === 'business');
+  // Separa em duas seções: canais empresa (compartilhados) e pessoais.
+  // Phase 3.1: business pode ter MÚLTIPLOS Baileys; ordena com primary primeiro.
+  const businessChannels = connections
+    .filter(c => c.ownerType === 'business')
+    .sort((a, b) => {
+      // Primary primeiro
+      if (a.isPrimary && !b.isPrimary) return -1;
+      if (!a.isPrimary && b.isPrimary) return 1;
+      // Connected antes de desconectado
+      if (a.isConnected && !b.isConnected) return -1;
+      if (!a.isConnected && b.isConnected) return 1;
+      return a.displayName.localeCompare(b.displayName);
+    });
+  const baileysBusinessChannels = businessChannels.filter(c => c.type === 'whatsapp_baileys');
   const myChannels = connections.filter(c => c.ownerType === 'user' && c.ownerId === userId);
   // Admin também vê canais 'user' de OUTROS operadores
   const otherUserChannels = isAdmin
@@ -233,25 +284,60 @@ export default function MyChannelsTab() {
         canManage={() => true}
       />
 
-      {/* Lista: Canais da empresa (read-only pra non-admin) */}
+      {/* Phase 3.1: admin pode adicionar mais Baileys-empresa.
+          Útil pra ter número Comercial + Suporte separados, etc. */}
+      {isAdmin && (
+        <div className="p-4 rounded-2xl border border-dashed border-blue-300 dark:border-blue-500/30 bg-blue-50/30 dark:bg-blue-500/5">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-blue-100 dark:bg-blue-500/15 flex items-center justify-center shrink-0">
+              <Building2 className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                Adicionar WhatsApp da empresa
+                {baileysBusinessChannels.length > 0 && (
+                  <span className="ml-2 text-[10px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider">
+                    {baileysBusinessChannels.length} já conectados
+                  </span>
+                )}
+              </p>
+              <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                Conecte mais um número da empresa (ex: Comercial, Suporte). Operadores acessam todos.
+                {baileysBusinessChannels.length > 0 && ' O novo canal será secundário — promova como principal depois se quiser.'}
+              </p>
+            </div>
+            <button
+              onClick={handleCreateBusinessChannel}
+              disabled={creating}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 transition-colors shrink-0"
+            >
+              {creating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
+              Conectar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Lista: Canais da empresa */}
       <ConnectionSection
         title="Da empresa"
-        subtitle={isAdmin ? 'Compartilhados — gerencie via Configurações → Canais.' : 'Compartilhados pela empresa'}
+        subtitle={isAdmin ? 'Compartilhados — você pode promover, renomear e remover.' : 'Compartilhados pela empresa'}
         icon={<Building2 className="w-4 h-4 text-blue-500" />}
         connections={businessChannels}
         loading={loading}
         emptyMsg="A empresa não tem canais conectados."
-        deletingId={null}
-        onDelete={() => {}}
-        onConnect={() => {}}
-        onRenameStart={() => {}}
-        renamingId={null}
-        renameValue=""
-        onRenameChange={() => {}}
-        onRenameSubmit={() => {}}
-        onRenameCancel={() => {}}
-        canManage={() => false}
-        readonly
+        deletingId={isAdmin ? deletingId : null}
+        onDelete={isAdmin ? handleDelete : () => {}}
+        onConnect={isAdmin ? (conn) => setQrConnectionId(conn.id) : () => {}}
+        onRenameStart={isAdmin ? (conn) => { setRenamingId(conn.id); setRenameValue(conn.displayName); } : () => {}}
+        renamingId={isAdmin ? renamingId : null}
+        renameValue={isAdmin ? renameValue : ''}
+        onRenameChange={isAdmin ? setRenameValue : () => {}}
+        onRenameSubmit={isAdmin ? handleRename : () => {}}
+        onRenameCancel={isAdmin ? () => { setRenamingId(null); setRenameValue(''); } : () => {}}
+        canManage={() => isAdmin}
+        readonly={!isAdmin}
+        onSetPrimary={isAdmin ? handleSetPrimary : undefined}
       />
 
       {/* Admin extra: canais pessoais de outros operadores */}
@@ -310,6 +396,8 @@ interface SectionProps {
   onRenameCancel: () => void;
   canManage: (c: ChannelConnection) => boolean;
   readonly?: boolean;
+  /** Phase 3.1: admin pode promover canal-empresa secundário a principal. */
+  onSetPrimary?: (c: ChannelConnection) => void;
 }
 
 function ConnectionSection(p: SectionProps) {
@@ -406,10 +494,29 @@ function ConnectionSection(p: SectionProps) {
                   )}>
                     {c.isConnected ? 'Conectado' : 'Desconectado'}
                   </span>
+                  {/* Phase 3.1: badge "Principal" pra connection primária */}
+                  {c.ownerType === 'business' && c.isPrimary && (
+                    <span
+                      title="Canal principal — usado como default em fallbacks"
+                      className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400"
+                    >
+                      PRINCIPAL
+                    </span>
+                  )}
                 </div>
               </div>
               {!p.readonly && p.canManage(c) && (
                 <div className="flex items-center gap-1 shrink-0">
+                  {/* Phase 3.1: tornar principal (só pra business secundárias) */}
+                  {p.onSetPrimary && c.ownerType === 'business' && !c.isPrimary && c.isConnected && (
+                    <button
+                      onClick={() => p.onSetPrimary?.(c)}
+                      title="Definir como canal principal"
+                      className="p-1.5 rounded-lg text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-500/10 transition-colors"
+                    >
+                      <Star className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                   {!c.isConnected && c.type === 'whatsapp_baileys' && (
                     <button
                       onClick={() => p.onConnect(c)}

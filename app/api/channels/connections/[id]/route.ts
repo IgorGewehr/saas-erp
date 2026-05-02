@@ -87,6 +87,25 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   }
 
   try {
+    // Phase 3.1: promover a primary requer demote da primary atual.
+    // Sem isso, business pode ter 2 primary ao mesmo tempo — findPrimaryConnection
+    // retorna inconsistente, send pode pegar a errada.
+    if (patch.isPrimary === true && conn.ownerType === 'business') {
+      const currentPrimarySnap = await adminDb.collection('channelConnections')
+        .where('businessId', '==', conn.businessId)
+        .where('type', '==', conn.type)
+        .where('ownerType', '==', 'business')
+        .where('isPrimary', '==', true)
+        .get();
+      // Demote todas as outras primary do mesmo tipo (deveria ser só 1, mas
+      // anti-corrupção em caso de estado inconsistente prévio)
+      for (const d of currentPrimarySnap.docs) {
+        if (d.id !== id) {
+          await d.ref.update({ isPrimary: false, updatedAt: new Date().toISOString() });
+        }
+      }
+    }
+
     await updateConnection(id, patch);
     const updated = await loadConnection(id);
     return NextResponse.json({ success: true, connection: sanitize(updated) });
@@ -187,6 +206,31 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: stri
         isActive: false,
         disconnectedAt: new Date().toISOString(),
       });
+
+      // Phase 3.1: ao desativar a primary, promove outra business connection
+      // do mesmo type a primary se houver. Sem isso, send/route.ts cai no
+      // lazy migration e cria primary nova vazia (estado confuso).
+      try {
+        const candidatesSnap = await adminDb.collection('channelConnections')
+          .where('businessId', '==', conn.businessId)
+          .where('type', '==', conn.type)
+          .where('ownerType', '==', 'business')
+          .where('isActive', '==', true)
+          .get();
+        const candidates = candidatesSnap.docs
+          .filter((d) => d.id !== id && !d.data().isPrimary);
+        // Prefere conexões connected; senão primeira ativa
+        const promoted = candidates.find((d) => d.data().isConnected) || candidates[0];
+        if (promoted) {
+          await promoted.ref.update({
+            isPrimary: true,
+            updatedAt: new Date().toISOString(),
+          });
+          console.log(`[connections DELETE] Auto-promoted ${promoted.id} to primary after disabling ${id}`);
+        }
+      } catch (promoteErr) {
+        console.warn('[connections DELETE] Failed to auto-promote replacement primary:', promoteErr);
+      }
     } else {
       await adminDb.collection('channelConnections').doc(id).delete();
     }
