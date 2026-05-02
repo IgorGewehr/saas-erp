@@ -544,10 +544,36 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
         certificado,
       };
 
+      // Build the API body (flat, English-named fields). The backend rebuilds
+      // the SEFAZ-format payload internally from these. The `payload` constant
+      // above keeps the SEFAZ shape for the local saveFiscalDoc record.
+      const firstPayment = nfcePayments[0];
+      const apiBody = {
+        type: 'nfce' as const,
+        businessId: business.id,
+        items: nfceItems.filter(i => i.description.trim()).map(item => ({
+          description: item.description,
+          ncm: item.ncm || '00000000',
+          cfop: item.cfop || '5102',
+          unit: item.unit || 'UN',
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          barcode: item.gtin || undefined,
+          cest: item.cest || undefined,
+          icmsOrigem: item.icmsOrigem || '0',
+        })),
+        paymentMethod: firstPayment?.method || 'dinheiro',
+        paymentValue: firstPayment?.amount || total,
+        cpfConsumidor: nfceConsumidorCpf ? nfceConsumidorCpf.replace(/\D/g, '') : undefined,
+        nomeConsumidor: nfceConsumidorNome || undefined,
+        informacoesAdicionais: nfceInfoAdicionais.trim() || undefined,
+        certificado,
+      };
+
       const res = await fetch('/api/fiscal/emit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
-        body: JSON.stringify({ type: 'nfce', businessId: business.id, ...payload }),
+        body: JSON.stringify(apiBody),
       });
 
       const result = await res.json();
@@ -690,10 +716,43 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
         certificado,
       };
 
+      // Build the API body (flat, English-named). Backend rebuilds SEFAZ format.
+      const firstNfePayment = nfePayments[0];
+      const apiBody = {
+        type: 'nfe' as const,
+        businessId: business.id,
+        items: nfeItems.filter(i => i.description.trim()).map(item => ({
+          description: item.description,
+          ncm: item.ncm || '00000000',
+          cfop: item.cfop || '5102',
+          unit: item.unit || 'UN',
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          barcode: item.gtin || undefined,
+          cest: item.cest || undefined,
+          icmsOrigem: item.icmsOrigem || '0',
+        })),
+        paymentMethod: firstNfePayment?.method || 'dinheiro',
+        paymentValue: firstNfePayment?.amount || itemsTotal(nfeItems),
+        recipient: {
+          document: cleanDestDoc,
+          name: nfeRecipientName,
+          inscricaoEstadual: nfeRecipientIE || undefined,
+          indicadorIE: nfeRecipientIndicadorIE,
+          address: destinatarioEndereco,
+        },
+        naturezaOperacao: nfeNatureza,
+        finalidadeEmissao: Number(nfeFinalidade) || 1,
+        consumidorFinal: isDestPJ ? 0 : 1,
+        presencaComprador: 9,
+        informacoesAdicionais: nfeInfoAdicionais.trim() || undefined,
+        certificado,
+      };
+
       const res = await fetch('/api/fiscal/emit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
-        body: JSON.stringify({ type: 'nfe', businessId: business.id, ...payload }),
+        body: JSON.stringify(apiBody),
       });
 
       const result = await res.json();
