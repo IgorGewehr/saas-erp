@@ -60,6 +60,18 @@ export interface BaileysSession {
   businessId: string;
   /** LID (@lid) → número de telefone (dígitos). Populado por contacts.upsert. */
   lidToPhone: Map<string, string>;
+  /** Contadores de debug — atualizados em tempo real pelos event listeners. */
+  _dbg: {
+    upsertFired: number;       // total de vezes que messages.upsert disparou
+    upsertNotify: number;      // desses, quantos eram type=notify (real-time)
+    filtered: { fromMe: number; noMsg: number; group: number; lid: number; other: number };
+    processed: number;         // chegaram até handleInboundMessage
+    saved: number;             // gravados no Firestore com sucesso
+    lastRawJid: string | null; // último remoteJid visto (qualquer mensagem)
+    lastError: string | null;  // último erro em handleInboundMessage
+    lastErrorAt: string | null;
+    contactsUpserted: number;  // total de contatos recebidos via contacts.upsert
+  };
 }
 
 // ─── Global Singleton Map ────────────────────────────────────────────────────
@@ -894,6 +906,13 @@ export async function createBaileysSession(
     connectionId: sessionKey,
     businessId,
     lidToPhone: new Map(),
+    _dbg: {
+      upsertFired: 0, upsertNotify: 0,
+      filtered: { fromMe: 0, noMsg: 0, group: 0, lid: 0, other: 0 },
+      processed: 0, saved: 0,
+      lastRawJid: null, lastError: null, lastErrorAt: null,
+      contactsUpserted: 0,
+    },
   };
 
   sessions.set(sessionKey, session);
@@ -937,37 +956,43 @@ export async function createBaileysSession(
     // WhatsApp multi-device usa LIDs (@lid) em vez de telefones em alguns eventos.
     // Populamos o mapa aqui para que handleInboundMessage possa resolver LIDs.
     sock.ev.on('contacts.upsert', (contacts: import('@whiskeysockets/baileys').Contact[]) => {
+      session._dbg.contactsUpserted += contacts.length;
       for (const c of contacts) {
         const rawPhone = c.phoneNumber?.replace(/\D/g, '');
         if (!rawPhone) continue;
-        // Mapeia lid@lid → dígitos do telefone
         if (c.lid) session.lidToPhone.set(c.lid, rawPhone);
-        // Mapeia também o próprio JID principal (pode ser @s.whatsapp.net ou @lid)
         if (c.id) session.lidToPhone.set(c.id, rawPhone);
       }
     });
 
     // ── Message listener ──
     sock.ev.on('messages.upsert', async ({ messages: waMessages, type }: { messages: WAMessage[]; type: MessageUpsertType }) => {
-      for (const waMsg of waMessages) {
-        try {
-          if (waMsg.key.fromMe) continue;
-          if (waMsg.key.remoteJid === 'status@broadcast') continue;
-          if (waMsg.key.remoteJid?.endsWith('@g.us')) continue;
-          if (!waMsg.message) continue;
-          if (waMsg.message.protocolMessage || waMsg.message.reactionMessage) continue;
+      session._dbg.upsertFired++;
+      if (type === 'notify') session._dbg.upsertNotify++;
 
-          // For 'append' (history sync after reconnect), only process recent messages.
-          // This ensures messages received during a brief disconnect are not lost while
-          // ignoring true historical messages loaded on session start.
+      for (const waMsg of waMessages) {
+        const jid = waMsg.key.remoteJid ?? '';
+        session._dbg.lastRawJid = `${jid} [type=${type}]`;
+        try {
+          if (waMsg.key.fromMe) { session._dbg.filtered.fromMe++; continue; }
+          if (jid === 'status@broadcast') { session._dbg.filtered.other++; continue; }
+          if (jid.endsWith('@g.us')) { session._dbg.filtered.group++; continue; }
+          if (!waMsg.message) { session._dbg.filtered.noMsg++; continue; }
+          if (waMsg.message.protocolMessage || waMsg.message.reactionMessage) { session._dbg.filtered.other++; continue; }
+
           if (type !== 'notify') {
             const tsRaw = waMsg.messageTimestamp;
             const tsMs = (typeof tsRaw === 'number' ? tsRaw : Number(tsRaw)) * 1000;
-            if (Date.now() - tsMs > 5 * 60 * 1000) continue; // older than 5 min → skip
+            if (Date.now() - tsMs > 5 * 60 * 1000) { session._dbg.filtered.other++; continue; }
           }
 
+          session._dbg.processed++;
           await handleInboundMessage(businessId, sessionKey, waMsg, sock);
+          session._dbg.saved++;
         } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          session._dbg.lastError = msg;
+          session._dbg.lastErrorAt = new Date().toISOString();
           console.error('[Baileys] Erro ao processar mensagem:', err);
         }
       }
