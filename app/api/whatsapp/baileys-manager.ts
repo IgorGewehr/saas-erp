@@ -160,6 +160,15 @@ export function broadcast(session: BaileysSession, data: Record<string, unknown>
 }
 
 function formatPhone(phone: string): string {
+  // Brasil: o 9º dígito foi obrigatório para celulares desde 2016.
+  // O WhatsApp armazena internamente sem o 9º dígito (8 dígitos após DDD).
+  // Celulares BR: primeiro dígito após DDD é 6-9 → inserir '9' antes.
+  if (phone.length === 12 && phone.startsWith('55')) {
+    const firstAfterDDD = phone[4];
+    if (firstAfterDDD >= '6' && firstAfterDDD <= '9') {
+      phone = phone.slice(0, 4) + '9' + phone.slice(4);
+    }
+  }
   if (phone.length === 13 && phone.startsWith('55')) {
     return `+${phone.slice(0, 2)} ${phone.slice(2, 4)} ${phone.slice(4, 9)}-${phone.slice(9)}`;
   }
@@ -1033,7 +1042,13 @@ export async function createBaileysSession(
           phoneNumber = me.phoneNumber.replace(/\D/g, '') || null;
         } else if (me?.id && !me.id.endsWith('@lid')) {
           // Formato convencional: "55119...@s.whatsapp.net" ou "55119...:10@s.whatsapp.net"
-          phoneNumber = me.id.split(':')[0].split('@')[0] || null;
+          const raw = me.id.split(':')[0].split('@')[0];
+          // Aplica o mesmo fix de 9º dígito que formatPhone — WA armazena sem '9'
+          if (raw.length === 12 && raw.startsWith('55') && raw[4] >= '6') {
+            phoneNumber = raw.slice(0, 4) + '9' + raw.slice(4);
+          } else {
+            phoneNumber = raw || null;
+          }
         } else if (me?.id && me.id.endsWith('@lid')) {
           // Conta LID — tenta resolver via mapa (populado por contacts.upsert)
           phoneNumber = session.lidToPhone.get(me.id) || session.lidToPhone.get(me.lid || '') || null;
