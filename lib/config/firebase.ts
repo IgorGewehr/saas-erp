@@ -5,6 +5,7 @@ import {
   getFirestore,
   persistentLocalCache,
   persistentMultipleTabManager,
+  memoryLocalCache,
   Firestore,
 } from 'firebase/firestore';
 import { getStorage, FirebaseStorage } from 'firebase/storage';
@@ -38,11 +39,13 @@ if (!g._fb_db) {
   // persistentLocalCache stores snapshots in IndexedDB — second visit loads from cache
   // in <50ms instead of waiting for a network round trip.
   try {
+    // memoryLocalCache: sem persistência em IndexedDB — evita cache stale entre sessões.
+    // Tradeoff: primeira visita sempre busca do servidor (sem "instant load" offline),
+    // mas garante consistência — dados em cache nunca ficam dessincronizados com o Firestore.
     g._fb_db = initializeFirestore(g._fb_app, {
-      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+      localCache: memoryLocalCache(),
     });
   } catch {
-    // Firestore already initialized (e.g. HMR re-evaluation) — fall back to getFirestore
     g._fb_db = getFirestore(g._fb_app);
   }
 }
