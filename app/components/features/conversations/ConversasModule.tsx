@@ -38,6 +38,7 @@ import {
   Trash2,
   User as UserIcon,
   Building2,
+  Smartphone,
   Check,
   CheckCheck,
   Smile,
@@ -761,6 +762,7 @@ function ThreadHeader({
   onToggleAssignHistory,
   channelConnection,
   isMineConnection,
+  onTransferChannel,
 }: {
   conversation: Conversation;
   onBack: () => void;
@@ -788,6 +790,9 @@ function ThreadHeader({
   channelConnection?: import('@/lib/types').ChannelConnection;
   /** True quando channelConnection é pessoal do operador atual. */
   isMineConnection?: boolean;
+  /** Phase 3.3: transferir conversa pra outro canal. Quando undefined,
+   *  esconde a opção (ex: operador sem outros canais acessíveis). */
+  onTransferChannel?: () => void;
 }) {
   const { t } = useTranslation();
   const cfg = getConvConfig(conversation);
@@ -1233,6 +1238,13 @@ function ThreadHeader({
                     className="w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs text-gray-700 dark:text-gray-300">
                     <ArrowRightLeft className="w-3.5 h-3.5 text-gray-400" />
                     Unificar com outra conversa
+                  </button>
+                )}
+                {onTransferChannel && (
+                  <button onClick={() => { onTransferChannel(); setShowOverflowMenu(false); }}
+                    className="w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs text-gray-700 dark:text-gray-300">
+                    <Smartphone className="w-3.5 h-3.5 text-gray-400" />
+                    Transferir para outro canal
                   </button>
                 )}
                 {(conversation.assignmentHistory?.length ?? 0) > 0 && onToggleAssignHistory && (
@@ -2866,6 +2878,228 @@ function NewConversationDialog({
   );
 }
 
+// ─── Transfer Channel Dialog (Phase 3.3) ────────────────────────────────────
+
+/**
+ * Permite operador transferir uma conversa pra outro canal Baileys/Cloud.
+ * Lista canais alternativos do mesmo type que o user pode acessar.
+ */
+function TransferChannelDialog({
+  conversation,
+  connections,
+  myConnectionIds,
+  onClose,
+  onTransferred,
+}: {
+  conversation: Conversation;
+  connections: import('@/lib/types').ChannelConnection[];
+  myConnectionIds: Set<string>;
+  onClose: () => void;
+  onTransferred: () => void;
+}) {
+  const { firebaseUser } = useAuth();
+  const [selectedTargetId, setSelectedTargetId] = useState<string>('');
+  const [sendNotice, setSendNotice] = useState(true);
+  const [noticeText, setNoticeText] = useState('Olá! A partir de agora vou te atender por este número.');
+  const [transferring, setTransferring] = useState(false);
+
+  // Type da conversa atual define os candidatos compatíveis (Baileys vs Cloud)
+  const convType = conversation.connectedVia === 'baileys' ? 'whatsapp_baileys' : 'whatsapp_cloud';
+  const candidates = useMemo(() => {
+    return connections
+      .filter(c =>
+        c.id !== conversation.channelConnectionId
+        && c.type === convType
+        && c.isActive
+        && c.isConnected,
+      )
+      .sort((a, b) => {
+        if (a.ownerType === 'business' && b.ownerType !== 'business') return -1;
+        if (a.ownerType !== 'business' && b.ownerType === 'business') return 1;
+        if (a.isPrimary && !b.isPrimary) return -1;
+        if (!a.isPrimary && b.isPrimary) return 1;
+        return a.displayName.localeCompare(b.displayName);
+      });
+  }, [connections, conversation.channelConnectionId, convType]);
+
+  useEffect(() => {
+    if (candidates.length > 0 && !selectedTargetId) {
+      setSelectedTargetId(candidates[0].id);
+    }
+  }, [candidates, selectedTargetId]);
+
+  const handleTransfer = async () => {
+    if (!selectedTargetId || !firebaseUser) return;
+    setTransferring(true);
+    try {
+      const token = await firebaseUser.getIdToken();
+      const res = await fetch(`/api/conversations/${conversation.id}/transfer-channel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          businessId: conversation.businessId,
+          targetConnectionId: selectedTargetId,
+          sendNotice,
+          noticeText: noticeText.trim() || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      toast.success(data.message || 'Conversa transferida.');
+      if (sendNotice && data.notice && !data.notice.sent) {
+        toast.warn(`Aviso ao contato falhou: ${data.notice.error || 'desconhecido'}`);
+      }
+      onTransferred();
+    } catch (err) {
+      console.error('[transfer] Failed:', err);
+      toast.error(err instanceof Error ? err.message : 'Erro ao transferir');
+    } finally {
+      setTransferring(false);
+    }
+  };
+
+  if (candidates.length === 0) {
+    return (
+      <motion.div
+        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+        className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+        onClick={onClose}
+      >
+        <motion.div onClick={(e) => e.stopPropagation()}
+          initial={{ scale: 0.95 }} animate={{ scale: 1 }} exit={{ scale: 0.95 }}
+          className="w-full max-w-sm bg-white dark:bg-[#111827] rounded-2xl p-6 text-center"
+        >
+          <AlertCircle className="w-10 h-10 text-amber-500 mx-auto mb-3" />
+          <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Sem canais compatíveis</p>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+            Não há outros canais {convType === 'whatsapp_baileys' ? 'WhatsApp Web' : 'WhatsApp Cloud'} conectados pra receber a transferência.
+          </p>
+          <button onClick={onClose} className="px-4 py-1.5 rounded-lg bg-gray-100 dark:bg-white/[0.06] text-xs font-semibold">Fechar</button>
+        </motion.div>
+      </motion.div>
+    );
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <motion.div
+        initial={{ scale: 0.95, y: 8 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 8 }}
+        className="w-full max-w-md bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden"
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800">
+          <div>
+            <h3 className="font-bold text-base text-gray-900 dark:text-gray-100">Transferir canal</h3>
+            <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+              A conversa passa a ser respondida pelo canal escolhido.
+            </p>
+          </div>
+          <button onClick={onClose} disabled={transferring}
+            className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 disabled:opacity-50">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4">
+          <div>
+            <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">
+              Canal destino
+            </label>
+            <div className="space-y-2">
+              {candidates.map(c => {
+                const isMine = myConnectionIds.has(c.id);
+                const isSelected = selectedTargetId === c.id;
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => setSelectedTargetId(c.id)}
+                    className={cn(
+                      'w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border-2 text-left transition-all',
+                      isSelected
+                        ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10'
+                        : 'border-gray-200 dark:border-gray-700 hover:border-emerald-300',
+                    )}
+                  >
+                    <div className={cn(
+                      'w-8 h-8 rounded-lg flex items-center justify-center shrink-0',
+                      isMine
+                        ? 'bg-violet-100 dark:bg-violet-500/15 text-violet-600 dark:text-violet-400'
+                        : 'bg-blue-100 dark:bg-blue-500/15 text-blue-600 dark:text-blue-400',
+                    )}>
+                      {isMine ? <UserIcon className="w-4 h-4" /> : <Building2 className="w-4 h-4" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-bold text-gray-900 dark:text-gray-100 truncate">
+                        {c.displayName}
+                        {c.isPrimary && (
+                          <span className="ml-1.5 text-[9px] font-bold text-amber-600 dark:text-amber-400">PRINCIPAL</span>
+                        )}
+                      </p>
+                      {c.phoneNumber && (
+                        <p className="text-[10px] text-gray-500 dark:text-gray-400 font-mono">+{c.phoneNumber}</p>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={sendNotice}
+                onChange={(e) => setSendNotice(e.target.checked)}
+                className="mt-0.5 rounded border-gray-300 text-emerald-600 focus:ring-emerald-400"
+              />
+              <div>
+                <p className="text-xs font-semibold text-gray-900 dark:text-gray-100">
+                  Avisar contato com mensagem
+                </p>
+                <p className="text-[10px] text-gray-500 dark:text-gray-400">
+                  Enviada pelo canal NOVO — o contato vê o número diferente. Sem isso, ele pode estranhar a próxima resposta.
+                </p>
+              </div>
+            </label>
+            {sendNotice && (
+              <textarea
+                value={noticeText}
+                onChange={(e) => setNoticeText(e.target.value)}
+                rows={3}
+                className="mt-2 w-full px-3 py-2 text-xs bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-xl text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400"
+                placeholder="Mensagem de aviso..."
+              />
+            )}
+          </div>
+        </div>
+
+        <div className="px-5 py-3 border-t border-gray-100 dark:border-gray-800 flex items-center justify-end gap-2">
+          <button
+            onClick={onClose}
+            disabled={transferring}
+            className="px-3 py-1.5 rounded-lg text-xs text-gray-500 hover:bg-gray-100 dark:hover:bg-white/[0.04] disabled:opacity-50"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={handleTransfer}
+            disabled={transferring || !selectedTargetId}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50"
+          >
+            {transferring ? <Loader2 className="w-3 h-3 animate-spin" /> : <ArrowRightLeft className="w-3 h-3" />}
+            Transferir
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 // ─── Merge Conversations Dialog ───────────────────────────────────────────────
 
 function MergeConversationsDialog({ source, conversations, onClose, onMerge }: {
@@ -3783,6 +4017,7 @@ export default function ConversasModule() {
   }, [showHeaderMore]);
   const [showAssignHistory, setShowAssignHistory] = useState(false);
   const [showMergeDialog, setShowMergeDialog] = useState(false);
+  const [showTransferChannelDialog, setShowTransferChannelDialog] = useState(false);
   const [showNewConversation, setShowNewConversation] = useState(false);
   const [routingRules, setRoutingRules] = useState<RoutingRule[]>(business?.settings?.routingRules ?? []);
   useEffect(() => { setRoutingRules(business?.settings?.routingRules ?? []); }, [business?.settings?.routingRules]);
@@ -5743,6 +5978,21 @@ export default function ConversasModule() {
                   isMineConnection={
                     !!(selectedConversation.channelConnectionId && myConnectionIds.has(selectedConversation.channelConnectionId))
                   }
+                  // Phase 3.3: só mostra Transferir se há OUTRA connection
+                  // do mesmo tipo acessível pro operador (senão sem destino).
+                  onTransferChannel={
+                    (() => {
+                      const sameTypeOthers = channelConnections.filter(c => {
+                        if (c.id === selectedConversation.channelConnectionId) return false;
+                        if (!c.isActive || !c.isConnected) return false;
+                        const convType = selectedConversation.connectedVia === 'baileys' ? 'whatsapp_baileys' : 'whatsapp_cloud';
+                        return c.type === convType;
+                      });
+                      return sameTypeOthers.length > 0
+                        ? () => setShowTransferChannelDialog(true)
+                        : undefined;
+                    })()
+                  }
                 />
 
                 {/* Assignment history panel */}
@@ -6060,6 +6310,15 @@ export default function ConversasModule() {
             conversations={conversations}
             onClose={() => setShowMergeDialog(false)}
             onMerge={targetId => handleMergeConversations(selectedConversation.id, targetId)}
+          />
+        )}
+        {showTransferChannelDialog && selectedConversation && (
+          <TransferChannelDialog
+            conversation={selectedConversation}
+            connections={channelConnections}
+            myConnectionIds={myConnectionIds}
+            onClose={() => setShowTransferChannelDialog(false)}
+            onTransferred={() => setShowTransferChannelDialog(false)}
           />
         )}
         <NewConversationDialog
