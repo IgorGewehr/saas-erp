@@ -1222,7 +1222,10 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
     const bytes = new Uint8Array(buffer);
     let binary = '';
     for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-    return { pfxBase64: btoa(binary), password: atob(pwdEncoded) };
+    // Tolerate older data with plain-text or invalid base64 password
+    let password: string;
+    try { password = atob(pwdEncoded); } catch { password = pwdEncoded; }
+    return { pfxBase64: btoa(binary), password };
   };
 
   // Certificate warning

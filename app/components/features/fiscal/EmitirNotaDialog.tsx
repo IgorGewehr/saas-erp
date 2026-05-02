@@ -33,6 +33,7 @@ import { ref as storageRef, getDownloadURL } from 'firebase/storage';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import type { FiscalDocType, PaymentMethod, CRMContact } from '@/lib/types';
 import { NfseServicoCombobox } from './NfseServicoCombobox';
+import NcmSelector from './NcmSelector';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatCPFCNPJ } from '@/lib/utils/format';
 import { maskCpfCnpj, maskPhone, maskCep, unmaskDigits } from '@/lib/utils/fiscal-masks';
@@ -341,7 +342,14 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
       binary += String.fromCharCode(bytes[i]);
     }
     const pfxBase64 = btoa(binary);
-    const password = atob(pwdEncoded);
+    // Decode password tolerating older data that may have been stored as plain text
+    // or with invalid base64 (e.g. passwords with non-Latin1 chars that broke btoa).
+    let password: string;
+    try {
+      password = atob(pwdEncoded);
+    } catch {
+      password = pwdEncoded;
+    }
     return { pfxBase64, password };
   };
 
@@ -1365,7 +1373,11 @@ function ItemsSection({
                 <input value={item.description} onChange={(e) => onUpdate(item.id, 'description', e.target.value)} placeholder={t('fiscal.emit.descricaoProduto', 'Descrição do produto/serviço')} className={inputClasses} />
               </div>
               <div className="col-span-4 sm:col-span-2">
-                <input value={item.ncm} onChange={(e) => onUpdate(item.id, 'ncm', e.target.value)} placeholder="NCM" className={inputClasses} />
+                <NcmSelector
+                  value={item.ncm}
+                  onChange={(code) => onUpdate(item.id, 'ncm', code)}
+                  placeholder="NCM"
+                />
               </div>
               <div className="col-span-4 sm:col-span-2">
                 <input value={item.cfop} onChange={(e) => onUpdate(item.id, 'cfop', e.target.value)} placeholder="CFOP" className={inputClasses} />
