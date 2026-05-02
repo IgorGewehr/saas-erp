@@ -75,9 +75,12 @@ export interface BaileysSession {
       oldAppend: number;        // type=append e mais velho que 5min
     };
     processed: number;
-    saved: number;       // handleInboundMessage completou sem throw
-    earlyReturn: number; // handleInboundMessage retornou cedo (LID sem resolução, etc)
+    saved: number;
+    earlyReturn: number;
     lastRawJid: string | null;
+    lastSavedConvId: string | null;   // ID da última conversa salva
+    lastSavedMsgId: string | null;    // ID da última mensagem salva
+    lastSavedPhone: string | null;    // telefone do último remetente salvo
     lastMsgTypes: string[];     // últimos 5 tipos de waMsg.message que chegaram
     lastError: string | null;
     lastErrorAt: string | null;
@@ -447,13 +450,15 @@ export async function sendBaileysBroadcastMessage(
 
 // ─── Firestore: save inbound message ─────────────────────────────────────────
 
+interface InboundSaveResult { conversationId: string; messageId: string; phone: string }
+
 async function handleInboundMessage(
   businessId: string,
   connectionId: string,
   waMessage: WAMessage,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sock: any,
-): Promise<boolean> {
+): Promise<InboundSaveResult | false> {
   const rawJid = waMessage.key.remoteJid;
   if (!rawJid) return false;
 
@@ -752,7 +757,7 @@ async function handleInboundMessage(
     } catch (agentErr) {
       console.warn('[Baileys] Agent dispatch import/call failed:', agentErr);
     }
-    return true;
+    return { conversationId, messageId: msgRef.id, phone: senderPhone };
   } catch (err) {
     console.error('[Baileys] Erro ao salvar mensagem inbound:', err);
     throw err; // outer catch registra em _dbg.lastError
@@ -947,6 +952,7 @@ export async function createBaileysSession(
       upsertFired: 0, upsertNotify: 0,
       filtered: { fromMe: 0, noMsg: 0, group: 0, lid: 0, statusBroadcast: 0, protocolMsg: 0, reactionMsg: 0, oldAppend: 0 },
       processed: 0, saved: 0, earlyReturn: 0,
+      lastSavedConvId: null, lastSavedMsgId: null, lastSavedPhone: null,
       lastRawJid: null, lastMsgTypes: [], lastError: null, lastErrorAt: null,
       contactsUpserted: 0,
     },
@@ -1032,11 +1038,14 @@ export async function createBaileysSession(
           }
 
           session._dbg.processed++;
-          const savedOk = await handleInboundMessage(businessId, sessionKey, waMsg, sock);
-          if (savedOk) {
+          const result = await handleInboundMessage(businessId, sessionKey, waMsg, sock);
+          if (result) {
             session._dbg.saved++;
+            session._dbg.lastSavedConvId = result.conversationId;
+            session._dbg.lastSavedMsgId = result.messageId;
+            session._dbg.lastSavedPhone = result.phone;
           } else {
-            session._dbg.earlyReturn++;
+            session._dbg.earlyReturn = (session._dbg.earlyReturn || 0) + 1;
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
