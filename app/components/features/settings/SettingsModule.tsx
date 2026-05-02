@@ -1819,7 +1819,10 @@ function FiscalTab() {
     fiscalInitializedForRef.current = business.id;
     const f = business.fiscal;
 
-    setEnvironment(((f.nfeConfig?.environment || (f as Record<string, unknown>).environment) || 'homologacao') as typeof environment);
+    // Lê ambiente em ordem de especificidade: nfceConfig → nfeConfig → raiz.
+    // Aceita 'production'/'producao' como produção; tudo mais cai em homologação.
+    const rawEnv = f.nfceConfig?.environment || f.nfeConfig?.environment || (f as Record<string, unknown>).environment as string | undefined || '';
+    setEnvironment(rawEnv === 'production' || rawEnv === 'producao' ? 'production' : 'homologation');
     setTaxRegime(f.taxRegime || 'simples_nacional');
     setOperationType(((f as Record<string, unknown>).operationType as string) || 'saida');
     setSellsInterstate(!!((f as Record<string, unknown>).sellsInterstate));
@@ -1884,7 +1887,16 @@ function FiscalTab() {
   const handleSaveEnv = async () => {
     setIsSavingEnv(true);
     try {
-      await saveFiscalField({ environment });
+      // Persistir o ambiente nos três caminhos (raiz, nfeConfig, nfceConfig) pra
+      // evitar que ele fique inconsistente. O emit prioriza nfceConfig/nfeConfig,
+      // mas mantemos a raiz como fallback histórico.
+      const currentNfeConfig = business?.fiscal?.nfeConfig || {};
+      const currentNfceConfig = business?.fiscal?.nfceConfig || {};
+      await saveFiscalField({
+        environment,
+        nfeConfig: { ...currentNfeConfig, environment },
+        nfceConfig: { ...currentNfceConfig, environment },
+      });
       toast.success(t('settings.fiscal.envSaved', 'Ambiente fiscal salvo!'));
     } catch { toast.error(t('settings.fiscal.envError', 'Erro ao salvar ambiente')); }
     finally { setIsSavingEnv(false); }
