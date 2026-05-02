@@ -33,7 +33,11 @@ export async function GET(req: NextRequest) {
         isConnected: session.isConnected,
         isDestroyed: session.isDestroyed,
         hasSock: !!session.sock,
-        sockReadyState: session.sock?.ws?.readyState ?? null,
+        sockReadyState: session.sock?.ws?.readyState
+          ?? session.sock?.ws?.socket?.readyState
+          ?? session.sock?.socket?.readyState
+          ?? null,
+        sockEvListeners: (() => { try { return session.sock?.ev?.listenerCount?.('messages.upsert') ?? null; } catch { return null; } })(),
         sockUserId: session.sock?.user?.id ?? null,
         sockUserName: session.sock?.user?.name ?? null,
         sockUserPhone: session.sock?.user?.phoneNumber ?? null,

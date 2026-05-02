@@ -62,15 +62,25 @@ export interface BaileysSession {
   lidToPhone: Map<string, string>;
   /** Contadores de debug — atualizados em tempo real pelos event listeners. */
   _dbg: {
-    upsertFired: number;       // total de vezes que messages.upsert disparou
-    upsertNotify: number;      // desses, quantos eram type=notify (real-time)
-    filtered: { fromMe: number; noMsg: number; group: number; lid: number; other: number };
-    processed: number;         // chegaram até handleInboundMessage
-    saved: number;             // gravados no Firestore com sucesso
-    lastRawJid: string | null; // último remoteJid visto (qualquer mensagem)
-    lastError: string | null;  // último erro em handleInboundMessage
+    upsertFired: number;
+    upsertNotify: number;
+    filtered: {
+      fromMe: number;
+      noMsg: number;
+      group: number;
+      lid: number;
+      statusBroadcast: number;  // separado de protocolMessage agora
+      protocolMsg: number;      // waMsg.message.protocolMessage
+      reactionMsg: number;      // waMsg.message.reactionMessage
+      oldAppend: number;        // type=append e mais velho que 5min
+    };
+    processed: number;
+    saved: number;
+    lastRawJid: string | null;
+    lastMsgTypes: string[];     // últimos 5 tipos de waMsg.message que chegaram
+    lastError: string | null;
     lastErrorAt: string | null;
-    contactsUpserted: number;  // total de contatos recebidos via contacts.upsert
+    contactsUpserted: number;
   };
 }
 
@@ -917,9 +927,9 @@ export async function createBaileysSession(
     lidToPhone: new Map(),
     _dbg: {
       upsertFired: 0, upsertNotify: 0,
-      filtered: { fromMe: 0, noMsg: 0, group: 0, lid: 0, other: 0 },
+      filtered: { fromMe: 0, noMsg: 0, group: 0, lid: 0, statusBroadcast: 0, protocolMsg: 0, reactionMsg: 0, oldAppend: 0 },
       processed: 0, saved: 0,
-      lastRawJid: null, lastError: null, lastErrorAt: null,
+      lastRawJid: null, lastMsgTypes: [], lastError: null, lastErrorAt: null,
       contactsUpserted: 0,
     },
   };
@@ -982,17 +992,25 @@ export async function createBaileysSession(
       for (const waMsg of waMessages) {
         const jid = waMsg.key.remoteJid ?? '';
         session._dbg.lastRawJid = `${jid} [type=${type}]`;
+        // Registra os tipos de mensagem para diagnóstico
+        if (waMsg.message) {
+          const msgTypes = Object.keys(waMsg.message).filter(k => k !== 'messageContextInfo');
+          if (msgTypes.length > 0) {
+            session._dbg.lastMsgTypes = [msgTypes.join('+'), ...session._dbg.lastMsgTypes].slice(0, 5);
+          }
+        }
         try {
           if (waMsg.key.fromMe) { session._dbg.filtered.fromMe++; continue; }
-          if (jid === 'status@broadcast') { session._dbg.filtered.other++; continue; }
+          if (jid === 'status@broadcast') { session._dbg.filtered.statusBroadcast++; continue; }
           if (jid.endsWith('@g.us')) { session._dbg.filtered.group++; continue; }
           if (!waMsg.message) { session._dbg.filtered.noMsg++; continue; }
-          if (waMsg.message.protocolMessage || waMsg.message.reactionMessage) { session._dbg.filtered.other++; continue; }
+          if (waMsg.message.protocolMessage) { session._dbg.filtered.protocolMsg++; continue; }
+          if (waMsg.message.reactionMessage) { session._dbg.filtered.reactionMsg++; continue; }
 
           if (type !== 'notify') {
             const tsRaw = waMsg.messageTimestamp;
             const tsMs = (typeof tsRaw === 'number' ? tsRaw : Number(tsRaw)) * 1000;
-            if (Date.now() - tsMs > 5 * 60 * 1000) { session._dbg.filtered.other++; continue; }
+            if (Date.now() - tsMs > 5 * 60 * 1000) { session._dbg.filtered.oldAppend++; continue; }
           }
 
           session._dbg.processed++;
