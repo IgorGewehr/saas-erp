@@ -58,6 +58,8 @@ export interface BaileysSession {
   connectionId: string;
   /** Tenant. handleInboundMessage usa pra atribuir msgs entrantes. */
   businessId: string;
+  /** LID (@lid) → número de telefone (dígitos). Populado por contacts.upsert. */
+  lidToPhone: Map<string, string>;
 }
 
 // ─── Global Singleton Map ────────────────────────────────────────────────────
@@ -434,28 +436,39 @@ async function handleInboundMessage(
     // Normal case: "5521999999999@s.whatsapp.net"
     senderPhone = rawJid.replace('@s.whatsapp.net', '');
   } else if (rawJid.endsWith('@lid')) {
-    // LID (Linked Device ID) — the real phone is in key.remoteJidAlt
+    // LID (Linked Device ID) — Baileys 7+ usa LIDs em vez de telefones.
+    // Prioridade: lidToPhone map → participantAlt → remoteJidAlt → participant
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const altJid = (waMessage.key as any).remoteJidAlt as string | undefined;
+    const key = waMessage.key as any;
+    const session = sessions.get(connectionId);
 
-    if (altJid && altJid.includes('@s.whatsapp.net')) {
-      senderPhone = altJid.replace('@s.whatsapp.net', '');
-      jidForProfile = altJid;
+    // 1. Nosso mapa LID→phone (populado por contacts.upsert)
+    const mappedPhone = session?.lidToPhone.get(rawJid);
+    if (mappedPhone && /^\d{10,15}$/.test(mappedPhone)) {
+      senderPhone = mappedPhone;
     } else {
-      // Fallback chain: participant fields
+      // 2. participantAlt (campo novo do Baileys 7 — prioridade sobre remoteJidAlt)
+      const participantAlt = key.participantAlt as string | undefined;
+      const remoteJidAlt = key.remoteJidAlt as string | undefined;
       const keyParticipant = waMessage.key.participant;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const msgParticipant = (waMessage as any).participant;
+      const msgParticipant = key.participant as string | undefined;
 
-      if (keyParticipant && keyParticipant.includes('@s.whatsapp.net')) {
-        senderPhone = keyParticipant.replace('@s.whatsapp.net', '');
-        jidForProfile = keyParticipant;
-      } else if (msgParticipant && msgParticipant.includes('@s.whatsapp.net')) {
-        senderPhone = msgParticipant.replace('@s.whatsapp.net', '');
-        jidForProfile = msgParticipant;
+      const resolved = [participantAlt, remoteJidAlt, keyParticipant, msgParticipant]
+        .find(j => j && j.includes('@s.whatsapp.net'));
+
+      if (resolved) {
+        senderPhone = resolved.replace('@s.whatsapp.net', '');
+        jidForProfile = resolved;
       } else {
-        console.warn('[Baileys] @lid sem remoteJidAlt ou participant. Ignorando:', rawJid);
-        return;
+        // Última tentativa: tenta o mapa com variantes do LID
+        const lidDigits = rawJid.replace('@lid', '');
+        const mappedFallback = session?.lidToPhone.get(lidDigits);
+        if (mappedFallback && /^\d{10,15}$/.test(mappedFallback)) {
+          senderPhone = mappedFallback;
+        } else {
+          console.warn('[Baileys] @lid sem resolução de telefone. Ignorando:', rawJid, { participantAlt, remoteJidAlt });
+          return;
+        }
       }
     }
   } else if (rawJid.endsWith('@g.us')) {
@@ -880,6 +893,7 @@ export async function createBaileysSession(
     isDestroyed: false,
     connectionId: sessionKey,
     businessId,
+    lidToPhone: new Map(),
   };
 
   sessions.set(sessionKey, session);
@@ -918,6 +932,20 @@ export async function createBaileysSession(
     session.sock = sock;
 
     sock.ev.on('creds.update', saveCreds);
+
+    // ── Contact LID → phone map (Baileys 7+) ──
+    // WhatsApp multi-device usa LIDs (@lid) em vez de telefones em alguns eventos.
+    // Populamos o mapa aqui para que handleInboundMessage possa resolver LIDs.
+    sock.ev.on('contacts.upsert', (contacts: import('@whiskeysockets/baileys').Contact[]) => {
+      for (const c of contacts) {
+        const rawPhone = c.phoneNumber?.replace(/\D/g, '');
+        if (!rawPhone) continue;
+        // Mapeia lid@lid → dígitos do telefone
+        if (c.lid) session.lidToPhone.set(c.lid, rawPhone);
+        // Mapeia também o próprio JID principal (pode ser @s.whatsapp.net ou @lid)
+        if (c.id) session.lidToPhone.set(c.id, rawPhone);
+      }
+    });
 
     // ── Message listener ──
     sock.ev.on('messages.upsert', async ({ messages: waMessages, type }: { messages: WAMessage[]; type: MessageUpsertType }) => {
@@ -971,8 +999,21 @@ export async function createBaileysSession(
       if (connection === 'open') {
         session.isConnected = true;
         restartCount = 0;
-        const phoneNumber = sock.user?.id?.split(':')[0] || sock.user?.id?.split('@')[0] || null;
-        console.log('[Baileys] Conectado! Tel:', phoneNumber, '| business:', businessId);
+
+        // Extrai o número do próprio telefone conectado.
+        // Prioridade: Contact.phoneNumber (canônico) → JID convencional → LID via mapa
+        let phoneNumber: string | null = null;
+        const me = sock.user as (import('@whiskeysockets/baileys').Contact & { phoneNumber?: string }) | undefined;
+        if (me?.phoneNumber) {
+          phoneNumber = me.phoneNumber.replace(/\D/g, '') || null;
+        } else if (me?.id && !me.id.endsWith('@lid')) {
+          // Formato convencional: "55119...@s.whatsapp.net" ou "55119...:10@s.whatsapp.net"
+          phoneNumber = me.id.split(':')[0].split('@')[0] || null;
+        } else if (me?.id && me.id.endsWith('@lid')) {
+          // Conta LID — tenta resolver via mapa (populado por contacts.upsert)
+          phoneNumber = session.lidToPhone.get(me.id) || session.lidToPhone.get(me.lid || '') || null;
+        }
+        console.log('[Baileys] Conectado! Tel:', phoneNumber, '| userId:', me?.id, '| business:', businessId);
 
         // Persist first — then notify the UI. This way `onSnapshot` listeners on
         // `businesses/{id}.channels.whatsapp` already see the updated state when the
