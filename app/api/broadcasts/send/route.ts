@@ -833,25 +833,37 @@ export async function POST(req: NextRequest) {
     try {
       // Status final:
       //   - 'paused' se pause manual no meio do loop OU dispatch parcial
-      //     (operador escolheu enviar só X de Y; o resto fica pendente
-      //     pra retomar via /api/broadcasts/[id]/resume)
       //   - 'failed' só se TODAS as msgs processadas falharam
       //   - 'sent' caso contrário
-      // recipientsToProcess.length é o que de fato foi iterado nesta rodada.
       const isParcialOuPaused = wasPaused || isPartialDispatch;
-      const finalStatus = isParcialOuPaused
+      const computedStatus = isParcialOuPaused
         ? 'paused'
         : (failed === recipientsToProcess.length ? 'failed' : 'sent');
-      const finalUpdate: Record<string, unknown> = {
-        'stats.sent': sent,
-        'stats.failed': failed,
-        'stats.total': totalRecipients,
-        status: finalStatus,
-        updatedAt: new Date().toISOString(),
-      };
-      // Só seta completedAt quando realmente concluiu (não pausou nem foi parcial)
-      if (!isParcialOuPaused) finalUpdate.completedAt = new Date().toISOString();
-      await adminDb.collection('broadcasts').doc(broadcastId).update(finalUpdate);
+
+      // Race window: depois da última iteração (pause-check feita) e antes
+      // deste update, o operador pode ter clicado Pausar via /pause endpoint.
+      // Sem CAS, sobrescrevemos 'paused' com 'sent'. runTransaction garante
+      // que só atualizamos status se ainda está 'sending'; caso contrário,
+      // só atualiza stats sem mexer em status terminal já gravado.
+      const broadcastRef = adminDb.collection('broadcasts').doc(broadcastId);
+      await adminDb.runTransaction(async (tx) => {
+        const snap = await tx.get(broadcastRef);
+        if (!snap.exists) return;
+        const currentStatus = snap.data()?.status as string | undefined;
+        const update: Record<string, unknown> = {
+          'stats.sent': sent,
+          'stats.failed': failed,
+          'stats.total': totalRecipients,
+          updatedAt: new Date().toISOString(),
+        };
+        // Só sobrescreve status se ainda estamos no estado 'sending' que entramos.
+        // Se virou 'paused' (operador clicou Pausar nos últimos ms), preserva.
+        if (currentStatus === 'sending') {
+          update.status = computedStatus;
+          if (!isParcialOuPaused) update.completedAt = new Date().toISOString();
+        }
+        tx.update(broadcastRef, update);
+      });
     } catch (statsErr) {
       console.error('[Broadcast] Failed to update stats:', statsErr);
     }

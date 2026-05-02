@@ -673,6 +673,71 @@ service cloud.firestore {
     }
 
     // ============================================
+    // CHANNEL CONNECTIONS COLLECTION
+    // Cada doc é uma conexão de canal (WhatsApp Cloud, WhatsApp Baileys,
+    // Facebook, Instagram). Pode pertencer ao business ('business' ownerType,
+    // canal compartilhado) ou a um usuário específico ('user', canal pessoal
+    // do operador, suportado apenas em Baileys).
+    // ============================================
+    match /channelConnections/{connectionId} {
+      // Read:
+      //   - admin/founder: tudo
+      //   - operator+: connections 'business' OU connections 'user' do próprio uid
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && (
+                    isAdmin()
+                    || (resource.data.ownerType == 'business' && isOperator())
+                    || (resource.data.ownerType == 'user'
+                        && resource.data.ownerId == request.auth.uid)
+                  );
+
+      // Create:
+      //   - admin/founder: connections de qualquer ownerType
+      //   - operator+: apenas connections 'user' com ownerId == próprio uid
+      // Garante que não dá pra criar canal pessoal alheio.
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && (
+                      isAdmin()
+                      || (request.resource.data.ownerType == 'user'
+                          && request.resource.data.ownerId == request.auth.uid
+                          && isOperator())
+                    );
+
+      // Update:
+      //   - admin/founder: pode tudo, INCLUSIVE mudar ownerType/ownerId
+      //     (cenário: operador saiu, admin transfere canal-user pra ownerType=
+      //     'business' ou pra outro operador. Sem essa permissão precisaria
+      //     deletar+recriar e perder histórico).
+      //   - operator+: só seu próprio canal 'user' E não pode mudar ownership
+      //     (anti-escalation: operator não vira admin do próprio canal).
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && incomingBelongsToBusiness()
+                    && (
+                      isAdmin()
+                      || (
+                        resource.data.ownerType == 'user'
+                        && resource.data.ownerId == request.auth.uid
+                        && request.resource.data.ownerType == resource.data.ownerType
+                        && request.resource.data.ownerId == resource.data.ownerId
+                      )
+                    );
+
+      // Delete:
+      //   - admin/founder: qualquer
+      //   - operator+: só própria 'user' connection
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && (
+                      isAdmin()
+                      || (resource.data.ownerType == 'user'
+                          && resource.data.ownerId == request.auth.uid)
+                    );
+    }
+
+    // ============================================
     // WEBHOOK FAILURES COLLECTION (Dead-letter queue)
     // ============================================
     match /webhookFailures/{docId} {

@@ -62,12 +62,40 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
     return () => unsub();
   }, [initialBroadcast.id]);
 
-  // Real-time listener das mensagens deste broadcast (limit 500 — UI prática para listas grandes)
-  // IMPORTANTE: o where('businessId', '==', ...) é obrigatório pelas Firestore Rules
-  // (isOwnBusiness exige que cada doc tenha businessId == userBusinessId). Sem ele,
-  // a query é rejeitada upfront com "Missing or insufficient permissions" mesmo
-  // que todos os docs satisfaçam a regra individualmente.
+  // Carga das mensagens em duas etapas:
+  //  1. Tenta onSnapshot (real-time, UX ideal)
+  //  2. Se snapshot falhar (sem index, rules, etc) OU vier vazio com stats > 0,
+  //     fallback para fetch via /api/broadcasts/[id]/messages (admin SDK).
+  // Re-fetch a cada 5s enquanto status='sending' para refletir progresso mesmo
+  // quando o snapshot está bloqueado.
   useEffect(() => {
+    let snapshotErrored = false;
+
+    const fetchViaApi = async () => {
+      try {
+        const token = await getAuth().currentUser?.getIdToken();
+        const url = `/api/broadcasts/${broadcast.id}/messages?businessId=${encodeURIComponent(broadcast.businessId)}&limit=500`;
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+        // 404 = route não compilada ainda (dev server precisa restart depois
+        // de adicionar nova route). Não polui console com error.
+        if (res.status === 404) {
+          console.warn('[BroadcastDetail] /messages route não disponível (404) — dev server pode precisar restart');
+          return;
+        }
+        if (!res.ok) {
+          console.warn(`[BroadcastDetail] /messages retornou HTTP ${res.status}`);
+          return;
+        }
+        const data = await res.json();
+        const apiMessages = (data.messages || []) as BroadcastMessage[];
+        if (apiMessages.length > 0) setMessages(apiMessages);
+      } catch (err) {
+        console.warn('[BroadcastDetail] API fallback failed:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
     const q = query(
       collection(db, 'broadcastMessages'),
       where('businessId', '==', broadcast.businessId),
@@ -78,16 +106,37 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
     const unsub = onSnapshot(
       q,
       (snap) => {
-        setMessages(snap.docs.map(d => ({ ...(d.data() as BroadcastMessage), id: d.id })));
+        const docs = snap.docs.map(d => ({ ...(d.data() as BroadcastMessage), id: d.id }));
+        setMessages(docs);
         setLoading(false);
+        // Se snapshot voltou vazio mas o broadcast.stats indica que deveria haver
+        // mensagens (sent/failed > 0), tenta API. Pode acontecer se index ainda
+        // não está deployado e snapshot dá empty silenciosamente.
+        const expected = (broadcast.stats?.sent || 0) + (broadcast.stats?.failed || 0);
+        if (docs.length === 0 && expected > 0) {
+          fetchViaApi();
+        }
       },
       (err) => {
-        console.error('[BroadcastDetail] snapshot error:', err);
-        setLoading(false);
+        // Index ausente, rules bloqueando, etc — usa API fallback
+        console.warn('[BroadcastDetail] snapshot error, using API fallback:', err);
+        snapshotErrored = true;
+        fetchViaApi();
       }
     );
-    return () => unsub();
-  }, [broadcast.id, broadcast.businessId]);
+
+    // Polling complementar enquanto envio ativo (status='sending'): garante
+    // visibilidade de progresso mesmo se snapshot estiver bloqueado.
+    let pollTimer: ReturnType<typeof setInterval> | undefined;
+    if (broadcast.status === 'sending' || snapshotErrored) {
+      pollTimer = setInterval(fetchViaApi, 5_000);
+    }
+
+    return () => {
+      unsub();
+      if (pollTimer) clearInterval(pollTimer);
+    };
+  }, [broadcast.id, broadcast.businessId, broadcast.status, broadcast.stats?.sent, broadcast.stats?.failed]);
 
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: messages.length, pending: 0, sent: 0, delivered: 0, read: 0, failed: 0 };
@@ -102,6 +151,44 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
 
   const failedCount = counts.failed ?? 0;
   const pendingCount = counts.pending ?? 0;
+  // Erro mais recente entre as mensagens falhadas — exibido no banner pra não
+  // exigir scroll e abrir a lista pra descobrir a causa.
+  const latestFailedError = useMemo(() => {
+    const failed = messages.filter(m => m.status === 'failed' && m.errorMessage);
+    if (failed.length === 0) return null;
+    failed.sort((a, b) => (b.sentAt || b.createdAt || '').localeCompare(a.sentAt || a.createdAt || ''));
+    return failed[0].errorMessage || null;
+  }, [messages]);
+
+  // Detecta erro específico de Baileys offline pra mostrar botão de reconnect
+  const isBaileysOffline = !!latestFailedError
+    && /WhatsApp Web não está conectado|reconectando \(timeout/i.test(latestFailedError);
+
+  const handleBaileysReconnect = async () => {
+    setReconnecting(true);
+    try {
+      const token = await getAuth().currentUser?.getIdToken();
+      const res = await fetch('/api/whatsapp/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ businessId: broadcast.businessId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || data.error || `HTTP ${res.status}`);
+      if (data.status === 'no_session') {
+        toast.warn('Sessão WhatsApp não existe no servidor. Reconecte via Configurações (escaneando QR Code).');
+      } else if (data.status === 'already_active') {
+        toast.info(data.isConnected ? 'Sessão já ativa.' : 'Sessão em reconexão...');
+      } else {
+        toast.success('Restauração da sessão iniciada. Aguarde alguns segundos e tente novamente.');
+      }
+    } catch (err) {
+      console.error('[BroadcastDetail] reconnect failed:', err);
+      toast.error(err instanceof Error ? err.message : 'Erro ao reconectar');
+    } finally {
+      setReconnecting(false);
+    }
+  };
   const [dispatching, setDispatching] = useState(false);
   /**
    * Quantidade a disparar nesta rodada. `null` = enviar todos (default).
@@ -113,6 +200,7 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
   const [resetting, setResetting] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [pausing, setPausing] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
   const [cancelingSchedule, setCancelingSchedule] = useState(false);
   const canDispatch = broadcast.status === 'draft' && (broadcast.recipients?.length ?? 0) > 0;
   // Resume: confia no status do broadcast doc, não em pendingCount (que pode
@@ -133,13 +221,19 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
     if (!confirm('Cancelar agendamento e voltar para rascunho?')) return;
     setCancelingSchedule(true);
     try {
-      const { updateDoc, deleteField, doc: docRef } = await import('firebase/firestore');
-      await updateDoc(docRef(db, 'broadcasts', broadcast.id), {
-        status: 'draft',
-        scheduledAt: deleteField(),
-        updatedAt: new Date().toISOString(),
+      // Usa endpoint dedicado com runTransaction. updateDoc client-side direto
+      // tinha race com o cron /process-scheduled (cron CAS scheduled→sending
+      // podia rodar entre a leitura do cliente e o update, deixando broadcast
+      // disparado depois do operador "cancelar").
+      const token = await getAuth().currentUser?.getIdToken();
+      const res = await fetch(`/api/broadcasts/${broadcast.id}/cancel-schedule`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ businessId: broadcast.businessId }),
       });
-      toast.success('Agendamento cancelado.');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      toast.success(data.message || 'Agendamento cancelado.');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Erro ao cancelar');
     } finally {
@@ -625,21 +719,42 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
           </div>
         )}
 
-        {/* Failed retry toolbar */}
+        {/* Failed retry toolbar — inclui o erro mais recente no próprio banner
+            pra evitar scroll/clique adicional pra descobrir a causa. */}
         {failedCount > 0 && (
-          <div className="px-5 py-2.5 bg-red-50 dark:bg-red-500/5 border-b border-red-100 dark:border-red-500/10 flex items-center justify-between">
-            <span className="text-xs text-red-700 dark:text-red-400">
-              <AlertTriangle className="w-3 h-3 inline mr-1 -mt-0.5" />
-              {failedCount} contato(s) falharam no envio
-            </span>
-            <button
-              onClick={handleRetryFailed}
-              disabled={retrying}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-red-600 hover:bg-red-700 text-white disabled:opacity-50"
-            >
-              {retrying ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-              Reenviar falhados
-            </button>
+          <div className="px-5 py-2.5 bg-red-50 dark:bg-red-500/5 border-b border-red-100 dark:border-red-500/10">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <span className="text-xs text-red-700 dark:text-red-400 font-medium">
+                  <AlertTriangle className="w-3 h-3 inline mr-1 -mt-0.5" />
+                  {failedCount} contato(s) falharam no envio
+                </span>
+                {latestFailedError && (
+                  <div className="mt-1.5 text-[11px] leading-relaxed text-red-800 dark:text-red-300 bg-red-100/60 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 rounded-md px-2 py-1.5">
+                    <span className="font-semibold">Erro:</span> {latestFailedError}
+                    {isBaileysOffline && (
+                      <button
+                        type="button"
+                        onClick={handleBaileysReconnect}
+                        disabled={reconnecting}
+                        className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-600 hover:bg-red-700 text-white text-[10px] font-semibold disabled:opacity-50"
+                      >
+                        {reconnecting ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                        Tentar reconectar
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+              <button
+                onClick={handleRetryFailed}
+                disabled={retrying}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-red-600 hover:bg-red-700 text-white disabled:opacity-50 flex-shrink-0"
+              >
+                {retrying ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                Reenviar falhados
+              </button>
+            </div>
           </div>
         )}
 

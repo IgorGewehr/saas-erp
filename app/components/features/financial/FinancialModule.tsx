@@ -102,6 +102,9 @@ import { toast } from 'react-toastify';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
+import { CurrencyProvider, useCurrencyFormat } from './CurrencyContext';
+import CurrencyToggle from './CurrencyToggle';
+import RecurrenceDetailDialog from './RecurrenceDetailDialog';
 import {
   exportTransactionsCSV,
   exportTransactionsPDF,
@@ -251,7 +254,8 @@ const RECURRENCE_LABELS: Record<string, string> = {
 // COMPONENT
 // ==========================================
 
-export default function FinancialModule() {
+function FinancialModuleBody() {
+  const formatCurrency = useCurrencyFormat();
   const { t } = useTranslation();
   const { isDark } = useTheme();
   const { business, user, sectors } = useAuth();
@@ -1398,6 +1402,7 @@ export default function FinancialModule() {
                 {showBalances ? <Eye size={16} className="text-slate-500 dark:text-gray-400" /> : <EyeOff size={16} className="text-slate-500 dark:text-gray-400" />}
               </IconButton>
             </Tooltip>
+            <CurrencyToggle />
             <motion.button
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
@@ -2505,6 +2510,7 @@ function OverviewContent({
   onGoToDAS: () => void;
   businessId: string;
 }) {
+  const formatCurrency = useCurrencyFormat();
   const { t } = useTranslation();
   const hiddenValue = '******';
   const [dashboardPeriod, setDashboardPeriod] = useState<DashboardPeriod>('30d');
@@ -3281,6 +3287,7 @@ function EnterpriseFinancialCards({
   showBalances: boolean;
   isDark: boolean;
 }) {
+  const formatCurrency = useCurrencyFormat();
   const { t } = useTranslation();
   const hiddenValue = '******';
 
@@ -3353,18 +3360,23 @@ function EnterpriseFinancialCards({
       });
   }, [broadcasts, transactions]);
 
-  // CLV Top 10
+  // CLV Top 10 — agrega por cliente. Aceita transação que tenha contactId
+  // (caminho CRM/webhook) OU clientId (caminho PDV/Sale). Antes filtrava só
+  // por contactId, então vendas do PDV nunca apareciam no CLV — bug crítico
+  // do tier Enterprise. Como Client e CRMContact são a MESMA coleção
+  // (lib/types/index.ts:1832 — CRMContact = Client), ambos resolvem certo.
   const clvTop10 = useMemo(() => {
     const contactRevenue: Record<string, { name: string; total: number; count: number }> = {};
     transactions
-      .filter(tx => tx.type === 'receita' && tx.status === 'pago' && tx.contactId)
+      .filter(tx => tx.type === 'receita' && tx.status === 'pago' && (tx.contactId || tx.clientId))
       .forEach(tx => {
-        if (!contactRevenue[tx.contactId!]) {
-          const contact = crmContacts.find(c => c.id === tx.contactId);
-          contactRevenue[tx.contactId!] = { name: contact?.name || tx.clientName || t('financial.enterprise.unknown', 'Desconhecido'), total: 0, count: 0 };
+        const key = tx.contactId || tx.clientId!;
+        if (!contactRevenue[key]) {
+          const contact = crmContacts.find(c => c.id === key);
+          contactRevenue[key] = { name: contact?.name || tx.clientName || t('financial.enterprise.unknown', 'Desconhecido'), total: 0, count: 0 };
         }
-        contactRevenue[tx.contactId!].total += tx.amount;
-        contactRevenue[tx.contactId!].count += 1;
+        contactRevenue[key].total += tx.amount;
+        contactRevenue[key].count += 1;
       });
     return Object.entries(contactRevenue)
       .sort(([, a], [, b]) => b.total - a.total)
@@ -3600,6 +3612,7 @@ function CashFlowProjection({
   bankAccounts: BankAccount[];
   businessName: string;
 }) {
+  const formatCurrency = useCurrencyFormat();
   const { isDark } = useTheme();
   const [viewMode, setViewMode]   = useState<'daily' | 'weekly'>('weekly');
   const [horizon,  setHorizon]    = useState<30 | 60 | 90>(30);
@@ -3900,6 +3913,7 @@ function CashFlowProjection({
 // ==========================================
 
 function AuditLogView({ businessId }: { businessId?: string }) {
+  const formatCurrency = useCurrencyFormat();
   const [logs, setLogs] = useState<import('@/lib/types').FinancialAuditLog[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -4078,6 +4092,7 @@ function competenciaLabel(c: string): string {
 }
 
 function DASContent({ transactions, businessId }: { transactions: Transaction[]; businessId: string }) {
+  const formatCurrency = useCurrencyFormat();
   const { user } = useAuth();
   const { isDark } = useTheme();
   const queryClient = useQueryClient();
@@ -4443,6 +4458,7 @@ function DASContent({ transactions, businessId }: { transactions: Transaction[];
 
 // Widget for OverviewContent dashboard
 function DASWidget({ businessId, onGoToDAS }: { businessId: string; onGoToDAS: () => void }) {
+  const formatCurrency = useCurrencyFormat();
   const [record, setRecord] = useState<DasRecord | null | undefined>(undefined);
 
   useEffect(() => {
@@ -4522,6 +4538,7 @@ function BudgetContent({
   transactions: Transaction[];
   businessId: string;
 }) {
+  const formatCurrency = useCurrencyFormat();
   const { user, business } = useAuth();
   const queryClient = useQueryClient();
   const { isDark } = useTheme();
@@ -4995,6 +5012,7 @@ function InstallmentGroupDialog({
   onPayAll: () => Promise<void>;
   showBalances: boolean;
 }) {
+  const formatCurrency = useCurrencyFormat();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingDate, setEditingDate] = useState('');
   const [saving, setSaving] = useState<string | null>(null);
@@ -5210,6 +5228,7 @@ function TransactionsContent({
   onSaveFilters: () => void;
   onClearFilters: () => void;
 }) {
+  const formatCurrency = useCurrencyFormat();
   const { t } = useTranslation();
   const { sectors } = useAuth();
   const [showFilters, setShowFilters] = useState(false);
@@ -5551,6 +5570,7 @@ function CommissionsContent({
   showBalances: boolean;
   businessName: string;
 }) {
+  const formatCurrency = useCurrencyFormat();
   const { business } = useAuth();
   const queryClient = useQueryClient();
   const [period, setPeriod] = useState<CommissionPeriod>('mes');
@@ -5934,6 +5954,7 @@ const DEDUCAO_CATEGORIES = new Set(['Impostos']);
 const FINANCEIRO_RECEITA_CATEGORIES = new Set(['Juros']);
 
 function DREContent({ transactions, businessName }: { transactions: Transaction[]; businessName: string }) {
+  const formatCurrency = useCurrencyFormat();
   const { sectors } = useAuth();
   const [period, setPeriod] = useState<DrePeriod>('mensal');
   const [selectedMonth, setSelectedMonth] = useState(() => {
@@ -6509,6 +6530,7 @@ function BankAccountsContent({
   onEdit: (account: BankAccount) => void;
   onDelete: (id: string) => void;
 }) {
+  const formatCurrency = useCurrencyFormat();
   const { t } = useTranslation();
   const activeAccounts = accounts.filter((a) => a.isActive);
   const totalBalance = activeAccounts.reduce((s, a) => s + a.balance, 0);
@@ -6707,6 +6729,7 @@ function RecurringContent({
   onEndSeries: (txId: string, cancelCurrent: boolean) => Promise<void>;
   onAdjustValue: (txId: string, mode: 'pct' | 'fixed', value: number) => Promise<void>;
 }) {
+  const formatCurrency = useCurrencyFormat();
   const { isDark } = useTheme();
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState<RecurringFilter>('all');
@@ -6721,6 +6744,7 @@ function RecurringContent({
   const [adjustValue, setAdjustValue] = useState('');
   const [adjustSaving, setAdjustSaving] = useState(false);
   const [historyExpandedId, setHistoryExpandedId] = useState<string | null>(null);
+  const [detailTxId, setDetailTxId] = useState<string | null>(null);
   const [latePayingId, setLatePayingId] = useState<string | null>(null);
   const [lateConfirmedAmount, setLateConfirmedAmount] = useState('');
   const [viewMode, setViewMode] = useState<'list' | 'calendar'>('list');
@@ -7139,11 +7163,20 @@ function RecurringContent({
                     <Percent size={14} />
                   </button>
 
-                  {/* Histórico de ocorrências */}
+                  {/* Detalhes (modal completo: histórico + próximas + config) */}
+                  <button
+                    onClick={() => setDetailTxId(tx.id)}
+                    title="Ver histórico, próximas e configuração"
+                    className="p-1.5 rounded-lg transition-colors text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20"
+                  >
+                    <BarChart3 size={14} />
+                  </button>
+
+                  {/* Histórico inline (legado — atalho rápido) */}
                   {(tx.recurrence?.history?.length ?? 0) > 0 && (
                     <button
                       onClick={() => setHistoryExpandedId(historyExpandedId === tx.id ? null : tx.id)}
-                      title="Ver histórico de pagamentos"
+                      title="Ver histórico inline (atalho)"
                       className={cn('p-1.5 rounded-lg transition-colors', historyExpandedId === tx.id ? 'bg-slate-200 dark:bg-gray-700 text-slate-600 dark:text-gray-300' : 'text-slate-400 hover:text-slate-600 dark:hover:text-gray-300 hover:bg-slate-100 dark:hover:bg-gray-800')}
                     >
                       <History size={14} />
@@ -7884,6 +7917,40 @@ function RecurringContent({
             startIcon={bulkSaving ? <Loader2 size={14} className="animate-spin" /> : <StopCircle size={14} />}>Confirmar encerramento</Button>
         </DialogActions>
       </Dialog>
+
+      {/* Modal completo de detalhe da recorrência */}
+      <AnimatePresence>
+        {detailTxId && (() => {
+          const tx = transactions.find(t => t.id === detailTxId);
+          if (!tx) return null;
+          return (
+            <RecurrenceDetailDialog
+              transaction={tx}
+              onClose={() => setDetailTxId(null)}
+              onPause={onPause}
+              onResume={onResume}
+              onEndSeries={onEndSeries}
+              onAdjustValue={onAdjustValue}
+              onMarkPaid={onMarkPaid}
+              onSkip={onSkip}
+              onEdit={(t) => { onEdit(t); setDetailTxId(null); }}
+            />
+          );
+        })()}
+      </AnimatePresence>
     </div>
+  );
+}
+
+/**
+ * Wrapper que injeta o CurrencyProvider em volta do FinancialModuleBody.
+ * Mantemos o body como função separada pra que `useCurrencyFormat()` possa
+ * ser chamado dentro dele e seus filhos vendo o context corretamente.
+ */
+export default function FinancialModule() {
+  return (
+    <CurrencyProvider>
+      <FinancialModuleBody />
+    </CurrencyProvider>
   );
 }

@@ -525,6 +525,18 @@ export async function POST(req: NextRequest) {
     // Save to Firestore via Admin SDK (bypasses security rules — server-side only)
     await adminDb.doc(`businesses/${businessId}`).update(channelUpdates);
 
+    // Sincroniza channelConnections — mantém o modelo novo em paridade com
+    // businesses.channels.* legado. Idempotente; primary connection terá ID
+    // determinístico e set/merge não duplica em concurrent calls.
+    try {
+      const { ensureBusinessConnectionsFromLegacy } = await import('@/lib/services/channels/channelConnections');
+      const synced = await ensureBusinessConnectionsFromLegacy(businessId);
+      console.log(`[meta-signup] Synced ${synced.filter(s => s.wasCreated).length} new + ${synced.filter(s => !s.wasCreated).length} existing channelConnections for ${businessId}`);
+    } catch (syncErr) {
+      // Não bloqueia o connect — webhooks fazem lazy migration depois.
+      console.warn('[meta-signup] channelConnections sync failed:', syncErr);
+    }
+
     // Return channel info WITHOUT tokens
     return NextResponse.json({
       success: true,

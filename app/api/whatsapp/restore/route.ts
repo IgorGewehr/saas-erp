@@ -32,9 +32,11 @@ export async function POST(req: NextRequest) {
   if (isAuthError(authResult)) return authResult;
 
   let businessId: string;
+  let connectionId: string | undefined;
   try {
     const body = await req.json();
     businessId = body.businessId;
+    connectionId = body.connectionId;
   } catch {
     return NextResponse.json({ error: 'Invalid body' }, { status: 400 });
   }
@@ -43,19 +45,31 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'businessId required' }, { status: 400 });
   }
 
+  // Resolve qual connection restaurar. Phase 2: connectionId pode ser fornecido
+  // pra restaurar canal específico (ex: pessoal do operador).
+  let sessionKey: string;
+  if (connectionId) {
+    sessionKey = connectionId;
+  } else {
+    const { ensurePrimaryBaileysBusinessConnection } = await import('@/lib/services/channels/channelConnections');
+    sessionKey = (await ensurePrimaryBaileysBusinessConnection(businessId)).id;
+  }
+
   // Already running — nothing to do
-  if (sessions.has(businessId)) {
-    const session = sessions.get(businessId)!;
+  if (sessions.has(sessionKey)) {
+    const session = sessions.get(sessionKey)!;
     return NextResponse.json({
       status: 'already_active',
       isConnected: session.isConnected,
     });
   }
 
-  // Check if session files exist on disk
-  const sessionDir = path.join(SESSIONS_DIR, businessId);
-  const hasSessionFiles = fs.existsSync(sessionDir) &&
-    fs.readdirSync(sessionDir).some((f) => f.endsWith('.json'));
+  // Check if session files exist on disk. Verifica novo dir (connectionId)
+  // E o legacy dir (businessId) — restore migra automaticamente em createBaileysSession.
+  const newDir = path.join(SESSIONS_DIR, sessionKey);
+  const legacyDir = path.join(SESSIONS_DIR, businessId);
+  const hasFiles = (dir: string) => fs.existsSync(dir) && fs.readdirSync(dir).some((f) => f.endsWith('.json'));
+  const hasSessionFiles = hasFiles(newDir) || (sessionKey !== businessId && hasFiles(legacyDir));
 
   if (!hasSessionFiles) {
     return NextResponse.json({
@@ -66,8 +80,8 @@ export async function POST(req: NextRequest) {
 
   // Restore session silently (reuse existing auth files, no QR needed)
   try {
-    console.log(`[Baileys Restore] Restaurando sessao para business: ${businessId}`);
-    await createBaileysSession(businessId, 'restore');
+    console.log(`[Baileys Restore] Restaurando sessao: business=${businessId} connection=${sessionKey}`);
+    await createBaileysSession(businessId, 'restore', sessionKey);
 
     return NextResponse.json({
       status: 'restored',

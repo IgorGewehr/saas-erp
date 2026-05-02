@@ -971,6 +971,59 @@ async function handleInstagramEvent(entry: MetaWebhookEntry) {
  * Resolves the businessId from the channel identifier (phoneNumberId or pageId).
  * Queries the businesses collection for a matching channel configuration.
  */
+/**
+ * Resolve { businessId, connectionId } a partir do identificador externo recebido
+ * no webhook. Prioridade:
+ *  1. channelConnections (modelo novo, suporta múltiplas conexões + canais
+ *     pessoais)
+ *  2. businesses.channels.* legado (até a migração rodar pra todos os tenants)
+ *
+ * Quando encontra via legado, dispara lazy migration em background — cria a
+ * channelConnection correspondente e retorna o ID dela.
+ */
+async function resolveChannelContext(
+  channel: 'whatsapp' | 'facebook' | 'instagram',
+  channelIdentifier: string,
+): Promise<{ businessId: string; connectionId: string | null } | null> {
+  try {
+    // 1. Try channelConnections first
+    const typeMap = {
+      whatsapp: 'whatsapp_cloud',
+      facebook: 'facebook',
+      instagram: 'instagram',
+    } as const;
+    const { resolveChannelConnectionByExternalId, ensureBusinessConnectionsFromLegacy } =
+      await import('@/lib/services/channels/channelConnections');
+    const conn = await resolveChannelConnectionByExternalId(
+      typeMap[channel],
+      channelIdentifier,
+    );
+    if (conn) {
+      return { businessId: conn.businessId, connectionId: conn.id };
+    }
+
+    // 2. Legacy fallback — same logic as before
+    const businessId = await resolveBusinessId(channel, channelIdentifier);
+    if (!businessId) return null;
+    // Lazy migration: cria channelConnections espelhando businesses.channels.*
+    // assíncrono pra não atrasar webhook. Idempotente.
+    void ensureBusinessConnectionsFromLegacy(businessId)
+      .then((results) => {
+        const newCount = results.filter(r => r.wasCreated).length;
+        if (newCount > 0) {
+          console.log(`[Meta Webhook] Lazy-migrated ${newCount} new channel connection(s) for ${businessId}`);
+        }
+      })
+      .catch((err) => {
+        console.warn('[Meta Webhook] Lazy migration failed:', err);
+      });
+    return { businessId, connectionId: null };
+  } catch (err) {
+    console.error('[Meta Webhook] resolveChannelContext error:', err);
+    return null;
+  }
+}
+
 async function resolveBusinessId(
   channel: 'whatsapp' | 'facebook' | 'instagram',
   channelIdentifier: string,
@@ -1237,19 +1290,22 @@ async function saveInboundMessage(params: InboundMessageParams) {
     timestamp: params.timestamp,
   });
 
-  // 1. Resolve businessId from channel identifier
+  // 1. Resolve businessId + channelConnectionId from channel identifier
   // For Instagram DMs arriving via page subscription (object:'page'), the channelIdentifier
   // is event.recipient.id which may be the Instagram account ID or the page ID depending
   // on how Meta structures the payload. If primary lookup fails, try the fallbackPageId
   // (the entry.id = Facebook page ID) which is always reliable.
-  let businessId = await resolveBusinessId(params.channel, params.channelIdentifier);
+  let resolved = await resolveChannelContext(params.channel, params.channelIdentifier);
 
-  if (!businessId && params.channel === 'instagram' && params.fallbackPageId) {
-    businessId = await resolveBusinessId('facebook', params.fallbackPageId);
-    if (businessId) {
+  if (!resolved && params.channel === 'instagram' && params.fallbackPageId) {
+    resolved = await resolveChannelContext('facebook', params.fallbackPageId);
+    if (resolved) {
       console.log('[Meta Webhook] Instagram resolved via fallbackPageId:', params.fallbackPageId);
     }
   }
+
+  let businessId = resolved?.businessId ?? null;
+  const channelConnectionId = resolved?.connectionId ?? null;
 
   if (!businessId) {
     console.error('[Meta Webhook] Could not resolve businessId for', params.channel, 'identifier:', params.channelIdentifier, 'fallback:', params.fallbackPageId);
@@ -1329,6 +1385,10 @@ async function saveInboundMessage(params: InboundMessageParams) {
         // All Meta webhooks come from the official APIs (Embedded Signup). Tag it so
         // the UI can distinguish from Baileys (WhatsApp Web).
         ...(isWhatsApp ? { connectedVia: 'embedded_signup' } : {}),
+        // channelConnectionId: vincula a conversa à conexão específica que recebeu
+        // a mensagem. Pode ser null em ambientes ainda não-migrados (lazy
+        // migration foi disparada em background no resolveChannelContext).
+        ...(channelConnectionId ? { channelConnectionId } : {}),
         contactName: params.senderName ?? params.externalId,
         contactExternalId: params.externalId,
         ...(formattedPhone ? { contactPhone: formattedPhone } : {}),
@@ -1432,6 +1492,15 @@ async function saveInboundMessage(params: InboundMessageParams) {
         isDeleted: false,
         deletedAt: null,
       };
+      // Backfill / correção de channelConnectionId. Preenche se ausente; também
+      // corrige se diferente do resolvido — o webhook é autoritativo (sabemos
+      // exatamente qual phoneNumberId/pageId/igAccountId entregou esta msg).
+      // Antes só preenchia quando ausente, e mapeamentos errados ficavam
+      // permanentes. Agora reflete a fonte real do tráfego.
+      if (channelConnectionId
+          && existingData.channelConnectionId !== channelConnectionId) {
+        enrichUpdate.channelConnectionId = channelConnectionId;
+      }
       // Default placeholder names used as fallback when profile fetch fails on first message.
       // On subsequent messages (when profile fetch succeeds), overwrite them with the real name.
       const PLACEHOLDER_NAMES = [
@@ -1467,7 +1536,11 @@ async function saveInboundMessage(params: InboundMessageParams) {
 
       console.log('[Meta Webhook] Updated conversation:', conversationId);
 
-      // Auto-link to CRM if not already linked
+      // Auto-link to CRM if not already linked.
+      // Antes este branch só tentava match exato, enquanto o branch "nova
+      // conversa" usava fuzzy (channelIdentities + phone + getAlternativeBrazilianPhone).
+      // Resultado: contatos legacy salvos sem 9º dígito ficavam permanentemente
+      // não-linkados se a conversa já existia. Agora aplica a mesma lógica fuzzy.
       if (!existingData.crmContactId) {
         try {
           const channelField = params.channel === 'whatsapp'
@@ -1476,20 +1549,39 @@ async function saveInboundMessage(params: InboundMessageParams) {
             ? 'channelIdentities.facebook'
             : 'channelIdentities.instagram';
 
-          const contactSnap = await adminDb.collection('clients')
-            .where('businessId', '==', businessId)
-            .where(channelField, '==', params.externalId)
-            .limit(1)
-            .get();
+          const altPhoneForLink = params.channel === 'whatsapp'
+            ? getAlternativeBrazilianPhone(params.externalId)
+            : null;
+          const candidates = altPhoneForLink ? [params.externalId, altPhoneForLink] : [params.externalId];
 
-          if (!contactSnap.empty) {
-            const contact = contactSnap.docs[0];
+          let matchedContact: FirebaseFirestore.DocumentSnapshot | null = null;
+          for (const candidate of candidates) {
+            const snap = await adminDb.collection('clients')
+              .where('businessId', '==', businessId)
+              .where(channelField, '==', candidate)
+              .limit(1)
+              .get();
+            if (!snap.empty) { matchedContact = snap.docs[0]; break; }
+          }
+          if (!matchedContact && params.channel === 'whatsapp') {
+            for (const candidate of candidates) {
+              const snap = await adminDb.collection('clients')
+                .where('businessId', '==', businessId)
+                .where('phone', '==', candidate)
+                .limit(1)
+                .get();
+              if (!snap.empty) { matchedContact = snap.docs[0]; break; }
+            }
+          }
+
+          if (matchedContact) {
             await adminDb.doc(`conversations/${conversationId}`).update({
-              crmContactId: contact.id,
+              crmContactId: matchedContact.id,
             });
-            await adminDb.doc(`clients/${contact.id}`).update({
+            await adminDb.doc(`clients/${matchedContact.id}`).update({
               lastConversationId: conversationId,
               lastConversationAt: now,
+              ...(params.channel === 'whatsapp' ? { 'channelIdentities.whatsapp': params.externalId } : {}),
               updatedAt: now,
             });
           }

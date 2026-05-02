@@ -37,6 +37,7 @@ import {
   MoreVertical,
   Trash2,
   User as UserIcon,
+  Building2,
   Check,
   CheckCheck,
   Smile,
@@ -442,9 +443,15 @@ interface ConversationItemProps {
   batchMode?: boolean;
   isBatchSelected?: boolean;
   onBatchToggle?: () => void;
+  /** Phase 2: label da channelConnection que recebeu a conversa. Vazio se
+   *  é canal-empresa primary (não polui a UI quando todo mundo usa o mesmo). */
+  connectionLabel?: string;
+  /** Phase 2: true se a conexão é pessoal do operador atual ('user' + ownerId=self).
+   *  Usado pra estilizar o badge diferentemente. */
+  isMineConnection?: boolean;
 }
 
-function ConversationItem({ conversation, isSelected, onClick, slaInfo, batchMode, isBatchSelected, onBatchToggle }: ConversationItemProps) {
+function ConversationItem({ conversation, isSelected, onClick, slaInfo, batchMode, isBatchSelected, onBatchToggle, connectionLabel, isMineConnection }: ConversationItemProps) {
   const { t } = useTranslation();
   const cfg = getConvConfig(conversation);
   const displayName = conversation.customContactName ?? conversation.contactName;
@@ -535,6 +542,21 @@ function ConversationItem({ conversation, isSelected, onClick, slaInfo, batchMod
             {relativeTime(conversation.lastMessageAt, t)}
           </span>
         </div>
+        {connectionLabel && (
+          <div className="mb-0.5">
+            <span className={cn(
+              'inline-flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wide',
+              isMineConnection
+                ? 'bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-400'
+                : 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400',
+            )}>
+              {isMineConnection
+                ? <UserIcon className="w-2.5 h-2.5" />
+                : <Building2 className="w-2.5 h-2.5" />}
+              {connectionLabel}
+            </span>
+          </div>
+        )}
         <div className="flex items-center justify-between gap-1">
           <p className="text-xs text-gray-500 dark:text-gray-400 truncate leading-relaxed">
             {conversation.lastMessageDirection === 'outbound' && (
@@ -737,6 +759,8 @@ function ThreadHeader({
   sectors: sectorsList,
   slaInfo,
   onToggleAssignHistory,
+  channelConnection,
+  isMineConnection,
 }: {
   conversation: Conversation;
   onBack: () => void;
@@ -759,6 +783,11 @@ function ThreadHeader({
   sectors?: Sector[];
   slaInfo?: SLAInfo | null;
   onToggleAssignHistory?: () => void;
+  /** Phase 2: connection que recebeu/envia esta conversa. Usado pra mostrar
+   *  "via @CanalNome" no header quando relevante (canal não-default). */
+  channelConnection?: import('@/lib/types').ChannelConnection;
+  /** True quando channelConnection é pessoal do operador atual. */
+  isMineConnection?: boolean;
 }) {
   const { t } = useTranslation();
   const cfg = getConvConfig(conversation);
@@ -906,6 +935,22 @@ function ThreadHeader({
               <ChannelIcon channel={conversation.channel} size="sm" />
               {cfg.label}
             </span>
+            {/* Phase 2: badge "via @CanalNome" — esconde em business primary
+                (default, não polui) e em conexões inexistentes. */}
+            {channelConnection && !(channelConnection.ownerType === 'business' && channelConnection.isPrimary) && (
+              <span
+                title={`Conexão: ${channelConnection.displayName}${channelConnection.phoneNumber ? ` · +${channelConnection.phoneNumber}` : ''}`}
+                className={cn(
+                  'hidden sm:inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0',
+                  isMineConnection
+                    ? 'bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-400'
+                    : 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400',
+                )}
+              >
+                {isMineConnection ? <UserIcon className="w-2.5 h-2.5" /> : <Building2 className="w-2.5 h-2.5" />}
+                via {channelConnection.displayName}
+              </span>
+            )}
             {onLinkClient && (
               <button
                 type="button"
@@ -3218,6 +3263,35 @@ function LinkContactDrawer({
     try {
       const now = new Date().toISOString();
       const phoneDigits = digits(conversation.contactPhone || conversation.contactExternalId);
+
+      // Antes de criar: verifica se já existe cliente com mesmo telefone
+      // (compara últimos 8 dígitos com DDD batendo — cobre variação BR de
+      // 9º dígito e código do país). Sem isso, conversa criava Client novo
+      // mesmo se o operador já tinha cadastrado o mesmo humano antes.
+      if (phoneDigits) {
+        const existing = clients.find(c => {
+          const candidates = [c.phone, c.whatsapp].filter(Boolean) as string[];
+          for (const cand of candidates) {
+            const candDigits = digits(cand);
+            if (!candDigits) continue;
+            const candLast8 = candDigits.slice(-8);
+            const newLast8 = phoneDigits.slice(-8);
+            if (candLast8 && candLast8 === newLast8) {
+              // Confere DDD bate (evita falso positivo entre cidades)
+              const candDdd = candDigits.replace(/^55/, '').slice(0, 2);
+              const newDdd = phoneDigits.replace(/^55/, '').slice(0, 2);
+              if (candDdd === newDdd) return true;
+            }
+          }
+          return false;
+        });
+        if (existing && !existing.mergedInto && !(existing as { deletedAt?: string }).deletedAt) {
+          console.log('[Conversations] Quick-create: cliente existente encontrado, linkando em vez de criar:', existing.id);
+          await link(existing.id);
+          return;
+        }
+      }
+
       const payload: Record<string, unknown> = {
         businessId,
         name: (conversation.customContactName ?? conversation.contactName) || 'Novo contato',
@@ -3441,7 +3515,14 @@ function AgentDebugDrawer({
   useEffect(() => {
     if (!businessId || !conversationId) return;
     setLoading(true);
+    // Bug anterior: o `return () => unsub()` ficava DENTRO do .then(), o que
+    // significa que o useEffect síncrono não retornava cleanup function.
+    // Listener acumulava a cada abertura do painel. Captura `unsub` em escopo
+    // externo via let; a cleanup retornada AGORA é do useEffect.
+    let unsub: (() => void) | null = null;
+    let cancelled = false;
     import('firebase/firestore').then(({ collection, query, where, orderBy, limit, onSnapshot }) => {
+      if (cancelled) return; // se desmontou antes do import resolver
       const q = query(
         collection(db, 'agentRuns'),
         where('businessId', '==', businessId),
@@ -3449,15 +3530,18 @@ function AgentDebugDrawer({
         orderBy('createdAt', 'desc'),
         limit(10),
       );
-      const unsub = onSnapshot(q,
+      unsub = onSnapshot(q,
         (snap) => {
           setRuns(snap.docs.map(d => ({ ...(d.data() as AgentRun), id: d.id })));
           setLoading(false);
         },
         () => setLoading(false),
       );
-      return () => unsub();
     });
+    return () => {
+      cancelled = true;
+      unsub?.();
+    };
   }, [businessId, conversationId]);
 
   return (
@@ -3603,7 +3687,7 @@ function AgentDebugDrawer({
 
 export default function ConversasModule() {
   const { t } = useTranslation();
-  const { user, business, sectors, userSectorIds } = useAuth();
+  const { user, business, sectors, userSectorIds, firebaseUser } = useAuth();
   const { setActivePage } = useAppContext();
 
   const isPedidosMode = business?.settings?.useCase === 'pedidos';
@@ -3808,6 +3892,11 @@ export default function ConversasModule() {
   const [activeChannel, setActiveChannel] = useState<ConversationChannel | 'all'>('all');
   const [activeStatus, setActiveStatus] = useState<ConversationStatus | 'all'>('all');
   const [activeSectorFilter, setActiveSectorFilter] = useState<string | 'all'>('all');
+  // Phase 2: filtro por escopo de canal — 'all' (sem filtro), 'business'
+  // (só conversas de canal-empresa), 'mine' (só conversas em canais
+  // pessoais do operador atual).
+  const [activeChannelScope, setActiveChannelScope] = useState<'all' | 'business' | 'mine'>('all');
+  const [channelConnections, setChannelConnections] = useState<import('@/lib/types').ChannelConnection[]>([]);
   const [advFilters, setAdvFilters] = useState<AdvancedFilters>(EMPTY_ADV_FILTERS);
   const [showAdvFilters, setShowAdvFilters] = useState(false);
   const [savedViews, setSavedViews] = useState<ConversationView[]>([]);
@@ -3975,6 +4064,48 @@ export default function ConversasModule() {
 
     return () => unsub();
   }, [business?.id]);
+
+  // ── Load channel connections (Phase 2: badges + filter) ───────────────────
+  // Fetch via API pra usar a sanitização (sem tokens) + filtragem por role
+  // (operator vê só business + suas próprias 'user'; admin vê tudo).
+  useEffect(() => {
+    if (!business?.id || !firebaseUser) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const token = await firebaseUser.getIdToken();
+        const res = await fetch(`/api/channels/connections?businessId=${encodeURIComponent(business.id)}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (!cancelled) setChannelConnections((data.connections || []) as import('@/lib/types').ChannelConnection[]);
+      } catch (err) {
+        console.warn('[Conversations] Failed to load channelConnections:', err);
+      }
+    };
+    void load();
+    // Refetch a cada 30s pra capturar conexões adicionadas via Settings
+    const t = setInterval(load, 30_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [business?.id, firebaseUser]);
+
+  // Map: connectionId → connection (pra lookup rápido em ConversationItem)
+  const connectionsById = useMemo(() => {
+    const m = new Map<string, import('@/lib/types').ChannelConnection>();
+    for (const c of channelConnections) m.set(c.id, c);
+    return m;
+  }, [channelConnections]);
+
+  // Set: IDs de connections que pertencem ao operador atual (pro filtro 'mine')
+  const myConnectionIds = useMemo(() => {
+    const s = new Set<string>();
+    if (!user?.uid) return s;
+    for (const c of channelConnections) {
+      if (c.ownerType === 'user' && c.ownerId === user.uid) s.add(c.id);
+    }
+    return s;
+  }, [channelConnections, user?.uid]);
 
   // ── Load snippets ──────────────────────────────────────────────────────────
 
@@ -4195,15 +4326,20 @@ export default function ConversasModule() {
   useEffect(() => {
     if (!selectedConversation?.id || !business?.id) return;
 
+    // Reset state ao trocar de conversa — sem isso, mensagens da conv anterior
+    // (especialmente quando "ver mais" tinha sido usado e prev.length > 50)
+    // misturavam com as 50 da nova conversa via o branch de merge abaixo.
+    setMessages([]);
     setIsLoadingMessages(true);
     setHasMoreMessages(false);
     setOldestMessageTimestamp(null);
 
     // Load latest 50 messages in real-time
+    const activeConvId = selectedConversation.id;
     const q = query(
       collection(db, 'conversationMessages'),
       where('businessId', '==', business.id),
-      where('conversationId', '==', selectedConversation.id),
+      where('conversationId', '==', activeConvId),
       orderBy('sentAt', 'desc'),
       limit(50),
     );
@@ -4214,10 +4350,13 @@ export default function ConversasModule() {
         .reverse(); // Reverse to show oldest first (chronological order)
 
       setMessages((prev) => {
-        // If we had loaded older messages, preserve them and merge with real-time updates
+        // Guard adicional: se algum msg de prev não é desta conv (ex: race
+        // durante troca de conversa), descarta tudo e usa só o novo batch.
+        const prevIsForThisConv = prev.length === 0 || prev[0]?.conversationId === activeConvId;
+        if (!prevIsForThisConv) return data;
+        // Se loadOlder havia sido usado, preserva os anciões + novos 50.
         if (prev.length > 50) {
           const olderMessages = prev.slice(0, prev.length - 50);
-          // Deduplicate: remove any older messages that appear in the new batch
           const newIds = new Set(data.map((m) => m.id));
           const filteredOlder = olderMessages.filter((m) => !newIds.has(m.id));
           return [...filteredOlder, ...data];
@@ -4589,7 +4728,7 @@ export default function ConversasModule() {
     setAttachment(null);
   }, []);
 
-  const sendMediaMessage = useCallback(async (file: File) => {
+  const sendMediaMessage = useCallback(async (file: File, asInternal = false) => {
     if (!selectedConversation || !business?.id || !user) return;
 
     const mediaType: 'image' | 'video' | 'audio' | 'document' = file.type.startsWith('image/') ? 'image'
@@ -4608,7 +4747,8 @@ export default function ConversasModule() {
       await uploadBytes(storageRef, file, { contentType: file.type || 'application/octet-stream' });
       const mediaUrl = await getDownloadURL(storageRef);
 
-      // 2. Save to Firestore with 'sending' status
+      // 2. Save to Firestore — internal notes never go via API, marked 'delivered'
+      //    diretamente. Externos ficam 'sending' e mudam pra 'sent' após API ok.
       msgRef = await addDoc(collection(db, 'conversationMessages'), {
         conversationId: selectedConversation.id,
         businessId: business.id,
@@ -4617,24 +4757,36 @@ export default function ConversasModule() {
         content: messageContent,
         mediaUrl,
         mediaType,
-        status: 'sending' as const,
+        status: asInternal ? 'delivered' as const : 'sending' as const,
         senderName: user.name,
+        ...(asInternal ? { isInternal: true } : {}),
         sentAt: now,
       });
 
-      // 3. Update conversation last-message preview
-      const mediaLabel = mediaType === 'image' ? t('conversations.mediaImage', 'Imagem')
-        : mediaType === 'video' ? t('conversations.mediaVideo', 'Vídeo')
-        : mediaType === 'audio' ? t('conversations.mediaAudio', 'Áudio')
-        : t('conversations.mediaDocument', 'Documento');
-      await updateDoc(doc(db, 'conversations', selectedConversation.id), {
-        lastMessage: `[${mediaLabel}] ${file.name}`,
-        lastMessageAt: now,
-        lastMessageDirection: 'outbound',
-        updatedAt: now,
-      });
+      // 3. Atualização de preview da conversa — só pra mensagens externas.
+      //    Notas internas não devem virar "última mensagem" do contato (não foi
+      //    nada que o cliente viu) nem aparecer na lista lateral.
+      if (!asInternal) {
+        const mediaLabel = mediaType === 'image' ? t('conversations.mediaImage', 'Imagem')
+          : mediaType === 'video' ? t('conversations.mediaVideo', 'Vídeo')
+          : mediaType === 'audio' ? t('conversations.mediaAudio', 'Áudio')
+          : t('conversations.mediaDocument', 'Documento');
+        await updateDoc(doc(db, 'conversations', selectedConversation.id), {
+          lastMessage: `[${mediaLabel}] ${file.name}`,
+          lastMessageAt: now,
+          lastMessageDirection: 'outbound',
+          updatedAt: now,
+        });
+      } else {
+        // Internal notes só atualizam contagem; arquivo fica visível só pra equipe.
+        await updateDoc(doc(db, 'conversations', selectedConversation.id), {
+          internalNotes: (selectedConversation.internalNotes || 0) + 1,
+          updatedAt: now,
+        });
+        return; // PULA chamada à Meta API — bug crítico era enviar mesmo como nota interna
+      }
 
-      // 4. Send via Meta API
+      // 4. Send via Meta API (apenas mensagens externas)
       const authInstance = getAuth();
       const token = await authInstance.currentUser?.getIdToken();
       const sendRes = await fetch('/api/conversations/send', {
@@ -4747,9 +4899,10 @@ export default function ConversasModule() {
     setAttachment(null);
     setIsSending(true);
 
-    // If there is a media attachment, send it (errors are handled + toasted inside sendMediaMessage)
+    // If there is a media attachment, send it (errors are handled + toasted inside sendMediaMessage).
+    // Propaga `isInternalNote` — anexo de nota interna NUNCA vai pelo Meta API.
     if (currentAttachment) {
-      await sendMediaMessage(currentAttachment);
+      await sendMediaMessage(currentAttachment, isInternalNote);
     }
 
     // If no text, just finish
@@ -4950,6 +5103,17 @@ export default function ConversasModule() {
     const matchesChannel = activeChannel === 'all' || c.channel === activeChannel;
     const matchesStatus = activeStatus === 'all' || c.status === activeStatus;
     const matchesSector = activeSectorFilter === 'all' || c.sectorIds?.includes(activeSectorFilter) || c.assignedToSectorId === activeSectorFilter;
+    // Phase 2: filtro por escopo de canal
+    let matchesScope = true;
+    if (activeChannelScope === 'mine') {
+      matchesScope = !!(c.channelConnectionId && myConnectionIds.has(c.channelConnectionId));
+    } else if (activeChannelScope === 'business') {
+      // 'business': pertence a connection cuja ownerType seja 'business' OU
+      // não tem connectionId (legado). User sem connection ainda aparece em
+      // 'business' por default.
+      const conn = c.channelConnectionId ? connectionsById.get(c.channelConnectionId) : null;
+      matchesScope = !conn || conn.ownerType === 'business';
+    }
     const matchesSearch =
       !searchQuery ||
       (c.customContactName ?? c.contactName).toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -4960,8 +5124,8 @@ export default function ConversasModule() {
     const matchesLabel = !advFilters.label || c.labels?.includes(advFilters.label) || c.tags?.includes(advFilters.label);
     const matchesUnread = !advFilters.unreadOnly || (c.unreadCount ?? 0) > 0;
     const matchesSLAStatus = !advFilters.slaStatus || getSLAInfo(c, slaConfig)?.status === advFilters.slaStatus;
-    return matchesChannel && matchesStatus && matchesSector && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus;
-  }), [getVisibleConversations, conversations, activeChannel, activeStatus, activeSectorFilter, searchQuery, advFilters, slaConfig]);
+    return matchesChannel && matchesStatus && matchesSector && matchesScope && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus;
+  }), [getVisibleConversations, conversations, activeChannel, activeStatus, activeSectorFilter, activeChannelScope, myConnectionIds, connectionsById, searchQuery, advFilters, slaConfig]);
 
   const activeFilterCount = countActiveFilters(advFilters);
 
@@ -5224,6 +5388,32 @@ export default function ConversasModule() {
             counts={countsByStatus}
           />
 
+          {/* Channel scope filter (Phase 2) — só aparece se operador tem >=1
+              canal pessoal. Sem isso, polui a UI de quem só usa empresa. */}
+          {myConnectionIds.size > 0 && (
+            <div className="px-3 pb-1 flex items-center gap-1 flex-shrink-0">
+              {([
+                { id: 'all',      label: 'Todos',   icon: null },
+                { id: 'business', label: 'Empresa', icon: <Building2 className="w-3 h-3" /> },
+                { id: 'mine',     label: 'Meus',    icon: <UserIcon className="w-3 h-3" /> },
+              ] as const).map((opt) => (
+                <button
+                  key={opt.id}
+                  onClick={() => setActiveChannelScope(opt.id)}
+                  className={cn(
+                    'flex items-center gap-1 px-2 py-1 rounded-md text-[10.5px] font-semibold transition-colors',
+                    activeChannelScope === opt.id
+                      ? 'bg-violet-100 dark:bg-violet-500/15 text-violet-700 dark:text-violet-400'
+                      : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06]',
+                  )}
+                >
+                  {opt.icon}
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Advanced filter panel */}
           <AnimatePresence>
             {showAdvFilters && (
@@ -5341,6 +5531,16 @@ export default function ConversasModule() {
                         batchMode={batchMode}
                         isBatchSelected={batchSelectedIds.has(conv.id)}
                         onBatchToggle={() => toggleBatchSelect(conv.id)}
+                        connectionLabel={(() => {
+                          if (!conv.channelConnectionId) return undefined;
+                          const conn = connectionsById.get(conv.channelConnectionId);
+                          // Esconde label de business primary (default — não polui)
+                          if (!conn || (conn.ownerType === 'business' && conn.isPrimary)) return undefined;
+                          return conn.displayName;
+                        })()}
+                        isMineConnection={
+                          !!(conv.channelConnectionId && myConnectionIds.has(conv.channelConnectionId))
+                        }
                       />
                     </motion.div>
                   ))
@@ -5469,6 +5669,14 @@ export default function ConversasModule() {
                   onToggleAssignHistory={() => setShowAssignHistory(v => !v)}
                   onMerge={() => setShowMergeDialog(true)}
                   onRename={handleRenameContact}
+                  channelConnection={
+                    selectedConversation.channelConnectionId
+                      ? connectionsById.get(selectedConversation.channelConnectionId)
+                      : undefined
+                  }
+                  isMineConnection={
+                    !!(selectedConversation.channelConnectionId && myConnectionIds.has(selectedConversation.channelConnectionId))
+                  }
                 />
 
                 {/* Assignment history panel */}

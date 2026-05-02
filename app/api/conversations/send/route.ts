@@ -243,13 +243,55 @@ export async function POST(req: NextRequest) {
     }
 
     const businessData = businessSnap.data();
-    const channels: ChannelCredentials | undefined = businessData?.channels;
+    let channels: ChannelCredentials | undefined = businessData?.channels;
+    // ID da connection usada (preferido) ou null (fallback legacy). Carregado
+    // logo abaixo a partir de conversation.channelConnectionId.
+    let resolvedConnectionId: string | null = null;
+
+    // Refactor multi-canal Fase 1: prefere ler config da channelConnections quando
+    // a conversation tem channelConnectionId. Cai para businesses.channels apenas
+    // quando a conversa é pré-refactor (campo undefined).
+    if (conversationId) {
+      try {
+        const convSnap = await adminDb.doc(`conversations/${conversationId}`).get();
+        const convChannelConnId = convSnap.data()?.channelConnectionId as string | undefined;
+        if (convChannelConnId) {
+          const { adminDb: _adminDb } = await import('@/lib/config/firebaseAdmin');
+          const connSnap = await _adminDb.collection('channelConnections').doc(convChannelConnId).get();
+          if (connSnap.exists) {
+            const { buildLegacyChannelsFromConnection } = await import('@/lib/services/channels/channelConnections');
+            const conn = { ...(connSnap.data() as import('@/lib/types').ChannelConnection), id: connSnap.id };
+            // Sobrescreve apenas o tipo correspondente; preserva outros canais
+            // do businesses.channels caso existam (ex: enviar via WA mantendo
+            // FB/IG no objeto se o caller precisasse).
+            const fromConn = buildLegacyChannelsFromConnection(conn);
+            channels = { ...(channels || {}), ...fromConn };
+            resolvedConnectionId = conn.id;
+          } else {
+            // Conexão referenciada não existe (deletada, doc órfão por unlink
+            // que falhou). Retorna erro claro em vez de cair pro Cloud da
+            // empresa silenciosamente — operador esperava enviar pelo canal
+            // específico e ficaria confuso vendo a mensagem ir pelo outro.
+            return NextResponse.json({
+              error: 'O canal usado por esta conversa foi removido. Recarregue a página ou atribua a conversa a outro canal.',
+              code: 'connection_not_found',
+            }, { status: 410 });
+          }
+        }
+      } catch (err) {
+        console.warn('[Send] Failed to resolve channels via channelConnections, using legacy:', err);
+      }
+    }
 
     if (!channels) {
       return NextResponse.json(
         { error: 'Nenhum canal de comunicação configurado para esta empresa', code: 'disconnected' },
         { status: 400 },
       );
+    }
+    // Log defensivo da origem dos credentials — útil pra depurar quando há ambos
+    if (resolvedConnectionId) {
+      console.log(`[Send] Using channelConnection: ${resolvedConnectionId} (channel: ${channel})`);
     }
 
     // ── Channel connectivity pre-check ──────────────────────────────────────
@@ -360,7 +402,15 @@ export async function POST(req: NextRequest) {
         }
 
         if (isBaileys) {
-          result = await sendWhatsAppBaileys(businessId, recipientId, content, conversationId, mediaOpts);
+          // resolvedConnectionId vem do bloco anterior que carregou a connection
+          // a partir de conversation.channelConnectionId. Quando presente, usa
+          // a sessão Baileys daquela conexão específica (essencial pra canais
+          // pessoais de operador na Phase 2). Se ausente, sendWhatsAppBaileys
+          // resolve pra primary business automaticamente.
+          result = await sendWhatsAppBaileys(
+            businessId, recipientId, content, conversationId, mediaOpts,
+            resolvedConnectionId || undefined,
+          );
         } else {
           // Resolve config Cloud: novo campo whatsappCloud > legado whatsapp
           const cloudConfig = channels.whatsappCloud ?? channels.whatsapp;
@@ -444,8 +494,13 @@ async function sendWhatsAppBaileys(
   content: string,
   conversationId: string,
   mediaOpts?: MediaOptions,
+  connectionId?: string,
 ): Promise<{ externalMessageId: string }> {
-  const session = sessions.get(businessId);
+  // Resolve qual sessão usar. Se connectionId fornecido (canal específico
+  // da conversa via Phase 2), alvo direto. Senão, usa a primary business.
+  const { ensurePrimaryBaileysBusinessConnection } = await import('@/lib/services/channels/channelConnections');
+  const sessionKey = connectionId || (await ensurePrimaryBaileysBusinessConnection(businessId)).id;
+  const session = sessions.get(sessionKey);
 
   if (!session || !session.sock) {
     throw new Error('WhatsApp Web não está conectado. Reconecte escaneando o QR Code em Configurações.');
@@ -940,6 +995,15 @@ async function updateMessageAfterSend(
     const msgSnap = await msgRef.get();
 
     if (msgSnap.exists) {
+      // Multi-tenant guard: messageDocId vem do client; sem essa checagem,
+      // operador A poderia passar um docId do tenant B e marcar a mensagem
+      // dele como sent/com externalMessageId controlado. adminDb ignora rules.
+      if (msgSnap.data()?.businessId !== businessId) {
+        console.warn(
+          `[Send Message] Cross-tenant messageDocId rejected: ${messageId} (caller=${businessId}, owner=${msgSnap.data()?.businessId})`,
+        );
+        return;
+      }
       await msgRef.update({
         status: 'sent',
         externalMessageId,
