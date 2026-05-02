@@ -14,6 +14,7 @@ import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
+import { validateCPF, validateCNPJ } from '@/lib/utils/validators';
 import { cn } from '@/lib/utils';
 import type { Client, LeadSource, LeadStatus, LoyaltyConfig, LoyaltyTier, LoyaltyHistoryEntry } from '@/lib/types';
 import { DEFAULT_LOYALTY_TIERS } from '@/lib/types';
@@ -192,24 +193,55 @@ const emptyForm: ClientFormData = {
 const digits = (v: string | undefined | null) => (v || '').replace(/\D/g, '');
 const normEmail = (v: string | undefined | null) => (v || '').trim().toLowerCase();
 
+/**
+ * Compara dois telefones BR considerando que o mesmo número pode aparecer com
+ * ou sem 9º dígito (ex: 11987654321 vs 1187654321), com ou sem código do país
+ * (5511987654321 vs 11987654321), e com formatação (parênteses/hífen).
+ *
+ * Estratégia: normalizar para "core" = últimos 10 dígitos (DDD+8) ou últimos
+ * 11 dígitos (DDD+9). Se os "cores" baterem em qualquer combinação, consideramos
+ * o mesmo número. Sem isso, cliente cadastrado manualmente como (11) 98765-4321
+ * (11 dígitos) e webhook que recebe E.164 sem + (5511987654321, 13 dígitos)
+ * não eram detectados como duplicata.
+ */
+function samePhoneBR(a: string, b: string): boolean {
+  const da = digits(a);
+  const db = digits(b);
+  if (!da || !db) return false;
+  if (da === db) return true;
+  // Remove código do país BR (55) se presente
+  const stripCountry = (n: string) => (n.length >= 12 && n.startsWith('55')) ? n.slice(2) : n;
+  const a2 = stripCountry(da);
+  const b2 = stripCountry(db);
+  if (a2 === b2) return true;
+  // Compara últimos 8 dígitos (assinatura sem DDD nem 9º) — match mais agressivo
+  const last8a = a2.slice(-8);
+  const last8b = b2.slice(-8);
+  // Mas só conta se DDD bate (evita falso positivo entre cidades distintas)
+  const ddda = a2.slice(0, 2);
+  const dddb = b2.slice(0, 2);
+  return last8a === last8b && ddda === dddb && last8a.length === 8;
+}
+
 function findDuplicate(form: ClientFormData, clients: Client[], editingId?: string): { client: Client; field: string } | null {
   const cpfCnpj = digits(form.cpfCnpj);
-  const phone = digits(form.phone);
-  const whatsapp = digits(form.whatsapp);
+  const phone = (form.phone || '').trim();
+  const whatsapp = (form.whatsapp || '').trim();
   const email = normEmail(form.email);
 
   for (const c of clients) {
     if (editingId && c.id === editingId) continue;
     if (c.mergedInto) continue; // skip already-merged secondary records
+    if ((c as { deletedAt?: string }).deletedAt) continue; // skip soft-deleted
     if (cpfCnpj && digits(c.cpfCnpj) === cpfCnpj) return { client: c, field: form.tipo === 'pj' ? 'CNPJ' : 'CPF' };
     if (email && normEmail(c.email) === email) return { client: c, field: 'e-mail' };
     if (phone) {
-      if (digits(c.phone) === phone) return { client: c, field: 'telefone' };
-      if (digits(c.whatsapp) === phone) return { client: c, field: 'telefone' };
+      if (samePhoneBR(c.phone || '', phone)) return { client: c, field: 'telefone' };
+      if (samePhoneBR(c.whatsapp || '', phone)) return { client: c, field: 'telefone' };
     }
     if (whatsapp) {
-      if (digits(c.whatsapp) === whatsapp) return { client: c, field: 'WhatsApp' };
-      if (digits(c.phone) === whatsapp) return { client: c, field: 'WhatsApp' };
+      if (samePhoneBR(c.whatsapp || '', whatsapp)) return { client: c, field: 'WhatsApp' };
+      if (samePhoneBR(c.phone || '', whatsapp)) return { client: c, field: 'WhatsApp' };
     }
   }
   return null;
@@ -1198,12 +1230,20 @@ function detectDuplicates(clients: Client[]): [Client, Client][] {
 }
 
 async function reassociateRelatedDocs(oldId: string, newId: string, businessId: string) {
+  // Cobrir TODAS as coleções que apontam pra Client. Sem isso, merge deixa
+  // crmDeals/crmActivities/kanbanCards/loyaltyHistory órfãos apontando pro
+  // doc desativado. Conversations.contactName também é denormalizado e fica
+  // stale (atualização separada após o merge — ver nameToPropagate abaixo).
   const targets = [
-    { col: 'conversations', field: 'crmContactId' },
-    { col: 'appointments',  field: 'clientId' },
-    { col: 'sales',         field: 'clientId' },
-    { col: 'transactions',  field: 'clientId' },
-    { col: 'transactions',  field: 'contactId' },
+    { col: 'conversations',  field: 'crmContactId' },
+    { col: 'appointments',   field: 'clientId' },
+    { col: 'sales',          field: 'clientId' },
+    { col: 'transactions',   field: 'clientId' },
+    { col: 'transactions',   field: 'contactId' },
+    { col: 'crmDeals',       field: 'contactId' },
+    { col: 'crmActivities',  field: 'contactId' },
+    { col: 'kanbanCards',    field: 'contactId' },
+    { col: 'loyaltyHistory', field: 'clientId' },
   ];
   for (const { col, field } of targets) {
     try {
@@ -1213,10 +1253,41 @@ async function reassociateRelatedDocs(oldId: string, newId: string, businessId: 
         where(field, '==', oldId),
       ));
       if (snap.empty) continue;
+      // Chunk em batches de 400 (limite Firestore é 500, deixa folga)
+      const docs = snap.docs;
+      for (let i = 0; i < docs.length; i += 400) {
+        const slice = docs.slice(i, i + 400);
+        const batch = writeBatch(db);
+        slice.forEach(d => batch.update(d.ref, { [field]: newId, updatedAt: new Date().toISOString() }));
+        await batch.commit();
+      }
+    } catch (err) {
+      console.warn(`[Clients merge] reassociate ${col}.${field} failed:`, err);
+    }
+  }
+}
+
+/**
+ * Atualiza Conversation.contactName em todas as conversas reassociadas pro
+ * client primário (campos denormalizados ficavam stale após merge).
+ */
+async function propagateContactNameToConversations(clientId: string, newName: string, businessId: string) {
+  try {
+    const snap = await getDocs(query(
+      collection(db, 'conversations'),
+      where('businessId', '==', businessId),
+      where('crmContactId', '==', clientId),
+    ));
+    if (snap.empty) return;
+    const docs = snap.docs;
+    for (let i = 0; i < docs.length; i += 400) {
+      const slice = docs.slice(i, i + 400);
       const batch = writeBatch(db);
-      snap.docs.forEach(d => batch.update(d.ref, { [field]: newId, updatedAt: new Date().toISOString() }));
+      slice.forEach(d => batch.update(d.ref, { contactName: newName, updatedAt: new Date().toISOString() }));
       await batch.commit();
-    } catch { /* best-effort */ }
+    }
+  } catch (err) {
+    console.warn('[Clients merge] propagate contactName failed:', err);
   }
 }
 
@@ -1297,6 +1368,11 @@ function MergeModal({
       // Await reassociation so conversations/sales/appointments point to the primary
       // before the dialog closes. Each collection has its own try-catch — won't throw.
       await reassociateRelatedDocs(secondary.id, primary.id, businessId);
+      // Propaga nome do primary nas conversas reassociadas (denorm fica stale)
+      const finalName = (primary.name || '').trim();
+      if (finalName) {
+        await propagateContactNameToConversations(primary.id, finalName, businessId);
+      }
 
       setMerged(prev => new Set([...prev, key]));
       onDone();
@@ -2453,6 +2529,17 @@ export default function ClientsModule() {
   // ─── Mutations ──────────────────────────────────────────────────────────────
   const { mutate: saveClient, isPending: isSaving } = useMutation({
     mutationFn: async (data: ClientFormData) => {
+      // Validação CPF/CNPJ — antes não era feita ANTES do save, então cliente
+      // PJ com CNPJ inválido vinha a quebrar depois na emissão de NFe.
+      // Só valida quando o campo está preenchido (CPF/CNPJ é opcional).
+      const cpfCnpjRaw = (data.cpfCnpj || '').trim();
+      if (cpfCnpjRaw) {
+        const isValid = data.tipo === 'pj' ? validateCNPJ(cpfCnpjRaw) : validateCPF(cpfCnpjRaw);
+        if (!isValid) {
+          throw new Error(`${data.tipo === 'pj' ? 'CNPJ' : 'CPF'} inválido — confira os dígitos`);
+        }
+      }
+
       const dup = findDuplicate(data, clients, editingClient?.id);
       if (dup) {
         throw new Error(`Já existe um cliente com esse ${dup.field}: "${dup.client.name}"`);
@@ -2526,7 +2613,18 @@ export default function ClientsModule() {
 
   const { mutate: deleteClient, isPending: isDeleting } = useMutation({
     mutationFn: async (id: string) => {
-      await deleteDoc(doc(db, 'clients', id));
+      // Soft delete em vez de deleteDoc. Hard delete deixava órfãos em
+      // conversations, sales, transactions, appointments, kanbanCards,
+      // crmDeals, crmActivities — todos ainda apontavam pro doc fantasma.
+      // Soft delete preserva a integridade histórica + audit trail e
+      // permite rollback caso o operador tenha clicado errado.
+      await updateDoc(doc(db, 'clients', id), {
+        isActive: false,
+        deletedAt: new Date().toISOString(),
+        deletedBy: user?.uid || '',
+        deletedByName: user?.name || '',
+        updatedAt: new Date().toISOString(),
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['clients', business?.id] });
@@ -2539,8 +2637,12 @@ export default function ClientsModule() {
 
   // ─── Filtered & sorted list ──────────────────────────────────────────────────
   const filtered = useMemo(() => {
-    // Drop malformed entries and already-merged secondary records
-    let list = clients.filter(c => c && typeof c.name === 'string' && c.name.length > 0 && !c.mergedInto);
+    // Drop malformed entries, already-merged records, e soft-deleted (deletedAt)
+    let list = clients.filter(c =>
+      c && typeof c.name === 'string' && c.name.length > 0
+      && !c.mergedInto
+      && !(c as { deletedAt?: string }).deletedAt
+    );
     const term = search.trim().toLowerCase();
     if (term) {
       list = list.filter(c =>

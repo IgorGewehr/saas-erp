@@ -1024,8 +1024,10 @@ function SegmentsTab({ contacts, businessId, userId, userName }: {
       ) : (
         <div className="space-y-2.5">
           {segments.map(seg => {
+            // Segments legados podem não ter filterGroups NEM filters — fallback p/ [].
+            // Sem isso, group.filters.every(...) lança TypeError e quebra a aba inteira.
             const count = contacts.filter(c =>
-              matchesSegmentGroups(c, seg.filterGroups?.length ? seg.filterGroups : [{ id: '', filters: seg.filters }])
+              matchesSegmentGroups(c, seg.filterGroups?.length ? seg.filterGroups : [{ id: '', filters: seg.filters ?? [] }])
             ).length;
             const groupCount = seg.filterGroups?.length ?? 1;
             return (

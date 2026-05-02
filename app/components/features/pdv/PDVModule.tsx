@@ -57,7 +57,7 @@ import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch, increment } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch, increment, deleteField } from 'firebase/firestore';
 import { toast } from 'react-toastify';
 import { deductStock, restoreStock, checkStockAvailability } from '@/lib/services/stock';
 import { calculateEarnedPoints, addLoyaltyPoints, redeemLoyaltyPoints, pointsToReais, reaisToPoints } from '@/lib/services/loyalty';
@@ -739,7 +739,10 @@ export default function PDVModule() {
         }, batch);
       }
 
-      // Financial transaction in the same batch
+      // Financial transaction in the same batch.
+      // contactId espelha clientId — Client e CRMContact são a mesma coleção
+      // (lib/types:1832), então gravar ambos garante que relatórios Enterprise
+      // (CLV) que filtram por contactId capturem vendas do PDV também.
       const txRef = doc(collection(db, 'transactions'));
       batch.set(txRef, {
         businessId: business.id,
@@ -751,6 +754,7 @@ export default function PDVModule() {
         paymentDate: now.split('T')[0],
         status: 'pago',
         clientId: selectedClient?.id || null,
+        contactId: selectedClient?.id || null,
         clientName: selectedClient?.name || null,
         saleId: saleRef.id,
         paymentMethod: payments[0]?.method || 'dinheiro',
@@ -758,14 +762,23 @@ export default function PDVModule() {
         updatedAt: now,
       });
 
-      // Client stats in the same batch (uses increment to prevent race conditions)
+      // Client stats + lifecycle promotion in the same batch.
+      // Antes só atualizava totalSpent/visitCount/lastVisit. Não promovia
+      // status/lifecycleStage — lead que comprava continuava marcado como
+      // "qualificado" pra sempre. Após primeira venda paga, marca como
+      // 'ganho' / 'customer'.
       if (selectedClient) {
-        batch.update(doc(db, 'clients', selectedClient.id), {
+        const promote: Record<string, unknown> = {
           totalSpent: increment(total),
           visitCount: increment(1),
           lastVisit: now,
           updatedAt: now,
-        });
+        };
+        if (selectedClient.status !== 'ganho') promote.status = 'ganho';
+        // lifecycleStage opcional no tipo Client — só promove se ainda não é customer
+        const currentStage = (selectedClient as { lifecycleStage?: string }).lifecycleStage;
+        if (currentStage !== 'customer') promote.lifecycleStage = 'customer';
+        batch.update(doc(db, 'clients', selectedClient.id), promote);
       }
 
       // Commit all core operations atomically
@@ -973,7 +986,10 @@ export default function PDVModule() {
         });
       }
 
-      // 4. Reverse client stats
+      // 4. Reverse client stats — totalSpent + visitCount + lastVisit.
+      // Antes lastVisit não era revertido, então churn filter ficava enganado
+      // por venda cancelada. Agora consulta sales não-canceladas do cliente
+      // e usa o createdAt da mais recente como novo lastVisit (ou remove).
       if (sale.clientId) {
         try {
           const clientDoc = await getDocs(
@@ -982,11 +998,33 @@ export default function PDVModule() {
           const client = clientDoc.docs.find(d => d.id === sale.clientId);
           if (client) {
             const data = client.data();
-            await updateDoc(doc(db, 'clients', client.id), {
+            // Recalcula lastVisit consultando demais sales válidas
+            let newLastVisit: string | null | undefined = data.lastVisit;
+            try {
+              const otherSalesSnap = await getDocs(
+                query(
+                  collection(db, 'sales'),
+                  where('businessId', '==', business.id),
+                  where('clientId', '==', sale.clientId),
+                ),
+              );
+              const validSales = otherSalesSnap.docs
+                .map(d => ({ id: d.id, ...(d.data() as { status?: string; createdAt?: string }) }))
+                .filter(s => s.id !== sale.id && s.status !== 'cancelado' && s.createdAt)
+                .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+              newLastVisit = validSales[0]?.createdAt || null;
+            } catch (recalcErr) {
+              console.warn('[PDV cancel] Failed to recalc lastVisit:', recalcErr);
+              // mantém o valor atual em caso de erro — pior que ideal mas não bloqueia
+            }
+            const updates: Record<string, unknown> = {
               totalSpent: Math.max(0, (data.totalSpent || 0) - sale.total),
               visitCount: Math.max(0, (data.visitCount || 0) - 1),
               updatedAt: now,
-            });
+            };
+            if (newLastVisit) updates.lastVisit = newLastVisit;
+            else updates.lastVisit = deleteField();
+            await updateDoc(doc(db, 'clients', client.id), updates);
           }
         } catch (err) {
           console.warn('Failed to reverse client stats:', err);

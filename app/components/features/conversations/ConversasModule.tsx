@@ -37,6 +37,8 @@ import {
   MoreVertical,
   Trash2,
   User as UserIcon,
+  Building2,
+  Smartphone,
   Check,
   CheckCheck,
   Smile,
@@ -442,9 +444,15 @@ interface ConversationItemProps {
   batchMode?: boolean;
   isBatchSelected?: boolean;
   onBatchToggle?: () => void;
+  /** Phase 2: label da channelConnection que recebeu a conversa. Vazio se
+   *  é canal-empresa primary (não polui a UI quando todo mundo usa o mesmo). */
+  connectionLabel?: string;
+  /** Phase 2: true se a conexão é pessoal do operador atual ('user' + ownerId=self).
+   *  Usado pra estilizar o badge diferentemente. */
+  isMineConnection?: boolean;
 }
 
-function ConversationItem({ conversation, isSelected, onClick, slaInfo, batchMode, isBatchSelected, onBatchToggle }: ConversationItemProps) {
+function ConversationItem({ conversation, isSelected, onClick, slaInfo, batchMode, isBatchSelected, onBatchToggle, connectionLabel, isMineConnection }: ConversationItemProps) {
   const { t } = useTranslation();
   const cfg = getConvConfig(conversation);
   const displayName = conversation.customContactName ?? conversation.contactName;
@@ -535,6 +543,21 @@ function ConversationItem({ conversation, isSelected, onClick, slaInfo, batchMod
             {relativeTime(conversation.lastMessageAt, t)}
           </span>
         </div>
+        {connectionLabel && (
+          <div className="mb-0.5">
+            <span className={cn(
+              'inline-flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wide',
+              isMineConnection
+                ? 'bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-400'
+                : 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400',
+            )}>
+              {isMineConnection
+                ? <UserIcon className="w-2.5 h-2.5" />
+                : <Building2 className="w-2.5 h-2.5" />}
+              {connectionLabel}
+            </span>
+          </div>
+        )}
         <div className="flex items-center justify-between gap-1">
           <p className="text-xs text-gray-500 dark:text-gray-400 truncate leading-relaxed">
             {conversation.lastMessageDirection === 'outbound' && (
@@ -737,6 +760,9 @@ function ThreadHeader({
   sectors: sectorsList,
   slaInfo,
   onToggleAssignHistory,
+  channelConnection,
+  isMineConnection,
+  onTransferChannel,
 }: {
   conversation: Conversation;
   onBack: () => void;
@@ -759,6 +785,14 @@ function ThreadHeader({
   sectors?: Sector[];
   slaInfo?: SLAInfo | null;
   onToggleAssignHistory?: () => void;
+  /** Phase 2: connection que recebeu/envia esta conversa. Usado pra mostrar
+   *  "via @CanalNome" no header quando relevante (canal não-default). */
+  channelConnection?: import('@/lib/types').ChannelConnection;
+  /** True quando channelConnection é pessoal do operador atual. */
+  isMineConnection?: boolean;
+  /** Phase 3.3: transferir conversa pra outro canal. Quando undefined,
+   *  esconde a opção (ex: operador sem outros canais acessíveis). */
+  onTransferChannel?: () => void;
 }) {
   const { t } = useTranslation();
   const cfg = getConvConfig(conversation);
@@ -906,6 +940,22 @@ function ThreadHeader({
               <ChannelIcon channel={conversation.channel} size="sm" />
               {cfg.label}
             </span>
+            {/* Phase 2: badge "via @CanalNome" — esconde em business primary
+                (default, não polui) e em conexões inexistentes. */}
+            {channelConnection && !(channelConnection.ownerType === 'business' && channelConnection.isPrimary) && (
+              <span
+                title={`Conexão: ${channelConnection.displayName}${channelConnection.phoneNumber ? ` · +${channelConnection.phoneNumber}` : ''}`}
+                className={cn(
+                  'hidden sm:inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0',
+                  isMineConnection
+                    ? 'bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-400'
+                    : 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400',
+                )}
+              >
+                {isMineConnection ? <UserIcon className="w-2.5 h-2.5" /> : <Building2 className="w-2.5 h-2.5" />}
+                via {channelConnection.displayName}
+              </span>
+            )}
             {onLinkClient && (
               <button
                 type="button"
@@ -1188,6 +1238,13 @@ function ThreadHeader({
                     className="w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs text-gray-700 dark:text-gray-300">
                     <ArrowRightLeft className="w-3.5 h-3.5 text-gray-400" />
                     Unificar com outra conversa
+                  </button>
+                )}
+                {onTransferChannel && (
+                  <button onClick={() => { onTransferChannel(); setShowOverflowMenu(false); }}
+                    className="w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs text-gray-700 dark:text-gray-300">
+                    <Smartphone className="w-3.5 h-3.5 text-gray-400" />
+                    Transferir para outro canal
                   </button>
                 )}
                 {(conversation.assignmentHistory?.length ?? 0) > 0 && onToggleAssignHistory && (
@@ -2247,11 +2304,18 @@ function NewConversationDialog({
   onClose,
   onCreated,
   clients,
+  connections,
+  myConnectionIds,
 }: {
   open: boolean;
   onClose: () => void;
   onCreated: (conversation: Conversation) => void;
   clients: Client[];
+  /** Phase 3.2: connections visíveis pro user (business + próprias 'user').
+   *  Usado pra montar dropdown "Enviar de" quando há múltiplas. */
+  connections: import('@/lib/types').ChannelConnection[];
+  /** IDs das connections 'user' do operador atual — pra exibir badge. */
+  myConnectionIds: Set<string>;
 }) {
   const { business, user } = useAuth();
   const channels = business?.channels as (NonNullable<typeof business>['channels'] & {
@@ -2272,6 +2336,9 @@ function NewConversationDialog({
   const igConnected = !!channels?.instagram?.isConnected;
 
   const [channelMode, setChannelMode] = useState<'baileys' | 'cloud'>('baileys');
+  // Phase 3.2: ID da channelConnection escolhida pra "Enviar de". Quando há
+  // 1 só, auto-seleciona. Quando há N, dropdown deixa user escolher.
+  const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
   const [phoneInput, setPhoneInput] = useState('');
   const [nameInput, setNameInput] = useState('');
   const [clientSearch, setClientSearch] = useState('');
@@ -2283,6 +2350,22 @@ function NewConversationDialog({
   const [templateVars, setTemplateVars] = useState<string[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
   const [sending, setSending] = useState(false);
+
+  // Phase 3.2: connections disponíveis pra "Enviar de" — só Baileys (Cloud
+  // é sempre 1 por business via Embedded Signup, escolha trivial).
+  // Filtra: ativas + connected + tipo correto. Sort: business primary primeiro,
+  // depois business secundárias, depois user (pessoais).
+  const availableBaileysConnections = useMemo(() => {
+    return connections
+      .filter(c => c.type === 'whatsapp_baileys' && c.isActive && c.isConnected)
+      .sort((a, b) => {
+        if (a.ownerType === 'business' && b.ownerType !== 'business') return -1;
+        if (a.ownerType !== 'business' && b.ownerType === 'business') return 1;
+        if (a.isPrimary && !b.isPrimary) return -1;
+        if (!a.isPrimary && b.isPrimary) return 1;
+        return a.displayName.localeCompare(b.displayName);
+      });
+  }, [connections]);
 
   // Reset everything on open and pick best default channel
   useEffect(() => {
@@ -2301,7 +2384,10 @@ function NewConversationDialog({
       setChannelMode('cloud');
       setMessageMode('template');
     }
-  }, [open, baileysAvailable, cloudAvailable]);
+    // Auto-select default connection: primeira da lista (business primary
+    // se houver, senão a primeira disponível).
+    setSelectedConnectionId(availableBaileysConnections[0]?.id ?? null);
+  }, [open, baileysAvailable, cloudAvailable, availableBaileysConnections]);
 
   // When switching to cloud+template, fetch templates
   useEffect(() => {
@@ -2448,11 +2534,17 @@ function NewConversationDialog({
       const now = new Date().toISOString();
       const displayName = (selectedClient?.name) || nameInput.trim() || phoneE164;
 
+      // Phase 3.2: vincula a conversa à channelConnection escolhida — essencial
+      // pra que send/route.ts use a sessão correta no reply (especialmente
+      // quando há múltiplas Baileys-empresa ou quando user escolhe pessoal).
+      const effectiveConnectionId = channelMode === 'baileys' ? selectedConnectionId : null;
+
       // Create conversation document
       const convData: Record<string, unknown> = {
         businessId: business.id,
         channel: 'whatsapp',
         connectedVia: channelMode === 'baileys' ? 'baileys' : 'embedded_signup',
+        ...(effectiveConnectionId ? { channelConnectionId: effectiveConnectionId } : {}),
         contactName: displayName,
         contactPhone: phoneE164,
         contactExternalId: phoneE164,
@@ -2612,6 +2704,37 @@ function NewConversationDialog({
                 </div>
               </div>
 
+              {/* Phase 3.2: dropdown "Enviar de" — só aparece se Baileys e há
+                  >1 connection disponível. Quando 1 só, é trivial e auto-selecionada. */}
+              {channelMode === 'baileys' && availableBaileysConnections.length > 1 && (
+                <div>
+                  <p className="text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">Enviar de</p>
+                  <div className="relative">
+                    <select
+                      value={selectedConnectionId || ''}
+                      onChange={(e) => setSelectedConnectionId(e.target.value || null)}
+                      className={cn(inputCls, 'appearance-none pr-8 cursor-pointer')}
+                    >
+                      {availableBaileysConnections.map(c => {
+                        const prefix = c.ownerType === 'user'
+                          ? '[Pessoal] '
+                          : c.isPrimary ? '[Principal] ' : '[Empresa] ';
+                        return (
+                          <option key={c.id} value={c.id}>
+                            {prefix}{c.displayName}
+                            {c.phoneNumber ? ` · +${c.phoneNumber}` : ''}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
+                  </div>
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">
+                    O contato verá o número escolhido como remetente.
+                  </p>
+                </div>
+              )}
+
               {/* Contact section */}
               <div>
                 <p className="text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">Contato</p>
@@ -2748,6 +2871,228 @@ function NewConversationDialog({
           <button onClick={handleSend} disabled={!canSend || noWhatsapp}
             className="flex-1 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5">
             {sending ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Enviando...</> : <><Send className="w-3.5 h-3.5" /> Enviar</>}
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ─── Transfer Channel Dialog (Phase 3.3) ────────────────────────────────────
+
+/**
+ * Permite operador transferir uma conversa pra outro canal Baileys/Cloud.
+ * Lista canais alternativos do mesmo type que o user pode acessar.
+ */
+function TransferChannelDialog({
+  conversation,
+  connections,
+  myConnectionIds,
+  onClose,
+  onTransferred,
+}: {
+  conversation: Conversation;
+  connections: import('@/lib/types').ChannelConnection[];
+  myConnectionIds: Set<string>;
+  onClose: () => void;
+  onTransferred: () => void;
+}) {
+  const { firebaseUser } = useAuth();
+  const [selectedTargetId, setSelectedTargetId] = useState<string>('');
+  const [sendNotice, setSendNotice] = useState(true);
+  const [noticeText, setNoticeText] = useState('Olá! A partir de agora vou te atender por este número.');
+  const [transferring, setTransferring] = useState(false);
+
+  // Type da conversa atual define os candidatos compatíveis (Baileys vs Cloud)
+  const convType = conversation.connectedVia === 'baileys' ? 'whatsapp_baileys' : 'whatsapp_cloud';
+  const candidates = useMemo(() => {
+    return connections
+      .filter(c =>
+        c.id !== conversation.channelConnectionId
+        && c.type === convType
+        && c.isActive
+        && c.isConnected,
+      )
+      .sort((a, b) => {
+        if (a.ownerType === 'business' && b.ownerType !== 'business') return -1;
+        if (a.ownerType !== 'business' && b.ownerType === 'business') return 1;
+        if (a.isPrimary && !b.isPrimary) return -1;
+        if (!a.isPrimary && b.isPrimary) return 1;
+        return a.displayName.localeCompare(b.displayName);
+      });
+  }, [connections, conversation.channelConnectionId, convType]);
+
+  useEffect(() => {
+    if (candidates.length > 0 && !selectedTargetId) {
+      setSelectedTargetId(candidates[0].id);
+    }
+  }, [candidates, selectedTargetId]);
+
+  const handleTransfer = async () => {
+    if (!selectedTargetId || !firebaseUser) return;
+    setTransferring(true);
+    try {
+      const token = await firebaseUser.getIdToken();
+      const res = await fetch(`/api/conversations/${conversation.id}/transfer-channel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          businessId: conversation.businessId,
+          targetConnectionId: selectedTargetId,
+          sendNotice,
+          noticeText: noticeText.trim() || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      toast.success(data.message || 'Conversa transferida.');
+      if (sendNotice && data.notice && !data.notice.sent) {
+        toast.warn(`Aviso ao contato falhou: ${data.notice.error || 'desconhecido'}`);
+      }
+      onTransferred();
+    } catch (err) {
+      console.error('[transfer] Failed:', err);
+      toast.error(err instanceof Error ? err.message : 'Erro ao transferir');
+    } finally {
+      setTransferring(false);
+    }
+  };
+
+  if (candidates.length === 0) {
+    return (
+      <motion.div
+        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+        className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+        onClick={onClose}
+      >
+        <motion.div onClick={(e) => e.stopPropagation()}
+          initial={{ scale: 0.95 }} animate={{ scale: 1 }} exit={{ scale: 0.95 }}
+          className="w-full max-w-sm bg-white dark:bg-[#111827] rounded-2xl p-6 text-center"
+        >
+          <AlertCircle className="w-10 h-10 text-amber-500 mx-auto mb-3" />
+          <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Sem canais compatíveis</p>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+            Não há outros canais {convType === 'whatsapp_baileys' ? 'WhatsApp Web' : 'WhatsApp Cloud'} conectados pra receber a transferência.
+          </p>
+          <button onClick={onClose} className="px-4 py-1.5 rounded-lg bg-gray-100 dark:bg-white/[0.06] text-xs font-semibold">Fechar</button>
+        </motion.div>
+      </motion.div>
+    );
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <motion.div
+        initial={{ scale: 0.95, y: 8 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 8 }}
+        className="w-full max-w-md bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden"
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800">
+          <div>
+            <h3 className="font-bold text-base text-gray-900 dark:text-gray-100">Transferir canal</h3>
+            <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+              A conversa passa a ser respondida pelo canal escolhido.
+            </p>
+          </div>
+          <button onClick={onClose} disabled={transferring}
+            className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 disabled:opacity-50">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4">
+          <div>
+            <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">
+              Canal destino
+            </label>
+            <div className="space-y-2">
+              {candidates.map(c => {
+                const isMine = myConnectionIds.has(c.id);
+                const isSelected = selectedTargetId === c.id;
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => setSelectedTargetId(c.id)}
+                    className={cn(
+                      'w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border-2 text-left transition-all',
+                      isSelected
+                        ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10'
+                        : 'border-gray-200 dark:border-gray-700 hover:border-emerald-300',
+                    )}
+                  >
+                    <div className={cn(
+                      'w-8 h-8 rounded-lg flex items-center justify-center shrink-0',
+                      isMine
+                        ? 'bg-violet-100 dark:bg-violet-500/15 text-violet-600 dark:text-violet-400'
+                        : 'bg-blue-100 dark:bg-blue-500/15 text-blue-600 dark:text-blue-400',
+                    )}>
+                      {isMine ? <UserIcon className="w-4 h-4" /> : <Building2 className="w-4 h-4" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-bold text-gray-900 dark:text-gray-100 truncate">
+                        {c.displayName}
+                        {c.isPrimary && (
+                          <span className="ml-1.5 text-[9px] font-bold text-amber-600 dark:text-amber-400">PRINCIPAL</span>
+                        )}
+                      </p>
+                      {c.phoneNumber && (
+                        <p className="text-[10px] text-gray-500 dark:text-gray-400 font-mono">+{c.phoneNumber}</p>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={sendNotice}
+                onChange={(e) => setSendNotice(e.target.checked)}
+                className="mt-0.5 rounded border-gray-300 text-emerald-600 focus:ring-emerald-400"
+              />
+              <div>
+                <p className="text-xs font-semibold text-gray-900 dark:text-gray-100">
+                  Avisar contato com mensagem
+                </p>
+                <p className="text-[10px] text-gray-500 dark:text-gray-400">
+                  Enviada pelo canal NOVO — o contato vê o número diferente. Sem isso, ele pode estranhar a próxima resposta.
+                </p>
+              </div>
+            </label>
+            {sendNotice && (
+              <textarea
+                value={noticeText}
+                onChange={(e) => setNoticeText(e.target.value)}
+                rows={3}
+                className="mt-2 w-full px-3 py-2 text-xs bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-xl text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400"
+                placeholder="Mensagem de aviso..."
+              />
+            )}
+          </div>
+        </div>
+
+        <div className="px-5 py-3 border-t border-gray-100 dark:border-gray-800 flex items-center justify-end gap-2">
+          <button
+            onClick={onClose}
+            disabled={transferring}
+            className="px-3 py-1.5 rounded-lg text-xs text-gray-500 hover:bg-gray-100 dark:hover:bg-white/[0.04] disabled:opacity-50"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={handleTransfer}
+            disabled={transferring || !selectedTargetId}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50"
+          >
+            {transferring ? <Loader2 className="w-3 h-3 animate-spin" /> : <ArrowRightLeft className="w-3 h-3" />}
+            Transferir
           </button>
         </div>
       </motion.div>
@@ -3218,6 +3563,35 @@ function LinkContactDrawer({
     try {
       const now = new Date().toISOString();
       const phoneDigits = digits(conversation.contactPhone || conversation.contactExternalId);
+
+      // Antes de criar: verifica se já existe cliente com mesmo telefone
+      // (compara últimos 8 dígitos com DDD batendo — cobre variação BR de
+      // 9º dígito e código do país). Sem isso, conversa criava Client novo
+      // mesmo se o operador já tinha cadastrado o mesmo humano antes.
+      if (phoneDigits) {
+        const existing = clients.find(c => {
+          const candidates = [c.phone, c.whatsapp].filter(Boolean) as string[];
+          for (const cand of candidates) {
+            const candDigits = digits(cand);
+            if (!candDigits) continue;
+            const candLast8 = candDigits.slice(-8);
+            const newLast8 = phoneDigits.slice(-8);
+            if (candLast8 && candLast8 === newLast8) {
+              // Confere DDD bate (evita falso positivo entre cidades)
+              const candDdd = candDigits.replace(/^55/, '').slice(0, 2);
+              const newDdd = phoneDigits.replace(/^55/, '').slice(0, 2);
+              if (candDdd === newDdd) return true;
+            }
+          }
+          return false;
+        });
+        if (existing && !existing.mergedInto && !(existing as { deletedAt?: string }).deletedAt) {
+          console.log('[Conversations] Quick-create: cliente existente encontrado, linkando em vez de criar:', existing.id);
+          await link(existing.id);
+          return;
+        }
+      }
+
       const payload: Record<string, unknown> = {
         businessId,
         name: (conversation.customContactName ?? conversation.contactName) || 'Novo contato',
@@ -3441,7 +3815,14 @@ function AgentDebugDrawer({
   useEffect(() => {
     if (!businessId || !conversationId) return;
     setLoading(true);
+    // Bug anterior: o `return () => unsub()` ficava DENTRO do .then(), o que
+    // significa que o useEffect síncrono não retornava cleanup function.
+    // Listener acumulava a cada abertura do painel. Captura `unsub` em escopo
+    // externo via let; a cleanup retornada AGORA é do useEffect.
+    let unsub: (() => void) | null = null;
+    let cancelled = false;
     import('firebase/firestore').then(({ collection, query, where, orderBy, limit, onSnapshot }) => {
+      if (cancelled) return; // se desmontou antes do import resolver
       const q = query(
         collection(db, 'agentRuns'),
         where('businessId', '==', businessId),
@@ -3449,15 +3830,18 @@ function AgentDebugDrawer({
         orderBy('createdAt', 'desc'),
         limit(10),
       );
-      const unsub = onSnapshot(q,
+      unsub = onSnapshot(q,
         (snap) => {
           setRuns(snap.docs.map(d => ({ ...(d.data() as AgentRun), id: d.id })));
           setLoading(false);
         },
         () => setLoading(false),
       );
-      return () => unsub();
     });
+    return () => {
+      cancelled = true;
+      unsub?.();
+    };
   }, [businessId, conversationId]);
 
   return (
@@ -3603,7 +3987,7 @@ function AgentDebugDrawer({
 
 export default function ConversasModule() {
   const { t } = useTranslation();
-  const { user, business, sectors, userSectorIds } = useAuth();
+  const { user, business, sectors, userSectorIds, firebaseUser } = useAuth();
   const { setActivePage } = useAppContext();
 
   const isPedidosMode = business?.settings?.useCase === 'pedidos';
@@ -3633,6 +4017,7 @@ export default function ConversasModule() {
   }, [showHeaderMore]);
   const [showAssignHistory, setShowAssignHistory] = useState(false);
   const [showMergeDialog, setShowMergeDialog] = useState(false);
+  const [showTransferChannelDialog, setShowTransferChannelDialog] = useState(false);
   const [showNewConversation, setShowNewConversation] = useState(false);
   const [routingRules, setRoutingRules] = useState<RoutingRule[]>(business?.settings?.routingRules ?? []);
   useEffect(() => { setRoutingRules(business?.settings?.routingRules ?? []); }, [business?.settings?.routingRules]);
@@ -3808,6 +4193,11 @@ export default function ConversasModule() {
   const [activeChannel, setActiveChannel] = useState<ConversationChannel | 'all'>('all');
   const [activeStatus, setActiveStatus] = useState<ConversationStatus | 'all'>('all');
   const [activeSectorFilter, setActiveSectorFilter] = useState<string | 'all'>('all');
+  // Phase 2: filtro por escopo de canal — 'all' (sem filtro), 'business'
+  // (só conversas de canal-empresa), 'mine' (só conversas em canais
+  // pessoais do operador atual).
+  const [activeChannelScope, setActiveChannelScope] = useState<'all' | 'business' | 'mine'>('all');
+  const [channelConnections, setChannelConnections] = useState<import('@/lib/types').ChannelConnection[]>([]);
   const [advFilters, setAdvFilters] = useState<AdvancedFilters>(EMPTY_ADV_FILTERS);
   const [showAdvFilters, setShowAdvFilters] = useState(false);
   const [savedViews, setSavedViews] = useState<ConversationView[]>([]);
@@ -3975,6 +4365,48 @@ export default function ConversasModule() {
 
     return () => unsub();
   }, [business?.id]);
+
+  // ── Load channel connections (Phase 2: badges + filter) ───────────────────
+  // Fetch via API pra usar a sanitização (sem tokens) + filtragem por role
+  // (operator vê só business + suas próprias 'user'; admin vê tudo).
+  useEffect(() => {
+    if (!business?.id || !firebaseUser) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const token = await firebaseUser.getIdToken();
+        const res = await fetch(`/api/channels/connections?businessId=${encodeURIComponent(business.id)}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (!cancelled) setChannelConnections((data.connections || []) as import('@/lib/types').ChannelConnection[]);
+      } catch (err) {
+        console.warn('[Conversations] Failed to load channelConnections:', err);
+      }
+    };
+    void load();
+    // Refetch a cada 30s pra capturar conexões adicionadas via Settings
+    const t = setInterval(load, 30_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [business?.id, firebaseUser]);
+
+  // Map: connectionId → connection (pra lookup rápido em ConversationItem)
+  const connectionsById = useMemo(() => {
+    const m = new Map<string, import('@/lib/types').ChannelConnection>();
+    for (const c of channelConnections) m.set(c.id, c);
+    return m;
+  }, [channelConnections]);
+
+  // Set: IDs de connections que pertencem ao operador atual (pro filtro 'mine')
+  const myConnectionIds = useMemo(() => {
+    const s = new Set<string>();
+    if (!user?.uid) return s;
+    for (const c of channelConnections) {
+      if (c.ownerType === 'user' && c.ownerId === user.uid) s.add(c.id);
+    }
+    return s;
+  }, [channelConnections, user?.uid]);
 
   // ── Load snippets ──────────────────────────────────────────────────────────
 
@@ -4195,15 +4627,20 @@ export default function ConversasModule() {
   useEffect(() => {
     if (!selectedConversation?.id || !business?.id) return;
 
+    // Reset state ao trocar de conversa — sem isso, mensagens da conv anterior
+    // (especialmente quando "ver mais" tinha sido usado e prev.length > 50)
+    // misturavam com as 50 da nova conversa via o branch de merge abaixo.
+    setMessages([]);
     setIsLoadingMessages(true);
     setHasMoreMessages(false);
     setOldestMessageTimestamp(null);
 
     // Load latest 50 messages in real-time
+    const activeConvId = selectedConversation.id;
     const q = query(
       collection(db, 'conversationMessages'),
       where('businessId', '==', business.id),
-      where('conversationId', '==', selectedConversation.id),
+      where('conversationId', '==', activeConvId),
       orderBy('sentAt', 'desc'),
       limit(50),
     );
@@ -4214,10 +4651,13 @@ export default function ConversasModule() {
         .reverse(); // Reverse to show oldest first (chronological order)
 
       setMessages((prev) => {
-        // If we had loaded older messages, preserve them and merge with real-time updates
+        // Guard adicional: se algum msg de prev não é desta conv (ex: race
+        // durante troca de conversa), descarta tudo e usa só o novo batch.
+        const prevIsForThisConv = prev.length === 0 || prev[0]?.conversationId === activeConvId;
+        if (!prevIsForThisConv) return data;
+        // Se loadOlder havia sido usado, preserva os anciões + novos 50.
         if (prev.length > 50) {
           const olderMessages = prev.slice(0, prev.length - 50);
-          // Deduplicate: remove any older messages that appear in the new batch
           const newIds = new Set(data.map((m) => m.id));
           const filteredOlder = olderMessages.filter((m) => !newIds.has(m.id));
           return [...filteredOlder, ...data];
@@ -4589,7 +5029,7 @@ export default function ConversasModule() {
     setAttachment(null);
   }, []);
 
-  const sendMediaMessage = useCallback(async (file: File) => {
+  const sendMediaMessage = useCallback(async (file: File, asInternal = false) => {
     if (!selectedConversation || !business?.id || !user) return;
 
     const mediaType: 'image' | 'video' | 'audio' | 'document' = file.type.startsWith('image/') ? 'image'
@@ -4608,7 +5048,8 @@ export default function ConversasModule() {
       await uploadBytes(storageRef, file, { contentType: file.type || 'application/octet-stream' });
       const mediaUrl = await getDownloadURL(storageRef);
 
-      // 2. Save to Firestore with 'sending' status
+      // 2. Save to Firestore — internal notes never go via API, marked 'delivered'
+      //    diretamente. Externos ficam 'sending' e mudam pra 'sent' após API ok.
       msgRef = await addDoc(collection(db, 'conversationMessages'), {
         conversationId: selectedConversation.id,
         businessId: business.id,
@@ -4617,24 +5058,36 @@ export default function ConversasModule() {
         content: messageContent,
         mediaUrl,
         mediaType,
-        status: 'sending' as const,
+        status: asInternal ? 'delivered' as const : 'sending' as const,
         senderName: user.name,
+        ...(asInternal ? { isInternal: true } : {}),
         sentAt: now,
       });
 
-      // 3. Update conversation last-message preview
-      const mediaLabel = mediaType === 'image' ? t('conversations.mediaImage', 'Imagem')
-        : mediaType === 'video' ? t('conversations.mediaVideo', 'Vídeo')
-        : mediaType === 'audio' ? t('conversations.mediaAudio', 'Áudio')
-        : t('conversations.mediaDocument', 'Documento');
-      await updateDoc(doc(db, 'conversations', selectedConversation.id), {
-        lastMessage: `[${mediaLabel}] ${file.name}`,
-        lastMessageAt: now,
-        lastMessageDirection: 'outbound',
-        updatedAt: now,
-      });
+      // 3. Atualização de preview da conversa — só pra mensagens externas.
+      //    Notas internas não devem virar "última mensagem" do contato (não foi
+      //    nada que o cliente viu) nem aparecer na lista lateral.
+      if (!asInternal) {
+        const mediaLabel = mediaType === 'image' ? t('conversations.mediaImage', 'Imagem')
+          : mediaType === 'video' ? t('conversations.mediaVideo', 'Vídeo')
+          : mediaType === 'audio' ? t('conversations.mediaAudio', 'Áudio')
+          : t('conversations.mediaDocument', 'Documento');
+        await updateDoc(doc(db, 'conversations', selectedConversation.id), {
+          lastMessage: `[${mediaLabel}] ${file.name}`,
+          lastMessageAt: now,
+          lastMessageDirection: 'outbound',
+          updatedAt: now,
+        });
+      } else {
+        // Internal notes só atualizam contagem; arquivo fica visível só pra equipe.
+        await updateDoc(doc(db, 'conversations', selectedConversation.id), {
+          internalNotes: (selectedConversation.internalNotes || 0) + 1,
+          updatedAt: now,
+        });
+        return; // PULA chamada à Meta API — bug crítico era enviar mesmo como nota interna
+      }
 
-      // 4. Send via Meta API
+      // 4. Send via Meta API (apenas mensagens externas)
       const authInstance = getAuth();
       const token = await authInstance.currentUser?.getIdToken();
       const sendRes = await fetch('/api/conversations/send', {
@@ -4747,9 +5200,10 @@ export default function ConversasModule() {
     setAttachment(null);
     setIsSending(true);
 
-    // If there is a media attachment, send it (errors are handled + toasted inside sendMediaMessage)
+    // If there is a media attachment, send it (errors are handled + toasted inside sendMediaMessage).
+    // Propaga `isInternalNote` — anexo de nota interna NUNCA vai pelo Meta API.
     if (currentAttachment) {
-      await sendMediaMessage(currentAttachment);
+      await sendMediaMessage(currentAttachment, isInternalNote);
     }
 
     // If no text, just finish
@@ -4950,6 +5404,17 @@ export default function ConversasModule() {
     const matchesChannel = activeChannel === 'all' || c.channel === activeChannel;
     const matchesStatus = activeStatus === 'all' || c.status === activeStatus;
     const matchesSector = activeSectorFilter === 'all' || c.sectorIds?.includes(activeSectorFilter) || c.assignedToSectorId === activeSectorFilter;
+    // Phase 2: filtro por escopo de canal
+    let matchesScope = true;
+    if (activeChannelScope === 'mine') {
+      matchesScope = !!(c.channelConnectionId && myConnectionIds.has(c.channelConnectionId));
+    } else if (activeChannelScope === 'business') {
+      // 'business': pertence a connection cuja ownerType seja 'business' OU
+      // não tem connectionId (legado). User sem connection ainda aparece em
+      // 'business' por default.
+      const conn = c.channelConnectionId ? connectionsById.get(c.channelConnectionId) : null;
+      matchesScope = !conn || conn.ownerType === 'business';
+    }
     const matchesSearch =
       !searchQuery ||
       (c.customContactName ?? c.contactName).toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -4960,8 +5425,8 @@ export default function ConversasModule() {
     const matchesLabel = !advFilters.label || c.labels?.includes(advFilters.label) || c.tags?.includes(advFilters.label);
     const matchesUnread = !advFilters.unreadOnly || (c.unreadCount ?? 0) > 0;
     const matchesSLAStatus = !advFilters.slaStatus || getSLAInfo(c, slaConfig)?.status === advFilters.slaStatus;
-    return matchesChannel && matchesStatus && matchesSector && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus;
-  }), [getVisibleConversations, conversations, activeChannel, activeStatus, activeSectorFilter, searchQuery, advFilters, slaConfig]);
+    return matchesChannel && matchesStatus && matchesSector && matchesScope && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus;
+  }), [getVisibleConversations, conversations, activeChannel, activeStatus, activeSectorFilter, activeChannelScope, myConnectionIds, connectionsById, searchQuery, advFilters, slaConfig]);
 
   const activeFilterCount = countActiveFilters(advFilters);
 
@@ -5224,6 +5689,32 @@ export default function ConversasModule() {
             counts={countsByStatus}
           />
 
+          {/* Channel scope filter (Phase 2) — só aparece se operador tem >=1
+              canal pessoal. Sem isso, polui a UI de quem só usa empresa. */}
+          {myConnectionIds.size > 0 && (
+            <div className="px-3 pb-1 flex items-center gap-1 flex-shrink-0">
+              {([
+                { id: 'all',      label: 'Todos',   icon: null },
+                { id: 'business', label: 'Empresa', icon: <Building2 className="w-3 h-3" /> },
+                { id: 'mine',     label: 'Meus',    icon: <UserIcon className="w-3 h-3" /> },
+              ] as const).map((opt) => (
+                <button
+                  key={opt.id}
+                  onClick={() => setActiveChannelScope(opt.id)}
+                  className={cn(
+                    'flex items-center gap-1 px-2 py-1 rounded-md text-[10.5px] font-semibold transition-colors',
+                    activeChannelScope === opt.id
+                      ? 'bg-violet-100 dark:bg-violet-500/15 text-violet-700 dark:text-violet-400'
+                      : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06]',
+                  )}
+                >
+                  {opt.icon}
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Advanced filter panel */}
           <AnimatePresence>
             {showAdvFilters && (
@@ -5341,6 +5832,16 @@ export default function ConversasModule() {
                         batchMode={batchMode}
                         isBatchSelected={batchSelectedIds.has(conv.id)}
                         onBatchToggle={() => toggleBatchSelect(conv.id)}
+                        connectionLabel={(() => {
+                          if (!conv.channelConnectionId) return undefined;
+                          const conn = connectionsById.get(conv.channelConnectionId);
+                          // Esconde label de business primary (default — não polui)
+                          if (!conn || (conn.ownerType === 'business' && conn.isPrimary)) return undefined;
+                          return conn.displayName;
+                        })()}
+                        isMineConnection={
+                          !!(conv.channelConnectionId && myConnectionIds.has(conv.channelConnectionId))
+                        }
                       />
                     </motion.div>
                   ))
@@ -5469,6 +5970,29 @@ export default function ConversasModule() {
                   onToggleAssignHistory={() => setShowAssignHistory(v => !v)}
                   onMerge={() => setShowMergeDialog(true)}
                   onRename={handleRenameContact}
+                  channelConnection={
+                    selectedConversation.channelConnectionId
+                      ? connectionsById.get(selectedConversation.channelConnectionId)
+                      : undefined
+                  }
+                  isMineConnection={
+                    !!(selectedConversation.channelConnectionId && myConnectionIds.has(selectedConversation.channelConnectionId))
+                  }
+                  // Phase 3.3: só mostra Transferir se há OUTRA connection
+                  // do mesmo tipo acessível pro operador (senão sem destino).
+                  onTransferChannel={
+                    (() => {
+                      const sameTypeOthers = channelConnections.filter(c => {
+                        if (c.id === selectedConversation.channelConnectionId) return false;
+                        if (!c.isActive || !c.isConnected) return false;
+                        const convType = selectedConversation.connectedVia === 'baileys' ? 'whatsapp_baileys' : 'whatsapp_cloud';
+                        return c.type === convType;
+                      });
+                      return sameTypeOthers.length > 0
+                        ? () => setShowTransferChannelDialog(true)
+                        : undefined;
+                    })()
+                  }
                 />
 
                 {/* Assignment history panel */}
@@ -5788,6 +6312,15 @@ export default function ConversasModule() {
             onMerge={targetId => handleMergeConversations(selectedConversation.id, targetId)}
           />
         )}
+        {showTransferChannelDialog && selectedConversation && (
+          <TransferChannelDialog
+            conversation={selectedConversation}
+            connections={channelConnections}
+            myConnectionIds={myConnectionIds}
+            onClose={() => setShowTransferChannelDialog(false)}
+            onTransferred={() => setShowTransferChannelDialog(false)}
+          />
+        )}
         <NewConversationDialog
           open={showNewConversation}
           onClose={() => setShowNewConversation(false)}
@@ -5797,6 +6330,8 @@ export default function ConversasModule() {
             setShowMobileThread(true);
           }}
           clients={clientsList}
+          connections={channelConnections}
+          myConnectionIds={myConnectionIds}
         />
         {showRoutingRules && isAdmin && business?.id && (
           <RoutingRulesDialog

@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import { createHash } from 'crypto';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
 import type { Appointment, AppointmentStatus, Service, User, WorkSchedule } from '@/lib/types';
@@ -276,49 +277,72 @@ interface BookParams {
   durationMinutes: number;
   price?: number;
   notes?: string;
+  channelType?: Appointment['channelType'];
+  conversationId?: string;
 }
 
 async function bookAppointment(businessId: string, p: BookParams) {
   if (!p.clientName || !p.date || !p.startTime) throw new Error('clientName, date, startTime required');
 
-  // Validate professional (best-effort — log but don't hard-fail on missing professionalId)
+  // ── Input sanitization ────────────────────────────────────────────────────
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(p.date)) {
+    throw new Error('Formato de data inválido — esperado YYYY-MM-DD');
+  }
+  if (!/^\d{2}:\d{2}$/.test(p.startTime)) {
+    throw new Error('Formato de startTime inválido — esperado HH:MM');
+  }
+  if (p.durationMinutes < 5 || p.durationMinutes > 480) {
+    throw new Error('durationMinutes deve estar entre 5 e 480');
+  }
+
+  // ── Professional validation (hard-fail on bad ID) ─────────────────────────
   if (p.professionalId) {
-    console.log('[agenda/book] params:', JSON.stringify({ professionalId: p.professionalId, serviceId: p.serviceId, clientName: p.clientName, date: p.date, startTime: p.startTime }));
     const profSnap = await adminDb.collection('users').doc(p.professionalId).get();
-    if (!profSnap.exists) {
-      console.error('[agenda/book] professionalId not found in users collection:', p.professionalId, '— clearing it');
-      // Agent passed a bad ID (e.g. service ID instead of user UID) — strip it so booking proceeds
-      p.professionalId = undefined;
-      p.professionalName = undefined;
-    } else {
-      const prof = profSnap.data() as User;
-      if (prof.businessId !== businessId) {
-        p.professionalId = undefined;
-        p.professionalName = undefined;
-      }
+    if (!profSnap.exists || (profSnap.data() as User).businessId !== businessId) {
+      throw new Error('Profissional inválido: ID não corresponde a nenhum profissional ativo. Não é possível agendar.');
     }
   }
 
-  const endTime = addMinutes(p.startTime, p.durationMinutes);
-
-  // Conflict check (defense in depth — agent should have called check_availability)
-  const conflictSnap = await adminDb.collection('appointments')
-    .where('businessId', '==', businessId)
-    .where('date', '==', p.date)
-    .get();
-  const conflicts = conflictSnap.docs
-    .map(d => d.data() as Appointment)
-    .filter(a => a.status !== 'cancelado')
-    .filter(a => {
-      if (!p.professionalId) return false; // sem profissional definido, não bloqueia
-      return a.professionalId === p.professionalId;
-    })
-    .filter(a => intervalsOverlap(p.startTime, endTime, a.startTime, a.endTime));
-  if (conflicts.length > 0) {
-    throw new Error(`Horário ${p.startTime} em ${p.date} já está ocupado para este profissional`);
+  // ── Auto-lookup clientId via phone ────────────────────────────────────────
+  if (!p.clientId && p.clientPhone) {
+    const clientSnap = await adminDb.collection('clients')
+      .where('businessId', '==', businessId)
+      .where('phone', '==', p.clientPhone)
+      .limit(1)
+      .get();
+    if (!clientSnap.empty) {
+      p.clientId = clientSnap.docs[0].id;
+    }
   }
 
-  // If service provided, pull duration/price/color
+  // ── Idempotency key ────────────────────────────────────────────────────────
+  const idempotencyKey = createHash('sha256')
+    .update(`${businessId}:${p.clientPhone || p.clientId || ''}:${p.date}:${p.startTime}:${p.professionalId || 'any'}`)
+    .digest('hex')
+    .slice(0, 32);
+
+  // ── Pre-transaction idempotency check ─────────────────────────────────────
+  const existingSnap = await adminDb.collection('appointments')
+    .where('businessId', '==', businessId)
+    .where('idempotencyKey', '==', idempotencyKey)
+    .limit(1)
+    .get();
+  if (!existingSnap.empty) {
+    const existing = existingSnap.docs[0];
+    const existingData = existing.data() as Appointment;
+    if (existingData.status !== 'cancelado') {
+      return {
+        id: existing.id,
+        status: 'exists',
+        date: existingData.date,
+        startTime: existingData.startTime,
+        endTime: existingData.endTime,
+        serviceName: existingData.serviceName,
+      };
+    }
+  }
+
+  // ── Service lookup (outside transaction — read-only, no contention) ───────
   let price = p.price || 0;
   let color = '#3B82F6';
   let serviceName = p.serviceName || '';
@@ -332,30 +356,68 @@ async function bookAppointment(businessId: string, p: BookParams) {
     }
   }
 
+  const endTime = addMinutes(p.startTime, p.durationMinutes);
   const now = new Date().toISOString();
-  const doc: Omit<Appointment, 'id'> = {
-    businessId,
-    clientId: p.clientId || '',
-    clientName: p.clientName,
-    clientPhone: p.clientPhone,
-    serviceId: p.serviceId,
-    serviceName,
-    professionalId: p.professionalId,
-    professionalName: p.professionalName,
-    date: p.date,
-    startTime: p.startTime,
-    endTime,
-    duration: p.durationMinutes,
-    status: 'agendado',
-    price,
-    notes: p.notes,
-    color,
-    createdAt: now,
-    updatedAt: now,
-  };
-  const cleaned = Object.fromEntries(Object.entries(doc).filter(([, v]) => v !== undefined));
-  const ref = await adminDb.collection('appointments').add(cleaned);
-  return { id: ref.id, date: p.date, startTime: p.startTime, endTime, serviceName };
+
+  // ── Atomic transaction: conflict check + write ────────────────────────────
+  // ALL reads must happen before writes inside Firestore transactions.
+  const newRef = adminDb.collection('appointments').doc();
+
+  const result = await adminDb.runTransaction(async (tx) => {
+    // Read: existing appointments for the day (scoped to professional if set)
+    let txQuery: FirebaseFirestore.Query = adminDb.collection('appointments')
+      .where('businessId', '==', businessId)
+      .where('date', '==', p.date);
+    if (p.professionalId) {
+      txQuery = txQuery.where('professionalId', '==', p.professionalId);
+    }
+    const daySnap = await tx.get(txQuery);
+
+    // Evaluate conflicts from the reads
+    const conflicts = daySnap.docs
+      .map(d => d.data() as Appointment)
+      .filter(a => a.status !== 'cancelado')
+      .filter(a => {
+        if (!p.professionalId) return false; // no professional set — no block
+        return a.professionalId === p.professionalId;
+      })
+      .filter(a => intervalsOverlap(p.startTime, endTime, a.startTime, a.endTime));
+
+    if (conflicts.length > 0) {
+      throw new Error(`Horário ${p.startTime} em ${p.date} já está ocupado para este profissional`);
+    }
+
+    // Write
+    const docData: Record<string, unknown> = {
+      businessId,
+      clientId: p.clientId || '',
+      clientName: p.clientName,
+      serviceId: p.serviceId,
+      serviceName,
+      professionalId: p.professionalId,
+      professionalName: p.professionalName,
+      date: p.date,
+      startTime: p.startTime,
+      endTime,
+      duration: p.durationMinutes,
+      status: 'agendado',
+      price,
+      color,
+      idempotencyKey,
+      createdAt: now,
+      updatedAt: now,
+    };
+    // Optional fields — only set if provided
+    if (p.clientPhone !== undefined) docData.clientPhone = p.clientPhone;
+    if (p.notes !== undefined) docData.notes = p.notes;
+    if (p.channelType !== undefined) docData.channelType = p.channelType;
+    if (p.conversationId !== undefined) docData.conversationId = p.conversationId;
+
+    tx.create(newRef, docData);
+    return { id: newRef.id, status: 'created', date: p.date, startTime: p.startTime, endTime, serviceName };
+  });
+
+  return result;
 }
 
 async function listByClient(businessId: string, lookupKey: string, limit: number) {

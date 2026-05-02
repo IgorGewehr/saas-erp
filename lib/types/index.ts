@@ -231,6 +231,76 @@ export interface ChannelCredentials {
   connectedVia?: 'embedded_signup' | 'manual';
 }
 
+// ─── Multi-canal: Channel Connections ─────────────────────────────────────
+//
+// Modelo novo (Fase 1 do refactor multi-canal). Substitui gradualmente o
+// businesses.channels.* (que comporta só 1 conexão por tipo). Cada conexão
+// vira um doc próprio em `channelConnections`, com ownerType definindo se é
+// canal-empresa (compartilhado) ou canal-pessoal (Baileys do operador).
+//
+// Migração: cada `businesses/{id}.channels.{whatsappCloud,whatsappBaileys,
+// facebook,instagram}` existente vira 1 ChannelConnection com ownerType=
+// 'business' e isPrimary=true. Conversations recebem channelConnectionId
+// via backfill. businesses.channels permanece como espelho leitura-only
+// até a remoção total (planejada após Fase 2 estabilizar).
+
+export type ChannelConnectionType =
+  | 'whatsapp_cloud'
+  | 'whatsapp_baileys'
+  | 'facebook'
+  | 'instagram';
+
+/**
+ * Quem é dono da conexão.
+ *  - 'business': canal compartilhado da empresa (todo operator+ acessa).
+ *    Cloud/FB/IG ficam SEMPRE com este ownerType (limitação do Embedded
+ *    Signup do Meta — uma conta por business). Apenas Baileys pode ser 'user'.
+ *  - 'user': canal pessoal de um operador específico. Visível pra ele +
+ *    admin/founder. Outros operators não veem.
+ */
+export type ChannelOwnerType = 'business' | 'user';
+
+export interface ChannelConnection {
+  id: string;
+  businessId: string;
+  type: ChannelConnectionType;
+  ownerType: ChannelOwnerType;
+  /** UID do owner quando ownerType='user'. Vazio quando 'business'. */
+  ownerId?: string;
+  /** Nome amigável pro operador (ex: "Comercial WA", "Pedro WhatsApp"). */
+  displayName: string;
+  /** Telefone formatado pra exibição (E.164 sem +). Útil em todos os tipos WA. */
+  phoneNumber?: string;
+  // ── Cloud-specific ───────────────────────────────────────────────────
+  phoneNumberId?: string;
+  wabaId?: string;
+  accessToken?: string;        // AES-256-GCM encrypted
+  tokenExpiresAt?: string;
+  // ── Facebook-specific ────────────────────────────────────────────────
+  pageId?: string;
+  pageAccessToken?: string;    // AES-256-GCM encrypted
+  pageName?: string;
+  // ── Instagram-specific ───────────────────────────────────────────────
+  igAccountId?: string;
+  igAccountName?: string;
+  // ── Baileys-specific ─────────────────────────────────────────────────
+  /** Diretório de auth no disco fica em whatsapp-sessions/{id}. */
+  // (não há campo extra — usamos o id da conexão como chave de sessão)
+  // ── Estado ───────────────────────────────────────────────────────────
+  isConnected: boolean;
+  isActive: boolean;
+  /** Quando há múltiplas do mesmo tipo, qual é o "default" pra rotas que
+   *  precisam decidir (ex: criar conversa vinda de fonte ambígua). */
+  isPrimary?: boolean;
+  connectedAt?: string;
+  disconnectedAt?: string;
+  // ── Auditoria ────────────────────────────────────────────────────────
+  createdAt: string;
+  updatedAt: string;
+  createdBy?: string;
+  createdByName?: string;
+}
+
 export const COMPANY_TYPE_LABELS: Record<string, string> = {
   mei: 'MEI - Microempreendedor Individual',
   me: 'ME - Microempresa',
@@ -724,6 +794,11 @@ export interface Appointment {
   notes?: string;
   color?: string;
   recurrenceId?: string;
+  // Origem (rastreabilidade quando criado via webhook/agent)
+  channelType?: 'whatsapp' | 'whatsapp_baileys' | 'facebook' | 'instagram' | 'web' | 'manual';
+  conversationId?: string;
+  // Idempotência para evitar duplicate bookings em retry/race
+  idempotencyKey?: string;
   // Agent-driven automation tracking (idempotência)
   reminderSentAt?: string;
   confirmationRequestedAt?: string;
@@ -748,6 +823,9 @@ export interface Service {
   color: string;
   commissionRate?: number; // Commission % override for this service (0–100). Takes precedence over professional's commissionRate
   formTemplateId?: string; // Intake form auto-requested when this service is booked
+  operatorIds?: string[];  // UIDs autorizados a executar o serviço (vazio = todos profissionais ativos)
+  sectorId?: string;       // Setor responsável (visibility/atribuição)
+  deletedAt?: string;      // Soft-delete timestamp (ISO) — preenchido em vez de deleteDoc
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
@@ -1915,6 +1993,14 @@ export interface Conversation {
    * Outros canais (facebook/instagram) ignoram este campo.
    */
   connectedVia?: 'embedded_signup' | 'baileys';
+  /**
+   * ID do `channelConnections/{id}` que recebeu/envia esta conversa.
+   * Adicionado na Fase 1 do refactor multi-canal. Nas conversas legadas (pré-
+   * refactor) pode estar undefined até o backfill rodar — leitores devem
+   * resolver por (businessId, channel, connectedVia, isPrimary=true) como
+   * fallback enquanto o campo não está populado.
+   */
+  channelConnectionId?: string;
   status: ConversationStatus;
   contactName: string;
   contactPhone?: string;
