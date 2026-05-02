@@ -501,25 +501,51 @@ async function handleInboundMessage(
 
   try {
     const altPhone = getAlternativeBrazilianPhone(senderPhone);
-    let convSnap = await adminDb.collection('conversations')
+
+    // Phase 2 P1.2: find-or-create por (contato + canal específico). Antes a
+    // query só filtrava por contactExternalId, então mesmo contato falando em
+    // dois canais do business virava UMA única conv com channelConnectionId
+    // pulando a cada mensagem (flip-flop). Agora cada (contato, canal) é uma
+    // thread separada — o que reflete a realidade UX (canais são identidades
+    // distintas pro contato).
+    //
+    // Estratégia da query: busca até 5 candidates por contactExternalId, depois
+    // escolhe o melhor:
+    //   1. Match exato (mesmo channelConnectionId)
+    //   2. Conversa legada sem channelConnectionId (será backfillada)
+    //   3. Nada → cria nova thread (ignora candidates de OUTRO canal)
+    const pickBestCandidate = (
+      docs: FirebaseFirestore.QueryDocumentSnapshot[],
+    ): FirebaseFirestore.QueryDocumentSnapshot | null => {
+      let legacy: FirebaseFirestore.QueryDocumentSnapshot | null = null;
+      for (const d of docs) {
+        const docConnId = d.data().channelConnectionId as string | undefined;
+        if (docConnId === connectionId) return d; // match exato — melhor opção
+        if (!docConnId && !legacy) legacy = d;     // legacy sem conn — fallback
+      }
+      return legacy;
+    };
+
+    let candidates = (await adminDb.collection('conversations')
       .where('businessId', '==', businessId)
       .where('channel', '==', 'whatsapp')
       .where('contactExternalId', '==', senderPhone)
-      .limit(1)
-      .get();
-      
-    if (convSnap.empty && altPhone) {
-      convSnap = await adminDb.collection('conversations')
+      .limit(5)
+      .get()).docs;
+
+    if (candidates.length === 0 && altPhone) {
+      candidates = (await adminDb.collection('conversations')
         .where('businessId', '==', businessId)
         .where('channel', '==', 'whatsapp')
         .where('contactExternalId', '==', altPhone)
-        .limit(1)
-        .get();
+        .limit(5)
+        .get()).docs;
     }
-        
+
+    const matchedDoc = pickBestCandidate(candidates);
     let conversationId: string;
 
-    if (convSnap.empty) {
+    if (!matchedDoc) {
       // Auto-assign para canais pessoais (ownerType='user'): a conversa que
       // chega num canal pessoal pertence ao owner do canal por default.
       // Outros operators continuam vendo (até implementarmos rule server-side
@@ -585,8 +611,8 @@ async function handleInboundMessage(
         }
       } catch { /* non-critical */ }
     } else {
-      conversationId = convSnap.docs[0].id;
-      const existingConv = convSnap.docs[0].data();
+      conversationId = matchedDoc.id;
+      const existingConv = matchedDoc.data();
 
       const convUpdate: Record<string, unknown> = {
         lastMessage: displayText,

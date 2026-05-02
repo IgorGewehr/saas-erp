@@ -1346,31 +1346,58 @@ async function saveInboundMessage(params: InboundMessageParams) {
 
   try {
     // 3. Find or create conversation
-    let convSnap = await adminDb.collection('conversations')
+    //
+    // Phase 2 P1.2: cada (contato, canal específico) é uma thread separada.
+    // Antes a query só filtrava por contactExternalId — funciona pra Phase 2
+    // (1 canal por tipo) mas Phase 3 vai permitir múltiplas Cloud connections
+    // por business. Com múltiplas, mesmo contato em canais distintos virava
+    // 1 thread só com channelConnectionId pulando — flip-flop confuso.
+    //
+    // Estratégia: busca até 5 candidates, escolhe o melhor:
+    //   1. Match exato (mesmo channelConnectionId)
+    //   2. Conversa legada sem channelConnectionId (será backfillada)
+    //   3. Nada → cria nova thread (ignora candidates de OUTRO canal)
+    const pickBestCandidate = (
+      docs: FirebaseFirestore.QueryDocumentSnapshot[],
+    ): FirebaseFirestore.QueryDocumentSnapshot | null => {
+      if (!channelConnectionId) {
+        // Sem connectionId resolvido (tenant não-migrado): mantém comportamento
+        // legado — primeira candidate é o match.
+        return docs[0] || null;
+      }
+      let legacy: FirebaseFirestore.QueryDocumentSnapshot | null = null;
+      for (const d of docs) {
+        const docConnId = d.data().channelConnectionId as string | undefined;
+        if (docConnId === channelConnectionId) return d;
+        if (!docConnId && !legacy) legacy = d;
+      }
+      return legacy;
+    };
+
+    let candidateDocs = (await adminDb.collection('conversations')
       .where('businessId', '==', businessId)
       .where('channel', '==', params.channel)
       .where('contactExternalId', '==', params.externalId)
-      .limit(1)
-      .get();
+      .limit(5)
+      .get()).docs;
 
-    // Fuzzy fallback: WhatsApp BR tem variação com/sem 9 inicial — tenta o
-    // formato alternativo antes de criar nova conversa. Sem isso, mesmo
-    // contato vira 2 conversas (uma por formato), confundindo o operador.
-    if (convSnap.empty && params.channel === 'whatsapp') {
+    // Fuzzy fallback: WhatsApp BR tem variação com/sem 9 inicial.
+    if (candidateDocs.length === 0 && params.channel === 'whatsapp') {
       const altPhone = getAlternativeBrazilianPhone(params.externalId);
       if (altPhone) {
-        convSnap = await adminDb.collection('conversations')
+        candidateDocs = (await adminDb.collection('conversations')
           .where('businessId', '==', businessId)
           .where('channel', '==', 'whatsapp')
           .where('contactExternalId', '==', altPhone)
-          .limit(1)
-          .get();
+          .limit(5)
+          .get()).docs;
       }
     }
 
+    const matchedDoc = pickBestCandidate(candidateDocs);
     let conversationId: string;
 
-    if (convSnap.empty) {
+    if (!matchedDoc) {
       // Create new conversation
       // Para WhatsApp, popula `contactPhone` com o externalId formatado.
       // O Baileys já fazia isso (baileys-manager.ts:340), mas o webhook Cloud
@@ -1466,9 +1493,9 @@ async function saveInboundMessage(params: InboundMessageParams) {
       console.log('[Meta Webhook] Created new conversation:', conversationId);
     } else {
       // Update existing conversation
-      conversationId = convSnap.docs[0].id;
+      conversationId = matchedDoc.id;
 
-      const existingData = convSnap.docs[0].data();
+      const existingData = matchedDoc.data();
 
       // Soft-delete guard: only resurrect if the new message is newer than deletedAt
       if (existingData.isDeleted) {
