@@ -34,7 +34,15 @@ const RESTARTABLE_CODES = new Set([
   DisconnectReason.connectionReplaced,
 ]);
 
-const MAX_AUTO_RESTARTS = 5;
+// Códigos que indicam logout real — a sessão foi revogada e NÃO deve ser reiniciada.
+// Qualquer outro código (incluindo undefined = rede caiu) deve tentar restart.
+const PERMANENT_DISCONNECT_CODES = new Set([
+  DisconnectReason.loggedOut,
+  DisconnectReason.multideviceMismatch,
+  DisconnectReason.forbidden,
+]);
+
+const MAX_AUTO_RESTARTS = 8;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -50,6 +58,34 @@ export interface BaileysSession {
   connectionId: string;
   /** Tenant. handleInboundMessage usa pra atribuir msgs entrantes. */
   businessId: string;
+  /** LID (@lid) → número de telefone (dígitos). Populado por contacts.upsert. */
+  lidToPhone: Map<string, string>;
+  /** Contadores de debug — atualizados em tempo real pelos event listeners. */
+  _dbg: {
+    upsertFired: number;
+    upsertNotify: number;
+    filtered: {
+      fromMe: number;
+      noMsg: number;
+      group: number;
+      lid: number;
+      statusBroadcast: number;  // separado de protocolMessage agora
+      protocolMsg: number;      // waMsg.message.protocolMessage
+      reactionMsg: number;      // waMsg.message.reactionMessage
+      oldAppend: number;        // type=append e mais velho que 5min
+    };
+    processed: number;
+    saved: number;
+    earlyReturn: number;
+    lastRawJid: string | null;
+    lastSavedConvId: string | null;   // ID da última conversa salva
+    lastSavedMsgId: string | null;    // ID da última mensagem salva
+    lastSavedPhone: string | null;    // telefone do último remetente salvo
+    lastMsgTypes: string[];     // últimos 5 tipos de waMsg.message que chegaram
+    lastError: string | null;
+    lastErrorAt: string | null;
+    contactsUpserted: number;
+  };
 }
 
 // ─── Global Singleton Map ────────────────────────────────────────────────────
@@ -138,6 +174,15 @@ export function broadcast(session: BaileysSession, data: Record<string, unknown>
 }
 
 function formatPhone(phone: string): string {
+  // Brasil: o 9º dígito foi obrigatório para celulares desde 2016.
+  // O WhatsApp armazena internamente sem o 9º dígito (8 dígitos após DDD).
+  // Celulares BR: primeiro dígito após DDD é 6-9 → inserir '9' antes.
+  if (phone.length === 12 && phone.startsWith('55')) {
+    const firstAfterDDD = phone[4];
+    if (firstAfterDDD >= '6' && firstAfterDDD <= '9') {
+      phone = phone.slice(0, 4) + '9' + phone.slice(4);
+    }
+  }
   if (phone.length === 13 && phone.startsWith('55')) {
     return `+${phone.slice(0, 2)} ${phone.slice(2, 4)} ${phone.slice(4, 9)}-${phone.slice(9)}`;
   }
@@ -405,15 +450,17 @@ export async function sendBaileysBroadcastMessage(
 
 // ─── Firestore: save inbound message ─────────────────────────────────────────
 
+interface InboundSaveResult { conversationId: string; messageId: string; phone: string }
+
 async function handleInboundMessage(
   businessId: string,
   connectionId: string,
   waMessage: WAMessage,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sock: any,
-): Promise<void> {
+): Promise<InboundSaveResult | false> {
   const rawJid = waMessage.key.remoteJid;
-  if (!rawJid) return;
+  if (!rawJid) return false;
 
   // ── Resolve phone number from JID ──
   // Baileys can send @lid (Linked Device ID) instead of @s.whatsapp.net.
@@ -426,33 +473,55 @@ async function handleInboundMessage(
     // Normal case: "5521999999999@s.whatsapp.net"
     senderPhone = rawJid.replace('@s.whatsapp.net', '');
   } else if (rawJid.endsWith('@lid')) {
-    // LID (Linked Device ID) — the real phone is in key.remoteJidAlt
+    // LID (Linked Device ID) — Baileys 7+ usa LIDs em vez de telefones.
+    // Prioridade: lidToPhone map → participantAlt → remoteJidAlt → participant
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const altJid = (waMessage.key as any).remoteJidAlt as string | undefined;
+    const key = waMessage.key as any;
+    const session = sessions.get(connectionId);
 
-    if (altJid && altJid.includes('@s.whatsapp.net')) {
-      senderPhone = altJid.replace('@s.whatsapp.net', '');
-      jidForProfile = altJid;
+    // Cadeia de resolução LID → telefone (Baileys 7+):
+    // 1. lidToPhone map (contacts.upsert)
+    // 2. participantAlt / remoteJidAlt / participant (campos do proto)
+    // 3. sock.onWhatsApp() — consulta o WA para resolver o LID em tempo real
+    const participantAlt = key.participantAlt as string | undefined;
+    const remoteJidAlt = key.remoteJidAlt as string | undefined;
+    const keyParticipant = waMessage.key.participant;
+    const msgParticipant = key.participant as string | undefined;
+
+    const mappedPhone = session?.lidToPhone.get(rawJid);
+    const resolvedJid = [participantAlt, remoteJidAlt, keyParticipant, msgParticipant]
+      .find(j => j && (j.includes('@s.whatsapp.net') || j.includes('@lid')));
+
+    if (mappedPhone && /^\d{10,15}$/.test(mappedPhone)) {
+      senderPhone = mappedPhone;
+    } else if (resolvedJid?.includes('@s.whatsapp.net')) {
+      senderPhone = resolvedJid.replace('@s.whatsapp.net', '');
+      jidForProfile = resolvedJid;
+      // Memoriza no mapa para próximas mensagens deste LID
+      if (session) session.lidToPhone.set(rawJid, senderPhone);
     } else {
-      // Fallback chain: participant fields
-      const keyParticipant = waMessage.key.participant;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const msgParticipant = (waMessage as any).participant;
+      // Fallback: resolve via sock.onWhatsApp (consulta WhatsApp)
+      // Funciona mesmo sem contacts.upsert populado.
+      let resolved = false;
+      try {
+        const results = await sock.onWhatsApp(rawJid);
+        const match = results?.find((r: { exists?: boolean; jid?: string }) => r.exists && r.jid?.includes('@s.whatsapp.net'));
+        if (match?.jid) {
+          senderPhone = match.jid.replace('@s.whatsapp.net', '');
+          jidForProfile = match.jid;
+          if (session) session.lidToPhone.set(rawJid, senderPhone);
+          resolved = true;
+        }
+      } catch { /* onWhatsApp pode falhar — segue para drop */ }
 
-      if (keyParticipant && keyParticipant.includes('@s.whatsapp.net')) {
-        senderPhone = keyParticipant.replace('@s.whatsapp.net', '');
-        jidForProfile = keyParticipant;
-      } else if (msgParticipant && msgParticipant.includes('@s.whatsapp.net')) {
-        senderPhone = msgParticipant.replace('@s.whatsapp.net', '');
-        jidForProfile = msgParticipant;
-      } else {
-        console.warn('[Baileys] @lid sem remoteJidAlt ou participant. Ignorando:', rawJid);
-        return;
+      if (!resolved) {
+        console.warn('[Baileys] @lid sem resolução:', rawJid, { participantAlt, remoteJidAlt });
+        return false;
       }
     }
   } else if (rawJid.endsWith('@g.us')) {
     // Group message — should already be filtered but just in case
-    return;
+    return false;
   } else {
     // Unknown suffix — extract digits
     senderPhone = rawJid.replace(/@.*$/, '');
@@ -461,7 +530,7 @@ async function handleInboundMessage(
   // Validate: senderPhone must look like a phone number (10-15 digits)
   if (!/^\d{10,15}$/.test(senderPhone)) {
     console.warn('[Baileys] Invalid phone extracted from JID:', { rawJid, senderPhone });
-    return;
+    return false;
   }
 
   const messageId = waMessage.key.id || `wa_${Date.now()}`;
@@ -472,7 +541,7 @@ async function handleInboundMessage(
   const msgContent = waMessage.message;
   const text = extractMessageText(msgContent);
   const mediaType = extractMediaType(msgContent);
-  if (!text && !mediaType) return;
+  if (!text && !mediaType) return false;
 
   const displayText = text || getMediaLabel(mediaType);
   const now = new Date().toISOString();
@@ -484,7 +553,7 @@ async function handleInboundMessage(
       .where('businessId', '==', businessId)
       .limit(1)
       .get();
-    if (!dupSnap.empty) return;
+    if (!dupSnap.empty) return false;
   } catch (err) {
     console.error('[Baileys] Erro ao verificar duplicata:', err);
   }
@@ -635,11 +704,15 @@ async function handleInboundMessage(
       if (avatarUrl && !existingConv.contactAvatarUrl) {
         convUpdate.contactAvatarUrl = avatarUrl;
       }
-      // Backfill / correção do channelConnectionId — Baileys é autoritativo
-      // (sabemos exatamente qual sessão entregou a msg). Atualiza se ausente
-      // OU se diferente (caso de migração de canal-empresa pra pessoal).
+      // Backfill / correção do channelConnectionId e connectedVia — Baileys é
+      // autoritativo (sabemos exatamente qual sessão entregou a msg). Atualiza
+      // connectedVia também para que a UI mostre "WhatsApp Web" e não "WhatsApp
+      // Business" em conversas que migraram do legado Cloud para Baileys.
       if (existingConv.channelConnectionId !== connectionId) {
         convUpdate.channelConnectionId = connectionId;
+      }
+      if (existingConv.connectedVia !== 'baileys') {
+        convUpdate.connectedVia = 'baileys';
       }
 
       await adminDb.collection('conversations').doc(conversationId).update(convUpdate);
@@ -684,8 +757,10 @@ async function handleInboundMessage(
     } catch (agentErr) {
       console.warn('[Baileys] Agent dispatch import/call failed:', agentErr);
     }
+    return { conversationId, messageId: msgRef.id, phone: senderPhone };
   } catch (err) {
     console.error('[Baileys] Erro ao salvar mensagem inbound:', err);
+    throw err; // outer catch registra em _dbg.lastError
   }
 }
 
@@ -872,6 +947,15 @@ export async function createBaileysSession(
     isDestroyed: false,
     connectionId: sessionKey,
     businessId,
+    lidToPhone: new Map(),
+    _dbg: {
+      upsertFired: 0, upsertNotify: 0,
+      filtered: { fromMe: 0, noMsg: 0, group: 0, lid: 0, statusBroadcast: 0, protocolMsg: 0, reactionMsg: 0, oldAppend: 0 },
+      processed: 0, saved: 0, earlyReturn: 0,
+      lastSavedConvId: null, lastSavedMsgId: null, lastSavedPhone: null,
+      lastRawJid: null, lastMsgTypes: [], lastError: null, lastErrorAt: null,
+      contactsUpserted: 0,
+    },
   };
 
   sessions.set(sessionKey, session);
@@ -901,33 +985,72 @@ export async function createBaileysSession(
       generateHighQualityLinkPreview: false,
       markOnlineOnConnect: false,
       defaultQueryTimeoutMs: 60_000,
+      // Keep-alive ping a cada 25s evita que o WA feche a conexão por inatividade
+      keepAliveIntervalMs: 25_000,
+      // Backoff em retries de request (ex: envio de msg com rede instável)
+      retryRequestDelayMs: 500,
     });
 
     session.sock = sock;
 
     sock.ev.on('creds.update', saveCreds);
 
+    // ── Contact LID → phone map (Baileys 7+) ──
+    // WhatsApp multi-device usa LIDs (@lid) em vez de telefones em alguns eventos.
+    // Populamos o mapa aqui para que handleInboundMessage possa resolver LIDs.
+    sock.ev.on('contacts.upsert', (contacts: import('@whiskeysockets/baileys').Contact[]) => {
+      session._dbg.contactsUpserted += contacts.length;
+      for (const c of contacts) {
+        const rawPhone = c.phoneNumber?.replace(/\D/g, '');
+        if (!rawPhone) continue;
+        if (c.lid) session.lidToPhone.set(c.lid, rawPhone);
+        if (c.id) session.lidToPhone.set(c.id, rawPhone);
+      }
+    });
+
     // ── Message listener ──
     sock.ev.on('messages.upsert', async ({ messages: waMessages, type }: { messages: WAMessage[]; type: MessageUpsertType }) => {
-      for (const waMsg of waMessages) {
-        try {
-          if (waMsg.key.fromMe) continue;
-          if (waMsg.key.remoteJid === 'status@broadcast') continue;
-          if (waMsg.key.remoteJid?.endsWith('@g.us')) continue;
-          if (!waMsg.message) continue;
-          if (waMsg.message.protocolMessage || waMsg.message.reactionMessage) continue;
+      session._dbg.upsertFired++;
+      if (type === 'notify') session._dbg.upsertNotify++;
 
-          // For 'append' (history sync after reconnect), only process recent messages.
-          // This ensures messages received during a brief disconnect are not lost while
-          // ignoring true historical messages loaded on session start.
+      for (const waMsg of waMessages) {
+        const jid = waMsg.key.remoteJid ?? '';
+        session._dbg.lastRawJid = `${jid} [type=${type}]`;
+        // Registra os tipos de mensagem para diagnóstico
+        if (waMsg.message) {
+          const msgTypes = Object.keys(waMsg.message).filter(k => k !== 'messageContextInfo');
+          if (msgTypes.length > 0) {
+            session._dbg.lastMsgTypes = [msgTypes.join('+'), ...session._dbg.lastMsgTypes].slice(0, 5);
+          }
+        }
+        try {
+          if (waMsg.key.fromMe) { session._dbg.filtered.fromMe++; continue; }
+          if (jid === 'status@broadcast') { session._dbg.filtered.statusBroadcast++; continue; }
+          if (jid.endsWith('@g.us')) { session._dbg.filtered.group++; continue; }
+          if (!waMsg.message) { session._dbg.filtered.noMsg++; continue; }
+          if (waMsg.message.protocolMessage) { session._dbg.filtered.protocolMsg++; continue; }
+          if (waMsg.message.reactionMessage) { session._dbg.filtered.reactionMsg++; continue; }
+
           if (type !== 'notify') {
             const tsRaw = waMsg.messageTimestamp;
             const tsMs = (typeof tsRaw === 'number' ? tsRaw : Number(tsRaw)) * 1000;
-            if (Date.now() - tsMs > 5 * 60 * 1000) continue; // older than 5 min → skip
+            if (Date.now() - tsMs > 5 * 60 * 1000) { session._dbg.filtered.oldAppend++; continue; }
           }
 
-          await handleInboundMessage(businessId, sessionKey, waMsg, sock);
+          session._dbg.processed++;
+          const result = await handleInboundMessage(businessId, sessionKey, waMsg, sock);
+          if (result) {
+            session._dbg.saved++;
+            session._dbg.lastSavedConvId = result.conversationId;
+            session._dbg.lastSavedMsgId = result.messageId;
+            session._dbg.lastSavedPhone = result.phone;
+          } else {
+            session._dbg.earlyReturn = (session._dbg.earlyReturn || 0) + 1;
+          }
         } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          session._dbg.lastError = msg;
+          session._dbg.lastErrorAt = new Date().toISOString();
           console.error('[Baileys] Erro ao processar mensagem:', err);
         }
       }
@@ -959,8 +1082,27 @@ export async function createBaileysSession(
       if (connection === 'open') {
         session.isConnected = true;
         restartCount = 0;
-        const phoneNumber = sock.user?.id?.split(':')[0] || sock.user?.id?.split('@')[0] || null;
-        console.log('[Baileys] Conectado! Tel:', phoneNumber, '| business:', businessId);
+
+        // Extrai o número do próprio telefone conectado.
+        // Prioridade: Contact.phoneNumber (canônico) → JID convencional → LID via mapa
+        let phoneNumber: string | null = null;
+        const me = sock.user as (import('@whiskeysockets/baileys').Contact & { phoneNumber?: string }) | undefined;
+        if (me?.phoneNumber) {
+          phoneNumber = me.phoneNumber.replace(/\D/g, '') || null;
+        } else if (me?.id && !me.id.endsWith('@lid')) {
+          // Formato convencional: "55119...@s.whatsapp.net" ou "55119...:10@s.whatsapp.net"
+          const raw = me.id.split(':')[0].split('@')[0];
+          // Aplica o mesmo fix de 9º dígito que formatPhone — WA armazena sem '9'
+          if (raw.length === 12 && raw.startsWith('55') && raw[4] >= '6') {
+            phoneNumber = raw.slice(0, 4) + '9' + raw.slice(4);
+          } else {
+            phoneNumber = raw || null;
+          }
+        } else if (me?.id && me.id.endsWith('@lid')) {
+          // Conta LID — tenta resolver via mapa (populado por contacts.upsert)
+          phoneNumber = session.lidToPhone.get(me.id) || session.lidToPhone.get(me.lid || '') || null;
+        }
+        console.log('[Baileys] Conectado! Tel:', phoneNumber, '| userId:', me?.id, '| business:', businessId);
 
         // Persist first — then notify the UI. This way `onSnapshot` listeners on
         // `businesses/{id}.channels.whatsapp` already see the updated state when the
@@ -984,11 +1126,9 @@ export async function createBaileysSession(
 
         console.warn('[Baileys] Conexao fechada:', { statusCode, message: lastDisconnect?.error?.message });
 
-        if (statusCode === DisconnectReason.loggedOut) {
+        // Logout real: sessão revogada pelo WA — limpar e não tentar restart.
+        if (PERMANENT_DISCONNECT_CODES.has(statusCode)) {
           broadcast(session, { type: 'disconnected', reason: 'logged_out' });
-          // Sincroniza Firestore antes de destruir — sem isso UI continua
-          // mostrando "Conectado" e send tenta usar sessão fantasma. Não-await
-          // pra não bloquear o cleanup, mas garante que o write dispara.
           void persistDisconnect(businessId, sessionKey).catch((err) => {
             console.error('[Baileys] Failed to persist logout state:', err);
           });
@@ -997,15 +1137,24 @@ export async function createBaileysSession(
           return;
         }
 
-        if (RESTARTABLE_CODES.has(statusCode) && restartCount < MAX_AUTO_RESTARTS) {
+        // Qualquer outro fechamento (incluindo statusCode=undefined, que indica
+        // queda de rede sem código específico) é tratado como restartable.
+        // Antes: undefined caia no destroySession — o usuário precisava re-escanear
+        // QR a cada oscilação de rede. Agora: tenta reconectar com backoff exponencial.
+        if (restartCount < MAX_AUTO_RESTARTS) {
           restartCount++;
-          const delay = Math.min(1000 * restartCount, 5000);
-          console.log(`[Baileys] Auto-restart ${restartCount}/${MAX_AUTO_RESTARTS} em ${delay}ms (code: ${statusCode})`);
+          // Backoff exponencial com jitter: 1s, 2s, 4s, 8s, 16s, 30s, 30s, 30s
+          const baseDelay = Math.min(1000 * Math.pow(2, restartCount - 1), 30_000);
+          const jitter = Math.floor(Math.random() * 1000);
+          const delay = baseDelay + jitter;
+          console.log(`[Baileys] Auto-restart ${restartCount}/${MAX_AUTO_RESTARTS} em ${delay}ms (code: ${statusCode ?? 'undefined'})`);
 
           broadcast(session, { type: 'status', status: 'reconnecting', attempt: restartCount });
 
           setTimeout(() => {
-            const keepSession = statusCode === DisconnectReason.restartRequired;
+            // restartRequired pede pra manter credenciais; outros casos limpam socket mas
+            // mantêm session dir (não é loggedOut, só reconecta)
+            const keepSession = statusCode === DisconnectReason.restartRequired || statusCode === undefined;
             startSocket(!keepSession).catch((err) => {
               console.error('[Baileys] Auto-restart falhou:', err);
               broadcast(session, { type: 'error', message: 'Falha ao reconectar. Tente novamente.' });
@@ -1016,7 +1165,9 @@ export async function createBaileysSession(
           return;
         }
 
-        broadcast(session, { type: 'error', message: 'Conexao fechada pelo WhatsApp. Tente novamente.' });
+        // Esgotou MAX_AUTO_RESTARTS — desiste e informa o operador.
+        console.error(`[Baileys] Esgotou ${MAX_AUTO_RESTARTS} tentativas de restart (último code: ${statusCode})`);
+        broadcast(session, { type: 'error', message: 'Não foi possível reconectar após várias tentativas. Verifique sua conexão e re-escaneie o QR Code.' });
         void persistDisconnect(businessId, sessionKey).catch(() => {});
         void destroySession(businessId, sessionKey);
       }

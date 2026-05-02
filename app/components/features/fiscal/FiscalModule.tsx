@@ -1244,7 +1244,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
 
   return (
     <>
-      <div className="space-y-6">
+      <div className="space-y-6 max-w-6xl mx-auto">
         {/* Certificate Warning Banner */}
         {(!hasCertificate || certExpired) && (
           <motion.div

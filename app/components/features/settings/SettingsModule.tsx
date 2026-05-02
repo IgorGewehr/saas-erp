@@ -2,7 +2,7 @@
 
 import { useTranslation } from 'react-i18next';
 
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -6392,6 +6392,24 @@ function CanaisTab() {
         const wabaId = cloudCfg?.wabaId || cloudCfg?.businessAccountId
           || (legacy as { wabaId?: string; businessAccountId?: string } | undefined)?.wabaId
           || (legacy as { wabaId?: string; businessAccountId?: string } | undefined)?.businessAccountId;
+
+        // Número do Baileys lido direto de baileysCfg — independente do waPhoneNumber
+        // que pode estar com o número do Cloud quando ambos estão ativos.
+        const baileysPhoneDisplay = (() => {
+          const raw = baileysCfg?.displayPhoneNumber || baileysCfg?.phoneNumber || '';
+          if (!raw) return '';
+          if (raw.startsWith('+')) return raw;
+          // E.164 BR — aplica 9º dígito se necessário
+          let digits = raw.replace(/\D/g, '');
+          if (digits.length === 12 && digits.startsWith('55') && digits[4] >= '6') {
+            digits = digits.slice(0, 4) + '9' + digits.slice(4);
+          }
+          if (digits.length === 13 && digits.startsWith('55')) {
+            return `+${digits.slice(0,2)} ${digits.slice(2,4)} ${digits.slice(4,9)}-${digits.slice(9)}`;
+          }
+          return `+${digits}`;
+        })();
+
         return (
           <>
             <div className={cn(
@@ -6492,8 +6510,8 @@ function CanaisTab() {
                           </span>
                         )}
                       </div>
-                      {isBaileys && waPhoneNumber ? (
-                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{waPhoneNumber}</p>
+                      {isBaileys && baileysPhoneDisplay ? (
+                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{baileysPhoneDisplay}</p>
                       ) : (
                         <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Envie mensagens livres sem aprovação de templates · Ideal para iniciar contatos</p>
                       )}
@@ -6515,6 +6533,7 @@ function CanaisTab() {
                         <RefreshCw className="w-3.5 h-3.5" />
                         Reconectar
                       </button>
+                      <BaileysDebugButton businessId={business?.id ?? ''} />
                       <button
                         onClick={() => handleDisconnect('whatsapp', 'baileys')}
                         disabled={disconnecting === 'whatsapp-baileys'}
@@ -6729,6 +6748,69 @@ function CanaisTab() {
         />
       )}
     </motion.div>
+  );
+}
+
+// ─── Baileys Debug Button ────────────────────────────────────────────────────
+
+function BaileysDebugButton({ businessId }: { businessId: string }) {
+  const [open, setOpen] = React.useState(false);
+  const [data, setData] = React.useState<Record<string, unknown> | null>(null);
+  const [loading, setLoading] = React.useState(false);
+
+  const fetch_ = async () => {
+    if (!businessId) return;
+    setLoading(true);
+    try {
+      const { auth } = await import('@/lib/config/firebase');
+      const token = await auth.currentUser?.getIdToken();
+      const res = await fetch(`/api/whatsapp/debug?businessId=${businessId}`, {
+        headers: { Authorization: `Bearer ${token ?? ''}` },
+      });
+      const text = await res.text();
+      try {
+        setData(JSON.parse(text));
+      } catch {
+        setData({ rawResponse: text, status: res.status });
+      }
+    } catch (e) {
+      setData({ error: String(e) });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <>
+      <button
+        onClick={() => { setOpen(true); fetch_(); }}
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 dark:text-gray-500 hover:text-blue-500 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/10 transition-colors"
+        title="Diagnóstico de sessão Baileys"
+      >
+        <span className="font-mono">⚙</span> Diagnóstico
+      </button>
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setOpen(false)}>
+          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl p-5 max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-bold text-gray-900 dark:text-white">Diagnóstico Baileys</h3>
+              <div className="flex gap-2">
+                <button onClick={fetch_} disabled={loading} className="text-xs text-blue-500 hover:text-blue-700 disabled:opacity-50">
+                  {loading ? 'Atualizando...' : 'Atualizar'}
+                </button>
+                <button onClick={() => setOpen(false)} className="text-xs text-gray-400 hover:text-gray-700">Fechar</button>
+              </div>
+            </div>
+            {loading && !data && <p className="text-xs text-gray-400">Carregando...</p>}
+            {data && (
+              <pre className="text-[10px] font-mono bg-gray-50 dark:bg-gray-800 rounded-xl p-3 overflow-x-auto whitespace-pre-wrap text-gray-700 dark:text-gray-300">
+                {JSON.stringify(data, null, 2)}
+              </pre>
+            )}
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -7007,7 +7089,7 @@ export default function SettingsModule() {
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] as [number, number, number, number] }}
-      className="max-w-7xl"
+      className="max-w-7xl mx-auto"
     >
       {/* Header */}
       <div className="mb-8">

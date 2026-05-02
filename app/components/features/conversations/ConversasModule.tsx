@@ -1524,6 +1524,7 @@ function Composer({
   onKeyDown,
   inputRef,
   channel,
+  connectedVia,
   isSending,
   attachment,
   onAttachmentSelect,
@@ -1540,6 +1541,7 @@ function Composer({
   onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
   channel: ConversationChannel;
+  connectedVia?: string;
   isSending: boolean;
   attachment: File | null;
   onAttachmentSelect: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -1551,7 +1553,7 @@ function Composer({
   onSnippetClick?: () => void;
 }) {
   const { t } = useTranslation();
-  const cfg = CHANNEL_CONFIG[channel];
+  const cfg = getConvConfig({ channel, connectedVia: connectedVia as 'baileys' | 'embedded_signup' | undefined });
   const hasContent = value.trim().length > 0 || !!attachment;
   const isDisabled = disabled || false;
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -4361,6 +4363,12 @@ export default function ConversasModule() {
 
     setIsLoadingConversations(true);
 
+    // Timeout de segurança: se o snapshot não responder em 12s, libera o loading
+    // (evita tela branca infinita em falha de rede ou permissão)
+    const loadingTimeout = setTimeout(() => {
+      setIsLoadingConversations(false);
+    }, 12_000);
+
     const q = query(
       collection(db, 'conversations'),
       where('businessId', '==', business.id),
@@ -4368,6 +4376,7 @@ export default function ConversasModule() {
     );
 
     const unsub = onSnapshot(q, (snap) => {
+      clearTimeout(loadingTimeout);
       const data = snap.docs
         .map((d) => ({ ...d.data(), id: d.id } as Conversation & { isDeleted?: boolean }))
         .filter((c) => !c.isDeleted);
@@ -4380,9 +4389,13 @@ export default function ConversasModule() {
         const updated = data.find((c) => c.id === prev.id);
         return updated || prev;
       });
+    }, (err) => {
+      clearTimeout(loadingTimeout);
+      console.error('[Conversations] onSnapshot error:', err);
+      setIsLoadingConversations(false);
     });
 
-    return () => unsub();
+    return () => { clearTimeout(loadingTimeout); unsub(); };
   }, [business?.id]);
 
   // ── Load channel connections (Phase 2: badges + filter) ───────────────────
@@ -6153,6 +6166,7 @@ export default function ConversasModule() {
                   onKeyDown={handleKeyDown}
                   inputRef={inputRef}
                   channel={selectedConversation.channel}
+                  connectedVia={selectedConversation.connectedVia}
                   isSending={isSending}
                   attachment={attachment}
                   onAttachmentSelect={handleFileSelect}

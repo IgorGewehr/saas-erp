@@ -56,9 +56,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: 'Forbidden' }, { status: 403 });
     }
 
-    // Only supported on Baileys channel
-    const isBaileys = conv.channel === 'whatsapp';
-    const session = isBaileys ? sessions.get(businessId) : null;
+    // Only supported on Baileys channel — Cloud API não suporta interactive lists
+    const isBaileys = conv.channel === 'whatsapp' && conv.connectedVia === 'baileys';
+    // sessions são keyed por connectionId, não businessId
+    const convConnectionId = conv.channelConnectionId as string | undefined;
+    let session = null;
+    if (isBaileys) {
+      // Tenta a connection específica da conversa primeiro (Phase 2)
+      if (convConnectionId) session = sessions.get(convConnectionId) ?? null;
+      // Fallback para primary business connection
+      if (!session) {
+        const { ensurePrimaryBaileysBusinessConnection } = await import('@/lib/services/channels/channelConnections');
+        const primary = await ensurePrimaryBaileysBusinessConnection(businessId);
+        session = sessions.get(primary.id) ?? null;
+      }
+    }
 
     let externalMessageId = `interactive_${Date.now()}`;
 

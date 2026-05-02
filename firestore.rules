@@ -1063,6 +1063,36 @@ service cloud.firestore {
     }
 
     // ============================================
+    // CONVERSATION VIEWS (saved filter presets)
+    // ============================================
+    match /conversationViews/{viewId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator();
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && (resource.data.createdBy == request.auth.uid || isAdmin());
+    }
+
+    // ============================================
+    // CSAT RESPONSES (customer satisfaction)
+    // ============================================
+    match /csatResponses/{responseId} {
+      // Operators can read their business's responses
+      allow read: if isAuthenticated() && isOwnBusiness();
+      // Written by server-side (webhook/API) — client cannot write
+      allow write: if false;
+    }
+
+    // ============================================
     // CATCH-ALL: Deny everything else
     // ============================================
     match /{document=**} {
