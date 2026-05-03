@@ -1152,10 +1152,10 @@ export async function createBaileysSession(
           broadcast(session, { type: 'status', status: 'reconnecting', attempt: restartCount });
 
           setTimeout(() => {
-            // restartRequired pede pra manter credenciais; outros casos limpam socket mas
-            // mantêm session dir (não é loggedOut, só reconecta)
-            const keepSession = statusCode === DisconnectReason.restartRequired || statusCode === undefined;
-            startSocket(!keepSession).catch((err) => {
+            // NUNCA apaga credenciais durante auto-restart — só fresh QR (mode='fresh')
+            // deve limpar. O código anterior apagava para connectionClosed/timedOut/
+            // connectionReplaced, forçando re-scan a cada queda de rede (BUG CRÍTICO).
+            startSocket(false).catch((err) => {
               console.error('[Baileys] Auto-restart falhou:', err);
               broadcast(session, { type: 'error', message: 'Falha ao reconectar. Tente novamente.' });
               void persistDisconnect(businessId, sessionKey).catch(() => {});
