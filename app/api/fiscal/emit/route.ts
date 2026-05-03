@@ -275,11 +275,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // IE/IM podem estar em fiscal.* (canônico) ou na raiz do business (legado/UI Empresa).
-    // IE: aceita só dígitos ou a literal "ISENTO" (MEI). Outros formatos são limpos.
+    // IE/IM/IBGE podem estar em fiscal.* (canônico), na raiz do business (UI Empresa)
+    // ou em business.endereco (preenchido via lookup CEP). Resolve com fallbacks.
+    // IE: aceita só dígitos ou a literal "ISENTO" (MEI).
     const ieRaw = String(fiscal.inscricaoEstadual || business.inscricaoEstadual || '').trim();
     const inscricaoEstadual = ieRaw.toUpperCase() === 'ISENTO' ? 'ISENTO' : ieRaw.replace(/\D/g, '');
     const inscricaoMunicipal = String(fiscal.inscricaoMunicipal || business.inscricaoMunicipal || '').replace(/\D/g, '');
+    const codigoMunicipioEmitente = String(
+      fiscal.ibgeCodigoMunicipio || business.endereco?.codigoMunicipio || ''
+    ).replace(/\D/g, '');
 
     // Validate inscricaoEstadual (required for NF-e and NFC-e)
     if ((type === 'nfe' || type === 'nfce') && !inscricaoEstadual) {
@@ -291,8 +295,7 @@ export async function POST(request: NextRequest) {
 
     // Validate codigoMunicipioEmitente (required for NF-e and NFC-e)
     if (type !== 'nfse') {
-      const codigoMun = String(fiscal.ibgeCodigoMunicipio || '');
-      if (!codigoMun || codigoMun === '0000000' || codigoMun.replace(/\D/g, '').length !== 7) {
+      if (!codigoMunicipioEmitente || codigoMunicipioEmitente === '0000000' || codigoMunicipioEmitente.length !== 7) {
         return NextResponse.json(
           { error: 'Código IBGE do município não configurado ou inválido. Configure em Configurações → Fiscal.' },
           { status: 400 },
@@ -339,7 +342,7 @@ export async function POST(request: NextRequest) {
         numero: business.endereco.numero || 'SN',
         complemento: business.endereco.complemento || undefined,
         bairro: business.endereco.bairro,
-        codigoMunicipio: String(fiscal.ibgeCodigoMunicipio || ''),
+        codigoMunicipio: codigoMunicipioEmitente,
         municipio: business.endereco.municipio,
         uf: business.endereco.uf?.toUpperCase(),
         cep: business.endereco.cep?.replace(/\D/g, ''),
@@ -383,7 +386,7 @@ export async function POST(request: NextRequest) {
           { status: 400 },
         );
       }
-      if (!fiscal.ibgeCodigoMunicipio || String(fiscal.ibgeCodigoMunicipio).length !== 7) {
+      if (!codigoMunicipioEmitente || codigoMunicipioEmitente.length !== 7) {
         return NextResponse.json(
           { error: 'Codigo IBGE do municipio invalido. Deve ter 7 digitos.' },
           { status: 400 },
@@ -398,7 +401,7 @@ export async function POST(request: NextRequest) {
       const nfsePayload = stripEmpty({
         numeroDPS: number,
         serie: series,
-        codigoMunicipioEmissao: String(fiscal.ibgeCodigoMunicipio),
+        codigoMunicipioEmissao: codigoMunicipioEmitente,
         prestador: {
           cnpj: business.cnpj?.replace(/\D/g, ''),
           inscricaoMunicipal,
@@ -418,7 +421,7 @@ export async function POST(request: NextRequest) {
           codigoTributacaoNacional: (data.codigoServico || '').replace(/\D/g, '').padEnd(6, '0'),
           codigoTributacaoMunicipal: data.codigoServicoMunicipal || undefined,
           discriminacao: data.discriminacao || data.descricaoServico,
-          localPrestacao: { codigoMunicipio: String(fiscal.ibgeCodigoMunicipio) },
+          localPrestacao: { codigoMunicipio: codigoMunicipioEmitente },
           nbs: data.nbs,
         },
         valores: {

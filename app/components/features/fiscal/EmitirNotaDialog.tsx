@@ -337,11 +337,15 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
       toast.error(t('fiscal.emit.errors.valorPositivo', 'Valor do serviço deve ser maior que zero'));
       return;
     }
-    if (!business.fiscal?.inscricaoMunicipal) {
-      toast.error(t('fiscal.emit.errors.inscricaoMunicipalRequired', 'Inscrição Municipal não configurada. Acesse Configurações > Fiscal.'));
+    // IM pode estar em fiscal.* (canônico) ou na raiz (UI Empresa). IBGE em
+    // fiscal.* ou em endereco.codigoMunicipio (preenchido pelo lookup CEP).
+    const hasIM = !!(business.fiscal?.inscricaoMunicipal || (business as { inscricaoMunicipal?: string }).inscricaoMunicipal);
+    const hasIBGE = !!(business.fiscal?.ibgeCodigoMunicipio || business.endereco?.codigoMunicipio);
+    if (!hasIM) {
+      toast.error(t('fiscal.emit.errors.inscricaoMunicipalRequired', 'Inscrição Municipal não configurada. Acesse Configurações > Empresa.'));
       return;
     }
-    if (!business.fiscal?.ibgeCodigoMunicipio) {
+    if (!hasIBGE) {
       toast.error(t('fiscal.emit.errors.ibgeRequired', 'Código IBGE do município não configurado. Acesse Configurações > Fiscal.'));
       return;
     }
@@ -620,9 +624,18 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
                 <Autocomplete
                   options={clients}
                   getOptionLabel={(opt) => `${opt.name}${opt.cpfCnpj ? ` — ${formatCPFCNPJ(opt.cpfCnpj)}` : ''}`}
+                  isOptionEqualToValue={(opt, val) => opt.id === val.id}
                   onChange={(_, val) => handleClientSelect(val)}
                   size="small"
                   noOptionsText={t('fiscal.emit.noClient', 'Nenhum cliente encontrado')}
+                  renderOption={(props, opt) => {
+                    const { key: _key, ...rest } = props as React.HTMLAttributes<HTMLLIElement> & { key?: React.Key };
+                    return (
+                      <li {...rest} key={opt.id}>
+                        {opt.name}{opt.cpfCnpj ? ` — ${formatCPFCNPJ(opt.cpfCnpj)}` : ''}
+                      </li>
+                    );
+                  }}
                   renderInput={(params) => (
                     <TextField
                       {...params}
@@ -917,9 +930,18 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
                 <Autocomplete
                   options={clients}
                   getOptionLabel={(opt) => `${opt.name}${opt.cpfCnpj ? ` — ${formatCPFCNPJ(opt.cpfCnpj)}` : ''}`}
+                  isOptionEqualToValue={(opt, val) => opt.id === val.id}
                   onChange={(_, val) => handleClientSelect(val)}
                   size="small"
                   noOptionsText={t('fiscal.emit.noClient', 'Nenhum cliente encontrado')}
+                  renderOption={(props, opt) => {
+                    const { key: _key, ...rest } = props as React.HTMLAttributes<HTMLLIElement> & { key?: React.Key };
+                    return (
+                      <li {...rest} key={opt.id}>
+                        {opt.name}{opt.cpfCnpj ? ` — ${formatCPFCNPJ(opt.cpfCnpj)}` : ''}
+                      </li>
+                    );
+                  }}
                   renderInput={(params) => (
                     <TextField {...params} placeholder={t('fiscal.emit.searchClientShort', 'Buscar cliente...')} size="small"
                       InputProps={{ ...params.InputProps, startAdornment: <><Search size={14} className="text-gray-400 dark:text-gray-500 mr-1" />{params.InputProps.startAdornment}</> }}
