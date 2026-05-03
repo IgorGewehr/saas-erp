@@ -13,6 +13,7 @@ import {
   Divider,
   CircularProgress,
   Pagination,
+  MenuItem,
 } from '@mui/material';
 import {
   FileCheck2,
@@ -40,6 +41,7 @@ import {
   AlertCircle,
   BookOpen,
   Hash,
+  ExternalLink,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { collection, query, where, orderBy, getDocs, doc as firestoreDoc, updateDoc } from 'firebase/firestore';
@@ -189,12 +191,15 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
   const [showXml, setShowXml] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
+  const [cancelCode, setCancelCode] = useState<'1' | '2' | '3' | '4'>('1');
   const [isCancelling, setIsCancelling] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [ccOpen, setCcOpen] = useState(false);
   const [ccText, setCcText] = useState('');
 
   if (!doc) return null;
+
+  const items = doc.items ?? [];
 
   const statusTimeline = [
     {
@@ -239,6 +244,17 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
       toast.error(t('fiscal.cancel.minCharsError', 'A justificativa deve ter no mínimo 15 caracteres.'));
       return;
     }
+    // Documentos antigos podem ter sido salvos sem chave/código (bug pré-fix).
+    // NFe/NFCe: chave de 44 dígitos numéricos.
+    // NFSe: chave de 50 dígitos (Betha/Nacional) ou código de verificação alfanumérico (SP).
+    if (!doc.accessKey) {
+      toast.error(t('fiscal.cancel.noAccessKey', 'Esta nota não tem chave de acesso registrada (registro antigo). Cancele direto no portal SEFAZ.'));
+      return;
+    }
+    if (doc.type !== 'nfse' && doc.accessKey.replace(/\D/g, '').length !== 44) {
+      toast.error(t('fiscal.cancel.noAccessKey', 'Esta nota não tem chave de acesso registrada (registro antigo). Cancele direto no portal SEFAZ.'));
+      return;
+    }
 
     setIsCancelling(true);
     try {
@@ -251,27 +267,27 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
           chaveAcesso: doc.accessKey,
           protocolo: doc.protocol,
           justificativa: cancelReason.trim(),
+          ...(doc.type === 'nfse' ? { codigoCancelamento: cancelCode } : {}),
         }),
       });
 
       const result = await response.json();
 
-      if (!response.ok) {
-        toast.error(result.error || t('fiscal.cancel.error', 'Erro ao cancelar nota fiscal.'));
+      if (!response.ok || !result.success) {
+        toast.error(
+          result.data?.motivoStatus
+            || result.data?.erros?.[0]
+            || result.error
+            || t('fiscal.cancel.error', 'Erro ao cancelar nota fiscal.')
+        );
         return;
       }
 
-      // Update document status in Firestore
-      await updateDoc(firestoreDoc(db, 'fiscalDocuments', doc.id), {
-        status: 'cancelada' as const,
-        canceledAt: new Date().toISOString(),
-        cancelReason: cancelReason.trim(),
-        updatedAt: new Date().toISOString(),
-      });
-
+      // Backend já atualizou o fiscalDocument no Firestore via reverseLinkedTransactions.
       toast.success(t('fiscal.cancel.success', 'Nota fiscal cancelada com sucesso!'));
       setCancelOpen(false);
       setCancelReason('');
+      setCancelCode('1');
       onDocumentUpdated();
       onClose();
     } catch {
@@ -413,10 +429,37 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
               </div>
             )}
 
-            {/* Chave de Acesso */}
+            {/* NFSe — link de visualização da prefeitura (substitui o DANFE) */}
+            {doc.type === 'nfse' && doc.pdfUrl && doc.status === 'autorizada' && (
+              <div className="p-4 rounded-lg bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300 mb-1">
+                      {t('fiscal.detail.nfseAutorizada', 'NFS-e Autorizada')}
+                    </p>
+                    <p className="text-xs text-emerald-700/80 dark:text-emerald-300/80">
+                      {t('fiscal.detail.nfseLinkHint', 'Visualize e imprima a nota direto no portal da prefeitura.')}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => window.open(doc.pdfUrl!, '_blank', 'noopener,noreferrer')}
+                    className="shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 transition-colors"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    {t('fiscal.actions.abrirNfse', 'Abrir NFS-e')}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Chave de Acesso / Código de Verificação */}
             {doc.accessKey && (
               <div className="p-3 rounded-lg bg-muted/30">
-                <p className="text-xs text-muted-foreground mb-1">{t('fiscal.detail.chaveAcesso', 'Chave de Acesso')}</p>
+                <p className="text-xs text-muted-foreground mb-1">
+                  {doc.type === 'nfse'
+                    ? t('fiscal.detail.codigoVerificacao', 'Código de Verificação')
+                    : t('fiscal.detail.chaveAcesso', 'Chave de Acesso')}
+                </p>
                 <p className="text-xs font-mono font-medium text-foreground break-all">
                   {doc.accessKey}
                 </p>
@@ -487,7 +530,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
                       </tr>
                     </thead>
                     <tbody>
-                      {doc.items.map((item: FiscalItem, idx: number) => (
+                      {items.map((item: FiscalItem, idx: number) => (
                         <tr key={idx} className="border-t border-border/40">
                           <td className="text-sm text-foreground px-4 py-2.5">
                             <span className="font-medium">{item.description}</span>
@@ -527,48 +570,48 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
             </div>
 
             {/* Tax Breakdown */}
-            {doc.items.some((item) => item.taxes) && (
+            {items.some((item) => item.taxes) && (
               <div>
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
                   {t('fiscal.detail.impostos', 'Impostos')}
                 </p>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  {doc.items.some((i) => i.taxes?.icms) && (
+                  {items.some((i) => i.taxes?.icms) && (
                     <div className="p-3 rounded-lg bg-muted/30">
                       <p className="text-xs text-muted-foreground">ICMS</p>
                       <p className="text-sm font-semibold text-foreground">
                         {formatCurrency(
-                          doc.items.reduce((sum, i) => sum + (i.taxes?.icms?.valor || 0), 0),
+                          items.reduce((sum, i) => sum + (i.taxes?.icms?.valor || 0), 0),
                         )}
                       </p>
                     </div>
                   )}
-                  {doc.items.some((i) => i.taxes?.pis) && (
+                  {items.some((i) => i.taxes?.pis) && (
                     <div className="p-3 rounded-lg bg-muted/30">
                       <p className="text-xs text-muted-foreground">PIS</p>
                       <p className="text-sm font-semibold text-foreground">
                         {formatCurrency(
-                          doc.items.reduce((sum, i) => sum + (i.taxes?.pis?.valor || 0), 0),
+                          items.reduce((sum, i) => sum + (i.taxes?.pis?.valor || 0), 0),
                         )}
                       </p>
                     </div>
                   )}
-                  {doc.items.some((i) => i.taxes?.cofins) && (
+                  {items.some((i) => i.taxes?.cofins) && (
                     <div className="p-3 rounded-lg bg-muted/30">
                       <p className="text-xs text-muted-foreground">COFINS</p>
                       <p className="text-sm font-semibold text-foreground">
                         {formatCurrency(
-                          doc.items.reduce((sum, i) => sum + (i.taxes?.cofins?.valor || 0), 0),
+                          items.reduce((sum, i) => sum + (i.taxes?.cofins?.valor || 0), 0),
                         )}
                       </p>
                     </div>
                   )}
-                  {doc.items.some((i) => i.taxes?.iss) && (
+                  {items.some((i) => i.taxes?.iss) && (
                     <div className="p-3 rounded-lg bg-muted/30">
                       <p className="text-xs text-muted-foreground">ISS</p>
                       <p className="text-sm font-semibold text-foreground">
                         {formatCurrency(
-                          doc.items.reduce((sum, i) => sum + (i.taxes?.iss?.valor || 0), 0),
+                          items.reduce((sum, i) => sum + (i.taxes?.iss?.valor || 0), 0),
                         )}
                       </p>
                     </div>
@@ -747,6 +790,23 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
           <p className="text-sm text-muted-foreground mb-4">
             {t('fiscal.cancel.desc', 'Informe a justificativa para o cancelamento. O prazo legal para cancelamento é de até 24 horas após a autorização.')}
           </p>
+          {doc.type === 'nfse' && (
+            <TextField
+              select
+              label={t('fiscal.cancel.codigoLabel', 'Motivo do cancelamento')}
+              value={cancelCode}
+              onChange={(e) => setCancelCode(e.target.value as '1' | '2' | '3' | '4')}
+              fullWidth
+              size="small"
+              disabled={isCancelling}
+              sx={{ mb: 2 }}
+            >
+              <MenuItem value="1">{t('fiscal.cancel.codigo.1', '1 — Erro na emissão')}</MenuItem>
+              <MenuItem value="2">{t('fiscal.cancel.codigo.2', '2 — Serviço não prestado')}</MenuItem>
+              <MenuItem value="3">{t('fiscal.cancel.codigo.3', '3 — Duplicidade da nota')}</MenuItem>
+              <MenuItem value="4">{t('fiscal.cancel.codigo.4', '4 — Erro de processamento')}</MenuItem>
+            </TextField>
+          )}
           <TextField
             label={t('fiscal.cancel.justificativaLabel', 'Justificativa (min. 15 caracteres)')}
             value={cancelReason}
@@ -1021,7 +1081,13 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
       const res = await fetch('/api/fiscal/danfe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
-        body: JSON.stringify({ xml: document.xml, type: document.type }),
+        body: JSON.stringify({
+          xml: document.xml,
+          type: document.type,
+          status: document.status,
+          canceledAt: document.canceledAt,
+          cancelReason: document.cancelReason,
+        }),
       });
       if (!res.ok) { toast.error(t('fiscal.danfe.error', 'Erro ao gerar DANFE.')); return; }
       const html = await res.text();
@@ -1222,7 +1288,10 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
     const bytes = new Uint8Array(buffer);
     let binary = '';
     for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-    return { pfxBase64: btoa(binary), password: atob(pwdEncoded) };
+    // Tolerate older data with plain-text or invalid base64 password
+    let password: string;
+    try { password = atob(pwdEncoded); } catch { password = pwdEncoded; }
+    return { pfxBase64: btoa(binary), password };
   };
 
   // Certificate warning
@@ -1233,7 +1302,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
 
   return (
     <>
-      <div className="space-y-6">
+      <div className="space-y-6 max-w-6xl mx-auto">
         {/* Certificate Warning Banner */}
         {(!hasCertificate || certExpired) && (
           <motion.div

@@ -423,6 +423,21 @@ export function buildLegacyChannelsFromConnection(
       connectedAt: conn.connectedAt,
       disconnectedAt: conn.disconnectedAt,
     };
+    // Popula o campo legado `whatsapp` com marcador connectedVia:'baileys' para que o
+    // pre-check em send/route.ts (que lê channels['whatsapp']) não rejeite a requisição
+    // com "não está configurado" quando o business nunca teve Cloud API configurado.
+    // O marcador também ativa o `isBaileysChannel` check que pula a validação de token.
+    out.whatsapp = {
+      isConnected: !!conn.isConnected,
+      connectedVia: 'baileys',
+      phoneNumber: conn.phoneNumber,
+      displayPhoneNumber: conn.phoneNumber,
+      phoneNumberId: '',
+      businessAccountId: '',
+      accessToken: '',
+      connectedAt: conn.connectedAt,
+      disconnectedAt: conn.disconnectedAt,
+    };
   } else if (conn.type === 'facebook') {
     out.facebook = {
       isConnected: !!conn.isConnected,

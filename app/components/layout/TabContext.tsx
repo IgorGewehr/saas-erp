@@ -57,7 +57,19 @@ function loadTabs(): { tabs: Tab[]; activeTabId: MenuPage | null } {
     const raw = sessionStorage.getItem(STORAGE_KEY);
     if (raw) {
       const d = JSON.parse(raw);
-      if (Array.isArray(d.tabs) && d.tabs.length > 0) return d;
+      if (Array.isArray(d.tabs)) {
+        // Deduplicate and strip tabs with empty/invalid ids
+        const seen = new Set<string>();
+        const valid = d.tabs.filter((t: Tab) => {
+          if (!t.id || seen.has(t.id)) return false;
+          seen.add(t.id);
+          return true;
+        });
+        if (valid.length > 0) {
+          const activeTabId = seen.has(d.activeTabId) ? d.activeTabId : valid[0].id;
+          return { tabs: valid, activeTabId };
+        }
+      }
     }
   } catch { /* ignore */ }
   return { tabs: [], activeTabId: null };
@@ -104,6 +116,7 @@ export function TabProvider({ children }: { children: React.ReactNode }) {
   // ── Actions ──
 
   const openTab = React.useCallback((page: MenuPage, title?: string) => {
+    if (!page) return; // guard against empty page ids from stale sessionStorage
     const tabTitle = title ?? PAGE_TITLES[page] ?? page;
     setTabs(prev => {
       const existing = prev.find(t => t.id === page);

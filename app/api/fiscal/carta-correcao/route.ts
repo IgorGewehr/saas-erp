@@ -5,6 +5,7 @@ import { ROLE_HIERARCHY } from '@/lib/types';
 import type { UserRole } from '@/lib/types';
 import { cartaCorrecaoNFe, resolveAmbiente, SefazAmbiente } from '@/lib/services/sefaz-gateway';
 import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
+import { resolveUfEmitente } from '@/lib/fiscal/uf';
 
 interface CartaCorrecaoBody {
   businessId: string;
@@ -53,15 +54,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Resolve certificate & ambiente from Firestore
+    // Resolve certificate, ambiente e UF from Firestore
     let certificado = body.certificado;
     let ambiente: SefazAmbiente = 'homologacao';
+    let ufFromBusiness: string | undefined;
 
     if (body.businessId) {
       const businessDoc = await adminDb.collection('businesses').doc(body.businessId).get();
       if (businessDoc.exists) {
-        const rawEnv = businessDoc.data()?.fiscal?.nfeConfig?.environment;
+        const data = businessDoc.data();
+        const rawEnv = data?.fiscal?.nfeConfig?.environment ?? data?.fiscal?.environment;
         ambiente = resolveAmbiente(rawEnv);
+        ufFromBusiness = data?.endereco?.uf?.toUpperCase();
       }
 
       if (!certificado) {
@@ -83,10 +87,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const ufEmitente = resolveUfEmitente({
+      ufFromBody: body.ufEmitente,
+      ufFromBusiness,
+      chaveAcesso: body.chaveAcesso,
+    });
+
     const result = await cartaCorrecaoNFe({
       chaveAcesso: body.chaveAcesso,
       correcao: body.textoCorrecao.trim(),
-      ufEmitente: body.ufEmitente || body.chaveAcesso.substring(0, 2),
+      ufEmitente,
       sequencia: body.sequencia || 1,
       ambiente,
       certificado,

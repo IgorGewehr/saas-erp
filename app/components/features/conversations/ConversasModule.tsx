@@ -1524,6 +1524,7 @@ function Composer({
   onKeyDown,
   inputRef,
   channel,
+  connectedVia,
   isSending,
   attachment,
   onAttachmentSelect,
@@ -1540,6 +1541,7 @@ function Composer({
   onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
   channel: ConversationChannel;
+  connectedVia?: string;
   isSending: boolean;
   attachment: File | null;
   onAttachmentSelect: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -1551,7 +1553,7 @@ function Composer({
   onSnippetClick?: () => void;
 }) {
   const { t } = useTranslation();
-  const cfg = CHANNEL_CONFIG[channel];
+  const cfg = getConvConfig({ channel, connectedVia: connectedVia as 'baileys' | 'embedded_signup' | undefined });
   const hasContent = value.trim().length > 0 || !!attachment;
   const isDisabled = disabled || false;
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -4361,28 +4363,57 @@ export default function ConversasModule() {
 
     setIsLoadingConversations(true);
 
+    // Timeout de segurança: se o snapshot não responder em 12s, libera o loading
+    // (evita tela branca infinita em falha de rede ou permissão)
+    const loadingTimeout = setTimeout(() => {
+      setIsLoadingConversations(false);
+    }, 12_000);
+
     const q = query(
       collection(db, 'conversations'),
       where('businessId', '==', business.id),
       orderBy('lastMessageAt', 'desc'),
     );
 
-    const unsub = onSnapshot(q, (snap) => {
-      const data = snap.docs
-        .map((d) => ({ ...d.data(), id: d.id } as Conversation & { isDeleted?: boolean }))
-        .filter((c) => !c.isDeleted);
-      setConversations(data);
-      setIsLoadingConversations(false);
+    let unsub: (() => void) | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryCount = 0;
 
-      // Update selected conversation if it exists in the new data
-      setSelectedConversation((prev) => {
-        if (!prev) return prev;
-        const updated = data.find((c) => c.id === prev.id);
-        return updated || prev;
+    const subscribe = () => {
+      unsub = onSnapshot(q, (snap) => {
+        clearTimeout(loadingTimeout);
+        retryCount = 0; // reset on success
+        const data = snap.docs
+          .map((d) => ({ ...d.data(), id: d.id } as Conversation & { isDeleted?: boolean }))
+          .filter((c) => !c.isDeleted);
+        setConversations(data);
+        setIsLoadingConversations(false);
+
+        setSelectedConversation((prev) => {
+          if (!prev) return prev;
+          const updated = data.find((c) => c.id === prev.id);
+          return updated || prev;
+        });
+      }, (err) => {
+        clearTimeout(loadingTimeout);
+        console.error('[Conversations] onSnapshot error:', err);
+        setIsLoadingConversations(false);
+        // Reinicia o listener automaticamente — erros transitórios (índice ainda
+        // construindo, rede instável) matam o listener; retry garante que ele
+        // volte assim que o problema resolver.
+        const delay = Math.min(3000 * Math.pow(2, retryCount), 30_000);
+        retryCount++;
+        retryTimer = setTimeout(subscribe, delay);
       });
-    });
+    };
 
-    return () => unsub();
+    subscribe();
+
+    return () => {
+      clearTimeout(loadingTimeout);
+      if (retryTimer) clearTimeout(retryTimer);
+      unsub?.();
+    };
   }, [business?.id]);
 
   // ── Load channel connections (Phase 2: badges + filter) ───────────────────
@@ -6153,6 +6184,7 @@ export default function ConversasModule() {
                   onKeyDown={handleKeyDown}
                   inputRef={inputRef}
                   channel={selectedConversation.channel}
+                  connectedVia={selectedConversation.connectedVia}
                   isSending={isSending}
                   attachment={attachment}
                   onAttachmentSelect={handleFileSelect}
