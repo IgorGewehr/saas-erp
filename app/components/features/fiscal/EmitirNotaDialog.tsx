@@ -393,9 +393,16 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
       const result = await res.json();
 
       if (!res.ok || !result.success) {
+        const data = result.data ?? {};
+        const mensagens: Array<{ codigo?: string; mensagem?: string }> = Array.isArray(data.mensagens) ? data.mensagens : [];
+        const sefazMsg = mensagens
+          .map((m) => m.mensagem)
+          .filter((m): m is string => !!m && m.trim().length > 0)
+          .join(' • ');
         const errorMsg =
-          result.details?.motivoStatus ||
-          result.details?.erros?.[0] ||
+          sefazMsg ||
+          data.motivoStatus ||
+          data.erros?.[0] ||
           result.error ||
           t('fiscal.emit.errors.genericNfse', 'Erro ao emitir NFSe');
         toast.error(errorMsg);
@@ -432,7 +439,6 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
     try {
       // Build the API body (flat, English-named fields). The backend rebuilds
       // o payload SEFAZ a partir destes campos + Firestore (emitente, certificado, CSC).
-      const firstPayment = nfcePayments[0];
       const apiBody = {
         type: 'nfce' as const,
         businessId: business.id,
@@ -447,8 +453,10 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
           cest: item.cest || undefined,
           icmsOrigem: item.icmsOrigem || '0',
         })),
-        paymentMethod: firstPayment?.method || 'dinheiro',
-        paymentValue: firstPayment?.amount || total,
+        // Suporta múltiplas formas de pagamento. Backend distribui no <pag> SEFAZ.
+        payments: nfcePayments
+          .filter(p => p && p.amount > 0)
+          .map(p => ({ method: p.method, amount: p.amount })),
         cpfConsumidor: nfceConsumidorCpf ? nfceConsumidorCpf.replace(/\D/g, '') : undefined,
         nomeConsumidor: nfceConsumidorNome || undefined,
         informacoesAdicionais: nfceInfoAdicionais.trim() || undefined,
@@ -510,7 +518,6 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
         : undefined;
 
       // Build the API body (flat, English-named). Backend rebuilds SEFAZ format.
-      const firstNfePayment = nfePayments[0];
       const apiBody = {
         type: 'nfe' as const,
         businessId: business.id,
@@ -525,8 +532,10 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
           cest: item.cest || undefined,
           icmsOrigem: item.icmsOrigem || '0',
         })),
-        paymentMethod: firstNfePayment?.method || 'dinheiro',
-        paymentValue: firstNfePayment?.amount || itemsTotal(nfeItems),
+        // Suporta múltiplas formas de pagamento. Backend distribui no <pag> SEFAZ.
+        payments: nfePayments
+          .filter(p => p && p.amount > 0)
+          .map(p => ({ method: p.method, amount: p.amount })),
         recipient: {
           document: cleanDestDoc,
           name: nfeRecipientName,
@@ -1279,7 +1288,12 @@ function PaymentsSection({
       ))}
       {paidTotal > 0 && paidTotal !== total && (
         <p className="text-xs text-amber-600 dark:text-amber-400">
-          {t('fiscal.emit.diferenca', 'Diferença')}: {formatCurrency(Math.abs(total - paidTotal))} {paidTotal > total ? `(${t('fiscal.emit.troco', 'troco')})` : `(${t('fiscal.emit.faltante', 'faltante')})`}
+          {t('fiscal.emit.diferenca', 'Diferença: {{value}} {{type}}', {
+            value: formatCurrency(Math.abs(total - paidTotal)),
+            type: paidTotal > total
+              ? `(${t('fiscal.emit.troco', 'troco')})`
+              : `(${t('fiscal.emit.faltante', 'faltante')})`,
+          })}
         </p>
       )}
     </div>

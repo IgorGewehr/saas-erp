@@ -5,6 +5,7 @@ import { ROLE_HIERARCHY } from '@/lib/types';
 import type { UserRole } from '@/lib/types';
 import { cancelarNFe, resolveAmbiente, SefazAmbiente } from '@/lib/services/sefaz-gateway';
 import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
+import { resolveUfEmitente } from '@/lib/fiscal/uf';
 
 const SEFAZ_API_URL = process.env.SEFAZ_API_URL;
 const SEFAZ_API_KEY = process.env.SEFAZ_API_KEY;
@@ -16,6 +17,8 @@ interface CancelRequestBody {
   protocolo?: string;
   justificativa: string;
   ufEmitente?: string;
+  /** NFSe only — código legal do motivo (1=Erro emissão, 2=Serviço não prestado, 3=Duplicidade, 4=Erro processamento). Default '1'. */
+  codigoCancelamento?: '1' | '2' | '3' | '4';
   certificado?: {
     pfxBase64: string;
     password: string;
@@ -50,19 +53,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Resolve certificate & ambiente from Firestore when businessId provided
+    // Resolve certificate, ambiente e UF from Firestore when businessId provided
     let certificado = body.certificado;
     let ambiente: SefazAmbiente = 'homologacao';
+    let ufFromBusiness: string | undefined;
 
     if (body.businessId) {
       const businessDoc = await adminDb.collection('businesses').doc(body.businessId).get();
       if (businessDoc.exists) {
-        const fiscal = businessDoc.data()?.fiscal;
+        const data = businessDoc.data();
+        const fiscal = data?.fiscal;
         const rawEnv =
           type === 'nfce'
-            ? (fiscal?.nfceConfig?.environment ?? fiscal?.nfeConfig?.environment)
-            : fiscal?.nfeConfig?.environment;
+            ? (fiscal?.nfceConfig?.environment ?? fiscal?.nfeConfig?.environment ?? fiscal?.environment)
+            : (fiscal?.nfeConfig?.environment ?? fiscal?.environment);
         ambiente = resolveAmbiente(rawEnv);
+        ufFromBusiness = data?.endereco?.uf?.toUpperCase();
       }
 
       if (!certificado) {
@@ -85,9 +91,13 @@ export async function POST(request: NextRequest) {
     }
 
     if (type === 'nfse') {
-      if (!body.chaveAcesso || body.chaveAcesso.replace(/\D/g, '').length !== 50) {
+      // NFSe accessKey varia por município:
+      //   - Betha/Nacional: chave de 50 dígitos (chaveNFSe)
+      //   - São Paulo: código de verificação alfanumérico (~8 chars)
+      // Aceitamos qualquer string não vazia; o provider na sefaz-api valida o formato.
+      if (!body.chaveAcesso || !body.chaveAcesso.trim()) {
         return NextResponse.json(
-          { error: 'Chave de acesso NFSe deve conter 50 digitos.' },
+          { error: 'Chave/código de verificação da NFSe ausente.' },
           { status: 400 },
         );
       }
@@ -96,6 +106,50 @@ export async function POST(request: NextRequest) {
         return NextResponse.json(
           { error: 'SEFAZ_API_URL ou SEFAZ_API_KEY nao configurada.' },
           { status: 500 },
+        );
+      }
+
+      // Lookup do fiscalDocument para obter número da NFSe (necessário para sefaz-api).
+      const fiscalSnap = await adminDb
+        .collection('fiscalDocuments')
+        .where('businessId', '==', body.businessId)
+        .where('accessKey', '==', body.chaveAcesso)
+        .where('type', '==', 'nfse')
+        .limit(1)
+        .get();
+
+      if (fiscalSnap.empty) {
+        return NextResponse.json(
+          { error: 'NFSe não encontrada para cancelamento. Reemita ou cancele direto no portal da prefeitura.' },
+          { status: 404 },
+        );
+      }
+
+      const fiscalDoc = fiscalSnap.docs[0].data();
+      const numeroNfse = Number(fiscalDoc.number);
+      if (!numeroNfse || Number.isNaN(numeroNfse)) {
+        return NextResponse.json(
+          { error: 'Número da NFSe não registrado neste documento.' },
+          { status: 400 },
+        );
+      }
+
+      // Resolver dados do prestador necessários para o payload de cancelamento.
+      const businessDoc = await adminDb.collection('businesses').doc(body.businessId).get();
+      const businessData = businessDoc.exists ? businessDoc.data() : null;
+      const fiscalCfg = businessData?.fiscal;
+      const prestadorCnpj = String(businessData?.cnpj || '').replace(/\D/g, '');
+      const inscricaoMunicipal = String(
+        fiscalCfg?.inscricaoMunicipal || businessData?.inscricaoMunicipal || ''
+      ).replace(/\D/g, '');
+      const codigoMunicipio = String(
+        fiscalCfg?.ibgeCodigoMunicipio || businessData?.endereco?.codigoMunicipio || ''
+      ).replace(/\D/g, '');
+
+      if (!prestadorCnpj || !inscricaoMunicipal || codigoMunicipio.length !== 7) {
+        return NextResponse.json(
+          { error: 'Dados do prestador incompletos (CNPJ, Inscrição Municipal ou Código IBGE). Configure em Configurações → Empresa/Fiscal.' },
+          { status: 400 },
         );
       }
 
@@ -111,8 +165,16 @@ export async function POST(request: NextRequest) {
             Authorization: `Bearer ${SEFAZ_API_KEY}`,
           },
           body: JSON.stringify({
-            chaveAcesso: body.chaveAcesso,
-            justificativa: body.justificativa.trim(),
+            prestador: { cnpj: prestadorCnpj, inscricaoMunicipal },
+            numero: numeroNfse,
+            chaveNFSe: body.chaveAcesso,
+            codigoMunicipio,
+            // Códigos legais: 1=Erro emissão, 2=Serviço não prestado, 3=Duplicidade, 4=Erro processamento.
+            // Default '1' (mais comum dentro do prazo de 24h).
+            codigoCancelamento: ['1', '2', '3', '4'].includes(body.codigoCancelamento as string)
+              ? body.codigoCancelamento
+              : '1',
+            motivo: body.justificativa.trim(),
             ambiente,
             certificado,
           }),
@@ -142,7 +204,26 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // Reverse linked financial transactions atomically
+      // Mesmo com HTTP 200, sefaz-api pode retornar status='rejeitado' ou
+      // success=false dentro do body. Não confiamos só no status HTTP.
+      const respBody = (responseData && typeof responseData === 'object')
+        ? (responseData as Record<string, unknown>)
+        : {};
+      const respStatus = String(respBody.status || '').toLowerCase();
+      const isCancelled = respStatus === 'cancelado' || respBody.success === true;
+
+      if (!isCancelled) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: respBody.motivoStatus || respBody.error || 'Cancelamento de NFSe rejeitado pela SEFAZ.',
+            data: responseData,
+          },
+          { status: 422 },
+        );
+      }
+
+      // Confirmed cancellation: reverse linked financial transactions.
       if (body.businessId) {
         await reverseLinkedTransactions(body.businessId, body.chaveAcesso, body.justificativa.trim());
       }
@@ -158,11 +239,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const ufEmitente = resolveUfEmitente({
+      ufFromBody: body.ufEmitente,
+      ufFromBusiness,
+      chaveAcesso: body.chaveAcesso,
+    });
+
     const result = await cancelarNFe({
       chaveAcesso: body.chaveAcesso,
       protocolo: body.protocolo || '',
       justificativa: body.justificativa.trim(),
-      ufEmitente: body.ufEmitente || body.chaveAcesso.substring(0, 2),
+      ufEmitente,
       ambiente,
       certificado,
     });

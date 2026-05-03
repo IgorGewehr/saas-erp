@@ -5,6 +5,7 @@ import { ROLE_HIERARCHY } from '@/lib/types';
 import type { UserRole } from '@/lib/types';
 import { consultarNFe, resolveAmbiente, SefazAmbiente } from '@/lib/services/sefaz-gateway';
 import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
+import { resolveUfEmitente } from '@/lib/fiscal/uf';
 
 const SEFAZ_API_URL = process.env.SEFAZ_API_URL;
 const SEFAZ_API_KEY = process.env.SEFAZ_API_KEY;
@@ -36,19 +37,22 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Admin role required' }, { status: 403 });
     }
 
-    // Resolve certificate & ambiente from Firestore
+    // Resolve certificate, ambiente e UF from Firestore
     let certificado = body.certificado;
     let ambiente: SefazAmbiente = 'homologacao';
+    let ufFromBusiness: string | undefined;
 
     if (body.businessId) {
       const businessDoc = await adminDb.collection('businesses').doc(body.businessId).get();
       if (businessDoc.exists) {
-        const fiscal = businessDoc.data()?.fiscal;
+        const data = businessDoc.data();
+        const fiscal = data?.fiscal;
         const rawEnv =
           type === 'nfce'
-            ? (fiscal?.nfceConfig?.environment ?? fiscal?.nfeConfig?.environment)
-            : fiscal?.nfeConfig?.environment;
+            ? (fiscal?.nfceConfig?.environment ?? fiscal?.nfeConfig?.environment ?? fiscal?.environment)
+            : (fiscal?.nfeConfig?.environment ?? fiscal?.environment);
         ambiente = resolveAmbiente(rawEnv);
+        ufFromBusiness = data?.endereco?.uf?.toUpperCase();
       }
 
       if (!certificado) {
@@ -114,9 +118,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const ufEmitente = resolveUfEmitente({
+      ufFromBody: body.ufEmitente,
+      ufFromBusiness,
+      chaveAcesso: body.chaveAcesso,
+    });
+
     const result = await consultarNFe({
       chaveAcesso: body.chaveAcesso,
-      ufEmitente: body.ufEmitente || body.chaveAcesso.substring(0, 2),
+      ufEmitente,
       ambiente,
       certificado,
     });

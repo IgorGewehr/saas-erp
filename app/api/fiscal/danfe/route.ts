@@ -180,14 +180,15 @@ function extractDanfeData(xml: string): DanfeData {
   };
 }
 
-function generateDanfeNFCeHtml(data: DanfeData): string {
+function generateDanfeNFCeHtml(data: DanfeData, opts: { isCancelled: boolean; cancelReason?: string; canceledAt?: string }): string {
   const isHomolog = data.tpAmb === '2';
+  const cancelDate = opts.canceledAt ? new Date(opts.canceledAt).toLocaleString('pt-BR') : '';
 
   return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>DANFE NFCe #${data.numero}</title>
+<html><head><meta charset="utf-8"><title>DANFE NFCe #${data.numero}${opts.isCancelled ? ' (CANCELADA)' : ''}</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: 'Courier New', monospace; font-size: 10px; width: 80mm; margin: 0 auto; padding: 4mm; }
+  body { font-family: 'Courier New', monospace; font-size: 10px; width: 80mm; margin: 0 auto; padding: 4mm; position: relative; }
   .center { text-align: center; }
   .bold { font-weight: bold; }
   .divider { border-top: 1px dashed #000; margin: 4px 0; }
@@ -196,8 +197,14 @@ function generateDanfeNFCeHtml(data: DanfeData): string {
   .total { font-size: 14px; font-weight: bold; margin: 4px 0; }
   .key { font-size: 8px; word-break: break-all; }
   ${isHomolog ? '.homolog { background: #fef3cd; padding: 4px; text-align: center; font-weight: bold; color: #856404; margin-bottom: 4px; }' : ''}
+  ${opts.isCancelled ? `
+  .cancelled-banner { background: #fee2e2; border: 2px solid #dc2626; padding: 6px; text-align: center; color: #991b1b; font-weight: bold; margin-bottom: 4px; font-size: 11px; }
+  .cancelled-watermark { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-25deg); font-size: 64px; font-weight: bold; color: rgba(220, 38, 38, 0.18); border: 6px solid rgba(220, 38, 38, 0.18); padding: 12px 30px; pointer-events: none; z-index: 9999; white-space: nowrap; }
+  ` : ''}
   @media print { body { width: 80mm; } }
 </style></head><body>
+${opts.isCancelled ? '<div class="cancelled-watermark">CANCELADA</div>' : ''}
+${opts.isCancelled ? `<div class="cancelled-banner">NOTA FISCAL CANCELADA${cancelDate ? `<br>Em: ${cancelDate}` : ''}${opts.cancelReason ? `<br>Motivo: ${opts.cancelReason}` : ''}</div>` : ''}
 ${isHomolog ? '<div class="homolog">EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL</div>' : ''}
 <div class="header center">
   <div class="bold">${data.emitente.fantasia || data.emitente.nome}</div>
@@ -233,14 +240,15 @@ ${data.destinatario ? `<div style="font-size: 9px;">Consumidor: ${data.destinata
 </body></html>`;
 }
 
-function generateDanfeNFeHtml(data: DanfeData): string {
+function generateDanfeNFeHtml(data: DanfeData, opts: { isCancelled: boolean; cancelReason?: string; canceledAt?: string }): string {
   const isHomolog = data.tpAmb === '2';
+  const cancelDate = opts.canceledAt ? new Date(opts.canceledAt).toLocaleString('pt-BR') : '';
 
   return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>DANFE NFe #${data.numero}</title>
+<html><head><meta charset="utf-8"><title>DANFE NFe #${data.numero}${opts.isCancelled ? ' (CANCELADA)' : ''}</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: Arial, sans-serif; font-size: 9px; max-width: 210mm; margin: 0 auto; padding: 10mm; }
+  body { font-family: Arial, sans-serif; font-size: 9px; max-width: 210mm; margin: 0 auto; padding: 10mm; position: relative; }
   table { width: 100%; border-collapse: collapse; }
   td, th { border: 1px solid #333; padding: 2px 4px; vertical-align: top; }
   th { background: #f3f4f6; font-weight: 600; text-align: left; }
@@ -252,8 +260,14 @@ function generateDanfeNFeHtml(data: DanfeData): string {
   .key { font-size: 8px; font-family: monospace; letter-spacing: 1px; }
   .total-row { font-weight: bold; background: #f9fafb; }
   ${isHomolog ? '.homolog-banner { background: #fef3cd; border: 2px solid #f59e0b; padding: 6px; text-align: center; font-weight: bold; color: #856404; margin-bottom: 8px; font-size: 12px; }' : ''}
+  ${opts.isCancelled ? `
+  .cancelled-banner { background: #fee2e2; border: 3px double #dc2626; padding: 10px; text-align: center; color: #991b1b; font-weight: bold; margin-bottom: 8px; font-size: 14px; }
+  .cancelled-watermark { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-30deg); font-size: 140px; font-weight: bold; color: rgba(220, 38, 38, 0.15); border: 12px solid rgba(220, 38, 38, 0.15); padding: 20px 60px; pointer-events: none; z-index: 9999; white-space: nowrap; letter-spacing: 8px; }
+  ` : ''}
   @media print { body { padding: 5mm; } @page { margin: 5mm; } }
 </style></head><body>
+${opts.isCancelled ? '<div class="cancelled-watermark">CANCELADA</div>' : ''}
+${opts.isCancelled ? `<div class="cancelled-banner">NOTA FISCAL CANCELADA${cancelDate ? ` em ${cancelDate}` : ''}${opts.cancelReason ? `<br><span style="font-size: 10px; font-weight: normal;">Motivo: ${opts.cancelReason}</span>` : ''}</div>` : ''}
 ${isHomolog ? '<div class="homolog-banner">EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL</div>' : ''}
 <div class="header">
   <div class="header-left">
@@ -349,7 +363,13 @@ export async function POST(request: NextRequest) {
     if (isAuthError(auth)) return auth;
 
     const body = await request.json();
-    const { xml, type } = body as { xml?: string; type?: string };
+    const { xml, type, status, canceledAt, cancelReason } = body as {
+      xml?: string;
+      type?: string;
+      status?: string;
+      canceledAt?: string;
+      cancelReason?: string;
+    };
 
     if (!xml) {
       return NextResponse.json({ error: 'XML e obrigatorio para gerar DANFE.' }, { status: 400 });
@@ -357,8 +377,11 @@ export async function POST(request: NextRequest) {
 
     const data = extractDanfeData(xml);
     const isNFCe = (type === 'nfce') || data.modelo === '65';
+    const cancelOpts = { isCancelled: status === 'cancelada', cancelReason, canceledAt };
 
-    const html = isNFCe ? generateDanfeNFCeHtml(data) : generateDanfeNFeHtml(data);
+    const html = isNFCe
+      ? generateDanfeNFCeHtml(data, cancelOpts)
+      : generateDanfeNFeHtml(data, cancelOpts);
 
     return new NextResponse(html, {
       status: 200,

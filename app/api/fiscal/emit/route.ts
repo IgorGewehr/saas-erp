@@ -144,17 +144,17 @@ export async function POST(request: NextRequest) {
         : (fiscal.nfeConfig?.environment ?? fiscal.environment);
     const ambiente: SefazAmbiente = resolveAmbiente(rawEnvironment);
 
-    // 6. Build items with tax blocks -------------------------------------------
+    // 6. Build items with tax blocks (NFe/NFCe only — NFSe uses servico block) -
 
     const rawItems = data.items;
-    if (!Array.isArray(rawItems) || rawItems.length === 0) {
+    if (type !== 'nfse' && (!Array.isArray(rawItems) || rawItems.length === 0)) {
       return NextResponse.json(
         { error: 'Pelo menos um item e obrigatorio.' },
         { status: 400 },
       );
     }
 
-    const items = rawItems.map((item: Record<string, unknown>, i: number) => {
+    const items = (Array.isArray(rawItems) ? rawItems : []).map((item: Record<string, unknown>, i: number) => {
       const qty = Number(item.quantity) || 0;
       const price = Number(item.unitPrice) || 0;
       const vProd = +(qty * price).toFixed(2);
@@ -354,24 +354,39 @@ export async function POST(request: NextRequest) {
 
     // 9. Payment ----------------------------------------------------------------
 
-    const paymentCode = getPaymentCode(data.paymentMethod || 'dinheiro');
     const totalNF = items.reduce(
       (sum: number, it: { produto: { valorTotal: number; valorDesconto?: number } }) =>
         sum + (it.produto.valorTotal || 0) - (it.produto.valorDesconto || 0),
       0,
     );
 
-    // Card info for electronic payment methods (crédito, débito, pix)
-    const needsCardInfo = ['03', '04', '17'].includes(paymentCode);
+    // Aceita data.payments (array — preferido) ou data.paymentMethod+paymentValue
+    // (legado/single). Card info só pra métodos eletrônicos (crédito, débito, pix).
+    const rawPayments: Array<{ method?: string; amount?: number }> = Array.isArray(data.payments) && data.payments.length > 0
+      ? data.payments
+      : [{ method: data.paymentMethod, amount: Number(data.paymentValue) || totalNF }];
+
+    const formas = rawPayments
+      .filter((p) => p && (p.method || p.amount))
+      .map((p) => {
+        const code = getPaymentCode(p.method || 'dinheiro');
+        const needsCardInfo = ['03', '04', '17'].includes(code);
+        return {
+          tipo: code,
+          valor: +(Number(p.amount) || 0).toFixed(2),
+          ...(needsCardInfo ? { cartao: { tipoIntegracao: '2' } } : {}),
+        };
+      })
+      .filter((f) => f.valor > 0);
+
+    if (formas.length === 0) {
+      // Fallback: total da nota como dinheiro (caso UI não tenha enviado nada).
+      formas.push({ tipo: '01', valor: +totalNF.toFixed(2) });
+    }
+
     const pagamento = {
       indicadorPagamento: '0',
-      formas: [
-        {
-          tipo: paymentCode,
-          valor: +(Number(data.paymentValue) || totalNF).toFixed(2),
-          ...(needsCardInfo ? { cartao: { tipoIntegracao: '2' } } : {}),
-        },
-      ],
+      formas,
     };
 
     const now = new Date().toISOString();
@@ -449,21 +464,41 @@ export async function POST(request: NextRequest) {
       }
 
       // Persist fiscal document
-      if (result.chaveAcesso || result.status === 'autorizado') {
+      if (result.chaveAcesso || result.codigoVerificacao || result.status === 'autorizado') {
         await adminDb.collection('fiscalDocuments').add(
           stripEmpty({
             businessId,
             type: 'nfse',
-            number,
+            // Prefer the SEFAZ-issued NFSe number when available; otherwise fall back to the DPS/RPS number we sent.
+            number: result.numeroNfse || number,
             series,
-            accessKey: result.chaveAcesso,
+            // For NFSe, the SEFAZ returns codigoVerificacao (used to validate the note on the city portal).
+            accessKey: result.codigoVerificacao || result.chaveAcesso,
             protocol: result.protocolo,
             status: result.status === 'autorizado' ? 'autorizada' : result.status,
+            statusMessage: result.motivoStatus || result.mensagens?.[0]?.mensagem || result.erros?.[0] || null,
             xml: result.xml,
+            // linkVisualizacao = external URL (city portal) to view/print the NFSe — there's no DANFE for NFSe.
+            pdfUrl: result.linkVisualizacao,
             sefazResponse: result,
             totalValue: baseCalculo,
             clientName: data.tomador?.nome,
             clientCpfCnpj: data.tomador?.cpf || data.tomador?.cnpj,
+            informacoesAdicionais: data.informacoesAdicionais,
+            // NFSe doesn't have a true items array — synthesize one entry from the service block so
+            // the detail dialog renders the description/value table consistently with NFe/NFCe.
+            items: [
+              {
+                description: data.discriminacao || data.descricaoServico || 'Servico',
+                quantity: 1,
+                unitPrice: baseCalculo,
+                totalPrice: baseCalculo,
+                unit: 'SV',
+                codigo: data.codigoServico || undefined,
+                taxes: { iss: { aliquota: aliquotaIss, valor: valorISS } },
+              },
+            ],
+            issueDate: result.dataEmissao || now,
             createdAt: now,
             updatedAt: now,
           }),

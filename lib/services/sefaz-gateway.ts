@@ -115,6 +115,12 @@ export interface SefazResponse {
   xml?: string;
   nRec?: string | null;
   erros?: string[] | null;
+  // NFS-e specific (returned by /nfse/emitir)
+  numeroNfse?: number;
+  codigoVerificacao?: string;
+  linkVisualizacao?: string;
+  dataEmissao?: string;
+  mensagens?: Array<{ codigo: string; mensagem: string; correcao?: string }>;
 }
 
 export interface CertificadoPayload {
