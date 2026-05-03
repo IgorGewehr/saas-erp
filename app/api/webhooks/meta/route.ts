@@ -1419,6 +1419,9 @@ async function saveInboundMessage(params: InboundMessageParams) {
         // a mensagem. Pode ser null em ambientes ainda não-migrados (lazy
         // migration foi disparada em background no resolveChannelContext).
         ...(channelConnectionId ? { channelConnectionId } : {}),
+        // Cloud/FB/IG são sempre 'business' por regra do produto (Embedded Signup
+        // do Meta = uma conta por business). Apenas Baileys pode ser 'user'.
+        channelOwnerType: 'business',
         contactName: params.senderName ?? params.externalId,
         contactExternalId: params.externalId,
         ...(formattedPhone ? { contactPhone: formattedPhone } : {}),

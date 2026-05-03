@@ -717,14 +717,19 @@ async function handleInboundMessage(
     if (!matchedDoc) {
       // Auto-assign para canais pessoais (ownerType='user'): a conversa que
       // chega num canal pessoal pertence ao owner do canal por default.
-      // Outros operators continuam vendo (até implementarmos rule server-side
-      // pra restringir), mas a atribuição inicial fica clara.
+      // E denormaliza channelOwnerType/channelOwnerId no doc da conversa pra
+      // que rules e queries consigam isolar canais pessoais sem precisar
+      // fazer get() do channelConnections em cada read.
       let initialAssignedTo: string | undefined;
       let initialAssignedToName: string | undefined;
+      let channelOwnerType: 'business' | 'user' = 'business';
+      let channelOwnerId: string | undefined;
       try {
         const connSnap = await adminDb.collection('channelConnections').doc(connectionId).get();
         const connData = connSnap.data();
         if (connData?.ownerType === 'user' && connData.ownerId) {
+          channelOwnerType = 'user';
+          channelOwnerId = connData.ownerId as string;
           initialAssignedTo = connData.ownerId as string;
           // Tenta puxar nome do owner pra denormalizar
           try {
@@ -732,7 +737,7 @@ async function handleInboundMessage(
             initialAssignedToName = (userSnap.data()?.name as string) || undefined;
           } catch { /* opcional */ }
         }
-      } catch { /* connection lookup falhou — sem auto-assign */ }
+      } catch { /* connection lookup falhou — assume business */ }
 
       const newConvRef = await adminDb.collection('conversations').add({
         businessId,
@@ -743,6 +748,8 @@ async function handleInboundMessage(
         // partir desse campo. Sem isso, send caía pra primary business
         // mesmo quando a msg veio em canal pessoal (ownerType='user').
         channelConnectionId: connectionId,
+        channelOwnerType,
+        ...(channelOwnerId ? { channelOwnerId } : {}),
         contactName,
         contactPhone: formatPhone(senderPhone),
         contactExternalId: senderPhone,
@@ -819,23 +826,29 @@ async function handleInboundMessage(
         // refactor maior agora.
         let initialAssignedTo: string | undefined;
         let initialAssignedToName: string | undefined;
+        let channelOwnerType: 'business' | 'user' = 'business';
+        let channelOwnerId: string | undefined;
         try {
           const connSnap = await adminDb.collection('channelConnections').doc(connectionId).get();
           const connData = connSnap.data();
           if (connData?.ownerType === 'user' && connData.ownerId) {
+            channelOwnerType = 'user';
+            channelOwnerId = connData.ownerId as string;
             initialAssignedTo = connData.ownerId as string;
             try {
               const userSnap = await adminDb.collection('users').doc(initialAssignedTo).get();
               initialAssignedToName = (userSnap.data()?.name as string) || undefined;
             } catch { /* opcional */ }
           }
-        } catch { /* connection lookup falhou — sem auto-assign */ }
+        } catch { /* connection lookup falhou — assume business */ }
 
         const newConvRef = await adminDb.collection('conversations').add({
           businessId,
           channel: 'whatsapp',
           connectedVia: 'baileys',
           channelConnectionId: connectionId,
+          channelOwnerType,
+          ...(channelOwnerId ? { channelOwnerId } : {}),
           contactName,
           contactPhone: formatPhone(senderPhone),
           contactExternalId: senderPhone,

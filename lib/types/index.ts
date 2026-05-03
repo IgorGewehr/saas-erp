@@ -2009,6 +2009,19 @@ export interface Conversation {
    * fallback enquanto o campo não está populado.
    */
   channelConnectionId?: string;
+  /**
+   * Denormalização de `channelConnections/{channelConnectionId}.ownerType`.
+   * Usado pelas Firestore rules e queries pra isolar canais pessoais
+   * (ownerType='user') do operador-dono — sem isso, qualquer operator+ do
+   * mesmo business consegue ler/escrever conversas de canal pessoal alheio.
+   * Vazio em conversas legadas até o backfill (`backfill-conversation-ownership`).
+   */
+  channelOwnerType?: 'business' | 'user';
+  /**
+   * Denormalização de `channelConnections/{channelConnectionId}.ownerId`.
+   * Só populado quando `channelOwnerType === 'user'`. Vazio em canais business.
+   */
+  channelOwnerId?: string;
   status: ConversationStatus;
   contactName: string;
   contactPhone?: string;
@@ -2629,6 +2642,18 @@ export interface Broadcast {
   retryOf?: string;
   /** Quando true e channel === 'whatsapp', envia via Baileys (WhatsApp Web) em vez de Cloud API. */
   viaBaileys?: boolean;
+  /**
+   * ID da `channelConnections/{id}` específica que vai disparar o broadcast.
+   *
+   * Quando presente, o backend `/api/broadcasts/send` usa essa connection
+   * exata — permite ao operador escolher entre múltiplas Baileys (empresa ou
+   * pessoal) ou múltiplas Cloud (raro). Quando ausente (broadcast antigo ou
+   * UI básica), o backend faz fallback pra primary 'business' do tipo.
+   *
+   * Regra: se `viaBaileys=true` e o operador quer usar seu Baileys pessoal,
+   * este campo precisa estar setado — sem ele, o backend cai em `business`.
+   */
+  channelConnectionId?: string;
   messageType: 'template' | 'text';
   templateName?: string;
   templateLanguage?: string;

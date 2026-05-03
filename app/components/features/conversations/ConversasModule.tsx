@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
@@ -13,6 +13,7 @@ import {
   collection,
   query,
   where,
+  or,
   orderBy,
   addDoc,
   updateDoc,
@@ -2619,6 +2620,13 @@ function NewConversationDialog({
       // pra que send/route.ts use a sessão correta no reply (especialmente
       // quando há múltiplas Baileys-empresa ou quando user escolhe pessoal).
       const effectiveConnectionId = channelMode === 'baileys' ? selectedConnectionId : null;
+      // Denormaliza ownership da connection escolhida pra fallar em queries/rules
+      // sem precisar de get(). Cloud (channelMode!=='baileys') é sempre 'business'.
+      const selectedConn = effectiveConnectionId
+        ? connections.find(c => c.id === effectiveConnectionId)
+        : null;
+      const channelOwnerType: 'business' | 'user' = selectedConn?.ownerType === 'user' ? 'user' : 'business';
+      const channelOwnerId = selectedConn?.ownerType === 'user' ? selectedConn.ownerId : undefined;
 
       // Create conversation document
       const convData: Record<string, unknown> = {
@@ -2626,6 +2634,8 @@ function NewConversationDialog({
         channel: 'whatsapp',
         connectedVia: channelMode === 'baileys' ? 'baileys' : 'embedded_signup',
         ...(effectiveConnectionId ? { channelConnectionId: effectiveConnectionId } : {}),
+        channelOwnerType,
+        ...(channelOwnerId ? { channelOwnerId } : {}),
         contactName: displayName,
         contactPhone: phoneE164,
         contactExternalId: phoneE164,
@@ -4431,6 +4441,7 @@ export default function ConversasModule() {
 
   useEffect(() => {
     if (!business?.id) return;
+    if (!user?.uid) return;
 
     setIsLoadingConversations(true);
 
@@ -4440,11 +4451,29 @@ export default function ConversasModule() {
       setIsLoadingConversations(false);
     }, 12_000);
 
-    const q = query(
-      collection(db, 'conversations'),
-      where('businessId', '==', business.id),
-      orderBy('lastMessageAt', 'desc'),
-    );
+    // Isolamento server-side de canais pessoais (ownerType='user'):
+    //   - Admin/Founder vê tudo (rules + query irrestrita).
+    //   - Operador/Manager vê: canais 'business' + canais 'user' que ele é dono.
+    // O `or()` aqui combina (channelOwnerType=='business' || channelOwnerId==me).
+    // Conversas legadas sem channelOwnerType denormalizado NÃO casam com nenhuma
+    // das branches — por isso depende do backfill (`backfill-conversation-ownership`)
+    // ter rodado antes do deploy desta versão. Até lá, conversas legadas ficam
+    // invisíveis pra non-admin (efeito conservador, não vaza nada).
+    const q = isAdmin
+      ? query(
+          collection(db, 'conversations'),
+          where('businessId', '==', business.id),
+          orderBy('lastMessageAt', 'desc'),
+        )
+      : query(
+          collection(db, 'conversations'),
+          where('businessId', '==', business.id),
+          or(
+            where('channelOwnerType', '==', 'business'),
+            where('channelOwnerId', '==', user.uid),
+          ),
+          orderBy('lastMessageAt', 'desc'),
+        );
 
     let unsub: (() => void) | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -4485,7 +4514,7 @@ export default function ConversasModule() {
       if (retryTimer) clearTimeout(retryTimer);
       unsub?.();
     };
-  }, [business?.id]);
+  }, [business?.id, user?.uid, isAdmin]);
 
   // ── Load channel connections (Phase 2: badges + filter) ───────────────────
   // Fetch via API pra usar a sanitização (sem tokens) + filtragem por role
@@ -4803,17 +4832,27 @@ export default function ConversasModule() {
 
   // ── Auto-scroll to bottom ──────────────────────────────────────────────────
 
-  // Scroll the messages container to the absolute bottom.
-  // Using scrollTop = scrollHeight directly on the container is more reliable than
-  // scrollIntoView, which can be affected by other scrollable ancestors.
+  // Força o scroll do messagesContainerRef pro fundo. Usa scrollHeight direto
+  // — mais confiável que scrollIntoView quando há ancestors animados (Framer
+  // Motion no shell + transição de conversa) que podem confundir o "nearest
+  // scrollable parent" do scrollIntoView nativo.
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const container = messagesContainerRef.current;
     if (!container) return;
-    if (behavior === 'instant') {
+    if (behavior === 'instant' || behavior === 'auto') {
       container.scrollTop = container.scrollHeight;
     } else {
       container.scrollTo({ top: container.scrollHeight, behavior });
     }
+  }, []);
+
+  // Detecta se o user está dentro de ~150px do bottom — se sim, auto-scroll
+  // ao receber novas msgs/mídia carregando é desejado. Se está scrollado bem
+  // pra cima (lendo histórico), respeitamos a posição dele.
+  const isNearBottom = useCallback(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return true;
+    return container.scrollHeight - container.scrollTop - container.clientHeight < 150;
   }, []);
 
   // Track the conversation ID for which we've already done the initial instant scroll
@@ -4827,25 +4866,71 @@ export default function ConversasModule() {
   }, [selectedConversation?.id]);
 
   // Scroll to bottom when messages finish loading for the first time in a conversation.
-  // Two-pass strategy: immediate rAF for text messages, delayed pass for images/media
-  // that finish loading after the initial DOM paint and would otherwise push content down.
-  useEffect(() => {
+  //
+  // Por que useLayoutEffect ao invés de useEffect: o useLayoutEffect roda
+  // SÍNCRONO depois do DOM update mas ANTES do paint. Isso garante que o
+  // scroll é aplicado antes do user ver o conteúdo no estado errado (sem
+  // flicker) e evita race com a animação de entrada do painel direito
+  // (AnimatePresence + Framer Motion) que pode interferir com scrollIntoView.
+  //
+  // Multi-pass + ResizeObserver: 1 attempt síncrono + vários attempts
+  // assíncronos (até 3.5s) pra cobrir imagens/áudio/vídeo que carregam após
+  // DOM paint. ResizeObserver re-scrolla automaticamente sempre que altura
+  // do container muda nos primeiros 5s, MAS só se user ainda está near-bottom
+  // (se ele scrollou pra cima manualmente, respeitamos).
+  useLayoutEffect(() => {
     if (
       !isLoadingMessages &&
       selectedConversation?.id &&
       messages.length > 0 &&
       initialScrollDoneRef.current !== selectedConversation.id
     ) {
-      initialScrollDoneRef.current = selectedConversation.id;
+      const convId = selectedConversation.id;
+      initialScrollDoneRef.current = convId;
 
-      // Pass 1: scroll as soon as the DOM is painted (catches text-only conversations)
-      requestAnimationFrame(() => scrollToBottom('instant'));
+      // Pass síncrono (antes do paint) — funciona pra texto puro
+      scrollToBottom('instant');
 
-      // Pass 2: re-scroll after a short delay to catch images/media that load
-      // asynchronously and shift layout after the first scroll
-      setTimeout(() => scrollToBottom('instant'), 350);
+      const timers: ReturnType<typeof setTimeout>[] = [];
+
+      // Passes assíncronos pra mídia que carrega depois.
+      requestAnimationFrame(() => {
+        if (initialScrollDoneRef.current === convId) scrollToBottom('instant');
+      });
+      [50, 150, 350, 700, 1200, 2000, 3500].forEach((ms) => {
+        timers.push(setTimeout(() => {
+          if (initialScrollDoneRef.current === convId) {
+            scrollToBottom('instant');
+          }
+        }, ms));
+      });
+
+      // ResizeObserver: durante 5s, sempre que altura muda, re-scrolla SE
+      // user está near-bottom. Isso pega lazy load de mídia sem bater contra
+      // o scroll manual do user.
+      const container = messagesContainerRef.current;
+      let stopObserving = false;
+      let observer: ResizeObserver | null = null;
+      if (container && typeof ResizeObserver !== 'undefined') {
+        observer = new ResizeObserver(() => {
+          if (stopObserving) return;
+          if (initialScrollDoneRef.current !== convId) return;
+          if (!isNearBottom()) return; // user scrollou — respeita
+          scrollToBottom('instant');
+        });
+        observer.observe(container);
+        timers.push(setTimeout(() => {
+          stopObserving = true;
+          observer?.disconnect();
+        }, 5000));
+      }
+
+      return () => {
+        timers.forEach(clearTimeout);
+        observer?.disconnect();
+      };
     }
-  }, [isLoadingMessages, selectedConversation?.id, messages.length, scrollToBottom]);
+  }, [isLoadingMessages, selectedConversation?.id, messages.length, scrollToBottom, isNearBottom]);
 
   // Smooth scroll when a new message arrives after the initial load
   useEffect(() => {
@@ -5264,11 +5349,18 @@ export default function ConversasModule() {
     // Update status back to 'sending'
     await updateDoc(doc(db, 'conversationMessages', msg.id), { status: 'sending' });
 
-    // Re-send via API
+    const markFailed = () =>
+      updateDoc(doc(db, 'conversationMessages', msg.id), { status: 'failed' })
+        .catch(e => console.warn('[Conversations] Failed to mark message as failed:', e));
+
+    // Re-send via API — mirrors handleSend error handling so a failed retry
+    // surfaces the toast and flips the bubble back to 'failed' (re-exposes the
+    // "Tentar novamente" affordance). Without this, HTTP 4xx leaves the message
+    // stuck in 'sending' and the UI silently looks sent.
     try {
       const authInstance = getAuth();
       const token = await authInstance.currentUser?.getIdToken();
-      await fetch('/api/conversations/send', {
+      const res = await fetch('/api/conversations/send', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -5284,8 +5376,24 @@ export default function ConversasModule() {
           ...(msg.mediaUrl ? { type: 'media', mediaUrl: msg.mediaUrl, mediaType: msg.mediaType } : {}),
         }),
       });
-    } catch {
-      await updateDoc(doc(db, 'conversationMessages', msg.id), { status: 'failed' });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({ code: 'unknown', error: 'Erro desconhecido' }));
+        const chNames: Record<string, string> = { whatsapp: 'WhatsApp', facebook: 'Facebook Messenger', instagram: 'Instagram' };
+        const chName = chNames[msg.channel] || 'Canal';
+        if (errBody.code === 'disconnected' || errBody.code === 'token_expired') {
+          toast.warn(`${chName} desconectado — reconecte em Configurações → Canais.\n${errBody.error || ''}`);
+        } else if (errBody.code === 'send_failed') {
+          toast.error(`Falha ao enviar pelo ${chName}: ${errBody.error || 'erro desconhecido'}${errBody.metaCode ? ` (Meta #${errBody.metaCode})` : ''}`);
+        } else {
+          toast.error(`Erro ao reenviar mensagem [${res.status}]: ${errBody.error || 'erro desconhecido'}`);
+        }
+        console.warn('[Retry] API error:', errBody);
+        await markFailed();
+      }
+    } catch (err) {
+      const m = err instanceof Error ? err.message : String(err);
+      toast.error(`Erro de conexão ao reenviar mensagem: ${m}`);
+      await markFailed();
     }
   }, [selectedConversation, business?.id]);
 
@@ -5421,7 +5529,9 @@ export default function ConversasModule() {
             } else {
               toast.error(`Erro ao enviar mensagem [${res.status}]: ${errBody.error || 'erro desconhecido'}`);
             }
-            console.error('[Send] API error:', errBody);
+            // Tratado (toast + status:'failed') — usa warn pra não disparar o overlay
+            // de erro do Next.js dev. console.error fica reservado pro catch abaixo.
+            console.warn('[Send] API error:', errBody);
             await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(e => console.warn('[Conversations] Failed to mark message as failed:', e));
           }
         } catch (err) {
@@ -5822,9 +5932,13 @@ export default function ConversasModule() {
             </div>
           </div>
 
-          {/* Channel Tabs */}
+          {/* Channel Tabs — scroll horizontal quando há tabs demais (split
+              Cloud/Baileys = 5 tabs). Labels completos sempre, sem truncate
+              que cortava em "WA O..." / "Mess...". Quem não couber pode ser
+              alcançado scrollando lateralmente; barra de scroll fica
+              escondida visualmente mas funcional via mouse-wheel/trackpad. */}
           <div className="px-3 pb-1 flex-shrink-0">
-            <div className="flex gap-0.5">
+            <div className="flex gap-0.5 overflow-x-auto scrollbar-hide -mx-1 px-1">
               {tabs.map((tab) => {
                 const isActive = activeChannel === tab.id;
                 const unread = tab.id === 'all' ? unreadByChannel.all : unreadByChannel[tab.id];
@@ -5839,8 +5953,9 @@ export default function ConversasModule() {
                   <button
                     key={tab.id}
                     onClick={() => setActiveChannel(tab.id)}
+                    title={tab.label}
                     className={cn(
-                      'flex items-center gap-1 min-w-0 px-1.5 py-1.5 rounded-lg text-[10.5px] font-semibold transition-all duration-150 whitespace-nowrap',
+                      'flex items-center gap-1 flex-shrink-0 px-1.5 py-1.5 rounded-lg text-[10.5px] font-semibold transition-all duration-150 whitespace-nowrap',
                       isActive
                         ? 'bg-gray-900 dark:bg-white/[0.12] text-white dark:text-white'
                         : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] hover:text-gray-800 dark:hover:text-gray-200',
@@ -5855,7 +5970,7 @@ export default function ConversasModule() {
                             : <ChannelIcon channel={tab.id as ConversationChannel} size="sm" />}
                       </span>
                     )}
-                    <span className="truncate">{tab.label}</span>
+                    <span>{tab.label}</span>
                     {(unread ?? 0) > 0 && (
                       <span
                         className={cn(

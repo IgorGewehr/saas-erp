@@ -1290,6 +1290,17 @@ function CampaignsTab({ businessId }: { businessId: string }) {
   const [formName, setFormName] = useState('');
   const [formChannel, setFormChannel] = useState<'whatsapp' | 'facebook' | 'instagram' | 'email'>('whatsapp');
   const [formViaBaileys, setFormViaBaileys] = useState(false);
+  /**
+   * ID da channelConnections/{id} escolhida pra disparar a campanha. Sem isso,
+   * o backend cai em fallback `primary business` — o que esconde canais
+   * pessoais de operador (ownerType='user') e quebra envios em ambientes que
+   * só têm Baileys pessoal cadastrado. Empty string = "default" (deixa o
+   * backend resolver).
+   */
+  const [formChannelConnectionId, setFormChannelConnectionId] = useState<string>('');
+  // Lista de connections disponíveis pro operador (carregada via API que já
+  // filtra por role: operator vê 'business' + suas próprias 'user'; admin vê tudo).
+  const [availableConnections, setAvailableConnections] = useState<import('@/lib/types').ChannelConnection[]>([]);
   const [formAudienceType, setFormAudienceType] = useState<'all_contacts' | 'tags' | 'manual' | 'list'>('list');
   const [formTags, setFormTags] = useState('');
   const [formRecipients, setFormRecipients] = useState<BroadcastRecipient[]>([]);
@@ -1366,6 +1377,62 @@ function CampaignsTab({ businessId }: { businessId: string }) {
   useEffect(() => {
     if (showNew) refreshSavedLists();
   }, [showNew, refreshSavedLists]);
+
+  // Carrega channelConnections disponíveis pro operador. A API filtra por role:
+  // operator vê 'business' + suas próprias 'user'; admin/founder vê tudo.
+  useEffect(() => {
+    if (!showNew || !businessId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await getAuth().currentUser?.getIdToken();
+        if (!token) return;
+        const res = await fetch(`/api/channels/connections?businessId=${encodeURIComponent(businessId)}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        setAvailableConnections((data.connections || []) as import('@/lib/types').ChannelConnection[]);
+      } catch (err) {
+        console.error('[CRM:Campaigns] Failed to load channel connections:', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [showNew, businessId]);
+
+  // Connections elegíveis pro canal + modo escolhidos. Filtra por type e
+  // isConnected — desconectadas não dispararam.
+  const eligibleConnections = useMemo(() => {
+    if (formChannel === 'email') return [];
+    return availableConnections.filter(c => {
+      if (!c.isActive || !c.isConnected) return false;
+      if (formChannel === 'whatsapp') {
+        return formViaBaileys ? c.type === 'whatsapp_baileys' : c.type === 'whatsapp_cloud';
+      }
+      if (formChannel === 'facebook') return c.type === 'facebook';
+      if (formChannel === 'instagram') return c.type === 'instagram';
+      return false;
+    });
+  }, [availableConnections, formChannel, formViaBaileys]);
+
+  // Auto-seleciona quando há exatamente 1 connection elegível, ou quando a
+  // seleção atual deixa de ser elegível (ex: trocou Cloud→Baileys).
+  useEffect(() => {
+    if (formChannel === 'email') {
+      if (formChannelConnectionId) setFormChannelConnectionId('');
+      return;
+    }
+    if (eligibleConnections.length === 1) {
+      const onlyId = eligibleConnections[0].id;
+      if (formChannelConnectionId !== onlyId) setFormChannelConnectionId(onlyId);
+      return;
+    }
+    if (formChannelConnectionId && !eligibleConnections.some(c => c.id === formChannelConnectionId)) {
+      // Seleção atual não é mais válida — limpa pra forçar nova escolha.
+      setFormChannelConnectionId('');
+    }
+  }, [eligibleConnections, formChannel, formChannelConnectionId]);
 
   // Carrega clientes para o auto-link do RecipientListInput (cache compartilhado com pipeline tab)
   const { data: existingClients = [] } = useQuery<Client[]>({
@@ -1491,6 +1558,10 @@ function CampaignsTab({ businessId }: { businessId: string }) {
         businessId,
         name: formName.trim(),
         channel: formChannel,
+        // ID da connection escolhida (ou auto-selected quando só há 1). Sem
+        // isso, backend cai em fallback `primary business` — esconde canais
+        // pessoais e quebra envios quando só há Baileys pessoal cadastrado.
+        channelConnectionId: formChannelConnectionId || undefined,
         audienceType: formAudienceType,
         audienceTags: formAudienceType === 'tags' ? formTags.split(',').map(t => t.trim()).filter(Boolean) : [],
         messageType: effectiveMsgType,
@@ -1563,6 +1634,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       setFormContent('');
       setFormEmailSubject('');
       setFormViaBaileys(false);
+      setFormChannelConnectionId('');
       setFormScheduledAt('');
       setFormRecipientLimit('');
       setFormThrottlePreset('human');
@@ -1744,6 +1816,37 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                   </p>
                 </div>
               )}
+            </div>
+          )}
+          {/* Seletor "Enviar de" — só aparece quando há mais de 1 connection
+              elegível (na maioria dos negócios é 1 só, então fica oculto). */}
+          {formChannel !== 'email' && eligibleConnections.length > 1 && (
+            <FormControl fullWidth size="small">
+              <InputLabel>Enviar de</InputLabel>
+              <Select
+                value={formChannelConnectionId}
+                label="Enviar de"
+                onChange={(e) => setFormChannelConnectionId(e.target.value as string)}
+              >
+                {eligibleConnections.map(c => {
+                  const isUserOwned = c.ownerType === 'user';
+                  const ownerLabel = isUserOwned ? ' · pessoal' : ' · empresa';
+                  const phoneSuffix = c.phoneNumber ? ` (${c.phoneNumber})` : '';
+                  return (
+                    <MenuItem key={c.id} value={c.id}>
+                      {c.displayName}{phoneSuffix}{ownerLabel}
+                    </MenuItem>
+                  );
+                })}
+              </Select>
+            </FormControl>
+          )}
+          {formChannel !== 'email' && eligibleConnections.length === 0 && (
+            <div className="px-2.5 py-1.5 rounded-lg bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20">
+              <p className="text-[10px] text-red-700 dark:text-red-400 leading-relaxed">
+                Nenhum canal {formChannel === 'whatsapp' ? (formViaBaileys ? 'Baileys' : 'Cloud') : formChannel} conectado e disponível pra você.
+                Conecte um em Configurações → Canais.
+              </p>
             </div>
           )}
           <FormControl fullWidth size="small">
@@ -2162,7 +2265,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
             </label>
           </div>
         </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2 }}><Button onClick={() => setShowNew(false)}>{t('crm.action.cancel', 'Cancelar')}</Button><Button onClick={handleCreate} variant="contained" disabled={saving || !formName.trim() || !formConsentBasis || !formConsentAck} sx={{ bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' }, borderRadius: '0.75rem' }}>{saving ? t('crm.action.creating', 'Criando...') : t('crm.action.create', 'Criar')}</Button></DialogActions>
+        <DialogActions sx={{ px: 3, pb: 2 }}><Button onClick={() => setShowNew(false)}>{t('crm.action.cancel', 'Cancelar')}</Button><Button onClick={handleCreate} variant="contained" disabled={saving || !formName.trim() || !formConsentBasis || !formConsentAck || (formChannel !== 'email' && eligibleConnections.length === 0)} sx={{ bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' }, borderRadius: '0.75rem' }}>{saving ? t('crm.action.creating', 'Criando...') : t('crm.action.create', 'Criar')}</Button></DialogActions>
       </Dialog>
     </div>
   );
