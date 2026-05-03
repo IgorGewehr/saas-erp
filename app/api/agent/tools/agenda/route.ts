@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { createHash } from 'crypto';
+import { createHash } from 'node:crypto';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
 import type { Appointment, AppointmentStatus, Service, User, WorkSchedule } from '@/lib/types';

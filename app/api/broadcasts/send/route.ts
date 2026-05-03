@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 import { decryptToken } from '@/lib/utils/encryption';
 import { checkRateLimit, checkBusinessRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';

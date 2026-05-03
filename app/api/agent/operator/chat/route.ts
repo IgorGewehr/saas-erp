@@ -16,7 +16,7 @@
  * except for audit writes. This keeps the endpoint simple and resumable.
  */
 
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';

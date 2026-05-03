@@ -13,8 +13,6 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import path from 'path';
-import fs from 'fs';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { ROLE_HIERARCHY } from '@/lib/types';
@@ -24,9 +22,8 @@ import {
   updateConnection,
 } from '@/lib/services/channels/channelConnections';
 import { sessions, destroySession } from '@/app/api/whatsapp/baileys-manager';
+import { deleteFirestoreAuthState } from '@/lib/services/baileys/firestore-auth-state';
 import type { ChannelConnection, UserRole } from '@/lib/types';
-
-const SESSIONS_DIR = path.join(process.cwd(), 'whatsapp-sessions');
 
 async function loadConnection(id: string): Promise<ChannelConnection | null> {
   const snap = await adminDb.collection('channelConnections').doc(id).get();
@@ -147,61 +144,118 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: stri
   }
 
   try {
-    // Mata sessão em memória + arquivos do disco (se for Baileys).
-    // destroySession é await aqui — sem ele, o Baileys ainda mantém handles
-    // abertos no sessionDir. Em Windows, rmSync logo após dispara EBUSY.
-    // Pequeno delay extra cobre handles assíncronos do useMultiFileAuthState
-    // que talvez ainda estejam fechando.
+    // Mata sessão em memória + apaga auth state do Firestore (se for Baileys).
     if (conn.type === 'whatsapp_baileys') {
       try {
         await destroySession(conn.businessId, id);
       } catch (destroyErr) {
         console.warn('[connections DELETE] destroySession failed:', destroyErr);
       }
-      // Aguarda 100ms pra handles do Baileys auth state liberarem
-      await new Promise((r) => setTimeout(r, 100));
-      const dir = path.join(SESSIONS_DIR, id);
-      // Retry-on-EBUSY: 3 tentativas com backoff curto (cobre Windows)
-      for (let attempt = 0; attempt < 3; attempt++) {
-        if (!fs.existsSync(dir)) break;
-        try {
-          fs.rmSync(dir, { recursive: true, force: true });
-          break;
-        } catch (rmErr) {
-          const isLast = attempt === 2;
-          if (isLast) {
-            console.warn('[connections DELETE] rmSync failed after retries:', rmErr);
-            break;
-          }
-          await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
-        }
+      try {
+        await deleteFirestoreAuthState(id);
+      } catch (deleteErr) {
+        console.warn('[connections DELETE] deleteFirestoreAuthState failed:', deleteErr);
       }
     }
 
-    // Antes de apagar/desativar, desvincula conversations apontando pra esta
-    // connection — senão ficam órfãs com channelConnectionId pra doc inexistente,
-    // o que faz send/route.ts cair pro fallback legacy silencioso e mensagens
-    // podem ir pelo canal-empresa por engano.
+    // Antes de apagar/desativar, trata conversations apontando pra esta
+    // connection. Sem isso ficam órfãs com channelConnectionId pra doc
+    // inexistente, e send/route.ts cai pro fallback silencioso — risco de
+    // mensagens irem pelo canal errado.
+    //
+    // Estratégia (canal pessoal removido, ex: operador saiu da empresa):
+    //   1. Procura primary baileys do business como destino de fallback.
+    //   2. Se existe: repointar `channelConnectionId` pra primary. As novas
+    //      mensagens saem pelo número da empresa (com connectedVia='baileys').
+    //      O histórico (mensagens antigas) preserva o transporte original.
+    //   3. Se não existe primary baileys: limpa `channelConnectionId` E
+    //      `connectedVia` da conversa — força o admin a escolher canal
+    //      explicitamente na próxima resposta (em vez de envio silencioso).
     try {
       const { FieldValue } = await import('firebase-admin/firestore');
       const orphanSnap = await adminDb.collection('conversations')
         .where('businessId', '==', conn.businessId)
         .where('channelConnectionId', '==', id)
         .get();
+
+      // Resolve fallback de canal (apenas pra Baileys; Cloud não tem múltiplas connections do mesmo type).
+      let fallbackConnectionId: string | null = null;
+      if (conn.type === 'whatsapp_baileys' && orphanSnap.size > 0) {
+        try {
+          const primarySnap = await adminDb.collection('channelConnections')
+            .where('businessId', '==', conn.businessId)
+            .where('type', '==', 'whatsapp_baileys')
+            .where('ownerType', '==', 'business')
+            .where('isPrimary', '==', true)
+            .where('isActive', '==', true)
+            .limit(1)
+            .get();
+          // Não promove pra primary desconectada — operador veria badge "Conectado"
+          // sem socket atrás (envio falharia).
+          const primary = primarySnap.docs.find(d => d.data().isConnected);
+          if (primary && primary.id !== id) {
+            fallbackConnectionId = primary.id;
+          }
+        } catch (lookupErr) {
+          console.warn('[connections DELETE] Falha ao buscar primary baileys de fallback:', lookupErr);
+        }
+      }
+
+      const now = new Date().toISOString();
+      const isBaileysDelete = conn.type === 'whatsapp_baileys';
+
       // Chunk em batches (Firestore: 500 ops max)
       for (let i = 0; i < orphanSnap.docs.length; i += 400) {
         const slice = orphanSnap.docs.slice(i, i + 400);
         const batch = adminDb.batch();
         for (const d of slice) {
-          batch.update(d.ref, {
-            channelConnectionId: FieldValue.delete(),
-            updatedAt: new Date().toISOString(),
-          });
+          if (isBaileysDelete && fallbackConnectionId) {
+            // Baileys com fallback: repointa pra primary; mantém connectedVia
+            // (transporte real preservado). Conversa permanece 'open' — operador
+            // continua atendendo pelo número da empresa.
+            batch.update(d.ref, {
+              channelConnectionId: fallbackConnectionId,
+              updatedAt: now,
+            });
+          } else if (isBaileysDelete) {
+            // Baileys sem fallback: arquiva como 'resolved' pra sair da inbox.
+            // Sem isso o operador veria a conversa "viva" e responderia, mas a
+            // resposta sairia pelo Cloud (canal-empresa diferente do original) —
+            // cliente recebe num thread separado e fica confuso.
+            //
+            // Limpa channelConnectionId/connectedVia pra forçar escolha explícita
+            // se o admin reabrir e tentar responder. closedReason documenta o
+            // motivo pra auditoria/futuro UI banner. Mantém status original se já
+            // estava 'resolved' (não desfaz CSAT etc — só adiciona closedReason).
+            const wasAlreadyResolved = d.data().status === 'resolved';
+            batch.update(d.ref, {
+              channelConnectionId: FieldValue.delete(),
+              connectedVia: FieldValue.delete(),
+              ...(wasAlreadyResolved ? {} : { status: 'resolved' }),
+              closedReason: 'channel_removed',
+              updatedAt: now,
+            });
+          } else {
+            // Não-Baileys (Cloud/FB/IG): só desvincula channelConnectionId. NÃO
+            // arquiva (Cloud é singleton por business — sua remoção é evento
+            // administrativo, não impacta histórico de conversa) e NÃO toca
+            // connectedVia (preserva o transporte original pra UI render).
+            batch.update(d.ref, {
+              channelConnectionId: FieldValue.delete(),
+              updatedAt: now,
+            });
+          }
         }
         await batch.commit();
       }
       if (orphanSnap.size > 0) {
-        console.log(`[connections DELETE] Unlinked ${orphanSnap.size} conversation(s) from connection ${id}`);
+        if (!isBaileysDelete) {
+          console.log(`[connections DELETE] Desvinculou ${orphanSnap.size} conversa(s) do canal ${conn.type} ${id} (não-Baileys: sem arquivamento auto)`);
+        } else if (fallbackConnectionId) {
+          console.log(`[connections DELETE] Repontou ${orphanSnap.size} conversa(s) do canal Baileys ${id} pra primary ${fallbackConnectionId}`);
+        } else {
+          console.log(`[connections DELETE] ${orphanSnap.size} conversa(s) do canal Baileys ${id} arquivadas como 'resolved' (sem fallback disponível)`);
+        }
       }
     } catch (unlinkErr) {
       console.error('[connections DELETE] Failed to unlink conversations:', unlinkErr);

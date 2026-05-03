@@ -6,12 +6,9 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import path from 'path';
-import fs from 'fs';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { destroySession } from '../baileys-manager';
-
-const SESSIONS_DIR = path.join(process.cwd(), 'whatsapp-sessions');
+import { deleteFirestoreAuthState } from '@/lib/services/baileys/firestore-auth-state';
 
 export async function POST(req: NextRequest) {
   try {
@@ -52,19 +49,18 @@ export async function POST(req: NextRequest) {
 
     // Kill in-memory socket FIRST — sets isDestroyed=true antes do sock.end(),
     // garantindo que o handler async de connection.close pule auto-restart e
-    // não abra socket novo enquanto os arquivos estão sendo apagados.
+    // não abra socket novo enquanto o auth state é apagado.
     await destroySession(businessId, sessionKey);
 
-    // Clear session files (no diretório novo). Diretório legado é tratado
-    // como já-migrado (a sessão é a do connectionId).
-    const sessionDir = path.join(SESSIONS_DIR, sessionKey);
-    if (fs.existsSync(sessionDir)) {
-      fs.rmSync(sessionDir, { recursive: true, force: true });
-    }
-    // Limpa também o legacy dir se ainda existir (idempotente)
-    const legacyDir = path.join(SESSIONS_DIR, businessId);
-    if (legacyDir !== sessionDir && fs.existsSync(legacyDir)) {
-      fs.rmSync(legacyDir, { recursive: true, force: true });
+    // Apaga o auth state persistido (creds + signal keys) do Firestore.
+    // Idempotente; se já não existir, ok.
+    try {
+      await deleteFirestoreAuthState(sessionKey);
+    } catch (err) {
+      // Não-fatal — a sessão em memória já foi destruída e o flag do Firestore
+      // será atualizado abaixo. Pior caso: lixo persiste em baileysAuthStates/
+      // mas nada quebra; próxima limpeza explícita ou re-pareamento sobrescreve.
+      console.warn('[WA Baileys] Failed to delete Firestore auth state:', err);
     }
 
     // Update Firestore via Admin SDK — usar cliente Firebase aqui falhava silenciosamente
@@ -86,6 +82,7 @@ export async function POST(req: NextRequest) {
         const updates: Record<string, unknown> = {
           'channels.whatsappBaileys.isConnected': false,
           'channels.whatsappBaileys.disconnectedAt': now,
+          'channels.whatsappBaileys.disconnectReason': 'manual',
           updatedAt: now,
         };
         if (legacy?.connectedVia === 'baileys') {
@@ -101,6 +98,7 @@ export async function POST(req: NextRequest) {
         await connSnap.ref.update({
           isConnected: false,
           disconnectedAt: now,
+          disconnectReason: 'manual',
           updatedAt: now,
         });
       }

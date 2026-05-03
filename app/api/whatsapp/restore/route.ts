@@ -2,26 +2,23 @@
  * WhatsApp Session Restore
  *
  * POST /api/whatsapp/restore
- *   Body: { businessId: string }
+ *   Body: { businessId: string, connectionId?: string }
  *
  * Called once on frontend login to restore Baileys sessions
  * that were connected before the server restarted.
  *
  * Only restores if:
- *   1. The session files exist on disk (whatsapp-sessions/{businessId}/)
+ *   1. Há credenciais persistidas no Firestore (baileysAuthStates/{connectionId})
  *   2. The session is NOT already in the in-memory Map
- *   3. The business has channels.whatsapp.isConnected: true in Firestore
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import {
   sessions,
   createBaileysSession,
-  SESSIONS_DIR,
 } from '../baileys-manager';
+import { hasFirestoreAuthState } from '@/lib/services/baileys/firestore-auth-state';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -64,17 +61,13 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // Check if session files exist on disk. Verifica novo dir (connectionId)
-  // E o legacy dir (businessId) — restore migra automaticamente em createBaileysSession.
-  const newDir = path.join(SESSIONS_DIR, sessionKey);
-  const legacyDir = path.join(SESSIONS_DIR, businessId);
-  const hasFiles = (dir: string) => fs.existsSync(dir) && fs.readdirSync(dir).some((f) => f.endsWith('.json'));
-  const hasSessionFiles = hasFiles(newDir) || (sessionKey !== businessId && hasFiles(legacyDir));
-
-  if (!hasSessionFiles) {
+  // Verifica se há credenciais persistidas no Firestore. Se não, não há o que
+  // restaurar — usuário precisa parear via QR Code.
+  const hasAuthState = await hasFirestoreAuthState(sessionKey);
+  if (!hasAuthState) {
     return NextResponse.json({
       status: 'no_session',
-      message: 'No session files found on disk',
+      message: 'No persisted auth state — pareamento via QR Code necessário.',
     });
   }
 

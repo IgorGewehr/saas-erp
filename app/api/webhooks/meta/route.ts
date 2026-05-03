@@ -13,7 +13,7 @@
  *     Para Facebook: messages, messaging_postbacks, message_deliveries, message_reads
  */
 
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { decryptToken } from '@/lib/utils/encryption';
@@ -1626,6 +1626,10 @@ async function saveInboundMessage(params: InboundMessageParams) {
       conversationId,
       businessId,
       channel: params.channel,
+      // Mensagens vindas via Meta webhooks são SEMPRE da Cloud API oficial.
+      // Marcamos por mensagem (denormalizado) pra UI conseguir mostrar o
+      // transporte mesmo se a conversa migrar de canal no futuro.
+      ...(params.channel === 'whatsapp' ? { connectedVia: 'embedded_signup' as const } : {}),
       direction: 'inbound',
       content: params.content,
       status: 'delivered',

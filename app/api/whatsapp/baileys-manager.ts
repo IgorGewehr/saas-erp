@@ -5,10 +5,8 @@
  * Manages one Baileys socket per businessId in a global Map.
  */
 
-import path from 'path';
-import fs from 'fs';
+import fs from 'node:fs';
 import makeWASocket, {
-  useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
   Browsers,
@@ -17,6 +15,11 @@ import makeWASocket, {
   WAMessageUpdate,
   MessageUpsertType,
 } from '@whiskeysockets/baileys';
+import {
+  useFirestoreAuthState,
+  hasFirestoreAuthState,
+  deleteFirestoreAuthState,
+} from '@/lib/services/baileys/firestore-auth-state';
 import QRCode from 'qrcode';
 import pino from 'pino';
 import { FieldValue } from 'firebase-admin/firestore';
@@ -24,8 +27,6 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { getAlternativeBrazilianPhone } from '@/lib/utils/phoneAlternatives';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
-
-export const SESSIONS_DIR = path.join(process.cwd(), 'whatsapp-sessions');
 
 const RESTARTABLE_CODES = new Set([
   DisconnectReason.restartRequired,
@@ -140,6 +141,25 @@ function forgetBusinessKey(businessId: string, connectionId: string): void {
 }
 
 /**
+ * Lock de criação de sessão por sessionKey. Resolve race condition: dois
+ * requests concorrentes pra `createBaileysSession(...sessionKey)` chegavam
+ * juntos, ambos passavam o check `sessions.get(...)` (Map vazio) e ambos
+ * criavam socket — segundo socket ficava órfão (sem ref no Map) e WhatsApp
+ * mandava connectionReplaced num deles.
+ *
+ * Cenários reais que disparam:
+ *   - Operador clica "Conectar" 2x rapidamente
+ *   - Múltiplas tabs abertas com a app
+ *   - Restart do servidor enquanto operador também tenta conectar (instrumentation hook + UI request)
+ *
+ * Usa globalSessions pra sobreviver HMR em dev — mesmo padrão das outras maps.
+ */
+if (!globalSessions.__baileysSessionLocks) {
+  globalSessions.__baileysSessionLocks = new Map<string, Promise<BaileysSession>>();
+}
+const sessionLocks = globalSessions.__baileysSessionLocks as Map<string, Promise<BaileysSession>>;
+
+/**
  * Sincronia: tenta resolver connectionId pelo cache local. Útil em pontos
  * onde fazer await é caro (ex: getConnectedSession). Retorna null se não
  * conhecido — caller pode cair pro async resolver.
@@ -151,17 +171,6 @@ function tryResolveConnectionIdSync(businessId: string): string | null {
 
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function clearSessionDir(sessionDir: string) {
-  try {
-    if (fs.existsSync(sessionDir)) {
-      fs.rmSync(sessionDir, { recursive: true, force: true });
-    }
-  } catch (err) {
-    console.error('[Baileys] Erro ao limpar sessao:', err);
-  }
-  fs.mkdirSync(sessionDir, { recursive: true });
-}
 
 export function broadcast(session: BaileysSession, data: Record<string, unknown>) {
   for (const listener of session.listeners) {
@@ -247,7 +256,11 @@ function getMediaLabel(type: string | null): string {
  * ficam dizendo isConnected=true mesmo com a sessão morta, e UI/send query
  * resultam em comportamento confuso ("conectado" mas envio falha).
  */
-async function persistDisconnect(businessId: string, connectionId: string): Promise<void> {
+async function persistDisconnect(
+  businessId: string,
+  connectionId: string,
+  reason?: 'replaced' | 'logged_out' | 'network' | 'manual',
+): Promise<void> {
   const now = new Date().toISOString();
   // Atualiza connection doc (modelo novo)
   try {
@@ -255,6 +268,7 @@ async function persistDisconnect(businessId: string, connectionId: string): Prom
     await updateConnection(connectionId, {
       isConnected: false,
       disconnectedAt: now,
+      ...(reason ? { disconnectReason: reason } : {}),
     });
   } catch (err) {
     console.warn('[Baileys] persistDisconnect: connection update failed:', err);
@@ -264,11 +278,13 @@ async function persistDisconnect(businessId: string, connectionId: string): Prom
     const connSnap = await adminDb.collection('channelConnections').doc(connectionId).get();
     const isBusinessConn = !connSnap.exists || connSnap.data()?.ownerType !== 'user';
     if (isBusinessConn) {
-      await adminDb.collection('businesses').doc(businessId).update({
+      const update: Record<string, unknown> = {
         'channels.whatsappBaileys.isConnected': false,
         'channels.whatsappBaileys.disconnectedAt': now,
         updatedAt: now,
-      });
+      };
+      if (reason) update['channels.whatsappBaileys.disconnectReason'] = reason;
+      await adminDb.collection('businesses').doc(businessId).update(update);
     }
   } catch (err) {
     console.warn('[Baileys] persistDisconnect: legacy businesses update failed:', err);
@@ -369,15 +385,14 @@ export async function sendBaileysBroadcastMessage(
   });
 
   // Lazy restore: se sessão não está em memória OU está mas o sock não conectou
-  // (caso típico após restart do server), tenta restaurar automaticamente em
-  // vez de falhar. Evita que o operador precise re-escanear o QR Code.
+  // (caso típico após restart do server / failover entre máquinas), tenta
+  // restaurar automaticamente em vez de falhar. Evita que o operador precise
+  // re-escanear o QR Code.
   if (!session?.sock || !session.isConnected) {
-    const sessionDir = path.join(SESSIONS_DIR, sessionKey);
-    const hasSessionFiles = fs.existsSync(sessionDir)
-      && fs.readdirSync(sessionDir).some((f) => f.endsWith('.json'));
-    console.log('[Baileys Broadcast] Session files on disk:', { sessionDir, hasSessionFiles });
+    const hasAuthState = await hasFirestoreAuthState(sessionKey);
+    console.log('[Baileys Broadcast] Auth state in Firestore:', { sessionKey, hasAuthState });
 
-    if (hasSessionFiles) {
+    if (hasAuthState) {
       // Se já há uma session no map mas sock não conectou (restore em andamento
       // ou travado), aguarda direto sem chamar createBaileysSession de novo
       // (que é idempotente mas iniciaria loop).
@@ -722,6 +737,10 @@ async function handleInboundMessage(
       conversationId,
       businessId,
       channel: 'whatsapp',
+      // Mensagens recebidas pelo socket Baileys são sempre transporte 'baileys'.
+      // Denormalizado por mensagem pra UI poder mostrar o transporte mesmo se
+      // a conversa migrar de canal no futuro.
+      connectedVia: 'baileys',
       direction: 'inbound',
       content: displayText,
       status: 'delivered',
@@ -895,41 +914,50 @@ export async function createBaileysSession(
   // canais pessoais; default = primary business (cria se ausente).
   const sessionKey = await resolveConnectionIdForBaileys(businessId, connectionId);
 
-  // Already running? Return existing
+  // Already running? Return existing — fast path (sem lock necessário pra leitura)
   const existing = sessions.get(sessionKey);
   if (existing) return existing;
 
-  // Migração one-shot do dir legado (whatsapp-sessions/{businessId}) pra novo
-  // (whatsapp-sessions/{connectionId}). Garante que sessões já autenticadas
-  // pré-Phase 2 sobrevivam sem requerer re-scan de QR.
-  const newDir = path.join(SESSIONS_DIR, sessionKey);
-  const legacyDir = path.join(SESSIONS_DIR, businessId);
-  if (legacyDir !== newDir && fs.existsSync(legacyDir) && !fs.existsSync(newDir)) {
-    let migrated = false;
-    try {
-      fs.renameSync(legacyDir, newDir);
-      console.log(`[Baileys] Migrated session dir: ${businessId} → ${sessionKey}`);
-      migrated = true;
-    } catch (renameErr) {
-      try {
-        fs.cpSync(legacyDir, newDir, { recursive: true });
-        fs.rmSync(legacyDir, { recursive: true, force: true });
-        console.log(`[Baileys] Copied session dir: ${businessId} → ${sessionKey}`);
-        migrated = true;
-      } catch (cpErr) {
-        console.error('[Baileys] CRITICAL: Failed to migrate session dir:', renameErr, cpErr);
-      }
-    }
-    if (!migrated) {
-      // Cleanup do dir parcial se cpSync deixou algo
-      try { if (fs.existsSync(newDir)) fs.rmSync(newDir, { recursive: true, force: true }); } catch { /* ignore */ }
-      throw new Error(
-        `Falha ao migrar sessão Baileys (${businessId} → ${sessionKey}). ` +
-        `Re-escaneie o QR Code em Configurações → Canais.`
-      );
-    }
+  // Lock por sessionKey: dois requests concorrentes pra mesma sessão compartilham
+  // a MESMA promise (segundo aguarda o primeiro), evitando criação duplicada de
+  // socket. O lock é removido quando a promise resolve/rejeita.
+  const pending = sessionLocks.get(sessionKey);
+  if (pending) {
+    return pending;
   }
-  const sessionDir = newDir;
+
+  const creationPromise = (async () => {
+    // Re-check dentro do lock — outro request pode ter terminado entre o check
+    // de cima e a aquisição do lock (cenário raro mas possível com microtasks).
+    const recheck = sessions.get(sessionKey);
+    if (recheck) return recheck;
+    return doCreateBaileysSession(businessId, mode, sessionKey);
+  })();
+
+  sessionLocks.set(sessionKey, creationPromise);
+  try {
+    return await creationPromise;
+  } finally {
+    // Importante: limpar mesmo em caso de erro pra próxima tentativa não ficar
+    // travada esperando uma promise rejeitada já consumida.
+    sessionLocks.delete(sessionKey);
+  }
+}
+
+/**
+ * Implementação real de criar a sessão. Separada de createBaileysSession pra
+ * que o lock fique limpo no wrapper. Não chamar diretamente — sempre via
+ * createBaileysSession (que aplica o lock).
+ */
+async function doCreateBaileysSession(
+  businessId: string,
+  mode: 'fresh' | 'restore',
+  sessionKey: string,
+): Promise<BaileysSession> {
+  // Auth state agora é persistido no Firestore (lib/services/baileys/firestore-auth-state.ts).
+  // Não há mais migração de diretório legado — sessões antigas baseadas em disco
+  // precisam ser re-pareadas via QR Code (a primeira instância que pareia escreve
+  // no Firestore e a partir daí qualquer máquina que abrir a conexão hidrata dali).
 
   let version: [number, number, number] | undefined;
   try {
@@ -964,15 +992,14 @@ export async function createBaileysSession(
   let restartCount = 0;
 
   async function startSocket(clearFirst: boolean) {
+    // clearFirst=true: usuário escaneou QR fresh → apaga state anterior do Firestore
+    // pra que initAuthCreds() gere identidade nova. Apenas o fluxo 'fresh' deve
+    // limpar; auto-restart por queda de rede NUNCA passa clearFirst=true.
     if (clearFirst) {
-      clearSessionDir(sessionDir);
-    } else {
-      if (!fs.existsSync(sessionDir)) {
-        fs.mkdirSync(sessionDir, { recursive: true });
-      }
+      await deleteFirestoreAuthState(sessionKey);
     }
 
-    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+    const { state, saveCreds } = await useFirestoreAuthState(sessionKey);
 
     const sock = makeWASocket({
       version,
@@ -1129,10 +1156,32 @@ export async function createBaileysSession(
         // Logout real: sessão revogada pelo WA — limpar e não tentar restart.
         if (PERMANENT_DISCONNECT_CODES.has(statusCode)) {
           broadcast(session, { type: 'disconnected', reason: 'logged_out' });
-          void persistDisconnect(businessId, sessionKey).catch((err) => {
+          void persistDisconnect(businessId, sessionKey, 'logged_out').catch((err) => {
             console.error('[Baileys] Failed to persist logout state:', err);
           });
-          clearSessionDir(sessionDir);
+          // Apaga creds revogadas do Firestore — re-pareamento via QR é obrigatório.
+          void deleteFirestoreAuthState(sessionKey).catch((err) => {
+            console.error('[Baileys] Failed to delete auth state on logout:', err);
+          });
+          void destroySession(businessId, sessionKey);
+          return;
+        }
+
+        // Outro dispositivo conectou com as mesmas creds — limite multi-device do
+        // WhatsApp. Auto-restart aqui causa ping-pong (a gente substitui de volta
+        // → o outro lado também recebe connectionReplaced → ele restart → e
+        // voltamos do zero indefinidamente). NÃO faz restart; deixa o usuário
+        // decidir (clicando "Reconectar" na UI, que vai derrubar o outro device).
+        if (statusCode === DisconnectReason.connectionReplaced) {
+          console.warn(`[Baileys] Sessão substituída por outro dispositivo (${sessionKey.slice(-12)}). Não fazendo auto-restart pra evitar ping-pong.`);
+          broadcast(session, {
+            type: 'disconnected',
+            reason: 'replaced',
+            message: 'Outro dispositivo se conectou com as mesmas credenciais. Para usar aqui, clique em "Reconectar" — isso vai desconectar o outro dispositivo.',
+          });
+          void persistDisconnect(businessId, sessionKey, 'replaced').catch((err) => {
+            console.error('[Baileys] Failed to persist replaced state:', err);
+          });
           void destroySession(businessId, sessionKey);
           return;
         }
@@ -1155,10 +1204,16 @@ export async function createBaileysSession(
             // NUNCA apaga credenciais durante auto-restart — só fresh QR (mode='fresh')
             // deve limpar. O código anterior apagava para connectionClosed/timedOut/
             // connectionReplaced, forçando re-scan a cada queda de rede (BUG CRÍTICO).
+
+            // Guard: se a sessão foi destruída entre o agendamento e a execução
+            // (ex: usuário desconectou manualmente, ou outro evento de close
+            // disparou destroySession antes), não cria zombie socket.
+            if (session.isDestroyed) return;
+
             startSocket(false).catch((err) => {
               console.error('[Baileys] Auto-restart falhou:', err);
               broadcast(session, { type: 'error', message: 'Falha ao reconectar. Tente novamente.' });
-              void persistDisconnect(businessId, sessionKey).catch(() => {});
+              void persistDisconnect(businessId, sessionKey, 'network').catch(() => {});
               void destroySession(businessId, sessionKey);
             });
           }, delay);
@@ -1168,7 +1223,7 @@ export async function createBaileysSession(
         // Esgotou MAX_AUTO_RESTARTS — desiste e informa o operador.
         console.error(`[Baileys] Esgotou ${MAX_AUTO_RESTARTS} tentativas de restart (último code: ${statusCode})`);
         broadcast(session, { type: 'error', message: 'Não foi possível reconectar após várias tentativas. Verifique sua conexão e re-escaneie o QR Code.' });
-        void persistDisconnect(businessId, sessionKey).catch(() => {});
+        void persistDisconnect(businessId, sessionKey, 'network').catch(() => {});
         void destroySession(businessId, sessionKey);
       }
     });
@@ -1176,7 +1231,19 @@ export async function createBaileysSession(
 
   // First start
   const isFresh = mode === 'fresh';
-  await startSocket(isFresh);
+  try {
+    await startSocket(isFresh);
+  } catch (err) {
+    // Se startSocket falhar (ex: erro carregando creds, makeWASocket throw,
+    // listener registration error), o objeto `session` foi adicionado ao Map
+    // mas nunca conectou. Sem este cleanup, próximas chamadas a
+    // `createBaileysSession` veriam `sessions.get(sessionKey)` retornar essa
+    // session zumbi (sock pode ou não estar setado, isConnected=false sempre)
+    // e callers como `sendWhatsAppBaileys` falhariam com mensagens confusas.
+    sessions.delete(sessionKey);
+    forgetBusinessKey(businessId, sessionKey);
+    throw err;
+  }
 
   return session;
 }

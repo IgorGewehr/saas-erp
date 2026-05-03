@@ -7,8 +7,8 @@
  * Python agent service. Fire-and-forget — webhook response shouldn't block.
  */
 
-import crypto from 'crypto';
-import fs from 'fs';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
 import type { Firestore } from 'firebase-admin/firestore';
 import type { Business, Conversation, ConversationChannel } from '@/lib/types';
 import { sendTypingIndicator } from '@/lib/channels/typing';

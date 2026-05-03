@@ -284,8 +284,8 @@ export interface ChannelConnection {
   igAccountId?: string;
   igAccountName?: string;
   // ── Baileys-specific ─────────────────────────────────────────────────
-  /** Diretório de auth no disco fica em whatsapp-sessions/{id}. */
-  // (não há campo extra — usamos o id da conexão como chave de sessão)
+  /** Auth state (creds + signal keys) é persistido cifrado no Firestore em
+   *  baileysAuthStates/{id}. O id da conexão é a chave de sessão. */
   // ── Estado ───────────────────────────────────────────────────────────
   isConnected: boolean;
   isActive: boolean;
@@ -294,6 +294,14 @@ export interface ChannelConnection {
   isPrimary?: boolean;
   connectedAt?: string;
   disconnectedAt?: string;
+  /** Motivo da última desconexão — usado pra UI mostrar mensagem clara:
+   *   - 'replaced':    outro dispositivo conectou com as mesmas creds
+   *                    (limite multi-device do WhatsApp). Re-conectar aqui
+   *                    vai derrubar o outro.
+   *   - 'logged_out':  sessão revogada pelo telefone — re-pareamento via QR.
+   *   - 'network':     rede caiu / restart do servidor — auto-reconnect tentando.
+   *   - 'manual':      usuário clicou "desconectar". */
+  disconnectReason?: 'replaced' | 'logged_out' | 'network' | 'manual';
   // ── Auditoria ────────────────────────────────────────────────────────
   createdAt: string;
   updatedAt: string;
@@ -2035,6 +2043,13 @@ export interface Conversation {
     changedByName: string;
     changedAt: string;
   }>;
+  /**
+   * Motivo do fechamento (status='resolved') quando foi automático pelo sistema.
+   * Diferente de uma resolução manual pelo operador. Hoje só usamos
+   * 'channel_removed' (admin removeu o canal pessoal que sustentava a conversa
+   * e não havia fallback Baileys disponível).
+   */
+  closedReason?: 'channel_removed';
   createdAt: string;
   updatedAt: string;
   isDeleted?: boolean;
@@ -2079,6 +2094,16 @@ export interface ConversationMessage {
   conversationId: string;
   businessId: string;
   channel: ConversationChannel;
+  /**
+   * Para canal 'whatsapp', subdivide em dois transportes (paralelo a
+   * `Conversation.connectedVia`). Denormalizado na mensagem pra que a UI
+   * possa renderizar distinto por bolha — útil quando uma conversa muda
+   * de transporte (ex: failover, troca de número), preservando o histórico
+   * fiel de qual canal recebeu/enviou cada mensagem.
+   *   'embedded_signup' → WhatsApp Business (Meta Cloud API, oficial)
+   *   'baileys'         → WhatsApp Web (conexão via app do celular)
+   */
+  connectedVia?: 'embedded_signup' | 'baileys';
   direction: MessageDirection;
   content: string;
   status: MessageStatus;

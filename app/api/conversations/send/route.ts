@@ -12,7 +12,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { decryptToken } from '@/lib/utils/encryption';
 import { checkRateLimit, checkBusinessRateLimit, getClientIp } from '@/lib/utils/rateLimit';
@@ -400,6 +400,10 @@ export async function POST(req: NextRequest) {
 
     const mediaOpts = isMedia ? { mediaUrl: mediaUrl!, mediaType: mediaType || 'document' as const } : undefined;
 
+    // Captura o transporte usado (cloud vs baileys) pra denormalizar na mensagem.
+    // Setado dentro do case 'whatsapp'; outros canais (FB/IG) ficam undefined.
+    let resolvedConnectedVia: 'embedded_signup' | 'baileys' | undefined;
+
     switch (channel) {
       case 'whatsapp': {
         // CRITICAL: routing decision deve vir da conversation, NÃO do business config.
@@ -421,6 +425,18 @@ export async function POST(req: NextRequest) {
         } else if (convVia === 'embedded_signup') {
           isBaileys = false;
         } else {
+          // Conversa sem connectedVia explícito — chega aqui só pra conversas
+          // pré-refactor que nunca receberam backfill, ou requests sem conversationId.
+          // Logamos pra observabilidade: se aparecer com frequência em prod, é
+          // sinal de que precisamos rodar o backfill script (lib/scripts/backfill-conversation-connectedVia.ts).
+          console.warn('[Send] Routing fallback acionado — conversa sem connectedVia.', {
+            conversationId: conversationId || '(none)',
+            businessId,
+            hasBaileys: !!channels.whatsappBaileys?.isConnected,
+            hasCloud: !!channels.whatsappCloud?.isConnected,
+            hasResolvedConnectionId: !!resolvedConnectionId,
+          });
+
           // Fallback 1: Baileys está conectado E (temos a connection explícita OU Cloud não está ativo).
           // O segundo critério cobre requests sem conversationId (ex: agent sem conv_id)
           // onde só Baileys está configurado no business — evita cair no Cloud incorretamente.
@@ -433,6 +449,8 @@ export async function POST(req: NextRequest) {
             isBaileys = waLegacy?.connectedVia === 'baileys' && !channels.whatsappCloud;
           }
         }
+
+        resolvedConnectedVia = isBaileys ? 'baileys' : 'embedded_signup';
 
         if (isBaileys) {
           // resolvedConnectionId vem do bloco anterior que carregou a connection
@@ -484,10 +502,10 @@ export async function POST(req: NextRequest) {
     // (meta/route.ts and baileys-manager.ts) after they persist a contact-originated message.
     const docIdToUpdate = messageDocId || messageId;
     if (docIdToUpdate) {
-      await updateMessageAfterSend(docIdToUpdate, result.externalMessageId, businessId);
+      await updateMessageAfterSend(docIdToUpdate, result.externalMessageId, businessId, resolvedConnectedVia);
     } else if (conversationId) {
       // Agent-originated send: no pre-existing doc — create one so it appears in the UI
-      await saveAgentMessage(businessId, conversationId, channel, content, result.externalMessageId, clientMessageId);
+      await saveAgentMessage(businessId, conversationId, channel, content, result.externalMessageId, clientMessageId, resolvedConnectedVia);
     }
 
     return NextResponse.json({
@@ -993,6 +1011,7 @@ async function saveAgentMessage(
   content: string,
   externalMessageId: string,
   clientMessageId?: string,
+  connectedVia?: 'embedded_signup' | 'baileys',
 ) {
   try {
     const now = new Date().toISOString();
@@ -1008,6 +1027,8 @@ async function saveAgentMessage(
       sentAt: now,
       createdAt: now,
     };
+    // Marca o transporte (cloud vs baileys) — só aplicável a 'whatsapp'.
+    if (connectedVia && channel === 'whatsapp') doc.connectedVia = connectedVia;
     if (clientMessageId) doc.clientMessageId = clientMessageId;
     await adminDb.collection('conversationMessages').add(doc);
     await adminDb.collection('conversations').doc(conversationId).update({
@@ -1025,7 +1046,18 @@ async function updateMessageAfterSend(
   messageId: string,
   externalMessageId: string,
   businessId: string,
+  connectedVia?: 'embedded_signup' | 'baileys',
 ) {
+  // Backfill de connectedVia: o doc otimista criado pelo client pode não
+  // ter o campo (ainda não atualizamos todos os call-sites do client).
+  // Quando o backend resolver o transporte, escreve aqui pra garantir que
+  // a mensagem reflita por qual canal saiu de fato.
+  const baseUpdate: Record<string, unknown> = {
+    status: 'sent',
+    externalMessageId,
+  };
+  if (connectedVia) baseUpdate.connectedVia = connectedVia;
+
   try {
     // Try direct doc update first (if messageId is the Firestore document ID)
     const msgRef = adminDb.collection('conversationMessages').doc(messageId);
@@ -1041,10 +1073,7 @@ async function updateMessageAfterSend(
         );
         return;
       }
-      await msgRef.update({
-        status: 'sent',
-        externalMessageId,
-      });
+      await msgRef.update(baseUpdate);
       return;
     }
 
@@ -1056,10 +1085,7 @@ async function updateMessageAfterSend(
       .get();
 
     if (!snap.empty) {
-      await snap.docs[0].ref.update({
-        status: 'sent',
-        externalMessageId,
-      });
+      await snap.docs[0].ref.update(baseUpdate);
     }
   } catch (err) {
     // Non-critical — log but don't fail the request

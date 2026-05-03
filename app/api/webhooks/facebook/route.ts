@@ -14,7 +14,7 @@
  *  - ENCRYPTION_KEY              (descriptografar pageAccessToken do Firestore)
  */
 
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { FieldValue } from 'firebase-admin/firestore';

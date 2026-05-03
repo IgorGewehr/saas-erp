@@ -30,7 +30,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 

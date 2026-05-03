@@ -58,6 +58,7 @@ import {
   Headphones,
   Video,
   RotateCcw,
+  BadgeCheck,
   Lock,
   Clock,
   StickyNote,
@@ -1342,6 +1343,39 @@ function MediaAttachment({
   return null;
 }
 
+// ─── Transport Badge ──────────────────────────────────────────────────────────
+
+/**
+ * Indica visualmente em CADA bolha por qual transporte WhatsApp a mensagem
+ * trafegou: Cloud API (oficial Meta) vs Baileys (WhatsApp Web). Crítico quando
+ * a empresa tem ambos os canais ativos — operador identifica de relance.
+ *
+ * Renderizado discretamente na linha do timestamp (não compete com o conteúdo).
+ */
+function TransportBadge({ connectedVia }: { connectedVia: 'embedded_signup' | 'baileys' }) {
+  const isBaileys = connectedVia === 'baileys';
+  const Icon = isBaileys ? Smartphone : BadgeCheck;
+  const label = isBaileys ? 'Web' : 'Oficial';
+  const tooltip = isBaileys
+    ? 'WhatsApp Web (Baileys) — conexão via celular do dono do número'
+    : 'WhatsApp Business (Meta Cloud API, oficial)';
+
+  return (
+    <span
+      title={tooltip}
+      className={cn(
+        'inline-flex items-center gap-0.5 text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none',
+        isBaileys
+          ? 'bg-[#128C7E]/10 text-[#128C7E] dark:bg-[#128C7E]/20 dark:text-[#25D366]'
+          : 'bg-[#0A7CFF]/10 text-[#0A7CFF] dark:bg-[#0A7CFF]/20 dark:text-[#4DA3FF]',
+      )}
+    >
+      <Icon className="w-2.5 h-2.5" />
+      {label}
+    </span>
+  );
+}
+
 // ─── Message Bubble ───────────────────────────────────────────────────────────
 
 function MessageBubble({
@@ -1400,10 +1434,10 @@ function MessageBubble({
           </div>
         )}
 
-        {/* Time + status */}
+        {/* Time + status + transport badge */}
         <div
           className={cn(
-            'flex items-center gap-1 mt-1 px-1',
+            'flex items-center gap-1.5 mt-1 px-1',
             isOut ? 'flex-row-reverse' : 'flex-row',
           )}
         >
@@ -1411,6 +1445,12 @@ function MessageBubble({
             {fullTime(message.sentAt)}
           </span>
           {isOut && <MessageStatusIcon status={message.status} />}
+          {/* Transport indicator: só pra WhatsApp, distingue Cloud (oficial Meta)
+              de Baileys (WhatsApp Web). Notas internas não têm transporte —
+              nunca saíram pelo canal — então não mostramos badge nelas. */}
+          {message.channel === 'whatsapp' && !message.isInternal && message.connectedVia && (
+            <TransportBadge connectedVia={message.connectedVia} />
+          )}
         </div>
 
         {/* Retry button for failed messages */}
@@ -2589,6 +2629,8 @@ function NewConversationDialog({
         conversationId: convRef.id,
         businessId: business.id,
         channel: 'whatsapp',
+        // Marca o transporte pra UI distinguir Cloud vs Baileys nas bolhas.
+        connectedVia: channelMode === 'baileys' ? 'baileys' : 'embedded_signup',
         direction: 'outbound',
         content,
         status: 'sending',
@@ -4211,7 +4253,16 @@ export default function ConversasModule() {
     setActivePage('Pedidos');
   }, [setActivePage]);
 
-  const [activeChannel, setActiveChannel] = useState<ConversationChannel | 'all'>('all');
+  /**
+   * Tab de canal expandida pra distinguir transporte WhatsApp:
+   *   - 'all', 'whatsapp', 'facebook', 'instagram' — comportamento padrão
+   *   - 'whatsapp_cloud'   → só conversas WhatsApp via Cloud API (Meta oficial)
+   *   - 'whatsapp_baileys' → só conversas WhatsApp via Baileys (Web)
+   * O split em Cloud/Baileys aparece automaticamente quando o business tem
+   * conversas dos dois transportes; senão fica só "WhatsApp" pra evitar ruído.
+   */
+  type ChannelTabId = ConversationChannel | 'all' | 'whatsapp_cloud' | 'whatsapp_baileys';
+  const [activeChannel, setActiveChannel] = useState<ChannelTabId>('all');
   const [activeStatus, setActiveStatus] = useState<ConversationStatus | 'all'>('all');
   const [activeSectorFilter, setActiveSectorFilter] = useState<string | 'all'>('all');
   // Phase 2: filtro por escopo de canal — 'all' (sem filtro), 'business'
@@ -4517,7 +4568,9 @@ export default function ConversasModule() {
       return;
     }
     setActiveViewId(view.id);
-    setActiveChannel((view.filters.channel as ConversationChannel | 'all') ?? 'all');
+    // Aceita os ids estendidos de transporte WhatsApp (whatsapp_cloud / whatsapp_baileys)
+    // pra views salvas com filtro mais granular não regredirem pra "all".
+    setActiveChannel((view.filters.channel as ChannelTabId) ?? 'all');
     setActiveStatus((view.filters.status as ConversationStatus | 'all') ?? 'all');
     setActiveSectorFilter(view.filters.sectorId ?? 'all');
     setAdvFilters({
@@ -4557,6 +4610,8 @@ export default function ConversasModule() {
       for (const conv of toSurvey) {
         await addDoc(collection(db, 'conversationMessages'), {
           conversationId: conv.id, businessId: business.id, channel: conv.channel,
+          // Herda o transporte da conversation pra preservar histórico fiel
+          ...(conv.connectedVia ? { connectedVia: conv.connectedVia } : {}),
           direction: 'outbound', content: csatMsg,
           status: 'sending', senderName: 'Sistema', isCsat: true, sentAt: now,
         });
@@ -4920,6 +4975,9 @@ export default function ConversasModule() {
           conversationId: selectedConversation.id,
           businessId: business.id,
           channel: selectedConversation.channel,
+          // Templates só existem no Cloud API (Meta), mas herdamos da conversation
+          // pra ser consistente com o resto. Baileys nunca chega aqui (toggle bloqueia).
+          ...(selectedConversation.connectedVia ? { connectedVia: selectedConversation.connectedVia } : {}),
           direction: 'outbound' as const,
           content: `[Template: ${templateName}]`,
           status: 'sending' as const,
@@ -5104,6 +5162,7 @@ export default function ConversasModule() {
         conversationId: selectedConversation.id,
         businessId: business.id,
         channel: selectedConversation.channel,
+        ...(selectedConversation.connectedVia ? { connectedVia: selectedConversation.connectedVia } : {}),
         direction: 'outbound' as const,
         content: messageContent,
         mediaUrl,
@@ -5224,6 +5283,7 @@ export default function ConversasModule() {
           const csatMsg = '⭐ Como foi seu atendimento? Responda com um número de 1 a 5.\n1 = Péssimo  2 = Ruim  3 = Regular  4 = Bom  5 = Excelente';
           await addDoc(collection(db, 'conversationMessages'), {
             conversationId, businessId: business.id, channel: conv.channel,
+            ...(conv.connectedVia ? { connectedVia: conv.connectedVia } : {}),
             direction: 'outbound', content: csatMsg,
             status: 'sending', senderName: 'Sistema', isCsat: true, sentAt: now,
           });
@@ -5272,6 +5332,8 @@ export default function ConversasModule() {
           conversationId: selectedConversation.id,
           businessId: business.id,
           channel: selectedConversation.channel,
+          // Notas internas herdam o transporte da conversation pra coerência visual.
+          ...(selectedConversation.connectedVia ? { connectedVia: selectedConversation.connectedVia } : {}),
           direction: 'outbound' as const,
           content,
           status: 'delivered' as const,
@@ -5290,6 +5352,9 @@ export default function ConversasModule() {
           conversationId: selectedConversation.id,
           businessId: business.id,
           channel: selectedConversation.channel,
+          // Marca o transporte aqui — backend do send/route.ts confirma/sobrescreve
+          // se necessário (updateMessageAfterSend faz backfill defensivo).
+          ...(selectedConversation.connectedVia ? { connectedVia: selectedConversation.connectedVia } : {}),
           direction: 'outbound' as const,
           content,
           status: 'sending' as const,
@@ -5451,7 +5516,18 @@ export default function ConversasModule() {
   // ── Filtered conversations ─────────────────────────────────────────────────
 
   const filteredConversations = useMemo(() => getVisibleConversations(conversations).filter((c) => {
-    const matchesChannel = activeChannel === 'all' || c.channel === activeChannel;
+    // Match canal — 'whatsapp_cloud' / 'whatsapp_baileys' são sub-filtros que
+    // aplicam sobre c.channel === 'whatsapp' E o c.connectedVia correspondente.
+    let matchesChannel: boolean;
+    if (activeChannel === 'all') {
+      matchesChannel = true;
+    } else if (activeChannel === 'whatsapp_cloud') {
+      matchesChannel = c.channel === 'whatsapp' && c.connectedVia === 'embedded_signup';
+    } else if (activeChannel === 'whatsapp_baileys') {
+      matchesChannel = c.channel === 'whatsapp' && c.connectedVia === 'baileys';
+    } else {
+      matchesChannel = c.channel === activeChannel;
+    }
     const matchesStatus = activeStatus === 'all' || c.status === activeStatus;
     const matchesSector = activeSectorFilter === 'all' || c.sectorIds?.includes(activeSectorFilter) || c.assignedToSectorId === activeSectorFilter;
     // Phase 2: filtro por escopo de canal
@@ -5491,22 +5567,38 @@ export default function ConversasModule() {
   }, [conversations]);
 
   // ── Unread counts per channel ──────────────────────────────────────────────
+  // Conta também os ids estendidos (whatsapp_cloud / whatsapp_baileys) baseado
+  // em conv.connectedVia, pra que cada sub-tab tenha seu próprio contador.
 
   const unreadByChannel = conversations.reduce(
     (acc, c) => {
       acc[c.channel] = (acc[c.channel] ?? 0) + c.unreadCount;
       acc.all = (acc.all ?? 0) + c.unreadCount;
+      if (c.channel === 'whatsapp') {
+        if (c.connectedVia === 'embedded_signup') {
+          acc.whatsapp_cloud = (acc.whatsapp_cloud ?? 0) + c.unreadCount;
+        } else if (c.connectedVia === 'baileys') {
+          acc.whatsapp_baileys = (acc.whatsapp_baileys ?? 0) + c.unreadCount;
+        }
+      }
       return acc;
     },
     {} as Record<string, number>,
   );
 
   // ── Counts per status ──────────────────────────────────────────────────────
+  // Filtra pelo canal ativo — incluindo os sub-tabs Cloud/Baileys.
+
+  const matchesActiveChannel = (c: Conversation): boolean => {
+    if (activeChannel === 'all') return true;
+    if (activeChannel === 'whatsapp_cloud') return c.channel === 'whatsapp' && c.connectedVia === 'embedded_signup';
+    if (activeChannel === 'whatsapp_baileys') return c.channel === 'whatsapp' && c.connectedVia === 'baileys';
+    return c.channel === activeChannel;
+  };
 
   const countsByStatus = conversations.reduce(
     (acc, c) => {
-      // Only count conversations matching current channel filter
-      if (activeChannel !== 'all' && c.channel !== activeChannel) return acc;
+      if (!matchesActiveChannel(c)) return acc;
       acc[c.status] = (acc[c.status] ?? 0) + 1;
       acc.all = (acc.all ?? 0) + 1;
       return acc;
@@ -5515,13 +5607,33 @@ export default function ConversasModule() {
   );
 
   // ── Tabs ────────────────────────────────────────────────────────────────────
+  // Split automático WhatsApp Cloud × Baileys quando o business tem volume nos
+  // dois transportes. Se só um existe, mostra "WhatsApp" único pra evitar ruído.
 
-  const tabs: { id: ConversationChannel | 'all'; label: string }[] = [
-    { id: 'all', label: t('conversations.tabAll', 'Todos') },
-    { id: 'whatsapp', label: t('conversations.tabWhatsApp', 'WhatsApp') },
-    { id: 'facebook', label: t('conversations.tabMessenger', 'Messenger') },
-    { id: 'instagram', label: t('conversations.tabInstagram', 'Instagram') },
-  ];
+  const hasWhatsAppCloud = useMemo(
+    () => conversations.some(c => c.channel === 'whatsapp' && c.connectedVia === 'embedded_signup'),
+    [conversations],
+  );
+  const hasWhatsAppBaileys = useMemo(
+    () => conversations.some(c => c.channel === 'whatsapp' && c.connectedVia === 'baileys'),
+    [conversations],
+  );
+  const splitWhatsApp = hasWhatsAppCloud && hasWhatsAppBaileys;
+
+  const tabs: { id: ChannelTabId; label: string }[] = splitWhatsApp
+    ? [
+        { id: 'all', label: t('conversations.tabAll', 'Todos') },
+        { id: 'whatsapp_cloud', label: t('conversations.tabWhatsAppCloud', 'WA Oficial') },
+        { id: 'whatsapp_baileys', label: t('conversations.tabWhatsAppWeb', 'WA Web') },
+        { id: 'facebook', label: t('conversations.tabMessenger', 'Messenger') },
+        { id: 'instagram', label: t('conversations.tabInstagram', 'Instagram') },
+      ]
+    : [
+        { id: 'all', label: t('conversations.tabAll', 'Todos') },
+        { id: 'whatsapp', label: t('conversations.tabWhatsApp', 'WhatsApp') },
+        { id: 'facebook', label: t('conversations.tabMessenger', 'Messenger') },
+        { id: 'instagram', label: t('conversations.tabInstagram', 'Instagram') },
+      ];
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -5696,7 +5808,13 @@ export default function ConversasModule() {
               {tabs.map((tab) => {
                 const isActive = activeChannel === tab.id;
                 const unread = tab.id === 'all' ? unreadByChannel.all : unreadByChannel[tab.id];
-                const cfg = tab.id !== 'all' ? CHANNEL_CONFIG[tab.id as ConversationChannel] : null;
+                // Resolve config visual: sub-tabs WhatsApp herdam de CHANNEL_CONFIG.whatsapp
+                // (Cloud) ou WHATSAPP_WEB_CONFIG (Baileys) pra refletir transporte na cor.
+                const cfg =
+                  tab.id === 'whatsapp_cloud' ? CHANNEL_CONFIG.whatsapp
+                  : tab.id === 'whatsapp_baileys' ? WHATSAPP_WEB_CONFIG
+                  : tab.id !== 'all' ? CHANNEL_CONFIG[tab.id as ConversationChannel]
+                  : null;
                 return (
                   <button
                     key={tab.id}
@@ -5710,7 +5828,11 @@ export default function ConversasModule() {
                   >
                     {tab.id !== 'all' && cfg && (
                       <span className={cn('flex-shrink-0', isActive ? 'text-current' : cfg.textColor)}>
-                        <ChannelIcon channel={tab.id as ConversationChannel} size="sm" />
+                        {tab.id === 'whatsapp_cloud'
+                          ? <BadgeCheck className="w-3 h-3" />
+                          : tab.id === 'whatsapp_baileys'
+                            ? <Smartphone className="w-3 h-3" />
+                            : <ChannelIcon channel={tab.id as ConversationChannel} size="sm" />}
                       </span>
                     )}
                     <span className="truncate">{tab.label}</span>
@@ -5959,6 +6081,14 @@ export default function ConversasModule() {
                 <div className="flex items-center gap-4 mt-2">
                   {(['whatsapp', 'facebook', 'instagram'] as ConversationChannel[]).map((ch) => {
                     const cfg = CHANNEL_CONFIG[ch];
+                    // Quando split Cloud/Baileys está ativo, clicar "WhatsApp"
+                    // aqui precisa cair em uma das sub-tabs — senão activeChannel
+                    // vira 'whatsapp' (que não está em `tabs`) e nenhuma tab fica
+                    // highlighted, deixando UI num estado intermediário confuso.
+                    const targetChannel: ChannelTabId =
+                      ch === 'whatsapp' && splitWhatsApp
+                        ? (hasWhatsAppCloud ? 'whatsapp_cloud' : 'whatsapp_baileys')
+                        : ch;
                     return (
                       <motion.div
                         key={ch}
@@ -5968,7 +6098,7 @@ export default function ConversasModule() {
                           cfg.bgColor,
                           cfg.borderColor,
                         )}
-                        onClick={() => setActiveChannel(ch)}
+                        onClick={() => setActiveChannel(targetChannel)}
                       >
                         <ChannelIcon channel={ch} size="md" />
                         <span className={cn('text-[10px] font-semibold', cfg.textColor)}>

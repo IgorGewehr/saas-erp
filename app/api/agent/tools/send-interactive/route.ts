@@ -138,10 +138,13 @@ export async function POST(req: NextRequest) {
     // Save to conversationMessages so it appears in the UI
     const now = new Date().toISOString();
     const displayContent = p.body; // show body text in conversation list
+    const convVia = conv.connectedVia as 'embedded_signup' | 'baileys' | undefined;
     await adminDb.collection('conversationMessages').add({
       conversationId: p.conversation_id,
       businessId,
       channel: conv.channel,
+      // Herda da conversation pra UI mostrar o transporte certo na bolha.
+      ...(convVia && conv.channel === 'whatsapp' ? { connectedVia: convVia } : {}),
       direction: 'outbound',
       content: displayContent,
       status: 'sent',

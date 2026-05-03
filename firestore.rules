@@ -847,6 +847,20 @@ service cloud.firestore {
     }
 
     // ============================================
+    // BAILEYS AUTH STATES (credenciais cifradas WhatsApp Web)
+    // ============================================
+    // Contém creds + signal keys do Baileys, cifradas com AES-256-GCM (chave em
+    // process.env.ENCRYPTION_KEY no servidor). Mesmo cifrado, vazar permite
+    // ataques offline contra a chave — clientes NÃO devem ler/escrever NUNCA.
+    // Acesso exclusivo via Admin SDK (server-side, bypassa rules).
+    match /baileysAuthStates/{connectionId} {
+      allow read, write: if false;
+      match /keys/{keyId} {
+        allow read, write: if false;
+      }
+    }
+
+    // ============================================
     // AGENT RUNS (logs do agente IA)
     // ============================================
     match /agentRuns/{runId} {

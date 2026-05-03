@@ -110,6 +110,7 @@ export async function POST(req: NextRequest) {
 
     const channel = convData.channel;
     const contactExternalId = convData.contactExternalId;
+    const convVia = convData.connectedVia as 'embedded_signup' | 'baileys' | undefined;
     const now = new Date().toISOString();
 
     // Build the message document
@@ -118,6 +119,8 @@ export async function POST(req: NextRequest) {
       conversationId,
       businessId: auth.businessId,
       channel,
+      // Herda o transporte da conversation pra UI distinguir Cloud vs Baileys.
+      ...(convVia && channel === 'whatsapp' ? { connectedVia: convVia } : {}),
       direction: 'outbound',
       content: content.trim(),
       status: isInternal ? 'delivered' : 'sending',
