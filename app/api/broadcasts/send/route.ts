@@ -109,6 +109,10 @@ function normalizeRecipients(
   channel: string,
 ): NormalizedRecipient[] {
   const out: NormalizedRecipient[] = [];
+  // Dedup por recipientId (telefone/email): evita enviar a mesma campanha 2x
+  // pra um contato quando a lista vem com duplicatas (paste manual de CSV
+  // duplicado, segment com bug, lista mesclada de fontes diferentes).
+  const seen = new Set<string>();
   for (const r of raw) {
     const recipientId = (
       // Para WhatsApp/FB/IG usa phoneNumber/recipientId
@@ -116,6 +120,12 @@ function normalizeRecipients(
       channel === 'email' ? r.email : (r.phoneNumber || r.recipientId)
     ) ?? '';
     if (!recipientId) continue;
+    // Normaliza pra dedup: trim + lowercase pra email; só dígitos pra telefone.
+    const dedupKey = channel === 'email'
+      ? recipientId.trim().toLowerCase()
+      : recipientId.replace(/\D/g, '');
+    if (!dedupKey || seen.has(dedupKey)) continue;
+    seen.add(dedupKey);
     out.push({
       contactId: r.contactId,
       name: r.name || r.contactName,

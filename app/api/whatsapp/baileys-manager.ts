@@ -20,6 +20,7 @@ import {
   hasFirestoreAuthState,
   deleteFirestoreAuthState,
 } from '@/lib/services/baileys/firestore-auth-state';
+import { downloadAndUploadBaileysMedia } from '@/lib/services/baileys/media-storage';
 import QRCode from 'qrcode';
 import pino from 'pino';
 import { FieldValue } from 'firebase-admin/firestore';
@@ -405,9 +406,12 @@ export async function sendBaileysBroadcastMessage(
         }
       }
 
-      // Aguarda até 30s pela conexão completar
+      // Aguarda até 30s pela conexão completar. Logamos a cada 5s de espera
+      // pra dar visibilidade nos docker logs — admin pode acompanhar progresso
+      // se a operação demorar (rede instável, restart do servidor recente, etc).
       const startedAt = Date.now();
       const TIMEOUT_MS = 30_000;
+      let nextLogAt = startedAt + 5_000;
       while (Date.now() - startedAt < TIMEOUT_MS) {
         const s = sessions.get(sessionKey);
         if (s?.isConnected) {
@@ -415,16 +419,29 @@ export async function sendBaileysBroadcastMessage(
           session = s;
           break;
         }
+        if (Date.now() >= nextLogAt) {
+          const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+          const hasSocket = !!s?.sock;
+          console.log(`[Baileys Broadcast] Aguardando reconexão... ${elapsed}s elapsed (hasSocket=${hasSocket}, isConnected=${s?.isConnected ?? false})`);
+          nextLogAt = Date.now() + 5_000;
+        }
         await new Promise(r => setTimeout(r, 250));
       }
       session = sessions.get(sessionKey);
     }
 
     if (!session?.sock) {
-      throw new Error('WhatsApp Web não está conectado. Reconecte escaneando o QR Code em Configurações.');
+      throw new Error(
+        'WhatsApp Web não está conectado. Reconecte escaneando o QR Code em ' +
+        'Configurações → Canais.',
+      );
     }
     if (!session.isConnected) {
-      throw new Error('WhatsApp Web está reconectando (timeout 30s). Aguarde a conexão completar e tente novamente.');
+      throw new Error(
+        'WhatsApp Web está reconectando após restart. Aguarde alguns segundos e ' +
+        'tente novamente — se persistir após 1 min, verifique a conexão em ' +
+        'Configurações → Canais.',
+      );
     }
   }
 
@@ -435,11 +452,15 @@ export async function sendBaileysBroadcastMessage(
   }
 
   // onWhatsApp resolve o JID canônico (lida com 9º dígito BR) e indica se número
-  // tem WhatsApp. Em caso de erro de rede ou !exists, deixamos o sendMessage falhar
-  // naturalmente — evita anti-pattern de string-match no error message.
+  // tem WhatsApp. Diferenciamos 3 outcomes pra dar erro claro pro operador:
+  //   - exists=true → temos JID canônico, segue envio
+  //   - exists=false → número confirmadamente não tem WA → erro claro, aborta
+  //   - falha de rede → log + tenta enviar direto. Se falhar, erro técnico
+  //     terá menos contexto, mas operador entende ("não foi possível verificar").
   const candidateJid = `${digits}@s.whatsapp.net`;
   let targetJid = candidateJid;
   let knownNotOnWhatsApp = false;
+  let onWhatsAppCheckFailed = false;
   try {
     const [result] = await session.sock.onWhatsApp(candidateJid);
     if (result?.exists && result.jid) {
@@ -448,15 +469,30 @@ export async function sendBaileysBroadcastMessage(
       knownNotOnWhatsApp = true;
     }
   } catch (err) {
-    // Erro de rede no check — não bloqueia, o sendMessage falhará se necessário
-    console.warn('[Baileys Broadcast] onWhatsApp check falhou, tentando envio direto:', err);
+    onWhatsAppCheckFailed = true;
+    console.warn('[Baileys Broadcast] onWhatsApp check falhou (rede/timeout), tentando envio direto:', err);
   }
 
   if (knownNotOnWhatsApp) {
-    throw new Error(`Número ${digits} não está cadastrado no WhatsApp`);
+    throw new Error(`Número ${digits} não está cadastrado no WhatsApp.`);
   }
 
-  const sent = await session.sock.sendMessage(targetJid, { text });
+  let sent;
+  try {
+    sent = await session.sock.sendMessage(targetJid, { text });
+  } catch (sendErr) {
+    // Se o check inicial falhou por rede, anota isso na mensagem de erro pra
+    // operador entender que pode ser problema de validação de número, não
+    // necessariamente número inválido.
+    if (onWhatsAppCheckFailed) {
+      const reason = sendErr instanceof Error ? sendErr.message : String(sendErr);
+      throw new Error(
+        `Falha ao enviar pra ${digits}. Não foi possível validar antes (rede instável). ` +
+        `Verifique o número e tente novamente. Detalhe técnico: ${reason}`,
+      );
+    }
+    throw sendErr;
+  }
   // Random suffix evita colisão se sent.key.id ausente em mensagens consecutivas
   const externalMessageId = sent?.key?.id
     || `baileys_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -701,36 +737,124 @@ async function handleInboundMessage(
         }
       } catch { /* non-critical */ }
     } else {
-      conversationId = matchedDoc.id;
-      const existingConv = matchedDoc.data();
+      // Match em conversa legacy/sem channelConnectionId. Usa transaction pra
+      // resolver race: se OUTRO canal Baileys (ex: canal pessoal de outro
+      // operador) reivindicou a mesma legacy entre o pickBestCandidate e o
+      // update, sua mensagem precisa ir pra uma conversa NOVA — senão o
+      // backfill aleatoriamente vincularia a conversa ao canal "vencedor"
+      // do race e mensagens posteriores sairiam pelo canal errado.
+      const claimResult = await adminDb.runTransaction(async (tx) => {
+        const fresh = await tx.get(matchedDoc.ref);
+        if (!fresh.exists) {
+          // Conversa foi deletada entre query e transaction — cair pro create.
+          return { kind: 'conflict' as const };
+        }
+        const data = fresh.data()!;
+        const existingConn = data.channelConnectionId as string | undefined;
 
-      const convUpdate: Record<string, unknown> = {
-        lastMessage: displayText,
-        lastMessageAt: timestamp,
-        lastMessageDirection: 'inbound',
-        unreadCount: FieldValue.increment(1),
-        updatedAt: now,
-      };
+        // Se já foi reivindicada por OUTRO canal, NÃO sobrescrever — caller
+        // cria conversa nova com o canal correto.
+        if (existingConn && existingConn !== connectionId) {
+          return { kind: 'conflict' as const };
+        }
 
-      if (pushName && (!existingConv.contactName || /^\+?\d[\d\s-]+$/.test(existingConv.contactName))) {
-        convUpdate.contactName = pushName;
-        contactName = pushName;
-      }
-      if (avatarUrl && !existingConv.contactAvatarUrl) {
-        convUpdate.contactAvatarUrl = avatarUrl;
-      }
-      // Backfill / correção do channelConnectionId e connectedVia — Baileys é
-      // autoritativo (sabemos exatamente qual sessão entregou a msg). Atualiza
-      // connectedVia também para que a UI mostre "WhatsApp Web" e não "WhatsApp
-      // Business" em conversas que migraram do legado Cloud para Baileys.
-      if (existingConv.channelConnectionId !== connectionId) {
-        convUpdate.channelConnectionId = connectionId;
-      }
-      if (existingConv.connectedVia !== 'baileys') {
-        convUpdate.connectedVia = 'baileys';
-      }
+        const convUpdate: Record<string, unknown> = {
+          lastMessage: displayText,
+          lastMessageAt: timestamp,
+          lastMessageDirection: 'inbound',
+          unreadCount: FieldValue.increment(1),
+          updatedAt: now,
+        };
+        if (pushName && (!data.contactName || /^\+?\d[\d\s-]+$/.test(data.contactName))) {
+          convUpdate.contactName = pushName;
+        }
+        if (avatarUrl && !data.contactAvatarUrl) {
+          convUpdate.contactAvatarUrl = avatarUrl;
+        }
+        // Backfill / correção: Baileys é autoritativo (sabemos exatamente
+        // qual sessão entregou a msg). Atualiza connectedVia também pra
+        // que a UI mostre "WhatsApp Web" em conversas que migraram do
+        // legado Cloud → Baileys.
+        if (existingConn !== connectionId) {
+          convUpdate.channelConnectionId = connectionId;
+        }
+        if (data.connectedVia !== 'baileys') {
+          convUpdate.connectedVia = 'baileys';
+        }
 
-      await adminDb.collection('conversations').doc(conversationId).update(convUpdate);
+        tx.update(matchedDoc.ref, convUpdate);
+        return {
+          kind: 'updated' as const,
+          appliedContactName: convUpdate.contactName as string | undefined,
+        };
+      });
+
+      if (claimResult.kind === 'conflict') {
+        // Outro canal venceu o race — cria conversa nova com o connectionId
+        // atual pra preservar identidade de transporte. Fluxo idêntico ao
+        // do branch "matchedDoc===null" acima, mas duplicado pra evitar
+        // refactor maior agora.
+        let initialAssignedTo: string | undefined;
+        let initialAssignedToName: string | undefined;
+        try {
+          const connSnap = await adminDb.collection('channelConnections').doc(connectionId).get();
+          const connData = connSnap.data();
+          if (connData?.ownerType === 'user' && connData.ownerId) {
+            initialAssignedTo = connData.ownerId as string;
+            try {
+              const userSnap = await adminDb.collection('users').doc(initialAssignedTo).get();
+              initialAssignedToName = (userSnap.data()?.name as string) || undefined;
+            } catch { /* opcional */ }
+          }
+        } catch { /* connection lookup falhou — sem auto-assign */ }
+
+        const newConvRef = await adminDb.collection('conversations').add({
+          businessId,
+          channel: 'whatsapp',
+          connectedVia: 'baileys',
+          channelConnectionId: connectionId,
+          contactName,
+          contactPhone: formatPhone(senderPhone),
+          contactExternalId: senderPhone,
+          ...(avatarUrl ? { contactAvatarUrl: avatarUrl } : {}),
+          ...(initialAssignedTo ? { assignedTo: initialAssignedTo } : {}),
+          ...(initialAssignedToName ? { assignedToName: initialAssignedToName } : {}),
+          status: 'open',
+          lastMessage: displayText,
+          lastMessageAt: timestamp,
+          lastMessageDirection: 'inbound',
+          unreadCount: 1,
+          createdAt: now,
+          updatedAt: now,
+        });
+        conversationId = newConvRef.id;
+        console.log(`[Baileys] Race em conversa legacy resolvido — criada nova conv ${conversationId.slice(-6)} pra canal ${connectionId.slice(-6)}`);
+      } else {
+        conversationId = matchedDoc.id;
+        if (claimResult.appliedContactName) contactName = claimResult.appliedContactName;
+      }
+    }
+
+    // Download de mídia (image/audio/video/document/sticker): faz download via
+    // Baileys (decodifica E2EE) + upload pro Firebase Storage, retorna URL signed.
+    // Sem isso, mensagens de mídia ficavam com mediaUrl=null e a UI renderizava
+    // bolha vazia. Não bloqueia o save: se o download/upload falhar, persiste a
+    // mensagem com mediaUrl=null e o operador vê o preview "[Imagem]"/"[Áudio]"
+    // — perda de informação visual mas não perde o registro.
+    let mediaUrl: string | null = null;
+    if (mediaType) {
+      try {
+        const mediaResult = await downloadAndUploadBaileysMedia({
+          waMessage,
+          businessId,
+          conversationId,
+          logger: pino({ level: 'silent' }),
+          reuploadRequest: sock.updateMediaMessage,
+        });
+        if (mediaResult) mediaUrl = mediaResult.mediaUrl;
+      } catch (mediaErr) {
+        console.error('[Baileys] Falha no download/upload de mídia (mensagem salva sem URL):', mediaErr);
+      }
     }
 
     const msgRef = await adminDb.collection('conversationMessages').add({
@@ -747,7 +871,7 @@ async function handleInboundMessage(
       externalMessageId: messageId,
       senderName: contactName,
       mediaType: mediaType ?? null,
-      mediaUrl: null,
+      mediaUrl,
       sentAt: timestamp,
       createdAt: now,
     });

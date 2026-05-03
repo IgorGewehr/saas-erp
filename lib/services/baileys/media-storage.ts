@@ -1,0 +1,229 @@
+/**
+ * Download de mídia recebida via Baileys + upload pra Firebase Storage.
+ *
+ * Sem este pipeline, mensagens inbound de imagem/áudio/vídeo/documento ficavam
+ * com `mediaUrl: null` no Firestore e a UI não conseguia renderizar a mídia —
+ * cliente mandava foto e o operador via bolha vazia.
+ *
+ * Espelha o padrão usado por app/api/webhooks/meta/route.ts pra Cloud API.
+ * Diferenças:
+ *   - Baileys já tem a mensagem em mãos (não precisa de fetch da Graph API);
+ *   - usamos `downloadMediaMessage` do Baileys, que decodifica os blobs E2EE;
+ *   - mantém o mesmo path no Storage (`conversations/{biz}/{conv}/{file}`)
+ *     pra que a UI use a mesma URL signed do Firebase Storage de sempre.
+ */
+
+import { initializeApp, getApps, getApp } from 'firebase/app';
+import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import {
+  downloadMediaMessage,
+  type WAMessage,
+  type proto,
+} from '@whiskeysockets/baileys';
+
+// Firebase config — mesmo padrão dos outros uploads (usa client SDK pra ter
+// getDownloadURL com signed token, não admin SDK).
+const firebaseConfig = {
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
+  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
+};
+
+function getStorageBucket() {
+  const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
+  return getStorage(app);
+}
+
+// MIMEs que precisam ser convertidos pra M4A pra rodar em todos os navegadores.
+// WhatsApp voice notes usam audio/ogg;codecs=opus — Safari não toca OGG.
+const AUDIO_CONVERT_MIMES = new Set([
+  'audio/ogg',
+  'audio/opus',
+  'audio/webm',
+  'audio/amr',
+  'audio/amr-wb',
+]);
+
+function mimeToExtension(mime: string): string {
+  const map: Record<string, string> = {
+    'image/jpeg': '.jpg',
+    'image/png': '.png',
+    'image/gif': '.gif',
+    'image/webp': '.webp',
+    'video/mp4': '.mp4',
+    'video/3gpp': '.3gp',
+    'audio/aac': '.aac',
+    'audio/amr': '.amr',
+    'audio/amr-wb': '.amr',
+    'audio/mpeg': '.mp3',
+    'audio/mp4': '.m4a',
+    'audio/ogg': '.ogg',
+    'audio/opus': '.opus',
+    'audio/webm': '.webm',
+    'application/pdf': '.pdf',
+    'application/vnd.ms-powerpoint': '.ppt',
+    'application/msword': '.doc',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+  };
+  return map[mime] || '.bin';
+}
+
+/**
+ * Converte um buffer de áudio pra M4A (AAC) pra compatibilidade cross-browser.
+ * Mesma lógica do Meta webhook — duplicada aqui pra não criar dependência
+ * entre arquivos sem necessidade. Se virar manutenção, vale extrair pra utility.
+ */
+async function convertAudioToM4a(inputBuffer: Buffer, inputExt: string): Promise<Buffer> {
+  const ffmpegInstaller = await import('@ffmpeg-installer/ffmpeg');
+  const ffmpeg = (await import('fluent-ffmpeg')).default;
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { writeFile, readFile, unlink } = await import('node:fs/promises');
+
+  ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+
+  const inputPath = join(tmpdir(), `bly_in_${Date.now()}${inputExt}`);
+  const outputPath = join(tmpdir(), `bly_out_${Date.now()}.m4a`);
+
+  await writeFile(inputPath, inputBuffer);
+
+  await new Promise<void>((resolve, reject) => {
+    ffmpeg(inputPath)
+      .audioCodec('aac')
+      .audioBitrate('128k')
+      .audioChannels(1)
+      .format('ipod') // M4A/AAC container
+      .on('error', reject)
+      .on('end', () => resolve())
+      .save(outputPath);
+  });
+
+  const outputBuffer = await readFile(outputPath);
+  // Cleanup non-fatal — se falhar, /tmp eventualmente limpa
+  try { await unlink(inputPath); } catch { /* ignore */ }
+  try { await unlink(outputPath); } catch { /* ignore */ }
+  return outputBuffer;
+}
+
+/**
+ * Extrai o mimetype declarado pelo Baileys no proto da mensagem.
+ * Cada tipo de mídia (image/video/audio/document/sticker) tem seu próprio campo.
+ */
+function extractMimeType(msg: proto.IMessage | null | undefined): string | null {
+  if (!msg) return null;
+  if (msg.imageMessage?.mimetype) return msg.imageMessage.mimetype;
+  if (msg.videoMessage?.mimetype) return msg.videoMessage.mimetype;
+  if (msg.audioMessage?.mimetype) return msg.audioMessage.mimetype;
+  if (msg.documentMessage?.mimetype) return msg.documentMessage.mimetype;
+  if (msg.stickerMessage?.mimetype) return msg.stickerMessage.mimetype;
+  return null;
+}
+
+/**
+ * Tenta extrair o nome de arquivo declarado (apenas documentMessage tem isso).
+ * Usado como hint na construção do nome do arquivo no Storage.
+ */
+function extractFileName(msg: proto.IMessage | null | undefined): string | null {
+  if (!msg) return null;
+  return msg.documentMessage?.fileName || null;
+}
+
+export interface DownloadAndUploadParams {
+  waMessage: WAMessage;
+  businessId: string;
+  conversationId: string;
+  /** Logger usado pelo downloadMediaMessage do Baileys; passe pino do socket. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  logger?: any;
+  /**
+   * Função de re-upload — só necessária se o WhatsApp pedir reupload (raro).
+   * Passar `sock.updateMediaMessage` da socket Baileys.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  reuploadRequest?: any;
+}
+
+/**
+ * Baixa a mídia da mensagem Baileys, opcionalmente converte áudio pra M4A,
+ * e faz upload pro Firebase Storage. Retorna a URL pública (signed) do arquivo,
+ * ou null se algo falhar (caller mantém mediaUrl=null nesse caso).
+ *
+ * Não lança — mídia que falha em download/upload não pode bloquear a persistência
+ * da mensagem no Firestore (operador veria menos do que deveria, mas pelo menos
+ * o texto/preview chega).
+ */
+export async function downloadAndUploadBaileysMedia(
+  params: DownloadAndUploadParams,
+): Promise<{ mediaUrl: string; contentType: string } | null> {
+  const { waMessage, businessId, conversationId, logger, reuploadRequest } = params;
+
+  if (!waMessage.message) return null;
+  const declaredMime = extractMimeType(waMessage.message);
+  if (!declaredMime) {
+    // Mensagem não é mídia — não há o que baixar.
+    return null;
+  }
+
+  try {
+    // 1. Download via Baileys (decodifica E2EE blobs).
+    // Timeout via Promise.race — se o WhatsApp demorar mais que 30s, desistimos
+    // pra não travar o handler de inbound (próximas mensagens ficariam atrás).
+    const downloadPromise = downloadMediaMessage(
+      waMessage,
+      'buffer',
+      {},
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ({ logger, reuploadRequest } as any),
+    );
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Baileys media download timeout (30s)')), 30_000);
+    });
+    const downloaded = (await Promise.race([downloadPromise, timeoutPromise])) as Buffer;
+    let buffer = Buffer.isBuffer(downloaded) ? downloaded : Buffer.from(downloaded);
+
+    // 2. Limites de tamanho (defesa contra OOM com vídeos enormes).
+    const MAX_BYTES = 50 * 1024 * 1024; // 50MB — alinhado com limite Meta
+    if (buffer.length > MAX_BYTES) {
+      console.warn(`[Baileys Media] Arquivo grande demais (${buffer.length} bytes), pulando upload`);
+      return null;
+    }
+
+    // 3. Determinar content-type final — começa pelo declarado, normaliza
+    //    "audio/ogg; codecs=opus" pra "audio/ogg" (split por ";").
+    let contentType = declaredMime.split(';')[0]?.trim() || 'application/octet-stream';
+
+    // 4. Converte áudios incompatíveis pra M4A (Safari não toca OGG, etc).
+    if (AUDIO_CONVERT_MIMES.has(contentType)) {
+      try {
+        console.log(`[Baileys Media] Convertendo ${contentType} → audio/mp4`);
+        buffer = await convertAudioToM4a(buffer, mimeToExtension(contentType));
+        contentType = 'audio/mp4';
+      } catch (convErr) {
+        console.warn('[Baileys Media] Falha na conversão de áudio (mantendo original):', convErr);
+      }
+    }
+
+    // 5. Monta path no Storage.
+    const ext = mimeToExtension(contentType);
+    const declaredName = extractFileName(waMessage.message);
+    const baseName = declaredName
+      ? declaredName.replace(/[^\w.-]/g, '_').slice(0, 60)
+      : `inbound_${Date.now()}_${(waMessage.key.id || 'msg').slice(-8)}${ext}`;
+    const storagePath = `conversations/${businessId}/${conversationId}/${Date.now()}_${baseName}`;
+
+    // 6. Upload via client SDK pra ter URL signed compatível com a UI.
+    const storage = getStorageBucket();
+    const storageRef = ref(storage, storagePath);
+    await uploadBytes(storageRef, buffer, { contentType });
+    const downloadUrl = await getDownloadURL(storageRef);
+
+    return { mediaUrl: downloadUrl, contentType };
+  } catch (err) {
+    console.error('[Baileys Media] Erro no download/upload:', err);
+    return null;
+  }
+}

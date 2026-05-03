@@ -1574,6 +1574,7 @@ function Composer({
   isInternalNote,
   onToggleInternalNote,
   onSnippetClick,
+  crossOperatorWarning,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -1591,6 +1592,12 @@ function Composer({
   isInternalNote?: boolean;
   onToggleInternalNote?: () => void;
   onSnippetClick?: () => void;
+  /**
+   * Setado quando o canal da conversa pertence a OUTRO operador (canal pessoal
+   * de Igor, e estou logado como Maria/admin). A mensagem que eu enviar vai
+   * sair do número do Igor — operador precisa ter ciência. Banner âmbar.
+   */
+  crossOperatorWarning?: { ownerName: string };
 }) {
   const { t } = useTranslation();
   const cfg = getConvConfig({ channel, connectedVia: connectedVia as 'baileys' | 'embedded_signup' | undefined });
@@ -1633,6 +1640,19 @@ function Composer({
         ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-500/20'
         : 'bg-white dark:bg-[#111827] border-gray-100 dark:border-white/[0.06]'
     )}>
+      {/* Cross-operator warning: conversa pertence ao canal pessoal de OUTRO
+          operador. Mensagens enviadas aqui saem do NÚMERO dele, não do meu —
+          contato vai ver "Igor" no remetente, mesmo eu (admin/Maria) tendo
+          digitado. UI deixa explícito pra evitar surpresas. */}
+      {crossOperatorWarning && !isInternalNote && (
+        <div className="flex items-start gap-2 mb-2 px-2 py-2 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20">
+          <AlertCircle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+          <span className="text-xs text-amber-800 dark:text-amber-300 leading-snug">
+            Você está respondendo pelo <strong>canal pessoal de {crossOperatorWarning.ownerName}</strong>.
+            A mensagem sairá do número dele — o cliente verá como se {crossOperatorWarning.ownerName} respondeu.
+          </span>
+        </div>
+      )}
       {/* Internal Note Banner */}
       {isInternalNote && (
         <div className="flex items-center gap-2 mb-2 px-2">
@@ -6307,27 +6327,47 @@ export default function ConversasModule() {
                 </AnimatePresence>
 
                 {/* Composer */}
-                <Composer
-                  value={messageInput}
-                  onChange={(v) => { setMessageInput(v); sendTypingIndicator(); }}
-                  onSend={handleSend}
-                  onKeyDown={handleKeyDown}
-                  inputRef={inputRef}
-                  channel={selectedConversation.channel}
-                  connectedVia={selectedConversation.connectedVia}
-                  isSending={isSending}
-                  attachment={attachment}
-                  onAttachmentSelect={handleFileSelect}
-                  onAttachmentRemove={handleRemoveAttachment}
-                  disabled={isWindowExpired(selectedConversation)}
-                  onTemplateClick={() => {
-                    setShowTemplateSelector(true);
-                    if (templateList.length === 0 && !templatesLoading) fetchWhatsappTemplates();
-                  }}
-                  isInternalNote={isInternalNote}
-                  onToggleInternalNote={() => setIsInternalNote(prev => !prev)}
-                  onSnippetClick={() => setShowSnippets(true)}
-                />
+                {(() => {
+                  // Cross-operator detection: a conversa está vinculada a uma
+                  // connection pessoal de OUTRO operador. Se eu (admin/colega)
+                  // responder, a msg sai pelo número dele. Mostra banner amber.
+                  const conn = selectedConversation.channelConnectionId
+                    ? connectionsById.get(selectedConversation.channelConnectionId)
+                    : null;
+                  const isCrossOperator = !!(
+                    conn &&
+                    conn.ownerType === 'user' &&
+                    conn.ownerId &&
+                    conn.ownerId !== user?.uid
+                  );
+                  const crossOpWarning = isCrossOperator
+                    ? { ownerName: conn!.displayName || 'outro operador' }
+                    : undefined;
+                  return (
+                    <Composer
+                      value={messageInput}
+                      onChange={(v) => { setMessageInput(v); sendTypingIndicator(); }}
+                      onSend={handleSend}
+                      onKeyDown={handleKeyDown}
+                      inputRef={inputRef}
+                      channel={selectedConversation.channel}
+                      connectedVia={selectedConversation.connectedVia}
+                      isSending={isSending}
+                      attachment={attachment}
+                      onAttachmentSelect={handleFileSelect}
+                      onAttachmentRemove={handleRemoveAttachment}
+                      disabled={isWindowExpired(selectedConversation)}
+                      onTemplateClick={() => {
+                        setShowTemplateSelector(true);
+                        if (templateList.length === 0 && !templatesLoading) fetchWhatsappTemplates();
+                      }}
+                      isInternalNote={isInternalNote}
+                      onToggleInternalNote={() => setIsInternalNote(prev => !prev)}
+                      onSnippetClick={() => setShowSnippets(true)}
+                      crossOperatorWarning={crossOpWarning}
+                    />
+                  );
+                })()}
 
                 {/* Snippets Popup */}
                 <AnimatePresence>
