@@ -46,6 +46,11 @@ const PERMANENT_DISCONNECT_CODES = new Set([
 
 const MAX_AUTO_RESTARTS = 8;
 
+// Logger silencioso compartilhado — usado por downloadMediaMessage de Baileys.
+// Singleton pra evitar criar nova instância de pino a cada mensagem inbound
+// com mídia (cada instance abre file descriptor pro stderr).
+const SILENT_LOGGER = pino({ level: 'silent' });
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface BaileysSession {
@@ -503,6 +508,44 @@ export async function sendBaileysBroadcastMessage(
 
 interface InboundSaveResult { conversationId: string; messageId: string; phone: string }
 
+/**
+ * Vincula a conversa a um contato CRM existente quando o telefone bate com
+ * `channelIdentities.whatsapp`. Best-effort — falhas não bloqueiam o flow
+ * principal. Idempotente: chamar múltiplas vezes com a mesma combinação
+ * resulta em escrita inofensiva.
+ *
+ * Extraído pra helper porque é necessário em 2 lugares no handleInboundMessage:
+ * o branch `!matchedDoc` (conversa nova) e o branch `claimResult.kind==='conflict'`
+ * (race detectado, conv nova criada com canal correto).
+ */
+async function autoLinkCrmContact(
+  businessId: string,
+  conversationId: string,
+  senderPhone: string,
+  fallbackContactName: string,
+  now: string,
+): Promise<void> {
+  try {
+    const crmSnap = await adminDb.collection('clients')
+      .where('businessId', '==', businessId)
+      .where('channelIdentities.whatsapp', '==', senderPhone)
+      .limit(1)
+      .get();
+    if (!crmSnap.empty) {
+      const crmContact = crmSnap.docs[0];
+      await adminDb.collection('conversations').doc(conversationId).update({
+        crmContactId: crmContact.id,
+        contactName: crmContact.data().name || fallbackContactName,
+      });
+      await adminDb.collection('clients').doc(crmContact.id).update({
+        lastConversationId: conversationId,
+        lastConversationAt: now,
+        updatedAt: now,
+      });
+    }
+  } catch { /* non-critical */ }
+}
+
 async function handleInboundMessage(
   businessId: string,
   connectionId: string,
@@ -715,27 +758,7 @@ async function handleInboundMessage(
         updatedAt: now,
       });
       conversationId = newConvRef.id;
-
-      // Auto-link CRM contact
-      try {
-        const crmSnap = await adminDb.collection('clients')
-          .where('businessId', '==', businessId)
-          .where('channelIdentities.whatsapp', '==', senderPhone)
-          .limit(1)
-          .get();
-        if (!crmSnap.empty) {
-          const crmContact = crmSnap.docs[0];
-          await adminDb.collection('conversations').doc(conversationId).update({
-            crmContactId: crmContact.id,
-            contactName: crmContact.data().name || contactName,
-          });
-          await adminDb.collection('clients').doc(crmContact.id).update({
-            lastConversationId: conversationId,
-            lastConversationAt: now,
-            updatedAt: now,
-          });
-        }
-      } catch { /* non-critical */ }
+      await autoLinkCrmContact(businessId, conversationId, senderPhone, contactName, now);
     } else {
       // Match em conversa legacy/sem channelConnectionId. Usa transaction pra
       // resolver race: se OUTRO canal Baileys (ex: canal pessoal de outro
@@ -829,6 +852,9 @@ async function handleInboundMessage(
         });
         conversationId = newConvRef.id;
         console.log(`[Baileys] Race em conversa legacy resolvido — criada nova conv ${conversationId.slice(-6)} pra canal ${connectionId.slice(-6)}`);
+        // Auto-link CRM tambem na branch de conflict — sem isso, conversas
+        // criadas via race perderiam a vinculação ao crmContact.
+        await autoLinkCrmContact(businessId, conversationId, senderPhone, contactName, now);
       } else {
         conversationId = matchedDoc.id;
         if (claimResult.appliedContactName) contactName = claimResult.appliedContactName;
@@ -848,7 +874,7 @@ async function handleInboundMessage(
           waMessage,
           businessId,
           conversationId,
-          logger: pino({ level: 'silent' }),
+          logger: SILENT_LOGGER,
           reuploadRequest: sock.updateMediaMessage,
         });
         if (mediaResult) mediaUrl = mediaResult.mediaUrl;

@@ -172,6 +172,8 @@ export async function downloadAndUploadBaileysMedia(
     // 1. Download via Baileys (decodifica E2EE blobs).
     // Timeout via Promise.race — se o WhatsApp demorar mais que 30s, desistimos
     // pra não travar o handler de inbound (próximas mensagens ficariam atrás).
+    // CRÍTICO: limpar o timer no finally pra não vazar timers em alta carga
+    // (100+ mensagens/min com mídia acumularia 3000+ timers pendentes).
     const downloadPromise = downloadMediaMessage(
       waMessage,
       'buffer',
@@ -179,10 +181,19 @@ export async function downloadAndUploadBaileysMedia(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ({ logger, reuploadRequest } as any),
     );
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Baileys media download timeout (30s)')), 30_000);
+      timeoutHandle = setTimeout(
+        () => reject(new Error('Baileys media download timeout (30s)')),
+        30_000,
+      );
     });
-    const downloaded = (await Promise.race([downloadPromise, timeoutPromise])) as Buffer;
+    let downloaded: Buffer;
+    try {
+      downloaded = (await Promise.race([downloadPromise, timeoutPromise])) as Buffer;
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
     let buffer = Buffer.isBuffer(downloaded) ? downloaded : Buffer.from(downloaded);
 
     // 2. Limites de tamanho (defesa contra OOM com vídeos enormes).
