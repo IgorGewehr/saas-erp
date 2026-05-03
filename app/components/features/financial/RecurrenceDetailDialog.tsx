@@ -22,6 +22,7 @@
  */
 
 import { useMemo, useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { motion } from 'framer-motion';
 import {
   X, Clock, History as HistoryIcon, Calendar as CalendarIcon, Settings2,
@@ -141,24 +142,23 @@ export default function RecurrenceDetailDialog({
   const isActive = recurrence?.isActive ?? false;
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
-  // Lock the tab's scroll container while the modal is open.
-  // The app uses an inner div (overflow-y-auto) as the scroll host, not document.body,
-  // so we walk up the DOM from the backdrop element to find and freeze it.
+  // Mount-check pra createPortal: document.body só existe no browser, e o
+  // primeiro render no Next.js pode acontecer no servidor (mesmo com 'use client'
+  // pode rodar SSR antes de hidratar). Sem isso, hydration mismatch.
+  const [portalReady, setPortalReady] = useState(false);
+  useEffect(() => { setPortalReady(true); }, []);
+
+  // Lock body scroll while the modal is open. Antes a lógica caminhava pelo DOM
+  // procurando o primeiro overflow:auto/scroll ancestor, mas isso é frágil:
+  // em alguns layouts achava o elemento errado e travava UI inteira (ou nem
+  // travava nada). Agora trava o body diretamente — modal renderiza via portal
+  // fora do tree do app, então não há conflito com scrolls internos.
   const backdropRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    let el: HTMLElement | null = backdropRef.current?.parentElement ?? null;
-    while (el) {
-      const { overflowY } = window.getComputedStyle(el);
-      if (overflowY === 'auto' || overflowY === 'scroll') break;
-      el = el.parentElement;
-    }
-    if (!el) return;
-    const prevOverflow = el.style.overflowY;
-    const prevScroll   = el.scrollTop;
-    el.style.overflowY = 'hidden';
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
     return () => {
-      el!.style.overflowY = prevOverflow;
-      el!.scrollTop = prevScroll;
+      document.body.style.overflow = prevOverflow;
     };
   }, []);
 
@@ -282,7 +282,13 @@ export default function RecurrenceDetailDialog({
     finally { setAdjustSaving(false); }
   };
 
-  return (
+  // Render via portal direto no document.body — sem isso, position:fixed do
+  // backdrop fica RELATIVO a algum ancestor com transform/will-change (motion
+  // components do framer-motion no shell da app criam containing block pra
+  // fixed). Resultado: modal ficava preso dentro do <main>, com header coberto
+  // pelo TopBar e tela parecendo travada.
+  if (!portalReady) return null;
+  return createPortal(
     <motion.div
       ref={backdropRef}
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
@@ -799,7 +805,8 @@ export default function RecurrenceDetailDialog({
           </div>
         )}
       </motion.div>
-    </motion.div>
+    </motion.div>,
+    document.body,
   );
 }
 
