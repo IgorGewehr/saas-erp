@@ -264,19 +264,17 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
 
       const result = await response.json();
 
-      if (!response.ok) {
-        toast.error(result.error || t('fiscal.cancel.error', 'Erro ao cancelar nota fiscal.'));
+      if (!response.ok || !result.success) {
+        toast.error(
+          result.data?.motivoStatus
+            || result.data?.erros?.[0]
+            || result.error
+            || t('fiscal.cancel.error', 'Erro ao cancelar nota fiscal.')
+        );
         return;
       }
 
-      // Update document status in Firestore
-      await updateDoc(firestoreDoc(db, 'fiscalDocuments', doc.id), {
-        status: 'cancelada' as const,
-        canceledAt: new Date().toISOString(),
-        cancelReason: cancelReason.trim(),
-        updatedAt: new Date().toISOString(),
-      });
-
+      // Backend já atualizou o fiscalDocument no Firestore via reverseLinkedTransactions.
       toast.success(t('fiscal.cancel.success', 'Nota fiscal cancelada com sucesso!'));
       setCancelOpen(false);
       setCancelReason('');

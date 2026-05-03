@@ -167,8 +167,25 @@ export async function POST(request: NextRequest) {
       certificado,
     });
 
-    // Reverse linked financial transactions atomically
-    if (body.businessId && (result.status === 'cancelado' || result.success)) {
+    // SEFAZ retorna 422 com status='rejeitado' quando recusa o cancelamento.
+    // Só aceitamos como cancelado se status='cancelado' OR success=true.
+    const isCancelled = result.status === 'cancelado' || result.success === true;
+
+    if (!isCancelled) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: result.motivoStatus
+            || result.erros?.[0]
+            || 'Cancelamento rejeitado pela SEFAZ. Verifique o motivo.',
+          data: result,
+        },
+        { status: 422 },
+      );
+    }
+
+    // Confirmed cancellation: update fiscal doc + reverse linked transactions.
+    if (body.businessId) {
       await reverseLinkedTransactions(body.businessId, body.chaveAcesso, body.justificativa.trim());
     }
 
