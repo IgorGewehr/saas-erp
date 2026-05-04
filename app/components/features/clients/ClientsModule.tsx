@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback, useMemo, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Users, Plus, Search, Filter, X, Edit2, Trash2, Phone, Mail,
@@ -601,7 +602,9 @@ function ExportModal({
     onClose();
   };
 
-  return (
+  // Portal pra escapar containing block do wrapper de tabs (will-change-transform).
+  if (typeof document === 'undefined') return null;
+  return createPortal(
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
@@ -614,7 +617,7 @@ function ExportModal({
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95, y: 16 }}
         transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-        className="w-full max-w-lg bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 overflow-hidden"
+        className="w-full max-w-lg max-h-[calc(100vh-2rem)] overflow-y-auto bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50"
       >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800">
@@ -721,7 +724,8 @@ function ExportModal({
           </div>
         </div>
       </motion.div>
-    </motion.div>
+    </motion.div>,
+    document.body,
   );
 }
 
@@ -988,7 +992,9 @@ function ImportModal({
     onDone();
   };
 
-  return (
+  // Portal pra escapar containing block do wrapper de tabs (will-change-transform).
+  if (typeof document === 'undefined') return null;
+  return createPortal(
     <motion.div
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
       className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
@@ -999,7 +1005,7 @@ function ImportModal({
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95, y: 16 }}
         transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-        className="w-full max-w-2xl bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 overflow-hidden flex flex-col max-h-[90vh]"
+        className="w-full max-w-2xl bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 overflow-hidden flex flex-col max-h-[calc(100vh-2rem)]"
       >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800 flex-shrink-0">
@@ -1233,7 +1239,8 @@ function ImportModal({
           )}
         </div>
       </motion.div>
-    </motion.div>
+    </motion.div>,
+    document.body,
   );
 }
 
@@ -1461,7 +1468,9 @@ function MergeModal({
     </div>
   );
 
-  return (
+  // Portal pra escapar containing block do wrapper de tabs (will-change-transform).
+  if (typeof document === 'undefined') return null;
+  return createPortal(
     <motion.div
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
       className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
@@ -1472,7 +1481,7 @@ function MergeModal({
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95, y: 16 }}
         transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-        className="w-full max-w-xl bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 overflow-hidden flex flex-col max-h-[90vh]"
+        className="w-full max-w-xl bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 overflow-hidden flex flex-col max-h-[calc(100vh-2rem)]"
       >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800 flex-shrink-0">
@@ -1574,7 +1583,8 @@ function MergeModal({
           </p>
         </div>
       </motion.div>
-    </motion.div>
+    </motion.div>,
+    document.body,
   );
 }
 
@@ -1647,7 +1657,9 @@ function LoyaltySettingsModal({
     }
   };
 
-  return (
+  // Portal pra escapar containing block do wrapper de tabs (will-change-transform).
+  if (typeof document === 'undefined') return null;
+  return createPortal(
     <motion.div
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
       className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
@@ -1658,7 +1670,7 @@ function LoyaltySettingsModal({
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95, y: 16 }}
         transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-        className="w-full max-w-lg bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 overflow-hidden flex flex-col max-h-[90vh]"
+        className="w-full max-w-lg bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 overflow-hidden flex flex-col max-h-[calc(100vh-2rem)]"
       >
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800 flex-shrink-0">
           <div className="flex items-center gap-2.5">
@@ -1775,7 +1787,8 @@ function LoyaltySettingsModal({
           </button>
         </div>
       </motion.div>
-    </motion.div>
+    </motion.div>,
+    document.body,
   );
 }
 
@@ -1834,7 +1847,9 @@ function PointsAdjustModal({
     }
   };
 
-  return (
+  // Portal pra escapar containing block do wrapper de tabs (will-change-transform).
+  if (typeof document === 'undefined') return null;
+  return createPortal(
     <motion.div
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
       className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
@@ -1927,7 +1942,8 @@ function PointsAdjustModal({
           </button>
         </div>
       </motion.div>
-    </motion.div>
+    </motion.div>,
+    document.body,
   );
 }
 
@@ -2533,6 +2549,21 @@ export default function ClientsModule() {
   const [showForm, setShowForm] = useState(false);
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<Client | null>(null);
+
+  // Lock-scroll do wrapper de tab ativo enquanto qualquer modal estiver aberto.
+  // Sem isso, com os modais portalados pra document.body, a página atrás
+  // ainda fica scrollável.
+  useEffect(() => {
+    const anyOpen = showForm || showImport || showExport || showMerge || showLoyaltySettings || !!deleteConfirm;
+    if (!anyOpen) return;
+    const el = document.querySelector<HTMLElement>(
+      '.will-change-transform.pointer-events-auto.overflow-y-auto',
+    );
+    if (!el) return;
+    const prevOverflow = el.style.overflowY;
+    el.style.overflowY = 'hidden';
+    return () => { el.style.overflowY = prevOverflow; };
+  }, [showForm, showImport, showExport, showMerge, showLoyaltySettings, deleteConfirm]);
 
   // ─── Data fetching ──────────────────────────────────────────────────────────
   const { data: clients = [], isLoading } = useQuery({
@@ -3196,49 +3227,52 @@ export default function ClientsModule() {
       </div>
 
       {/* Create/Edit modal */}
-      <AnimatePresence>
-        {showForm && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
-            onClick={(e) => { if (e.target === e.currentTarget) { setShowForm(false); setEditingClient(null); } }}
-          >
+      {typeof document !== 'undefined' && createPortal(
+        <AnimatePresence>
+          {showForm && (
             <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-              className="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-white dark:bg-gray-900 rounded-2xl shadow-2xl"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+              onClick={(e) => { if (e.target === e.currentTarget) { setShowForm(false); setEditingClient(null); } }}
             >
-              <div className="sticky top-0 z-10 bg-white dark:bg-gray-900 border-b border-gray-100 dark:border-gray-800 px-6 py-4 flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-lg bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
-                    <Users className="w-4 h-4 text-red-500" />
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+                className="w-full max-w-2xl max-h-[calc(100vh-2rem)] overflow-y-auto bg-white dark:bg-gray-900 rounded-2xl shadow-2xl"
+              >
+                <div className="sticky top-0 z-10 bg-white dark:bg-gray-900 border-b border-gray-100 dark:border-gray-800 px-6 py-4 flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
+                      <Users className="w-4 h-4 text-red-500" />
+                    </div>
+                    <h2 className="font-semibold text-gray-900 dark:text-white">
+                      {editingClient ? 'Editar cliente' : 'Novo cliente'}
+                    </h2>
                   </div>
-                  <h2 className="font-semibold text-gray-900 dark:text-white">
-                    {editingClient ? 'Editar cliente' : 'Novo cliente'}
-                  </h2>
+                  <button onClick={() => { setShowForm(false); setEditingClient(null); }}
+                    className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 transition-colors">
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
-                <button onClick={() => { setShowForm(false); setEditingClient(null); }}
-                  className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 transition-colors">
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-              <div className="p-6">
-                <ClientForm
-                  initial={formInitial}
-                  onSave={saveClient}
-                  onCancel={() => { setShowForm(false); setEditingClient(null); }}
-                  isSaving={isSaving}
-                  tagSuggestions={allTags}
-                />
-              </div>
+                <div className="p-6">
+                  <ClientForm
+                    initial={formInitial}
+                    onSave={saveClient}
+                    onCancel={() => { setShowForm(false); setEditingClient(null); }}
+                    isSaving={isSaving}
+                    tagSuggestions={allTags}
+                  />
+                </div>
+              </motion.div>
             </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          )}
+        </AnimatePresence>,
+        document.body,
+      )}
 
       {/* Loyalty settings modal */}
       <AnimatePresence>
@@ -3291,44 +3325,47 @@ export default function ClientsModule() {
       </AnimatePresence>
 
       {/* Delete confirm */}
-      <AnimatePresence>
-        {deleteConfirm && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
-          >
+      {typeof document !== 'undefined' && createPortal(
+        <AnimatePresence>
+          {deleteConfirm && (
             <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl shadow-2xl p-6"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
             >
-              <div className="w-12 h-12 rounded-2xl bg-red-50 dark:bg-red-500/10 flex items-center justify-center mx-auto mb-4">
-                <Trash2 className="w-6 h-6 text-red-500" />
-              </div>
-              <h3 className="text-lg font-semibold text-gray-900 dark:text-white text-center mb-2">Excluir cliente?</h3>
-              <p className="text-sm text-gray-500 dark:text-gray-400 text-center mb-6">
-                <strong className="text-gray-700 dark:text-gray-300">{deleteConfirm.name}</strong> será removido permanentemente.
-              </p>
-              <div className="flex gap-3">
-                <button onClick={() => setDeleteConfirm(null)}
-                  className="flex-1 px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
-                  Cancelar
-                </button>
-                <button
-                  onClick={() => deleteClient(deleteConfirm.id)}
-                  disabled={isDeleting}
-                  className="flex-1 px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors disabled:opacity-50"
-                >
-                  {isDeleting ? 'Excluindo...' : 'Excluir'}
-                </button>
-              </div>
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl shadow-2xl p-6"
+              >
+                <div className="w-12 h-12 rounded-2xl bg-red-50 dark:bg-red-500/10 flex items-center justify-center mx-auto mb-4">
+                  <Trash2 className="w-6 h-6 text-red-500" />
+                </div>
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white text-center mb-2">Excluir cliente?</h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400 text-center mb-6">
+                  <strong className="text-gray-700 dark:text-gray-300">{deleteConfirm.name}</strong> será removido permanentemente.
+                </p>
+                <div className="flex gap-3">
+                  <button onClick={() => setDeleteConfirm(null)}
+                    className="flex-1 px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={() => deleteClient(deleteConfirm.id)}
+                    disabled={isDeleting}
+                    className="flex-1 px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors disabled:opacity-50"
+                  >
+                    {isDeleting ? 'Excluindo...' : 'Excluir'}
+                  </button>
+                </div>
+              </motion.div>
             </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          )}
+        </AnimatePresence>,
+        document.body,
+      )}
     </div>
   );
 }
