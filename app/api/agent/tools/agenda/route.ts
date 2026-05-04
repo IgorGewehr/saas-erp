@@ -182,15 +182,12 @@ async function checkAvailability(
     return { date, slots: [] };
   }
 
-  // Load existing appointments for the day. When a specific professional is
-  // requested, narrow the query server-side (index: businessId + date + professionalId).
-  let apptsQuery = adminDb.collection('appointments')
+  // Load ALL appointments for the day — no professionalId filter so that
+  // unassigned appointments (no professionalId) are included in conflict detection.
+  const apptsSnap = await adminDb.collection('appointments')
     .where('businessId', '==', businessId)
-    .where('date', '==', date) as FirebaseFirestore.Query;
-  if (professionalId) {
-    apptsQuery = apptsQuery.where('professionalId', '==', professionalId);
-  }
-  const apptsSnap = await apptsQuery.get();
+    .where('date', '==', date)
+    .get();
   const appts = apptsSnap.docs
     .map(d => d.data() as Appointment)
     .filter(a => a.status !== 'cancelado');
@@ -244,8 +241,9 @@ async function checkAvailability(
 
     for (const start of candidates) {
       const end = addMinutes(start, durationMinutes);
+      // Unassigned appointments (no professionalId) block all professionals.
       const conflict = appts.some(a =>
-        a.professionalId === prof.id &&
+        (!a.professionalId || a.professionalId === prof.id) &&
         intervalsOverlap(start, end, a.startTime, a.endTime),
       );
       if (!conflict) {
@@ -364,23 +362,18 @@ async function bookAppointment(businessId: string, p: BookParams) {
   const newRef = adminDb.collection('appointments').doc();
 
   const result = await adminDb.runTransaction(async (tx) => {
-    // Read: existing appointments for the day (scoped to professional if set)
-    let txQuery: FirebaseFirestore.Query = adminDb.collection('appointments')
+    // Read: ALL appointments for the day — unassigned ones block all professionals.
+    const txQuery: FirebaseFirestore.Query = adminDb.collection('appointments')
       .where('businessId', '==', businessId)
       .where('date', '==', p.date);
-    if (p.professionalId) {
-      txQuery = txQuery.where('professionalId', '==', p.professionalId);
-    }
     const daySnap = await tx.get(txQuery);
 
-    // Evaluate conflicts from the reads
+    // Evaluate conflicts: unassigned appointments block everyone;
+    // assigned appointments only block the same professional.
     const conflicts = daySnap.docs
       .map(d => d.data() as Appointment)
       .filter(a => a.status !== 'cancelado')
-      .filter(a => {
-        if (!p.professionalId) return false; // no professional set — no block
-        return a.professionalId === p.professionalId;
-      })
+      .filter(a => !a.professionalId || !p.professionalId || a.professionalId === p.professionalId)
       .filter(a => intervalsOverlap(p.startTime, endTime, a.startTime, a.endTime));
 
     if (conflicts.length > 0) {
