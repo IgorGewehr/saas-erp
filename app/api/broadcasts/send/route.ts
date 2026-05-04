@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 import { decryptToken } from '@/lib/utils/encryption';
 import { checkRateLimit, checkBusinessRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
@@ -109,6 +109,10 @@ function normalizeRecipients(
   channel: string,
 ): NormalizedRecipient[] {
   const out: NormalizedRecipient[] = [];
+  // Dedup por recipientId (telefone/email): evita enviar a mesma campanha 2x
+  // pra um contato quando a lista vem com duplicatas (paste manual de CSV
+  // duplicado, segment com bug, lista mesclada de fontes diferentes).
+  const seen = new Set<string>();
   for (const r of raw) {
     const recipientId = (
       // Para WhatsApp/FB/IG usa phoneNumber/recipientId
@@ -116,6 +120,12 @@ function normalizeRecipients(
       channel === 'email' ? r.email : (r.phoneNumber || r.recipientId)
     ) ?? '';
     if (!recipientId) continue;
+    // Normaliza pra dedup: trim + lowercase pra email; só dígitos pra telefone.
+    const dedupKey = channel === 'email'
+      ? recipientId.trim().toLowerCase()
+      : recipientId.replace(/\D/g, '');
+    if (!dedupKey || seen.has(dedupKey)) continue;
+    seen.add(dedupKey);
     out.push({
       contactId: r.contactId,
       name: r.name || r.contactName,
@@ -321,10 +331,52 @@ export async function POST(req: NextRequest) {
     }
 
     const businessData = businessDoc.data()!;
-    const channels = businessData.channels;
+    let channels = businessData.channels;
     // Email não usa channels da Meta — só o branch email tem checagem própria
     if (channel !== 'email' && !channels) {
-      return NextResponse.json({ error: 'No channels configured' }, { status: 400 });
+      // Pode ser que o business não tenha o legado `channels` populado ainda mas
+      // tenha uma channelConnections — não falha aqui, deixa o resolver abaixo
+      // construir o credentials a partir da connection escolhida.
+      channels = {};
+    }
+
+    // Resolve channelConnection específica do broadcast, quando setada. Permite
+    // ao operador escolher canal pessoal (ownerType='user') ou um Baileys
+    // não-primary. Quando ausente, mantém o fallback legado em `channels`.
+    const broadcastConnectionId = broadcastData?.channelConnectionId as string | undefined;
+    let resolvedConnectionId: string | undefined;
+    if (channel !== 'email' && broadcastConnectionId) {
+      const connSnap = await adminDb.collection('channelConnections').doc(broadcastConnectionId).get();
+      if (!connSnap.exists) {
+        return NextResponse.json({
+          error: `Canal escolhido na campanha (${broadcastConnectionId}) não foi encontrado. Edite a campanha e selecione outro canal.`,
+        }, { status: 400 });
+      }
+      const connData = connSnap.data() as import('@/lib/types').ChannelConnection;
+      if (connData.businessId !== businessId) {
+        return NextResponse.json({ error: 'Canal escolhido pertence a outro business' }, { status: 403 });
+      }
+      // Valida que o tipo da connection casa com o canal/modo do broadcast.
+      const expectedType = channel === 'whatsapp'
+        ? (viaBaileys ? 'whatsapp_baileys' : 'whatsapp_cloud')
+        : channel;
+      if (connData.type !== expectedType) {
+        return NextResponse.json({
+          error: `Canal escolhido (tipo ${connData.type}) não combina com canal/modo da campanha (${expectedType}).`,
+        }, { status: 400 });
+      }
+      if (!connData.isConnected || !connData.isActive) {
+        return NextResponse.json({
+          error: `Canal escolhido na campanha está desconectado/inativo. Reconecte em Configurações → Canais.`,
+        }, { status: 400 });
+      }
+      // Reescreve o slot correspondente em `channels` com as credentials da
+      // connection escolhida — o resto do fluxo (Cloud/FB/IG) continua lendo
+      // de `channels` sem precisar de outra branch.
+      const { buildLegacyChannelsFromConnection } = await import('@/lib/services/channels/channelConnections');
+      const fromConn = buildLegacyChannelsFromConnection({ ...connData, id: connSnap.id });
+      channels = { ...(channels || {}), ...fromConn };
+      resolvedConnectionId = connSnap.id;
     }
 
     let token: string;
@@ -564,6 +616,7 @@ export async function POST(req: NextRequest) {
             businessId,
             recipient.recipientId,
             messageContent || '',
+            resolvedConnectionId,
           );
           results.push({
             contactId: recipient.contactId,

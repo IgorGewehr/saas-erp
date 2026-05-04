@@ -3712,6 +3712,7 @@ function CashFlowProjection({
       running += w.receitas - w.despesas;
       return {
         name:     w.name,
+        date:     w.startStr,
         receitas: w.receitas,
         despesas: w.despesas,
         saldo:    w.receitas - w.despesas,
@@ -3729,26 +3730,57 @@ function CashFlowProjection({
     };
   }, [transactions, startingBalance, scenario]);
 
-  // ── Daily projection (existing logic, unchanged) ──────────────────────────
+  // ── Daily projection ───────────────────────────────────────────────────────
+  // Mesma estratégia de duas etapas do weeklyProjection:
+  //   1. Transações individuais pendentes/atrasadas com dueDate dentro do horizonte
+  //   2. Recorrências ativas — projeta as próximas ocorrências dentro do horizonte
+  // Antes só fazia a etapa 1 — recorrências ficavam invisíveis no Diário a menos
+  // que o `nextDueDate` atual estivesse no intervalo, e mesmo assim só a 1ª
+  // ocorrência aparecia. Com horizonte de 90d e despesas mensais, deveriam
+  // aparecer 2-3 ocorrências por recorrência.
   const dailyProjection = useMemo(() => {
-    const today    = new Date();
+    const today    = new Date(); today.setHours(0, 0, 0, 0);
     const todayStr = today.toISOString().slice(0, 10);
     const cutoff   = new Date(today); cutoff.setDate(today.getDate() + horizon);
     const cutoffStr = cutoff.toISOString().slice(0, 10);
 
-    const relevant = transactions.filter(t => {
-      if (t.status === 'cancelado') return false;
-      const dateStr = t.dueDate || t.paymentDate;
-      return dateStr && dateStr >= todayStr && dateStr <= cutoffStr;
-    });
-
     const byDate = new Map<string, { receitas: number; despesas: number }>();
-    for (const tx of relevant) {
-      const key = (tx.dueDate || tx.paymentDate)!;
-      const bucket = byDate.get(key) || { receitas: 0, despesas: 0 };
-      if (tx.type === 'receita') bucket.receitas += tx.amount;
-      else bucket.despesas += tx.amount;
-      byDate.set(key, bucket);
+    const addToBucket = (dateStr: string, type: 'receita' | 'despesa', amount: number) => {
+      const bucket = byDate.get(dateStr) || { receitas: 0, despesas: 0 };
+      if (type === 'receita') bucket.receitas += amount;
+      else bucket.despesas += amount;
+      byDate.set(dateStr, bucket);
+    };
+
+    // 1. Transações individuais (NÃO-recorrentes) pendentes/atrasadas dentro
+    //    do horizonte. Recorrências vão pra etapa 2 — sem isso há ambiguidade
+    //    porque tx.dueDate de uma recorrência pode estar dessincronizado com
+    //    tx.recurrence.nextDueDate (após um pagamento, o dueDate fica no
+    //    passado e o nextDueDate avança), causando ocorrências invisíveis ou
+    //    duplicadas.
+    for (const tx of transactions) {
+      if (tx.status === 'cancelado' || tx.status === 'pago') continue;
+      if (tx.recurrence?.isActive) continue; // recorrências vão pra etapa 2
+      const dateStr = tx.dueDate || tx.paymentDate;
+      if (!dateStr || dateStr < todayStr || dateStr > cutoffStr) continue;
+      addToBucket(dateStr, tx.type, tx.amount);
+    }
+
+    // 2. Recorrências ativas — projeta TODAS as ocorrências dentro do horizonte
+    //    a partir de `nextDueDate` (próxima a vencer). Guard de 100 iterações
+    //    cobre semanal por 90d (~13 ocorrências) com folga sem risco de loop
+    //    infinito por bug em advanceRecurrence.
+    for (const tx of transactions.filter(t => t.recurrence?.isActive && t.recurrence.nextDueDate)) {
+      const freq = tx.recurrence!.frequency;
+      const dom  = tx.recurrence!.dayOfMonth;
+      let next = tx.recurrence!.nextDueDate!;
+      let guard = 0;
+      while (next <= cutoffStr && guard++ < 100) {
+        if (next >= todayStr) {
+          addToBucket(next, tx.type, tx.amount);
+        }
+        next = advanceRecurrence(next, freq, dom, tx.recurrence!.secondDayOfMonth, tx.recurrence!.holidayAdjust);
+      }
     }
 
     let running = startingBalance;
@@ -3816,8 +3848,10 @@ function CashFlowProjection({
           )}
           <button
             onClick={() => exportCashFlowCSV(
-              active.data.map(d => ({ date: ('date' in d ? d.date : d.name) as string, receitas: d.receitas, despesas: d.despesas, saldo: d.saldo, acumulado: d.acumulado })),
-              viewMode === 'weekly' ? 13 : horizon, businessName
+              active.data.map(d => ({ date: d.date, receitas: d.receitas, despesas: d.despesas, saldo: d.saldo, acumulado: d.acumulado })),
+              viewMode === 'weekly' ? 13 : horizon,
+              businessName,
+              viewMode === 'weekly' ? 'semanas' : 'dias',
             )}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
           >
@@ -3893,7 +3927,7 @@ function CashFlowProjection({
             </div>
             {active.data.map((row, i) => (
               <div key={i} className={cn('grid grid-cols-5 px-5 py-2.5 text-sm hover:bg-slate-50 dark:hover:bg-gray-800/40 transition-colors', row.acumulado < 0 && 'bg-red-50/30 dark:bg-red-500/5')}>
-                <div className="col-span-2 text-slate-700 dark:text-gray-300 font-medium">{'name' in row ? row.name : ''}</div>
+                <div className="col-span-2 text-slate-700 dark:text-gray-300 font-medium">{('name' in row ? row.name : ('date' in row ? row.date : '')) as string}</div>
                 <div className="text-right text-emerald-600 dark:text-emerald-400 tabular-nums">{row.receitas > 0 ? `+${formatCurrency(row.receitas)}` : '—'}</div>
                 <div className="text-right text-red-600 dark:text-red-400 tabular-nums">{row.despesas > 0 ? `-${formatCurrency(row.despesas)}` : '—'}</div>
                 <div className={cn('text-right font-semibold tabular-nums', row.acumulado >= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-orange-600 dark:text-orange-400')}>

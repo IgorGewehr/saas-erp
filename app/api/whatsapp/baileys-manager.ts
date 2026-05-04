@@ -5,10 +5,8 @@
  * Manages one Baileys socket per businessId in a global Map.
  */
 
-import path from 'path';
-import fs from 'fs';
+import fs from 'node:fs';
 import makeWASocket, {
-  useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
   Browsers,
@@ -17,6 +15,12 @@ import makeWASocket, {
   WAMessageUpdate,
   MessageUpsertType,
 } from '@whiskeysockets/baileys';
+import {
+  useFirestoreAuthState,
+  hasFirestoreAuthState,
+  deleteFirestoreAuthState,
+} from '@/lib/services/baileys/firestore-auth-state';
+import { downloadAndUploadBaileysMedia } from '@/lib/services/baileys/media-storage';
 import QRCode from 'qrcode';
 import pino from 'pino';
 import { FieldValue } from 'firebase-admin/firestore';
@@ -24,8 +28,6 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { getAlternativeBrazilianPhone } from '@/lib/utils/phoneAlternatives';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
-
-export const SESSIONS_DIR = path.join(process.cwd(), 'whatsapp-sessions');
 
 const RESTARTABLE_CODES = new Set([
   DisconnectReason.restartRequired,
@@ -43,6 +45,11 @@ const PERMANENT_DISCONNECT_CODES = new Set([
 ]);
 
 const MAX_AUTO_RESTARTS = 8;
+
+// Logger silencioso compartilhado — usado por downloadMediaMessage de Baileys.
+// Singleton pra evitar criar nova instância de pino a cada mensagem inbound
+// com mídia (cada instance abre file descriptor pro stderr).
+const SILENT_LOGGER = pino({ level: 'silent' });
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -140,6 +147,25 @@ function forgetBusinessKey(businessId: string, connectionId: string): void {
 }
 
 /**
+ * Lock de criação de sessão por sessionKey. Resolve race condition: dois
+ * requests concorrentes pra `createBaileysSession(...sessionKey)` chegavam
+ * juntos, ambos passavam o check `sessions.get(...)` (Map vazio) e ambos
+ * criavam socket — segundo socket ficava órfão (sem ref no Map) e WhatsApp
+ * mandava connectionReplaced num deles.
+ *
+ * Cenários reais que disparam:
+ *   - Operador clica "Conectar" 2x rapidamente
+ *   - Múltiplas tabs abertas com a app
+ *   - Restart do servidor enquanto operador também tenta conectar (instrumentation hook + UI request)
+ *
+ * Usa globalSessions pra sobreviver HMR em dev — mesmo padrão das outras maps.
+ */
+if (!globalSessions.__baileysSessionLocks) {
+  globalSessions.__baileysSessionLocks = new Map<string, Promise<BaileysSession>>();
+}
+const sessionLocks = globalSessions.__baileysSessionLocks as Map<string, Promise<BaileysSession>>;
+
+/**
  * Sincronia: tenta resolver connectionId pelo cache local. Útil em pontos
  * onde fazer await é caro (ex: getConnectedSession). Retorna null se não
  * conhecido — caller pode cair pro async resolver.
@@ -151,17 +177,6 @@ function tryResolveConnectionIdSync(businessId: string): string | null {
 
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function clearSessionDir(sessionDir: string) {
-  try {
-    if (fs.existsSync(sessionDir)) {
-      fs.rmSync(sessionDir, { recursive: true, force: true });
-    }
-  } catch (err) {
-    console.error('[Baileys] Erro ao limpar sessao:', err);
-  }
-  fs.mkdirSync(sessionDir, { recursive: true });
-}
 
 export function broadcast(session: BaileysSession, data: Record<string, unknown>) {
   for (const listener of session.listeners) {
@@ -247,7 +262,11 @@ function getMediaLabel(type: string | null): string {
  * ficam dizendo isConnected=true mesmo com a sessão morta, e UI/send query
  * resultam em comportamento confuso ("conectado" mas envio falha).
  */
-async function persistDisconnect(businessId: string, connectionId: string): Promise<void> {
+async function persistDisconnect(
+  businessId: string,
+  connectionId: string,
+  reason?: 'replaced' | 'logged_out' | 'network' | 'manual',
+): Promise<void> {
   const now = new Date().toISOString();
   // Atualiza connection doc (modelo novo)
   try {
@@ -255,6 +274,7 @@ async function persistDisconnect(businessId: string, connectionId: string): Prom
     await updateConnection(connectionId, {
       isConnected: false,
       disconnectedAt: now,
+      ...(reason ? { disconnectReason: reason } : {}),
     });
   } catch (err) {
     console.warn('[Baileys] persistDisconnect: connection update failed:', err);
@@ -264,11 +284,13 @@ async function persistDisconnect(businessId: string, connectionId: string): Prom
     const connSnap = await adminDb.collection('channelConnections').doc(connectionId).get();
     const isBusinessConn = !connSnap.exists || connSnap.data()?.ownerType !== 'user';
     if (isBusinessConn) {
-      await adminDb.collection('businesses').doc(businessId).update({
+      const update: Record<string, unknown> = {
         'channels.whatsappBaileys.isConnected': false,
         'channels.whatsappBaileys.disconnectedAt': now,
         updatedAt: now,
-      });
+      };
+      if (reason) update['channels.whatsappBaileys.disconnectReason'] = reason;
+      await adminDb.collection('businesses').doc(businessId).update(update);
     }
   } catch (err) {
     console.warn('[Baileys] persistDisconnect: legacy businesses update failed:', err);
@@ -369,15 +391,14 @@ export async function sendBaileysBroadcastMessage(
   });
 
   // Lazy restore: se sessão não está em memória OU está mas o sock não conectou
-  // (caso típico após restart do server), tenta restaurar automaticamente em
-  // vez de falhar. Evita que o operador precise re-escanear o QR Code.
+  // (caso típico após restart do server / failover entre máquinas), tenta
+  // restaurar automaticamente em vez de falhar. Evita que o operador precise
+  // re-escanear o QR Code.
   if (!session?.sock || !session.isConnected) {
-    const sessionDir = path.join(SESSIONS_DIR, sessionKey);
-    const hasSessionFiles = fs.existsSync(sessionDir)
-      && fs.readdirSync(sessionDir).some((f) => f.endsWith('.json'));
-    console.log('[Baileys Broadcast] Session files on disk:', { sessionDir, hasSessionFiles });
+    const hasAuthState = await hasFirestoreAuthState(sessionKey);
+    console.log('[Baileys Broadcast] Auth state in Firestore:', { sessionKey, hasAuthState });
 
-    if (hasSessionFiles) {
+    if (hasAuthState) {
       // Se já há uma session no map mas sock não conectou (restore em andamento
       // ou travado), aguarda direto sem chamar createBaileysSession de novo
       // (que é idempotente mas iniciaria loop).
@@ -390,9 +411,12 @@ export async function sendBaileysBroadcastMessage(
         }
       }
 
-      // Aguarda até 30s pela conexão completar
+      // Aguarda até 30s pela conexão completar. Logamos a cada 5s de espera
+      // pra dar visibilidade nos docker logs — admin pode acompanhar progresso
+      // se a operação demorar (rede instável, restart do servidor recente, etc).
       const startedAt = Date.now();
       const TIMEOUT_MS = 30_000;
+      let nextLogAt = startedAt + 5_000;
       while (Date.now() - startedAt < TIMEOUT_MS) {
         const s = sessions.get(sessionKey);
         if (s?.isConnected) {
@@ -400,16 +424,29 @@ export async function sendBaileysBroadcastMessage(
           session = s;
           break;
         }
+        if (Date.now() >= nextLogAt) {
+          const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+          const hasSocket = !!s?.sock;
+          console.log(`[Baileys Broadcast] Aguardando reconexão... ${elapsed}s elapsed (hasSocket=${hasSocket}, isConnected=${s?.isConnected ?? false})`);
+          nextLogAt = Date.now() + 5_000;
+        }
         await new Promise(r => setTimeout(r, 250));
       }
       session = sessions.get(sessionKey);
     }
 
     if (!session?.sock) {
-      throw new Error('WhatsApp Web não está conectado. Reconecte escaneando o QR Code em Configurações.');
+      throw new Error(
+        'WhatsApp Web não está conectado. Reconecte escaneando o QR Code em ' +
+        'Configurações → Canais.',
+      );
     }
     if (!session.isConnected) {
-      throw new Error('WhatsApp Web está reconectando (timeout 30s). Aguarde a conexão completar e tente novamente.');
+      throw new Error(
+        'WhatsApp Web está reconectando após restart. Aguarde alguns segundos e ' +
+        'tente novamente — se persistir após 1 min, verifique a conexão em ' +
+        'Configurações → Canais.',
+      );
     }
   }
 
@@ -420,11 +457,15 @@ export async function sendBaileysBroadcastMessage(
   }
 
   // onWhatsApp resolve o JID canônico (lida com 9º dígito BR) e indica se número
-  // tem WhatsApp. Em caso de erro de rede ou !exists, deixamos o sendMessage falhar
-  // naturalmente — evita anti-pattern de string-match no error message.
+  // tem WhatsApp. Diferenciamos 3 outcomes pra dar erro claro pro operador:
+  //   - exists=true → temos JID canônico, segue envio
+  //   - exists=false → número confirmadamente não tem WA → erro claro, aborta
+  //   - falha de rede → log + tenta enviar direto. Se falhar, erro técnico
+  //     terá menos contexto, mas operador entende ("não foi possível verificar").
   const candidateJid = `${digits}@s.whatsapp.net`;
   let targetJid = candidateJid;
   let knownNotOnWhatsApp = false;
+  let onWhatsAppCheckFailed = false;
   try {
     const [result] = await session.sock.onWhatsApp(candidateJid);
     if (result?.exists && result.jid) {
@@ -433,15 +474,30 @@ export async function sendBaileysBroadcastMessage(
       knownNotOnWhatsApp = true;
     }
   } catch (err) {
-    // Erro de rede no check — não bloqueia, o sendMessage falhará se necessário
-    console.warn('[Baileys Broadcast] onWhatsApp check falhou, tentando envio direto:', err);
+    onWhatsAppCheckFailed = true;
+    console.warn('[Baileys Broadcast] onWhatsApp check falhou (rede/timeout), tentando envio direto:', err);
   }
 
   if (knownNotOnWhatsApp) {
-    throw new Error(`Número ${digits} não está cadastrado no WhatsApp`);
+    throw new Error(`Número ${digits} não está cadastrado no WhatsApp.`);
   }
 
-  const sent = await session.sock.sendMessage(targetJid, { text });
+  let sent;
+  try {
+    sent = await session.sock.sendMessage(targetJid, { text });
+  } catch (sendErr) {
+    // Se o check inicial falhou por rede, anota isso na mensagem de erro pra
+    // operador entender que pode ser problema de validação de número, não
+    // necessariamente número inválido.
+    if (onWhatsAppCheckFailed) {
+      const reason = sendErr instanceof Error ? sendErr.message : String(sendErr);
+      throw new Error(
+        `Falha ao enviar pra ${digits}. Não foi possível validar antes (rede instável). ` +
+        `Verifique o número e tente novamente. Detalhe técnico: ${reason}`,
+      );
+    }
+    throw sendErr;
+  }
   // Random suffix evita colisão se sent.key.id ausente em mensagens consecutivas
   const externalMessageId = sent?.key?.id
     || `baileys_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -451,6 +507,44 @@ export async function sendBaileysBroadcastMessage(
 // ─── Firestore: save inbound message ─────────────────────────────────────────
 
 interface InboundSaveResult { conversationId: string; messageId: string; phone: string }
+
+/**
+ * Vincula a conversa a um contato CRM existente quando o telefone bate com
+ * `channelIdentities.whatsapp`. Best-effort — falhas não bloqueiam o flow
+ * principal. Idempotente: chamar múltiplas vezes com a mesma combinação
+ * resulta em escrita inofensiva.
+ *
+ * Extraído pra helper porque é necessário em 2 lugares no handleInboundMessage:
+ * o branch `!matchedDoc` (conversa nova) e o branch `claimResult.kind==='conflict'`
+ * (race detectado, conv nova criada com canal correto).
+ */
+async function autoLinkCrmContact(
+  businessId: string,
+  conversationId: string,
+  senderPhone: string,
+  fallbackContactName: string,
+  now: string,
+): Promise<void> {
+  try {
+    const crmSnap = await adminDb.collection('clients')
+      .where('businessId', '==', businessId)
+      .where('channelIdentities.whatsapp', '==', senderPhone)
+      .limit(1)
+      .get();
+    if (!crmSnap.empty) {
+      const crmContact = crmSnap.docs[0];
+      await adminDb.collection('conversations').doc(conversationId).update({
+        crmContactId: crmContact.id,
+        contactName: crmContact.data().name || fallbackContactName,
+      });
+      await adminDb.collection('clients').doc(crmContact.id).update({
+        lastConversationId: conversationId,
+        lastConversationAt: now,
+        updatedAt: now,
+      });
+    }
+  } catch { /* non-critical */ }
+}
 
 async function handleInboundMessage(
   businessId: string,
@@ -623,14 +717,19 @@ async function handleInboundMessage(
     if (!matchedDoc) {
       // Auto-assign para canais pessoais (ownerType='user'): a conversa que
       // chega num canal pessoal pertence ao owner do canal por default.
-      // Outros operators continuam vendo (até implementarmos rule server-side
-      // pra restringir), mas a atribuição inicial fica clara.
+      // E denormaliza channelOwnerType/channelOwnerId no doc da conversa pra
+      // que rules e queries consigam isolar canais pessoais sem precisar
+      // fazer get() do channelConnections em cada read.
       let initialAssignedTo: string | undefined;
       let initialAssignedToName: string | undefined;
+      let channelOwnerType: 'business' | 'user' = 'business';
+      let channelOwnerId: string | undefined;
       try {
         const connSnap = await adminDb.collection('channelConnections').doc(connectionId).get();
         const connData = connSnap.data();
         if (connData?.ownerType === 'user' && connData.ownerId) {
+          channelOwnerType = 'user';
+          channelOwnerId = connData.ownerId as string;
           initialAssignedTo = connData.ownerId as string;
           // Tenta puxar nome do owner pra denormalizar
           try {
@@ -638,7 +737,7 @@ async function handleInboundMessage(
             initialAssignedToName = (userSnap.data()?.name as string) || undefined;
           } catch { /* opcional */ }
         }
-      } catch { /* connection lookup falhou — sem auto-assign */ }
+      } catch { /* connection lookup falhou — assume business */ }
 
       const newConvRef = await adminDb.collection('conversations').add({
         businessId,
@@ -649,6 +748,8 @@ async function handleInboundMessage(
         // partir desse campo. Sem isso, send caía pra primary business
         // mesmo quando a msg veio em canal pessoal (ownerType='user').
         channelConnectionId: connectionId,
+        channelOwnerType,
+        ...(channelOwnerId ? { channelOwnerId } : {}),
         contactName,
         contactPhone: formatPhone(senderPhone),
         contactExternalId: senderPhone,
@@ -664,71 +765,152 @@ async function handleInboundMessage(
         updatedAt: now,
       });
       conversationId = newConvRef.id;
-
-      // Auto-link CRM contact
-      try {
-        const crmSnap = await adminDb.collection('clients')
-          .where('businessId', '==', businessId)
-          .where('channelIdentities.whatsapp', '==', senderPhone)
-          .limit(1)
-          .get();
-        if (!crmSnap.empty) {
-          const crmContact = crmSnap.docs[0];
-          await adminDb.collection('conversations').doc(conversationId).update({
-            crmContactId: crmContact.id,
-            contactName: crmContact.data().name || contactName,
-          });
-          await adminDb.collection('clients').doc(crmContact.id).update({
-            lastConversationId: conversationId,
-            lastConversationAt: now,
-            updatedAt: now,
-          });
-        }
-      } catch { /* non-critical */ }
+      await autoLinkCrmContact(businessId, conversationId, senderPhone, contactName, now);
     } else {
-      conversationId = matchedDoc.id;
-      const existingConv = matchedDoc.data();
+      // Match em conversa legacy/sem channelConnectionId. Usa transaction pra
+      // resolver race: se OUTRO canal Baileys (ex: canal pessoal de outro
+      // operador) reivindicou a mesma legacy entre o pickBestCandidate e o
+      // update, sua mensagem precisa ir pra uma conversa NOVA — senão o
+      // backfill aleatoriamente vincularia a conversa ao canal "vencedor"
+      // do race e mensagens posteriores sairiam pelo canal errado.
+      const claimResult = await adminDb.runTransaction(async (tx) => {
+        const fresh = await tx.get(matchedDoc.ref);
+        if (!fresh.exists) {
+          // Conversa foi deletada entre query e transaction — cair pro create.
+          return { kind: 'conflict' as const };
+        }
+        const data = fresh.data()!;
+        const existingConn = data.channelConnectionId as string | undefined;
 
-      const convUpdate: Record<string, unknown> = {
-        lastMessage: displayText,
-        lastMessageAt: timestamp,
-        lastMessageDirection: 'inbound',
-        unreadCount: FieldValue.increment(1),
-        updatedAt: now,
-      };
+        // Se já foi reivindicada por OUTRO canal, NÃO sobrescrever — caller
+        // cria conversa nova com o canal correto.
+        if (existingConn && existingConn !== connectionId) {
+          return { kind: 'conflict' as const };
+        }
 
-      if (pushName && (!existingConv.contactName || /^\+?\d[\d\s-]+$/.test(existingConv.contactName))) {
-        convUpdate.contactName = pushName;
-        contactName = pushName;
-      }
-      if (avatarUrl && !existingConv.contactAvatarUrl) {
-        convUpdate.contactAvatarUrl = avatarUrl;
-      }
-      // Backfill / correção do channelConnectionId e connectedVia — Baileys é
-      // autoritativo (sabemos exatamente qual sessão entregou a msg). Atualiza
-      // connectedVia também para que a UI mostre "WhatsApp Web" e não "WhatsApp
-      // Business" em conversas que migraram do legado Cloud para Baileys.
-      if (existingConv.channelConnectionId !== connectionId) {
-        convUpdate.channelConnectionId = connectionId;
-      }
-      if (existingConv.connectedVia !== 'baileys') {
-        convUpdate.connectedVia = 'baileys';
-      }
+        const convUpdate: Record<string, unknown> = {
+          lastMessage: displayText,
+          lastMessageAt: timestamp,
+          lastMessageDirection: 'inbound',
+          unreadCount: FieldValue.increment(1),
+          updatedAt: now,
+        };
+        if (pushName && (!data.contactName || /^\+?\d[\d\s-]+$/.test(data.contactName))) {
+          convUpdate.contactName = pushName;
+        }
+        if (avatarUrl && !data.contactAvatarUrl) {
+          convUpdate.contactAvatarUrl = avatarUrl;
+        }
+        // Backfill / correção: Baileys é autoritativo (sabemos exatamente
+        // qual sessão entregou a msg). Atualiza connectedVia também pra
+        // que a UI mostre "WhatsApp Web" em conversas que migraram do
+        // legado Cloud → Baileys.
+        if (existingConn !== connectionId) {
+          convUpdate.channelConnectionId = connectionId;
+        }
+        if (data.connectedVia !== 'baileys') {
+          convUpdate.connectedVia = 'baileys';
+        }
 
-      await adminDb.collection('conversations').doc(conversationId).update(convUpdate);
+        tx.update(matchedDoc.ref, convUpdate);
+        return {
+          kind: 'updated' as const,
+          appliedContactName: convUpdate.contactName as string | undefined,
+        };
+      });
+
+      if (claimResult.kind === 'conflict') {
+        // Outro canal venceu o race — cria conversa nova com o connectionId
+        // atual pra preservar identidade de transporte. Fluxo idêntico ao
+        // do branch "matchedDoc===null" acima, mas duplicado pra evitar
+        // refactor maior agora.
+        let initialAssignedTo: string | undefined;
+        let initialAssignedToName: string | undefined;
+        let channelOwnerType: 'business' | 'user' = 'business';
+        let channelOwnerId: string | undefined;
+        try {
+          const connSnap = await adminDb.collection('channelConnections').doc(connectionId).get();
+          const connData = connSnap.data();
+          if (connData?.ownerType === 'user' && connData.ownerId) {
+            channelOwnerType = 'user';
+            channelOwnerId = connData.ownerId as string;
+            initialAssignedTo = connData.ownerId as string;
+            try {
+              const userSnap = await adminDb.collection('users').doc(initialAssignedTo).get();
+              initialAssignedToName = (userSnap.data()?.name as string) || undefined;
+            } catch { /* opcional */ }
+          }
+        } catch { /* connection lookup falhou — assume business */ }
+
+        const newConvRef = await adminDb.collection('conversations').add({
+          businessId,
+          channel: 'whatsapp',
+          connectedVia: 'baileys',
+          channelConnectionId: connectionId,
+          channelOwnerType,
+          ...(channelOwnerId ? { channelOwnerId } : {}),
+          contactName,
+          contactPhone: formatPhone(senderPhone),
+          contactExternalId: senderPhone,
+          ...(avatarUrl ? { contactAvatarUrl: avatarUrl } : {}),
+          ...(initialAssignedTo ? { assignedTo: initialAssignedTo } : {}),
+          ...(initialAssignedToName ? { assignedToName: initialAssignedToName } : {}),
+          status: 'open',
+          lastMessage: displayText,
+          lastMessageAt: timestamp,
+          lastMessageDirection: 'inbound',
+          unreadCount: 1,
+          createdAt: now,
+          updatedAt: now,
+        });
+        conversationId = newConvRef.id;
+        console.log(`[Baileys] Race em conversa legacy resolvido — criada nova conv ${conversationId.slice(-6)} pra canal ${connectionId.slice(-6)}`);
+        // Auto-link CRM tambem na branch de conflict — sem isso, conversas
+        // criadas via race perderiam a vinculação ao crmContact.
+        await autoLinkCrmContact(businessId, conversationId, senderPhone, contactName, now);
+      } else {
+        conversationId = matchedDoc.id;
+        if (claimResult.appliedContactName) contactName = claimResult.appliedContactName;
+      }
+    }
+
+    // Download de mídia (image/audio/video/document/sticker): faz download via
+    // Baileys (decodifica E2EE) + upload pro Firebase Storage, retorna URL signed.
+    // Sem isso, mensagens de mídia ficavam com mediaUrl=null e a UI renderizava
+    // bolha vazia. Não bloqueia o save: se o download/upload falhar, persiste a
+    // mensagem com mediaUrl=null e o operador vê o preview "[Imagem]"/"[Áudio]"
+    // — perda de informação visual mas não perde o registro.
+    let mediaUrl: string | null = null;
+    if (mediaType) {
+      try {
+        const mediaResult = await downloadAndUploadBaileysMedia({
+          waMessage,
+          businessId,
+          conversationId,
+          logger: SILENT_LOGGER,
+          reuploadRequest: sock.updateMediaMessage,
+        });
+        if (mediaResult) mediaUrl = mediaResult.mediaUrl;
+      } catch (mediaErr) {
+        console.error('[Baileys] Falha no download/upload de mídia (mensagem salva sem URL):', mediaErr);
+      }
     }
 
     const msgRef = await adminDb.collection('conversationMessages').add({
       conversationId,
       businessId,
       channel: 'whatsapp',
+      // Mensagens recebidas pelo socket Baileys são sempre transporte 'baileys'.
+      // Denormalizado por mensagem pra UI poder mostrar o transporte mesmo se
+      // a conversa migrar de canal no futuro.
+      connectedVia: 'baileys',
       direction: 'inbound',
       content: displayText,
       status: 'delivered',
       externalMessageId: messageId,
       senderName: contactName,
       mediaType: mediaType ?? null,
-      mediaUrl: null,
+      mediaUrl,
       sentAt: timestamp,
       createdAt: now,
     });
@@ -895,41 +1077,50 @@ export async function createBaileysSession(
   // canais pessoais; default = primary business (cria se ausente).
   const sessionKey = await resolveConnectionIdForBaileys(businessId, connectionId);
 
-  // Already running? Return existing
+  // Already running? Return existing — fast path (sem lock necessário pra leitura)
   const existing = sessions.get(sessionKey);
   if (existing) return existing;
 
-  // Migração one-shot do dir legado (whatsapp-sessions/{businessId}) pra novo
-  // (whatsapp-sessions/{connectionId}). Garante que sessões já autenticadas
-  // pré-Phase 2 sobrevivam sem requerer re-scan de QR.
-  const newDir = path.join(SESSIONS_DIR, sessionKey);
-  const legacyDir = path.join(SESSIONS_DIR, businessId);
-  if (legacyDir !== newDir && fs.existsSync(legacyDir) && !fs.existsSync(newDir)) {
-    let migrated = false;
-    try {
-      fs.renameSync(legacyDir, newDir);
-      console.log(`[Baileys] Migrated session dir: ${businessId} → ${sessionKey}`);
-      migrated = true;
-    } catch (renameErr) {
-      try {
-        fs.cpSync(legacyDir, newDir, { recursive: true });
-        fs.rmSync(legacyDir, { recursive: true, force: true });
-        console.log(`[Baileys] Copied session dir: ${businessId} → ${sessionKey}`);
-        migrated = true;
-      } catch (cpErr) {
-        console.error('[Baileys] CRITICAL: Failed to migrate session dir:', renameErr, cpErr);
-      }
-    }
-    if (!migrated) {
-      // Cleanup do dir parcial se cpSync deixou algo
-      try { if (fs.existsSync(newDir)) fs.rmSync(newDir, { recursive: true, force: true }); } catch { /* ignore */ }
-      throw new Error(
-        `Falha ao migrar sessão Baileys (${businessId} → ${sessionKey}). ` +
-        `Re-escaneie o QR Code em Configurações → Canais.`
-      );
-    }
+  // Lock por sessionKey: dois requests concorrentes pra mesma sessão compartilham
+  // a MESMA promise (segundo aguarda o primeiro), evitando criação duplicada de
+  // socket. O lock é removido quando a promise resolve/rejeita.
+  const pending = sessionLocks.get(sessionKey);
+  if (pending) {
+    return pending;
   }
-  const sessionDir = newDir;
+
+  const creationPromise = (async () => {
+    // Re-check dentro do lock — outro request pode ter terminado entre o check
+    // de cima e a aquisição do lock (cenário raro mas possível com microtasks).
+    const recheck = sessions.get(sessionKey);
+    if (recheck) return recheck;
+    return doCreateBaileysSession(businessId, mode, sessionKey);
+  })();
+
+  sessionLocks.set(sessionKey, creationPromise);
+  try {
+    return await creationPromise;
+  } finally {
+    // Importante: limpar mesmo em caso de erro pra próxima tentativa não ficar
+    // travada esperando uma promise rejeitada já consumida.
+    sessionLocks.delete(sessionKey);
+  }
+}
+
+/**
+ * Implementação real de criar a sessão. Separada de createBaileysSession pra
+ * que o lock fique limpo no wrapper. Não chamar diretamente — sempre via
+ * createBaileysSession (que aplica o lock).
+ */
+async function doCreateBaileysSession(
+  businessId: string,
+  mode: 'fresh' | 'restore',
+  sessionKey: string,
+): Promise<BaileysSession> {
+  // Auth state agora é persistido no Firestore (lib/services/baileys/firestore-auth-state.ts).
+  // Não há mais migração de diretório legado — sessões antigas baseadas em disco
+  // precisam ser re-pareadas via QR Code (a primeira instância que pareia escreve
+  // no Firestore e a partir daí qualquer máquina que abrir a conexão hidrata dali).
 
   let version: [number, number, number] | undefined;
   try {
@@ -964,15 +1155,14 @@ export async function createBaileysSession(
   let restartCount = 0;
 
   async function startSocket(clearFirst: boolean) {
+    // clearFirst=true: usuário escaneou QR fresh → apaga state anterior do Firestore
+    // pra que initAuthCreds() gere identidade nova. Apenas o fluxo 'fresh' deve
+    // limpar; auto-restart por queda de rede NUNCA passa clearFirst=true.
     if (clearFirst) {
-      clearSessionDir(sessionDir);
-    } else {
-      if (!fs.existsSync(sessionDir)) {
-        fs.mkdirSync(sessionDir, { recursive: true });
-      }
+      await deleteFirestoreAuthState(sessionKey);
     }
 
-    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+    const { state, saveCreds } = await useFirestoreAuthState(sessionKey);
 
     const sock = makeWASocket({
       version,
@@ -1129,10 +1319,32 @@ export async function createBaileysSession(
         // Logout real: sessão revogada pelo WA — limpar e não tentar restart.
         if (PERMANENT_DISCONNECT_CODES.has(statusCode)) {
           broadcast(session, { type: 'disconnected', reason: 'logged_out' });
-          void persistDisconnect(businessId, sessionKey).catch((err) => {
+          void persistDisconnect(businessId, sessionKey, 'logged_out').catch((err) => {
             console.error('[Baileys] Failed to persist logout state:', err);
           });
-          clearSessionDir(sessionDir);
+          // Apaga creds revogadas do Firestore — re-pareamento via QR é obrigatório.
+          void deleteFirestoreAuthState(sessionKey).catch((err) => {
+            console.error('[Baileys] Failed to delete auth state on logout:', err);
+          });
+          void destroySession(businessId, sessionKey);
+          return;
+        }
+
+        // Outro dispositivo conectou com as mesmas creds — limite multi-device do
+        // WhatsApp. Auto-restart aqui causa ping-pong (a gente substitui de volta
+        // → o outro lado também recebe connectionReplaced → ele restart → e
+        // voltamos do zero indefinidamente). NÃO faz restart; deixa o usuário
+        // decidir (clicando "Reconectar" na UI, que vai derrubar o outro device).
+        if (statusCode === DisconnectReason.connectionReplaced) {
+          console.warn(`[Baileys] Sessão substituída por outro dispositivo (${sessionKey.slice(-12)}). Não fazendo auto-restart pra evitar ping-pong.`);
+          broadcast(session, {
+            type: 'disconnected',
+            reason: 'replaced',
+            message: 'Outro dispositivo se conectou com as mesmas credenciais. Para usar aqui, clique em "Reconectar" — isso vai desconectar o outro dispositivo.',
+          });
+          void persistDisconnect(businessId, sessionKey, 'replaced').catch((err) => {
+            console.error('[Baileys] Failed to persist replaced state:', err);
+          });
           void destroySession(businessId, sessionKey);
           return;
         }
@@ -1155,10 +1367,16 @@ export async function createBaileysSession(
             // NUNCA apaga credenciais durante auto-restart — só fresh QR (mode='fresh')
             // deve limpar. O código anterior apagava para connectionClosed/timedOut/
             // connectionReplaced, forçando re-scan a cada queda de rede (BUG CRÍTICO).
+
+            // Guard: se a sessão foi destruída entre o agendamento e a execução
+            // (ex: usuário desconectou manualmente, ou outro evento de close
+            // disparou destroySession antes), não cria zombie socket.
+            if (session.isDestroyed) return;
+
             startSocket(false).catch((err) => {
               console.error('[Baileys] Auto-restart falhou:', err);
               broadcast(session, { type: 'error', message: 'Falha ao reconectar. Tente novamente.' });
-              void persistDisconnect(businessId, sessionKey).catch(() => {});
+              void persistDisconnect(businessId, sessionKey, 'network').catch(() => {});
               void destroySession(businessId, sessionKey);
             });
           }, delay);
@@ -1168,7 +1386,7 @@ export async function createBaileysSession(
         // Esgotou MAX_AUTO_RESTARTS — desiste e informa o operador.
         console.error(`[Baileys] Esgotou ${MAX_AUTO_RESTARTS} tentativas de restart (último code: ${statusCode})`);
         broadcast(session, { type: 'error', message: 'Não foi possível reconectar após várias tentativas. Verifique sua conexão e re-escaneie o QR Code.' });
-        void persistDisconnect(businessId, sessionKey).catch(() => {});
+        void persistDisconnect(businessId, sessionKey, 'network').catch(() => {});
         void destroySession(businessId, sessionKey);
       }
     });
@@ -1176,7 +1394,19 @@ export async function createBaileysSession(
 
   // First start
   const isFresh = mode === 'fresh';
-  await startSocket(isFresh);
+  try {
+    await startSocket(isFresh);
+  } catch (err) {
+    // Se startSocket falhar (ex: erro carregando creds, makeWASocket throw,
+    // listener registration error), o objeto `session` foi adicionado ao Map
+    // mas nunca conectou. Sem este cleanup, próximas chamadas a
+    // `createBaileysSession` veriam `sessions.get(sessionKey)` retornar essa
+    // session zumbi (sock pode ou não estar setado, isConnected=false sempre)
+    // e callers como `sendWhatsAppBaileys` falhariam com mensagens confusas.
+    sessions.delete(sessionKey);
+    forgetBusinessKey(businessId, sessionKey);
+    throw err;
+  }
 
   return session;
 }

@@ -13,7 +13,7 @@
  *     Para Facebook: messages, messaging_postbacks, message_deliveries, message_reads
  */
 
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { decryptToken } from '@/lib/utils/encryption';
@@ -1419,6 +1419,9 @@ async function saveInboundMessage(params: InboundMessageParams) {
         // a mensagem. Pode ser null em ambientes ainda não-migrados (lazy
         // migration foi disparada em background no resolveChannelContext).
         ...(channelConnectionId ? { channelConnectionId } : {}),
+        // Cloud/FB/IG são sempre 'business' por regra do produto (Embedded Signup
+        // do Meta = uma conta por business). Apenas Baileys pode ser 'user'.
+        channelOwnerType: 'business',
         contactName: params.senderName ?? params.externalId,
         contactExternalId: params.externalId,
         ...(formattedPhone ? { contactPhone: formattedPhone } : {}),
@@ -1626,6 +1629,10 @@ async function saveInboundMessage(params: InboundMessageParams) {
       conversationId,
       businessId,
       channel: params.channel,
+      // Mensagens vindas via Meta webhooks são SEMPRE da Cloud API oficial.
+      // Marcamos por mensagem (denormalizado) pra UI conseguir mostrar o
+      // transporte mesmo se a conversa migrar de canal no futuro.
+      ...(params.channel === 'whatsapp' ? { connectedVia: 'embedded_signup' as const } : {}),
       direction: 'inbound',
       content: params.content,
       status: 'delivered',

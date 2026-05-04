@@ -18,7 +18,7 @@
  * network retries and captured-and-replayed requests within the ±5min window.
  */
 
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 

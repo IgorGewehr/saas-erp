@@ -284,8 +284,8 @@ export interface ChannelConnection {
   igAccountId?: string;
   igAccountName?: string;
   // ── Baileys-specific ─────────────────────────────────────────────────
-  /** Diretório de auth no disco fica em whatsapp-sessions/{id}. */
-  // (não há campo extra — usamos o id da conexão como chave de sessão)
+  /** Auth state (creds + signal keys) é persistido cifrado no Firestore em
+   *  baileysAuthStates/{id}. O id da conexão é a chave de sessão. */
   // ── Estado ───────────────────────────────────────────────────────────
   isConnected: boolean;
   isActive: boolean;
@@ -294,6 +294,14 @@ export interface ChannelConnection {
   isPrimary?: boolean;
   connectedAt?: string;
   disconnectedAt?: string;
+  /** Motivo da última desconexão — usado pra UI mostrar mensagem clara:
+   *   - 'replaced':    outro dispositivo conectou com as mesmas creds
+   *                    (limite multi-device do WhatsApp). Re-conectar aqui
+   *                    vai derrubar o outro.
+   *   - 'logged_out':  sessão revogada pelo telefone — re-pareamento via QR.
+   *   - 'network':     rede caiu / restart do servidor — auto-reconnect tentando.
+   *   - 'manual':      usuário clicou "desconectar". */
+  disconnectReason?: 'replaced' | 'logged_out' | 'network' | 'manual';
   // ── Auditoria ────────────────────────────────────────────────────────
   createdAt: string;
   updatedAt: string;
@@ -2001,6 +2009,19 @@ export interface Conversation {
    * fallback enquanto o campo não está populado.
    */
   channelConnectionId?: string;
+  /**
+   * Denormalização de `channelConnections/{channelConnectionId}.ownerType`.
+   * Usado pelas Firestore rules e queries pra isolar canais pessoais
+   * (ownerType='user') do operador-dono — sem isso, qualquer operator+ do
+   * mesmo business consegue ler/escrever conversas de canal pessoal alheio.
+   * Vazio em conversas legadas até o backfill (`backfill-conversation-ownership`).
+   */
+  channelOwnerType?: 'business' | 'user';
+  /**
+   * Denormalização de `channelConnections/{channelConnectionId}.ownerId`.
+   * Só populado quando `channelOwnerType === 'user'`. Vazio em canais business.
+   */
+  channelOwnerId?: string;
   status: ConversationStatus;
   contactName: string;
   contactPhone?: string;
@@ -2035,6 +2056,13 @@ export interface Conversation {
     changedByName: string;
     changedAt: string;
   }>;
+  /**
+   * Motivo do fechamento (status='resolved') quando foi automático pelo sistema.
+   * Diferente de uma resolução manual pelo operador. Hoje só usamos
+   * 'channel_removed' (admin removeu o canal pessoal que sustentava a conversa
+   * e não havia fallback Baileys disponível).
+   */
+  closedReason?: 'channel_removed';
   createdAt: string;
   updatedAt: string;
   isDeleted?: boolean;
@@ -2079,6 +2107,16 @@ export interface ConversationMessage {
   conversationId: string;
   businessId: string;
   channel: ConversationChannel;
+  /**
+   * Para canal 'whatsapp', subdivide em dois transportes (paralelo a
+   * `Conversation.connectedVia`). Denormalizado na mensagem pra que a UI
+   * possa renderizar distinto por bolha — útil quando uma conversa muda
+   * de transporte (ex: failover, troca de número), preservando o histórico
+   * fiel de qual canal recebeu/enviou cada mensagem.
+   *   'embedded_signup' → WhatsApp Business (Meta Cloud API, oficial)
+   *   'baileys'         → WhatsApp Web (conexão via app do celular)
+   */
+  connectedVia?: 'embedded_signup' | 'baileys';
   direction: MessageDirection;
   content: string;
   status: MessageStatus;
@@ -2604,6 +2642,18 @@ export interface Broadcast {
   retryOf?: string;
   /** Quando true e channel === 'whatsapp', envia via Baileys (WhatsApp Web) em vez de Cloud API. */
   viaBaileys?: boolean;
+  /**
+   * ID da `channelConnections/{id}` específica que vai disparar o broadcast.
+   *
+   * Quando presente, o backend `/api/broadcasts/send` usa essa connection
+   * exata — permite ao operador escolher entre múltiplas Baileys (empresa ou
+   * pessoal) ou múltiplas Cloud (raro). Quando ausente (broadcast antigo ou
+   * UI básica), o backend faz fallback pra primary 'business' do tipo.
+   *
+   * Regra: se `viaBaileys=true` e o operador quer usar seu Baileys pessoal,
+   * este campo precisa estar setado — sem ele, o backend cai em `business`.
+   */
+  channelConnectionId?: string;
   messageType: 'template' | 'text';
   templateName?: string;
   templateLanguage?: string;

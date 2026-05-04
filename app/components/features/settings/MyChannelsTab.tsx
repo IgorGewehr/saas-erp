@@ -71,10 +71,22 @@ export default function MyChannelsTab() {
 
   useEffect(() => { void fetchConnections(); }, [fetchConnections]);
 
-  // Polling leve enquanto há conexão sendo estabelecida (modal QR aberto)
+  // Polling leve enquanto há conexão sendo estabelecida (modal QR aberto) —
+  // 3s pra responder rápido ao "Conectado!" e fechar modal automaticamente.
   useEffect(() => {
     if (!qrConnectionId) return;
     const t = setInterval(() => { void fetchConnections(); }, 3_000);
+    return () => clearInterval(t);
+  }, [qrConnectionId, fetchConnections]);
+
+  // Polling de fundo enquanto MyChannelsTab está montada — captura mudanças
+  // de estado como `disconnectReason='replaced'` (outro dispositivo conectou
+  // com as mesmas creds) sem o operador precisar dar F5. Intervalo maior pra
+  // não martelar o Firestore. Se o modal QR estiver aberto, o poll rápido
+  // acima cobre — esse aqui complementa pra estados pós-pareamento.
+  useEffect(() => {
+    if (qrConnectionId) return; // evita poll duplo enquanto QR modal aberto
+    const t = setInterval(() => { void fetchConnections(); }, 15_000);
     return () => clearInterval(t);
   }, [qrConnectionId, fetchConnections]);
 
@@ -474,7 +486,7 @@ function ConnectionSection(p: SectionProps) {
                     )}
                   </div>
                 )}
-                <div className="flex items-center gap-2 mt-0.5">
+                <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                   <span className="text-[10px] text-gray-400 dark:text-gray-500">
                     {CHANNEL_LABELS[c.type] || c.type}
                   </span>
@@ -486,14 +498,45 @@ function ConnectionSection(p: SectionProps) {
                       </span>
                     </>
                   )}
-                  <span className={cn(
-                    'text-[10px] font-bold px-1.5 py-0.5 rounded-full',
-                    c.isConnected
-                      ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400'
-                      : 'bg-gray-100 text-gray-500 dark:bg-white/[0.06] dark:text-gray-400',
-                  )}>
-                    {c.isConnected ? 'Conectado' : 'Desconectado'}
-                  </span>
+                  {/* Status badge: cor depende do motivo da última desconexão.
+                      'replaced' (outro dispositivo) recebe destaque âmbar pra
+                      diferenciar de queda de rede genérica. */}
+                  {(() => {
+                    const isReplaced = !c.isConnected && c.disconnectReason === 'replaced';
+                    const isLoggedOut = !c.isConnected && c.disconnectReason === 'logged_out';
+                    if (c.isConnected) {
+                      return (
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400">
+                          Conectado
+                        </span>
+                      );
+                    }
+                    if (isReplaced) {
+                      return (
+                        <span
+                          title="Outro dispositivo se conectou com as mesmas credenciais. Clique em 'Reconectar' pra usar aqui."
+                          className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400"
+                        >
+                          Substituído
+                        </span>
+                      );
+                    }
+                    if (isLoggedOut) {
+                      return (
+                        <span
+                          title="Sessão revogada pelo telefone — escaneie o QR Code novamente."
+                          className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-400"
+                        >
+                          Revogado
+                        </span>
+                      );
+                    }
+                    return (
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 dark:bg-white/[0.06] dark:text-gray-400">
+                        Desconectado
+                      </span>
+                    );
+                  })()}
                   {/* Phase 3.1: badge "Principal" pra connection primária */}
                   {c.ownerType === 'business' && c.isPrimary && (
                     <span
@@ -504,6 +547,21 @@ function ConnectionSection(p: SectionProps) {
                     </span>
                   )}
                 </div>
+                {/* Linha explicativa quando o canal está em estado especial.
+                    Aparece embaixo dos badges pra dar contexto sem poluir. */}
+                {!c.isConnected && c.disconnectReason === 'replaced' && (
+                  <p className="text-[10px] text-amber-700/90 dark:text-amber-400/90 mt-1 leading-snug">
+                    ⚠ Este canal foi tomado por outro dispositivo (computador, celular ou
+                    outro membro da equipe usando o mesmo número). Reconectar aqui vai
+                    desconectar o outro. Para usar simultâneo, cada pessoa deve conectar
+                    o próprio canal pessoal — WhatsApp permite até 4 dispositivos por número.
+                  </p>
+                )}
+                {!c.isConnected && c.disconnectReason === 'logged_out' && (
+                  <p className="text-[10px] text-red-700/90 dark:text-red-400/90 mt-1 leading-snug">
+                    A sessão foi revogada (logout pelo telefone ou WhatsApp Web). Escaneie o QR Code novamente para reconectar.
+                  </p>
+                )}
               </div>
               {!p.readonly && p.canManage(c) && (
                 <div className="flex items-center gap-1 shrink-0">
@@ -553,7 +611,7 @@ interface QrModalProps {
 function QrModal({ businessId, connectionId, onClose }: QrModalProps) {
   const { firebaseUser } = useAuth();
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
-  const [status, setStatus] = useState<'connecting' | 'scanning' | 'connected' | 'error'>('connecting');
+  const [status, setStatus] = useState<'connecting' | 'scanning' | 'connected' | 'error' | 'replaced'>('connecting');
   const [errorMsg, setErrorMsg] = useState('');
   const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
 
@@ -609,7 +667,17 @@ function QrModal({ businessId, connectionId, onClose }: QrModalProps) {
               } else if (data.type === 'disconnected') {
                 if (data.reason === 'logged_out') {
                   setStatus('error');
-                  setErrorMsg('Sessão revogada. Tente novamente.');
+                  setErrorMsg('Sessão revogada pelo telefone. Escaneie o QR Code novamente.');
+                } else if (data.reason === 'replaced') {
+                  // Outro dispositivo (outra máquina, outro membro da equipe, ou
+                  // o WhatsApp Web do navegador) conectou com as mesmas credenciais.
+                  // Limite multi-device do WhatsApp.
+                  setStatus('replaced');
+                  setErrorMsg(
+                    typeof data.message === 'string' && data.message
+                      ? data.message
+                      : 'Outro dispositivo se conectou com este número. Para usar aqui, clique em "Reconectar" — isso vai desconectar o outro.',
+                  );
                 }
               }
             } catch { /* skip malformed line */ }
@@ -692,6 +760,22 @@ function QrModal({ businessId, connectionId, onClose }: QrModalProps) {
             <div className="w-[240px] h-[240px] rounded-2xl bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 flex flex-col items-center justify-center gap-3 px-4">
               <AlertCircle className="w-8 h-8 text-red-500" />
               <p className="text-xs text-red-700 dark:text-red-400 text-center">{errorMsg}</p>
+            </div>
+          )}
+          {status === 'replaced' && (
+            <div className="w-full max-w-[280px] rounded-2xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 flex flex-col items-center justify-center gap-3 px-5 py-6">
+              <div className="w-12 h-12 rounded-full bg-amber-100 dark:bg-amber-500/20 flex items-center justify-center">
+                <Smartphone className="w-6 h-6 text-amber-600 dark:text-amber-400" />
+              </div>
+              <p className="text-xs font-semibold text-amber-700 dark:text-amber-400 text-center">
+                Sessão substituída
+              </p>
+              <p className="text-[11px] text-amber-700/80 dark:text-amber-400/80 text-center leading-relaxed">
+                {errorMsg}
+              </p>
+              <p className="text-[10px] text-amber-700/60 dark:text-amber-400/60 text-center mt-1">
+                WhatsApp permite até 4 dispositivos vinculados; cada um precisa do próprio QR Code.
+              </p>
             </div>
           )}
         </div>

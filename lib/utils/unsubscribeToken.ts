@@ -12,7 +12,7 @@
  * fail-closed (preferível a tokens forjáveis).
  */
 
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 import type { OptOutChannel } from '@/lib/types';
 
 const DEFAULT_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 1 ano

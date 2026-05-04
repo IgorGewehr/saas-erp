@@ -247,6 +247,8 @@ async function syncSingleConversation(
     const newRef = await adminDb.collection('conversations').add({
       businessId,
       channel,
+      // Sync só roda em FB/IG, que são sempre 'business'.
+      channelOwnerType: 'business',
       contactName,
       contactExternalId: externalId,
       ...(profile.profilePic ? { contactAvatarUrl: profile.profilePic } : {}),

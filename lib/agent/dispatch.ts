@@ -7,8 +7,8 @@
  * Python agent service. Fire-and-forget — webhook response shouldn't block.
  */
 
-import crypto from 'crypto';
-import fs from 'fs';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
 import type { Firestore } from 'firebase-admin/firestore';
 import type { Business, Conversation, ConversationChannel } from '@/lib/types';
 import { sendTypingIndicator } from '@/lib/channels/typing';
@@ -176,9 +176,9 @@ export async function dispatchInboundToAgent(
       .limit(10)
       .get();
     const history = historySnap.docs
+      .filter(d => d.id !== input.messageId) // skip the triggering message (passed separately)
       .map(d => d.data())
       .reverse() // chronological asc
-      .filter(m => m.id !== input.messageId) // skip the triggering message (passed separately)
       .map(m => ({
         role: m.direction === 'inbound' ? 'user' : 'assistant',
         content: typeof m.content === 'string' ? m.content : '',

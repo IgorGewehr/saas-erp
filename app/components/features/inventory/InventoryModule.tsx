@@ -68,6 +68,7 @@ import { cn } from '@/lib/utils';
 import { formatCurrency, formatDateTime } from '@/lib/utils/format';
 import ModifierGroupsEditor from './ModifierGroupsEditor';
 import MenuCategoriesManager from './MenuCategoriesManager';
+import NcmSelector from '@/app/components/features/fiscal/NcmSelector';
 import { onSnapshot } from 'firebase/firestore';
 import { Tag, Sparkles } from 'lucide-react';
 
@@ -1497,17 +1498,40 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
                 {t('inventory.productForm.fiscalDesc', 'Campos opcionais. Obrigatórios para emissão de NF-e/NFC-e.')}
               </p>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <TextField
-                  label="NCM"
-                  value={form.ncm}
-                  onChange={(e) => updateField('ncm', e.target.value)}
-                  error={!!errors.ncm}
-                  helperText={errors.ncm || t('inventory.productForm.ncmHelper', 'Nomenclatura Comum do Mercosul')}
-                  fullWidth
-                  size="small"
-                  placeholder="00000000"
-                  slotProps={{ htmlInput: { maxLength: 8 } }}
-                />
+                {/* NCM com combobox de busca — usuário pode buscar por código,
+                    descrição ou categoria. Se NCM não estiver no catálogo,
+                    digitar 8 dígitos cria entrada custom. Mesmo componente
+                    usado na emissão de NF-e/NFC-e (NcmSelector). Wrapper
+                    aplica label/helper estilo MUI pra ficar alinhado com os
+                    TextFields ao lado. */}
+                <div className="flex flex-col">
+                  <label
+                    className={cn(
+                      'text-xs font-medium mb-1.5 px-0.5',
+                      errors.ncm
+                        ? 'text-red-600 dark:text-red-400'
+                        : 'text-slate-600 dark:text-slate-400',
+                    )}
+                  >
+                    NCM
+                  </label>
+                  <NcmSelector
+                    value={form.ncm}
+                    onChange={(code) => updateField('ncm', code)}
+                    onClear={() => updateField('ncm', '')}
+                    placeholder="Buscar ou digitar 8 dígitos…"
+                  />
+                  <span
+                    className={cn(
+                      'text-xs mt-1 px-0.5',
+                      errors.ncm
+                        ? 'text-red-600 dark:text-red-400'
+                        : 'text-slate-500 dark:text-slate-400',
+                    )}
+                  >
+                    {errors.ncm || t('inventory.productForm.ncmHelper', 'Nomenclatura Comum do Mercosul')}
+                  </span>
+                </div>
                 <TextField
                   label="CFOP"
                   value={form.cfop}

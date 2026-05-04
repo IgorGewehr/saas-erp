@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
@@ -13,6 +13,8 @@ import {
   collection,
   query,
   where,
+  or,
+  and,
   orderBy,
   addDoc,
   updateDoc,
@@ -58,6 +60,7 @@ import {
   Headphones,
   Video,
   RotateCcw,
+  BadgeCheck,
   Lock,
   Clock,
   StickyNote,
@@ -1342,6 +1345,39 @@ function MediaAttachment({
   return null;
 }
 
+// ─── Transport Badge ──────────────────────────────────────────────────────────
+
+/**
+ * Indica visualmente em CADA bolha por qual transporte WhatsApp a mensagem
+ * trafegou: Cloud API (oficial Meta) vs Baileys (WhatsApp Web). Crítico quando
+ * a empresa tem ambos os canais ativos — operador identifica de relance.
+ *
+ * Renderizado discretamente na linha do timestamp (não compete com o conteúdo).
+ */
+function TransportBadge({ connectedVia }: { connectedVia: 'embedded_signup' | 'baileys' }) {
+  const isBaileys = connectedVia === 'baileys';
+  const Icon = isBaileys ? Smartphone : BadgeCheck;
+  const label = isBaileys ? 'Web' : 'Oficial';
+  const tooltip = isBaileys
+    ? 'WhatsApp Web (Baileys) — conexão via celular do dono do número'
+    : 'WhatsApp Business (Meta Cloud API, oficial)';
+
+  return (
+    <span
+      title={tooltip}
+      className={cn(
+        'inline-flex items-center gap-0.5 text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none',
+        isBaileys
+          ? 'bg-[#128C7E]/10 text-[#128C7E] dark:bg-[#128C7E]/20 dark:text-[#25D366]'
+          : 'bg-[#0A7CFF]/10 text-[#0A7CFF] dark:bg-[#0A7CFF]/20 dark:text-[#4DA3FF]',
+      )}
+    >
+      <Icon className="w-2.5 h-2.5" />
+      {label}
+    </span>
+  );
+}
+
 // ─── Message Bubble ───────────────────────────────────────────────────────────
 
 function MessageBubble({
@@ -1400,10 +1436,10 @@ function MessageBubble({
           </div>
         )}
 
-        {/* Time + status */}
+        {/* Time + status + transport badge */}
         <div
           className={cn(
-            'flex items-center gap-1 mt-1 px-1',
+            'flex items-center gap-1.5 mt-1 px-1',
             isOut ? 'flex-row-reverse' : 'flex-row',
           )}
         >
@@ -1411,6 +1447,12 @@ function MessageBubble({
             {fullTime(message.sentAt)}
           </span>
           {isOut && <MessageStatusIcon status={message.status} />}
+          {/* Transport indicator: só pra WhatsApp, distingue Cloud (oficial Meta)
+              de Baileys (WhatsApp Web). Notas internas não têm transporte —
+              nunca saíram pelo canal — então não mostramos badge nelas. */}
+          {message.channel === 'whatsapp' && !message.isInternal && message.connectedVia && (
+            <TransportBadge connectedVia={message.connectedVia} />
+          )}
         </div>
 
         {/* Retry button for failed messages */}
@@ -1534,6 +1576,7 @@ function Composer({
   isInternalNote,
   onToggleInternalNote,
   onSnippetClick,
+  crossOperatorWarning,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -1551,6 +1594,12 @@ function Composer({
   isInternalNote?: boolean;
   onToggleInternalNote?: () => void;
   onSnippetClick?: () => void;
+  /**
+   * Setado quando o canal da conversa pertence a OUTRO operador (canal pessoal
+   * de Igor, e estou logado como Maria/admin). A mensagem que eu enviar vai
+   * sair do número do Igor — operador precisa ter ciência. Banner âmbar.
+   */
+  crossOperatorWarning?: { ownerName: string };
 }) {
   const { t } = useTranslation();
   const cfg = getConvConfig({ channel, connectedVia: connectedVia as 'baileys' | 'embedded_signup' | undefined });
@@ -1593,6 +1642,19 @@ function Composer({
         ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-500/20'
         : 'bg-white dark:bg-[#111827] border-gray-100 dark:border-white/[0.06]'
     )}>
+      {/* Cross-operator warning: conversa pertence ao canal pessoal de OUTRO
+          operador. Mensagens enviadas aqui saem do NÚMERO dele, não do meu —
+          contato vai ver "Igor" no remetente, mesmo eu (admin/Maria) tendo
+          digitado. UI deixa explícito pra evitar surpresas. */}
+      {crossOperatorWarning && !isInternalNote && (
+        <div className="flex items-start gap-2 mb-2 px-2 py-2 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20">
+          <AlertCircle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+          <span className="text-xs text-amber-800 dark:text-amber-300 leading-snug">
+            Você está respondendo pelo <strong>canal pessoal de {crossOperatorWarning.ownerName}</strong>.
+            A mensagem sairá do número dele — o cliente verá como se {crossOperatorWarning.ownerName} respondeu.
+          </span>
+        </div>
+      )}
       {/* Internal Note Banner */}
       {isInternalNote && (
         <div className="flex items-center gap-2 mb-2 px-2">
@@ -2559,6 +2621,13 @@ function NewConversationDialog({
       // pra que send/route.ts use a sessão correta no reply (especialmente
       // quando há múltiplas Baileys-empresa ou quando user escolhe pessoal).
       const effectiveConnectionId = channelMode === 'baileys' ? selectedConnectionId : null;
+      // Denormaliza ownership da connection escolhida pra fallar em queries/rules
+      // sem precisar de get(). Cloud (channelMode!=='baileys') é sempre 'business'.
+      const selectedConn = effectiveConnectionId
+        ? connections.find(c => c.id === effectiveConnectionId)
+        : null;
+      const channelOwnerType: 'business' | 'user' = selectedConn?.ownerType === 'user' ? 'user' : 'business';
+      const channelOwnerId = selectedConn?.ownerType === 'user' ? selectedConn.ownerId : undefined;
 
       // Create conversation document
       const convData: Record<string, unknown> = {
@@ -2566,6 +2635,8 @@ function NewConversationDialog({
         channel: 'whatsapp',
         connectedVia: channelMode === 'baileys' ? 'baileys' : 'embedded_signup',
         ...(effectiveConnectionId ? { channelConnectionId: effectiveConnectionId } : {}),
+        channelOwnerType,
+        ...(channelOwnerId ? { channelOwnerId } : {}),
         contactName: displayName,
         contactPhone: phoneE164,
         contactExternalId: phoneE164,
@@ -2589,6 +2660,8 @@ function NewConversationDialog({
         conversationId: convRef.id,
         businessId: business.id,
         channel: 'whatsapp',
+        // Marca o transporte pra UI distinguir Cloud vs Baileys nas bolhas.
+        connectedVia: channelMode === 'baileys' ? 'baileys' : 'embedded_signup',
         direction: 'outbound',
         content,
         status: 'sending',
@@ -4211,7 +4284,16 @@ export default function ConversasModule() {
     setActivePage('Pedidos');
   }, [setActivePage]);
 
-  const [activeChannel, setActiveChannel] = useState<ConversationChannel | 'all'>('all');
+  /**
+   * Tab de canal expandida pra distinguir transporte WhatsApp:
+   *   - 'all', 'whatsapp', 'facebook', 'instagram' — comportamento padrão
+   *   - 'whatsapp_cloud'   → só conversas WhatsApp via Cloud API (Meta oficial)
+   *   - 'whatsapp_baileys' → só conversas WhatsApp via Baileys (Web)
+   * O split em Cloud/Baileys aparece automaticamente quando o business tem
+   * conversas dos dois transportes; senão fica só "WhatsApp" pra evitar ruído.
+   */
+  type ChannelTabId = ConversationChannel | 'all' | 'whatsapp_cloud' | 'whatsapp_baileys';
+  const [activeChannel, setActiveChannel] = useState<ChannelTabId>('all');
   const [activeStatus, setActiveStatus] = useState<ConversationStatus | 'all'>('all');
   const [activeSectorFilter, setActiveSectorFilter] = useState<string | 'all'>('all');
   // Phase 2: filtro por escopo de canal — 'all' (sem filtro), 'business'
@@ -4360,6 +4442,7 @@ export default function ConversasModule() {
 
   useEffect(() => {
     if (!business?.id) return;
+    if (!user?.uid) return;
 
     setIsLoadingConversations(true);
 
@@ -4369,11 +4452,34 @@ export default function ConversasModule() {
       setIsLoadingConversations(false);
     }, 12_000);
 
-    const q = query(
-      collection(db, 'conversations'),
-      where('businessId', '==', business.id),
-      orderBy('lastMessageAt', 'desc'),
-    );
+    // Isolamento server-side de canais pessoais (ownerType='user'):
+    //   - Admin/Founder vê tudo (rules + query irrestrita).
+    //   - Operador/Manager vê: canais 'business' + canais 'user' que ele é dono.
+    // O `or()` aqui combina (channelOwnerType=='business' || channelOwnerId==me).
+    // Conversas legadas sem channelOwnerType denormalizado NÃO casam com nenhuma
+    // das branches — por isso depende do backfill (`backfill-conversation-ownership`)
+    // ter rodado antes do deploy desta versão. Até lá, conversas legadas ficam
+    // invisíveis pra non-admin (efeito conservador, não vaza nada).
+    const q = isAdmin
+      ? query(
+          collection(db, 'conversations'),
+          where('businessId', '==', business.id),
+          orderBy('lastMessageAt', 'desc'),
+        )
+      : query(
+          collection(db, 'conversations'),
+          // Firestore v10+: composite OR exige and() wrapper quando combinado
+          // com outros where(). Senão TS reclama (QueryCompositeFilterConstraint
+          // ≠ QueryConstraint) e runtime rejeita a query.
+          and(
+            where('businessId', '==', business.id),
+            or(
+              where('channelOwnerType', '==', 'business'),
+              where('channelOwnerId', '==', user.uid),
+            ),
+          ),
+          orderBy('lastMessageAt', 'desc'),
+        );
 
     let unsub: (() => void) | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -4414,7 +4520,7 @@ export default function ConversasModule() {
       if (retryTimer) clearTimeout(retryTimer);
       unsub?.();
     };
-  }, [business?.id]);
+  }, [business?.id, user?.uid, isAdmin]);
 
   // ── Load channel connections (Phase 2: badges + filter) ───────────────────
   // Fetch via API pra usar a sanitização (sem tokens) + filtragem por role
@@ -4517,7 +4623,9 @@ export default function ConversasModule() {
       return;
     }
     setActiveViewId(view.id);
-    setActiveChannel((view.filters.channel as ConversationChannel | 'all') ?? 'all');
+    // Aceita os ids estendidos de transporte WhatsApp (whatsapp_cloud / whatsapp_baileys)
+    // pra views salvas com filtro mais granular não regredirem pra "all".
+    setActiveChannel((view.filters.channel as ChannelTabId) ?? 'all');
     setActiveStatus((view.filters.status as ConversationStatus | 'all') ?? 'all');
     setActiveSectorFilter(view.filters.sectorId ?? 'all');
     setAdvFilters({
@@ -4557,6 +4665,8 @@ export default function ConversasModule() {
       for (const conv of toSurvey) {
         await addDoc(collection(db, 'conversationMessages'), {
           conversationId: conv.id, businessId: business.id, channel: conv.channel,
+          // Herda o transporte da conversation pra preservar histórico fiel
+          ...(conv.connectedVia ? { connectedVia: conv.connectedVia } : {}),
           direction: 'outbound', content: csatMsg,
           status: 'sending', senderName: 'Sistema', isCsat: true, sentAt: now,
         });
@@ -4728,17 +4838,27 @@ export default function ConversasModule() {
 
   // ── Auto-scroll to bottom ──────────────────────────────────────────────────
 
-  // Scroll the messages container to the absolute bottom.
-  // Using scrollTop = scrollHeight directly on the container is more reliable than
-  // scrollIntoView, which can be affected by other scrollable ancestors.
+  // Força o scroll do messagesContainerRef pro fundo. Usa scrollHeight direto
+  // — mais confiável que scrollIntoView quando há ancestors animados (Framer
+  // Motion no shell + transição de conversa) que podem confundir o "nearest
+  // scrollable parent" do scrollIntoView nativo.
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const container = messagesContainerRef.current;
     if (!container) return;
-    if (behavior === 'instant') {
+    if (behavior === 'instant' || behavior === 'auto') {
       container.scrollTop = container.scrollHeight;
     } else {
       container.scrollTo({ top: container.scrollHeight, behavior });
     }
+  }, []);
+
+  // Detecta se o user está dentro de ~150px do bottom — se sim, auto-scroll
+  // ao receber novas msgs/mídia carregando é desejado. Se está scrollado bem
+  // pra cima (lendo histórico), respeitamos a posição dele.
+  const isNearBottom = useCallback(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return true;
+    return container.scrollHeight - container.scrollTop - container.clientHeight < 150;
   }, []);
 
   // Track the conversation ID for which we've already done the initial instant scroll
@@ -4752,25 +4872,71 @@ export default function ConversasModule() {
   }, [selectedConversation?.id]);
 
   // Scroll to bottom when messages finish loading for the first time in a conversation.
-  // Two-pass strategy: immediate rAF for text messages, delayed pass for images/media
-  // that finish loading after the initial DOM paint and would otherwise push content down.
-  useEffect(() => {
+  //
+  // Por que useLayoutEffect ao invés de useEffect: o useLayoutEffect roda
+  // SÍNCRONO depois do DOM update mas ANTES do paint. Isso garante que o
+  // scroll é aplicado antes do user ver o conteúdo no estado errado (sem
+  // flicker) e evita race com a animação de entrada do painel direito
+  // (AnimatePresence + Framer Motion) que pode interferir com scrollIntoView.
+  //
+  // Multi-pass + ResizeObserver: 1 attempt síncrono + vários attempts
+  // assíncronos (até 3.5s) pra cobrir imagens/áudio/vídeo que carregam após
+  // DOM paint. ResizeObserver re-scrolla automaticamente sempre que altura
+  // do container muda nos primeiros 5s, MAS só se user ainda está near-bottom
+  // (se ele scrollou pra cima manualmente, respeitamos).
+  useLayoutEffect(() => {
     if (
       !isLoadingMessages &&
       selectedConversation?.id &&
       messages.length > 0 &&
       initialScrollDoneRef.current !== selectedConversation.id
     ) {
-      initialScrollDoneRef.current = selectedConversation.id;
+      const convId = selectedConversation.id;
+      initialScrollDoneRef.current = convId;
 
-      // Pass 1: scroll as soon as the DOM is painted (catches text-only conversations)
-      requestAnimationFrame(() => scrollToBottom('instant'));
+      // Pass síncrono (antes do paint) — funciona pra texto puro
+      scrollToBottom('instant');
 
-      // Pass 2: re-scroll after a short delay to catch images/media that load
-      // asynchronously and shift layout after the first scroll
-      setTimeout(() => scrollToBottom('instant'), 350);
+      const timers: ReturnType<typeof setTimeout>[] = [];
+
+      // Passes assíncronos pra mídia que carrega depois.
+      requestAnimationFrame(() => {
+        if (initialScrollDoneRef.current === convId) scrollToBottom('instant');
+      });
+      [50, 150, 350, 700, 1200, 2000, 3500].forEach((ms) => {
+        timers.push(setTimeout(() => {
+          if (initialScrollDoneRef.current === convId) {
+            scrollToBottom('instant');
+          }
+        }, ms));
+      });
+
+      // ResizeObserver: durante 5s, sempre que altura muda, re-scrolla SE
+      // user está near-bottom. Isso pega lazy load de mídia sem bater contra
+      // o scroll manual do user.
+      const container = messagesContainerRef.current;
+      let stopObserving = false;
+      let observer: ResizeObserver | null = null;
+      if (container && typeof ResizeObserver !== 'undefined') {
+        observer = new ResizeObserver(() => {
+          if (stopObserving) return;
+          if (initialScrollDoneRef.current !== convId) return;
+          if (!isNearBottom()) return; // user scrollou — respeita
+          scrollToBottom('instant');
+        });
+        observer.observe(container);
+        timers.push(setTimeout(() => {
+          stopObserving = true;
+          observer?.disconnect();
+        }, 5000));
+      }
+
+      return () => {
+        timers.forEach(clearTimeout);
+        observer?.disconnect();
+      };
     }
-  }, [isLoadingMessages, selectedConversation?.id, messages.length, scrollToBottom]);
+  }, [isLoadingMessages, selectedConversation?.id, messages.length, scrollToBottom, isNearBottom]);
 
   // Smooth scroll when a new message arrives after the initial load
   useEffect(() => {
@@ -4920,6 +5086,9 @@ export default function ConversasModule() {
           conversationId: selectedConversation.id,
           businessId: business.id,
           channel: selectedConversation.channel,
+          // Templates só existem no Cloud API (Meta), mas herdamos da conversation
+          // pra ser consistente com o resto. Baileys nunca chega aqui (toggle bloqueia).
+          ...(selectedConversation.connectedVia ? { connectedVia: selectedConversation.connectedVia } : {}),
           direction: 'outbound' as const,
           content: `[Template: ${templateName}]`,
           status: 'sending' as const,
@@ -5104,6 +5273,7 @@ export default function ConversasModule() {
         conversationId: selectedConversation.id,
         businessId: business.id,
         channel: selectedConversation.channel,
+        ...(selectedConversation.connectedVia ? { connectedVia: selectedConversation.connectedVia } : {}),
         direction: 'outbound' as const,
         content: messageContent,
         mediaUrl,
@@ -5185,11 +5355,18 @@ export default function ConversasModule() {
     // Update status back to 'sending'
     await updateDoc(doc(db, 'conversationMessages', msg.id), { status: 'sending' });
 
-    // Re-send via API
+    const markFailed = () =>
+      updateDoc(doc(db, 'conversationMessages', msg.id), { status: 'failed' })
+        .catch(e => console.warn('[Conversations] Failed to mark message as failed:', e));
+
+    // Re-send via API — mirrors handleSend error handling so a failed retry
+    // surfaces the toast and flips the bubble back to 'failed' (re-exposes the
+    // "Tentar novamente" affordance). Without this, HTTP 4xx leaves the message
+    // stuck in 'sending' and the UI silently looks sent.
     try {
       const authInstance = getAuth();
       const token = await authInstance.currentUser?.getIdToken();
-      await fetch('/api/conversations/send', {
+      const res = await fetch('/api/conversations/send', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -5205,8 +5382,24 @@ export default function ConversasModule() {
           ...(msg.mediaUrl ? { type: 'media', mediaUrl: msg.mediaUrl, mediaType: msg.mediaType } : {}),
         }),
       });
-    } catch {
-      await updateDoc(doc(db, 'conversationMessages', msg.id), { status: 'failed' });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({ code: 'unknown', error: 'Erro desconhecido' }));
+        const chNames: Record<string, string> = { whatsapp: 'WhatsApp', facebook: 'Facebook Messenger', instagram: 'Instagram' };
+        const chName = chNames[msg.channel] || 'Canal';
+        if (errBody.code === 'disconnected' || errBody.code === 'token_expired') {
+          toast.warn(`${chName} desconectado — reconecte em Configurações → Canais.\n${errBody.error || ''}`);
+        } else if (errBody.code === 'send_failed') {
+          toast.error(`Falha ao enviar pelo ${chName}: ${errBody.error || 'erro desconhecido'}${errBody.metaCode ? ` (Meta #${errBody.metaCode})` : ''}`);
+        } else {
+          toast.error(`Erro ao reenviar mensagem [${res.status}]: ${errBody.error || 'erro desconhecido'}`);
+        }
+        console.warn('[Retry] API error:', errBody);
+        await markFailed();
+      }
+    } catch (err) {
+      const m = err instanceof Error ? err.message : String(err);
+      toast.error(`Erro de conexão ao reenviar mensagem: ${m}`);
+      await markFailed();
     }
   }, [selectedConversation, business?.id]);
 
@@ -5224,6 +5417,7 @@ export default function ConversasModule() {
           const csatMsg = '⭐ Como foi seu atendimento? Responda com um número de 1 a 5.\n1 = Péssimo  2 = Ruim  3 = Regular  4 = Bom  5 = Excelente';
           await addDoc(collection(db, 'conversationMessages'), {
             conversationId, businessId: business.id, channel: conv.channel,
+            ...(conv.connectedVia ? { connectedVia: conv.connectedVia } : {}),
             direction: 'outbound', content: csatMsg,
             status: 'sending', senderName: 'Sistema', isCsat: true, sentAt: now,
           });
@@ -5272,6 +5466,8 @@ export default function ConversasModule() {
           conversationId: selectedConversation.id,
           businessId: business.id,
           channel: selectedConversation.channel,
+          // Notas internas herdam o transporte da conversation pra coerência visual.
+          ...(selectedConversation.connectedVia ? { connectedVia: selectedConversation.connectedVia } : {}),
           direction: 'outbound' as const,
           content,
           status: 'delivered' as const,
@@ -5290,6 +5486,9 @@ export default function ConversasModule() {
           conversationId: selectedConversation.id,
           businessId: business.id,
           channel: selectedConversation.channel,
+          // Marca o transporte aqui — backend do send/route.ts confirma/sobrescreve
+          // se necessário (updateMessageAfterSend faz backfill defensivo).
+          ...(selectedConversation.connectedVia ? { connectedVia: selectedConversation.connectedVia } : {}),
           direction: 'outbound' as const,
           content,
           status: 'sending' as const,
@@ -5336,7 +5535,9 @@ export default function ConversasModule() {
             } else {
               toast.error(`Erro ao enviar mensagem [${res.status}]: ${errBody.error || 'erro desconhecido'}`);
             }
-            console.error('[Send] API error:', errBody);
+            // Tratado (toast + status:'failed') — usa warn pra não disparar o overlay
+            // de erro do Next.js dev. console.error fica reservado pro catch abaixo.
+            console.warn('[Send] API error:', errBody);
             await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(e => console.warn('[Conversations] Failed to mark message as failed:', e));
           }
         } catch (err) {
@@ -5451,7 +5652,18 @@ export default function ConversasModule() {
   // ── Filtered conversations ─────────────────────────────────────────────────
 
   const filteredConversations = useMemo(() => getVisibleConversations(conversations).filter((c) => {
-    const matchesChannel = activeChannel === 'all' || c.channel === activeChannel;
+    // Match canal — 'whatsapp_cloud' / 'whatsapp_baileys' são sub-filtros que
+    // aplicam sobre c.channel === 'whatsapp' E o c.connectedVia correspondente.
+    let matchesChannel: boolean;
+    if (activeChannel === 'all') {
+      matchesChannel = true;
+    } else if (activeChannel === 'whatsapp_cloud') {
+      matchesChannel = c.channel === 'whatsapp' && c.connectedVia === 'embedded_signup';
+    } else if (activeChannel === 'whatsapp_baileys') {
+      matchesChannel = c.channel === 'whatsapp' && c.connectedVia === 'baileys';
+    } else {
+      matchesChannel = c.channel === activeChannel;
+    }
     const matchesStatus = activeStatus === 'all' || c.status === activeStatus;
     const matchesSector = activeSectorFilter === 'all' || c.sectorIds?.includes(activeSectorFilter) || c.assignedToSectorId === activeSectorFilter;
     // Phase 2: filtro por escopo de canal
@@ -5491,22 +5703,38 @@ export default function ConversasModule() {
   }, [conversations]);
 
   // ── Unread counts per channel ──────────────────────────────────────────────
+  // Conta também os ids estendidos (whatsapp_cloud / whatsapp_baileys) baseado
+  // em conv.connectedVia, pra que cada sub-tab tenha seu próprio contador.
 
   const unreadByChannel = conversations.reduce(
     (acc, c) => {
       acc[c.channel] = (acc[c.channel] ?? 0) + c.unreadCount;
       acc.all = (acc.all ?? 0) + c.unreadCount;
+      if (c.channel === 'whatsapp') {
+        if (c.connectedVia === 'embedded_signup') {
+          acc.whatsapp_cloud = (acc.whatsapp_cloud ?? 0) + c.unreadCount;
+        } else if (c.connectedVia === 'baileys') {
+          acc.whatsapp_baileys = (acc.whatsapp_baileys ?? 0) + c.unreadCount;
+        }
+      }
       return acc;
     },
     {} as Record<string, number>,
   );
 
   // ── Counts per status ──────────────────────────────────────────────────────
+  // Filtra pelo canal ativo — incluindo os sub-tabs Cloud/Baileys.
+
+  const matchesActiveChannel = (c: Conversation): boolean => {
+    if (activeChannel === 'all') return true;
+    if (activeChannel === 'whatsapp_cloud') return c.channel === 'whatsapp' && c.connectedVia === 'embedded_signup';
+    if (activeChannel === 'whatsapp_baileys') return c.channel === 'whatsapp' && c.connectedVia === 'baileys';
+    return c.channel === activeChannel;
+  };
 
   const countsByStatus = conversations.reduce(
     (acc, c) => {
-      // Only count conversations matching current channel filter
-      if (activeChannel !== 'all' && c.channel !== activeChannel) return acc;
+      if (!matchesActiveChannel(c)) return acc;
       acc[c.status] = (acc[c.status] ?? 0) + 1;
       acc.all = (acc.all ?? 0) + 1;
       return acc;
@@ -5515,13 +5743,33 @@ export default function ConversasModule() {
   );
 
   // ── Tabs ────────────────────────────────────────────────────────────────────
+  // Split automático WhatsApp Cloud × Baileys quando o business tem volume nos
+  // dois transportes. Se só um existe, mostra "WhatsApp" único pra evitar ruído.
 
-  const tabs: { id: ConversationChannel | 'all'; label: string }[] = [
-    { id: 'all', label: t('conversations.tabAll', 'Todos') },
-    { id: 'whatsapp', label: t('conversations.tabWhatsApp', 'WhatsApp') },
-    { id: 'facebook', label: t('conversations.tabMessenger', 'Messenger') },
-    { id: 'instagram', label: t('conversations.tabInstagram', 'Instagram') },
-  ];
+  const hasWhatsAppCloud = useMemo(
+    () => conversations.some(c => c.channel === 'whatsapp' && c.connectedVia === 'embedded_signup'),
+    [conversations],
+  );
+  const hasWhatsAppBaileys = useMemo(
+    () => conversations.some(c => c.channel === 'whatsapp' && c.connectedVia === 'baileys'),
+    [conversations],
+  );
+  const splitWhatsApp = hasWhatsAppCloud && hasWhatsAppBaileys;
+
+  const tabs: { id: ChannelTabId; label: string }[] = splitWhatsApp
+    ? [
+        { id: 'all', label: t('conversations.tabAll', 'Todos') },
+        { id: 'whatsapp_cloud', label: t('conversations.tabWhatsAppCloud', 'WA Oficial') },
+        { id: 'whatsapp_baileys', label: t('conversations.tabWhatsAppWeb', 'WA Web') },
+        { id: 'facebook', label: t('conversations.tabMessenger', 'Messenger') },
+        { id: 'instagram', label: t('conversations.tabInstagram', 'Instagram') },
+      ]
+    : [
+        { id: 'all', label: t('conversations.tabAll', 'Todos') },
+        { id: 'whatsapp', label: t('conversations.tabWhatsApp', 'WhatsApp') },
+        { id: 'facebook', label: t('conversations.tabMessenger', 'Messenger') },
+        { id: 'instagram', label: t('conversations.tabInstagram', 'Instagram') },
+      ];
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -5690,19 +5938,30 @@ export default function ConversasModule() {
             </div>
           </div>
 
-          {/* Channel Tabs */}
+          {/* Channel Tabs — scroll horizontal quando há tabs demais (split
+              Cloud/Baileys = 5 tabs). Labels completos sempre, sem truncate
+              que cortava em "WA O..." / "Mess...". Quem não couber pode ser
+              alcançado scrollando lateralmente; barra de scroll fica
+              escondida visualmente mas funcional via mouse-wheel/trackpad. */}
           <div className="px-3 pb-1 flex-shrink-0">
-            <div className="flex gap-0.5">
+            <div className="flex gap-0.5 overflow-x-auto scrollbar-hide -mx-1 px-1">
               {tabs.map((tab) => {
                 const isActive = activeChannel === tab.id;
                 const unread = tab.id === 'all' ? unreadByChannel.all : unreadByChannel[tab.id];
-                const cfg = tab.id !== 'all' ? CHANNEL_CONFIG[tab.id as ConversationChannel] : null;
+                // Resolve config visual: sub-tabs WhatsApp herdam de CHANNEL_CONFIG.whatsapp
+                // (Cloud) ou WHATSAPP_WEB_CONFIG (Baileys) pra refletir transporte na cor.
+                const cfg =
+                  tab.id === 'whatsapp_cloud' ? CHANNEL_CONFIG.whatsapp
+                  : tab.id === 'whatsapp_baileys' ? WHATSAPP_WEB_CONFIG
+                  : tab.id !== 'all' ? CHANNEL_CONFIG[tab.id as ConversationChannel]
+                  : null;
                 return (
                   <button
                     key={tab.id}
                     onClick={() => setActiveChannel(tab.id)}
+                    title={tab.label}
                     className={cn(
-                      'flex items-center gap-1 min-w-0 px-1.5 py-1.5 rounded-lg text-[10.5px] font-semibold transition-all duration-150 whitespace-nowrap',
+                      'flex items-center gap-1 flex-shrink-0 px-1.5 py-1.5 rounded-lg text-[10.5px] font-semibold transition-all duration-150 whitespace-nowrap',
                       isActive
                         ? 'bg-gray-900 dark:bg-white/[0.12] text-white dark:text-white'
                         : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] hover:text-gray-800 dark:hover:text-gray-200',
@@ -5710,10 +5969,14 @@ export default function ConversasModule() {
                   >
                     {tab.id !== 'all' && cfg && (
                       <span className={cn('flex-shrink-0', isActive ? 'text-current' : cfg.textColor)}>
-                        <ChannelIcon channel={tab.id as ConversationChannel} size="sm" />
+                        {tab.id === 'whatsapp_cloud'
+                          ? <BadgeCheck className="w-3 h-3" />
+                          : tab.id === 'whatsapp_baileys'
+                            ? <Smartphone className="w-3 h-3" />
+                            : <ChannelIcon channel={tab.id as ConversationChannel} size="sm" />}
                       </span>
                     )}
-                    <span className="truncate">{tab.label}</span>
+                    <span>{tab.label}</span>
                     {(unread ?? 0) > 0 && (
                       <span
                         className={cn(
@@ -5959,6 +6222,14 @@ export default function ConversasModule() {
                 <div className="flex items-center gap-4 mt-2">
                   {(['whatsapp', 'facebook', 'instagram'] as ConversationChannel[]).map((ch) => {
                     const cfg = CHANNEL_CONFIG[ch];
+                    // Quando split Cloud/Baileys está ativo, clicar "WhatsApp"
+                    // aqui precisa cair em uma das sub-tabs — senão activeChannel
+                    // vira 'whatsapp' (que não está em `tabs`) e nenhuma tab fica
+                    // highlighted, deixando UI num estado intermediário confuso.
+                    const targetChannel: ChannelTabId =
+                      ch === 'whatsapp' && splitWhatsApp
+                        ? (hasWhatsAppCloud ? 'whatsapp_cloud' : 'whatsapp_baileys')
+                        : ch;
                     return (
                       <motion.div
                         key={ch}
@@ -5968,7 +6239,7 @@ export default function ConversasModule() {
                           cfg.bgColor,
                           cfg.borderColor,
                         )}
-                        onClick={() => setActiveChannel(ch)}
+                        onClick={() => setActiveChannel(targetChannel)}
                       >
                         <ChannelIcon channel={ch} size="md" />
                         <span className={cn('text-[10px] font-semibold', cfg.textColor)}>
@@ -6177,27 +6448,47 @@ export default function ConversasModule() {
                 </AnimatePresence>
 
                 {/* Composer */}
-                <Composer
-                  value={messageInput}
-                  onChange={(v) => { setMessageInput(v); sendTypingIndicator(); }}
-                  onSend={handleSend}
-                  onKeyDown={handleKeyDown}
-                  inputRef={inputRef}
-                  channel={selectedConversation.channel}
-                  connectedVia={selectedConversation.connectedVia}
-                  isSending={isSending}
-                  attachment={attachment}
-                  onAttachmentSelect={handleFileSelect}
-                  onAttachmentRemove={handleRemoveAttachment}
-                  disabled={isWindowExpired(selectedConversation)}
-                  onTemplateClick={() => {
-                    setShowTemplateSelector(true);
-                    if (templateList.length === 0 && !templatesLoading) fetchWhatsappTemplates();
-                  }}
-                  isInternalNote={isInternalNote}
-                  onToggleInternalNote={() => setIsInternalNote(prev => !prev)}
-                  onSnippetClick={() => setShowSnippets(true)}
-                />
+                {(() => {
+                  // Cross-operator detection: a conversa está vinculada a uma
+                  // connection pessoal de OUTRO operador. Se eu (admin/colega)
+                  // responder, a msg sai pelo número dele. Mostra banner amber.
+                  const conn = selectedConversation.channelConnectionId
+                    ? connectionsById.get(selectedConversation.channelConnectionId)
+                    : null;
+                  const isCrossOperator = !!(
+                    conn &&
+                    conn.ownerType === 'user' &&
+                    conn.ownerId &&
+                    conn.ownerId !== user?.uid
+                  );
+                  const crossOpWarning = isCrossOperator
+                    ? { ownerName: conn!.displayName || 'outro operador' }
+                    : undefined;
+                  return (
+                    <Composer
+                      value={messageInput}
+                      onChange={(v) => { setMessageInput(v); sendTypingIndicator(); }}
+                      onSend={handleSend}
+                      onKeyDown={handleKeyDown}
+                      inputRef={inputRef}
+                      channel={selectedConversation.channel}
+                      connectedVia={selectedConversation.connectedVia}
+                      isSending={isSending}
+                      attachment={attachment}
+                      onAttachmentSelect={handleFileSelect}
+                      onAttachmentRemove={handleRemoveAttachment}
+                      disabled={isWindowExpired(selectedConversation)}
+                      onTemplateClick={() => {
+                        setShowTemplateSelector(true);
+                        if (templateList.length === 0 && !templatesLoading) fetchWhatsappTemplates();
+                      }}
+                      isInternalNote={isInternalNote}
+                      onToggleInternalNote={() => setIsInternalNote(prev => !prev)}
+                      onSnippetClick={() => setShowSnippets(true)}
+                      crossOperatorWarning={crossOpWarning}
+                    />
+                  );
+                })()}
 
                 {/* Snippets Popup */}
                 <AnimatePresence>

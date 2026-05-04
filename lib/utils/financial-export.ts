@@ -32,10 +32,18 @@ function triggerBlobDownload(blob: Blob, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 100);
 }
 
+// Plain decimal number (with optional minus sign and `,`/`.` decimal separator).
+// e.g. "1392,00" / "-1392,00" / "1234.56" — NOT a formula, must not be escaped as text.
+const PLAIN_NUMBER_RE = /^-?\d+([.,]\d+)?$/;
+
 function csvEscape(v: unknown): string {
   const s = v == null ? '' : String(v);
-  // OWASP: prefix formula-injection chars so spreadsheets treat value as text
-  if (/^[=+\-@\t\r]/.test(s)) {
+  // OWASP formula-injection guard: prefix dangerous lead chars with `'` so
+  // spreadsheets treat the cell as text. Skip for plain numbers (negatives
+  // included) and bare placeholders ("-" / "—") — those aren't formulas, and
+  // prefixing them breaks numeric parsing in Excel/Sheets.
+  const isHarmless = s === '-' || s === '—' || PLAIN_NUMBER_RE.test(s);
+  if (!isHarmless && /^[=+\-@\t\r]/.test(s)) {
     return `"'${s.replace(/"/g, '""')}"`;
   }
   if (s.includes(',') || s.includes('"') || s.includes('\n')) {
@@ -354,12 +362,13 @@ export function exportCashFlowCSV(
   data: CashFlowRow[],
   horizon: number,
   businessName: string,
+  unit: 'dias' | 'semanas' = 'dias',
   filename = `fluxo_caixa_${new Date().toISOString().slice(0, 10)}.csv`,
 ) {
   const lines: string[] = [
     BOM,
     row([businessName]),
-    row([`Projeção de Fluxo de Caixa — próximos ${horizon} dias`]),
+    row([`Projeção de Fluxo de Caixa — ${unit === 'semanas' ? 'próximas' : 'próximos'} ${horizon} ${unit}`]),
     row([`Gerado em ${new Date().toLocaleString('pt-BR')}`]),
     '',
     row(['Data', 'Entradas (R$)', 'Saídas (R$)', 'Saldo do Dia (R$)', 'Saldo Acumulado (R$)']),

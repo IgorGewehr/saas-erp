@@ -26,7 +26,7 @@
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import type { Firestore } from 'firebase-admin/firestore';
 import { embedText, cosineSim, vectorToArray, arrayToVector } from './embed';
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 
 export type KnowledgeSource = 'product' | 'service' | 'snippet' | 'faq' | 'business_desc' | 'policy';
 

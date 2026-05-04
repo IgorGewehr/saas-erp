@@ -1579,6 +1579,7 @@ export default function PDVModule() {
                   : (item as Service).price;
                 const inCartQty = cartItemCount(item.id);
                 const outOfStock = item.type === 'product' && (item as Product).currentStock <= 0;
+                const productImageUrl = item.type === 'product' ? (item as Product).imageUrl : undefined;
                 return (
                   <motion.button
                     key={item.id}
@@ -1592,7 +1593,7 @@ export default function PDVModule() {
                     onClick={() => !outOfStock && addToCart(item)}
                     disabled={outOfStock}
                     className={cn(
-                      'relative flex flex-col items-start p-3.5 rounded-xl border transition-all duration-200 text-left group',
+                      'relative flex flex-col rounded-xl border transition-all duration-200 text-left group',
                       outOfStock
                         ? 'bg-slate-50 dark:bg-gray-800/30 border-slate-200/50 dark:border-gray-700/50 cursor-not-allowed'
                         : inCartQty > 0
@@ -1604,60 +1605,76 @@ export default function PDVModule() {
                       <motion.div
                         initial={{ scale: 0 }}
                         animate={{ scale: 1 }}
-                        className="absolute -top-2 -right-2 w-6 h-6 bg-gradient-to-br from-red-500 to-red-600 text-white rounded-full flex items-center justify-center text-xs font-bold shadow-lg shadow-red-500/30"
+                        className="absolute -top-2 -right-2 z-10 min-w-[24px] h-6 px-1.5 bg-gradient-to-br from-red-500 to-red-600 text-white rounded-full flex items-center justify-center text-xs font-bold shadow-lg shadow-red-500/30"
                       >
                         {inCartQty}
                       </motion.div>
                     )}
-                    {outOfStock && (
-                      <div className="absolute top-2 right-2 text-[9px] font-bold text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-500/10 px-1.5 py-0.5 rounded-md">
-                        SEM ESTOQUE
-                      </div>
-                    )}
-                    <div className="flex items-center justify-between w-full mb-2.5">
-                      <div className={cn(
-                        'w-9 h-9 rounded-xl flex items-center justify-center transition-transform duration-200 group-hover:scale-110',
-                        inCartQty > 0
-                          ? 'bg-red-100 dark:bg-red-500/20'
-                          : 'bg-slate-100 dark:bg-gray-700/80'
-                      )}>
-                        {getItemIcon(item)}
-                      </div>
+
+                    {/* Image banner */}
+                    <div className={cn(
+                      'relative w-full h-28 flex items-center justify-center overflow-hidden rounded-t-xl',
+                      inCartQty > 0
+                        ? 'bg-red-100/40 dark:bg-red-500/10'
+                        : 'bg-slate-100 dark:bg-gray-700/40'
+                    )}>
+                      {productImageUrl ? (
+                        <img
+                          src={productImageUrl}
+                          alt={item.name}
+                          loading="lazy"
+                          className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                        />
+                      ) : (
+                        <div className="opacity-50 group-hover:opacity-70 transition-all duration-200 group-hover:scale-110">
+                          {getItemIcon(item)}
+                        </div>
+                      )}
+
+                      {outOfStock && (
+                        <div className="absolute top-2 right-2 text-[9px] font-bold text-red-500 dark:text-red-400 bg-white/90 dark:bg-gray-900/90 backdrop-blur-sm px-1.5 py-0.5 rounded-md">
+                          SEM ESTOQUE
+                        </div>
+                      )}
                       {item.type === 'service' && (
-                        <span className="text-[9px] font-semibold text-slate-400 dark:text-gray-500 bg-slate-100 dark:bg-gray-700/60 px-1.5 py-0.5 rounded-md">
+                        <span className="absolute top-2 left-2 text-[10px] font-semibold text-slate-700 dark:text-gray-200 bg-white/90 dark:bg-gray-900/90 backdrop-blur-sm px-1.5 py-0.5 rounded-md">
                           {(item as Service).duration}min
                         </span>
                       )}
                     </div>
-                    <span className="text-[13px] font-semibold text-slate-800 dark:text-gray-100 leading-snug mb-1.5 line-clamp-2 text-left w-full">
-                      {item.name}
-                    </span>
-                    <div className="flex items-end justify-between w-full mt-auto">
-                      <span className={cn(
-                        'text-base font-bold leading-none',
-                        outOfStock
-                          ? 'text-slate-400 dark:text-gray-500'
-                          : inCartQty > 0 ? 'text-red-600 dark:text-red-400' : 'text-red-500 dark:text-red-400'
-                      )}>
-                        {formatCurrency(price)}
+
+                    {/* Content */}
+                    <div className="flex flex-col p-3 gap-2 flex-1">
+                      <span className="text-[13px] font-semibold text-slate-800 dark:text-gray-100 leading-snug line-clamp-2 min-h-[2.4rem]">
+                        {item.name}
                       </span>
-                      {inCartQty > 0 ? (
-                        <button
-                          onClick={(e) => { e.stopPropagation(); updateQuantityByItemId(item.id, -1); }}
-                          className="w-7 h-7 rounded-lg bg-white dark:bg-gray-700 border border-red-200 dark:border-red-500/30 flex items-center justify-center text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors shadow-sm"
-                        >
-                          <Minus size={13} />
-                        </button>
-                      ) : item.type === 'product' ? (
+                      <div className="flex items-end justify-between w-full mt-auto">
                         <span className={cn(
-                          'text-[10px] font-medium rounded-md px-1.5 py-0.5',
-                          (item as Product).currentStock <= (item as Product).minStock
-                            ? 'text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-500/10'
-                            : 'text-slate-400 dark:text-gray-500 bg-slate-100/80 dark:bg-gray-700/50'
+                          'text-base font-bold leading-none',
+                          outOfStock
+                            ? 'text-slate-400 dark:text-gray-500'
+                            : inCartQty > 0 ? 'text-red-600 dark:text-red-400' : 'text-red-500 dark:text-red-400'
                         )}>
-                          {(item as Product).currentStock} un
+                          {formatCurrency(price)}
                         </span>
-                      ) : null}
+                        {inCartQty > 0 ? (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); updateQuantityByItemId(item.id, -1); }}
+                            className="w-7 h-7 rounded-lg bg-white dark:bg-gray-700 border border-red-200 dark:border-red-500/30 flex items-center justify-center text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors shadow-sm"
+                          >
+                            <Minus size={13} />
+                          </button>
+                        ) : item.type === 'product' ? (
+                          <span className={cn(
+                            'text-[10px] font-medium rounded-md px-1.5 py-0.5',
+                            (item as Product).currentStock <= (item as Product).minStock
+                              ? 'text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-500/10'
+                              : 'text-slate-400 dark:text-gray-500 bg-slate-100/80 dark:bg-gray-700/50'
+                          )}>
+                            {(item as Product).currentStock} un
+                          </span>
+                        ) : null}
+                      </div>
                     </div>
                   </motion.button>
                 );

@@ -76,6 +76,45 @@ service cloud.firestore {
       return field is string && field.size() > 0;
     }
 
+    // ─── Conversation ownership helpers ─────────────────────────────────────
+    // Canais Baileys podem ser pessoais (ownerType='user'). Outros operators do
+    // mesmo business NÃO devem ver/escrever conversas desses canais — só o
+    // dono e admin/founder. Cloud/FB/IG são sempre 'business' (todos vêem).
+    //
+    // Estratégia: a conversation denormaliza channelOwnerType + channelOwnerId
+    // (ver baileys-manager.handleInboundMessage e demais sites de criação). A
+    // rule não precisa fazer get() do channelConnections em cada read.
+    //
+    // Conversas legadas (pré-fix) podem não ter os campos denormalizados —
+    // nesse caso, faz fallback consultando a connection. Após rodar o
+    // backfill `lib/scripts/backfill-conversation-ownership`, esse branch
+    // deixa de disparar e a rule fica O(1) por doc.
+
+    function isLegacyConversationData(data) {
+      return !('channelOwnerType' in data);
+    }
+
+    function legacyConversationReadable(data) {
+      return !('channelConnectionId' in data)
+          || data.channelConnectionId == null
+          || get(/databases/$(database)/documents/channelConnections/$(data.channelConnectionId)).data.ownerType == 'business'
+          || get(/databases/$(database)/documents/channelConnections/$(data.channelConnectionId)).data.ownerId == request.auth.uid;
+    }
+
+    function canAccessConversationData(data) {
+      return isAdmin()
+          || data.channelOwnerType == 'business'
+          || data.channelOwnerId == request.auth.uid
+          || (isLegacyConversationData(data) && legacyConversationReadable(data));
+    }
+
+    // Variante pra create (lê de request.resource.data).
+    function incomingConversationOwnedByCaller() {
+      return isAdmin()
+          || request.resource.data.channelOwnerType == 'business'
+          || request.resource.data.channelOwnerId == request.auth.uid;
+    }
+
     // ============================================
     // USERS COLLECTION
     // ============================================
@@ -567,19 +606,24 @@ service cloud.firestore {
     // ============================================
     // CONVERSATIONS COLLECTION
     // ============================================
+    // Isolamento: canais Baileys com ownerType='user' são privados ao dono.
+    // Ver helpers `canAccessConversationData` e `incomingConversationOwnedByCaller`.
     match /conversations/{conversationId} {
       allow read: if isAuthenticated()
                   && isOwnBusiness()
-                  && isOperator();
+                  && isOperator()
+                  && canAccessConversationData(resource.data);
 
       allow create: if isAuthenticated()
                     && incomingBelongsToBusiness()
-                    && isOperator();
+                    && isOperator()
+                    && incomingConversationOwnedByCaller();
 
       allow update: if isAuthenticated()
                     && isOwnBusiness()
                     && isOperator()
-                    && incomingBelongsToBusiness();
+                    && incomingBelongsToBusiness()
+                    && canAccessConversationData(resource.data);
 
       allow delete: if isAuthenticated()
                     && isOwnBusiness()
@@ -589,19 +633,32 @@ service cloud.firestore {
     // ============================================
     // CONVERSATION MESSAGES COLLECTION
     // ============================================
+    // As mensagens herdam o isolamento da parent conversation: o usuário só
+    // pode ler/escrever mensagens de conversas que ele já tem permissão de
+    // ver. Custo: 1 get() de parent por mensagem avaliada (cacheado por
+    // request — irrelevante pra read único, mensurável em listagens grandes).
+    function parentConversationAccessible(conversationId) {
+      let convData = get(/databases/$(database)/documents/conversations/$(conversationId)).data;
+      return convData.businessId == userBusinessId()
+          && canAccessConversationData(convData);
+    }
+
     match /conversationMessages/{messageId} {
       allow read: if isAuthenticated()
                   && isOwnBusiness()
-                  && isOperator();
+                  && isOperator()
+                  && parentConversationAccessible(resource.data.conversationId);
 
       allow create: if isAuthenticated()
                     && incomingBelongsToBusiness()
-                    && isOperator();
+                    && isOperator()
+                    && parentConversationAccessible(request.resource.data.conversationId);
 
       // Messages are append-only - no updates or deletes
       allow update: if isAuthenticated()
                     && isOwnBusiness()
-                    && isOperator();
+                    && isOperator()
+                    && parentConversationAccessible(resource.data.conversationId);
       allow delete: if false;
     }
 
@@ -847,6 +904,20 @@ service cloud.firestore {
     }
 
     // ============================================
+    // BAILEYS AUTH STATES (credenciais cifradas WhatsApp Web)
+    // ============================================
+    // Contém creds + signal keys do Baileys, cifradas com AES-256-GCM (chave em
+    // process.env.ENCRYPTION_KEY no servidor). Mesmo cifrado, vazar permite
+    // ataques offline contra a chave — clientes NÃO devem ler/escrever NUNCA.
+    // Acesso exclusivo via Admin SDK (server-side, bypassa rules).
+    match /baileysAuthStates/{connectionId} {
+      allow read, write: if false;
+      match /keys/{keyId} {
+        allow read, write: if false;
+      }
+    }
+
+    // ============================================
     // AGENT RUNS (logs do agente IA)
     // ============================================
     match /agentRuns/{runId} {
@@ -1017,6 +1088,26 @@ service cloud.firestore {
       allow create: if isAuthenticated() && incomingBelongsToBusiness() && isAdmin();
       allow update: if isAuthenticated() && isOwnBusiness() && isAdmin();
       allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    // ============================================
+    // CRM SEQUENCES COLLECTION (templates de follow-up)
+    // ============================================
+    match /crmSequences/{sequenceId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isAdmin();
+      allow update: if isAuthenticated() && isOwnBusiness() && isAdmin();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    // ============================================
+    // CRM ENROLLMENTS COLLECTION (instâncias de sequência aplicadas a contatos)
+    // ============================================
+    match /crmEnrollments/{enrollmentId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isOperator();
+      allow update: if isAuthenticated() && isOwnBusiness() && isOperator() && incomingBelongsToBusiness();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isOperator();
     }
 
     // ============================================

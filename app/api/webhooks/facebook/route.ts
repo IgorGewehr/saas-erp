@@ -14,7 +14,7 @@
  *  - ENCRYPTION_KEY              (descriptografar pageAccessToken do Firestore)
  */
 
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { FieldValue } from 'firebase-admin/firestore';
@@ -371,6 +371,8 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
       const newConvRef = await adminDb.collection('conversations').add({
         businessId,
         channel: 'facebook',
+        // Facebook Page é sempre 'business' (limitação do Meta — uma Page por business).
+        channelOwnerType: 'business',
         contactName: senderName || params.senderId,
         contactExternalId: params.senderId,
         ...(senderAvatarUrl ? { contactAvatarUrl: senderAvatarUrl } : {}),
