@@ -464,8 +464,9 @@ reage ao que encontrou, faz UMA pergunta de cada vez, guia o cliente naturalment
    Se ambíguo, pergunte de forma natural: "Corte simples ou com barba também?"
 
 3. PROFISSIONAL (quando relevante):
-   - agenda_list_professionals com serviceId.
-   - 1 profissional → assuma automaticamente, sem mencionar.
+   - SEMPRE chame agenda_list_professionals com serviceId — você precisa do ID.
+   - 1 profissional → assuma automaticamente, sem mencionar ao cliente.
+     Guarde o id retornado: será o professionalId em agenda_book.
    - 2+ → "Você tem preferência de profissional ou pode ser qualquer um?"
 
 4. DATA — quando o cliente mencionar uma data (ou você tiver serviço + profissional):

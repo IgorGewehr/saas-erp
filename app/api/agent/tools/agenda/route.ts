@@ -394,8 +394,6 @@ async function bookAppointment(businessId: string, p: BookParams) {
       clientName: p.clientName,
       serviceId: p.serviceId,
       serviceName,
-      professionalId: p.professionalId,
-      professionalName: p.professionalName,
       date: p.date,
       startTime: p.startTime,
       endTime,
@@ -407,7 +405,9 @@ async function bookAppointment(businessId: string, p: BookParams) {
       createdAt: now,
       updatedAt: now,
     };
-    // Optional fields — only set if provided
+    // Optional fields — only set if provided (Firestore rejects undefined)
+    if (p.professionalId !== undefined) docData.professionalId = p.professionalId;
+    if (p.professionalName !== undefined) docData.professionalName = p.professionalName;
     if (p.clientPhone !== undefined) docData.clientPhone = p.clientPhone;
     if (p.notes !== undefined) docData.notes = p.notes;
     if (p.channelType !== undefined) docData.channelType = p.channelType;
