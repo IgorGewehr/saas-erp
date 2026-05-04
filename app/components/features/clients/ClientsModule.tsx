@@ -2466,7 +2466,7 @@ export default function ClientsModule() {
 
   const [clientsView, setClientsView] = useState<'list' | 'table'>(() => {
     if (typeof window === 'undefined') return 'list';
-    return (localStorage.getItem('clients_view') as 'list' | 'table') ?? 'list';
+    return (localStorage.getItem('clients_view') as 'list' | 'table') ?? 'table';
   });
   const handleClientsView = (v: 'list' | 'table') => {
     setClientsView(v);
