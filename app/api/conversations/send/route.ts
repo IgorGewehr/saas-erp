@@ -334,7 +334,24 @@ export async function POST(req: NextRequest) {
       }, { status: 400 });
     }
 
-    if ('isConnected' in channelConfig && !channelConfig.isConnected) {
+    // Pré-check de conectividade. Para channel='whatsapp', NÃO bloqueia só com
+    // base em channels.whatsapp (legacy) — porque esse campo pode estar
+    // desatualizado/refletindo Baileys desconectado mesmo com Cloud ativo.
+    // Aceita se Cloud OU Baileys estiver conectado; o routing decision abaixo
+    // (linha ~422) escolhe o transporte correto e o send em si falha com
+    // mensagem específica se aquele transporte específico estiver offline.
+    if (channel === 'whatsapp') {
+      const cloudOk = !!channels.whatsappCloud?.isConnected;
+      const baileysOk = !!channels.whatsappBaileys?.isConnected;
+      const legacyOk = !!(channels.whatsapp as { isConnected?: boolean } | undefined)?.isConnected;
+      if (!cloudOk && !baileysOk && !legacyOk) {
+        return NextResponse.json({
+          error: 'Nenhum canal WhatsApp está conectado. Reconecte nas Configurações.',
+          code: 'disconnected',
+        }, { status: 400 });
+      }
+    } else if ('isConnected' in channelConfig && !channelConfig.isConnected) {
+      // Outros canais (Facebook/Instagram) — usa o config singular como antes
       return NextResponse.json({
         error: `${channelLabel[channel] || channel} está desconectado. Reconecte nas Configurações.`,
         code: 'disconnected',
@@ -347,16 +364,29 @@ export async function POST(req: NextRequest) {
       channelConfig.connectedVia === 'baileys';
 
     if (!isBaileysChannel) {
-      // Token presence check
-      const tokenField = channel === 'whatsapp' ? 'accessToken'
-        : channel === 'facebook' ? 'pageAccessToken'
-        : 'accessToken';
-
-      if (tokenField in channelConfig && !channelConfig[tokenField as keyof typeof channelConfig]) {
-        return NextResponse.json({
-          error: `Token do ${channelLabel[channel] || channel} ausente. Reconecte o canal em Configurações.`,
-          code: 'disconnected',
-        }, { status: 400 });
+      // Token presence check.
+      // Para WhatsApp: aceita se Cloud OU legacy tem accessToken — não força
+      // checar só channels.whatsapp (que pode estar desatualizado por Baileys).
+      // O routing decision abaixo escolhe a config correta no envio.
+      if (channel === 'whatsapp') {
+        const cloudToken = (channels.whatsappCloud as { accessToken?: string } | undefined)?.accessToken;
+        const legacyToken = (channels.whatsapp as { accessToken?: string } | undefined)?.accessToken;
+        const baileysOk = !!channels.whatsappBaileys?.isConnected;
+        // Tem que ter ALGUM caminho de envio: Cloud com token, ou Baileys conectado
+        if (!cloudToken && !legacyToken && !baileysOk) {
+          return NextResponse.json({
+            error: 'Token do WhatsApp Cloud ausente e Baileys desconectado. Reconecte o canal em Configurações.',
+            code: 'disconnected',
+          }, { status: 400 });
+        }
+      } else {
+        const tokenField = channel === 'facebook' ? 'pageAccessToken' : 'accessToken';
+        if (tokenField in channelConfig && !channelConfig[tokenField as keyof typeof channelConfig]) {
+          return NextResponse.json({
+            error: `Token do ${channelLabel[channel] || channel} ausente. Reconecte o canal em Configurações.`,
+            code: 'disconnected',
+          }, { status: 400 });
+        }
       }
     }
 
@@ -420,7 +450,14 @@ export async function POST(req: NextRequest) {
         }
 
         let isBaileys: boolean;
-        if (convVia === 'baileys') {
+        // Templates são feature exclusiva do Cloud API. Mesmo se a conversa
+        // está em connectedVia='baileys', forçamos Cloud — Baileys não suporta.
+        // Sem este override, dava "WhatsApp desconectado" quando user tentava
+        // template numa conv tagged Baileys (que ficou offline).
+        if (type === 'template') {
+          isBaileys = false;
+          console.log('[Send] Template send — forçando Cloud (templates são Cloud-only)');
+        } else if (convVia === 'baileys') {
           isBaileys = true;
         } else if (convVia === 'embedded_signup') {
           isBaileys = false;
