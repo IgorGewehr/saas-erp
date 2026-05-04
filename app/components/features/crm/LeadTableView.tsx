@@ -61,7 +61,7 @@ export function LeadTableView({
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       result = result.filter(c =>
-        c.name.toLowerCase().includes(q) ||
+        (c.name?.toLowerCase().includes(q)) ||
         (c.company && c.company.toLowerCase().includes(q)) ||
         (c.email && c.email.toLowerCase().includes(q)),
       );
@@ -73,10 +73,13 @@ export function LeadTableView({
 
   const sorted = useMemo(() => [...filtered].sort((a, b) => {
     let cmp = 0;
-    if (sortField === 'name') cmp = a.name.localeCompare(b.name, 'pt-BR');
+    // Defensivo: contatos legados (importados via CSV ou criados antes do
+    // tipo ficar estrito) podem ter campos string undefined no Firestore.
+    // Sem fallback, .localeCompare() crasha o módulo inteiro.
+    if (sortField === 'name') cmp = (a.name ?? '').localeCompare(b.name ?? '', 'pt-BR');
     else if (sortField === 'status') cmp = (stageOrder[a.status] ?? 99) - (stageOrder[b.status] ?? 99);
     else if (sortField === 'score') cmp = (a.scores?.overall ?? a.score ?? 0) - (b.scores?.overall ?? b.score ?? 0);
-    else if (sortField === 'source') cmp = a.source.localeCompare(b.source);
+    else if (sortField === 'source') cmp = (a.source ?? '').localeCompare(b.source ?? '');
     else if (sortField === 'assignedTo') cmp = (a.assignedToName ?? '').localeCompare(b.assignedToName ?? '', 'pt-BR');
     else if (sortField === 'lastContact') {
       const da = a.lastContactDate ?? a.updatedAt ?? '';
