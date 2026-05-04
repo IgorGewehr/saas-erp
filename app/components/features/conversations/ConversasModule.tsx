@@ -2368,6 +2368,7 @@ function NewConversationDialog({
   onClose,
   onCreated,
   clients,
+  clientsLoadError,
   connections,
   myConnectionIds,
 }: {
@@ -2375,6 +2376,8 @@ function NewConversationDialog({
   onClose: () => void;
   onCreated: (conversation: Conversation) => void;
   clients: Client[];
+  /** Mensagem de erro quando o snapshot de clientes falha (rules, index, etc). */
+  clientsLoadError?: string | null;
   /** Phase 3.2: connections visíveis pro user (business + próprias 'user').
    *  Usado pra montar dropdown "Enviar de" quando há múltiplas. */
   connections: import('@/lib/types').ChannelConnection[];
@@ -2518,15 +2521,22 @@ function NewConversationDialog({
     setTemplateVars(Array(count).fill(''));
   }, [selectedTemplate]);
 
-  // Filter clients for search
+  // Filter clients for search.
+  // Exclui merged secondaries e soft-deleted (mesma regra do ClientsModule)
+  // pra não poluir busca com registros que o operador não deveria ver.
   const filteredClients = useMemo(() => {
     if (!clientSearch.trim()) return [];
     const q = clientSearch.trim().toLowerCase();
     const qDigits = clientSearch.replace(/\D/g, '');
     return clients.filter(c => {
+      if (!c) return false;
+      if ((c as { mergedInto?: string }).mergedInto) return false;
+      if ((c as { deletedAt?: string }).deletedAt) return false;
       if (c.name?.toLowerCase().includes(q)) return true;
       if (qDigits && (c.phone || '').replace(/\D/g, '').includes(qDigits)) return true;
       if (qDigits && (c.whatsapp || '').replace(/\D/g, '').includes(qDigits)) return true;
+      // Match também por email se a busca tem '@'
+      if (q.includes('@') && c.email?.toLowerCase().includes(q)) return true;
       return false;
     }).slice(0, 6);
   }, [clientSearch, clients]);
@@ -2856,7 +2866,23 @@ function NewConversationDialog({
                       ))}
                     </div>
                   )}
+                  {/* Feedback quando user digitou mas não há match.
+                      Antes a busca era silenciosa — sem nenhum hint do que tava errado. */}
+                  {clientSearch.trim() && filteredClients.length === 0 && !clientsLoadError && (
+                    <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl z-10 px-3 py-2.5">
+                      <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                        {clients.length === 0
+                          ? 'Nenhum cliente cadastrado ainda. Use os campos abaixo para criar.'
+                          : `Nenhum match em ${clients.length} cliente(s). Tente outro termo ou preencha nome+telefone abaixo pra criar novo.`}
+                      </p>
+                    </div>
+                  )}
                 </div>
+                {clientsLoadError && (
+                  <div className="mb-2 px-2.5 py-1.5 rounded-lg bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 text-[10px] text-red-700 dark:text-red-400">
+                    Falha ao carregar clientes: {clientsLoadError}
+                  </div>
+                )}
                 <div className="grid grid-cols-2 gap-2">
                   <input placeholder="Nome (opcional)" value={nameInput} onChange={e => setNameInput(e.target.value)} className={inputCls} />
                   <input placeholder="(11) 99999-9999" value={phoneInput} onChange={e => setPhoneInput(e.target.value)} className={inputCls} />
@@ -4135,13 +4161,24 @@ export default function ConversasModule() {
   const [agentDebugOpen, setAgentDebugOpen] = useState(false);
   const [linkContactOpen, setLinkContactOpen] = useState(false);
   const [clientsList, setClientsList] = useState<Client[]>([]);
+  const [clientsLoadError, setClientsLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!business?.id) return;
     const q = query(collection(db, 'clients'), where('businessId', '==', business.id));
-    const unsub = onSnapshot(q, (snap) => {
-      setClientsList(snap.docs.map(d => ({ ...(d.data() as Client), id: d.id })));
-    });
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        setClientsList(snap.docs.map(d => ({ ...(d.data() as Client), id: d.id })));
+        setClientsLoadError(null);
+      },
+      (err) => {
+        // Antes não havia error handler — falhas (rules, index ausente) eram
+        // silenciosas e clientsList ficava vazio sem o user saber por quê.
+        console.error('[Conversations] Failed to load clients:', err);
+        setClientsLoadError(err.message || 'Erro ao carregar clientes');
+      },
+    );
     return () => unsub();
   }, [business?.id]);
 
@@ -6685,6 +6722,7 @@ export default function ConversasModule() {
             setShowMobileThread(true);
           }}
           clients={clientsList}
+          clientsLoadError={clientsLoadError}
           connections={channelConnections}
           myConnectionIds={myConnectionIds}
         />
