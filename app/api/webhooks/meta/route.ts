@@ -1375,29 +1375,97 @@ async function saveInboundMessage(params: InboundMessageParams) {
     };
 
     // Phase 3 audit P1.1: orderBy pra escolha estável quando há 2+ legacies.
-    let candidateDocs = (await adminDb.collection('conversations')
-      .where('businessId', '==', businessId)
-      .where('channel', '==', params.channel)
-      .where('contactExternalId', '==', params.externalId)
-      .orderBy('lastMessageAt', 'desc')
-      .limit(5)
-      .get()).docs;
-
-    // Fuzzy fallback: WhatsApp BR tem variação com/sem 9 inicial.
-    if (candidateDocs.length === 0 && params.channel === 'whatsapp') {
-      const altPhone = getAlternativeBrazilianPhone(params.externalId);
-      if (altPhone) {
-        candidateDocs = (await adminDb.collection('conversations')
+    // Run sem orderBy se a query falhar — degrade gracefully se index estiver
+    // sendo construído em produção, evita lost-message.
+    const safeQuery = async (externalId: string): Promise<FirebaseFirestore.QueryDocumentSnapshot[]> => {
+      try {
+        return (await adminDb.collection('conversations')
           .where('businessId', '==', businessId)
-          .where('channel', '==', 'whatsapp')
-          .where('contactExternalId', '==', altPhone)
+          .where('channel', '==', params.channel)
+          .where('contactExternalId', '==', externalId)
           .orderBy('lastMessageAt', 'desc')
           .limit(5)
           .get()).docs;
+      } catch (err) {
+        // Fallback sem orderBy se index ausente
+        console.warn('[Meta Webhook] orderBy query failed (falling back), index may be missing:', err);
+        return (await adminDb.collection('conversations')
+          .where('businessId', '==', businessId)
+          .where('channel', '==', params.channel)
+          .where('contactExternalId', '==', externalId)
+          .limit(5)
+          .get()).docs;
+      }
+    };
+
+    let candidateDocs = await safeQuery(params.externalId);
+
+    // Fuzzy fallback 1: WhatsApp BR tem variação com/sem 9 inicial.
+    let altUsed: string | null = null;
+    if (candidateDocs.length === 0 && params.channel === 'whatsapp') {
+      const altPhone = getAlternativeBrazilianPhone(params.externalId);
+      if (altPhone) {
+        altUsed = altPhone;
+        candidateDocs = await safeQuery(altPhone);
+      }
+    }
+
+    // Fuzzy fallback 2: últimos 8 dígitos com mesmo DDD — cobre normalizações
+    // mais variadas (ex: contato salvo sem código do país, com formatação,
+    // ou edge cases que o getAlternativeBrazilianPhone não cobre).
+    let last8Used: string | null = null;
+    if (candidateDocs.length === 0 && params.channel === 'whatsapp') {
+      const digits = params.externalId.replace(/\D/g, '');
+      if (digits.length >= 10) {
+        // Pega últimos 8 dígitos do número incoming
+        const last8 = digits.slice(-8);
+        // Pega DDD do incoming (assume 2 dígitos antes dos últimos 8 ou 9)
+        const ddd = digits.length >= 11
+          ? digits.slice(-11, -9)  // 11+ dígitos: últimos 9 são número, antes é DDD
+          : digits.slice(-10, -8); // 10 dígitos: últimos 8 + 2 DDD
+        // Busca todas conversas e filtra client-side por DDD+last8 (querying só
+        // por contactExternalId LIKE não dá no Firestore — usa scan limitado).
+        const allConvs = (await adminDb.collection('conversations')
+          .where('businessId', '==', businessId)
+          .where('channel', '==', params.channel)
+          .limit(100) // limite conservador — usuário típico tem <100 conversas Cloud
+          .get()).docs;
+        candidateDocs = allConvs.filter(d => {
+          const ext = (d.data().contactExternalId as string | undefined)?.replace(/\D/g, '') || '';
+          if (!ext || ext.length < 10) return false;
+          const docLast8 = ext.slice(-8);
+          const docDdd = ext.length >= 11
+            ? ext.slice(-11, -9)
+            : ext.slice(-10, -8);
+          return docLast8 === last8 && docDdd === ddd;
+        });
+        if (candidateDocs.length > 0) {
+          last8Used = `last8=${last8} ddd=${ddd}`;
+          console.log(`[Meta Webhook] Found ${candidateDocs.length} match(es) via last-8-digits fallback for ${params.externalId}`);
+        }
       }
     }
 
     const matchedDoc = pickBestCandidate(candidateDocs);
+
+    // Debug log: quando criamos nova conversa, salva metadados pra auditoria
+    // posterior. Ajuda a entender por que o match falhou se for caso real
+    // (vs. contato verdadeiramente novo).
+    if (!matchedDoc) {
+      try {
+        await adminDb.collection('webhookConvCreates').add({
+          businessId,
+          channel: params.channel,
+          externalId: params.externalId,
+          altTried: altUsed,
+          last8Tried: last8Used,
+          channelConnectionId: channelConnectionId || null,
+          senderName: params.senderName || null,
+          createdAt: now,
+        }).catch(() => {});
+      } catch { /* non-blocking */ }
+    }
+
     let conversationId: string;
 
     if (!matchedDoc) {
