@@ -27,29 +27,35 @@ export async function register() {
 
     console.log('[Instrumentation] Verificando sessões Baileys para restaurar...');
 
-    // Busca todos os businesses com Baileys conectado no Firestore
-    const bizSnap = await adminDb.collection('businesses')
-      .where('channels.whatsappBaileys.isConnected', '==', true)
+    // Busca todas as channelConnections Baileys ativas (modelo autoritativo).
+    // Não filtra por isConnected — o campo fica false após shutdown do container,
+    // mas o auth state persistido no Firestore permite restaurar a sessão.
+    const connSnap = await adminDb.collection('channelConnections')
+      .where('type', '==', 'whatsapp_baileys')
+      .where('isActive', '==', true)
       .get();
 
-    if (bizSnap.empty) {
-      console.log('[Instrumentation] Nenhum business com Baileys conectado.');
+    if (connSnap.empty) {
+      console.log('[Instrumentation] Nenhuma channelConnection Baileys ativa.');
       return;
     }
 
-    console.log(`[Instrumentation] ${bizSnap.size} business(es) com Baileys — verificando auth state no Firestore...`);
+    console.log(`[Instrumentation] ${connSnap.size} connection(s) Baileys — verificando auth state no Firestore...`);
 
     const restorePromises: Promise<void>[] = [];
 
-    for (const doc of bizSnap.docs) {
-      const businessId = doc.id;
+    for (const doc of connSnap.docs) {
+      const conn = doc.data();
+      const sessionKey = doc.id;
+      const businessId = conn.businessId as string;
+
+      if (!businessId) {
+        console.warn(`[Instrumentation] Connection ${sessionKey} sem businessId, pulando.`);
+        continue;
+      }
 
       const restoreOne = async () => {
         try {
-          const { ensurePrimaryBaileysBusinessConnection } = await import('@/lib/services/channels/channelConnections');
-          const conn = await ensurePrimaryBaileysBusinessConnection(businessId);
-          const sessionKey = conn.id;
-
           // Pula se já está em memória
           if (sessions.has(sessionKey)) {
             console.log(`[Instrumentation] Sessão ${sessionKey.slice(-12)} já ativa, pulando.`);
@@ -60,46 +66,14 @@ export async function register() {
           const hasAuthState = await hasFirestoreAuthState(sessionKey);
 
           if (!hasAuthState) {
-            // Estado dessincronizado: Firestore (channels.whatsappBaileys.isConnected=true)
-            // diz conectado mas o auth state não existe (nunca pareou, ou foi apagado).
-            // Marca como desconectado pra UI parar de mentir "conectado".
             console.warn(
-              `[Instrumentation] Estado dessincronizado para ${sessionKey.slice(-12)}: ` +
-              `isConnected=true mas sem auth state persistido. ` +
-              `Marcando como desconectado — re-pareamento via QR necessário.`
+              `[Instrumentation] Connection ${sessionKey.slice(-12)} sem auth state persistido. ` +
+              `Re-pareamento via QR necessário.`
             );
-
-            const now = new Date().toISOString();
-
-            // Atualiza connection doc (modelo novo)
-            try {
-              const { updateConnection } = await import('@/lib/services/channels/channelConnections');
-              await updateConnection(sessionKey, {
-                isConnected: false,
-                disconnectedAt: now,
-              });
-            } catch (connErr) {
-              console.warn('[Instrumentation] Falha ao atualizar channelConnection:', connErr);
-            }
-
-            // Atualiza businesses.channels.whatsappBaileys (legado) só se for business connection
-            try {
-              const connSnap = await adminDb.collection('channelConnections').doc(sessionKey).get();
-              const isBusinessConn = !connSnap.exists || connSnap.data()?.ownerType !== 'user';
-              if (isBusinessConn) {
-                await adminDb.collection('businesses').doc(businessId).update({
-                  'channels.whatsappBaileys.isConnected': false,
-                  'channels.whatsappBaileys.disconnectedAt': now,
-                  updatedAt: now,
-                });
-              }
-            } catch (legacyErr) {
-              console.warn('[Instrumentation] Falha ao atualizar businesses.channels:', legacyErr);
-            }
             return;
           }
 
-          console.log(`[Instrumentation] Restaurando sessão para business ${businessId.slice(-8)}...`);
+          console.log(`[Instrumentation] Restaurando sessão para business ${businessId.slice(-8)} (conn ${sessionKey.slice(-12)})...`);
           await createBaileysSession(businessId, 'restore', sessionKey);
           console.log(`[Instrumentation] ✓ Sessão ${sessionKey.slice(-12)} restaurada.`);
         } catch (err) {
