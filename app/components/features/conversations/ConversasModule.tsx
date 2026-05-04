@@ -5080,6 +5080,14 @@ export default function ConversasModule() {
       setShowTemplateSelector(false);
       const now = new Date().toISOString();
 
+      // Tenta usar o preview do template (texto real renderizado) em vez do
+      // placeholder cru "[Template: nome]". Cai pro placeholder se não achar
+      // (ex: hello_world fallback antes do fetch).
+      const tpl = templateList.find(t => t.name === templateName);
+      const displayContent = tpl?.preview && tpl.preview.trim()
+        ? tpl.preview
+        : `[Template: ${templateName}]`;
+
       try {
         // 1. Save template message to Firestore
         await addDoc(collection(db, 'conversationMessages'), {
@@ -5090,7 +5098,10 @@ export default function ConversasModule() {
           // pra ser consistente com o resto. Baileys nunca chega aqui (toggle bloqueia).
           ...(selectedConversation.connectedVia ? { connectedVia: selectedConversation.connectedVia } : {}),
           direction: 'outbound' as const,
-          content: `[Template: ${templateName}]`,
+          content: displayContent,
+          // Mantém o nome do template como metadado pra debug/audit
+          templateName,
+          templateLanguage,
           status: 'sending' as const,
           senderName: user.name,
           sentAt: now,
@@ -5098,7 +5109,7 @@ export default function ConversasModule() {
 
         // 2. Update conversation metadata (set firstResponseAt if this is the first reply)
         await updateDoc(doc(db, 'conversations', selectedConversation.id), {
-          lastMessage: `[Template: ${templateName}]`,
+          lastMessage: displayContent.slice(0, 100),
           lastMessageAt: now,
           lastMessageDirection: 'outbound',
           updatedAt: now,
@@ -5120,7 +5131,9 @@ export default function ConversasModule() {
               conversationId: selectedConversation.id,
               channel: selectedConversation.channel,
               recipientId: selectedConversation.contactExternalId,
-              content: `[Template: ${templateName}]`,
+              // Mandamos o conteúdo renderizado pra UI da outra ponta também
+              // ver o texto real, não o placeholder.
+              content: displayContent,
               type: 'template',
               templateName,
               templateLanguage,
