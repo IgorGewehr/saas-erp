@@ -900,7 +900,29 @@ function ImportModal({
     setImporting(true);
     setProgress(0);
     let created = 0, skipped = 0, errors = 0;
+    const errorSamples: string[] = []; // primeiras 3 mensagens pra exibir ao user
     const now = new Date().toISOString();
+
+    /**
+     * Strip-undefined: Firebase JS SDK rejeita addDoc com `field: undefined`
+     * lançando "Unsupported field value: undefined". O código antigo usava
+     * `field || undefined` e o catch silencioso engolia TODOS os erros —
+     * resultado: 101 imports falhavam silenciosamente, user via 0 criados
+     * sem nenhum aviso.
+     */
+    const stripUndefined = (obj: Record<string, unknown>): Record<string, unknown> => {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(obj)) {
+        if (v === undefined) continue;
+        if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+          const inner = stripUndefined(v as Record<string, unknown>);
+          if (Object.keys(inner).length > 0) out[k] = inner;
+        } else {
+          out[k] = v;
+        }
+      }
+      return out;
+    };
 
     for (let i = 0; i < rows.length; i++) {
       setProgress(Math.round(((i + 1) / rows.length) * 100));
@@ -934,13 +956,35 @@ function ImportModal({
             uf: fd.uf || undefined,
           };
         }
-        await addDoc(collection(db, 'clients'), payload);
+        await addDoc(collection(db, 'clients'), stripUndefined(payload));
         created++;
-      } catch { errors++; }
+      } catch (err) {
+        errors++;
+        const msg = err instanceof Error ? err.message : String(err);
+        // Log per-row pra debug em DevTools (server logs não acessíveis pro user)
+        console.error(`[Import] Row ${i + 1} (${rows[i]?.[mapping.name] || '?'}) failed:`, msg);
+        if (errorSamples.length < 3) {
+          errorSamples.push(`Linha ${i + 1}: ${msg.slice(0, 120)}`);
+        }
+      }
     }
 
     setResult({ created, skipped, errors });
     setImporting(false);
+    // Toast com sumário — sem isso, user vê só "concluído" e dialog fecha
+    if (errors > 0 && created === 0) {
+      toast.error(
+        `Falha em todas as importações (${errors}). ${errorSamples[0] || 'Verifique o console (F12).'}`,
+        { autoClose: 10000 },
+      );
+    } else if (errors > 0) {
+      toast.warn(
+        `${created} importados, ${errors} falharam. ${errorSamples[0] || 'Veja console (F12) pros detalhes.'}`,
+        { autoClose: 8000 },
+      );
+    } else if (created > 0) {
+      toast.success(`${created} cliente(s) importado(s).`);
+    }
     onDone();
   };
 
