@@ -92,6 +92,7 @@ async function processBroadcast(b: Broadcast): Promise<{ ok: boolean; error?: st
   if (b.templateName) body.templateName = b.templateName;
   if (b.templateLanguage) body.templateLanguage = b.templateLanguage;
   if (b.templateParams) body.templateParams = b.templateParams;
+  if (b.templateBody) body.templateBody = b.templateBody;
   if (b.messageContent) body.messageContent = b.messageContent;
   if (b.emailSubject) body.emailSubject = b.emailSubject;
   if (b.viaBaileys) body.viaBaileys = true;

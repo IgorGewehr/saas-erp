@@ -33,6 +33,9 @@ export interface TemplateSelection {
   name: string;
   language: string;
   params: BroadcastTemplateParam[];
+  /** Body cru com `{{N}}` placeholders — usado pra render no histórico
+   *  da conversa (sem isso, broadcast aparecia como "[Template: nome]"). */
+  preview?: string;
 }
 
 interface Props {
@@ -196,6 +199,7 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
       name: tpl.name,
       language: tpl.language,
       params: Array.from({ length: count }, () => ({ kind: 'literal', value: '' } as BroadcastTemplateParam)),
+      preview: tpl.preview,
     });
   };
 

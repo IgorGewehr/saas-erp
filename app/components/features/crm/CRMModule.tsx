@@ -1569,6 +1569,11 @@ function CampaignsTab({ businessId }: { businessId: string }) {
         templateName: effectiveMsgType === 'template' && formTemplate ? formTemplate.name : undefined,
         templateLanguage: effectiveMsgType === 'template' && formTemplate ? formTemplate.language : undefined,
         templateParams: effectiveMsgType === 'template' && formTemplate ? formTemplate.params : undefined,
+        // Persiste o body cru do template (com {{N}} placeholders) pra que
+        // /api/broadcasts/send consiga renderizar o texto real por destinatário
+        // quando der upsert da conversa. Sem isso a aba Conversas mostrava só
+        // "[Template: nome]" em vez do conteúdo enviado.
+        templateBody: effectiveMsgType === 'template' && formTemplate ? formTemplate.preview : undefined,
         messageContent: effectiveMsgType === 'text' ? formContent.trim() : undefined,
         emailSubject: formChannel === 'email' ? formEmailSubject.trim() : undefined,
         viaBaileys: isBaileysSend,

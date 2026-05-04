@@ -68,6 +68,49 @@ function sleep(ms: number) {
  *
  * Aceita também o formato legado (componentes Meta crus) para compatibilidade.
  */
+/**
+ * Resolve cada BroadcastTemplateParam em string (sem wrapping de Meta).
+ * Espelha resolveTemplateComponents mas retorna só os valores em ordem
+ * pra que possamos substituir {{N}} no templateBody.
+ */
+function resolveTemplateValues(
+  params: unknown,
+  recipient: { name?: string; recipientId: string; email?: string; customColumns?: Record<string, string> },
+): string[] {
+  if (!Array.isArray(params) || params.length === 0) return [];
+  // Formato legado (componentes Meta crus): tenta extrair parameters[].text
+  const looksLikeLegacy = params.every(p =>
+    typeof p === 'object' && p !== null && 'type' in p && 'parameters' in p && !('kind' in p)
+  );
+  if (looksLikeLegacy) {
+    const body = (params as Array<{ type: string; parameters: Array<{ text?: string }> }>)
+      .find(c => c.type === 'body');
+    return (body?.parameters || []).map(p => p.text || '');
+  }
+  return (params as BroadcastTemplateParam[]).map(p => {
+    if (p.kind === 'literal') return p.value;
+    if (p.kind === 'field') {
+      if (p.field === 'name') return recipient.name || '';
+      if (p.field === 'phoneNumber') return recipient.recipientId;
+      if (p.field === 'email') return recipient.email || '';
+    }
+    if (p.kind === 'csvColumn') return recipient.customColumns?.[p.column] || '';
+    return '';
+  });
+}
+
+/**
+ * Substitui `{{1}}`, `{{2}}`, ... no body do template pelos valores resolvidos.
+ * Indice é 1-based (Meta padrão). Placeholder não-resolvido permanece como
+ * `{{N}}` (raro: param ausente do form de criação).
+ */
+function renderTemplateBody(body: string, values: string[]): string {
+  return body.replace(/\{\{(\d+)\}\}/g, (match, idxStr) => {
+    const idx = parseInt(idxStr, 10) - 1;
+    return idx >= 0 && idx < values.length ? values[idx] : match;
+  });
+}
+
 function resolveTemplateComponents(
   params: unknown,
   recipient: { name?: string; recipientId: string; email?: string; customColumns?: Record<string, string> },
@@ -373,6 +416,9 @@ export async function POST(req: NextRequest) {
       templateName,
       templateLanguage,
       templateParams,
+      // body cru do template (com {{N}} placeholders) — frontend persiste do
+      // TemplateSelector. Usado pra renderizar conteúdo da conversa.
+      templateBody,
       messageContent,
       emailSubject,
       recipients: rawRecipients,
@@ -1003,12 +1049,22 @@ export async function POST(req: NextRequest) {
             })
           );
           // Upsert na aba Conversas (Cloud / FB / IG). Email é skipado por
-          // não ter conversa correspondente no módulo de Conversas. Pra
-          // template, usa messageContent (rendered preview do client) ou
-          // fallback `[Template: nome]` quando não veio nada renderizado.
+          // não ter conversa correspondente no módulo de Conversas. Para
+          // template: renderiza o body com placeholders {{N}} substituídos
+          // pelos params resolvidos pra este recipiente — assim a aba mostra
+          // o texto real recebido pelo destinatário, não "[Template: nome]".
           if (channel !== 'email') {
-            const displayContent = messageContent
-              || (templateName ? `[Template: ${templateName}]` : '');
+            let displayContent = messageContent || '';
+            if (!displayContent && templateName) {
+              if (templateBody) {
+                const values = resolveTemplateValues(templateParams, recipient);
+                displayContent = renderTemplateBody(templateBody, values);
+              } else {
+                // Fallback pra broadcasts antigos (criados antes da feature
+                // de persistir templateBody) — usa o nome como referência.
+                displayContent = `[Template: ${templateName}]`;
+              }
+            }
             await upsertConversationFromBroadcast({
               businessId,
               channel: channel as 'whatsapp' | 'facebook' | 'instagram',

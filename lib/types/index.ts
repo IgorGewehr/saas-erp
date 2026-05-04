@@ -2659,6 +2659,14 @@ export interface Broadcast {
   templateLanguage?: string;
   /** Mapeamento de variáveis ({{1}}, {{2}}, ...) — resolvido per-recipiente no envio. */
   templateParams?: BroadcastTemplateParam[];
+  /**
+   * Corpo cru do template (body com `{{N}}` placeholders) capturado do
+   * TemplateSelector na criação. Persistido pra que /api/broadcasts/send
+   * consiga renderizar conteúdo real por destinatário ao criar registro
+   * em conversationMessages — sem isso, a aba Conversas mostrava só
+   * "[Template: nome]" no lugar do texto enviado.
+   */
+  templateBody?: string;
   messageContent?: string;
   /** Assunto para canal email (broadcasts via notification-server). */
   emailSubject?: string;

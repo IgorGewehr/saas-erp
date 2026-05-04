@@ -123,6 +123,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     if (original.templateName) newBroadcastData.templateName = original.templateName;
     if (original.templateLanguage) newBroadcastData.templateLanguage = original.templateLanguage;
     if (original.templateParams) newBroadcastData.templateParams = original.templateParams;
+    if (original.templateBody) newBroadcastData.templateBody = original.templateBody;
     if (original.messageContent) newBroadcastData.messageContent = original.messageContent;
     if (original.emailSubject) newBroadcastData.emailSubject = original.emailSubject;
     if (original.viaBaileys) newBroadcastData.viaBaileys = true;
