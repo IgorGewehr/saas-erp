@@ -36,10 +36,18 @@ export function ClientTableView({
   clients,
   selectedClientId,
   onSelectClient,
+  selectedIds,
+  onToggleSelectId,
+  onToggleSelectAll,
 }: {
   clients: Client[];
   selectedClientId: string | null;
   onSelectClient: (c: Client) => void;
+  // Multi-seleção pra bulk delete. Opcionais — quando ausentes, a coluna
+  // de checkbox some (mantém compat com call-sites que não usam multi-select).
+  selectedIds?: Set<string>;
+  onToggleSelectId?: (id: string) => void;
+  onToggleSelectAll?: () => void;
 }) {
   const [sortField, setSortField] = useState<SortField>('name');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
@@ -82,11 +90,27 @@ export function ClientTableView({
 
   if (clients.length === 0) return null;
 
+  const showCheckboxes = !!onToggleSelectId;
+  const allOnPageSelected = showCheckboxes && clients.length > 0 && clients.every(c => selectedIds?.has(c.id));
+  const someSelected = showCheckboxes && clients.some(c => selectedIds?.has(c.id));
+
   return (
     <div className="overflow-auto pr-1">
       <table className="w-full text-sm border-collapse min-w-[680px]">
         <thead className="sticky top-0 z-10 bg-white dark:bg-gray-900">
           <tr className="border-b border-gray-100 dark:border-white/[0.06]">
+            {showCheckboxes && (
+              <th className="px-3 py-3 w-10">
+                <input
+                  type="checkbox"
+                  checked={allOnPageSelected}
+                  ref={el => { if (el) el.indeterminate = !allOnPageSelected && someSelected; }}
+                  onChange={() => onToggleSelectAll?.()}
+                  className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-red-600 focus:ring-red-500 focus:ring-offset-0 cursor-pointer accent-red-600"
+                  aria-label="Selecionar todos"
+                />
+              </th>
+            )}
             {COLS.map(({ field, label }) => (
               <th
                 key={field}
@@ -129,6 +153,17 @@ export function ClientTableView({
                     : 'hover:bg-gray-50 dark:hover:bg-gray-800/40',
                 )}
               >
+                {showCheckboxes && (
+                  <td className="px-3 py-2.5 w-10" onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      checked={selectedIds?.has(client.id) ?? false}
+                      onChange={() => onToggleSelectId?.(client.id)}
+                      className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-red-600 focus:ring-red-500 focus:ring-offset-0 cursor-pointer accent-red-600"
+                      aria-label={`Selecionar ${client.name}`}
+                    />
+                  </td>
+                )}
                 {/* Nome */}
                 <td className="px-3 py-2.5">
                   <div className="flex items-center gap-2.5">

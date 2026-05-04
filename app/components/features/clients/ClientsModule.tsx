@@ -819,13 +819,28 @@ function rowToFormData(row: Record<string, string>, mapping: Record<string, stri
     const col = Object.entries(mapping).find(([, v]) => v === fieldId)?.[0];
     return col ? (row[col] ?? '').trim() : '';
   };
+  // Auto-detecta PF/PJ a partir do CNPJ/CPF (se mapeado) ou do nome.
+  // Se o cpfCnpj tem 14 dígitos = CNPJ → pj. Se 11 = CPF → pf.
+  // Se não há documento, procura por sufixos típicos de razão social
+  // (LTDA, ME, EIRELI, S/A, S.A., MEI) no nome ou na coluna company.
+  const tipoRaw = get('tipo').toLowerCase();
+  const cpfCnpjDigits = get('cpfCnpj').replace(/\D/g, '');
+  const nameUpper = (get('name') + ' ' + get('company')).toUpperCase();
+  const looksLikePJ = /\b(LTDA|EIRELI|S\.?A\.?|S\/A|MEI|ME|EPP)\b/.test(nameUpper);
+  let tipo: 'pf' | 'pj';
+  if (tipoRaw.startsWith('pj') || tipoRaw.includes('jur')) tipo = 'pj';
+  else if (tipoRaw.startsWith('pf') || tipoRaw.includes('fis')) tipo = 'pf';
+  else if (cpfCnpjDigits.length === 14) tipo = 'pj';
+  else if (cpfCnpjDigits.length === 11) tipo = 'pf';
+  else if (looksLikePJ) tipo = 'pj';
+  else tipo = 'pf';
   return {
     name: get('name'),
     email: get('email'),
     phone: get('phone'),
     whatsapp: get('whatsapp'),
     company: get('company'),
-    tipo: get('tipo').toLowerCase().startsWith('pj') ? 'pj' : 'pf',
+    tipo,
     cpfCnpj: get('cpfCnpj'),
     inscricaoEstadual: '',
     indicadorIE: '',
@@ -2549,12 +2564,15 @@ export default function ClientsModule() {
   const [showForm, setShowForm] = useState(false);
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<Client | null>(null);
+  // Multi-seleção pra exclusão em massa (importação errada, etc.)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
 
   // Lock-scroll do wrapper de tab ativo enquanto qualquer modal estiver aberto.
   // Sem isso, com os modais portalados pra document.body, a página atrás
   // ainda fica scrollável.
   useEffect(() => {
-    const anyOpen = showForm || showImport || showExport || showMerge || showLoyaltySettings || !!deleteConfirm;
+    const anyOpen = showForm || showImport || showExport || showMerge || showLoyaltySettings || !!deleteConfirm || bulkDeleteOpen;
     if (!anyOpen) return;
     const el = document.querySelector<HTMLElement>(
       '.will-change-transform.pointer-events-auto.overflow-y-auto',
@@ -2563,7 +2581,18 @@ export default function ClientsModule() {
     const prevOverflow = el.style.overflowY;
     el.style.overflowY = 'hidden';
     return () => { el.style.overflowY = prevOverflow; };
-  }, [showForm, showImport, showExport, showMerge, showLoyaltySettings, deleteConfirm]);
+  }, [showForm, showImport, showExport, showMerge, showLoyaltySettings, deleteConfirm, bulkDeleteOpen]);
+
+  // Quando o usuário seleciona um cliente pra ver detalhes, sobe a viewport
+  // pra topo do wrapper de tab — sem isso, se ele tinha scrollado a lista
+  // pra baixo procurando o cliente, o painel lateral abre fora da área visível.
+  useEffect(() => {
+    if (!selectedClient) return;
+    const el = document.querySelector<HTMLElement>(
+      '.will-change-transform.pointer-events-auto.overflow-y-auto',
+    );
+    if (el) el.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [selectedClient?.id]);
 
   // ─── Data fetching ──────────────────────────────────────────────────────────
   const { data: clients = [], isLoading } = useQuery({
@@ -2708,6 +2737,39 @@ export default function ClientsModule() {
       if (selectedClient?.id === deleteConfirm?.id) setSelectedClient(null);
     },
     onError: () => toast.error('Erro ao excluir cliente'),
+  });
+
+  // Soft-delete em massa via writeBatch (limite Firestore: 500 ops por batch).
+  // Mantém o mesmo padrão do deleteClient single (isActive=false + deletedAt
+  // pra preservar audit trail e referências em vendas/agendamentos/etc.).
+  const { mutate: bulkDeleteClients, isPending: isBulkDeleting } = useMutation({
+    mutationFn: async (ids: string[]) => {
+      if (ids.length === 0) return;
+      const now = new Date().toISOString();
+      const meta = {
+        isActive: false,
+        deletedAt: now,
+        deletedBy: user?.uid || '',
+        deletedByName: user?.name || '',
+        updatedAt: now,
+      };
+      // Quebra em chunks de 500 (limite por writeBatch).
+      for (let i = 0; i < ids.length; i += 500) {
+        const chunk = ids.slice(i, i + 500);
+        const batch = writeBatch(db);
+        for (const id of chunk) batch.update(doc(db, 'clients', id), meta);
+        await batch.commit();
+      }
+    },
+    onSuccess: (_, ids) => {
+      queryClient.invalidateQueries({ queryKey: ['clients', business?.id] });
+      toast.success(`${ids.length} cliente(s) excluído(s)`);
+      setSelectedIds(new Set());
+      setBulkDeleteOpen(false);
+      // Se o cliente atualmente aberto foi um dos deletados, fecha o painel.
+      if (selectedClient && ids.includes(selectedClient.id)) setSelectedClient(null);
+    },
+    onError: (err: Error) => toast.error(`Erro ao excluir clientes: ${err.message}`),
   });
 
   // ─── Filtered & sorted list ──────────────────────────────────────────────────
@@ -3086,6 +3148,37 @@ export default function ClientsModule() {
       <div className="flex flex-1 gap-4 min-h-0">
         {/* Client list */}
         <div className={cn('flex flex-col flex-1 min-w-0 overflow-hidden', selectedClient && 'hidden lg:flex')}>
+          {/* Bulk action bar — só aparece quando há seleção. Posicionada acima
+              da lista pra não atrapalhar o scroll. Ações são destrutivas, daí
+              o destaque vermelho + confirmação obrigatória antes do delete. */}
+          {selectedIds.size > 0 && (
+            <div className="flex items-center justify-between gap-3 px-4 py-2.5 mb-2 rounded-xl bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30">
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-red-700 dark:text-red-300">
+                  {selectedIds.size} selecionado(s)
+                </span>
+                <button
+                  onClick={() => {
+                    const allIds = filtered.map(c => c.id);
+                    setSelectedIds(allIds.every(id => selectedIds.has(id))
+                      ? new Set()
+                      : new Set(allIds));
+                  }}
+                  className="text-xs text-red-600 dark:text-red-400 hover:underline"
+                >
+                  {filtered.every(c => selectedIds.has(c.id)) ? 'Limpar' : `Selecionar todos os ${filtered.length} filtrados`}
+                </button>
+              </div>
+              <button
+                onClick={() => setBulkDeleteOpen(true)}
+                disabled={isBulkDeleting}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-semibold transition-colors disabled:opacity-50"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Excluir {selectedIds.size}
+              </button>
+            </div>
+          )}
           {isLoading ? (
             <div className="space-y-2">
               {[...Array(6)].map((_, i) => (
@@ -3113,6 +3206,17 @@ export default function ClientsModule() {
               clients={filtered}
               selectedClientId={selectedClient?.id ?? null}
               onSelectClient={setSelectedClient}
+              selectedIds={selectedIds}
+              onToggleSelectId={(id) => setSelectedIds(prev => {
+                const next = new Set(prev);
+                if (next.has(id)) next.delete(id); else next.add(id);
+                return next;
+              })}
+              onToggleSelectAll={() => {
+                const allIds = filtered.map(c => c.id);
+                const allSelected = allIds.every(id => selectedIds.has(id));
+                setSelectedIds(allSelected ? new Set() : new Set(allIds));
+              }}
             />
           ) : (
             <div className="space-y-1.5 overflow-y-auto pr-1">
@@ -3323,6 +3427,56 @@ export default function ClientsModule() {
           />
         )}
       </AnimatePresence>
+
+      {/* Bulk delete confirm — destrutiva, daí confirmação dura antes de prosseguir */}
+      {typeof document !== 'undefined' && createPortal(
+        <AnimatePresence>
+          {bulkDeleteOpen && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+              onClick={(e) => { if (e.target === e.currentTarget && !isBulkDeleting) setBulkDeleteOpen(false); }}
+            >
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="w-full max-w-md bg-white dark:bg-gray-900 rounded-2xl shadow-2xl p-6"
+              >
+                <div className="w-12 h-12 rounded-2xl bg-red-50 dark:bg-red-500/10 flex items-center justify-center mx-auto mb-4">
+                  <Trash2 className="w-6 h-6 text-red-500" />
+                </div>
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white text-center mb-2">
+                  Excluir {selectedIds.size} cliente(s)?
+                </h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400 text-center mb-6">
+                  Os clientes selecionados serão desativados. Conversas, vendas e
+                  agendamentos vinculados são preservados pra audit trail.
+                </p>
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => setBulkDeleteOpen(false)}
+                    disabled={isBulkDeleting}
+                    className="flex-1 px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors disabled:opacity-50"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={() => bulkDeleteClients(Array.from(selectedIds))}
+                    disabled={isBulkDeleting}
+                    className="flex-1 px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors disabled:opacity-50"
+                  >
+                    {isBulkDeleting ? 'Excluindo...' : `Excluir ${selectedIds.size}`}
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body,
+      )}
 
       {/* Delete confirm */}
       {typeof document !== 'undefined' && createPortal(
