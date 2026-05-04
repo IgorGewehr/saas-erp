@@ -879,6 +879,10 @@ function ImportModal({
   const [importing, setImporting] = useState(false);
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState<ImportResult | null>(null);
+  // Permite importar duplicatas (cliente faz merge depois com a tela de
+  // duplicatas detectadas). Default false — preserva comportamento prévio
+  // de pular o que já existe.
+  const [importDuplicates, setImportDuplicates] = useState(false);
 
   const handleFile = (file: File) => {
     Papa.parse<Record<string, string>>(file, {
@@ -909,11 +913,18 @@ function ImportModal({
     for (const row of rows) {
       const fd = rowToFormData(row, mapping);
       if (!fd.name) { noName++; continue; }
-      if (findDuplicate(fd, existingClients)) { dupes++; continue; }
+      const isDup = !!findDuplicate(fd, existingClients);
+      if (isDup) {
+        dupes++;
+        // Quando o usuário optou por importar duplicatas, elas contam como válidas
+        // também — número de "Serão criados" reflete o que de fato vai pra base.
+        if (importDuplicates) valid++;
+        continue;
+      }
       valid++;
     }
     return { valid, dupes, noName, total: rows.length };
-  }, [rows, mapping, existingClients]);
+  }, [rows, mapping, existingClients, importDuplicates]);
 
   const handleImport = async () => {
     setImporting(true);
@@ -948,7 +959,10 @@ function ImportModal({
       try {
         const fd = rowToFormData(rows[i], mapping);
         if (!fd.name) { errors++; continue; }
-        if (findDuplicate(fd, existingClients)) { skipped++; continue; }
+        // Pula duplicatas só quando o usuário NÃO optou por importá-las.
+        // Com importDuplicates=true, registros duplicados são criados normalmente
+        // — fluxo previsto pra dps usar a tela "Duplicatas detectadas" pra fazer merge.
+        if (!importDuplicates && findDuplicate(fd, existingClients)) { skipped++; continue; }
         const payload: Record<string, unknown> = {
           businessId,
           name: fd.name,
@@ -1150,7 +1164,7 @@ function ImportModal({
               <div className="grid grid-cols-3 gap-3">
                 {[
                   { label: 'Serão criados',  value: stats.valid,  color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
-                  { label: 'Duplicatas (pular)', value: stats.dupes, color: 'text-amber-600 dark:text-amber-400',   bg: 'bg-amber-50 dark:bg-amber-500/10' },
+                  { label: importDuplicates ? 'Duplicatas (incluir)' : 'Duplicatas (pular)', value: stats.dupes, color: 'text-amber-600 dark:text-amber-400',   bg: 'bg-amber-50 dark:bg-amber-500/10' },
                   { label: 'Sem nome (erro)', value: stats.noName, color: 'text-red-600 dark:text-red-400',    bg: 'bg-red-50 dark:bg-red-500/10' },
                 ].map(s => (
                   <div key={s.label} className={cn('rounded-xl p-3 text-center', s.bg)}>
@@ -1159,6 +1173,29 @@ function ImportModal({
                   </div>
                 ))}
               </div>
+
+              {/* Toggle pra incluir duplicatas. Útil quando o usuário quer
+                  importar tudo e usar a tela "Duplicatas detectadas" depois
+                  pra fazer merge manual. Só aparece se há duplicata detectada. */}
+              {stats.dupes > 0 && (
+                <label className="flex items-start gap-3 p-3 rounded-xl border border-amber-200 dark:border-amber-500/30 bg-amber-50/50 dark:bg-amber-500/5 cursor-pointer hover:bg-amber-50 dark:hover:bg-amber-500/10 transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={importDuplicates}
+                    onChange={e => setImportDuplicates(e.target.checked)}
+                    className="mt-0.5 w-4 h-4 rounded border-amber-300 text-amber-600 focus:ring-amber-500 focus:ring-offset-0 accent-amber-600"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">
+                      Importar duplicatas mesmo assim
+                    </p>
+                    <p className="text-[11px] text-amber-700/80 dark:text-amber-400/80 mt-0.5">
+                      As {stats.dupes} duplicatas serão criadas como registros separados.
+                      Use a tela "Duplicatas" depois pra fazer merge manualmente.
+                    </p>
+                  </div>
+                </label>
+              )}
 
               {/* Preview table */}
               {preview.length > 0 && (
