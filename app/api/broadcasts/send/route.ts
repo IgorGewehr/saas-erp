@@ -278,10 +278,20 @@ async function upsertConversationFromBroadcast(params: {
 
     let candidates = await safeQuery(params.recipientId);
 
-    // 2. Fuzzy: variação BR com/sem 9
-    if (candidates.length === 0 && params.channel === 'whatsapp') {
+    // 2. Fuzzy: variação BR com/sem 9 — SEMPRE roda (não só quando exact=0)
+    // pra consolidar duplicatas. Quando recipient pasted tem 9 mas existe
+    // conv duplicada sem 9 (ou vice-versa), mergea ambos os sets e o sort
+    // por lastMessageAt escolhe a conv com atividade mais recente — assim
+    // o template não cria thread paralela.
+    if (params.channel === 'whatsapp') {
       const alt = getAlternativeBrazilianPhone(params.recipientId);
-      if (alt) candidates = await safeQuery(alt);
+      if (alt) {
+        const altDocs = await safeQuery(alt);
+        if (altDocs.length > 0) {
+          const seen = new Set(candidates.map(d => d.id));
+          for (const d of altDocs) if (!seen.has(d.id)) candidates.push(d);
+        }
+      }
     }
 
     // 3. Fuzzy: últimos 8 dígitos + DDD (cobre formatações esquisitas)

@@ -1398,17 +1398,37 @@ async function saveInboundMessage(params: InboundMessageParams) {
       }
     };
 
+    // Sempre busca AMBOS os formatos (exact + alt 9-prefix BR) e consolida.
+    // Sem isso, quando Meta envia o número sem o 9 mas existe conv com 9 (ou
+    // vice-versa), o exact match achava um duplicate antigo em vez de cair
+    // pro fuzzy — resultado: campanha caía em conv-A, resposta do cliente
+    // caía em conv-B (já que ambas existiam mas a busca exact parou na 1ª).
+    // Mergeando + ordenando por lastMessageAt, sempre priorizamos a conv
+    // com atividade mais recente — o que naturalmente consolida o histórico.
     let candidateDocs = await safeQuery(params.externalId);
 
-    // Fuzzy fallback 1: WhatsApp BR tem variação com/sem 9 inicial.
     let altUsed: string | null = null;
-    if (candidateDocs.length === 0 && params.channel === 'whatsapp') {
+    if (params.channel === 'whatsapp') {
       const altPhone = getAlternativeBrazilianPhone(params.externalId);
       if (altPhone) {
         altUsed = altPhone;
-        candidateDocs = await safeQuery(altPhone);
+        const altDocs = await safeQuery(altPhone);
+        if (altDocs.length > 0) {
+          // Dedup por id e merge — pickBestCandidate vai escolher o melhor.
+          const seen = new Set(candidateDocs.map(d => d.id));
+          for (const d of altDocs) if (!seen.has(d.id)) candidateDocs.push(d);
+        }
       }
     }
+
+    // Re-ordena merged set por lastMessageAt desc — pickBestCandidate
+    // confia que a primeira candidate é a mais recente quando não há
+    // channelConnectionId pra tiebreak.
+    candidateDocs.sort((a, b) => {
+      const ta = (a.data().lastMessageAt as string | undefined) ?? '';
+      const tb = (b.data().lastMessageAt as string | undefined) ?? '';
+      return tb.localeCompare(ta);
+    });
 
     // Fuzzy fallback 2: últimos 8 dígitos com mesmo DDD — cobre normalizações
     // mais variadas (ex: contato salvo sem código do país, com formatação,

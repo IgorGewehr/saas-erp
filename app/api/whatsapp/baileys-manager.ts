@@ -693,6 +693,11 @@ async function handleInboundMessage(
     // sem channelConnectionId (tenant pré-migração), pegamos a mais recente
     // como representativa do thread "vivo". Sem isso, Firestore não garante
     // ordem estável e backfill virava aleatório.
+    // Sempre busca AMBOS os formatos (exact + alt 9-prefix BR) e mergea —
+    // sem isso, dups com formatos diferentes (com/sem 9) se perpetuavam:
+    // exact achava uma duplicata antiga e nunca caía pro alt. Ao mergear
+    // + ordenar por lastMessageAt, sempre roteamos pra conv com atividade
+    // mais recente (consolida histórico mesmo com dups pré-existentes).
     let candidates = (await adminDb.collection('conversations')
       .where('businessId', '==', businessId)
       .where('channel', '==', 'whatsapp')
@@ -701,14 +706,24 @@ async function handleInboundMessage(
       .limit(5)
       .get()).docs;
 
-    if (candidates.length === 0 && altPhone) {
-      candidates = (await adminDb.collection('conversations')
+    if (altPhone) {
+      const altDocs = (await adminDb.collection('conversations')
         .where('businessId', '==', businessId)
         .where('channel', '==', 'whatsapp')
         .where('contactExternalId', '==', altPhone)
         .orderBy('lastMessageAt', 'desc')
         .limit(5)
         .get()).docs;
+      if (altDocs.length > 0) {
+        const seen = new Set(candidates.map(d => d.id));
+        for (const d of altDocs) if (!seen.has(d.id)) candidates.push(d);
+        // Re-ordena merged set — pickBestCandidate confia em primeira = mais recente
+        candidates.sort((a, b) => {
+          const ta = (a.data().lastMessageAt as string | undefined) ?? '';
+          const tb = (b.data().lastMessageAt as string | undefined) ?? '';
+          return tb.localeCompare(ta);
+        });
+      }
     }
 
     const matchedDoc = pickBestCandidate(candidates);
