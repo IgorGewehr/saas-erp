@@ -873,7 +873,10 @@ function NotePreviewModal({
               </h2>
             )}
           </div>
-          <div className="flex items-center gap-1.5 shrink-0">
+          {/* select-none aqui evita que Ctrl+A no modal copie "Editar" / "X"
+              junto com o conteúdo — usuário copiava da preview e colava em
+              campanha ou WhatsApp com lixo da UI no meio. */}
+          <div className="flex items-center gap-1.5 shrink-0 select-none">
             <button
               onClick={() => { onEdit(note); onClose(); }}
               title="Editar nota"
@@ -947,8 +950,8 @@ function NotePreviewModal({
           </p>
         </div>
 
-        {/* Footer */}
-        <div className="px-6 py-3.5 border-t border-black/10 dark:border-white/20 flex items-center gap-3 shrink-0">
+        {/* Footer — select-none pra rodapé não entrar em Ctrl+A do conteúdo */}
+        <div className="px-6 py-3.5 border-t border-black/10 dark:border-white/20 flex items-center gap-3 shrink-0 select-none">
           <span className="text-[11px] font-medium text-black/50 dark:text-white/65">
             {formatDateTime(note.updatedAt)}
           </span>
