@@ -176,9 +176,9 @@ export async function dispatchInboundToAgent(
       .limit(10)
       .get();
     const history = historySnap.docs
+      .filter(d => d.id !== input.messageId) // skip the triggering message (passed separately)
       .map(d => d.data())
       .reverse() // chronological asc
-      .filter(m => m.id !== input.messageId) // skip the triggering message (passed separately)
       .map(m => ({
         role: m.direction === 'inbound' ? 'user' : 'assistant',
         content: typeof m.content === 'string' ? m.content : '',
