@@ -4842,35 +4842,70 @@ export default function ConversasModule() {
       limit(50),
     );
 
-    const unsub = onSnapshot(q, (snap) => {
-      const data = snap.docs
-        .map((d) => ({ ...d.data(), id: d.id } as ConversationMessage))
-        .reverse(); // Reverse to show oldest first (chronological order)
+    let unsub: (() => void) | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryCount = 0;
 
-      setMessages((prev) => {
-        // Guard adicional: se algum msg de prev não é desta conv (ex: race
-        // durante troca de conversa), descarta tudo e usa só o novo batch.
-        const prevIsForThisConv = prev.length === 0 || prev[0]?.conversationId === activeConvId;
-        if (!prevIsForThisConv) return data;
-        // Se loadOlder havia sido usado, preserva os anciões + novos 50.
-        if (prev.length > 50) {
-          const olderMessages = prev.slice(0, prev.length - 50);
-          const newIds = new Set(data.map((m) => m.id));
-          const filteredOlder = olderMessages.filter((m) => !newIds.has(m.id));
-          return [...filteredOlder, ...data];
-        }
-        return data;
-      });
-      setIsLoadingMessages(false);
-      setHasMoreMessages(snap.docs.length >= 50);
+    const subscribe = () => {
+      unsub = onSnapshot(
+        q,
+        (snap) => {
+          retryCount = 0;
+          const data = snap.docs
+            .map((d) => ({ ...d.data(), id: d.id } as ConversationMessage))
+            .reverse(); // Reverse to show oldest first (chronological order)
 
-      if (data.length > 0) {
-        // Only update oldest timestamp if we haven't loaded older messages yet
-        setOldestMessageTimestamp((prev) => prev ?? data[0].sentAt);
-      }
-    });
+          setMessages((prev) => {
+            // Guard adicional: se algum msg de prev não é desta conv (ex: race
+            // durante troca de conversa), descarta tudo e usa só o novo batch.
+            const prevIsForThisConv = prev.length === 0 || prev[0]?.conversationId === activeConvId;
+            if (!prevIsForThisConv) return data;
+            // Se loadOlder havia sido usado, preserva os anciões + novos 50.
+            if (prev.length > 50) {
+              const olderMessages = prev.slice(0, prev.length - 50);
+              const newIds = new Set(data.map((m) => m.id));
+              const filteredOlder = olderMessages.filter((m) => !newIds.has(m.id));
+              return [...filteredOlder, ...data];
+            }
+            return data;
+          });
+          setIsLoadingMessages(false);
+          setHasMoreMessages(snap.docs.length >= 50);
 
-    return () => unsub();
+          if (data.length > 0) {
+            // Only update oldest timestamp if we haven't loaded older messages yet
+            setOldestMessageTimestamp((prev) => prev ?? data[0].sentAt);
+          }
+        },
+        (err) => {
+          // Sem este handler, qualquer erro (rules denial, índice em build, rede)
+          // matava o listener silenciosamente — mensagens recém-enviadas paravam
+          // de aparecer mesmo persistindo no Firestore. Toast só na primeira
+          // tentativa pra não spammar; retry com backoff segue como na lista
+          // de conversas.
+          console.error('[Messages] onSnapshot error:', err);
+          if (retryCount === 0) {
+            const code = (err as { code?: string }).code || '';
+            if (code === 'permission-denied') {
+              toast.error('Sem permissão para ler mensagens desta conversa. Atualize a página.');
+            } else {
+              toast.warn('Conexão de mensagens caiu — tentando reconectar.');
+            }
+          }
+          setIsLoadingMessages(false);
+          const delay = Math.min(3000 * Math.pow(2, retryCount), 30_000);
+          retryCount++;
+          retryTimer = setTimeout(subscribe, delay);
+        },
+      );
+    };
+
+    subscribe();
+
+    return () => {
+      if (retryTimer) clearTimeout(retryTimer);
+      unsub?.();
+    };
   }, [selectedConversation?.id, business?.id]);
 
   // ── Auto-scroll to bottom ──────────────────────────────────────────────────
@@ -5186,12 +5221,19 @@ export default function ConversasModule() {
           toast.error(`Erro de conexão ao enviar template: ${msg}`);
         }
       } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const code = (err as { code?: string }).code || '';
         console.error('Error sending template message:', err);
+        if (code === 'permission-denied') {
+          toast.error('Sem permissão para enviar template nesta conversa.');
+        } else {
+          toast.error(`Falha ao salvar template: ${errMsg}`);
+        }
       } finally {
         setIsSending(false);
       }
     },
-    [selectedConversation, business?.id, user, isSending],
+    [selectedConversation, business?.id, user, isSending, templateList],
   );
 
   // ── Mark as read ───────────────────────────────────────────────────────────
@@ -5597,8 +5639,17 @@ export default function ConversasModule() {
         }
       }
     } catch (err) {
+      // Falha na escrita otimista (rules denial, falta de campos denormalizados,
+      // ou rede). Antes ficava só no console e o usuário não tinha feedback —
+      // a mensagem sumia sem aviso. Agora restaura o input e mostra toast.
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const code = (err as { code?: string }).code || '';
       console.error('Error sending message:', err);
-      // Restore input if Firestore write failed
+      if (code === 'permission-denied') {
+        toast.error('Sem permissão para enviar mensagem nesta conversa. Verifique se você tem acesso ao canal.');
+      } else {
+        toast.error(`Falha ao salvar mensagem: ${errMsg}`);
+      }
       setMessageInput(content);
     } finally {
       setIsSending(false);
