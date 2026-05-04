@@ -13,7 +13,8 @@
  * Meta processa delivered/read.
  */
 
-import { useEffect, useMemo, useState, useRef } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { collection, doc, query, where, orderBy, onSnapshot, limit as firestoreLimit } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
@@ -51,23 +52,20 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
   const [statusFilter, setStatusFilter] = useState<BroadcastMessageStatus | 'all'>('all');
   const [retrying, setRetrying] = useState(false);
 
-  // Lock the tab scroll container while open (the app scroll host is an inner
-  // overflow-y-auto div, not document.body)
-  const backdropRef = useRef<HTMLDivElement>(null);
+  // Lock the tab scroll container while open. Como agora portalamos pra
+  // document.body, buscamos o wrapper de tab ativo via classes (ele tem
+  // will-change-transform + pointer-events-auto + overflow-y-auto).
   useEffect(() => {
-    let el: HTMLElement | null = backdropRef.current?.parentElement ?? null;
-    while (el) {
-      const { overflowY } = window.getComputedStyle(el);
-      if (overflowY === 'auto' || overflowY === 'scroll') break;
-      el = el.parentElement;
-    }
+    const el = document.querySelector<HTMLElement>(
+      '.will-change-transform.pointer-events-auto.overflow-y-auto',
+    );
     if (!el) return;
     const prevOverflow = el.style.overflowY;
-    const prevScroll   = el.scrollTop;
+    const prevScroll = el.scrollTop;
     el.style.overflowY = 'hidden';
     return () => {
-      el!.style.overflowY = prevOverflow;
-      el!.scrollTop = prevScroll;
+      el.style.overflowY = prevOverflow;
+      el.scrollTop = prevScroll;
     };
   }, []);
 
@@ -490,12 +488,16 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
     }
   };
 
-  return (
-    <motion.div ref={backdropRef} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+  // Portal pra escapar containing block do wrapper de tabs
+  // (will-change-transform em app/page.tsx quebra position:fixed, fazia
+  // o modal aparecer cortado/deslocado conforme o scroll da página).
+  if (typeof document === 'undefined') return null;
+  return createPortal(
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
       <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }}
-        className="w-full max-w-3xl h-[90vh] bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden flex flex-col">
+        className="w-full max-w-3xl max-h-[calc(100vh-2rem)] bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden flex flex-col">
         {/* Header — usa recipients.length como fonte primária (broadcastMessages
             podem ter sido apagadas em reset, mas recipients persiste). */}
         <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between gap-3">
@@ -839,6 +841,7 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
           </div>
         )}
       </motion.div>
-    </motion.div>
+    </motion.div>,
+    document.body,
   );
 }

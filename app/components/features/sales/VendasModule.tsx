@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ClipboardList, Plus, Search, Filter, X, Edit2, Trash2, ChevronDown,
@@ -553,6 +554,19 @@ export default function VendasModule() {
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [showForm, setShowForm] = useState(false);
 
+  // Lock-scroll do wrapper de tab ativo enquanto o modal de novo pedido está
+  // aberto. selectedOrder é painel lateral inline, não modal, então não trava.
+  useEffect(() => {
+    if (!showForm) return;
+    const el = document.querySelector<HTMLElement>(
+      '.will-change-transform.pointer-events-auto.overflow-y-auto',
+    );
+    if (!el) return;
+    const prevOverflow = el.style.overflowY;
+    el.style.overflowY = 'hidden';
+    return () => { el.style.overflowY = prevOverflow; };
+  }, [showForm]);
+
   // ─── Data ───────────────────────────────────────────────────────────────────
   const { data: orders = [], isLoading } = useQuery({
     queryKey: ['orders', business?.id],
@@ -839,44 +853,48 @@ export default function VendasModule() {
         </AnimatePresence>
       </div>
 
-      {/* Create order modal */}
-      <AnimatePresence>
-        {showForm && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
-            onClick={e => { if (e.target === e.currentTarget) setShowForm(false); }}>
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-              className="w-full max-w-3xl max-h-[90vh] overflow-y-auto bg-white dark:bg-gray-900 rounded-2xl shadow-2xl">
-              <div className="sticky top-0 z-10 bg-white dark:bg-gray-900 border-b border-gray-100 dark:border-gray-800 px-6 py-4 flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-lg bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
-                    <ClipboardList className="w-4 h-4 text-red-500" />
+      {/* Create order modal — portal pra escapar containing block do wrapper
+          de tabs (will-change-transform em app/page.tsx). */}
+      {typeof document !== 'undefined' && createPortal(
+        <AnimatePresence>
+          {showForm && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+              onClick={e => { if (e.target === e.currentTarget) setShowForm(false); }}>
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+                className="w-full max-w-3xl max-h-[calc(100vh-2rem)] overflow-y-auto bg-white dark:bg-gray-900 rounded-2xl shadow-2xl">
+                <div className="sticky top-0 z-10 bg-white dark:bg-gray-900 border-b border-gray-100 dark:border-gray-800 px-6 py-4 flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
+                      <ClipboardList className="w-4 h-4 text-red-500" />
+                    </div>
+                    <h2 className="font-semibold text-gray-900 dark:text-white">Novo pedido</h2>
                   </div>
-                  <h2 className="font-semibold text-gray-900 dark:text-white">Novo pedido</h2>
+                  <button onClick={() => setShowForm(false)}
+                    className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 transition-colors">
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
-                <button onClick={() => setShowForm(false)}
-                  className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 transition-colors">
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-              <div className="p-6">
-                <OrderForm
-                  initial={formInitial}
-                  clients={clients}
-                  products={products}
-                  onSave={createOrder}
-                  onCancel={() => setShowForm(false)}
-                  isSaving={isCreating}
-                />
-              </div>
+                <div className="p-6">
+                  <OrderForm
+                    initial={formInitial}
+                    clients={clients}
+                    products={products}
+                    onSave={createOrder}
+                    onCancel={() => setShowForm(false)}
+                    isSaving={isCreating}
+                  />
+                </div>
+              </motion.div>
             </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          )}
+        </AnimatePresence>,
+        document.body,
+      )}
     </div>
   );
 }
