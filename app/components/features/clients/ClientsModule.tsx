@@ -1411,6 +1411,9 @@ function MergeModal({
   const [fillEmpty, setFillEmpty] = useState<Record<string, boolean>>({});
   const [merging, setMerging] = useState<string | null>(null);
   const [merged, setMerged] = useState<Set<string>>(new Set());
+  // Estado do batch "Mesclar tudo": progresso atual + total + flag de erro.
+  const [batchMerging, setBatchMerging] = useState<{ done: number; total: number; failed: number } | null>(null);
+  const [confirmMergeAll, setConfirmMergeAll] = useState(false);
 
   const activePairs = pairs.filter(([a, b]) => {
     const key = [a.id, b.id].sort().join('|');
@@ -1486,21 +1489,48 @@ function MergeModal({
     }
   };
 
+  // Mesclagem em lote: roda handleMerge sequencialmente em todos os pairs
+  // ativos. Sequencial (não paralelo) porque writeBatch + reassociateRelatedDocs
+  // mexem em coleções compartilhadas — paralelizar arrisca race em conv/sales/etc.
+  // Cada par usa o primary atualmente selecionado (ou default = primeiro do par).
+  const handleMergeAll = async () => {
+    setConfirmMergeAll(false);
+    const pairsToProcess = [...activePairs];
+    setBatchMerging({ done: 0, total: pairsToProcess.length, failed: 0 });
+    let failed = 0;
+    for (let i = 0; i < pairsToProcess.length; i++) {
+      const [a, b] = pairsToProcess[i];
+      try {
+        await handleMerge(a, b);
+      } catch (err) {
+        failed++;
+        console.error(`[Merge all] Failed pair ${i + 1}:`, err);
+      }
+      setBatchMerging({ done: i + 1, total: pairsToProcess.length, failed });
+    }
+    // Mantém o status visível por 1.2s pra usuário ver o "concluído"
+    setTimeout(() => setBatchMerging(null), 1200);
+  };
+
   const ClientCard = ({ client, isPrimary, onSelect }: { client: Client; isPrimary: boolean; onSelect: () => void }) => (
     <div
       onClick={onSelect}
+      // `min-w-0` é o que conserta o overflow horizontal: sem ele, flex-1
+      // não shrinka abaixo do tamanho intrínseco do conteúdo (nomes longos
+      // como "COMERCIO DE ERVA MATE COR E SABOR LTDA" forçavam o card a
+      // crescer e cortavam o segundo card no eixo X).
       className={cn(
-        'flex-1 rounded-xl p-3 border-2 cursor-pointer transition-all',
+        'flex-1 min-w-0 rounded-xl p-3 border-2 cursor-pointer transition-all',
         isPrimary
           ? 'border-emerald-400 dark:border-emerald-500 bg-emerald-50/50 dark:bg-emerald-500/5'
           : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
       )}
     >
-      <div className="flex items-center gap-2 mb-2">
+      <div className="flex items-center gap-2 mb-2 min-w-0">
         <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
           {(client.name?.[0] ?? '?').toUpperCase()}
         </div>
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <p className="text-xs font-semibold text-gray-900 dark:text-white truncate">{client.name}</p>
           {client.company && <p className="text-[10px] text-gray-400 truncate">{client.company}</p>}
         </div>
@@ -1512,10 +1542,10 @@ function MergeModal({
       </div>
       <div className="space-y-0.5 text-[10px] text-gray-500 dark:text-gray-400">
         {client.email  && <p className="truncate">✉ {client.email}</p>}
-        {client.phone  && <p>📞 {client.phone}</p>}
-        {client.cpfCnpj && <p>📄 {client.cpfCnpj}</p>}
-        {(client.totalSpent ?? 0) > 0 && <p className="text-emerald-600 dark:text-emerald-400 font-medium">💰 {formatCurrency(client.totalSpent ?? 0)}</p>}
-        <p className="text-gray-300 dark:text-gray-600">Cadastro: {formatDate(client.createdAt)}</p>
+        {client.phone  && <p className="truncate">📞 {client.phone}</p>}
+        {client.cpfCnpj && <p className="truncate">📄 {client.cpfCnpj}</p>}
+        {(client.totalSpent ?? 0) > 0 && <p className="text-emerald-600 dark:text-emerald-400 font-medium truncate">💰 {formatCurrency(client.totalSpent ?? 0)}</p>}
+        <p className="text-gray-300 dark:text-gray-600 truncate">Cadastro: {formatDate(client.createdAt)}</p>
       </div>
     </div>
   );
@@ -1536,22 +1566,72 @@ function MergeModal({
         className="w-full max-w-xl bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700/50 overflow-hidden flex flex-col max-h-[calc(100vh-2rem)]"
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800 flex-shrink-0">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800 flex-shrink-0 gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center flex-shrink-0">
               <Users className="w-4 h-4 text-amber-500" />
             </div>
-            <div>
+            <div className="min-w-0">
               <h2 className="font-semibold text-gray-900 dark:text-white text-sm">Duplicatas detectadas</h2>
               <p className="text-[10px] text-gray-400">
                 {activePairs.length > 0 ? `${activePairs.length} par${activePairs.length > 1 ? 'es' : ''} encontrado${activePairs.length > 1 ? 's' : ''}` : 'Nenhuma duplicata pendente'}
               </p>
             </div>
           </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 transition-colors">
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {/* Botão "Mesclar tudo" — só aparece quando há ≥2 pares ativos.
+                Mantém o "MANTER" atualmente selecionado em cada par (default
+                = primeiro do par, mas usuário pode pré-selecionar antes). */}
+            {activePairs.length >= 2 && !batchMerging && (
+              <button
+                onClick={() => setConfirmMergeAll(true)}
+                disabled={!!merging}
+                className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-semibold transition-colors disabled:opacity-50 flex items-center gap-1.5"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                Mesclar tudo ({activePairs.length})
+              </button>
+            )}
+            {batchMerging && (
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30">
+                <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 0.8, ease: 'linear' }}>
+                  <Star className="w-3 h-3 text-amber-600" />
+                </motion.div>
+                <span className="text-xs font-semibold text-amber-700 dark:text-amber-300 tabular-nums">
+                  {batchMerging.done}/{batchMerging.total}
+                  {batchMerging.failed > 0 && ` (${batchMerging.failed} falha${batchMerging.failed > 1 ? 's' : ''})`}
+                </span>
+              </div>
+            )}
+            <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 transition-colors">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
+
+        {/* Confirmação inline pra "Mesclar tudo" — destrutivo, não dá pra desfazer
+            sem restaurar manualmente (soft-delete só reativa o secundário). */}
+        {confirmMergeAll && (
+          <div className="px-6 py-3 bg-amber-50 dark:bg-amber-500/10 border-b border-amber-200 dark:border-amber-500/30 flex items-center justify-between gap-3 flex-shrink-0">
+            <p className="text-xs text-amber-800 dark:text-amber-300">
+              Mesclar todos os {activePairs.length} pares? O card verde "MANTER" de cada par será preservado; o outro será desativado.
+            </p>
+            <div className="flex gap-2 flex-shrink-0">
+              <button
+                onClick={() => setConfirmMergeAll(false)}
+                className="px-3 py-1 rounded-lg text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-500/20 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleMergeAll}
+                className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold transition-colors"
+              >
+                Confirmar
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto">
           {activePairs.length === 0 ? (
@@ -1598,13 +1678,14 @@ function MergeModal({
                     <div className="flex gap-2">
                       <button
                         onClick={() => setDismissed(p => new Set([...p, key]))}
-                        className="flex-1 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 text-xs font-medium text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                        disabled={!!batchMerging}
+                        className="flex-1 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 text-xs font-medium text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors disabled:opacity-50"
                       >
                         Ignorar este par
                       </button>
                       <button
                         onClick={() => handleMerge(a, b)}
-                        disabled={isMerging}
+                        disabled={isMerging || !!batchMerging}
                         className="flex-1 px-3 py-2 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
                       >
                         {isMerging ? (
