@@ -350,9 +350,11 @@ interface AppointmentBlockProps {
   appointment: Appointment;
   onClick: (appt: Appointment) => void;
   compact?: boolean;
+  clientsMap?: Record<string, string>;
 }
 
-function AppointmentBlock({ appointment, onClick, compact = false }: AppointmentBlockProps) {
+function AppointmentBlock({ appointment, onClick, compact = false, clientsMap }: AppointmentBlockProps) {
+  const displayName = (appointment.clientId && clientsMap?.[appointment.clientId]) || appointment.clientName;
   const color = STATUS_COLORS[appointment.status];
   const bgColor = STATUS_BG_COLORS[appointment.status];
   const height = getAppointmentHeight(appointment.duration);
@@ -362,7 +364,7 @@ function AppointmentBlock({ appointment, onClick, compact = false }: Appointment
     <Tooltip
       title={
         <div className="text-xs space-y-1 p-1">
-          <div className="font-semibold">{appointment.clientName}</div>
+          <div className="font-semibold">{displayName}</div>
           <div>{appointment.serviceName}</div>
           <div>{appointment.startTime} - {appointment.endTime}</div>
           <div>{getStatusLabel(appointment.status)}</div>
@@ -403,7 +405,7 @@ function AppointmentBlock({ appointment, onClick, compact = false }: Appointment
               )}
               style={{ color }}
             >
-              {compact ? appointment.clientName.split(' ')[0] : appointment.clientName}
+              {compact ? displayName.split(' ')[0] : displayName}
             </div>
             {appointment.reminderSentAt && !isShort && (
               <Bell className="w-2.5 h-2.5 flex-shrink-0 opacity-70" style={{ color }} />
@@ -1148,7 +1150,10 @@ function AppointmentFormDialog({
   useEffect(() => {
     if (open && initialData) {
       setFormData((prev) => ({ ...prev, ...initialData }));
-      setClientSearch(initialData.clientName || '');
+      const resolvedName = initialData.clientId
+        ? (clients.find(c => c.id === initialData.clientId)?.name || initialData.clientName)
+        : initialData.clientName;
+      setClientSearch(resolvedName || '');
     } else if (open) {
       setFormData({
         clientId: '',
@@ -2094,6 +2099,11 @@ export default function AgendaModule() {
     staleTime: 5 * 60 * 1000,
   });
 
+  const clientsMap = useMemo(
+    () => Object.fromEntries(clients.map(c => [c.id, c.name])),
+    [clients],
+  );
+
   // Fetch team members via onSnapshot
   useEffect(() => {
     if (!business?.id) return;
@@ -2977,6 +2987,7 @@ export default function AgendaModule() {
                   key={appt.id}
                   appointment={appt}
                   onClick={handleAppointmentClick}
+                  clientsMap={clientsMap}
                 />
               ))}
 
@@ -3103,6 +3114,7 @@ export default function AgendaModule() {
                     appointment={appt}
                     onClick={handleAppointmentClick}
                     compact
+                    clientsMap={clientsMap}
                   />
                 ))}
               </div>
