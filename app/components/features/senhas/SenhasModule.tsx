@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -102,6 +103,20 @@ export function VaultTab() {
 
   const REVEAL_TIMEOUT_MS = 15_000;
   const canEdit = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
+
+  // Lock-scroll do wrapper de tab ativo enquanto o modal está aberto.
+  // Sem isso, o backdrop é portalado pra document.body mas o conteúdo da
+  // página continua scrollável atrás (tab wrapper tem overflow-y-auto).
+  useEffect(() => {
+    if (!formOpen) return;
+    const el = document.querySelector<HTMLElement>(
+      '.will-change-transform.pointer-events-auto.overflow-y-auto',
+    );
+    if (!el) return;
+    const prevOverflow = el.style.overflowY;
+    el.style.overflowY = 'hidden';
+    return () => { el.style.overflowY = prevOverflow; };
+  }, [formOpen]);
 
   useEffect(() => {
     if (!business?.id) { setLoading(false); return; }
@@ -479,27 +494,31 @@ export function VaultTab() {
         </div>
       )}
 
-      {/* Form modal */}
-      <AnimatePresence>
-        {formOpen && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
-            onClick={e => { if (e.target === e.currentTarget && !saving) setFormOpen(false); }}
-          >
-            <VaultForm
-              form={form}
-              setForm={setForm}
-              editing={editing}
-              saving={saving}
-              onSave={handleSave}
-              onClose={() => setFormOpen(false)}
-            />
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* Form modal — portal pra escapar containing block do wrapper de tabs
+          (will-change-transform em app/page.tsx quebra position:fixed). */}
+      {typeof document !== 'undefined' && createPortal(
+        <AnimatePresence>
+          {formOpen && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+              onClick={e => { if (e.target === e.currentTarget && !saving) setFormOpen(false); }}
+            >
+              <VaultForm
+                form={form}
+                setForm={setForm}
+                editing={editing}
+                saving={saving}
+                onSave={handleSave}
+                onClose={() => setFormOpen(false)}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body,
+      )}
     </motion.div>
   );
 }
