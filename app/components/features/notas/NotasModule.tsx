@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   StickyNote,
@@ -510,7 +511,12 @@ function NoteModal({
 
   const color = getColorConfig(form.color);
 
-  return (
+  // Portal pra escapar o containing block do wrapper de tabs em app/page.tsx,
+  // que tem `will-change-transform`. Sem isso, `position: fixed` é resolvido
+  // contra o wrapper scrollable e o modal aparece deslocado quando a página
+  // está scrollada.
+  if (typeof document === 'undefined') return null;
+  return createPortal(
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
@@ -712,7 +718,8 @@ function NoteModal({
           </button>
         </div>
       </motion.div>
-    </motion.div>
+    </motion.div>,
+    document.body,
   );
 }
 
@@ -808,28 +815,30 @@ function NotePreviewModal({
   }, [onClose]);
 
   // Lock the tab's scroll container while the modal is open.
-  // The app scroll host is an inner div (overflow-y-auto), not document.body.
-  const backdropRef = useRef<HTMLDivElement>(null);
+  // O wrapper de tabs ativo em app/page.tsx tem `will-change-transform`
+  // + `pointer-events-auto`. Como agora portalamos o modal pra document.body
+  // (pra evitar que o `will-change-transform` quebre o `position: fixed`), não
+  // dá pra subir do parentElement — buscamos pela classe da tab ativa.
   useEffect(() => {
-    let el: HTMLElement | null = backdropRef.current?.parentElement ?? null;
-    while (el) {
-      const { overflowY } = window.getComputedStyle(el);
-      if (overflowY === 'auto' || overflowY === 'scroll') break;
-      el = el.parentElement;
-    }
+    const el = document.querySelector<HTMLElement>(
+      '.will-change-transform.pointer-events-auto.overflow-y-auto',
+    );
     if (!el) return;
     const prevOverflow = el.style.overflowY;
-    const prevScroll   = el.scrollTop;
+    const prevScroll = el.scrollTop;
     el.style.overflowY = 'hidden';
     return () => {
-      el!.style.overflowY = prevOverflow;
-      el!.scrollTop = prevScroll;
+      el.style.overflowY = prevOverflow;
+      el.scrollTop = prevScroll;
     };
   }, []);
 
-  return (
+  // Portal pra escapar o containing block do wrapper com `will-change-transform`
+  // — sem isso, `position: fixed` é resolvido contra o wrapper scrollable e o
+  // modal aparece deslocado quando a página está scrollada.
+  if (typeof document === 'undefined') return null;
+  return createPortal(
     <motion.div
-      ref={backdropRef}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
@@ -956,7 +965,8 @@ function NotePreviewModal({
           </span>
         </div>
       </motion.div>
-    </motion.div>
+    </motion.div>,
+    document.body,
   );
 }
 
