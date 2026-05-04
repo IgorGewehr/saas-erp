@@ -49,10 +49,26 @@ const RESERVED_HEADERS = new Set(['nome', 'name', 'telefone', 'phone', 'whatsapp
 // Regex razoavelmente estrito — exige TLD com 2+ chars alfabéticos
 const EMAIL_RE = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
 
-/** Normaliza telefone para E.164 (apenas dígitos, sem +). Retorna null se inválido. */
+/** Normaliza telefone para E.164 (apenas dígitos, sem +). Retorna null se inválido.
+ *
+ * Aceita formatação livre (espaços, traços, parênteses, "+", pontos): tudo
+ * é stripado antes da validação. Ex:
+ *   "(54) 9678-5446"     → "545496785446" → "555496785446" (BR + DDI 55)
+ *   "+55 11 99999-9999"  → "5511999999999"
+ *   "011 99999-8888"     → "5511999998888" (drop 0 do DDD)
+ *
+ * Rejeita CNPJ (14 dígitos colados por engano) e CPF colado como número
+ * (11 dígitos onde o "celular" não começa com 9 — regra ANATEL pós-2013).
+ */
 function normalizePhone(raw: string): string | null {
   let digits = raw.replace(/\D/g, '');
   if (!digits) return null;
+  // Rejeita 14+ dígitos preventivamente — CNPJ tem 14, e phone E.164 com 14+
+  // dígitos é extremamente raro (a regra técnica permite até 15, mas na
+  // prática nenhum país comum chega lá). Catch principal pro caso reportado:
+  // CNPJ "91155234000244" passava antes pela validação genérica E.164.
+  if (digits.length > 13) return null;
+  if (digits.length < 8) return null;
   // Caso BR com 0 no DDD (ex: 011 99999-8888 → 11999998888)
   if (digits.length === 12 && digits.startsWith('0')) {
     digits = digits.substring(1);
@@ -61,8 +77,21 @@ function normalizePhone(raw: string): string | null {
   if ((digits.length === 10 || digits.length === 11) && !digits.startsWith('55')) {
     digits = '55' + digits;
   }
-  // E.164 válido: [1-9] inicial (sem 0), entre 8 e 15 dígitos no total
-  if (!/^[1-9]\d{7,14}$/.test(digits)) return null;
+  // BR (DDI 55): aceita só 12 (fixo: 55 + DDD + 8) ou 13 (celular: 55 + DDD + 9 + 8)
+  if (digits.startsWith('55')) {
+    if (digits.length !== 12 && digits.length !== 13) return null;
+    // DDD válido: 11-99 (índices 2-3)
+    const ddd = parseInt(digits.slice(2, 4), 10);
+    if (!Number.isFinite(ddd) || ddd < 11 || ddd > 99) return null;
+    // Celular BR pós-2013: 5º dígito (após 55 + DDD) deve ser 9. Catch
+    // adicional pra CPFs colados (11 dígitos onde o "celular" não começa
+    // com 9). Fixo de 12 dígitos não tem essa regra.
+    if (digits.length === 13 && digits[4] !== '9') return null;
+    return digits;
+  }
+  // Internacional E.164: começa com 1-9 (sem 0), 8-13 dígitos. Aceita os
+  // formatos comuns (US/UK/EU/etc) mas rejeita o ranges suspeitos acima.
+  if (!/^[1-9]\d{7,12}$/.test(digits)) return null;
   return digits;
 }
 

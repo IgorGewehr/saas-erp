@@ -6,6 +6,7 @@ import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { sendBaileysBroadcastMessage } from '@/app/api/whatsapp/baileys-manager';
 import { generateUnsubscribeToken } from '@/lib/utils/unsubscribeToken';
+import { getAlternativeBrazilianPhone } from '@/lib/utils/phoneAlternatives';
 import type { BroadcastTemplateParam, OptOutChannel } from '@/lib/types';
 
 /** Compara strings em tempo constante — evita timing attack na CRON_SECRET. */
@@ -181,6 +182,169 @@ async function preCreateBroadcastMessages(
   return ids;
 }
 
+/**
+ * Find-or-create conversation pra um envio de campanha + append da mensagem
+ * outbound em conversationMessages. Sem isso, broadcasts saíam direto via
+ * Meta/Baileys mas não apareciam na aba "Conversas" — operador só via a
+ * conversa quando o cliente respondia (e a mensagem original da campanha
+ * ficava perdida).
+ *
+ * Match logic espelha o webhook (meta/route.ts): exact contactExternalId
+ * primeiro, depois variante BR com/sem 9, depois fallback last-8 + DDD.
+ *
+ * Por que melhor esforço (try/catch silencioso): falha aqui não deve
+ * abortar o envio em si — a mensagem já foi entregue ao destinatário.
+ */
+async function upsertConversationFromBroadcast(params: {
+  businessId: string;
+  channel: 'whatsapp' | 'facebook' | 'instagram';
+  recipientId: string;          // phone digits (sem +) ou IGSID/PSID
+  contactName?: string;
+  contactId?: string;            // crmContactId, se vinculado
+  content: string;               // texto que vai aparecer na conversa
+  externalMessageId?: string;    // wamid / mid
+  broadcastId: string;
+  broadcastMessageId: string;    // doc id do broadcastMessages
+  connectedVia?: 'embedded_signup' | 'baileys';
+  channelConnectionId?: string;
+  channelOwnerType?: 'business' | 'user';
+  channelOwnerId?: string;
+}): Promise<void> {
+  try {
+    const now = new Date().toISOString();
+
+    // 1. Find — exact match
+    const safeQuery = async (externalId: string): Promise<FirebaseFirestore.QueryDocumentSnapshot[]> => {
+      try {
+        return (await adminDb.collection('conversations')
+          .where('businessId', '==', params.businessId)
+          .where('channel', '==', params.channel)
+          .where('contactExternalId', '==', externalId)
+          .orderBy('lastMessageAt', 'desc')
+          .limit(5)
+          .get()).docs;
+      } catch {
+        return (await adminDb.collection('conversations')
+          .where('businessId', '==', params.businessId)
+          .where('channel', '==', params.channel)
+          .where('contactExternalId', '==', externalId)
+          .limit(5)
+          .get()).docs;
+      }
+    };
+
+    let candidates = await safeQuery(params.recipientId);
+
+    // 2. Fuzzy: variação BR com/sem 9
+    if (candidates.length === 0 && params.channel === 'whatsapp') {
+      const alt = getAlternativeBrazilianPhone(params.recipientId);
+      if (alt) candidates = await safeQuery(alt);
+    }
+
+    // 3. Fuzzy: últimos 8 dígitos + DDD (cobre formatações esquisitas)
+    if (candidates.length === 0 && params.channel === 'whatsapp') {
+      const digits = params.recipientId.replace(/\D/g, '');
+      if (digits.length >= 10) {
+        const last8 = digits.slice(-8);
+        const ddd = digits.length >= 11 ? digits.slice(-11, -9) : digits.slice(-10, -8);
+        const all = (await adminDb.collection('conversations')
+          .where('businessId', '==', params.businessId)
+          .where('channel', '==', params.channel)
+          .limit(100)
+          .get()).docs;
+        candidates = all.filter(d => {
+          const ext = (d.data().contactExternalId as string | undefined)?.replace(/\D/g, '') || '';
+          if (ext.length < 10) return false;
+          const docLast8 = ext.slice(-8);
+          const docDdd = ext.length >= 11 ? ext.slice(-11, -9) : ext.slice(-10, -8);
+          return docLast8 === last8 && docDdd === ddd;
+        });
+      }
+    }
+
+    // Pick most recent (ou cria nova)
+    const matched = candidates.sort((a, b) => {
+      const ta = (a.data().lastMessageAt as string | undefined) ?? '';
+      const tb = (b.data().lastMessageAt as string | undefined) ?? '';
+      return tb.localeCompare(ta);
+    })[0];
+
+    let conversationId: string;
+    if (matched) {
+      conversationId = matched.id;
+      // Atualiza preview da conversa com a msg outbound
+      await matched.ref.update({
+        lastMessage: params.content.slice(0, 200),
+        lastMessageAt: now,
+        lastMessageDirection: 'outbound',
+        updatedAt: now,
+      });
+    } else {
+      // Cria conversa nova. Para WhatsApp, popula contactPhone com formatação
+      // BR. Outros canais (FB/IG) usam externalId direto.
+      const isWhatsApp = params.channel === 'whatsapp';
+      const phoneFormatted = isWhatsApp ? formatBrPhoneForBroadcast(params.recipientId) : undefined;
+      const newConvData: Record<string, unknown> = {
+        businessId: params.businessId,
+        channel: params.channel,
+        ...(params.connectedVia ? { connectedVia: params.connectedVia } : {}),
+        ...(params.channelConnectionId ? { channelConnectionId: params.channelConnectionId } : {}),
+        channelOwnerType: params.channelOwnerType ?? 'business',
+        ...(params.channelOwnerId ? { channelOwnerId: params.channelOwnerId } : {}),
+        contactName: params.contactName || params.recipientId,
+        contactExternalId: params.recipientId,
+        ...(phoneFormatted ? { contactPhone: phoneFormatted } : {}),
+        ...(params.contactId ? { crmContactId: params.contactId } : {}),
+        status: 'open',
+        lastMessage: params.content.slice(0, 200),
+        lastMessageAt: now,
+        lastMessageDirection: 'outbound',
+        unreadCount: 0,         // outbound não conta como não-lida
+        firstResponseAt: now,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const convRef = await adminDb.collection('conversations').add(newConvData);
+      conversationId = convRef.id;
+    }
+
+    // Append da mensagem outbound
+    const msgData: Record<string, unknown> = {
+      conversationId,
+      businessId: params.businessId,
+      channel: params.channel,
+      direction: 'outbound',
+      content: params.content,
+      status: 'sent',
+      senderName: 'Campanha',
+      isFromCampaign: true,
+      broadcastId: params.broadcastId,
+      broadcastMessageId: params.broadcastMessageId,
+      sentAt: now,
+      createdAt: now,
+    };
+    if (params.externalMessageId) msgData.externalMessageId = params.externalMessageId;
+    if (params.connectedVia) msgData.connectedVia = params.connectedVia;
+    await adminDb.collection('conversationMessages').add(msgData);
+  } catch (err) {
+    // Não-crítico: a mensagem já foi entregue. Loga pra debug.
+    console.warn('[Broadcast] upsertConversationFromBroadcast failed:', err);
+  }
+}
+
+/** Formata número BR pra display em contactPhone (espelha lógica do webhook). */
+function formatBrPhoneForBroadcast(externalId: string): string | undefined {
+  const digits = externalId.replace(/\D/g, '');
+  if (digits.length === 13 && digits.startsWith('55')) {
+    // 55 + DDD(2) + 9 + 8 → +55 (DD) 9XXXX-XXXX
+    return `+55 (${digits.slice(2, 4)}) ${digits.slice(4, 9)}-${digits.slice(9)}`;
+  }
+  if (digits.length === 12 && digits.startsWith('55')) {
+    return `+55 (${digits.slice(2, 4)}) ${digits.slice(4, 8)}-${digits.slice(8)}`;
+  }
+  return undefined;
+}
+
 export async function POST(req: NextRequest) {
   // Detecta cron call ANTES do rate limit pra que o cron não bata no limite
   const cronSecret = req.headers.get('x-cron-secret');
@@ -345,6 +509,10 @@ export async function POST(req: NextRequest) {
     // não-primary. Quando ausente, mantém o fallback legado em `channels`.
     const broadcastConnectionId = broadcastData?.channelConnectionId as string | undefined;
     let resolvedConnectionId: string | undefined;
+    // Captura ownerType/ownerId pra denormalizar nas conversas criadas a partir
+    // do broadcast (rules de privacidade dependem desses campos).
+    let resolvedOwnerType: 'business' | 'user' = 'business';
+    let resolvedOwnerId: string | undefined;
     if (channel !== 'email' && broadcastConnectionId) {
       const connSnap = await adminDb.collection('channelConnections').doc(broadcastConnectionId).get();
       if (!connSnap.exists) {
@@ -356,6 +524,8 @@ export async function POST(req: NextRequest) {
       if (connData.businessId !== businessId) {
         return NextResponse.json({ error: 'Canal escolhido pertence a outro business' }, { status: 403 });
       }
+      resolvedOwnerType = connData.ownerType === 'user' ? 'user' : 'business';
+      if (connData.ownerType === 'user' && connData.ownerId) resolvedOwnerId = connData.ownerId;
       // Valida que o tipo da connection casa com o canal/modo do broadcast.
       const expectedType = channel === 'whatsapp'
         ? (viaBaileys ? 'whatsapp_baileys' : 'whatsapp_cloud')
@@ -631,6 +801,23 @@ export async function POST(req: NextRequest) {
               sentAt: new Date().toISOString(),
             })
           );
+          // Upsert na aba Conversas (find-or-create + append outbound msg) —
+          // sem isso a campanha sumia da timeline do contato no Aevo.
+          await upsertConversationFromBroadcast({
+            businessId,
+            channel: 'whatsapp',
+            recipientId: recipient.recipientId,
+            contactName: recipient.name,
+            contactId: recipient.contactId,
+            content: messageContent || '',
+            externalMessageId,
+            broadcastId,
+            broadcastMessageId: messageDocId,
+            connectedVia: 'baileys',
+            channelConnectionId: resolvedConnectionId,
+            channelOwnerType: resolvedOwnerType,
+            channelOwnerId: resolvedOwnerId,
+          });
         } catch (err) {
           const errMessage = err instanceof Error ? err.message : 'Baileys send error';
           results.push({
@@ -815,6 +1002,29 @@ export async function POST(req: NextRequest) {
               sentAt: new Date().toISOString(),
             })
           );
+          // Upsert na aba Conversas (Cloud / FB / IG). Email é skipado por
+          // não ter conversa correspondente no módulo de Conversas. Pra
+          // template, usa messageContent (rendered preview do client) ou
+          // fallback `[Template: nome]` quando não veio nada renderizado.
+          if (channel !== 'email') {
+            const displayContent = messageContent
+              || (templateName ? `[Template: ${templateName}]` : '');
+            await upsertConversationFromBroadcast({
+              businessId,
+              channel: channel as 'whatsapp' | 'facebook' | 'instagram',
+              recipientId: recipient.recipientId,
+              contactName: recipient.name,
+              contactId: recipient.contactId,
+              content: displayContent,
+              externalMessageId: messageId,
+              broadcastId,
+              broadcastMessageId: messageDocId,
+              connectedVia: channel === 'whatsapp' ? 'embedded_signup' : undefined,
+              channelConnectionId: resolvedConnectionId,
+              channelOwnerType: resolvedOwnerType,
+              channelOwnerId: resolvedOwnerId,
+            });
+          }
         } else {
           const errData = await response?.json().catch(() => ({}));
           // Aceita múltiplos shapes: Meta usa { error: { message } }, notification-server
