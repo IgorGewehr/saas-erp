@@ -4971,13 +4971,19 @@ export default function ConversasModule() {
 
       const timers: ReturnType<typeof setTimeout>[] = [];
 
-      // Passes assíncronos pra mídia que carrega depois.
+      // Passes assíncronos pra mídia que carrega depois — TODOS checam
+      // isNearBottom antes de re-scrollar. Antes os timers eram
+      // incondicionais e yankavam o user de volta pro fundo durante 3.5s,
+      // impedindo de scrollar pra cima nos primeiros segundos. Agora só
+      // re-scrolla se o usuário ainda não scrollou pra cima manualmente.
       requestAnimationFrame(() => {
-        if (initialScrollDoneRef.current === convId) scrollToBottom('instant');
+        if (initialScrollDoneRef.current === convId && isNearBottom()) {
+          scrollToBottom('instant');
+        }
       });
       [50, 150, 350, 700, 1200, 2000, 3500].forEach((ms) => {
         timers.push(setTimeout(() => {
-          if (initialScrollDoneRef.current === convId) {
+          if (initialScrollDoneRef.current === convId && isNearBottom()) {
             scrollToBottom('instant');
           }
         }, ms));
@@ -5010,17 +5016,21 @@ export default function ConversasModule() {
     }
   }, [isLoadingMessages, selectedConversation?.id, messages.length, scrollToBottom, isNearBottom]);
 
-  // Smooth scroll when a new message arrives after the initial load
+  // Smooth scroll when a new message arrives after the initial load —
+  // respeita posição do usuário (se ele scrollou pra cima lendo histórico,
+  // não puxa de volta quando msg nova chega). Sem o check, chegada de
+  // inbound durante leitura de histórico tirava o user da posição.
   useEffect(() => {
     if (
       selectedConversation &&
       messages.length > 0 &&
       !isLoadingOlderRef.current &&
-      initialScrollDoneRef.current === selectedConversation.id
+      initialScrollDoneRef.current === selectedConversation.id &&
+      isNearBottom()
     ) {
       scrollToBottom('smooth');
     }
-  }, [messages.length, selectedConversation, scrollToBottom]);
+  }, [messages.length, selectedConversation, scrollToBottom, isNearBottom]);
 
   // ── Load more (older) messages ────────────────────────────────────────────
 
