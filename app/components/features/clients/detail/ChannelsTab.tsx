@@ -20,12 +20,11 @@
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { collection, query, where, getDocs, limit as firestoreLimit } from 'firebase/firestore';
-import { ExternalLink, Star, Users } from 'lucide-react';
+import { ExternalLink, Star, Users, Facebook as FacebookIcon, Instagram as InstagramIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { db } from '@/lib/config/firebase';
 import type { Client, Conversation, ConversationChannel } from '@/lib/types';
 import { WhatsAppIcon } from '@/app/components/features/crm/SourceIcon';
-import { Facebook as FacebookIcon, Instagram as InstagramIcon } from 'lucide-react';
 
 interface ChannelDef {
   id: ConversationChannel;
@@ -181,12 +180,17 @@ export function ChannelsTab({ client, businessId }: { client: Client; businessId
                 )}
               >
                 <div className="flex items-start gap-3">
-                  {/* Channel icon — usa cor da marca como fundo claro */}
+                  {/* Channel icon — usa cor da marca como fundo claro.
+                      O wrapper aplica `color: ch.color` no estilo: lucide SVGs
+                      e WhatsAppIcon (custom) usam `fill="currentColor"`,
+                      então herdam a cor do parent. Sem o wrapper, passar
+                      `style` direto no Icon não funcionaria pra WhatsAppIcon
+                      (componente não-lucide que não repassa style ao SVG). */}
                   <div
                     className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-                    style={{ backgroundColor: ch.color + '18' }}
+                    style={{ backgroundColor: ch.color + '18', color: ch.color }}
                   >
-                    <Icon className="w-5 h-5" style={{ color: ch.color }} />
+                    <Icon className="w-5 h-5" />
                   </div>
 
                   <div className="flex-1 min-w-0">
