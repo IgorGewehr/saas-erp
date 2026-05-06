@@ -4657,9 +4657,14 @@ export default function ConversasModule() {
   const executeDeleteConversation = useCallback(async () => {
     if (!deleteConfirmConv || !business?.id) return;
     try {
+      // Zerar unreadCount junto com soft-delete: defesa em profundidade contra
+      // badge fantasma no sidebar. O Sidebar já filtra isDeleted, mas se essa
+      // checagem falhar no futuro (ex: refactor que remove o filtro), o doc
+      // residual no Firestore não deveria poder inflar contadores. Custo zero.
       await updateDoc(doc(db, 'conversations', deleteConfirmConv.id), {
         isDeleted: true,
         deletedAt: new Date().toISOString(),
+        unreadCount: 0,
         updatedAt: new Date().toISOString(),
       });
       setSelectedConversation(null);
