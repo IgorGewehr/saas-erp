@@ -98,12 +98,32 @@ const nextConfig = {
         return false;
       };
 
+      // Node built-ins SEM o prefixo "node:". @google-cloud/firestore e outros
+      // pacotes legados usam `require("stream")` em vez de `require("node:stream")`.
+      // Sem externalizar, o webpack do Next 15 falha pra bundles que processam
+      // esses requires (ex: chunks dinâmicos do instrumentation hook em Edge),
+      // gerando "Module not found: Can't resolve 'stream'" no build.
+      const NODE_BUILTINS = new Set([
+        'assert', 'async_hooks', 'buffer', 'child_process', 'cluster',
+        'console', 'constants', 'crypto', 'dgram', 'diagnostics_channel',
+        'dns', 'domain', 'events', 'fs', 'fs/promises', 'http', 'http2',
+        'https', 'inspector', 'module', 'net', 'os', 'path', 'path/posix',
+        'path/win32', 'perf_hooks', 'process', 'punycode', 'querystring',
+        'readline', 'repl', 'stream', 'stream/web', 'stream/promises',
+        'string_decoder', 'sys', 'timers', 'timers/promises', 'tls',
+        'trace_events', 'tty', 'url', 'util', 'util/types', 'v8', 'vm',
+        'wasi', 'worker_threads', 'zlib',
+      ]);
+
       config.externals = config.externals || [];
       config.externals.push(({ request }, callback) => {
         if (!request) return callback();
-        // Esquema "node:" — built-ins do Node. Webpack do Next 15 não trata
-        // nativamente em todos os targets; externalizar pra Node resolver em runtime.
+        // Esquema "node:" — built-ins do Node com prefixo explícito
         if (request.startsWith('node:')) {
+          return callback(null, 'commonjs ' + request);
+        }
+        // Built-ins sem prefixo (require("stream") direto)
+        if (NODE_BUILTINS.has(request)) {
           return callback(null, 'commonjs ' + request);
         }
         if (isExternal(request)) {
