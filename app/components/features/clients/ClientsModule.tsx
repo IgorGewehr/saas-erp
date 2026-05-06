@@ -1,14 +1,14 @@
 'use client';
 
-import { useState, useCallback, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Users, Plus, Search, Filter, X, Edit2, Trash2, Phone, Mail,
-  Building2, User, ChevronDown, CheckCircle2, Tag, MapPin,
-  TrendingUp, TrendingDown, ShoppingCart, Star, MoreVertical, Eye, FileText,
-  Download, Upload, UserCheck, Gift, Calendar, MessageSquare, History, Clock,
-  FileDown, Settings, Plus as PlusIcon, Minus, Trophy, Sparkles, LayoutList, AlignJustify,
+  Building2, User, CheckCircle2, Tag, MapPin,
+  TrendingUp, TrendingDown, ShoppingCart, Star,
+  Upload, UserCheck, Gift, Calendar, MessageSquare, History, Clock,
+  FileDown, Settings, Plus as PlusIcon, Minus, Trophy, LayoutList, AlignJustify,
 } from 'lucide-react';
 import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, limit as firestoreLimit, orderBy, writeBatch, deleteField } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
@@ -17,7 +17,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
 import { validateCPF, validateCNPJ } from '@/lib/utils/validators';
 import { cn } from '@/lib/utils';
-import type { Client, LeadSource, LeadStatus, LoyaltyConfig, LoyaltyTier, LoyaltyHistoryEntry } from '@/lib/types';
+import type { Client, LeadStatus, LoyaltyConfig, LoyaltyTier, LoyaltyHistoryEntry } from '@/lib/types';
 import { DEFAULT_LOYALTY_TIERS } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import { toast } from 'react-toastify';
@@ -34,11 +34,6 @@ import { ImportModal } from './ImportModal';
 import { STATUS_CONFIG, SOURCE_LABELS, TIPO_LABELS } from './shared/constants';
 import { CHURN_CFG, getChurnLevel, getOverallColor, type ChurnRiskLevel } from './shared/health';
 import { findDuplicate, digits, normEmail } from './shared/duplicates';
-
-// Constantes (STATUS_CONFIG, SOURCE_LABELS, TIPO_LABELS) e helpers de saúde
-// (CHURN_CFG, getChurnLevel, getOverallColor, ChurnRiskLevel) foram movidos
-// para shared/constants.ts e shared/health.ts na Fase 1 da modularização.
-// Todos importados no topo do arquivo.
 
 // ─── Health Badge (list card) ─────────────────────────────────────────────────
 
@@ -125,17 +120,16 @@ function ScoresSection({ client }: { client: Client }) {
   );
 }
 
-// ClientFormData, emptyForm, TagEditor, ClientForm e helpers de duplicate
-// detection (digits, normEmail, samePhoneBR, findDuplicate) foram extraídos
-// na Fase 1 da modularização: ClientForm.tsx + shared/duplicates.ts.
+// ─── Extracted (Fase 1a) ─────────────────────────────────────────────────────
+// Componentes/helpers movidos para arquivos próprios pra reduzir o tamanho
+// deste módulo e abrir caminho pras tabs novas (Canais, Campanhas) em Fase 2/3:
+//   - ClientForm + ClientFormData + emptyForm + TagEditor   → ./ClientForm.tsx
+//   - ExportModal + EXPORT_COLUMNS + downloadCSV            → ./ExportModal.tsx
+//   - ImportModal + parsers de CSV (autoMap, normalize*)    → ./ImportModal.tsx
+//   - findDuplicate + helpers (digits, normEmail, samePhone) → ./shared/duplicates.ts
+//   - STATUS_CONFIG, SOURCE_LABELS, TIPO_LABELS              → ./shared/constants.ts
+//   - CHURN_CFG, getChurnLevel, getOverallColor              → ./shared/health.ts
 
-// ─── Client Detail Panel ──────────────────────────────────────────────────────
-
-// ExportModal + EXPORT_COLUMNS + downloadCSV foram extraídos pra ExportModal.tsx
-// na Fase 1 da modularização.
-// ImportModal e helpers de parsing CSV (autoMap, parseDateToIso, normalizeStatus,
-// normalizeSource, rowToFormData, IMPORT_FIELDS, FIELD_ALIASES) foram extraídos
-// pra ImportModal.tsx na Fase 1 da modularização.
 // ─── Merge duplicates ────────────────────────────────────────────────────────
 
 function detectDuplicates(clients: Client[]): [Client, Client][] {
