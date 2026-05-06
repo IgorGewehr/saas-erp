@@ -9,6 +9,7 @@ import {
   TrendingUp, ShoppingCart, Star,
   Upload, UserCheck, Gift,
   FileDown, Settings, Plus as PlusIcon, Trophy, LayoutList, AlignJustify,
+  Megaphone, MessageSquare,
 } from 'lucide-react';
 import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, limit as firestoreLimit, writeBatch, deleteField } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
@@ -702,6 +703,10 @@ export default function ClientsModule() {
   //   filterAcquisition: lê client.acquisitionProductId/OfferLabel (fase 4);
   //   filterCampaign: query broadcastMessages → set de contactIds (fase 3).
   const [filterChannel, setFilterChannel] = useState<'all' | 'whatsapp' | 'facebook' | 'instagram'>('all');
+  // Quando true, filterChannel só conta clientes que têm conversation REAL no
+  // canal (não só identifier cadastrado). Default false — manter retrocompat
+  // com fluxo anterior. Toggle ao lado dos chips de canal no painel de filtros.
+  const [filterChannelHasConv, setFilterChannelHasConv] = useState(false);
   const [filterAcquisition, setFilterAcquisition] = useState<'all' | 'with_product' | 'with_offer' | 'none' | string>('all');
   const [filterCampaign, setFilterCampaign] = useState<string>('');  // broadcastId ou ''
   const [sortBy, setSortBy] = useState<'name' | 'totalSpent' | 'createdAt' | 'churnRisk'>('name');
@@ -801,6 +806,34 @@ export default function ClientsModule() {
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     },
     enabled: !!business?.id,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Quando filterChannelHasConv está on, carrega o map (canal → set de
+  // crmContactIds com conversation real). Só roda quando o toggle está
+  // ativado E há um canal selecionado — economia óbvia. Limit 1000 cobre
+  // business típico (raros têm > 1000 conversas no histórico vivo).
+  const { data: contactIdsByChannel = new Map<string, Set<string>>() } = useQuery({
+    queryKey: ['client-contacts-by-channel', business?.id],
+    queryFn: async (): Promise<Map<string, Set<string>>> => {
+      if (!business?.id) return new Map();
+      const snap = await getDocs(query(
+        collection(db, 'conversations'),
+        where('businessId', '==', business.id),
+        firestoreLimit(1000),
+      ));
+      const map = new Map<string, Set<string>>();
+      snap.docs.forEach(d => {
+        const data = d.data();
+        const ch = data.channel as string | undefined;
+        const cid = data.crmContactId as string | undefined;
+        if (!ch || !cid) return;
+        if (!map.has(ch)) map.set(ch, new Set());
+        map.get(ch)!.add(cid);
+      });
+      return map;
+    },
+    enabled: !!business?.id && filterChannelHasConv && filterChannel !== 'all',
     staleTime: 5 * 60 * 1000,
   });
 
@@ -1050,6 +1083,13 @@ export default function ClientsModule() {
     // acquisition*) ou Set carregado via useQuery (campaignContactIds).
     if (filterChannel !== 'all') {
       list = list.filter(c => {
+        // Quando "exigir conversa real" está on, ignora identifier cadastrado
+        // — só conta cliente com conversation existente naquele canal. Set
+        // lookup é O(1). Default off → comportamento legado (qualquer
+        // identifier conta).
+        if (filterChannelHasConv) {
+          return contactIdsByChannel.get(filterChannel)?.has(c.id) ?? false;
+        }
         const ci = c.channelIdentities?.[filterChannel];
         if (ci) return true;
         // Fallback pra socialMedia (FB/IG cadastrados manualmente)
@@ -1089,7 +1129,7 @@ export default function ClientsModule() {
     });
 
     return list;
-  }, [clients, search, filterTipo, filterStatus, filterTags, filterChurnRisk, filterBirthMonth, filterChannel, filterAcquisition, filterCampaign, campaignContactIds, sortBy]);
+  }, [clients, search, filterTipo, filterStatus, filterTags, filterChurnRisk, filterBirthMonth, filterChannel, filterChannelHasConv, contactIdsByChannel, filterAcquisition, filterCampaign, campaignContactIds, sortBy]);
 
   // ─── Duplicate count (for badge) ─────────────────────────────────────────────
   const dupeCount = useMemo(() => detectDuplicates(clients).length, [clients]);
@@ -1466,10 +1506,27 @@ export default function ClientsModule() {
               )}
 
               {/* Filtro Canal — checa channelIdentities (PSID/IGSID/wa real) +
-                  fallback pra socialMedia/whatsapp/phone (cadastro manual). */}
+                  fallback pra socialMedia/whatsapp/phone (cadastro manual).
+                  Toggle "só com conversa" troca pra checagem em conversations
+                  collection: cliente conta só se tem conversation real no canal. */}
               <div>
-                <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2 block">
-                  Canal ativo
+                <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2 block flex items-center justify-between">
+                  <span>Canal ativo</span>
+                  {filterChannel !== 'all' && (
+                    <button
+                      onClick={() => setFilterChannelHasConv(v => !v)}
+                      title="Quando ligado, só conta clientes com conversa real no canal (não basta ter o identifier cadastrado)"
+                      className={cn(
+                        'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium normal-case tracking-normal transition-colors',
+                        filterChannelHasConv
+                          ? 'bg-red-600 text-white'
+                          : 'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-300 dark:hover:bg-gray-600',
+                      )}
+                    >
+                      <MessageSquare className="w-2.5 h-2.5" />
+                      Só com conversa
+                    </button>
+                  )}
                 </label>
                 <div className="flex flex-wrap gap-2">
                   {(['all', 'whatsapp', 'facebook', 'instagram'] as const).map(ch => (
@@ -1737,6 +1794,28 @@ export default function ClientsModule() {
                           </span>
                         </>
                       )}
+                      {/* Aquisição (Fase 4) — badge sutil mostrando produto/oferta
+                          que trouxe o cliente. Resolve productId via productsForAcquisition;
+                          fallback pra offerLabel quando não há produto, ou pra "Produto
+                          removido" quando o id existe mas o produto sumiu (race). */}
+                      {(client.acquisitionProductId || client.acquisitionOfferLabel) && (() => {
+                        const productName = client.acquisitionProductId
+                          ? productsForAcquisition.find(p => p.id === client.acquisitionProductId)?.name
+                          : null;
+                        const label = productName
+                          || client.acquisitionOfferLabel
+                          || (client.acquisitionProductId ? 'Produto removido' : '');
+                        if (!label) return null;
+                        return (
+                          <span
+                            title={`Aquisição: ${label}`}
+                            className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 max-w-[140px]"
+                          >
+                            <Megaphone className="w-2.5 h-2.5 flex-shrink-0" />
+                            <span className="truncate">{label}</span>
+                          </span>
+                        );
+                      })()}
                     </div>
 
                     {/* Actions (visible on hover) */}
