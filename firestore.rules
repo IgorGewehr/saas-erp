@@ -1090,14 +1090,17 @@ service cloud.firestore {
     // ============================================
     // Coleções dedicadas — separadas de `conversations` (omnichannel externo).
     // Acesso: membros do business para chat global; participantes para DMs.
-    function teamChatAccessible(chatData) {
-      return chatData.businessId == userBusinessId() &&
-             (chatData.type == 'global' ||
-              (chatData.type == 'dm' && request.auth.uid in chatData.memberIds));
-    }
+    //
+    // Padrão das rules espelha /conversations: businessId via isOwnBusiness(),
+    // restante inline. Isso evita potenciais problemas com o query inspector
+    // do Firestore quando funções compostas são chamadas em LIST.
 
     match /teamChats/{chatId} {
-      allow read: if isAuthenticated() && teamChatAccessible(resource.data);
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && (resource.data.type == 'global'
+                      || (resource.data.type == 'dm'
+                          && request.auth.uid in resource.data.memberIds));
 
       // Create: type ∈ {global,dm}; criador deve pertencer ao business; pra DM o
       // criador precisa estar nos memberIds.
@@ -1111,7 +1114,10 @@ service cloud.firestore {
       // Update: só atualiza lastMessage / lastMessageAt / lastReadAt / updatedAt.
       // memberIds e type ficam imutáveis (evita escalar privilégios em DM existente).
       allow update: if isAuthenticated()
-                    && teamChatAccessible(resource.data)
+                    && isOwnBusiness()
+                    && (resource.data.type == 'global'
+                        || (resource.data.type == 'dm'
+                            && request.auth.uid in resource.data.memberIds))
                     && request.resource.data.businessId == resource.data.businessId
                     && request.resource.data.type == resource.data.type
                     && request.resource.data.memberIds == resource.data.memberIds;
@@ -1120,9 +1126,13 @@ service cloud.firestore {
     }
 
     // Mensagens só são lidas/criadas se o chat-pai for acessível ao usuário.
+    // get() do parent é cacheado por request, então o custo é 1 read extra
+    // por mensagem na PRIMEIRA vez que ela é avaliada num request.
     function parentTeamChatAccessible(chatId) {
       let chat = get(/databases/$(database)/documents/teamChats/$(chatId)).data;
-      return teamChatAccessible(chat);
+      return chat.businessId == userBusinessId() &&
+             (chat.type == 'global' ||
+              (chat.type == 'dm' && request.auth.uid in chat.memberIds));
     }
 
     match /teamChatMessages/{msgId} {

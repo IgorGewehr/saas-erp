@@ -328,13 +328,17 @@ function TeamChatDropdown({ members, teamChat }: { members: UserType[]; teamChat
       {renderHeader()}
 
       {/* Banner de erro — aparece quando subscriptions/ensure falham (típico:
-          rules não publicadas). Some quando se recuperam. */}
+          rules não publicadas). Mostra a mensagem real do Firestore embaixo
+          do texto user-friendly pra ajudar a debugar. */}
       {error && view.type === 'list' && (
         <div className="px-4 py-2.5 bg-amber-50 dark:bg-amber-500/10 border-b border-amber-200/60 dark:border-amber-500/20 flex items-start gap-2">
           <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
-          <p className="text-[11px] text-amber-700 dark:text-amber-300 leading-snug">
-            {t('teamChat.permissionError')}
-          </p>
+          <div className="text-[11px] text-amber-700 dark:text-amber-300 leading-snug min-w-0 flex-1">
+            <p>{t('teamChat.permissionError')}</p>
+            <p className="mt-0.5 text-[10px] font-mono text-amber-600/70 dark:text-amber-400/60 break-all">
+              {error}
+            </p>
+          </div>
         </div>
       )}
 
