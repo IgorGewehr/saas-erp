@@ -1879,6 +1879,18 @@ export interface Client {
   optInMarketing?: boolean;
   optInAt?: string;
 
+  // ── Aquisição / atribuição (Fase 4 do módulo Clientes) ─────────────────────
+  // Diferencia "veio da campanha X" de "comprou produto Y" — o source genérico
+  // (LeadSource: whatsapp/site/etc) só captura canal, não a oferta específica.
+  // Estes campos são manuais (operador preenche no cadastro). Iteração futura
+  // (opção C do plano) modela `offers/{id}` como entidade própria com agregação.
+  /** Produto/serviço que originou o cadastro deste cliente — usado pra
+   *  filtrar "clientes que vieram da oferta Black Friday Rinoplastia". */
+  acquisitionProductId?: string;
+  /** Label livre da oferta apresentada — útil quando não há produto formal
+   *  (ex: "promo aniversário 30% off", "indicação parceiro X"). */
+  acquisitionOfferLabel?: string;
+
   // ── Dados Cadastrais / Fiscal ───────────────────────
   tipo?: 'pf' | 'pj';
   cpfCnpj?: string;

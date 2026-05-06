@@ -44,6 +44,11 @@ export interface ClientFormData {
   bairro: string;
   municipio: string;
   uf: string;
+  /** Aquisição (Fase 4): qual oferta/produto trouxe o cliente. Manual.
+   *  acquisitionProductId vincula a um Product opcionalmente; se vazio,
+   *  acquisitionOfferLabel vira o texto exibido (free-form). */
+  acquisitionProductId: string;
+  acquisitionOfferLabel: string;
 }
 
 export const emptyForm: ClientFormData = {
@@ -52,6 +57,7 @@ export const emptyForm: ClientFormData = {
   birthDate: '',
   source: 'outro', status: 'ganho', notes: '', tags: [],
   cep: '', logradouro: '', numero: '', complemento: '', bairro: '', municipio: '', uf: '',
+  acquisitionProductId: '', acquisitionOfferLabel: '',
 };
 
 // ─── Tag editor ──────────────────────────────────────────────────────────────
@@ -129,12 +135,17 @@ export function ClientForm({
   onCancel,
   isSaving,
   tagSuggestions,
+  products = [],
 }: {
   initial: ClientFormData;
   onSave: (data: ClientFormData) => void;
   onCancel: () => void;
   isSaving: boolean;
   tagSuggestions: string[];
+  /** Produtos do business (id+nome) — alimenta o select de "Origem da aquisição".
+   *  Opcional: se vazio, só o input de label livre aparece. ClientsModule
+   *  passa via useQuery em products collection. */
+  products?: Array<{ id: string; name: string }>;
 }) {
   const [form, setForm] = useState<ClientFormData>(initial);
   const [cepLoading, setCepLoading] = useState(false);
@@ -260,6 +271,36 @@ export function ClientForm({
               <option key={k} value={k}>{v}</option>
             ))}
           </select>
+        </div>
+      </div>
+
+      {/* Aquisição — produto/oferta que trouxe o cliente.
+          Diferente de "Origem" (canal genérico) — aqui captura QUAL oferta
+          específica converteu. Útil pra ROI por oferta no futuro. */}
+      <div>
+        <label className={labelCls}>Aquisição (opcional)</label>
+        <p className="text-[11px] text-gray-400 dark:text-gray-500 -mt-1 mb-2">
+          Qual oferta ou produto trouxe este cliente.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {products.length > 0 && (
+            <select
+              className={inputCls}
+              value={form.acquisitionProductId}
+              onChange={e => set('acquisitionProductId', e.target.value)}
+            >
+              <option value="">— Selecionar produto —</option>
+              {products.map(p => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          )}
+          <input
+            className={cn(inputCls, products.length === 0 && 'sm:col-span-2')}
+            placeholder="Label livre da oferta — ex: Black Friday, indicação parceiro X"
+            value={form.acquisitionOfferLabel}
+            onChange={e => set('acquisitionOfferLabel', e.target.value)}
+          />
         </div>
       </div>
 

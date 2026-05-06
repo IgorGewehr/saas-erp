@@ -39,11 +39,15 @@ export function ClientDetailPanel({
   onClose,
   onEdit,
   loyaltyConfig: loyaltyCfg,
+  products = [],
 }: {
   client: Client;
   onClose: () => void;
   onEdit: () => void;
   loyaltyConfig?: LoyaltyConfig;
+  /** Lookup id→nome de produto pra renderizar acquisitionProductId humanizado.
+   *  Mesma lista usada pelo ClientForm; mantém um único query no parent. */
+  products?: Array<{ id: string; name: string }>;
 }) {
   const { business, user } = useAuth();
   const queryClient = useQueryClient();
@@ -342,6 +346,31 @@ export function ClientDetailPanel({
             <span className="text-xs text-gray-400">Origem</span>
             <span className="text-xs text-gray-600 dark:text-gray-400">{SOURCE_LABELS[client.source] || client.source}</span>
           </div>
+          {/* Aquisição (Fase 4) — produto e/ou label livre da oferta. Renderiza
+              só quando há ao menos um dos dois preenchidos. Concatena com " · "
+              quando ambos pra mostrar contexto completo (ex: "Rinoplastia Padrão · Black Friday"). */}
+          {(client.acquisitionProductId || client.acquisitionOfferLabel) && (() => {
+            const productName = client.acquisitionProductId
+              ? products.find(p => p.id === client.acquisitionProductId)?.name
+              : null;
+            const parts: string[] = [];
+            if (productName) parts.push(productName);
+            if (client.acquisitionOfferLabel) parts.push(client.acquisitionOfferLabel);
+            // Fallback: produto não encontrado mas id existe (lista ainda
+            // carregando ou produto deletado) — mostra "Produto removido"
+            // pra não esconder a info crítica.
+            if (parts.length === 0 && client.acquisitionProductId) {
+              parts.push('Produto removido');
+            }
+            return (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs text-gray-400 flex-shrink-0">Aquisição</span>
+                <span className="text-xs text-gray-600 dark:text-gray-400 text-right truncate" title={parts.join(' · ')}>
+                  {parts.join(' · ')}
+                </span>
+              </div>
+            );
+          })()}
           {client.lastVisit && (
             <div className="flex items-center justify-between">
               <span className="text-xs text-gray-400">Última compra</span>

@@ -755,6 +755,26 @@ export default function ClientsModule() {
     staleTime: 3 * 60 * 1000,
   });
 
+  // Produtos (id + nome) pra alimentar o select de "Aquisição" no form.
+  // Carregamento leve — só os 2 campos necessários, mesmo que seja preciso
+  // scan completo da coleção (Firestore não tem projection); cache 10min
+  // pra evitar re-fetch a cada abertura do modal de cadastro.
+  const { data: productsForAcquisition = [] } = useQuery({
+    queryKey: ['products-acquisition-select', business?.id],
+    queryFn: async (): Promise<Array<{ id: string; name: string }>> => {
+      if (!business?.id) return [];
+      const snap = await getDocs(query(
+        collection(db, 'products'),
+        where('businessId', '==', business.id),
+      ));
+      return snap.docs
+        .map(d => ({ id: d.id, name: (d.data().name as string) || '(sem nome)' }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    },
+    enabled: !!business?.id,
+    staleTime: 10 * 60 * 1000,
+  });
+
   // ─── Pré-seleção via sessionStorage ─────────────────────────────────────────
   // Usado pelo Conversas → "Ver/editar contato" para abrir o cliente direto
   // quando navega pra cá. Limpa o storage após consumir (não persiste entre
@@ -814,6 +834,10 @@ export default function ClientsModule() {
         status: data.status,
         notes: data.notes.trim() || undefined,
         tags: data.tags.length ? data.tags : undefined,
+        // Aquisição (Fase 4) — produto e/ou label livre da oferta. Vazio vira
+        // undefined pra updateDoc → deleteField() limpar quando user remove.
+        acquisitionProductId: data.acquisitionProductId.trim() || undefined,
+        acquisitionOfferLabel: data.acquisitionOfferLabel.trim() || undefined,
         updatedAt: now,
       };
 
@@ -1034,6 +1058,8 @@ export default function ClientsModule() {
         bairro: editingClient.endereco?.bairro || '',
         municipio: editingClient.endereco?.municipio || '',
         uf: editingClient.endereco?.uf || '',
+        acquisitionProductId: editingClient.acquisitionProductId || '',
+        acquisitionOfferLabel: editingClient.acquisitionOfferLabel || '',
       }
     : emptyForm;
 
@@ -1567,6 +1593,7 @@ export default function ClientsModule() {
                 onClose={() => setSelectedClient(null)}
                 onEdit={() => openEdit(selectedClient)}
                 loyaltyConfig={loyaltyConfig}
+                products={productsForAcquisition}
               />
             </div>
           )}
@@ -1612,6 +1639,7 @@ export default function ClientsModule() {
                     onCancel={() => { setShowForm(false); setEditingClient(null); }}
                     isSaving={isSaving}
                     tagSuggestions={allTags}
+                    products={productsForAcquisition}
                   />
                 </div>
               </motion.div>
