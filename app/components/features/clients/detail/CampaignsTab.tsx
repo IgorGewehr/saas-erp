@@ -66,21 +66,21 @@ interface CampaignRow {
   broadcast: Broadcast | null; // null quando broadcast foi apagado
 }
 
-export function CampaignsTab({ client, businessId }: { client: { id: string }; businessId: string }) {
+export function CampaignsTab({ clientId, businessId }: { clientId: string; businessId: string }) {
   // Step 1: messages do contato. Index: (businessId, contactId, createdAt DESC).
   const { data: messages = [], isLoading: loadingMsgs } = useQuery({
-    queryKey: ['client-broadcast-messages', client.id, businessId],
+    queryKey: ['client-broadcast-messages', clientId, businessId],
     queryFn: async (): Promise<BroadcastMessage[]> => {
       const snap = await getDocs(query(
         collection(db, 'broadcastMessages'),
         where('businessId', '==', businessId),
-        where('contactId', '==', client.id),
+        where('contactId', '==', clientId),
         fsOrderBy('createdAt', 'desc'),
         firestoreLimit(30),
       ));
       return snap.docs.map(d => ({ ...(d.data() as BroadcastMessage), id: d.id }));
     },
-    enabled: !!client.id && !!businessId,
+    enabled: !!clientId && !!businessId,
     staleTime: 60 * 1000,
   });
 
@@ -187,8 +187,11 @@ export function CampaignsTab({ client, businessId }: { client: { id: string }; b
                       {channelCfg && <span>·</span>}
                       <span>{sentAt ? formatDate(sentAt) : '—'}</span>
                       {/* Sessão de retry tag — só aparece se sessionIndex > 1
-                          (1 = primeiro dispatch, padrão; 2+ = retomada parcial) */}
-                      {message.sessionIndex && message.sessionIndex > 1 && (
+                          (1 = primeiro dispatch, padrão; 2+ = retomada parcial).
+                          Comparação numérica direta (não `&&`) evita renderizar
+                          o "0" como texto se sessionIndex chegar como 0 — JSX
+                          curto-circuita números falsy como filhos de texto. */}
+                      {(message.sessionIndex ?? 0) > 1 && (
                         <>
                           <span>·</span>
                           <span className="inline-flex items-center gap-0.5 text-amber-600 dark:text-amber-400">

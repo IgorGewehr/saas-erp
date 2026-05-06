@@ -128,7 +128,7 @@ export function ClientDetailPanel({
 
       {/* Tab: Campanhas */}
       {activeTab === 'campanhas' && (
-        <CampaignsTab client={{ id: client.id }} businessId={business?.id ?? ''} />
+        <CampaignsTab clientId={client.id} businessId={business?.id ?? ''} />
       )}
 
       {/* Tab: Timeline */}
