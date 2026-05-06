@@ -45,7 +45,7 @@ const SUGGESTED_PROMPTS = [
 ];
 
 export default function AnalystChatPanel() {
-  const { user, business } = useAuth();
+  const { user } = useAuth();
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -55,9 +55,8 @@ export default function AnalystChatPanel() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Dashboard AI sempre disponível — `aiAgent.enabled` controla só o agente
-  // autônomo de atendimento ao cliente. Ver AgentHeroInput pro contexto.
-  const canUse = true;
+  // Dashboard AI (analista) sempre disponível — `aiAgent.enabled` controla só
+  // o agente autônomo de atendimento ao cliente. Ver AgentHeroInput pro contexto.
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -113,8 +112,6 @@ export default function AnalystChatPanel() {
       setIsLoading(false);
     }
   };
-
-  if (!canUse) return null;
 
   return (
     <div className="rounded-2xl border border-gray-200 dark:border-gray-700/60 bg-white dark:bg-gray-800/60 overflow-hidden">

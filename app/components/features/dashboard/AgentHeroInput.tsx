@@ -15,7 +15,6 @@ import { getAuth } from 'firebase/auth';
 import {
   Sparkles, Loader2, ChevronDown, ChevronUp, Zap, Lock,
   BarChart3, Command, ArrowUp, MessageSquarePlus,
-  AlertCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { RenderMarkdown } from './markdown';
@@ -77,12 +76,11 @@ export default function AgentHeroInput({
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const autonomous = !!business?.settings?.aiAgent?.operator?.autonomousMode;
   // Dashboard AI (chat operador/analista pra gerenciar o ERP) é INDEPENDENTE
   // da flag aiAgent.enabled — esse toggle controla apenas o agente autônomo
   // de atendimento em /Conversas. O dashboard chat sempre está disponível
   // pra operator+; checagem de role é feita server-side em /api/agent/operator/chat.
-  const canUse = true;
+  const autonomous = !!business?.settings?.aiAgent?.operator?.autonomousMode;
   const hasConversation = messages.length > 0;
 
   useEffect(() => {
@@ -92,7 +90,6 @@ export default function AgentHeroInput({
   const send = async (text?: string) => {
     const message = (text ?? input).trim();
     if (!message || isLoading || !user) return;
-    if (!canUse) return;
 
     const userMsg: ChatMessage = { role: 'user', content: message, timestamp: Date.now() };
     setMessages((prev) => [...prev, userMsg]);
@@ -267,7 +264,6 @@ export default function AgentHeroInput({
               'border border-red-200/70 dark:border-red-500/30',
               'shadow-sm transition-all duration-200',
               isFocused && 'border-red-400 dark:border-red-500/60 shadow shadow-red-500/10',
-              !canUse && 'opacity-70',
             )}
           >
             {/* Sparkle decorator — red theme */}
@@ -287,13 +283,11 @@ export default function AgentHeroInput({
               onFocus={() => setIsFocused(true)}
               onBlur={() => setIsFocused(false)}
               onKeyDown={keyDown}
-              placeholder={canUse
-                ? (mode === 'operator'
-                    ? 'Pergunte, comande ou execute uma ação...'
-                    : 'Pergunte sobre dados, métricas e tendências...')
-                : 'Agente IA está desligado. Ative em Configurações.'}
+              placeholder={mode === 'operator'
+                ? 'Pergunte, comande ou execute uma ação...'
+                : 'Pergunte sobre dados, métricas e tendências...'}
               rows={1}
-              disabled={isLoading || !canUse}
+              disabled={isLoading}
               spellCheck={false}
               autoComplete="off"
               className={cn(
@@ -309,12 +303,12 @@ export default function AgentHeroInput({
             {/* Send button — single accent (only red on the dashboard) */}
             <motion.button
               type="submit"
-              disabled={!input.trim() || isLoading || !canUse}
-              whileHover={input.trim() && !isLoading && canUse ? { scale: 1.04 } : undefined}
-              whileTap={input.trim() && !isLoading && canUse ? { scale: 0.94 } : undefined}
+              disabled={!input.trim() || isLoading}
+              whileHover={input.trim() && !isLoading ? { scale: 1.04 } : undefined}
+              whileTap={input.trim() && !isLoading ? { scale: 0.94 } : undefined}
               className={cn(
                 'self-end w-9 h-9 rounded-lg flex items-center justify-center transition-colors flex-shrink-0',
-                input.trim() && !isLoading && canUse
+                input.trim() && !isLoading
                   ? 'bg-red-600 text-white hover:bg-red-700'
                   : 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 cursor-not-allowed',
               )}
@@ -337,11 +331,7 @@ export default function AgentHeroInput({
           {/* Sub-row: status — neutral, single line */}
           <div className="mt-2 flex items-center justify-between text-[11px] text-gray-400 dark:text-gray-500 px-1">
             <div className="flex items-center gap-1.5">
-              {!canUse ? (
-                <span className="inline-flex items-center gap-1">
-                  <Lock className="w-3 h-3" /> Agente desligado
-                </span>
-              ) : mode === 'analyst' ? (
+              {mode === 'analyst' ? (
                 <span className="inline-flex items-center gap-1">
                   <BarChart3 className="w-3 h-3" /> Modo análise · somente leitura
                 </span>
@@ -411,24 +401,6 @@ export default function AgentHeroInput({
           )}
         </AnimatePresence>
 
-        {/* Disabled CTA when AI is off */}
-        <AnimatePresence>
-          {!canUse && !hasConversation && (
-            <motion.div
-              key="disabled-cta"
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.4, delay: 0.2 }}
-              className="mt-4 mx-auto max-w-md flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300 bg-amber-50/80 dark:bg-amber-500/10 border border-amber-200/60 dark:border-amber-500/20 rounded-xl px-3 py-2"
-            >
-              <AlertCircle className="w-4 h-4 flex-shrink-0" />
-              <span>
-                Ative o Agente IA em <strong>Configurações → Enterprise</strong> para conversar com seu negócio em linguagem natural.
-              </span>
-            </motion.div>
-          )}
-        </AnimatePresence>
       </div>
     </div>
   );

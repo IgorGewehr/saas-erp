@@ -20,7 +20,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { getAuth } from 'firebase/auth';
-import { Sparkles, Send, Loader2, Activity, ChevronDown, ChevronUp, Zap, Lock } from 'lucide-react';
+import { Sparkles, Send, Loader2, Activity, ChevronDown, ChevronUp, Zap } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 type Role = 'user' | 'assistant';
@@ -51,10 +51,9 @@ export default function OperatorChatPanel() {
   const [sessionId] = useState<string>(() => `${user?.uid || 'anon'}_${Date.now()}`);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const autonomous = !!business?.settings?.aiAgent?.operator?.autonomousMode;
   // Dashboard AI sempre disponível — `aiAgent.enabled` controla só o agente
   // autônomo de atendimento ao cliente. Ver AgentHeroInput pro contexto.
-  const canUse = true;
+  const autonomous = !!business?.settings?.aiAgent?.operator?.autonomousMode;
 
   // Auto-scroll to bottom on new message
   useEffect(() => {
@@ -135,10 +134,9 @@ export default function OperatorChatPanel() {
   };
 
   const statusPill = useMemo(() => {
-    if (!canUse) return { label: 'Agente desligado', color: 'bg-gray-400', icon: Lock };
     if (autonomous) return { label: 'Modo autônomo', color: 'bg-amber-500', icon: Zap };
     return { label: 'Modo confirm', color: 'bg-emerald-500', icon: Sparkles };
-  }, [autonomous, canUse]);
+  }, [autonomous]);
 
   const StatusIcon = statusPill.icon;
 
@@ -173,18 +171,7 @@ export default function OperatorChatPanel() {
       </div>
 
       {/* Body */}
-      {!canUse ? (
-        <div className="px-5 py-8 text-center">
-          <Lock className="w-8 h-8 mx-auto text-gray-400 mb-3" />
-          <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
-            O agente IA está desligado para este negócio.
-          </p>
-          <p className="text-xs text-gray-400">
-            Ative em <span className="font-medium">Configurações → Agente IA</span>.
-          </p>
-        </div>
-      ) : (
-        <>
+      <div>
           {/* Messages */}
           <div
             ref={scrollRef}
@@ -274,8 +261,7 @@ export default function OperatorChatPanel() {
               </span>
             </p>
           </div>
-        </>
-      )}
+        </div>
     </motion.div>
   );
 }

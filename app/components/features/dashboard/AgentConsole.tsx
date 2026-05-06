@@ -84,10 +84,9 @@ export default function AgentConsole() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const autonomous = !!business?.settings?.aiAgent?.operator?.autonomousMode;
   // Dashboard AI sempre disponível — `aiAgent.enabled` controla só o agente
   // autônomo de atendimento ao cliente. Ver AgentHeroInput pro contexto.
-  const canUse = true;
+  const autonomous = !!business?.settings?.aiAgent?.operator?.autonomousMode;
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -166,11 +165,10 @@ export default function AgentConsole() {
   };
 
   const statusLabel = useMemo(() => {
-    if (!canUse) return 'Desligado';
     if (mode === 'analyst') return 'Read-only';
     if (autonomous) return 'Autônomo';
     return 'Confirm';
-  }, [autonomous, canUse, mode]);
+  }, [autonomous, mode]);
 
   const meta = MODE_META[mode];
   const totalMessages = operatorMsgs.length + analystMsgs.length;
@@ -185,12 +183,8 @@ export default function AgentConsole() {
     )}>
       {/* Header strip — always visible */}
       <button
-        onClick={() => canUse && setIsOpen(!isOpen)}
-        disabled={!canUse}
-        className={cn(
-          'w-full flex items-center justify-between px-4 py-3 transition-colors',
-          canUse ? 'hover:bg-gray-50 dark:hover:bg-gray-800/60 cursor-pointer' : 'cursor-not-allowed opacity-70',
-        )}
+        onClick={() => setIsOpen(!isOpen)}
+        className="w-full flex items-center justify-between px-4 py-3 transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/60 cursor-pointer"
       >
         <div className="flex items-center gap-3">
           <div className={cn('w-8 h-8 rounded-lg bg-gradient-to-br flex items-center justify-center', meta.color)}>
@@ -199,7 +193,7 @@ export default function AgentConsole() {
           <div className="text-left">
             <div className="flex items-center gap-2">
               <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">Agente IA</p>
-              {!isOpen && canUse && (
+              {!isOpen && (
                 <span className="text-[10px] text-gray-400 font-medium">Clique para expandir</span>
               )}
             </div>
@@ -211,34 +205,28 @@ export default function AgentConsole() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {canUse ? (
-            <span className={cn(
-              'text-[10px] font-semibold px-2 py-0.5 rounded-full',
-              mode === 'analyst'
-                ? 'text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-500/10'
-                : autonomous
-                  ? 'text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-500/10'
-                  : 'text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-500/10',
-            )}>
-              {statusLabel}
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-1 text-[10px] text-gray-500 bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded-full">
-              <Lock className="w-2.5 h-2.5" /> Desligado
-            </span>
-          )}
+          <span className={cn(
+            'text-[10px] font-semibold px-2 py-0.5 rounded-full',
+            mode === 'analyst'
+              ? 'text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-500/10'
+              : autonomous
+                ? 'text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-500/10'
+                : 'text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-500/10',
+          )}>
+            {statusLabel}
+          </span>
           {totalMessages > 0 && (
             <span className="text-[10px] text-gray-500 bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded-full">
               {totalMessages}
             </span>
           )}
-          {canUse && (isOpen ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />)}
+          {isOpen ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
         </div>
       </button>
 
       {/* Expanded body */}
       <AnimatePresence>
-        {isOpen && canUse && (
+        {isOpen && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}

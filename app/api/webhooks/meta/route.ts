@@ -1028,20 +1028,46 @@ async function handleInstagramEvent(entry: MetaWebhookEntry) {
       };
       const mappedMediaType = (mediaTypeMap[attachmentType] || 'document') as 'image' | 'audio' | 'video' | 'document';
 
-      // For audio: download and convert OGG→M4A if needed (Instagram rejects OGG, Safari can't play it)
+      // For audio: download and convert OGG→M4A if needed (Instagram rejects OGG, Safari can't play it).
+      // resolvedBusinessId hoisted pra reusar no gate de enrichment abaixo (paridade com handleFacebookEvent).
       let resolvedMediaUrl = attachmentUrl;
+      let resolvedBusinessId: string | null = null;
       if (mappedMediaType === 'audio' && attachmentUrl) {
-        const bizId = await resolveBusinessId('instagram', String(accountId));
-        if (bizId) {
-          const pageToken = await getDecryptedPageToken(bizId);
+        resolvedBusinessId = await resolveBusinessId('instagram', String(accountId));
+        if (resolvedBusinessId) {
+          const pageToken = await getDecryptedPageToken(resolvedBusinessId);
           const stored = await downloadAndUploadAttachment({
             url: attachmentUrl,
             mediaType: 'audio',
-            businessId: bizId,
+            businessId: resolvedBusinessId,
             tempConvId: `instagram_${event.sender.id}`,
             pageToken: pageToken || undefined,
           }).catch((err) => { console.warn('[Attachment IG] audio store failed:', err); return null; });
           if (stored) resolvedMediaUrl = stored;
+        }
+      }
+
+      // Humanization: enrich voice notes and images so the agent sees text.
+      // Gated por aiAgent.enabled — paridade com WhatsApp e Facebook handlers.
+      // Sem agente autônomo, transcrição/descrição vira poluição visual + custo
+      // OpenAI sem benefício (operador humano já vê player/imagem na bolha).
+      const fallbackLabel = `[${attachmentType === 'file' ? 'Documento' : attachmentType === 'image' ? 'Imagem' : attachmentType === 'video' ? 'Video' : attachmentType === 'audio' ? 'Audio' : 'Anexo'}]`;
+      let agentContent = event.message.text || '';
+      if (!event.message.text && resolvedMediaUrl
+          && (mappedMediaType === 'audio' || mappedMediaType === 'image')) {
+        if (!resolvedBusinessId) {
+          resolvedBusinessId = await resolveBusinessId('instagram', String(accountId));
+        }
+        if (resolvedBusinessId && await isAgentEnabled(resolvedBusinessId)) {
+          if (mappedMediaType === 'audio') {
+            const { enrichAudio } = await import('@/lib/channels/media-enrichment');
+            const enriched = await enrichAudio({ mediaUrl: resolvedMediaUrl });
+            if (enriched) agentContent = enriched.content;
+          } else if (mappedMediaType === 'image') {
+            const { enrichImage } = await import('@/lib/channels/media-enrichment');
+            const enriched = await enrichImage({ mediaUrl: resolvedMediaUrl });
+            if (enriched) agentContent = enriched.content;
+          }
         }
       }
 
@@ -1052,8 +1078,8 @@ async function handleInstagramEvent(entry: MetaWebhookEntry) {
         senderName,
         senderAvatarUrl,
         messageId: event.message.mid,
-        content: event.message.text || '',
-        conversationPreview: event.message.text || `[${attachmentType === 'file' ? 'Documento' : attachmentType === 'image' ? 'Imagem' : attachmentType === 'video' ? 'Video' : attachmentType === 'audio' ? 'Audio' : 'Anexo'}]`,
+        content: agentContent,
+        conversationPreview: event.message.text || fallbackLabel,
         mediaType: mappedMediaType,
         mediaUrl: resolvedMediaUrl,
         timestamp: new Date(event.timestamp).toISOString(),
