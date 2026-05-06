@@ -54,6 +54,8 @@ interface UseTeamChatResult {
   /** hasUnread aplica também o override otimista local (markAsRead instantâneo). */
   hasUnread: (chatId: string) => boolean;
   ensureGlobalChat: () => Promise<string>;
+  /** Cria (se não existir) um DM 1:1 com `otherUid` e retorna o chatId. */
+  ensureDM: (otherUid: string) => Promise<string>;
   sendMessage: (chatId: string, text: string) => Promise<void>;
   markAsRead: (chatId: string) => Promise<void>;
 }
@@ -194,6 +196,30 @@ export function useTeamChat(): UseTeamChatResult {
     }
   }, [businessId]);
 
+  // Cria DM 1:1 lazy. ID determinístico — se dois usuários clicarem um no outro
+  // ao mesmo tempo, ambos resolvem pro mesmo chatId e o setDoc(merge:true)
+  // garante idempotência. memberIds sorted pra match com o ID.
+  const ensureDM = useCallback(async (otherUid: string): Promise<string> => {
+    if (!businessId || !user) throw new Error('Sem business/auth');
+    if (otherUid === user.uid) throw new Error('Não pode iniciar DM consigo mesmo');
+    const id = dmChatId(user.uid, otherUid);
+    const ref = doc(db, 'teamChats', id);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      const now = new Date().toISOString();
+      const sortedMembers = [user.uid, otherUid].sort();
+      await setDoc(ref, {
+        businessId,
+        type: 'dm',
+        memberIds: sortedMembers,
+        lastReadAt: {},
+        createdAt: now,
+        updatedAt: now,
+      }, { merge: true });
+    }
+    return id;
+  }, [businessId, user]);
+
   const sendMessage = useCallback(async (chatId: string, text: string) => {
     if (!user || !businessId) throw new Error('Sem auth/business');
     const trimmed = text.trim();
@@ -270,6 +296,7 @@ export function useTeamChat(): UseTeamChatResult {
     totalUnread,
     hasUnread,
     ensureGlobalChat,
+    ensureDM,
     sendMessage,
     markAsRead,
   };

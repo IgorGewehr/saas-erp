@@ -1150,7 +1150,10 @@
     "onlineCount": "{{count}} online",
     "realTimeUpdate": "Updates in real time · presence detected automatically",
     "unreadBadgeTitle_one": "{{count}} new conversation",
-    "unreadBadgeTitle_other": "{{count}} new conversations"
+    "unreadBadgeTitle_other": "{{count}} new conversations",
+    "startDM": "Start conversation",
+    "unknownUser": "User",
+    "noConversationsYet": "No direct conversations yet. Click a member below to start."
   },
   "common": {
     "save": "Save",

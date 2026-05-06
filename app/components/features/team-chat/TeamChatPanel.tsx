@@ -182,6 +182,7 @@ function TeamChatDropdown({ members, teamChat }: { members: UserType[]; teamChat
     globalChat,
     error,
     ensureGlobalChat,
+    ensureDM,
     markAsRead,
     sendMessage,
     hasUnread,
@@ -199,6 +200,18 @@ function TeamChatDropdown({ members, teamChat }: { members: UserType[]; teamChat
   const openChat = (chatId: string) => {
     setView({ type: 'chat', chatId });
     void markAsRead(chatId);
+  };
+
+  // Abre (criando se necessário) um DM com o membro clicado.
+  const openDM = async (otherUid: string) => {
+    if (!user || otherUid === user.uid) return;
+    try {
+      const chatId = await ensureDM(otherUid);
+      setView({ type: 'chat', chatId });
+      void markAsRead(chatId);
+    } catch (err) {
+      console.error('[TeamChat] openDM failed:', err);
+    }
   };
 
   const goBack = () => setView({ type: 'list' });
@@ -313,6 +326,7 @@ function TeamChatDropdown({ members, teamChat }: { members: UserType[]; teamChat
                 totalUnread={teamChat.totalUnread}
                 hasUnread={hasUnread}
                 onSelect={openChat}
+                onSelectMember={openDM}
               />
             </motion.div>
           ) : (
@@ -377,6 +391,7 @@ function ListView({
   totalUnread,
   hasUnread,
   onSelect,
+  onSelectMember,
 }: {
   chats: TeamChat[];
   globalChat: TeamChat | null;
@@ -385,6 +400,7 @@ function ListView({
   totalUnread: number;
   hasUnread: (chatId: string) => boolean;
   onSelect: (chatId: string) => void;
+  onSelectMember: (otherUid: string) => void;
 }) {
   const { t } = useTranslation();
 
@@ -418,10 +434,10 @@ function ListView({
         </div>
         <div className="px-1.5 space-y-0.5">
           {pinned.map(c => (
-            <ChatRow key={c.id} chat={c} userUid={userUid} unread={hasUnread(c.id)} onClick={() => onSelect(c.id)} />
+            <ChatRow key={c.id} chat={c} members={members} userUid={userUid} unread={hasUnread(c.id)} onClick={() => onSelect(c.id)} />
           ))}
           {others.map(c => (
-            <ChatRow key={c.id} chat={c} userUid={userUid} unread={hasUnread(c.id)} onClick={() => onSelect(c.id)} />
+            <ChatRow key={c.id} chat={c} members={members} userUid={userUid} unread={hasUnread(c.id)} onClick={() => onSelect(c.id)} />
           ))}
         </div>
 
@@ -432,7 +448,12 @@ function ListView({
         </div>
         <div className="px-1.5 pb-2 space-y-0.5">
           {sortedMembers.map(member => (
-            <MemberRow key={member.id} member={member} isSelf={member.uid === userUid} />
+            <MemberRow
+              key={member.id}
+              member={member}
+              isSelf={member.uid === userUid}
+              onSelect={onSelectMember}
+            />
           ))}
         </div>
       </div>
@@ -449,9 +470,10 @@ function ListView({
 // ─── Row de chat (lista) ─────────────────────────────────────────────────────
 
 function ChatRow({
-  chat, userUid, unread, onClick,
+  chat, members, userUid, unread, onClick,
 }: {
   chat: TeamChat;
+  members: UserType[];
   userUid: string | undefined;
   unread: boolean;
   onClick: () => void;
@@ -459,6 +481,13 @@ function ChatRow({
   const { t } = useTranslation();
   const isGlobal = chat.type === 'global';
   const lastMsg = chat.lastMessage;
+
+  // Resolve dados do "outro" para DMs. Pode ser undefined se o membro foi
+  // removido do business — caímos no fallback "Usuário".
+  const dmOther = !isGlobal
+    ? members.find(m => m.uid === chat.memberIds.find(id => id !== userUid))
+    : null;
+  const dmDisplayName = dmOther?.name ?? t('teamChat.unknownUser');
 
   return (
     <button
@@ -468,15 +497,16 @@ function ChatRow({
         'hover:bg-gray-50 dark:hover:bg-white/[0.04]',
       )}
     >
-      {isGlobal ? <GlobalAvatar size={36} /> : <Avatar name={chat.lastMessage?.senderName ?? '?'} size={36} />}
+      {isGlobal
+        ? <GlobalAvatar size={36} />
+        : <Avatar name={dmDisplayName} photoURL={dmOther?.photoURL} size={36} />}
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between gap-2">
           <p className={cn(
             'text-[13px] truncate leading-tight',
             unread ? 'font-bold text-gray-900 dark:text-gray-100' : 'font-medium text-gray-800 dark:text-gray-100',
           )}>
-            {/* Fase 2: pra DM, resolver o nome do outro membro via lookup em members[]. */}
-            {isGlobal ? t('teamChat.general') : (lastMsg?.senderName ?? '—')}
+            {isGlobal ? t('teamChat.general') : dmDisplayName}
           </p>
           {chat.lastMessageAt && (
             <span className="text-[10.5px] text-gray-400 dark:text-gray-500 flex-shrink-0">
@@ -504,13 +534,20 @@ function ChatRow({
 
 // ─── Row de membro (lista) ───────────────────────────────────────────────────
 
-function MemberRow({ member, isSelf }: { member: UserType; isSelf: boolean }) {
+function MemberRow({
+  member, isSelf, onSelect,
+}: {
+  member: UserType;
+  isSelf: boolean;
+  onSelect: (otherUid: string) => void;
+}) {
   const { t } = useTranslation();
   const ms = getMemberDisplayStatus(member);
   const lastSeen = member.lastSeenAt || member.lastLoginAt;
 
-  return (
-    <div className="flex items-center gap-2.5 px-2.5 py-1.5 rounded-xl">
+  // Conteúdo é o mesmo pra self (div) e outros (button) — só o wrapper muda.
+  const inner = (
+    <>
       <div className="relative flex-shrink-0">
         <Avatar name={member.name} photoURL={member.photoURL} size={28} />
         <div className={cn(
@@ -544,7 +581,26 @@ function MemberRow({ member, isSelf }: { member: UserType; isSelf: boolean }) {
           )}
         </div>
       </div>
-    </div>
+    </>
+  );
+
+  if (isSelf) {
+    return (
+      <div className="flex items-center gap-2.5 px-2.5 py-1.5 rounded-xl">
+        {inner}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(member.uid)}
+      title={t('teamChat.startDM')}
+      className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-xl text-left transition-colors hover:bg-gray-50 dark:hover:bg-white/[0.04]"
+    >
+      {inner}
+    </button>
   );
 }
 
