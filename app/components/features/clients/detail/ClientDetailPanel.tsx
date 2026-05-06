@@ -30,6 +30,7 @@ import ClientAgentMemoryPanel from '../ClientAgentMemoryPanel';
 import { ScoresSection } from './ScoresSection';
 import { LoyaltyHistorySection } from './LoyaltyHistorySection';
 import { ClientTimeline } from './ClientTimeline';
+import { ChannelsTab } from './ChannelsTab';
 import { PointsAdjustModal } from './PointsAdjustModal';
 
 export function ClientDetailPanel({
@@ -45,7 +46,7 @@ export function ClientDetailPanel({
 }) {
   const { business, user } = useAuth();
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState<'perfil' | 'timeline'>('perfil');
+  const [activeTab, setActiveTab] = useState<'perfil' | 'canais' | 'timeline'>('perfil');
   const [showPointsAdjust, setShowPointsAdjust] = useState(false);
   const [localPoints, setLocalPoints] = useState<number | null>(null);
 
@@ -98,21 +99,30 @@ export function ClientDetailPanel({
 
       {/* Tabs */}
       <div className="flex border-b border-gray-100 dark:border-gray-800 px-5">
-        {(['perfil', 'timeline'] as const).map(tab => (
+        {([
+          { id: 'perfil',   label: 'Perfil' },
+          { id: 'canais',   label: 'Canais' },
+          { id: 'timeline', label: 'Timeline' },
+        ] as const).map(tab => (
           <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
             className={cn(
-              'px-4 py-2.5 text-xs font-semibold border-b-2 transition-colors capitalize',
-              activeTab === tab
+              'px-4 py-2.5 text-xs font-semibold border-b-2 transition-colors',
+              activeTab === tab.id
                 ? 'border-red-500 text-red-600 dark:text-red-400'
                 : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
             )}
           >
-            {tab === 'perfil' ? 'Perfil' : 'Timeline'}
+            {tab.label}
           </button>
         ))}
       </div>
+
+      {/* Tab: Canais */}
+      {activeTab === 'canais' && (
+        <ChannelsTab client={client} businessId={business?.id ?? ''} />
+      )}
 
       {/* Tab: Timeline */}
       {activeTab === 'timeline' && (
