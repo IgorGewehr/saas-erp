@@ -24,6 +24,7 @@ import {
   RefreshCw,
   Save,
   ChevronRight,
+  Maximize2,
 } from 'lucide-react';
 
 interface VaultListItem extends Omit<VaultEntry, 'encryptedPassword'> {
@@ -100,6 +101,7 @@ export function VaultTab() {
   const [revealTimer, setRevealTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
   const [revealing, setRevealing] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [previewEntry, setPreviewEntry] = useState<VaultListItem | null>(null);
 
   const REVEAL_TIMEOUT_MS = 15_000;
   const canEdit = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
@@ -153,6 +155,14 @@ export function VaultTab() {
   useEffect(() => {
     return () => { if (revealTimer) clearTimeout(revealTimer); };
   }, [revealTimer]);
+
+  // Keep previewEntry hydrated against the latest list (rename/edit/delete)
+  useEffect(() => {
+    if (!previewEntry) return;
+    const fresh = entries.find(e => e.id === previewEntry.id);
+    if (!fresh) { setPreviewEntry(null); return; }
+    if (fresh !== previewEntry) setPreviewEntry(fresh);
+  }, [entries, previewEntry]);
 
   const categories = useMemo(() => {
     const s = new Set<string>();
@@ -380,8 +390,18 @@ export function VaultTab() {
                 layout
                 initial={{ opacity: 0, y: 6 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="group bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 hover:shadow-md transition-shadow"
+                onDoubleClick={(ev) => {
+                  // Skip dblclick that lands on interactive children (buttons/links/inputs)
+                  if ((ev.target as HTMLElement).closest('button, a, input')) return;
+                  setPreviewEntry(e);
+                }}
+                title="Duplo clique para destacar"
+                className="group relative bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 hover:shadow-md transition-shadow cursor-default select-none"
               >
+                {/* Hint de expandir — aparece no hover */}
+                <div className="absolute bottom-2.5 right-2.5 opacity-0 group-hover:opacity-40 transition-opacity duration-150 pointer-events-none">
+                  <Maximize2 className="w-3 h-3 text-gray-500 dark:text-gray-400" />
+                </div>
                 <div className="flex items-start justify-between gap-2 mb-2">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5 flex-wrap">
@@ -519,6 +539,238 @@ export function VaultTab() {
         </AnimatePresence>,
         document.body,
       )}
+
+      {/* Preview modal (double-click no card) — destaca título, senha e descrição */}
+      {typeof document !== 'undefined' && createPortal(
+        <AnimatePresence>
+          {previewEntry && (
+            <VaultPreviewModal
+              key={previewEntry.id}
+              entry={previewEntry}
+              revealedValue={revealedId === previewEntry.id ? revealedValue : null}
+              revealing={revealing === previewEntry.id}
+              canEdit={canEdit}
+              onClose={() => setPreviewEntry(null)}
+              onReveal={() => handleReveal(previewEntry.id)}
+              onCopyPassword={copyRevealed}
+              onCopyUsername={() => previewEntry.username && copyUsername(previewEntry.username)}
+              onEdit={() => { const e = previewEntry; setPreviewEntry(null); openEdit(e); }}
+            />
+          )}
+        </AnimatePresence>,
+        document.body,
+      )}
+    </motion.div>
+  );
+}
+
+function VaultPreviewModal({
+  entry,
+  revealedValue,
+  revealing,
+  canEdit,
+  onClose,
+  onReveal,
+  onCopyPassword,
+  onCopyUsername,
+  onEdit,
+}: {
+  entry: VaultListItem;
+  revealedValue: string | null;
+  revealing: boolean;
+  canEdit: boolean;
+  onClose: () => void;
+  onReveal: () => void;
+  onCopyPassword: () => void;
+  onCopyUsername: () => void;
+  onEdit: () => void;
+}) {
+  // Esc fecha
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  // Lock scroll do wrapper de tab (will-change-transform em app/page.tsx)
+  useEffect(() => {
+    const el = document.querySelector<HTMLElement>(
+      '.will-change-transform.pointer-events-auto.overflow-y-auto',
+    );
+    if (!el) return;
+    const prevOverflow = el.style.overflowY;
+    el.style.overflowY = 'hidden';
+    return () => { el.style.overflowY = prevOverflow; };
+  }, []);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.18 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-8 bg-black/50 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.93, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 8 }}
+        transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+        onClick={e => e.stopPropagation()}
+        className="relative w-full max-w-2xl rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-2xl flex flex-col"
+        style={{ maxHeight: 'calc(100vh - 64px)' }}
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3 px-6 pt-5 pb-4 shrink-0 border-b border-gray-100 dark:border-gray-800">
+          <div className="flex items-start gap-3 flex-1 min-w-0">
+            <div className="w-10 h-10 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 flex items-center justify-center flex-shrink-0">
+              <Shield className="w-5 h-5 text-emerald-500" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h2 className="font-bold text-xl leading-snug break-words text-gray-900 dark:text-gray-100 select-text">
+                {entry.title}
+              </h2>
+              {(entry.category || entry.accessScope === 'specific') && (
+                <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+                  {entry.category && (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400">
+                      {entry.category}
+                    </span>
+                  )}
+                  {entry.accessScope === 'specific' && (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 inline-flex items-center gap-1">
+                      <Lock className="w-2.5 h-2.5" /> Restrita
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0 select-none">
+            {canEdit && (
+              <button
+                onClick={onEdit}
+                title="Editar entrada"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 transition-colors text-xs font-semibold text-gray-700 dark:text-gray-200"
+              >
+                <Edit3 className="w-3.5 h-3.5" />
+                Editar
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              title="Fechar (Esc)"
+              className="p-1.5 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            >
+              <X className="w-4 h-4 text-gray-500 dark:text-gray-400" />
+            </button>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+          {entry.username && (
+            <div>
+              <label className="block text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1.5">
+                Usuário / Email
+              </label>
+              <button
+                type="button"
+                onClick={onCopyUsername}
+                className="group/u w-full inline-flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 text-sm text-gray-900 dark:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-left"
+                title="Clique para copiar"
+              >
+                <span className="truncate select-text">{entry.username}</span>
+                <Copy className="w-3.5 h-3.5 text-gray-400 opacity-0 group-hover/u:opacity-100 transition-opacity flex-shrink-0" />
+              </button>
+            </div>
+          )}
+
+          {entry.url && (
+            <div>
+              <label className="block text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1.5">
+                URL
+              </label>
+              <a
+                href={entry.url.startsWith('http') ? entry.url : `https://${entry.url}`}
+                target="_blank"
+                rel="noreferrer"
+                className="w-full inline-flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 text-sm text-blue-600 dark:text-blue-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+              >
+                <span className="truncate">{entry.url}</span>
+                <ExternalLink className="w-3.5 h-3.5 flex-shrink-0" />
+              </a>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1.5">
+              Senha
+            </label>
+            {!entry.hasPassword ? (
+              <div className="px-3 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 text-sm text-gray-400 dark:text-gray-500 inline-flex items-center gap-1.5">
+                <EyeOff className="w-3.5 h-3.5" />
+                Nenhuma credencial salva
+              </div>
+            ) : revealedValue ? (
+              <div className="flex items-center gap-2">
+                <div className="flex-1 min-w-0 px-3 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 font-mono text-sm text-gray-900 dark:text-gray-100 break-all select-text">
+                  {revealedValue}
+                </div>
+                <button
+                  onClick={onCopyPassword}
+                  className="p-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white transition-colors"
+                  title="Copiar"
+                >
+                  <Copy className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={onReveal}
+                  className="p-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-gray-500 hover:text-gray-700 dark:hover:text-gray-200"
+                  title="Ocultar"
+                >
+                  <EyeOff className="w-4 h-4" />
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={onReveal}
+                disabled={revealing}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gray-100 dark:bg-white/[0.04] hover:bg-gray-200 dark:hover:bg-white/[0.08] text-sm font-semibold text-gray-700 dark:text-gray-300 disabled:opacity-50 transition-colors"
+              >
+                {revealing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Eye className="w-4 h-4" />}
+                Revelar senha
+              </button>
+            )}
+            <p className="mt-1.5 text-[10px] text-gray-400 dark:text-gray-500">
+              A senha some automaticamente após 15 segundos.
+            </p>
+          </div>
+
+          {entry.notes && (
+            <div>
+              <label className="block text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1.5">
+                Descrição
+              </label>
+              <p className="px-3 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-words leading-relaxed select-text">
+                {entry.notes}
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-3.5 border-t border-gray-100 dark:border-gray-800 flex items-center gap-3 shrink-0 select-none text-[11px] text-gray-500 dark:text-gray-400">
+          <span>Criado por {entry.createdByName}</span>
+          <span className="ml-auto">
+            {entry.accessCount ? `${entry.accessCount} ${entry.accessCount === 1 ? 'consulta' : 'consultas'}` : 'Nunca acessada'}
+          </span>
+          <span className="text-[10px] text-gray-400 dark:text-gray-500 italic">
+            Esc para fechar
+          </span>
+        </div>
+      </motion.div>
     </motion.div>
   );
 }
