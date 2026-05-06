@@ -106,11 +106,13 @@ export function VaultTab() {
   const REVEAL_TIMEOUT_MS = 15_000;
   const canEdit = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
 
-  // Lock-scroll do wrapper de tab ativo enquanto o modal está aberto.
-  // Sem isso, o backdrop é portalado pra document.body mas o conteúdo da
-  // página continua scrollável atrás (tab wrapper tem overflow-y-auto).
+  // Lock-scroll do wrapper de tab ativo enquanto qualquer modal (form ou preview)
+  // está aberto. Síncrono com state change — não depende do exit animation do
+  // modal, então nunca fica preso. Sem isso, o backdrop é portalado pra
+  // document.body mas o conteúdo da página continua scrollável atrás (tab wrapper
+  // tem overflow-y-auto).
   useEffect(() => {
-    if (!formOpen) return;
+    if (!formOpen && !previewEntry) return;
     const el = document.querySelector<HTMLElement>(
       '.will-change-transform.pointer-events-auto.overflow-y-auto',
     );
@@ -118,7 +120,7 @@ export function VaultTab() {
     const prevOverflow = el.style.overflowY;
     el.style.overflowY = 'hidden';
     return () => { el.style.overflowY = prevOverflow; };
-  }, [formOpen]);
+  }, [formOpen, previewEntry]);
 
   useEffect(() => {
     if (!business?.id) { setLoading(false); return; }
@@ -540,26 +542,25 @@ export function VaultTab() {
         document.body,
       )}
 
-      {/* Preview modal (double-click no card) — destaca título, senha e descrição */}
-      {typeof document !== 'undefined' && createPortal(
-        <AnimatePresence>
-          {previewEntry && (
-            <VaultPreviewModal
-              key={previewEntry.id}
-              entry={previewEntry}
-              revealedValue={revealedId === previewEntry.id ? revealedValue : null}
-              revealing={revealing === previewEntry.id}
-              canEdit={canEdit}
-              onClose={() => setPreviewEntry(null)}
-              onReveal={() => handleReveal(previewEntry.id)}
-              onCopyPassword={copyRevealed}
-              onCopyUsername={() => previewEntry.username && copyUsername(previewEntry.username)}
-              onEdit={() => { const e = previewEntry; setPreviewEntry(null); openEdit(e); }}
-            />
-          )}
-        </AnimatePresence>,
-        document.body,
-      )}
+      {/* Preview modal (double-click no card) — destaca título, senha e descrição.
+          AnimatePresence fica fora do portal (mesmo padrão de NotePreviewModal),
+          o portal pra document.body é feito DENTRO de VaultPreviewModal. */}
+      <AnimatePresence>
+        {previewEntry && (
+          <VaultPreviewModal
+            key={previewEntry.id}
+            entry={previewEntry}
+            revealedValue={revealedId === previewEntry.id ? revealedValue : null}
+            revealing={revealing === previewEntry.id}
+            canEdit={canEdit}
+            onClose={() => setPreviewEntry(null)}
+            onReveal={() => handleReveal(previewEntry.id)}
+            onCopyPassword={copyRevealed}
+            onCopyUsername={() => previewEntry.username && copyUsername(previewEntry.username)}
+            onEdit={() => { const e = previewEntry; setPreviewEntry(null); openEdit(e); }}
+          />
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
@@ -585,25 +586,18 @@ function VaultPreviewModal({
   onCopyUsername: () => void;
   onEdit: () => void;
 }) {
-  // Esc fecha
+  // Esc fecha. Scroll-lock vive no parent (gateado em previewEntry) — síncrono
+  // com state change, não depende do exit animation, então nunca fica preso.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
   }, [onClose]);
 
-  // Lock scroll do wrapper de tab (will-change-transform em app/page.tsx)
-  useEffect(() => {
-    const el = document.querySelector<HTMLElement>(
-      '.will-change-transform.pointer-events-auto.overflow-y-auto',
-    );
-    if (!el) return;
-    const prevOverflow = el.style.overflowY;
-    el.style.overflowY = 'hidden';
-    return () => { el.style.overflowY = prevOverflow; };
-  }, []);
-
-  return (
+  // Portal pra escapar o containing block do wrapper com `will-change-transform`
+  // — sem isso, `position: fixed` é resolvido contra o wrapper scrollable.
+  if (typeof document === 'undefined') return null;
+  return createPortal(
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
@@ -771,7 +765,8 @@ function VaultPreviewModal({
           </span>
         </div>
       </motion.div>
-    </motion.div>
+    </motion.div>,
+    document.body,
   );
 }
 
