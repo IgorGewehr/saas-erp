@@ -6070,6 +6070,12 @@ export default function ConversasModule() {
         body: JSON.stringify({
           businessId: business.id,
           conversationId: selectedConversation.id,
+          // CRÍTICO: passa messageDocId pro backend ATUALIZAR a mensagem que
+          // o frontend já criou (com mediaUrl/mediaType). Sem isso, o backend
+          // cai no branch saveAgentMessage e cria uma SEGUNDA mensagem (sem
+          // mediaUrl, só content) — operador via duas bolhas/dois timestamps
+          // pro mesmo envio. Outros paths (text/template/retry) já passavam.
+          messageDocId: msgRef.id,
           channel: selectedConversation.channel,
           recipientId: selectedConversation.contactExternalId,
           // Sem caption automática — o filename real vai em fileName separado.
@@ -6082,6 +6088,9 @@ export default function ConversasModule() {
       });
 
       if (sendRes.ok) {
+        // Backend já marca status='sent' + externalMessageId em
+        // updateMessageAfterSend. Esta linha vira no-op, mas deixamos como
+        // belt-and-suspenders pra UI atualizar antes do snapshot do Firestore.
         await updateDoc(msgRef, { status: 'sent' });
       } else {
         const errData = await sendRes.json().catch(() => ({})) as { error?: string };
