@@ -17,8 +17,7 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { decryptToken } from '@/lib/utils/encryption';
 import { checkRateLimit, checkBusinessRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { ensureBaileysSessionConnected } from '@/app/api/whatsapp/baileys-manager';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { storage as firebaseStorage } from '@/lib/config/firebase';
+import { uploadServerMedia } from '@/lib/services/storage/adminUpload';
 import type {
   ConversationChannel,
   ChannelCredentials,
@@ -960,12 +959,14 @@ async function convertOggToM4a(oggUrl: string, businessId: string): Promise<stri
   await unlink(inputPath).catch(() => {});
   await unlink(outputPath).catch(() => {});
 
-  // 4. Upload converted file to Firebase Storage
+  // 4. Upload converted file via admin SDK (server-side não tem auth do
+  //    Firebase pra usar client SDK contra as Storage Rules).
   const storagePath = `conversations/${businessId}/converted/${Date.now()}_audio.m4a`;
-  const storageRef = ref(firebaseStorage, storagePath);
-  await uploadBytes(storageRef, m4aBuffer, { contentType: 'audio/mp4' });
-
-  return getDownloadURL(storageRef);
+  return await uploadServerMedia({
+    storagePath,
+    buffer: m4aBuffer,
+    contentType: 'audio/mp4',
+  });
 }
 
 /**

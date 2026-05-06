@@ -13,29 +13,17 @@
  *     pra que a UI use a mesma URL signed do Firebase Storage de sempre.
  */
 
-import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import {
   downloadMediaMessage,
   type WAMessage,
   type proto,
 } from '@whiskeysockets/baileys';
+import { uploadServerMedia } from '@/lib/services/storage/adminUpload';
 
-// Firebase config — mesmo padrão dos outros uploads (usa client SDK pra ter
-// getDownloadURL com signed token, não admin SDK).
-const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
-};
-
-function getStorageBucket() {
-  const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
-  return getStorage(app);
-}
+// Storage uploads via uploadServerMedia (admin SDK). Antes este arquivo
+// inicializava o client SDK manualmente (com firebaseConfig) e chamava
+// uploadBytes — mas como Baileys roda server-side sem auth do Firebase, as
+// Storage Rules retornavam `storage/unauthorized` em todas as mídias inbound.
 
 // MIMEs que precisam ser convertidos pra M4A pra rodar em todos os navegadores.
 // WhatsApp voice notes usam audio/ogg;codecs=opus — Safari não toca OGG.
@@ -288,11 +276,10 @@ export async function downloadAndUploadBaileysMedia(
       : `inbound_${Date.now()}_${(waMessage.key.id || 'msg').slice(-8)}${ext}`;
     const storagePath = `conversations/${businessId}/${conversationId}/${Date.now()}_${baseName}`;
 
-    // 6. Upload via client SDK pra ter URL signed compatível com a UI.
-    const storage = getStorageBucket();
-    const storageRef = ref(storage, storagePath);
-    await uploadBytes(storageRef, buffer, { contentType });
-    const downloadUrl = await getDownloadURL(storageRef);
+    // 6. Upload via admin SDK (bypassa Storage Rules que rejeitam
+    //    requests sem `request.auth`). URL retornada tem o mesmo formato
+    //    da gerada pelo client SDK, então a UI consome igual.
+    const downloadUrl = await uploadServerMedia({ storagePath, buffer, contentType });
 
     return { mediaUrl: downloadUrl, contentType };
   } catch (err) {

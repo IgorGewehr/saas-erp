@@ -15,31 +15,17 @@
 
 import crypto from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
-import { initializeApp, getApps, getApp } from 'firebase/app';
 import { decryptToken } from '@/lib/utils/encryption';
 import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { FieldValue } from 'firebase-admin/firestore';
 import { isOptOutKeyword } from '@/lib/utils/optOutKeywords';
 import { getAlternativeBrazilianPhone } from '@/lib/utils/phoneAlternatives';
+import { uploadServerMedia } from '@/lib/services/storage/adminUpload';
 
-// ─── Firebase Storage for media uploads ──────────────────────────────────────
-
-import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-
-const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
-};
-
-function getStorageBucket() {
-  const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
-  return getStorage(app);
-}
+// Storage uploads são feitos via uploadServerMedia (admin SDK) — antes
+// inicializávamos o client SDK aqui mas server-side não tem auth do Firebase,
+// então as Storage Rules retornavam `storage/unauthorized` em todo upload.
 
 /**
  * Persiste falha do pipeline de mídia em `webhookFailures` para diagnóstico
@@ -174,14 +160,13 @@ async function downloadAndUploadMedia(params: {
     const fileName = `${Date.now()}_${params.mediaId.slice(-8)}${ext}`;
     const storagePath = `conversations/${params.businessId}/${params.conversationId}/${fileName}`;
 
-    // 5. Upload to Firebase Storage with correct contentType
-    const storage = getStorageBucket();
-    const storageRef = ref(storage, storagePath);
-    await uploadBytes(storageRef, uploadBuffer, {
+    // 5. Upload via admin SDK — bypassa Storage Rules que esperam request.auth
+    //    de um usuário client-side (que não existe em webhooks).
+    const downloadUrl = await uploadServerMedia({
+      storagePath,
+      buffer: uploadBuffer,
       contentType: uploadContentType,
     });
-
-    const downloadUrl = await getDownloadURL(storageRef);
     return downloadUrl;
   } catch (err) {
     console.error('[Media] Error downloading/uploading media:', err);
@@ -309,10 +294,11 @@ async function downloadAndUploadAttachment(params: {
     const fileName = `${Date.now()}_attach${ext}`;
     const storagePath = `conversations/${params.businessId}/${params.tempConvId}/${fileName}`;
 
-    const storage = getStorageBucket();
-    const storageRef = ref(storage, storagePath);
-    await uploadBytes(storageRef, buffer, { contentType: uploadContentType });
-    return getDownloadURL(storageRef);
+    return await uploadServerMedia({
+      storagePath,
+      buffer,
+      contentType: uploadContentType,
+    });
   } catch (err) {
     console.error('[Attachment] Error:', err);
     return null;
@@ -1183,12 +1169,12 @@ async function persistProfilePic(
       picRes.headers.get('content-type')?.split(';')[0]?.trim() || 'image/jpeg';
     const buffer = Buffer.from(await picRes.arrayBuffer());
 
-    // Upload to Firebase Storage using the same client SDK already used for media
-    const storage = getStorageBucket();
-    const storageRef = ref(storage, `avatars/meta/${senderId}.jpg`);
-    await uploadBytes(storageRef, buffer, { contentType });
-
-    const permanentUrl = await getDownloadURL(storageRef);
+    // Upload via admin SDK (helper compartilhado com o pipeline de mídia).
+    const permanentUrl = await uploadServerMedia({
+      storagePath: `avatars/meta/${senderId}.jpg`,
+      buffer,
+      contentType,
+    });
     console.log(`[Profile Pic] Persisted avatar for ${senderId} → Firebase Storage`);
     return permanentUrl;
   } catch (err) {
