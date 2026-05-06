@@ -2047,6 +2047,18 @@ export interface Conversation {
   slaBreached?: boolean;     // true quando SLA venceu sem firstResponseAt
   csatRating?: 1 | 2 | 3 | 4 | 5;  // avaliação de satisfação registrada pelo contato
   csatSentAt?: string;       // ISO — quando a pesquisa CSAT foi enviada
+  /**
+   * ISO timestamp até quando a conversa está silenciada ("soneca"). Quando
+   * presente E > now, a conversa some de todas as smart views EXCETO da view
+   * 'snoozed' (que mostra justamente as soneca ativas). Não afeta o status
+   * (continua 'open'/'waiting') — é um sinal complementar de "não me lembre
+   * agora". Quando o tempo passa, o filtro deixa de casar e a conversa
+   * reaparece naturalmente nas views ativas — sem cron necessário.
+   */
+  snoozedUntil?: string;
+  /** UID do operador que ativou a soneca (audit trail). */
+  snoozedBy?: string;
+  snoozedByName?: string;
   assignmentHistory?: Array<{
     assignedTo?: string;
     assignedToName?: string;
@@ -2089,7 +2101,15 @@ export interface ConversationView {
   emoji?: string;
   filters: {
     channel?: string;
+    /** @deprecated Mantido para compat de views antigas — novas views usam smartView. */
     status?: string;
+    /**
+     * Smart view atual (post-refactor de filtros). Substitui o campo `status`
+     * com semântica mais rica (ex: 'awaiting_reply' = open + last msg do
+     * cliente). Quando ausente em views legadas, o `status` é mapeado pra
+     * smart view equivalente em runtime.
+     */
+    smartView?: string;
     sectorId?: string;
     assignedTo?: string;
     priority?: string;
@@ -2699,6 +2719,107 @@ export interface Broadcast {
   lastResetAt?: string;
   /** UID do admin que resetou (auditoria). */
   lastResetBy?: string;
+  /**
+   * Sessões de envio. Cada vez que o operador dispara (parcial ou total),
+   * cria-se uma sessão. Permite split de campanha em batches escalonados
+   * (25% agora, 50% depois, etc) com tracking individual por sessão.
+   * BroadcastMessage.sessionIndex referencia o `index` daqui.
+   * Vazio em broadcasts criados antes desta feature (legado).
+   */
+  sessions?: BroadcastSession[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Metadado de uma sessão de envio dentro de um broadcast. Stats por sessão
+ * são derivadas client-side filtrando broadcastMessages por sessionIndex —
+ * não duplicamos contadores aqui pra evitar drift entre cache e fonte real.
+ */
+export interface BroadcastSession {
+  /** Sequencial: 1 = primeiro dispatch, 2 = primeira retomada, etc. */
+  index: number;
+  /** ISO — quando o operador clicou Disparar/Retomar pra esta sessão. */
+  dispatchedAt: string;
+  /** Quantidade pedida pelo operador (recipients realmente processados nesta sessão). */
+  recipientCount: number;
+  /** UID e nome de quem disparou — auditoria por sessão. */
+  dispatchedBy?: string;
+  dispatchedByName?: string;
+}
+
+/**
+ * Campanha recorrente de aniversário. Diferente de Broadcast (one-shot,
+ * lista fixa de recipients): é uma REGRA que o cron varre diariamente
+ * pra encontrar clientes cujo `birthDate` bate com hoje + daysBefore, e
+ * dispara mensagem personalizada pra cada um.
+ *
+ * Idempotência por (campaignId, clientId, ano) evita disparos duplicados
+ * quando cron roda múltiplas vezes — implementado em PR-C como sub-coleção
+ * `birthdayCampaignLogs`.
+ */
+export interface BirthdayCampaign {
+  id: string;
+  businessId: string;
+  name: string;                            // ex: "Promoção 10% no aniversário"
+  enabled: boolean;                        // toggle pausa/ativa
+
+  // ── Quando dispara ─────────────────────────────
+  /** Dias ANTES do aniversário pra disparar. 0 = no dia, 7 = uma semana antes. */
+  daysBeforeBirthday: number;
+  /** Hora do envio (0-23) no fuso do business. PR-C respeita timezone. */
+  sendAtHour: number;
+
+  // ── Canal ──────────────────────────────────────
+  /** Hoje só WhatsApp; estrutura prevê email/outros no futuro. */
+  channel: 'whatsapp';
+  viaBaileys: boolean;
+  channelConnectionId?: string;
+
+  // ── Conteúdo ───────────────────────────────────
+  /** Pra Baileys (texto livre). Suporta placeholders {{name}}, {{phone}}. */
+  messageContent?: string;
+  /** Pra Cloud — template name aprovado na Meta. */
+  templateName?: string;
+  templateLanguage?: string;
+  /** Mapeamento de variáveis do template (mesma estrutura de Broadcast). */
+  templateParams?: BroadcastTemplateParam[];
+  /** Body cru do template — usado pra renderizar preview na conversa. */
+  templateBody?: string;
+
+  // ── Filtro de quem entra ───────────────────────
+  filters?: {
+    tipo?: 'pf' | 'pj' | 'all';
+    /** Lista de status que são elegíveis. Vazio/undefined = todos. */
+    status?: LeadStatus[];
+    /** Cliente precisa ter TODAS essas tags. */
+    tags?: string[];
+    /** Restringe a um setor. */
+    sectorId?: string;
+  };
+
+  // ── Stats acumulados (cron incrementa) ─────────
+  stats: {
+    totalSent: number;
+    totalDelivered: number;
+    totalRead: number;
+    totalFailed: number;
+    /** ISO da última execução do cron pra esta campanha. */
+    lastRanAt?: string;
+    /** Quantos clientes elegíveis foram encontrados na última run. */
+    lastRunMatched?: number;
+  };
+
+  // ── LGPD ───────────────────────────────────────
+  /** Base legal — aniversário tipicamente é 'legitimate-interest'
+   *  (relacionamento de cliente) ou 'transactional'. */
+  consentBasis: ConsentBasis;
+  consentSource?: string;
+  consentAcknowledgedAt?: string;
+  consentAcknowledgedBy?: string;
+
+  createdBy: string;
+  createdByName: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -2727,6 +2848,13 @@ export interface BroadcastMessage {
   consentBasis?: ConsentBasis;
   /** Snapshot das colunas extras do CSV (5.8) para reconstrução em resume/retry. */
   customColumns?: Record<string, string>;
+  /**
+   * Sessão de envio à qual esta mensagem pertence. 1 = primeiro dispatch
+   * da campanha, 2 = primeira retomada parcial, etc. Tagado pelo /send
+   * no pre-create dos broadcastMessages. Vazio em broadcasts antigos
+   * (legado) — UI lida graciosamente como "sem sessão".
+   */
+  sessionIndex?: number;
   createdAt: string;
 }
 

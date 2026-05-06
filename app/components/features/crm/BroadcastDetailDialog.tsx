@@ -21,7 +21,8 @@ import { getAuth } from 'firebase/auth';
 import { db } from '@/lib/config/firebase';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
-import { X, RefreshCw, Loader2, AlertTriangle, Check, CheckCheck, Clock, Send, Shield, RotateCcw, Trash2, Pause } from 'lucide-react';
+import { X, RefreshCw, Loader2, AlertTriangle, Check, CheckCheck, Clock, Send, Shield, RotateCcw, Trash2, Pause, Layers } from 'lucide-react';
+import { useAuth } from '@/app/components/providers/AuthProvider';
 import type { Broadcast, BroadcastMessage, BroadcastMessageStatus } from '@/lib/types';
 import { CONSENT_BASIS_LABELS } from '@/lib/types';
 import BroadcastMetricsPanel from './BroadcastMetricsPanel';
@@ -43,6 +44,7 @@ interface Props {
 }
 
 export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onClose, onRetryCreated, onDeleted }: Props) {
+  const { user } = useAuth();
   // Real-time do próprio broadcast doc — prop inicial é só seed.
   // Sem isso, status/recipients ficam stale após dispatch/resume e UI mostra
   // botões errados (ex: "Disparar agora" após envio bem-sucedido).
@@ -69,14 +71,26 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
     };
   }, []);
 
-  // Listener do broadcast doc (sincroniza status, recipients, stats)
+  // Listener do broadcast doc (sincroniza status, recipients, stats).
+  // Error handler captura `permission-denied` esperado quando o doc é apagado:
+  // Firestore re-avalia a rule `isOwnBusiness()` sobre `resource.data` que vira
+  // null após delete, retornando permission-denied em vez de "doc removed".
+  // Sem o handler, vazaria "Uncaught Error in snapshot listener" no console.
   useEffect(() => {
     const ref = doc(db, 'broadcasts', initialBroadcast.id);
-    const unsub = onSnapshot(ref, (snap) => {
-      if (snap.exists()) {
-        setBroadcast({ ...(snap.data() as Broadcast), id: snap.id });
+    const unsub = onSnapshot(
+      ref,
+      (snap) => {
+        if (snap.exists()) {
+          setBroadcast({ ...(snap.data() as Broadcast), id: snap.id });
+        }
+      },
+      (err) => {
+        if ((err as { code?: string }).code !== 'permission-denied') {
+          console.warn('[BroadcastDetail] broadcast snapshot error:', err);
+        }
       }
-    });
+    );
     return () => unsub();
   }, [initialBroadcast.id]);
 
@@ -156,19 +170,91 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
     };
   }, [broadcast.id, broadcast.businessId, broadcast.status, broadcast.stats?.sent, broadcast.stats?.failed]);
 
+  // Contadores CUMULATIVOS — uma msg que chegou ao status 'read' também conta
+  // como 'delivered' e 'sent' (passou por essas etapas). Sem isso, o card
+  // "Enviada" mostra só msgs travadas em 'sent' (visualmente ~18 de 45 reais),
+  // o que confunde o operador e diverge do denominador da barra de taxas.
   const counts = useMemo(() => {
-    const c: Record<string, number> = { all: messages.length, pending: 0, sent: 0, delivered: 0, read: 0, failed: 0 };
-    messages.forEach(m => { c[m.status] = (c[m.status] ?? 0) + 1; });
-    return c;
+    let pending = 0, sent = 0, delivered = 0, read = 0, failed = 0;
+    for (const m of messages) {
+      switch (m.status) {
+        case 'read':      read++; delivered++; sent++; break;
+        case 'delivered': delivered++; sent++; break;
+        case 'sent':      sent++; break;
+        case 'failed':    failed++; break;
+        case 'pending':
+        default:          pending++;
+      }
+    }
+    return { all: messages.length, pending, sent, delivered, read, failed };
   }, [messages]);
 
+  // Filtro casa com a semântica cumulativa: clicar "Entregues" mostra também
+  // as que já foram lidas (porque tecnicamente também foram entregues).
   const filtered = useMemo(() => {
     if (statusFilter === 'all') return messages;
+    if (statusFilter === 'sent')      return messages.filter(m => m.status === 'sent' || m.status === 'delivered' || m.status === 'read');
+    if (statusFilter === 'delivered') return messages.filter(m => m.status === 'delivered' || m.status === 'read');
     return messages.filter(m => m.status === statusFilter);
   }, [messages, statusFilter]);
 
   const failedCount = counts.failed ?? 0;
   const pendingCount = counts.pending ?? 0;
+
+  // Stats por sessão: agrupa broadcastMessages pelo sessionIndex e cruza
+  // com broadcast.sessions (metadados de quando/quem disparou). Operador
+  // pode ver "Sessão 1: 24 enviadas, 22 entregues" lado a lado com "Sessão
+  // 2: ...". Mensagens sem sessionIndex (legado pré-feature) ficam num
+  // bucket "Sem sessão".
+  const sessionStats = useMemo(() => {
+    if (messages.length === 0) return [];
+    type Bucket = {
+      index: number | null;
+      dispatchedAt?: string;
+      dispatchedByName?: string;
+      recipientCount?: number;
+      sent: number;
+      delivered: number;
+      read: number;
+      failed: number;
+      pending: number;
+      total: number;
+    };
+    const buckets = new Map<number | null, Bucket>();
+    for (const m of messages) {
+      const key = m.sessionIndex ?? null;
+      let b = buckets.get(key);
+      if (!b) {
+        b = { index: key, sent: 0, delivered: 0, read: 0, failed: 0, pending: 0, total: 0 };
+        buckets.set(key, b);
+      }
+      b.total++;
+      // Status cumulativo: read implica delivered+sent; delivered implica sent
+      switch (m.status) {
+        case 'read':      b.read++; b.delivered++; b.sent++; break;
+        case 'delivered': b.delivered++; b.sent++; break;
+        case 'sent':      b.sent++; break;
+        case 'failed':    b.failed++; break;
+        case 'pending':
+        default:          b.pending++; break;
+      }
+    }
+    // Decora com metadata de broadcast.sessions
+    for (const meta of (broadcast.sessions || [])) {
+      const b = buckets.get(meta.index);
+      if (b) {
+        b.dispatchedAt = meta.dispatchedAt;
+        b.dispatchedByName = meta.dispatchedByName;
+        b.recipientCount = meta.recipientCount;
+      }
+    }
+    // Ordena: numéricas asc, "null" (legado) por último
+    return Array.from(buckets.values()).sort((a, b) => {
+      if (a.index === null) return 1;
+      if (b.index === null) return -1;
+      return a.index - b.index;
+    });
+  }, [messages, broadcast.sessions]);
   // Erro mais recente entre as mensagens falhadas — exibido no banner pra não
   // exigir scroll e abrir a lista pra descobrir a causa.
   const latestFailedError = useMemo(() => {
@@ -214,6 +300,11 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
    * usa Retomar pra mandar o resto.
    */
   const [dispatchAmount, setDispatchAmount] = useState<number | null>(null);
+  // Quantidade pra retomar parcialmente. `null` = retoma todos os pendentes.
+  // Espelha dispatchAmount mas opera sobre o universo de pending. Permite
+  // dividir uma retomada em sub-batches (ex: pendingCount=75, retoma 25 +
+  // 25 + 25 em sessões separadas).
+  const [resumeAmount, setResumeAmount] = useState<number | null>(null);
   const [resuming, setResuming] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -227,12 +318,31 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
   const canResume = broadcast.status === 'paused';
   const isScheduled = broadcast.status === 'scheduled';
   const isStuckSending = broadcast.status === 'sending';
-  // Heurística pra "campanha presa": status='sending' + 0 messages criadas + startedAt > 2min
-  // ou simplesmente status='sending' (operador pode forçar reset mesmo enquanto processa).
+  // Heurística pra "campanha presa". Dois sinais combinados:
+  //  (a) startedAt > 2min sem nenhuma broadcastMessage criada — backend nunca
+  //      conseguiu pré-criar os docs (sinal forte de quebra real).
+  //  (b) tempo total excedeu o budget esperado pelo throttle configurado.
+  //      Sem isso, presets "humano"/"conservador" (com batchPause de 2-15min)
+  //      acionavam o banner durante operação normal.
   const stuckMinutes = broadcast.startedAt
     ? Math.floor((Date.now() - new Date(broadcast.startedAt).getTime()) / 60_000)
     : 0;
-  const looksStuck = isStuckSending && (messages.length === 0 || stuckMinutes >= 2);
+  const stuckThresholdMinutes = (() => {
+    const throttle = broadcast.throttle;
+    if (!throttle) return 2;
+    const recipientCount = broadcast.recipients?.length ?? broadcast.stats?.total ?? 30;
+    const batchSize = throttle.batchSize ?? 0;
+    const numBatches = batchSize > 0 ? Math.floor(recipientCount / batchSize) : 0;
+    const expectedMs =
+      recipientCount * (throttle.delayMaxMs ?? 0) +
+      numBatches * (throttle.batchPauseMaxMs ?? 0);
+    // 2x folga absorve variabilidade de rede/Firestore. Mínimo 2min pra não regredir o detector.
+    return Math.max(2, Math.ceil((expectedMs * 2) / 60_000));
+  })();
+  const looksStuck = isStuckSending && (
+    (messages.length === 0 && stuckMinutes >= 2) ||
+    stuckMinutes >= stuckThresholdMinutes
+  );
 
   const handleCancelSchedule = async () => {
     if (!isScheduled) return;
@@ -279,10 +389,16 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
         sendRate: broadcast.sendRate ?? 10,
         ...(broadcast.throttle ? { throttle: broadcast.throttle } : {}),
         ...(limit ? { maxRecipients: limit } : {}),
+        // Audit por sessão — backend grava no broadcast.sessions
+        ...(user?.name ? { dispatchedByName: user.name } : {}),
       };
       if (broadcast.templateName) body.templateName = broadcast.templateName;
       if (broadcast.templateLanguage) body.templateLanguage = broadcast.templateLanguage;
       if (broadcast.templateParams) body.templateParams = broadcast.templateParams;
+      // Sem templateBody, /api/broadcasts/send cai no fallback
+      // "[Template: nome]" ao popular conversationMessages — operador
+      // via o placeholder em vez do texto real do template.
+      if (broadcast.templateBody) body.templateBody = broadcast.templateBody;
       if (broadcast.messageContent) body.messageContent = broadcast.messageContent;
       if (broadcast.emailSubject) body.emailSubject = broadcast.emailSubject;
       if (broadcast.viaBaileys) body.viaBaileys = true;
@@ -303,10 +419,13 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
       setDispatchAmount(null);
     } catch (err) {
       // "Failed to fetch" / TypeError = client desconectou (timeout proxy ~5min,
-      // throttle longo, conexão perdida). O backend continua processando: o
-      // status do broadcast e os broadcastMessages são a fonte da verdade
-      // (sincronizados via onSnapshot). NÃO marca como erro nesse caso.
+      // throttle longo, conexão perdida). SyntaxError = proxy estourou timeout
+      // e devolveu HTML 504 em vez de JSON (Nginx/Cloudflare/ALB ~60s default).
+      // Em ambos os casos o backend continua processando: o status do broadcast
+      // e os broadcastMessages são a fonte da verdade (sincronizados via
+      // onSnapshot). NÃO marca como erro.
       const isNetworkAbort = err instanceof TypeError
+        || err instanceof SyntaxError
         || (err instanceof Error && /failed to fetch|network|aborted/i.test(err.message));
       if (isNetworkAbort) {
         console.warn('[BroadcastDetail] dispatch fetch timed out client-side — backend continua processando');
@@ -344,7 +463,13 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
 
   const handleResume = async () => {
     if (!canResume) return;
-    if (!confirm(`Retomar campanha com ${pendingCount} contato(s) pendentes?`)) return;
+    const total = pendingCount;
+    const limit = resumeAmount && resumeAmount > 0 && resumeAmount < total ? resumeAmount : null;
+    const targetCount = limit ?? total;
+    const confirmMsg = limit
+      ? `Retomar parcialmente — enviar ${limit} de ${total} contato(s) pendentes?\n\nOs ${total - limit} restantes ficam pendentes pra próximo "Retomar".`
+      : `Retomar campanha com ${total} contato(s) pendentes?`;
+    if (!confirm(confirmMsg)) return;
     setResuming(true);
     try {
       const token = await getAuth().currentUser?.getIdToken();
@@ -371,10 +496,17 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
         recipients,
         sendRate: broadcast.sendRate ?? 10,
         ...(broadcast.throttle ? { throttle: broadcast.throttle } : {}),
+        // Partial resume: passa maxRecipients pra /send processar só os
+        // primeiros N. Backend cria sessão dedicada com sessionIndex novo.
+        ...(limit ? { maxRecipients: limit } : {}),
+        ...(user?.name ? { dispatchedByName: user.name } : {}),
       };
       if (broadcast.templateName) sendBody.templateName = broadcast.templateName;
       if (broadcast.templateLanguage) sendBody.templateLanguage = broadcast.templateLanguage;
       if (broadcast.templateParams) sendBody.templateParams = broadcast.templateParams;
+      // Sem templateBody na retomada, conversa volta a mostrar
+      // "[Template: nome]" — mesmo bug do dispatch original.
+      if (broadcast.templateBody) sendBody.templateBody = broadcast.templateBody;
       if (broadcast.messageContent) sendBody.messageContent = broadcast.messageContent;
       if (broadcast.emailSubject) sendBody.emailSubject = broadcast.emailSubject;
       if (broadcast.viaBaileys) sendBody.viaBaileys = true;
@@ -391,8 +523,10 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
         : `Retomada concluída — ${sendData.stats.sent} enviadas, ${sendData.stats.failed} falharam`;
       toast.success(summary);
     } catch (err) {
-      // Mesmo padrão do dispatch: timeout client não é falha real
+      // Mesmo padrão do dispatch: timeout client não é falha real.
+      // SyntaxError cobre proxy timeout (HTML 504 em vez de JSON).
       const isNetworkAbort = err instanceof TypeError
+        || err instanceof SyntaxError
         || (err instanceof Error && /failed to fetch|network|aborted/i.test(err.message));
       if (isNetworkAbort) {
         console.warn('[BroadcastDetail] resume fetch timed out client-side — backend continua processando');
@@ -403,6 +537,8 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
       }
     } finally {
       setResuming(false);
+      // Reseta o picker — próximo "Retomar" sem ajuste manual usa "todos".
+      setResumeAmount(null);
     }
   };
 
@@ -687,7 +823,7 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
                   <AlertTriangle className="w-3 h-3 inline mr-1 -mt-0.5" />
                   Campanha parece travada — {messages.length === 0
                     ? 'nenhuma mensagem foi registrada'
-                    : `sem progresso há ${stuckMinutes}min`}
+                    : `rodando há ${stuckMinutes}min (esperado até ~${stuckThresholdMinutes}min)`}
                 </>
               ) : (
                 <>
@@ -723,23 +859,89 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
 
         {/* Resume toolbar — sempre que status='paused'. Se pendingCount=0
             (snapshot ainda carregando ou index pendente), o endpoint /resume
-            usa adminDb e responde com a contagem real. */}
-        {canResume && (
-          <div className="px-5 py-2.5 bg-amber-50 dark:bg-amber-500/5 border-b border-amber-100 dark:border-amber-500/10 flex items-center justify-between gap-3 flex-wrap">
-            <span className="text-xs text-amber-700 dark:text-amber-400">
-              <Clock className="w-3 h-3 inline mr-1 -mt-0.5" />
-              Pausada {pendingCount > 0 ? <>— {pendingCount} contato(s) pendentes</> : <>— clique em Retomar para continuar</>}
-            </span>
-            <button
-              type="button"
-              onClick={handleResume}
-              disabled={resuming}
-              className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[11px] font-semibold bg-amber-600 hover:bg-amber-700 text-white disabled:opacity-50 transition-colors"
-            >
-              {resuming ? <><Loader2 className="w-3 h-3 animate-spin" /> Retomando...</> : <><Send className="w-3 h-3" /> Retomar envio</>}
-            </button>
-          </div>
-        )}
+            usa adminDb e responde com a contagem real.
+
+            Tem picker de quantidade (espelha dispatch) pra dividir a retomada
+            em sub-batches — operador pode mandar 25% agora, 50% mais tarde,
+            25% no final, cada um virando uma sessão separada com stats próprias. */}
+        {canResume && (() => {
+          const totalPending = pendingCount;
+          const targetCount = resumeAmount && resumeAmount > 0 && resumeAmount < totalPending ? resumeAmount : totalPending;
+          const isPartial = totalPending > 0 && targetCount < totalPending;
+          const presets: { label: string; value: number }[] = totalPending > 0 ? [
+            { label: '25%', value: Math.max(1, Math.floor(totalPending * 0.25)) },
+            { label: '50%', value: Math.max(1, Math.floor(totalPending * 0.5)) },
+            { label: '75%', value: Math.max(1, Math.floor(totalPending * 0.75)) },
+            { label: '100%', value: totalPending },
+          ] : [];
+          return (
+            <div className="px-5 py-3 bg-amber-50 dark:bg-amber-500/5 border-b border-amber-100 dark:border-amber-500/10 space-y-2">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <span className="text-xs text-amber-700 dark:text-amber-400">
+                  <Clock className="w-3 h-3 inline mr-1 -mt-0.5" />
+                  {isPartial
+                    ? <>Retomar <strong>{targetCount}</strong> de {totalPending} pendentes · {totalPending - targetCount} ficam pra próximo Retomar</>
+                    : totalPending > 0
+                      ? <>Pausada — {totalPending} contato(s) pendentes</>
+                      : <>Pausada — clique em Retomar para continuar</>
+                  }
+                </span>
+                <button
+                  type="button"
+                  onClick={handleResume}
+                  disabled={resuming}
+                  className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[11px] font-semibold bg-amber-600 hover:bg-amber-700 text-white disabled:opacity-50 transition-colors"
+                >
+                  {resuming
+                    ? <><Loader2 className="w-3 h-3 animate-spin" /> Retomando...</>
+                    : <><Send className="w-3 h-3" /> {isPartial ? `Retomar ${targetCount}` : 'Retomar envio'}</>
+                  }
+                </button>
+              </div>
+              {/* Picker de quantidade — só aparece quando há ≥2 pendentes
+                  (com 1 só, "100%" é a única opção significativa). */}
+              {totalPending >= 2 && (
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-[10px] font-bold text-amber-700/70 dark:text-amber-400/70 uppercase tracking-wider">
+                    Quantos:
+                  </span>
+                  {presets.map(p => (
+                    <button
+                      key={p.label}
+                      type="button"
+                      onClick={() => setResumeAmount(p.value === totalPending ? null : p.value)}
+                      className={cn(
+                        'px-2 py-0.5 rounded-md text-[10px] font-semibold border transition-colors',
+                        targetCount === p.value
+                          ? 'bg-amber-600 text-white border-amber-600'
+                          : 'border-amber-200 dark:border-amber-500/20 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-500/10',
+                      )}
+                    >
+                      {p.label} ({p.value})
+                    </button>
+                  ))}
+                  <span className="text-[10px] text-amber-700/70 dark:text-amber-400/70 ml-1">ou</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={totalPending}
+                    value={resumeAmount ?? ''}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === '') { setResumeAmount(null); return; }
+                      const n = parseInt(v, 10);
+                      if (Number.isFinite(n) && n > 0) {
+                        setResumeAmount(Math.min(n, totalPending));
+                      }
+                    }}
+                    placeholder={`todos (${totalPending})`}
+                    className="w-20 px-2 py-0.5 text-[10px] text-center bg-white dark:bg-white/[0.04] border border-amber-200 dark:border-amber-500/20 rounded-md text-amber-900 dark:text-amber-200 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                  />
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Failed retry toolbar — inclui o erro mais recente no próprio banner
             pra evitar scroll/clique adicional pra descobrir a causa. */}
@@ -780,10 +982,79 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
           </div>
         )}
 
-        {/* 5.15 — Métricas agregadas (taxa entrega/leitura/falha + tempos médios) */}
+        {/* Métricas agregadas — taxas inline (entrega/leitura/falha) + tempos
+            médios em linha pequena. Renderiza só quando há ao menos 1 msg
+            registrada — evita ocupar espaço quando ainda não há dado. */}
         {messages.length > 0 && (
-          <div className="px-5 py-3 border-b border-gray-100 dark:border-gray-800">
+          <div className="px-5 py-2.5 border-b border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-white/[0.02]">
             <BroadcastMetricsPanel messages={messages} />
+          </div>
+        )}
+
+        {/* Por sessão — breakdown quando operador disparou em múltiplos
+            batches (ex: 25% agora, 50% depois). Cada sessão mostra stats
+            independentes. Só aparece quando há ≥2 sessões (com 1 só, é
+            redundante com as métricas agregadas acima). */}
+        {sessionStats.length >= 2 && (
+          <div className="px-5 py-2.5 border-b border-gray-100 dark:border-gray-800">
+            <div className="flex items-center gap-1.5 mb-2">
+              <Layers className="w-3 h-3 text-gray-500 dark:text-gray-400" />
+              <span className="text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                Por sessão
+              </span>
+            </div>
+            <div className="space-y-1.5">
+              {sessionStats.map(s => (
+                <div
+                  key={String(s.index)}
+                  className="rounded-lg border border-gray-100 dark:border-gray-800 px-3 py-2 bg-white dark:bg-white/[0.02]"
+                >
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-[11px] font-semibold text-gray-700 dark:text-gray-200">
+                        {s.index === null ? 'Sem sessão (legado)' : `Sessão ${s.index}`}
+                      </span>
+                      {s.recipientCount !== undefined && (
+                        <span className="text-[10px] text-gray-400 dark:text-gray-500">
+                          · {s.recipientCount} alvo{s.recipientCount !== 1 ? 's' : ''}
+                        </span>
+                      )}
+                      {s.dispatchedByName && (
+                        <span className="text-[10px] text-gray-400 dark:text-gray-500 truncate">
+                          · por {s.dispatchedByName}
+                        </span>
+                      )}
+                    </div>
+                    {s.dispatchedAt && (
+                      <span className="text-[10px] text-gray-400 dark:text-gray-500 tabular-nums">
+                        {new Date(s.dispatchedAt).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3 mt-1.5 text-[10.5px] tabular-nums">
+                    <span className="text-gray-500 dark:text-gray-400">
+                      Enviadas: <strong className="text-blue-600 dark:text-blue-400">{s.sent}</strong>
+                    </span>
+                    <span className="text-gray-500 dark:text-gray-400">
+                      Entregues: <strong className="text-emerald-600 dark:text-emerald-400">{s.delivered}</strong>
+                    </span>
+                    <span className="text-gray-500 dark:text-gray-400">
+                      Lidas: <strong className="text-purple-600 dark:text-purple-400">{s.read}</strong>
+                    </span>
+                    {s.failed > 0 && (
+                      <span className="text-gray-500 dark:text-gray-400">
+                        Falhas: <strong className="text-red-600 dark:text-red-400">{s.failed}</strong>
+                      </span>
+                    )}
+                    {s.pending > 0 && (
+                      <span className="text-gray-500 dark:text-gray-400">
+                        Pendentes: <strong className="text-amber-600 dark:text-amber-400">{s.pending}</strong>
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

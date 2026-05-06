@@ -707,6 +707,50 @@ service cloud.firestore {
     }
 
     // ============================================
+    // BIRTHDAY CAMPAIGNS COLLECTION
+    // Campanhas recorrentes de aniversário (PR-C). Mesmo padrão dos
+    // broadcasts: read pra qualquer operator do tenant; create/update
+    // pra operator+; delete restrito a admin (pode acumular stats que
+    // operadores não devem destruir).
+    // ============================================
+    match /birthdayCampaigns/{campaignId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isOperator();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator();
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isAdmin();
+    }
+
+    // ============================================
+    // BIRTHDAY CAMPAIGN LOGS COLLECTION
+    // Log idempotente de envio (1 doc por campaignId+clientId+year).
+    // Escrita SÓ pelo runner (admin SDK ignora rules). Client lê pra
+    // futura UI de drill-down (PR-C+); pra evitar bypass de operadores
+    // tentando "limpar" idempotência, write client é bloqueado.
+    // ============================================
+    match /birthdayCampaignLogs/{logId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isOperator();
+
+      // Logs só podem ser criados/atualizados pelo runner via admin SDK.
+      // Bloqueio explícito impede operador alterar status pra forçar
+      // re-envio (que duplicaria mensagens cobradas no Cloud).
+      allow write: if false;
+    }
+
+    // ============================================
     // BROADCAST MESSAGES COLLECTION
     // ============================================
     match /broadcastMessages/{messageId} {

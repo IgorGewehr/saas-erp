@@ -16,7 +16,7 @@ import crypto from 'node:crypto';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { decryptToken } from '@/lib/utils/encryption';
 import { checkRateLimit, checkBusinessRateLimit, getClientIp } from '@/lib/utils/rateLimit';
-import { sessions } from '@/app/api/whatsapp/baileys-manager';
+import { ensureBaileysSessionConnected } from '@/app/api/whatsapp/baileys-manager';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { storage as firebaseStorage } from '@/lib/config/firebase';
 import type {
@@ -592,15 +592,12 @@ async function sendWhatsAppBaileys(
   // da conversa via Phase 2), alvo direto. Senão, usa a primary business.
   const { ensurePrimaryBaileysBusinessConnection } = await import('@/lib/services/channels/channelConnections');
   const sessionKey = connectionId || (await ensurePrimaryBaileysBusinessConnection(businessId)).id;
-  const session = sessions.get(sessionKey);
 
-  if (!session || !session.sock) {
-    throw new Error('WhatsApp Web não está conectado. Reconecte escaneando o QR Code em Configurações.');
-  }
-
-  if (!session.isConnected) {
-    throw new Error('WhatsApp Web está reconectando. Tente novamente em alguns segundos.');
-  }
+  // Lazy restore + wait até 30s. Antes este branch falhava imediato com
+  // "WhatsApp Web não está conectado" se o session estava restaurando após
+  // o operador ter clicado "Reconectar" — o broadcast já tinha esse
+  // tratamento, agora 1:1 também.
+  const session = await ensureBaileysSessionConnected(businessId, sessionKey, 'Baileys 1:1');
 
   // ── Resolve the REAL phone number from the conversation document ──
   // The frontend sends contactExternalId as recipientId, but for Facebook

@@ -371,6 +371,88 @@ async function updateFirestoreConnection(
  *
  * Lança erro se a sessão não está conectada ou se o número não tem WhatsApp.
  */
+/**
+ * Garante que existe uma sessão Baileys conectada para `sessionKey`.
+ *
+ * Se a sessão está em memória e conectada, retorna direto. Caso contrário,
+ * tenta restaurar a partir do auth state no Firestore (sem exigir QR scan
+ * novo) e aguarda até 30s pela conexão completar.
+ *
+ * Usado por:
+ *  - sendBaileysBroadcastMessage (broadcasts)
+ *  - sendWhatsAppBaileys (envio 1:1 em conversas) — antes não tinha lazy
+ *    restore, então qualquer reconexão pendente disparava "WhatsApp Web não
+ *    está conectado" mesmo se o session estava restaurando legitimamente.
+ *
+ * Lança Error com mensagem orientando o operador quando não consegue.
+ */
+export async function ensureBaileysSessionConnected(
+  businessId: string,
+  sessionKey: string,
+  logTag = 'Baileys',
+): Promise<BaileysSession> {
+  let session = sessions.get(sessionKey);
+  console.log(`[${logTag}] Initial session check:`, {
+    businessId,
+    sessionKey,
+    hasSession: !!session,
+    hasSock: !!session?.sock,
+    isConnected: session?.isConnected,
+    mapSize: sessions.size,
+  });
+
+  if (session?.sock && session.isConnected) return session;
+
+  // Lazy restore: tenta restaurar do Firestore antes de falhar.
+  const hasAuthState = await hasFirestoreAuthState(sessionKey);
+  console.log(`[${logTag}] Auth state in Firestore:`, { sessionKey, hasAuthState });
+
+  if (hasAuthState) {
+    // Se já há session no map (restore em andamento), só aguarda — não
+    // chama createBaileysSession de novo pra evitar loop concorrente.
+    if (!session) {
+      console.log(`[${logTag}] Lazy-restoring session for connectionId: ${sessionKey}`);
+      try {
+        await createBaileysSession(businessId, 'restore', sessionKey);
+      } catch (err) {
+        console.error(`[${logTag}] Lazy restore failed:`, err);
+      }
+    }
+
+    const startedAt = Date.now();
+    const TIMEOUT_MS = 30_000;
+    let nextLogAt = startedAt + 5_000;
+    while (Date.now() - startedAt < TIMEOUT_MS) {
+      const s = sessions.get(sessionKey);
+      if (s?.isConnected) {
+        console.log(`[${logTag}] Session connected after ${Date.now() - startedAt}ms`);
+        return s;
+      }
+      if (Date.now() >= nextLogAt) {
+        const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+        console.log(`[${logTag}] Aguardando reconexão... ${elapsed}s elapsed (hasSocket=${!!s?.sock}, isConnected=${s?.isConnected ?? false})`);
+        nextLogAt = Date.now() + 5_000;
+      }
+      await new Promise(r => setTimeout(r, 250));
+    }
+    session = sessions.get(sessionKey);
+  }
+
+  if (!session?.sock) {
+    throw new Error(
+      'WhatsApp Web não está conectado. Reconecte escaneando o QR Code em ' +
+      'Configurações → Canais.',
+    );
+  }
+  if (!session.isConnected) {
+    throw new Error(
+      'WhatsApp Web está reconectando. Aguarde alguns segundos e tente novamente — ' +
+      'se persistir após 1 min, verifique a conexão em Configurações → Canais.',
+    );
+  }
+  return session;
+}
+
 export async function sendBaileysBroadcastMessage(
   businessId: string,
   phoneNumber: string,
@@ -380,75 +462,7 @@ export async function sendBaileysBroadcastMessage(
   // Resolve a chave de sessão (connectionId). Caller pode passar explicitly
   // pra usar canal pessoal de um operador; default é a primary business.
   const sessionKey = await resolveConnectionIdForBaileys(businessId, connectionId);
-  let session = sessions.get(sessionKey);
-  console.log('[Baileys Broadcast] Initial session check:', {
-    businessId,
-    sessionKey,
-    hasSession: !!session,
-    hasSock: !!session?.sock,
-    isConnected: session?.isConnected,
-    mapSize: sessions.size,
-  });
-
-  // Lazy restore: se sessão não está em memória OU está mas o sock não conectou
-  // (caso típico após restart do server / failover entre máquinas), tenta
-  // restaurar automaticamente em vez de falhar. Evita que o operador precise
-  // re-escanear o QR Code.
-  if (!session?.sock || !session.isConnected) {
-    const hasAuthState = await hasFirestoreAuthState(sessionKey);
-    console.log('[Baileys Broadcast] Auth state in Firestore:', { sessionKey, hasAuthState });
-
-    if (hasAuthState) {
-      // Se já há uma session no map mas sock não conectou (restore em andamento
-      // ou travado), aguarda direto sem chamar createBaileysSession de novo
-      // (que é idempotente mas iniciaria loop).
-      if (!session) {
-        console.log(`[Baileys Broadcast] Lazy-restoring session for connectionId: ${sessionKey}`);
-        try {
-          await createBaileysSession(businessId, 'restore', sessionKey);
-        } catch (err) {
-          console.error('[Baileys Broadcast] Lazy restore failed:', err);
-        }
-      }
-
-      // Aguarda até 30s pela conexão completar. Logamos a cada 5s de espera
-      // pra dar visibilidade nos docker logs — admin pode acompanhar progresso
-      // se a operação demorar (rede instável, restart do servidor recente, etc).
-      const startedAt = Date.now();
-      const TIMEOUT_MS = 30_000;
-      let nextLogAt = startedAt + 5_000;
-      while (Date.now() - startedAt < TIMEOUT_MS) {
-        const s = sessions.get(sessionKey);
-        if (s?.isConnected) {
-          console.log(`[Baileys Broadcast] Session connected after ${Date.now() - startedAt}ms`);
-          session = s;
-          break;
-        }
-        if (Date.now() >= nextLogAt) {
-          const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-          const hasSocket = !!s?.sock;
-          console.log(`[Baileys Broadcast] Aguardando reconexão... ${elapsed}s elapsed (hasSocket=${hasSocket}, isConnected=${s?.isConnected ?? false})`);
-          nextLogAt = Date.now() + 5_000;
-        }
-        await new Promise(r => setTimeout(r, 250));
-      }
-      session = sessions.get(sessionKey);
-    }
-
-    if (!session?.sock) {
-      throw new Error(
-        'WhatsApp Web não está conectado. Reconecte escaneando o QR Code em ' +
-        'Configurações → Canais.',
-      );
-    }
-    if (!session.isConnected) {
-      throw new Error(
-        'WhatsApp Web está reconectando após restart. Aguarde alguns segundos e ' +
-        'tente novamente — se persistir após 1 min, verifique a conexão em ' +
-        'Configurações → Canais.',
-      );
-    }
-  }
+  const session = await ensureBaileysSessionConnected(businessId, sessionKey, 'Baileys Broadcast');
 
   // phoneNumber já vem em E.164 (apenas dígitos) do RecipientListInput
   const digits = phoneNumber.replace(/\D/g, '');

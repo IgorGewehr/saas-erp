@@ -94,6 +94,13 @@ import {
   TagIcon,
   MailOpen,
   Pencil,
+  Inbox,
+  UserX,
+  CornerDownLeft,
+  ArrowDownUp,
+  Moon,
+  BellOff,
+  Mail,
 } from 'lucide-react';
 import { getDocs } from 'firebase/firestore';
 import type {
@@ -410,7 +417,10 @@ function StatusDot({ status }: { status: ConversationStatus }) {
     <span
       className={cn(
         'inline-block w-2 h-2 rounded-full flex-shrink-0',
-        status === 'open' && 'bg-emerald-400',
+        // Aberta: sky (azul claro) — antes era emerald, mas conflitava com a
+        // identidade verde do WhatsApp (canal verde + bubble verde + dot verde
+        // visualmente competindo). Sky destaca o status sem briga de cor.
+        status === 'open' && 'bg-sky-500 dark:bg-sky-400',
         status === 'waiting' && 'bg-amber-400',
         // Resolvida: cinza azulado (slate) com brilho compatível em dark mode
         status === 'resolved' && 'bg-slate-400 dark:bg-slate-300',
@@ -563,8 +573,17 @@ function ConversationItem({ conversation, isSelected, onClick, slaInfo, batchMod
         )}
         <div className="flex items-center justify-between gap-1">
           <p className="text-xs text-gray-500 dark:text-gray-400 truncate leading-relaxed">
-            {conversation.lastMessageDirection === 'outbound' && (
+            {conversation.lastMessageDirection === 'outbound' ? (
               <span className="text-gray-400 dark:text-gray-500 mr-1">{t('conversations.you', 'Você:')}</span>
+            ) : (
+              // Indicador "msg do cliente" — seta sutil em sky pra escanear
+              // sem ler. Sky combina com StatusDot 'open' nova e não compete
+              // com o verde do WhatsApp. Só renderiza quando inbound — outbound
+              // já tem o "Você:" como sinal claro de que operador respondeu.
+              <CornerDownLeft
+                className="inline-block w-3 h-3 mr-1 -mt-0.5 text-sky-500 dark:text-sky-400"
+                aria-label="Mensagem do cliente"
+              />
             )}
             {conversation.lastMessage}
           </p>
@@ -759,6 +778,8 @@ function ThreadHeader({
   onExport,
   onMerge,
   onRename,
+  onSnooze,
+  onUnsnooze,
   aiEnabledBusinessWide,
   sectors: sectorsList,
   slaInfo,
@@ -784,6 +805,10 @@ function ThreadHeader({
   onExport?: () => void;
   onMerge?: () => void;
   onRename?: (name: string) => Promise<void>;
+  /** Soneca: silencia a conversa por X horas (some das views ativas até lá). */
+  onSnooze?: (untilIso: string) => void;
+  /** Tira da soneca antes do tempo (limpa snoozedUntil). */
+  onUnsnooze?: () => void;
   aiEnabledBusinessWide?: boolean;
   sectors?: Sector[];
   slaInfo?: SLAInfo | null;
@@ -803,6 +828,7 @@ function ThreadHeader({
   const initials = getInitials(displayName);
   const [showStatusMenu, setShowStatusMenu] = useState(false);
   const [showOverflowMenu, setShowOverflowMenu] = useState(false);
+  const [showSnoozeMenu, setShowSnoozeMenu] = useState(false);
   const [isEditingName, setIsEditingName] = useState(false);
   const [editNameValue, setEditNameValue] = useState('');
   const [savingName, setSavingName] = useState(false);
@@ -815,7 +841,16 @@ function ThreadHeader({
     setEditNameValue('');
     setSavingName(false);
     isCommittingRef.current = false;
+    // Submenu de soneca também reseta — sem isso, mudar de conversa
+    // mantinha o menu aberto da anterior em estado inconsistente.
+    setShowSnoozeMenu(false);
   }, [conversation.id]);
+
+  // Quando overflow menu fecha (ex: click-outside), o submenu de soneca
+  // que estava aberto ficaria órfão. Sincronizar fechamentos.
+  useEffect(() => {
+    if (!showOverflowMenu) setShowSnoozeMenu(false);
+  }, [showOverflowMenu]);
 
   const startEditName = () => {
     setEditNameValue(displayName);
@@ -852,7 +887,9 @@ function ThreadHeader({
   }, [showOverflowMenu]);
 
   const statusOptions: { value: ConversationStatus; label: string; color: string }[] = [
-    { value: 'open', label: t('conversations.statusOpen', 'Aberta'), color: 'text-emerald-600 dark:text-emerald-400' },
+    // Aberta: sky em vez de emerald — alinha com StatusDot e evita choque
+    // visual com a paleta verde do WhatsApp (bubbles, badges, marca).
+    { value: 'open', label: t('conversations.statusOpen', 'Aberta'), color: 'text-sky-600 dark:text-sky-400' },
     { value: 'waiting', label: t('conversations.statusWaiting2', 'Aguardando'), color: 'text-amber-600 dark:text-amber-400' },
     { value: 'resolved', label: t('conversations.statusResolved2', 'Resolvida'), color: 'text-gray-500 dark:text-gray-400' },
   ];
@@ -1218,6 +1255,101 @@ function ThreadHeader({
                     Marcar como não lida
                   </button>
                 )}
+                {/* Soneca: se já está silenciada, mostra "Tirar da soneca";
+                    senão, abre submenu de quick-pick (1h / 4h / amanhã 9h /
+                    custom). Estados controlados pelo pai — handler grava
+                    snoozedUntil + snoozedBy + snoozedByName. */}
+                {(() => {
+                  const now = Date.now();
+                  const currentlySnoozed = isSnoozed(conversation, now);
+                  if (currentlySnoozed && onUnsnooze) {
+                    const until = new Date(conversation.snoozedUntil!);
+                    const untilLabel = until.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+                    return (
+                      <button
+                        onClick={() => { onUnsnooze(); setShowOverflowMenu(false); }}
+                        className="w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs text-gray-700 dark:text-gray-300"
+                      >
+                        <BellOff className="w-3.5 h-3.5 text-amber-500" />
+                        <span className="flex-1">Tirar da soneca</span>
+                        <span className="text-[10px] text-gray-400">até {untilLabel}</span>
+                      </button>
+                    );
+                  }
+                  if (!onSnooze) return null;
+                  return (
+                    <div className="relative">
+                      <button
+                        onClick={() => setShowSnoozeMenu(v => !v)}
+                        className="w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs text-gray-700 dark:text-gray-300"
+                      >
+                        <Moon className="w-3.5 h-3.5 text-gray-400" />
+                        <span className="flex-1">Soneca</span>
+                        <ChevronRight className="w-3 h-3 text-gray-400" />
+                      </button>
+                      <AnimatePresence>
+                        {showSnoozeMenu && (
+                          <motion.div
+                            initial={{ opacity: 0, x: -4 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={{ opacity: 0, x: -4 }}
+                            transition={{ duration: 0.12 }}
+                            className="absolute left-full top-0 ml-1 w-44 bg-white dark:bg-[#1a2030] border border-gray-200 dark:border-white/[0.08] rounded-xl shadow-lg overflow-hidden z-50"
+                          >
+                            {(() => {
+                              // Quick-pick presets. Cálculo de "amanhã 9h" e
+                              // "próx. segunda 9h" usa Date local pra respeitar
+                              // o fuso do operador, depois converte pra ISO.
+                              const tomorrow9 = new Date(now);
+                              tomorrow9.setDate(tomorrow9.getDate() + 1);
+                              tomorrow9.setHours(9, 0, 0, 0);
+                              const nextMonday9 = new Date(now);
+                              const day = nextMonday9.getDay(); // 0=dom, 1=seg...
+                              const daysToMonday = day === 0 ? 1 : day === 1 ? 7 : 8 - day;
+                              nextMonday9.setDate(nextMonday9.getDate() + daysToMonday);
+                              nextMonday9.setHours(9, 0, 0, 0);
+                              const presets: { label: string; hint: string; iso: string }[] = [
+                                { label: '1 hora',           hint: 'agora + 1h',   iso: new Date(now + 60 * 60 * 1000).toISOString() },
+                                { label: '4 horas',          hint: 'agora + 4h',   iso: new Date(now + 4 * 60 * 60 * 1000).toISOString() },
+                                { label: 'Amanhã 9h',        hint: tomorrow9.toLocaleDateString('pt-BR', { weekday: 'short' }), iso: tomorrow9.toISOString() },
+                                { label: 'Próx. segunda 9h', hint: nextMonday9.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }), iso: nextMonday9.toISOString() },
+                              ];
+                              return presets.map(p => (
+                                <button
+                                  key={p.label}
+                                  onClick={() => { onSnooze(p.iso); setShowSnoozeMenu(false); setShowOverflowMenu(false); }}
+                                  className="w-full text-left px-3 py-2 flex items-center justify-between gap-2 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs text-gray-700 dark:text-gray-300"
+                                >
+                                  <span>{p.label}</span>
+                                  <span className="text-[10px] text-gray-400">{p.hint}</span>
+                                </button>
+                              ));
+                            })()}
+                            <div className="border-t border-gray-100 dark:border-white/[0.06]" />
+                            {/* Personalizado: input datetime-local nativo. Não
+                                quero peso de DatePicker MUI só pra isso. */}
+                            <label className="block px-3 py-2 text-[10px] text-gray-400 uppercase tracking-wider">
+                              Personalizado
+                            </label>
+                            <input
+                              type="datetime-local"
+                              min={new Date(now + 60 * 1000).toISOString().slice(0, 16)}
+                              onChange={e => {
+                                if (!e.target.value) return;
+                                const picked = new Date(e.target.value);
+                                if (!Number.isFinite(picked.getTime()) || picked.getTime() <= now) return;
+                                onSnooze(picked.toISOString());
+                                setShowSnoozeMenu(false);
+                                setShowOverflowMenu(false);
+                              }}
+                              className="w-[calc(100%-1.5rem)] mx-3 mb-2 px-2 py-1.5 text-xs bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-white/[0.08] rounded-lg text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-1 focus:ring-red-400"
+                            />
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  );
+                })()}
                 {onTogglePrivate && (
                   <button
                     onClick={() => { onTogglePrivate(); setShowOverflowMenu(false); }}
@@ -1380,6 +1512,40 @@ function TransportBadge({ connectedVia }: { connectedVia: 'embedded_signup' | 'b
 
 // ─── Message Bubble ───────────────────────────────────────────────────────────
 
+/**
+ * Cor do balão de mensagem outbound por canal — usa as cores oficiais de
+ * cada plataforma pra que o operador identifique de relance qual canal
+ * a thread está usando, em vez do vermelho-Aevo genérico em todos.
+ *
+ *   • WhatsApp Cloud (Meta):    verde signature #25D366
+ *   • WhatsApp Web (Baileys):   verde escuro #128C7E (mesmo tom do app desktop)
+ *   • Facebook Messenger:       azul #0866FF
+ *   • Instagram:                gradient rosa→roxo (paleta oficial)
+ *   • Email / desconhecido:     fallback pro vermelho da marca Aevo
+ *
+ * Notas internas e mensagens inbound NÃO usam essa coloração — internas
+ * são amber, inbound mantém branco/cinza neutro.
+ */
+function getOutboundBubbleClass(message: ConversationMessage): string {
+  const base = 'text-white rounded-2xl rounded-tr-sm';
+  if (message.channel === 'whatsapp') {
+    if (message.connectedVia === 'baileys') {
+      return `${base} bg-gradient-to-br from-[#128C7E] to-[#0e6f63]`;
+    }
+    return `${base} bg-gradient-to-br from-[#25D366] to-[#1ebd5b]`;
+  }
+  if (message.channel === 'facebook') {
+    return `${base} bg-gradient-to-br from-[#0866FF] to-[#0a5ad9]`;
+  }
+  if (message.channel === 'instagram') {
+    // Gradient oficial Instagram (rosa → roxo). Cobre o "vermelho" que
+    // operador associa à marca, mas com a tonalidade real (pink-magenta).
+    return `${base} bg-gradient-to-br from-[#E1306C] to-[#833AB4]`;
+  }
+  // Email ou canal desconhecido — mantém identidade Aevo
+  return `${base} bg-gradient-to-br from-red-600 to-red-500`;
+}
+
 function MessageBubble({
   message,
   isGrouped,
@@ -1419,7 +1585,7 @@ function MessageBubble({
               message.isInternal
                 ? 'bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-500/30 text-amber-900 dark:text-amber-100 rounded-2xl'
                 : isOut
-                  ? 'bg-gradient-to-br from-red-600 to-red-500 text-white rounded-2xl rounded-tr-sm'
+                  ? getOutboundBubbleClass(message)
                   : 'bg-white dark:bg-[#1e293b] border border-gray-100 dark:border-gray-700/50 text-gray-800 dark:text-gray-100 rounded-2xl rounded-tl-sm',
             )}
           >
@@ -1950,10 +2116,13 @@ function AdvancedFilterPanel({ filters, onChange, members, allLabels, slaEnabled
 
 // ─── Saved Views Bar ─────────────────────────────────────────────────────────
 
-function SavedViewsBar({ views, activeViewId, onSelect, onDelete }: {
+function SavedViewsBar({ views, activeViewId, onSelect, onEdit, onDelete }: {
   views: ConversationView[];
   activeViewId: string | null;
   onSelect: (view: ConversationView) => void;
+  /** Edit reusa o SaveViewModal com prefill (nome+emoji). Filtros atuais
+   *  da UI podem ou não substituir os da view — ver handleEditView no parent. */
+  onEdit: (view: ConversationView) => void;
   onDelete: (viewId: string) => void;
 }) {
   if (views.length === 0) return null;
@@ -1962,7 +2131,7 @@ function SavedViewsBar({ views, activeViewId, onSelect, onDelete }: {
       {views.map(view => {
         const isActive = activeViewId === view.id;
         return (
-          <div key={view.id} className={cn('flex items-center gap-1 rounded-lg border text-[10px] font-semibold whitespace-nowrap transition-all',
+          <div key={view.id} className={cn('flex items-center rounded-lg border text-[10px] font-semibold whitespace-nowrap transition-all',
             isActive
               ? 'bg-red-50 dark:bg-red-500/10 border-red-300 dark:border-red-500/30 text-red-600 dark:text-red-400'
               : 'bg-gray-50 dark:bg-white/[0.04] border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:border-gray-300 dark:hover:border-gray-600')}>
@@ -1971,8 +2140,16 @@ function SavedViewsBar({ views, activeViewId, onSelect, onDelete }: {
               <BookmarkCheck className="w-2.5 h-2.5 opacity-60" />
               {view.name}
             </button>
+            <button
+              onClick={() => onEdit(view)}
+              title="Editar view"
+              className="px-1 py-1.5 opacity-40 hover:opacity-100 transition-opacity"
+            >
+              <Pencil className="w-2.5 h-2.5" />
+            </button>
             <button onClick={() => onDelete(view.id)}
-              className="pr-1.5 py-1.5 opacity-50 hover:opacity-100 transition-opacity">
+              title="Apagar view"
+              className="pr-1.5 py-1.5 opacity-40 hover:opacity-100 transition-opacity">
               <X className="w-2.5 h-2.5" />
             </button>
           </div>
@@ -1984,12 +2161,18 @@ function SavedViewsBar({ views, activeViewId, onSelect, onDelete }: {
 
 // ─── Save View Modal ─────────────────────────────────────────────────────────
 
-function SaveViewModal({ onSave, onClose }: {
+function SaveViewModal({ onSave, onClose, initialName, initialEmoji, mode = 'create' }: {
   onSave: (name: string, emoji: string) => Promise<void>;
   onClose: () => void;
+  initialName?: string;
+  initialEmoji?: string;
+  /** 'create' (default) abre vazio; 'edit' prefilla nome+emoji existentes
+   *  e troca os labels de UI ("Editar view" / "Atualizar"). O save handler
+   *  do parent decide se cria novo doc ou atualiza o existente. */
+  mode?: 'create' | 'edit';
 }) {
-  const [name, setName] = useState('');
-  const [emoji, setEmoji] = useState('🔖');
+  const [name, setName] = useState(initialName ?? '');
+  const [emoji, setEmoji] = useState(initialEmoji ?? '🔖');
   const [saving, setSaving] = useState(false);
   const EMOJIS = ['🔖', '⭐', '🔥', '📌', '💼', '🎯', '📋', '🚨', '💬', '✅'];
 
@@ -2000,14 +2183,20 @@ function SaveViewModal({ onSave, onClose }: {
     finally { setSaving(false); }
   };
 
+  const isEdit = mode === 'edit';
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
       <motion.div initial={{ opacity: 0, scale: 0.95, y: 8 }} animate={{ opacity: 1, scale: 1, y: 0 }}
         className="w-full max-w-xs bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 p-5 space-y-4">
         <div className="flex items-center justify-between">
-          <h3 className="font-bold text-sm text-gray-900 dark:text-gray-100">Salvar view</h3>
+          <h3 className="font-bold text-sm text-gray-900 dark:text-gray-100">{isEdit ? 'Editar view' : 'Salvar view'}</h3>
           <button onClick={onClose} className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400"><X className="w-3.5 h-3.5" /></button>
         </div>
+        {isEdit && (
+          <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed -mt-1">
+            Os filtros atuais da tela serão salvos como o novo conteúdo desta view.
+          </p>
+        )}
         <div className="flex flex-wrap gap-1.5">
           {EMOJIS.map(e => (
             <button key={e} onClick={() => setEmoji(e)}
@@ -2023,7 +2212,7 @@ function SaveViewModal({ onSave, onClose }: {
           <button onClick={onClose} className="flex-1 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">Cancelar</button>
           <button onClick={handleSave} disabled={!name.trim() || saving}
             className="flex-1 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors disabled:opacity-50">
-            {saving ? 'Salvando...' : 'Salvar'}
+            {saving ? 'Salvando...' : (isEdit ? 'Atualizar' : 'Salvar')}
           </button>
         </div>
       </motion.div>
@@ -3469,56 +3658,293 @@ function ConversationAnalyticsPanel({ conversations, members, onClose }: {
   );
 }
 
-// ─── Status Filter Tabs ──────────────────────────────────────────────────────
+// ─── Smart Views ─────────────────────────────────────────────────────────────
+//
+// Substitui o filtro antigo "Aberta/Aguardando/Resolvida" (que respondia
+// "qual o status do ticket?") por views acionáveis ("o que precisa de
+// resposta agora?", "o que é meu?", "o que tá esquecido?"). Os campos
+// status/lastMessageDirection/assignedTo/lastMessageAt/updatedAt já existem
+// no doc — nenhum schema novo necessário.
 
-function StatusFilterBar({
-  activeStatus,
-  onStatusChange,
+export type SmartViewId =
+  // ── Status (linha sempre visível no topo) ──
+  | 'all'               // qualquer status (mantém soneca escondida)
+  | 'all_open'          // status='open' — DEFAULT
+  | 'waiting_client'    // status='waiting' (operador esperando o cliente)
+  | 'all_resolved'      // status='resolved' (todas, sem corte temporal)
+  // ── Ações (dropdown "Mais views") ──
+  | 'awaiting_reply'    // open + último msg do cliente (precisa resposta)
+  | 'mine'              // open + assignedTo == eu
+  | 'unassigned'        // open + sem assignee
+  | 'unread'            // unreadCount > 0 (qualquer status, exceto soneca)
+  | 'stale'             // open + último msg do cliente + >1h sem resposta
+  | 'resolved_today'    // status='resolved' fechado hoje
+  | 'snoozed';          // soneca ativa (snoozedUntil > now)
+
+const STALE_THRESHOLD_MS = 60 * 60 * 1000; // 1h sem resposta vira "esquecida"
+
+/**
+ * True quando a conversa está em soneca ativa neste momento. Soneca é
+ * "esconde-me até X" — operador disse "não agora" deliberadamente. Todas as
+ * views (exceto 'snoozed') filtram com !isSnoozed pra respeitar isso.
+ */
+function isSnoozed(conv: Conversation, now: number): boolean {
+  if (!conv.snoozedUntil) return false;
+  const until = new Date(conv.snoozedUntil).getTime();
+  return Number.isFinite(until) && until > now;
+}
+
+function matchesSmartView(
+  conv: Conversation,
+  view: SmartViewId,
+  currentUserUid: string,
+  now: number,
+): boolean {
+  // Soneca ativa: aparece SÓ na view 'snoozed', some das outras. Operador
+  // já disse "ignore por enquanto" — não polui o radar.
+  if (view !== 'snoozed' && isSnoozed(conv, now)) return false;
+
+  switch (view) {
+    case 'all':
+      // "Todas" — qualquer status; soneca já filtrada acima. Equivale ao
+      // antigo activeStatus='all' que mostrava o universo todo.
+      return true;
+    case 'awaiting_reply':
+      return conv.status === 'open' && conv.lastMessageDirection === 'inbound';
+    case 'mine':
+      return conv.status === 'open' && conv.assignedTo === currentUserUid;
+    case 'unassigned':
+      return conv.status === 'open' && !conv.assignedTo;
+    case 'unread':
+      // Não lidas: qualquer status com unreadCount > 0. Soneca já foi
+      // descartada pelo guard universal acima. Útil pra operador escanear
+      // tudo que tem "bolinha" sem importar de quem é.
+      return (conv.unreadCount ?? 0) > 0;
+    case 'stale': {
+      if (conv.status !== 'open' || conv.lastMessageDirection !== 'inbound') return false;
+      const last = new Date(conv.lastMessageAt).getTime();
+      if (!Number.isFinite(last)) return false;
+      return now - last > STALE_THRESHOLD_MS;
+    }
+    case 'all_open':
+      return conv.status === 'open';
+    case 'waiting_client':
+      return conv.status === 'waiting';
+    case 'resolved_today': {
+      if (conv.status !== 'resolved') return false;
+      const startOfDay = new Date(now);
+      startOfDay.setHours(0, 0, 0, 0);
+      const updated = new Date(conv.updatedAt).getTime();
+      return Number.isFinite(updated) && updated >= startOfDay.getTime();
+    }
+    case 'all_resolved':
+      return conv.status === 'resolved';
+    case 'snoozed':
+      // Já filtrado acima — aqui chega só se tiver soneca ativa.
+      return isSnoozed(conv, now);
+  }
+}
+
+interface SmartViewDef {
+  id: SmartViewId;
+  label: string;
+  /** Mostra ícone à esquerda do label no dropdown. Status pills usam só texto. */
+  icon?: React.ReactNode;
+}
+
+/**
+ * Mensagens de empty state customizadas por smart view ativa.
+ * "Nenhuma aguardando resposta" e "Nenhuma esquecida" são sinais POSITIVOS —
+ * o operador deve sentir conquista. "Sem dono" sendo zero também é bom (todo
+ * ticket atribuído). Mensagens neutras são pra views de navegação. Sem isso,
+ * todas as views vazias mostram o mesmo "Nenhuma conversa encontrada", que
+ * confunde porque não diferencia conquista de busca infrutífera.
+ */
+const SMART_VIEW_EMPTY_STATE: Record<SmartViewId, { title: string; subtitle: string }> = {
+  all:             { title: 'Sem conversas',                  subtitle: 'Nenhuma conversa registrada — conecte um canal para começar.' },
+  all_open:        { title: 'Nenhuma conversa aberta',        subtitle: 'Todas estão resolvidas ou aguardando o cliente.' },
+  waiting_client:  { title: 'Ninguém aguardando cliente',     subtitle: 'Nenhuma conversa marcada como "aguardando".' },
+  all_resolved:    { title: 'Sem conversas resolvidas',       subtitle: 'Nenhuma conversa foi marcada como resolvida ainda.' },
+  awaiting_reply:  { title: '🎉 Tudo respondido!',           subtitle: 'Nenhum cliente esperando resposta agora.' },
+  mine:            { title: 'Nada atribuído a você',          subtitle: 'Você está zerado. Use "Sem dono" pra puxar conversas novas.' },
+  unassigned:      { title: 'Tudo atribuído',                 subtitle: 'Todas as conversas abertas têm dono.' },
+  unread:          { title: 'Tudo lido!',                     subtitle: 'Nenhuma conversa com mensagens não lidas.' },
+  stale:           { title: 'Sem conversas esquecidas',       subtitle: 'Nenhuma resposta pendente há mais de 1h.' },
+  resolved_today:  { title: 'Nenhuma resolvida hoje',         subtitle: 'O fechamento de tickets ainda não começou hoje.' },
+  snoozed:         { title: 'Sem conversas em soneca',        subtitle: 'Use "Soneca" no menu de uma conversa pra silenciá-la temporariamente.' },
+};
+
+/**
+ * Status pills sempre visíveis (linha única). Labels curtos (Abertas /
+ * Aguardando / Resolvidas) pra caberem em sidebar estreita sem wrap —
+ * descrição completa fica nos tooltips.
+ */
+const STATUS_VIEWS: { id: SmartViewId; label: string; title?: string }[] = [
+  { id: 'all',            label: 'Todas',      title: 'Todas as conversas (qualquer status)' },
+  { id: 'all_open',       label: 'Abertas',    title: 'Conversas abertas (em atendimento)' },
+  { id: 'waiting_client', label: 'Aguardando', title: 'Aguardando o cliente' },
+  { id: 'all_resolved',   label: 'Resolvidas', title: 'Conversas resolvidas (todas)' },
+];
+
+/**
+ * Views acionáveis no dropdown "Mais views". São lentes complementares ao
+ * status — quando uma é ativa, ela substitui a status pill (operador vê
+ * exatamente uma view por vez).
+ */
+const ACTION_VIEWS: SmartViewDef[] = [
+  { id: 'awaiting_reply', label: 'Aguardando resposta', icon: <Inbox size={13} /> },
+  { id: 'unread',         label: 'Não lidas',           icon: <Mail size={13} /> },
+  { id: 'mine',           label: 'Atribuídas a mim',    icon: <UserCheck size={13} /> },
+  { id: 'unassigned',     label: 'Sem dono',            icon: <UserX size={13} /> },
+  { id: 'stale',          label: 'Esquecidas (>1h)',    icon: <Clock size={13} /> },
+  { id: 'snoozed',        label: 'Em soneca',           icon: <Moon size={13} /> },
+  { id: 'resolved_today', label: 'Resolvidas hoje',     icon: <CheckCircle size={13} /> },
+];
+
+function SmartViewsBar({
+  activeView,
+  onViewChange,
   counts,
 }: {
-  activeStatus: ConversationStatus | 'all';
-  onStatusChange: (status: ConversationStatus | 'all') => void;
-  counts: Record<string, number>;
+  activeView: SmartViewId;
+  onViewChange: (id: SmartViewId) => void;
+  counts: Record<SmartViewId, number>;
 }) {
-  const { t } = useTranslation();
-  const statuses: { id: ConversationStatus | 'all'; label: string }[] = [
-    { id: 'all', label: t('conversations.statusAll', 'Todas') },
-    { id: 'open', label: t('conversations.statusOpen', 'Abertas') },
-    { id: 'waiting', label: t('conversations.statusWaiting', 'Aguardando') },
-    { id: 'resolved', label: t('conversations.statusResolved', 'Resolvidas') },
-  ];
+  const [showActionsMenu, setShowActionsMenu] = useState(false);
+  const activeAction = ACTION_VIEWS.find(v => v.id === activeView);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Wheel-to-horizontal scroll — espelha o padrão de SettingsModule e
+  // FinancialModule pras tabs do top. Operadores rolam a roda do mouse
+  // sobre as pills e a barra desliza lateralmente em vez de rolar a página.
+  // passive: false é obrigatório pra preventDefault funcionar.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY === 0) return;
+      e.preventDefault();
+      el.scrollLeft += e.deltaY;
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
 
   return (
-    <div className="flex gap-1 px-4 pb-2">
-      {statuses.map((s) => {
-        const isActive = activeStatus === s.id;
-        const count = s.id === 'all' ? counts.all || 0 : counts[s.id] || 0;
+    // Layout em 2 partes:
+    //   1. Container das STATUS pills com overflow-x-auto + scrollbar-hide:
+    //      pills rolam horizontal se não couberem, scrollbar invisível.
+    //   2. Dropdown FORA do container de overflow — sem isso, o popover
+    //      absoluto ficava clipado verticalmente (overflow-x-auto força
+    //      overflow-y também, browser spec).
+    <div className="px-3 pb-2 flex items-center gap-1">
+      <div
+        ref={scrollRef}
+        className="flex items-center gap-1 flex-nowrap overflow-x-auto scrollbar-hide flex-1 min-w-0"
+      >
+        {STATUS_VIEWS.map(s => {
+        const isActive = activeView === s.id;
+        const count = counts[s.id] ?? 0;
         return (
           <button
             key={s.id}
-            onClick={() => onStatusChange(s.id)}
+            type="button"
+            onClick={() => onViewChange(s.id)}
+            title={s.title}
             className={cn(
-              'flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-semibold transition-all duration-150',
+              'flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-semibold transition-all duration-150 whitespace-nowrap flex-shrink-0',
               isActive
                 ? 'bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400'
-                : 'text-gray-400 dark:text-gray-500 hover:bg-gray-50 dark:hover:bg-white/[0.04] hover:text-gray-600 dark:hover:text-gray-300',
+                : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-white/[0.04] hover:text-gray-700 dark:hover:text-gray-300',
             )}
           >
-            {s.id !== 'all' && <StatusDot status={s.id} />}
             {s.label}
-            {count > 0 && (
-              <span className={cn(
-                'text-[9px] min-w-[14px] h-[14px] rounded-full flex items-center justify-center px-0.5',
-                isActive
-                  ? 'bg-red-500/20 text-red-600 dark:text-red-400'
-                  : 'bg-gray-100 dark:bg-white/[0.06] text-gray-400',
-              )}>
-                {count}
-              </span>
-            )}
+            <span className={cn(
+              'text-[9px] min-w-[13px] h-[13px] rounded-full flex items-center justify-center px-0.5 tabular-nums',
+              isActive
+                ? 'bg-red-500/20 text-red-700 dark:text-red-300'
+                : 'bg-gray-100 dark:bg-white/[0.06] text-gray-500',
+            )}>
+              {count}
+            </span>
           </button>
         );
       })}
+      </div>
+
+      {/* Dropdown "Mais views" — quando uma view de ação está ativa, o botão
+          mostra o nome dela em vermelho (sinaliza estado ativo sem precisar
+          abrir o dropdown pra descobrir qual). */}
+      <div className="relative flex-shrink-0">
+        <button
+          type="button"
+          onClick={() => setShowActionsMenu(v => !v)}
+          className={cn(
+            'flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-semibold transition-all duration-150 whitespace-nowrap',
+            activeAction
+              ? 'bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400'
+              : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-white/[0.04] hover:text-gray-700 dark:hover:text-gray-300',
+          )}
+        >
+          {activeAction ? activeAction.icon : <SlidersHorizontal size={10} />}
+          {activeAction ? activeAction.label : 'Mais views'}
+          {activeAction && (
+            <span className="text-[9px] min-w-[13px] h-[13px] rounded-full flex items-center justify-center px-0.5 tabular-nums bg-red-500/20 text-red-700 dark:text-red-300">
+              {counts[activeAction.id] ?? 0}
+            </span>
+          )}
+          <ChevronDown size={10} className={cn('transition-transform', showActionsMenu && 'rotate-180')} />
+        </button>
+        <AnimatePresence>
+          {showActionsMenu && (
+            <>
+              {/* Click-outside catcher */}
+              <div className="fixed inset-0 z-30" onClick={() => setShowActionsMenu(false)} />
+              <motion.div
+                initial={{ opacity: 0, y: -4, scale: 0.97 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -4, scale: 0.97 }}
+                transition={{ duration: 0.12 }}
+                // right-0: popover abre alinhado à direita do botão e
+                // expande pra esquerda (dentro do bar, onde tem espaço).
+                // Inverso causaria off-screen em viewports estreitos.
+                className="absolute right-0 top-full mt-1.5 z-40 min-w-[220px] rounded-xl bg-white dark:bg-[#1a2030] border border-gray-200 dark:border-white/[0.08] shadow-lg overflow-hidden"
+              >
+                {ACTION_VIEWS.map(v => {
+                  const isActive = activeView === v.id;
+                  const count = counts[v.id] ?? 0;
+                  return (
+                    <button
+                      key={v.id}
+                      type="button"
+                      onClick={() => { onViewChange(v.id); setShowActionsMenu(false); }}
+                      className={cn(
+                        'w-full flex items-center gap-2 px-3 py-2 text-left transition-colors',
+                        isActive
+                          ? 'bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400'
+                          : 'text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/[0.04]',
+                      )}
+                    >
+                      {v.icon}
+                      <span className="flex-1 text-xs font-semibold">{v.label}</span>
+                      <span className={cn(
+                        'text-[10px] min-w-[16px] h-[16px] rounded-full flex items-center justify-center px-1 tabular-nums',
+                        isActive
+                          ? 'bg-red-500/20 text-red-700 dark:text-red-300'
+                          : count > 0
+                            ? 'bg-gray-100 dark:bg-white/[0.06] text-gray-600 dark:text-gray-400'
+                            : 'bg-transparent text-gray-400 dark:text-gray-500',
+                      )}>
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
+      </div>
     </div>
   );
 }
@@ -4235,6 +4661,43 @@ export default function ConversasModule() {
     }
   }, [business?.id]);
 
+  const handleSnooze = useCallback(async (conv: Conversation, untilIso: string) => {
+    if (!business?.id || !user) return;
+    try {
+      await updateDoc(doc(db, 'conversations', conv.id), {
+        snoozedUntil: untilIso,
+        snoozedBy: user.uid,
+        snoozedByName: user.name,
+        updatedAt: new Date().toISOString(),
+      });
+      const until = new Date(untilIso);
+      toast.success(`Conversa em soneca até ${until.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}`);
+    } catch (err) {
+      console.error('[Conversations] Snooze failed:', err);
+      toast.error('Falha ao silenciar conversa.');
+    }
+  }, [business?.id, user]);
+
+  const handleUnsnooze = useCallback(async (conv: Conversation) => {
+    if (!business?.id) return;
+    try {
+      // Limpa os 3 campos de soneca. deleteField evita deixar a chave com
+      // valor stale; updatedAt move o item pro topo da lista (operador acabou
+      // de tomar uma ação, conversa volta a ser relevante).
+      const { deleteField } = await import('firebase/firestore');
+      await updateDoc(doc(db, 'conversations', conv.id), {
+        snoozedUntil: deleteField(),
+        snoozedBy: deleteField(),
+        snoozedByName: deleteField(),
+        updatedAt: new Date().toISOString(),
+      });
+      toast.success('Conversa retomada.');
+    } catch (err) {
+      console.error('[Conversations] Unsnooze failed:', err);
+      toast.error('Falha ao tirar conversa da soneca.');
+    }
+  }, [business?.id]);
+
   const handleOpenContact = useCallback((conv: Conversation) => {
     // Se conversa está vinculada a um cliente CRM, marca o ID em sessionStorage
     // para que ClientsModule abra o detalhe ao montar. Sem vínculo, redireciona
@@ -4331,7 +4794,17 @@ export default function ConversasModule() {
    */
   type ChannelTabId = ConversationChannel | 'all' | 'whatsapp_cloud' | 'whatsapp_baileys';
   const [activeChannel, setActiveChannel] = useState<ChannelTabId>('all');
-  const [activeStatus, setActiveStatus] = useState<ConversationStatus | 'all'>('all');
+  // Smart view. Default 'all_open' = "Todas abertas" — preserva mental model
+  // do filtro antigo (Aberta/Aguardando/Resolvida) que operadores estavam
+  // acostumados. Views acionáveis (awaiting_reply / mine / etc) ficam em
+  // dropdown "Mais views" pra liberar espaço vertical.
+  const [activeView, setActiveView] = useState<SmartViewId>('all_open');
+  // Ordenação client-side. 'recent' (default) preserva o comportamento antigo
+  // — Firestore já vem ordenado por lastMessageAt desc. As outras opções fazem
+  // re-sort em memória sobre o array já filtrado.
+  type SortMode = 'recent' | 'oldest' | 'priority';
+  const [sortMode, setSortMode] = useState<SortMode>('recent');
+  const [showSortMenu, setShowSortMenu] = useState(false);
   const [activeSectorFilter, setActiveSectorFilter] = useState<string | 'all'>('all');
   // Phase 2: filtro por escopo de canal — 'all' (sem filtro), 'business'
   // (só conversas de canal-empresa), 'mine' (só conversas em canais
@@ -4347,6 +4820,10 @@ export default function ConversasModule() {
   const [showBatchTag, setShowBatchTag] = useState(false);
   const [activeViewId, setActiveViewId] = useState<string | null>(null);
   const [showSaveViewModal, setShowSaveViewModal] = useState(false);
+  // editingView !== null → modal está em modo "Editar". O save handler do
+  // modal recebe (name, emoji); o handler do parent decide se cria novo doc
+  // (se editingView for null) ou atualiza o existente (id de editingView).
+  const [editingView, setEditingView] = useState<ConversationView | null>(null);
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [messageInput, setMessageInput] = useState('');
@@ -4383,6 +4860,22 @@ export default function ConversasModule() {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const isLoadingOlderRef = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Ref pra barra de tabs de canal (Todos / WA Oficial / WA Web / Messenger /
+  // Instagram). Sem scroll-wheel handler, o operador só conseguia scroll
+  // horizontal via shift+wheel ou trackpad — quebrava o comentário
+  // existente que prometia "funcional via mouse-wheel".
+  const channelTabsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = channelTabsRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY === 0) return;
+      e.preventDefault();
+      el.scrollLeft += e.deltaY;
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
 
   const isAdmin = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['admin'];
 
@@ -4626,9 +5119,20 @@ export default function ConversasModule() {
 
   const handleSaveView = async (name: string, emoji: string) => {
     if (!business?.id || !user) return;
+    // Salva a smart view atual em `filters.smartView` (nova). Mantém também
+    // `filters.status` para views mapeáveis 1:1 (all_open/waiting_client/
+    // resolved_today) — assim views novas continuam legíveis pra qualquer
+    // código legado que ainda olhe pelo campo antigo.
+    const statusFromView: ConversationStatus | undefined =
+      activeView === 'all_open'        ? 'open' :
+      activeView === 'waiting_client'  ? 'waiting' :
+      activeView === 'resolved_today'  ? 'resolved' :
+      activeView === 'all_resolved'    ? 'resolved' :
+      undefined;
     const filters = {
       channel: activeChannel !== 'all' ? activeChannel : undefined,
-      status: activeStatus !== 'all' ? activeStatus : undefined,
+      smartView: activeView,
+      status: statusFromView,
       sectorId: activeSectorFilter !== 'all' ? activeSectorFilter : undefined,
       assignedTo: advFilters.assignedTo || undefined,
       priority: advFilters.priority || undefined,
@@ -4636,12 +5140,57 @@ export default function ConversasModule() {
       slaStatus: advFilters.slaStatus || undefined,
       unreadOnly: advFilters.unreadOnly || undefined,
     };
+    // Edição: sobrescreve nome/emoji/filtros do doc existente. Filtros
+    // refletem o snapshot atual da UI — comportamento ergonômico esperado
+    // ("editei minha view com a config atual"). Operador que abriu o edit
+    // sem mudar filtros vê só nome/emoji mudarem.
+    if (editingView) {
+      await updateDoc(doc(db, 'conversationViews', editingView.id), {
+        name, emoji, filters,
+        updatedAt: new Date().toISOString(),
+      });
+      setEditingView(null);
+      return;
+    }
     await addDoc(collection(db, 'conversationViews'), {
       businessId: business.id, name, emoji,
       filters,
       createdBy: user.uid, createdByName: user.name,
       createdAt: new Date().toISOString(),
     });
+  };
+
+  const handleEditView = (view: ConversationView) => {
+    // Abre o modal em modo edit. Marca a view como ativa para que se o
+    // operador não tocar em nada e clicar Atualizar, os filtros salvos no
+    // doc reflitam a view original. NÃO chamo handleSelectView pq ele faz
+    // toggle — clicar edit numa view já ativa deselecionaria.
+    if (activeViewId !== view.id) {
+      setActiveViewId(view.id);
+      setActiveChannel((view.filters.channel as ChannelTabId) ?? 'all');
+      const savedSmart = view.filters.smartView as SmartViewId | undefined;
+      if (savedSmart) {
+        setActiveView(savedSmart);
+      } else {
+        const legacyStatus = view.filters.status as ConversationStatus | 'all' | undefined;
+        setActiveView(
+          legacyStatus === 'open'     ? 'all_open' :
+          legacyStatus === 'waiting'  ? 'waiting_client' :
+          legacyStatus === 'resolved' ? 'all_resolved' :
+          'all',
+        );
+      }
+      setActiveSectorFilter(view.filters.sectorId ?? 'all');
+      setAdvFilters({
+        assignedTo: view.filters.assignedTo ?? '',
+        priority: view.filters.priority ?? '',
+        label: view.filters.label ?? '',
+        slaStatus: (view.filters.slaStatus as AdvancedFilters['slaStatus']) ?? '',
+        unreadOnly: view.filters.unreadOnly ?? false,
+      });
+    }
+    setEditingView(view);
+    setShowSaveViewModal(true);
   };
 
   const handleDeleteView = async (viewId: string) => {
@@ -4653,9 +5202,9 @@ export default function ConversasModule() {
 
   const handleSelectView = (view: ConversationView) => {
     if (activeViewId === view.id) {
-      // Deselect
+      // Deselect — volta pra default 'all_open' (mesma do reload do app).
       setActiveViewId(null);
-      setActiveChannel('all'); setActiveStatus('all'); setActiveSectorFilter('all');
+      setActiveChannel('all'); setActiveView('all_open'); setActiveSectorFilter('all');
       setAdvFilters(EMPTY_ADV_FILTERS);
       return;
     }
@@ -4663,7 +5212,20 @@ export default function ConversasModule() {
     // Aceita os ids estendidos de transporte WhatsApp (whatsapp_cloud / whatsapp_baileys)
     // pra views salvas com filtro mais granular não regredirem pra "all".
     setActiveChannel((view.filters.channel as ChannelTabId) ?? 'all');
-    setActiveStatus((view.filters.status as ConversationStatus | 'all') ?? 'all');
+    // Migração: views novas trazem `smartView`; legadas só têm `status`.
+    // Mapeia o status antigo pra equivalente smart view.
+    const savedSmart = view.filters.smartView as SmartViewId | undefined;
+    if (savedSmart) {
+      setActiveView(savedSmart);
+    } else {
+      const legacyStatus = view.filters.status as ConversationStatus | 'all' | undefined;
+      setActiveView(
+        legacyStatus === 'open'     ? 'all_open' :
+        legacyStatus === 'waiting'  ? 'waiting_client' :
+        legacyStatus === 'resolved' ? 'all_resolved' :
+        'all',  // sem status salvo (legado) = "Todas", preserva intenção do antigo activeStatus='all'
+      );
+    }
     setActiveSectorFilter(view.filters.sectorId ?? 'all');
     setAdvFilters({
       assignedTo: view.filters.assignedTo ?? '',
@@ -4935,12 +5497,39 @@ export default function ConversasModule() {
 
   // Track the conversation ID for which we've already done the initial instant scroll
   const initialScrollDoneRef = useRef<string | null>(null);
+  // Flag setada quando o operador scrolla pra CIMA (lendo histórico). Auto-
+  // scrolls programáticos só vão pra BAIXO, então direção upward distingue
+  // sem ambiguidade. Cooldown-based detection era frágil: timers de retry
+  // disparam a cada 50-1200ms, criando janelas onde scrolls genuínos do
+  // user caíam dentro da cooldown e eram ignorados.
+  const userHasScrolledRef = useRef(false);
+  // Última posição de scroll observada — usada pra detectar direção.
+  const lastScrollTopRef = useRef(0);
 
-  // Reset initial scroll flag when conversation changes
+  // Reset flags when conversation changes
   useEffect(() => {
     if (selectedConversation?.id) {
       initialScrollDoneRef.current = null;
+      userHasScrolledRef.current = false;
+      lastScrollTopRef.current = 0;
     }
+  }, [selectedConversation?.id]);
+
+  // Detecta scroll UPWARD (operador lendo histórico). Programmatic scrolls
+  // sempre vão downward (rumo ao bottom), então qualquer redução de
+  // scrollTop > 40px é necessariamente intencional do operador.
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    const onScroll = () => {
+      const current = container.scrollTop;
+      if (current < lastScrollTopRef.current - 40) {
+        userHasScrolledRef.current = true;
+      }
+      lastScrollTopRef.current = current;
+    };
+    container.addEventListener('scroll', onScroll, { passive: true });
+    return () => container.removeEventListener('scroll', onScroll);
   }, [selectedConversation?.id]);
 
   // Scroll to bottom when messages finish loading for the first time in a conversation.
@@ -4971,27 +5560,29 @@ export default function ConversasModule() {
 
       const timers: ReturnType<typeof setTimeout>[] = [];
 
-      // Passes assíncronos pra mídia que carrega depois — TODOS checam
-      // isNearBottom antes de re-scrollar. Antes os timers eram
-      // incondicionais e yankavam o user de volta pro fundo durante 3.5s,
-      // impedindo de scrollar pra cima nos primeiros segundos. Agora só
-      // re-scrolla se o usuário ainda não scrollou pra cima manualmente.
+      // Passes assíncronos pra mídia que carrega depois — checam
+      // userHasScrolledRef em vez de isNearBottom(). isNearBottom falhava
+      // quando mídia carregava e empurrava o conteúdo (scrollTop ficava
+      // >150px do bottom mesmo sem ação do usuário), causando os timers a
+      // desistirem e a conversa ficar parada no meio. userHasScrolled é
+      // setada SÓ quando o operador realmente scrolla — robusto contra
+      // crescimento do container.
       requestAnimationFrame(() => {
-        if (initialScrollDoneRef.current === convId && isNearBottom()) {
+        if (initialScrollDoneRef.current === convId && !userHasScrolledRef.current) {
           scrollToBottom('instant');
         }
       });
       [50, 150, 350, 700, 1200, 2000, 3500].forEach((ms) => {
         timers.push(setTimeout(() => {
-          if (initialScrollDoneRef.current === convId && isNearBottom()) {
+          if (initialScrollDoneRef.current === convId && !userHasScrolledRef.current) {
             scrollToBottom('instant');
           }
         }, ms));
       });
 
       // ResizeObserver: durante 5s, sempre que altura muda, re-scrolla SE
-      // user está near-bottom. Isso pega lazy load de mídia sem bater contra
-      // o scroll manual do user.
+      // user ainda não scrollou manualmente. Pega lazy load de mídia sem
+      // bater contra o scroll manual do user.
       const container = messagesContainerRef.current;
       let stopObserving = false;
       let observer: ResizeObserver | null = null;
@@ -4999,7 +5590,7 @@ export default function ConversasModule() {
         observer = new ResizeObserver(() => {
           if (stopObserving) return;
           if (initialScrollDoneRef.current !== convId) return;
-          if (!isNearBottom()) return; // user scrollou — respeita
+          if (userHasScrolledRef.current) return; // user scrollou — respeita
           scrollToBottom('instant');
         });
         observer.observe(container);
@@ -5088,6 +5679,11 @@ export default function ConversasModule() {
   const isWindowExpired = useCallback(
     (conversation: Conversation): boolean => {
       if (conversation.channel !== 'whatsapp') return false;
+      // Janela de 24h é regra exclusiva da Cloud API da Meta. Baileys
+      // (WhatsApp Web) não tem essa restrição — aceita texto livre a qualquer
+      // momento. Sem este short-circuit, conversas Baileys travavam exigindo
+      // template após 24h de silêncio do contato.
+      if (conversation.connectedVia === 'baileys') return false;
       if (!conversation.lastMessageAt) return true;
       // Check if last INBOUND message was more than 24h ago
       const lastInbound = messages
@@ -5171,14 +5767,16 @@ export default function ConversasModule() {
         : `[Template: ${templateName}]`;
 
       try {
-        // 1. Save template message to Firestore
-        await addDoc(collection(db, 'conversationMessages'), {
+        // 1. Save template message to Firestore (otimista). Templates SEMPRE
+        //    saem via Cloud (Baileys não suporta templates), então marcamos
+        //    connectedVia='embedded_signup' independente do canal da conv —
+        //    sem isso a UI mostrava badge "Web" durante o sending de uma
+        //    mensagem que iria sair como "Oficial".
+        const msgRef = await addDoc(collection(db, 'conversationMessages'), {
           conversationId: selectedConversation.id,
           businessId: business.id,
           channel: selectedConversation.channel,
-          // Templates só existem no Cloud API (Meta), mas herdamos da conversation
-          // pra ser consistente com o resto. Baileys nunca chega aqui (toggle bloqueia).
-          ...(selectedConversation.connectedVia ? { connectedVia: selectedConversation.connectedVia } : {}),
+          connectedVia: 'embedded_signup' as const,
           direction: 'outbound' as const,
           content: displayContent,
           // Mantém o nome do template como metadado pra debug/audit
@@ -5198,7 +5796,11 @@ export default function ConversasModule() {
           ...(!selectedConversation.firstResponseAt ? { firstResponseAt: now } : {}),
         });
 
-        // 3. Send via API as template
+        // 3. Send via API as template — passa messageDocId pra que o backend
+        //    atualize o doc otimista (sending → sent) em vez de criar um
+        //    SEGUNDO doc via saveAgentMessage. Sem isso, o operador via
+        //    duplicatas de cada template no histórico (uma "Web" em sending
+        //    eterno + uma "Oficial" sent).
         try {
           const auth = getAuth();
           const token = await auth.currentUser?.getIdToken();
@@ -5211,6 +5813,7 @@ export default function ConversasModule() {
             body: JSON.stringify({
               businessId: business.id,
               conversationId: selectedConversation.id,
+              messageDocId: msgRef.id,
               channel: selectedConversation.channel,
               recipientId: selectedConversation.contactExternalId,
               // Mandamos o conteúdo renderizado pra UI da outra ponta também
@@ -5224,11 +5827,17 @@ export default function ConversasModule() {
           if (!res.ok) {
             const errBody = await res.json().catch(() => ({ error: 'Erro desconhecido' }));
             toast.error(`Falha ao enviar template "${templateName}": ${errBody.error || 'erro desconhecido'}${errBody.metaCode ? ` (Meta #${errBody.metaCode})` : ''}`);
-            console.error('[SendTemplate] API error:', errBody);
+            console.warn('[SendTemplate] API error:', errBody);
+            // Marca como falhou — sem isso, o doc otimista fica em 'sending'
+            // pra sempre e o operador não sabe que precisa retentar.
+            await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' })
+              .catch(e => console.warn('[SendTemplate] Failed to mark template as failed:', e));
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           toast.error(`Erro de conexão ao enviar template: ${msg}`);
+          await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' })
+            .catch(e => console.warn('[SendTemplate] Failed to mark template as failed:', e));
         }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -5762,44 +6371,79 @@ export default function ConversasModule() {
 
   // ── Filtered conversations ─────────────────────────────────────────────────
 
-  const filteredConversations = useMemo(() => getVisibleConversations(conversations).filter((c) => {
-    // Match canal — 'whatsapp_cloud' / 'whatsapp_baileys' são sub-filtros que
-    // aplicam sobre c.channel === 'whatsapp' E o c.connectedVia correspondente.
-    let matchesChannel: boolean;
-    if (activeChannel === 'all') {
-      matchesChannel = true;
-    } else if (activeChannel === 'whatsapp_cloud') {
-      matchesChannel = c.channel === 'whatsapp' && c.connectedVia === 'embedded_signup';
-    } else if (activeChannel === 'whatsapp_baileys') {
-      matchesChannel = c.channel === 'whatsapp' && c.connectedVia === 'baileys';
-    } else {
-      matchesChannel = c.channel === activeChannel;
+  // `now` é fixado dentro do useMemo pra que o cálculo seja determinístico
+  // dentro de uma render — evita drift quando matchesSmartView é chamada
+  // múltiplas vezes ('stale' e 'resolved_today' dependem do tempo). Re-render
+  // periódico não é necessário pra esta versão (operador re-abre/recarrega).
+  const filteredConversations = useMemo(() => {
+    const now = Date.now();
+    const currentUid = user?.uid ?? '';
+    return getVisibleConversations(conversations).filter((c) => {
+      // Match canal — 'whatsapp_cloud' / 'whatsapp_baileys' são sub-filtros que
+      // aplicam sobre c.channel === 'whatsapp' E o c.connectedVia correspondente.
+      let matchesChannel: boolean;
+      if (activeChannel === 'all') {
+        matchesChannel = true;
+      } else if (activeChannel === 'whatsapp_cloud') {
+        matchesChannel = c.channel === 'whatsapp' && c.connectedVia === 'embedded_signup';
+      } else if (activeChannel === 'whatsapp_baileys') {
+        matchesChannel = c.channel === 'whatsapp' && c.connectedVia === 'baileys';
+      } else {
+        matchesChannel = c.channel === activeChannel;
+      }
+      const matchesView = matchesSmartView(c, activeView, currentUid, now);
+      const matchesSector = activeSectorFilter === 'all' || c.sectorIds?.includes(activeSectorFilter) || c.assignedToSectorId === activeSectorFilter;
+      // Phase 2: filtro por escopo de canal
+      let matchesScope = true;
+      if (activeChannelScope === 'mine') {
+        matchesScope = !!(c.channelConnectionId && myConnectionIds.has(c.channelConnectionId));
+      } else if (activeChannelScope === 'business') {
+        // 'business': pertence a connection cuja ownerType seja 'business' OU
+        // não tem connectionId (legado). User sem connection ainda aparece em
+        // 'business' por default.
+        const conn = c.channelConnectionId ? connectionsById.get(c.channelConnectionId) : null;
+        matchesScope = !conn || conn.ownerType === 'business';
+      }
+      const matchesSearch =
+        !searchQuery ||
+        (c.customContactName ?? c.contactName).toLowerCase().includes(searchQuery.toLowerCase()) ||
+        c.lastMessage.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (c.contactPhone && c.contactPhone.includes(searchQuery));
+      const matchesAssigned = !advFilters.assignedTo || c.assignedTo === advFilters.assignedTo;
+      const matchesPriority = !advFilters.priority || c.priority === advFilters.priority;
+      const matchesLabel = !advFilters.label || c.labels?.includes(advFilters.label) || c.tags?.includes(advFilters.label);
+      const matchesUnread = !advFilters.unreadOnly || (c.unreadCount ?? 0) > 0;
+      const matchesSLAStatus = !advFilters.slaStatus || getSLAInfo(c, slaConfig)?.status === advFilters.slaStatus;
+      return matchesChannel && matchesView && matchesSector && matchesScope && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus;
+    });
+  }, [getVisibleConversations, conversations, activeChannel, activeView, activeSectorFilter, activeChannelScope, myConnectionIds, connectionsById, searchQuery, advFilters, slaConfig, user?.uid]);
+
+  // Re-sort client-side. 'recent' não toca a ordem (Firestore já desc por
+  // lastMessageAt). 'oldest' inverte. 'priority' ranqueia urgent>high>med>low,
+  // empate desempata por lastMessageAt mais recente. Sem re-sort, operador
+  // que escolhe "Mais antigas" continuaria vendo as recentes no topo.
+  //
+  // Comparação por string em lastMessageAt: ISO 8601 em UTC (ex:
+  // "2026-05-04T18:45:00.000Z") é lexicograficamente ordenável, então
+  // localeCompare equivale a comparar como Date. Quebraria se algum site
+  // gravasse data sem timezone normalizado — todos os pontos de criação
+  // usam new Date().toISOString() que sempre produz UTC.
+  const sortedConversations = useMemo(() => {
+    if (sortMode === 'recent') return filteredConversations;
+    const arr = [...filteredConversations];
+    if (sortMode === 'oldest') {
+      arr.sort((a, b) => (a.lastMessageAt || '').localeCompare(b.lastMessageAt || ''));
+    } else if (sortMode === 'priority') {
+      const rank: Record<string, number> = { urgent: 4, high: 3, medium: 2, low: 1 };
+      arr.sort((a, b) => {
+        const pa = rank[a.priority || ''] ?? 0;
+        const pb = rank[b.priority || ''] ?? 0;
+        if (pb !== pa) return pb - pa;
+        return (b.lastMessageAt || '').localeCompare(a.lastMessageAt || '');
+      });
     }
-    const matchesStatus = activeStatus === 'all' || c.status === activeStatus;
-    const matchesSector = activeSectorFilter === 'all' || c.sectorIds?.includes(activeSectorFilter) || c.assignedToSectorId === activeSectorFilter;
-    // Phase 2: filtro por escopo de canal
-    let matchesScope = true;
-    if (activeChannelScope === 'mine') {
-      matchesScope = !!(c.channelConnectionId && myConnectionIds.has(c.channelConnectionId));
-    } else if (activeChannelScope === 'business') {
-      // 'business': pertence a connection cuja ownerType seja 'business' OU
-      // não tem connectionId (legado). User sem connection ainda aparece em
-      // 'business' por default.
-      const conn = c.channelConnectionId ? connectionsById.get(c.channelConnectionId) : null;
-      matchesScope = !conn || conn.ownerType === 'business';
-    }
-    const matchesSearch =
-      !searchQuery ||
-      (c.customContactName ?? c.contactName).toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.lastMessage.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (c.contactPhone && c.contactPhone.includes(searchQuery));
-    const matchesAssigned = !advFilters.assignedTo || c.assignedTo === advFilters.assignedTo;
-    const matchesPriority = !advFilters.priority || c.priority === advFilters.priority;
-    const matchesLabel = !advFilters.label || c.labels?.includes(advFilters.label) || c.tags?.includes(advFilters.label);
-    const matchesUnread = !advFilters.unreadOnly || (c.unreadCount ?? 0) > 0;
-    const matchesSLAStatus = !advFilters.slaStatus || getSLAInfo(c, slaConfig)?.status === advFilters.slaStatus;
-    return matchesChannel && matchesStatus && matchesSector && matchesScope && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus;
-  }), [getVisibleConversations, conversations, activeChannel, activeStatus, activeSectorFilter, activeChannelScope, myConnectionIds, connectionsById, searchQuery, advFilters, slaConfig]);
+    return arr;
+  }, [filteredConversations, sortMode]);
 
   const activeFilterCount = countActiveFilters(advFilters);
 
@@ -5843,15 +6487,26 @@ export default function ConversasModule() {
     return c.channel === activeChannel;
   };
 
-  const countsByStatus = conversations.reduce(
-    (acc, c) => {
-      if (!matchesActiveChannel(c)) return acc;
-      acc[c.status] = (acc[c.status] ?? 0) + 1;
-      acc.all = (acc.all ?? 0) + 1;
-      return acc;
-    },
-    {} as Record<string, number>,
-  );
+  // Contagem por smart view — calculada sobre o universo já filtrado pelo
+  // canal ativo (chips de cima). Assim os badges das views refletem o que o
+  // operador veria se clicasse, considerando o canal que ele já selecionou.
+  // Note: getVisibleConversations já aplica isolamento de canal pessoal.
+  const countsByView = useMemo(() => {
+    const now = Date.now();
+    const currentUid = user?.uid ?? '';
+    const out: Record<SmartViewId, number> = {
+      all: 0, all_open: 0, waiting_client: 0, all_resolved: 0,
+      awaiting_reply: 0, mine: 0, unassigned: 0, unread: 0, stale: 0,
+      resolved_today: 0, snoozed: 0,
+    };
+    for (const c of getVisibleConversations(conversations)) {
+      if (!matchesActiveChannel(c)) continue;
+      (Object.keys(out) as SmartViewId[]).forEach(v => {
+        if (matchesSmartView(c, v, currentUid, now)) out[v]++;
+      });
+    }
+    return out;
+  }, [conversations, getVisibleConversations, user?.uid, activeChannel]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Tabs ────────────────────────────────────────────────────────────────────
   // Split automático WhatsApp Cloud × Baileys quando o business tem volume nos
@@ -6032,6 +6687,56 @@ export default function ConversasModule() {
                 className="w-9 h-9 rounded-xl flex-shrink-0 flex items-center justify-center transition-colors bg-red-500 hover:bg-red-600 text-white shadow-sm shadow-red-500/30">
                 <Plus className="w-4 h-4" />
               </motion.button>
+              {/* Sort dropdown — re-ordena a lista filtrada client-side. Usa
+                  popover absoluto pra não inflar a barra com select<>. Fica
+                  acionado quando sort != recent (default invisível em uso). */}
+              <div className="relative flex-shrink-0">
+                <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+                  onClick={() => setShowSortMenu(v => !v)}
+                  title="Ordenar"
+                  className={cn('relative w-9 h-9 rounded-xl flex items-center justify-center transition-colors',
+                    sortMode !== 'recent'
+                      ? 'bg-red-50 dark:bg-red-500/10 text-red-500 dark:text-red-400'
+                      : 'bg-gray-100 dark:bg-white/[0.04] text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                  )}>
+                  <ArrowDownUp className="w-4 h-4" />
+                </motion.button>
+                <AnimatePresence>
+                  {showSortMenu && (
+                    <>
+                      {/* Click-outside catcher */}
+                      <div className="fixed inset-0 z-30" onClick={() => setShowSortMenu(false)} />
+                      <motion.div
+                        initial={{ opacity: 0, y: -4, scale: 0.97 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: -4, scale: 0.97 }}
+                        transition={{ duration: 0.12 }}
+                        className="absolute right-0 top-full mt-1.5 z-40 min-w-[180px] rounded-xl bg-white dark:bg-[#1a2030] border border-gray-200 dark:border-white/[0.08] shadow-lg overflow-hidden"
+                      >
+                        {([
+                          { id: 'recent',   label: 'Mais recentes',     hint: 'Padrão' },
+                          { id: 'oldest',   label: 'Mais antigas',      hint: 'Zerar backlog' },
+                          { id: 'priority', label: 'Por prioridade',    hint: 'Urgente → Baixa' },
+                        ] as const).map(opt => (
+                          <button
+                            key={opt.id}
+                            onClick={() => { setSortMode(opt.id); setShowSortMenu(false); }}
+                            className={cn(
+                              'w-full flex items-center justify-between px-3 py-2 text-left transition-colors',
+                              sortMode === opt.id
+                                ? 'bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400'
+                                : 'text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/[0.04]',
+                            )}
+                          >
+                            <span className="text-xs font-semibold">{opt.label}</span>
+                            <span className="text-[10px] text-gray-400 dark:text-gray-500">{opt.hint}</span>
+                          </button>
+                        ))}
+                      </motion.div>
+                    </>
+                  )}
+                </AnimatePresence>
+              </div>
               <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
                 onClick={() => setShowAdvFilters(v => !v)}
                 className={cn('relative w-9 h-9 rounded-xl flex-shrink-0 flex items-center justify-center transition-colors',
@@ -6052,10 +6757,11 @@ export default function ConversasModule() {
           {/* Channel Tabs — scroll horizontal quando há tabs demais (split
               Cloud/Baileys = 5 tabs). Labels completos sempre, sem truncate
               que cortava em "WA O..." / "Mess...". Quem não couber pode ser
-              alcançado scrollando lateralmente; barra de scroll fica
-              escondida visualmente mas funcional via mouse-wheel/trackpad. */}
+              alcançado scrollando lateralmente — wheel-handler em
+              channelTabsRef converte deltaY em scrollLeft (mesmo padrão
+              de SettingsModule e FinancialModule). */}
           <div className="px-3 pb-1 flex-shrink-0">
-            <div className="flex gap-0.5 overflow-x-auto scrollbar-hide -mx-1 px-1">
+            <div ref={channelTabsRef} className="flex gap-0.5 overflow-x-auto scrollbar-hide -mx-1 px-1">
               {tabs.map((tab) => {
                 const isActive = activeChannel === tab.id;
                 const unread = tab.id === 'all' ? unreadByChannel.all : unreadByChannel[tab.id];
@@ -6106,11 +6812,14 @@ export default function ConversasModule() {
             </div>
           </div>
 
-          {/* Status Filter */}
-          <StatusFilterBar
-            activeStatus={activeStatus}
-            onStatusChange={setActiveStatus}
-            counts={countsByStatus}
+          {/* Smart Views — linha única com 4 status pills (Todas / Todas
+              abertas / Aguardando cliente / Resolvidas) + dropdown "Mais
+              views" pras lentes acionáveis (Aguardando resposta, Atribuídas
+              a mim, Sem dono, Esquecidas, Em soneca, Resolvidas hoje). */}
+          <SmartViewsBar
+            activeView={activeView}
+            onViewChange={(id) => { setActiveView(id); setActiveViewId(null); }}
+            counts={countsByView}
           />
 
           {/* Channel scope filter (Phase 2) — só aparece se operador tem >=1
@@ -6158,6 +6867,7 @@ export default function ConversasModule() {
             views={savedViews}
             activeViewId={activeViewId}
             onSelect={handleSelectView}
+            onEdit={handleEditView}
             onDelete={handleDeleteView}
           />
 
@@ -6203,7 +6913,7 @@ export default function ConversasModule() {
               <ConversationListSkeleton />
             ) : (
               <AnimatePresence mode="popLayout">
-                {filteredConversations.length === 0 ? (
+                {sortedConversations.length === 0 ? (
                   <motion.div
                     key="empty-list"
                     initial={{ opacity: 0 }}
@@ -6228,19 +6938,36 @@ export default function ConversasModule() {
                           {t('conversations.configureChannels', 'Configurar canais')}
                         </button>
                       </>
-                    ) : (
-                      <>
-                        <p className="text-sm font-medium text-gray-500 dark:text-gray-400">
-                          {t('conversations.noConversationsFound', 'Nenhuma conversa encontrada')}
-                        </p>
-                        <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
-                          {t('conversations.noConversationsFoundDesc', 'Tente mudar o filtro ou a busca')}
-                        </p>
-                      </>
-                    )}
+                    ) : (() => {
+                      // Empty state contextual por smart view ativa. Quando a
+                      // busca/canal/filtros avançados também estão filtrando,
+                      // a mensagem da view é menos exata — então só usa o
+                      // contextual quando NÃO há outros filtros ativos.
+                      const hasOtherFilters = !!searchQuery
+                        || activeChannel !== 'all'
+                        || activeSectorFilter !== 'all'
+                        || advFilters.assignedTo
+                        || advFilters.priority
+                        || advFilters.label
+                        || advFilters.slaStatus
+                        || advFilters.unreadOnly;
+                      const ctx = SMART_VIEW_EMPTY_STATE[activeView];
+                      const title = hasOtherFilters
+                        ? t('conversations.noConversationsFound', 'Nenhuma conversa encontrada')
+                        : ctx.title;
+                      const subtitle = hasOtherFilters
+                        ? t('conversations.noConversationsFoundDesc', 'Tente mudar o filtro ou a busca')
+                        : ctx.subtitle;
+                      return (
+                        <>
+                          <p className="text-sm font-medium text-gray-500 dark:text-gray-400">{title}</p>
+                          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1 max-w-[260px] leading-relaxed">{subtitle}</p>
+                        </>
+                      );
+                    })()}
                   </motion.div>
                 ) : (
-                  filteredConversations.map((conv, index) => (
+                  sortedConversations.map((conv, index) => (
                     <motion.div
                       key={conv.id}
                       initial={{ opacity: 0, x: -10 }}
@@ -6394,6 +7121,8 @@ export default function ConversasModule() {
                   }
                   onDeleteConversation={() => handleDeleteConversation(selectedConversation)}
                   onMarkUnread={() => handleMarkUnread(selectedConversation)}
+                  onSnooze={(untilIso) => handleSnooze(selectedConversation, untilIso)}
+                  onUnsnooze={() => handleUnsnooze(selectedConversation)}
                   onTogglePrivate={handleTogglePrivate}
                   onExport={() => handleExportHistory(selectedConversation)}
                   aiEnabledBusinessWide={aiAgentEnabled}
@@ -6711,9 +7440,17 @@ export default function ConversasModule() {
       <AnimatePresence>
         {showSettings && <IntegrationSettingsDialog onClose={() => setShowSettings(false)} />}
         {showSaveViewModal && (
+          // key garante remount limpo quando alterna entre create/edit
+          // (defensivo: useState do modal só captura initialName/Emoji no
+          // primeiro render — sem key, alternar create→edit no mesmo lifecycle
+          // mostraria os valores antigos).
           <SaveViewModal
+            key={editingView?.id ?? 'new'}
             onSave={handleSaveView}
-            onClose={() => setShowSaveViewModal(false)}
+            onClose={() => { setShowSaveViewModal(false); setEditingView(null); }}
+            mode={editingView ? 'edit' : 'create'}
+            initialName={editingView?.name}
+            initialEmoji={editingView?.emoji}
           />
         )}
         {showBatchAssign && (

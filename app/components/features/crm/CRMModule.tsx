@@ -33,6 +33,7 @@ import type {
   LeadStatus, LeadSource, User, Broadcast, BroadcastStatus, BroadcastRecipient, Client, ContactProfile, CRMAuditAction,
   Segment, SegmentFilter, SegmentFilterGroup, SegmentFilterOperator,
   BroadcastList, ConsentBasis, SendThrottle, ThrottlePresetKey,
+  BirthdayCampaign,
 } from '@/lib/types';
 import { CONSENT_BASIS_LABELS, THROTTLE_PRESETS } from '@/lib/types';
 import { getAuth } from 'firebase/auth';
@@ -50,6 +51,7 @@ import {
 } from './shared';
 import RecipientListInput from './RecipientListInput';
 import BroadcastDetailDialog from './BroadcastDetailDialog';
+import BirthdayCampaignDialog from './BirthdayCampaignDialog';
 import TemplateSelector, { type TemplateSelection, isTemplateSelectionValid } from './TemplateSelector';
 import EmailBodyEditor from './EmailBodyEditor';
 import { KanbanBoard } from './KanbanBoard';
@@ -1287,6 +1289,11 @@ function CampaignsTab({ businessId }: { businessId: string }) {
   const [loading, setLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
   const [openBroadcast, setOpenBroadcast] = useState<Broadcast | null>(null);
+  // PR-B: campanhas recorrentes de aniversário. Coleção separada
+  // (`birthdayCampaigns`) — não se misturam com broadcasts pontuais.
+  const [birthdayCampaigns, setBirthdayCampaigns] = useState<BirthdayCampaign[]>([]);
+  const [showNewBirthday, setShowNewBirthday] = useState(false);
+  const [editingBirthday, setEditingBirthday] = useState<BirthdayCampaign | null>(null);
   const [formName, setFormName] = useState('');
   const [formChannel, setFormChannel] = useState<'whatsapp' | 'facebook' | 'instagram' | 'email'>('whatsapp');
   const [formViaBaileys, setFormViaBaileys] = useState(false);
@@ -1447,6 +1454,19 @@ function CampaignsTab({ businessId }: { businessId: string }) {
     staleTime: 30 * 1000, // 30s — clientes recém-criados aparecem rápido pro auto-link
     gcTime: 5 * 60 * 1000,
   });
+
+  // Subscription: campanhas de aniversário. Coleção `birthdayCampaigns`,
+  // ordenadas por createdAt desc igual a broadcasts. Erro silencioso —
+  // ausência da coleção (primeira instalação) é OK; UI só mostra empty state.
+  useEffect(() => {
+    if (!businessId) return;
+    const q = query(collection(db, 'birthdayCampaigns'), where('businessId', '==', businessId), orderBy('createdAt', 'desc'));
+    const unsub = onSnapshot(q,
+      (snap) => setBirthdayCampaigns(snap.docs.map(d => ({ ...d.data(), id: d.id } as BirthdayCampaign))),
+      (err) => console.warn('[CRM:Campaigns] birthdayCampaigns subscription:', err),
+    );
+    return () => unsub();
+  }, [businessId]);
 
   useEffect(() => {
     if (!businessId) return;
@@ -1664,9 +1684,122 @@ function CampaignsTab({ businessId }: { businessId: string }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between"><div><h3 className="text-base font-bold text-gray-900 dark:text-gray-100 font-display">{t('crm.campaign.title', 'Campanhas')}</h3><p className="text-xs text-gray-500 dark:text-gray-400">{broadcasts.length} {t('crm.campaign.campaignsSuffix', 'campanha{{s}}', { s: broadcasts.length !== 1 ? 's' : '' })}</p></div><button onClick={() => setShowNew(true)} className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-red-600 to-red-500 shadow-lg shadow-red-500/25"><Plus size={16} />{t('crm.action.newCampaign', 'Nova Campanha')}</button></div>
-      {broadcasts.length === 0 ? <div className="text-center py-16 bg-white dark:bg-gray-900/50 rounded-2xl border border-gray-200 dark:border-gray-700/50"><Send className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-3" /><p className="text-sm font-semibold text-gray-600 dark:text-gray-400">{t('crm.campaign.none', 'Nenhuma campanha')}</p></div>
-      : <div className="space-y-3">{broadcasts.map((b) => {
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <h3 className="text-base font-bold text-gray-900 dark:text-gray-100 font-display">{t('crm.campaign.title', 'Campanhas')}</h3>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            {broadcasts.length} {broadcasts.length !== 1 ? 'pontuais' : 'pontual'}
+            {birthdayCampaigns.length > 0 && (
+              <> · {birthdayCampaigns.length} aniversário{birthdayCampaigns.length !== 1 ? '' : ''}</>
+            )}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {/* Botão de campanha de aniversário — visualmente secundário (outline)
+              pra não competir com o CTA primário "Nova Campanha". O 🎂 deixa
+              claro que é a feature recorrente, não one-shot. */}
+          <button
+            onClick={() => { setEditingBirthday(null); setShowNewBirthday(true); }}
+            className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-semibold border-2 border-amber-400 text-amber-700 dark:text-amber-400 bg-amber-50/50 dark:bg-amber-500/5 hover:bg-amber-50 dark:hover:bg-amber-500/10 transition-colors"
+          >
+            <span className="text-base leading-none">🎂</span>
+            Nova de aniversariante
+          </button>
+          <button onClick={() => setShowNew(true)} className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-red-600 to-red-500 shadow-lg shadow-red-500/25">
+            <Plus size={16} />{t('crm.action.newCampaign', 'Nova Campanha')}
+          </button>
+        </div>
+      </div>
+
+      {/* Seção de campanhas de aniversário — só aparece quando há ≥ 1.
+          Lista compacta: nome, status, antecedência, hora, stats acumuladas. */}
+      {birthdayCampaigns.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-[11px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider px-1">
+            🎂 Aniversariantes (recorrentes)
+          </p>
+          <div className="space-y-2">
+            {birthdayCampaigns.map(bc => {
+              const dayLabel = bc.daysBeforeBirthday === 0
+                ? 'No dia'
+                : `${bc.daysBeforeBirthday}d antes`;
+              return (
+                <motion.div
+                  key={bc.id}
+                  initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+                  onClick={() => { setEditingBirthday(bc); setShowNewBirthday(true); }}
+                  className={cn(
+                    'rounded-2xl border p-4 cursor-pointer transition-shadow hover:shadow-md',
+                    bc.enabled
+                      ? 'bg-amber-50/40 dark:bg-amber-500/5 border-amber-200 dark:border-amber-500/20'
+                      : 'bg-gray-50 dark:bg-gray-900/50 border-gray-200 dark:border-gray-700/50 opacity-70',
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{bc.name}</h4>
+                      <span className={cn(
+                        'text-[10px] font-semibold px-2 py-0.5 rounded-full',
+                        bc.enabled
+                          ? 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400'
+                          : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400',
+                      )}>
+                        {bc.enabled ? 'Ativa' : 'Pausada'}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3 text-[11px] text-gray-500 dark:text-gray-400">
+                      <span>{dayLabel}</span>
+                      <span>·</span>
+                      <span>{String(bc.sendAtHour).padStart(2, '0')}:00</span>
+                      <span>·</span>
+                      <span className="capitalize">{bc.viaBaileys ? 'WA Web' : 'WA Cloud'}</span>
+                    </div>
+                  </div>
+                  {(bc.stats.totalSent > 0 || bc.stats.totalFailed > 0) && (
+                    <div className="mt-2 flex items-center gap-3 text-[11px]">
+                      <span className="text-gray-500 dark:text-gray-400">
+                        Enviadas: <strong className="text-emerald-700 dark:text-emerald-400 tabular-nums">{bc.stats.totalSent}</strong>
+                      </span>
+                      {bc.stats.totalDelivered > 0 && (
+                        <span className="text-gray-500 dark:text-gray-400">
+                          Entregues: <strong className="text-blue-600 dark:text-blue-400 tabular-nums">{bc.stats.totalDelivered}</strong>
+                        </span>
+                      )}
+                      {bc.stats.totalRead > 0 && (
+                        <span className="text-gray-500 dark:text-gray-400">
+                          Lidas: <strong className="text-purple-600 dark:text-purple-400 tabular-nums">{bc.stats.totalRead}</strong>
+                        </span>
+                      )}
+                      {bc.stats.totalFailed > 0 && (
+                        <span className="text-gray-500 dark:text-gray-400">
+                          Falhas: <strong className="text-red-600 dark:text-red-400 tabular-nums">{bc.stats.totalFailed}</strong>
+                        </span>
+                      )}
+                      {bc.stats.lastRanAt && (
+                        <span className="text-gray-400 dark:text-gray-500 ml-auto">
+                          última: {new Date(bc.stats.lastRanAt).toLocaleDateString('pt-BR')}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </motion.div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {broadcasts.length === 0 && birthdayCampaigns.length === 0 ? <div className="text-center py-16 bg-white dark:bg-gray-900/50 rounded-2xl border border-gray-200 dark:border-gray-700/50"><Send className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-3" /><p className="text-sm font-semibold text-gray-600 dark:text-gray-400">{t('crm.campaign.none', 'Nenhuma campanha')}</p></div>
+      : <div className="space-y-3">
+          {/* Header da seção pontuais — só renderiza se houver as duas listas
+              coexistindo, pra orientar o operador. Quando só pontuais, header
+              redundante (título "Campanhas" no topo já cobre). */}
+          {broadcasts.length > 0 && birthdayCampaigns.length > 0 && (
+            <p className="text-[11px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1 mt-2">
+              Campanhas pontuais
+            </p>
+          )}
+          {broadcasts.map((b) => {
           const sc = BROADCAST_STATUS_LABELS[b.status];
           // Taxas derivadas: deliveryRate sobre sent (não total), readRate sobre delivered.
           const deliveryRate = b.stats.sent > 0 ? b.stats.delivered / b.stats.sent : 0;
@@ -1728,6 +1861,17 @@ function CampaignsTab({ businessId }: { businessId: string }) {
           );
         })}</div>}
       <AnimatePresence>{openBroadcast && <BroadcastDetailDialog broadcast={openBroadcast} onClose={() => setOpenBroadcast(null)} onRetryCreated={() => setOpenBroadcast(null)} onDeleted={() => setOpenBroadcast(null)} />}</AnimatePresence>
+      {user && (
+        <BirthdayCampaignDialog
+          open={showNewBirthday}
+          onClose={() => { setShowNewBirthday(false); setEditingBirthday(null); }}
+          businessId={businessId}
+          user={{ uid: user.uid, name: user.name }}
+          editing={editingBirthday}
+          availableConnections={availableConnections}
+          clients={existingClients}
+        />
+      )}
       <Dialog open={showNew} onClose={() => setShowNew(false)} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: '1rem' } }}>
         <DialogTitle sx={{ fontWeight: 700, fontFamily: '"Plus Jakarta Sans", sans-serif' }}>{t('crm.dialog.newCampaign', 'Nova Campanha')}</DialogTitle>
         <DialogContent className="space-y-4 !pt-2">
@@ -1773,9 +1917,15 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                 }
               }}
             >
+              {/* Apenas WhatsApp e Email suportam campanhas (envios outbound
+                  iniciados pelo negócio). Facebook Messenger e Instagram
+                  exigem que o cliente inicie a conversa primeiro — a API da
+                  Meta proíbe cold outreach nesses canais. Messenger tem
+                  Marketing Messages (paga, desde Jan/2026), mas exige opt-in
+                  prévio em conversa anterior; Instagram não suporta broadcast
+                  desde fev/2024. Voltam aqui se/quando integrarmos a API
+                  específica de Marketing Messages com fluxo de opt-in. */}
               <MenuItem value="whatsapp">WhatsApp</MenuItem>
-              <MenuItem value="facebook">Messenger</MenuItem>
-              <MenuItem value="instagram">Instagram</MenuItem>
               <MenuItem value="email" disabled={!notificationServerReady}>
                 Email {!notificationServerReady && '(configure notification-server)'}
               </MenuItem>

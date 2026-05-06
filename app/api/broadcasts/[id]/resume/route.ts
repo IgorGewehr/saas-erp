@@ -118,15 +118,22 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     // Se o update falhar, abortamos sem mexer nos pending docs (recoverable).
     // Se update succeed mas delete falhar parcialmente, os pendentes restantes
     // serão limpos no próximo resume (idempotente — encontrará pendentes restantes).
+    //
+    // Stats NÃO são resetadas (antes setávamos sent/failed = 0 antes do
+    // próximo dispatch). Com sessões e /send usando FieldValue.increment,
+    // os contadores agregados refletem o histórico cumulativo de TODOS os
+    // dispatches — operador vê total real no broadcast list em vez do
+    // último run. Stats por sessão ficam derivadas dos broadcastMessages
+    // (filtro por sessionIndex).
     const now = new Date().toISOString();
     const { FieldValue } = await import('firebase-admin/firestore');
+    // stats.total NÃO é tocado — preserva o tamanho original da campanha.
+    // Antes ficava sobrescrito com `recipients.length` (= pendentes), o que
+    // encolhia o total a cada resume e mostrava "25 recipientes" na list
+    // pra um broadcast de 100 alvos.
     await broadcastRef.update({
       status: 'draft',
       recipients,
-      'stats.total': recipients.length,
-      // Stats agregadas resetam — broadcastMessages mantém histórico real
-      'stats.sent': 0,
-      'stats.failed': 0,
       startedAt: FieldValue.delete(),
       completedAt: FieldValue.delete(),
       updatedAt: now,

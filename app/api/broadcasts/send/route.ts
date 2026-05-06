@@ -189,6 +189,7 @@ async function preCreateBroadcastMessages(
   broadcastId: string,
   recipients: NormalizedRecipient[],
   consentBasis?: string,
+  sessionIndex?: number,
 ): Promise<string[]> {
   const ids: string[] = [];
   const now = new Date().toISOString();
@@ -217,6 +218,10 @@ async function preCreateBroadcastMessages(
       if (r.customColumns && Object.keys(r.customColumns).length > 0) {
         payload.customColumns = r.customColumns;
       }
+      // Tag de sessão: tracking por dispatch parcial. Operador que envia em
+      // 3 batches (25/50/25) consegue ver stats individuais filtrando por
+      // sessionIndex. Vazio em broadcasts pré-feature.
+      if (typeof sessionIndex === 'number') payload.sessionIndex = sessionIndex;
       batch.set(docRef, payload);
       ids.push(docRef.id);
     }
@@ -450,15 +455,29 @@ export async function POST(req: NextRequest) {
        * "Retomar".
        */
       maxRecipients,
+      /**
+       * Sessão de envio. Quando ausente, é calculado server-side como
+       * `(broadcast.sessions?.length ?? 0) + 1` no momento do dispatch.
+       * Frontend pode passar pra controlar (ex: retry de uma sessão), mas
+       * em geral deixa server resolver pra evitar race entre múltiplos
+       * dispatches concorrentes.
+       */
+      sessionIndex: sessionIndexFromBody,
+      dispatchedByName,
     } = body;
 
     if (!businessId || !broadcastId || !rawRecipients?.length) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
+    // dispatcher* hoisted aqui pra que o append da sessão lá no fim consiga
+    // gravar quem disparou (auditoria). Cron call deixa undefined.
+    let dispatcherUid: string | undefined;
+
     if (!isCronCall) {
       const authResult = await verifyAuth(req, businessId);
       if (isAuthError(authResult)) return authResult;
+      dispatcherUid = authResult.uid;
 
       // Rate limit por business (5.13): 30 broadcasts/hora — anti-abuse
       // independente do IP (atacante pode rotacionar IPs mas não tokens).
@@ -728,26 +747,44 @@ export async function POST(req: NextRequest) {
     const delayMs = fallbackDelayMs; // mantido pra compat com pause-check (TTL cap)
 
     // Idempotência: CAS draft/sent/failed → sending. Bloqueia duplo-clique e re-trigger.
+    // Também resolve sessionIndex dentro da transação pra evitar race entre
+    // múltiplos dispatches concorrentes que tentariam usar o mesmo index.
     const broadcastRef = adminDb.collection('broadcasts').doc(broadcastId);
+    let resolvedSessionIndex: number;
     try {
-      await adminDb.runTransaction(async (tx) => {
+      resolvedSessionIndex = await adminDb.runTransaction(async (tx) => {
         const snap = await tx.get(broadcastRef);
         if (!snap.exists) {
-          // Doc pode não existir em testes — tolera
-          return;
+          // Doc pode não existir em testes — tolera, retorna 1 como default
+          return 1;
         }
-        const status = snap.data()?.status;
+        const data = snap.data();
+        const status = data?.status;
         // Cron: process-scheduled já fez CAS scheduled→sending e nos chamou.
         // Status='sending' é ESPERADO nesse caso.
         if (status === 'sending' && !isCronCall) {
           throw new Error('CONCURRENT_SEND');
         }
-        tx.update(broadcastRef, {
+        // Sessão: index = (max existente) + 1. Se body forçou um valor, usa
+        // ele (caso de retry ou manipulação manual).
+        const existingSessions = (data?.sessions ?? []) as Array<{ index?: number }>;
+        const nextIndex = typeof sessionIndexFromBody === 'number' && sessionIndexFromBody > 0
+          ? sessionIndexFromBody
+          : existingSessions.reduce((max, s) => Math.max(max, s.index ?? 0), 0) + 1;
+        // stats.total preserva o tamanho ORIGINAL da campanha (set só na
+        // primeira sessão). Sem isso, retomadas parciais sobrescreviam total
+        // com a contagem de pendentes restantes — broadcast com 100 alvos
+        // virava "25 recipientes" depois da última retomada (mentira).
+        const isFirstSession = existingSessions.length === 0
+          && (typeof data?.stats?.total !== 'number' || data.stats.total === 0);
+        const update: Record<string, unknown> = {
           status: 'sending',
-          'stats.total': recipients.length,
           startedAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
-        });
+        };
+        if (isFirstSession) update['stats.total'] = recipients.length;
+        tx.update(broadcastRef, update);
+        return nextIndex;
       });
     } catch (err) {
       if (err instanceof Error && err.message === 'CONCURRENT_SEND') {
@@ -764,7 +801,8 @@ export async function POST(req: NextRequest) {
     // IMPORTANTE: pré-criamos para TODOS os recipients, mesmo quando o operador
     // optou por dispatch parcial (maxRecipients < total). Os que não forem
     // processados nesta rodada ficam pending → resume retoma normalmente.
-    const messageDocIds = await preCreateBroadcastMessages(businessId, broadcastId, recipients, consentBasis);
+    // Cada msg leva sessionIndex pra tracking individual por dispatch.
+    const messageDocIds = await preCreateBroadcastMessages(businessId, broadcastId, recipients, consentBasis, resolvedSessionIndex);
 
     // Dispatch parcial: trunca o iteration target. Total stats refletem o
     // recorte (truncado). Status final = 'paused' (mesmo fluxo do pause manual).
@@ -1174,15 +1212,38 @@ export async function POST(req: NextRequest) {
       // Sem CAS, sobrescrevemos 'paused' com 'sent'. runTransaction garante
       // que só atualizamos status se ainda está 'sending'; caso contrário,
       // só atualiza stats sem mexer em status terminal já gravado.
+      //
+      // Stats agora são CUMULATIVOS via FieldValue.increment (antes overwrite).
+      // Sem isso, dispatch parcial #2 zerava o stats.sent do parcial #1 — o
+      // contador no broadcast list mostrava só o último run, e a soma das
+      // sessões nunca batia com a realidade de broadcastMessages.
       const broadcastRef = adminDb.collection('broadcasts').doc(broadcastId);
+      const { FieldValue } = await import('firebase-admin/firestore');
       await adminDb.runTransaction(async (tx) => {
         const snap = await tx.get(broadcastRef);
         if (!snap.exists) return;
-        const currentStatus = snap.data()?.status as string | undefined;
+        const currentData = snap.data();
+        const currentStatus = currentData?.status as string | undefined;
+        // stats.total ficou setado na primeira sessão (no CAS inicial). Não
+        // sobrescreve aqui — manter o tamanho original da campanha mesmo
+        // após retomadas parciais (que processam só os pendentes).
         const update: Record<string, unknown> = {
-          'stats.sent': sent,
-          'stats.failed': failed,
-          'stats.total': totalRecipients,
+          'stats.sent': FieldValue.increment(sent),
+          'stats.failed': FieldValue.increment(failed),
+          // Append metadata da sessão recém-executada. dispatchedByName
+          // tem fallback inteligente: nome do operador (UI), uid bruto, ou
+          // "Sistema (agendado)" pra cron de scheduled broadcasts. Sem
+          // isso, a auditoria de sessões disparadas por cron mostrava só
+          // "—" / undefined.
+          sessions: FieldValue.arrayUnion({
+            index: resolvedSessionIndex,
+            dispatchedAt: new Date().toISOString(),
+            recipientCount: recipientsToProcess.length,
+            dispatchedByName: (typeof dispatchedByName === 'string' && dispatchedByName)
+              || dispatcherUid
+              || (isCronCall ? 'Sistema (agendado)' : 'Desconhecido'),
+            ...(dispatcherUid ? { dispatchedBy: dispatcherUid } : {}),
+          }),
           updatedAt: new Date().toISOString(),
         };
         // Só sobrescreve status se ainda estamos no estado 'sending' que entramos.

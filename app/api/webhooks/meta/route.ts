@@ -1862,6 +1862,13 @@ async function updateMessageStatus(params: {
   await updateBroadcastMessageStatus(params).catch(err =>
     console.error('[Meta Webhook] Error updating broadcastMessage status:', err)
   );
+
+  // Espelhamento em birthdayCampaignLogs — campanhas recorrentes de aniversário
+  // (PR-C). Logs são por (campaignId, clientId, year); webhook atualiza status
+  // e incrementa stats agregadas na campanha pai.
+  await updateBirthdayCampaignLogStatus(params).catch(err =>
+    console.error('[Meta Webhook] Error updating birthdayCampaignLog status:', err)
+  );
 }
 
 /** Atualiza um BroadcastMessage por externalMessageId — invocado a partir de updateMessageStatus. */
@@ -1904,6 +1911,58 @@ async function updateBroadcastMessageStatus(params: {
     const field = params.status === 'delivered' ? 'stats.delivered' : 'stats.read';
     const { FieldValue } = await import('firebase-admin/firestore');
     await adminDb.collection('broadcasts').doc(current.broadcastId).update({
+      [field]: FieldValue.increment(1),
+      updatedAt: new Date().toISOString(),
+    }).catch(() => {/* doc pode ter sido deletado */});
+  }
+}
+
+/**
+ * Atualiza birthdayCampaignLogs por externalMessageId — espelha o que
+ * updateBroadcastMessageStatus faz pra broadcastMessages, mas pra logs
+ * de campanhas recorrentes. Campanha pai recebe incremento atômico nas
+ * stats `totalDelivered` / `totalRead`.
+ *
+ * Status regression guard idêntico (nunca volta atrás, 'failed' sempre
+ * aplica). Idempotente — multiple deliveries do mesmo wamid não
+ * incrementam 2x graças ao guard.
+ */
+async function updateBirthdayCampaignLogStatus(params: {
+  businessId: string;
+  messageId: string;
+  status: string;
+  timestamp: string;
+  errors?: Array<{ code: number; title: string }>;
+}): Promise<void> {
+  const snap = await adminDb.collection('birthdayCampaignLogs')
+    .where('externalMessageId', '==', params.messageId)
+    .where('businessId', '==', params.businessId)
+    .limit(1)
+    .get();
+  if (snap.empty) return;
+
+  const doc = snap.docs[0];
+  const current = doc.data();
+  const currentOrder = STATUS_ORDER[current.status] ?? -1;
+  const newOrder = STATUS_ORDER[params.status] ?? -1;
+  if (params.status !== 'failed' && newOrder <= currentOrder) return;
+
+  const update: Record<string, string | number> = { status: params.status };
+  if (params.status === 'delivered') update.deliveredAt = params.timestamp;
+  if (params.status === 'read') {
+    update.readAt = params.timestamp;
+    if (!current.deliveredAt) update.deliveredAt = params.timestamp;
+  }
+  if (params.status === 'failed' && params.errors?.length) {
+    update.errorMessage = params.errors[0].title;
+  }
+
+  await doc.ref.update(update);
+
+  if (current.campaignId && (params.status === 'delivered' || params.status === 'read')) {
+    const field = params.status === 'delivered' ? 'stats.totalDelivered' : 'stats.totalRead';
+    const { FieldValue } = await import('firebase-admin/firestore');
+    await adminDb.collection('birthdayCampaigns').doc(current.campaignId).update({
       [field]: FieldValue.increment(1),
       updatedAt: new Date().toISOString(),
     }).catch(() => {/* doc pode ter sido deletado */});

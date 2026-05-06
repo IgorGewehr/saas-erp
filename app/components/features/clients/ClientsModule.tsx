@@ -170,6 +170,10 @@ interface ClientFormData {
   cpfCnpj: string;
   inscricaoEstadual: string;
   indicadorIE: '' | '1' | '2' | '9';
+  /** ISO date YYYY-MM-DD. PF = data de nascimento; PJ = data de fundação.
+   *  Mesmo campo serve aos dois casos pra simplificar automação de
+   *  "aniversário do cliente" no futuro. Vazio quando não informado. */
+  birthDate: string;
   source: LeadSource;
   status: LeadStatus;
   notes: string;
@@ -186,6 +190,7 @@ interface ClientFormData {
 const emptyForm: ClientFormData = {
   name: '', email: '', phone: '', whatsapp: '', company: '',
   tipo: 'pf', cpfCnpj: '', inscricaoEstadual: '', indicadorIE: '',
+  birthDate: '',
   source: 'outro', status: 'ganho', notes: '', tags: [],
   cep: '', logradouro: '', numero: '', complemento: '', bairro: '', municipio: '', uf: '',
 };
@@ -421,6 +426,16 @@ function ClientForm({
           <input className={inputCls} type="email" placeholder="email@exemplo.com" value={form.email}
             onChange={e => set('email', e.target.value)} />
         </div>
+        <div>
+          {/* PF: data de nascimento; PJ: data de fundação. Mesmo campo
+              `birthDate` serve aos dois — simplifica automação futura
+              de "aniversário do cliente" (compara só mês+dia). */}
+          <label className={labelCls}>
+            {form.tipo === 'pj' ? 'Data de Fundação' : 'Data de Nascimento'}
+          </label>
+          <input className={inputCls} type="date" value={form.birthDate}
+            onChange={e => set('birthDate', e.target.value)} />
+        </div>
       </div>
 
       {/* Status & source */}
@@ -520,6 +535,7 @@ const EXPORT_COLUMNS: ExportColumn[] = [
   { id: 'company',       label: 'Empresa',        group: 'Básico',     get: c => c.company || '' },
   { id: 'tipo',          label: 'Tipo',           group: 'Básico',     get: c => TIPO_LABELS[c.tipo || 'pf'] },
   { id: 'cpfCnpj',       label: 'CPF/CNPJ',       group: 'Básico',     get: c => c.cpfCnpj || '' },
+  { id: 'birthDate',     label: 'Aniversário',    group: 'Básico',     get: c => c.birthDate ? formatDate(c.birthDate) : '' },
   { id: 'status',        label: 'Status',         group: 'Básico',     get: c => STATUS_CONFIG[c.status]?.label || c.status },
   { id: 'source',        label: 'Origem',         group: 'Básico',     get: c => SOURCE_LABELS[c.source] || c.source },
   { id: 'tags',          label: 'Tags',           group: 'Básico',     get: c => (c.tags || []).join(', ') },
@@ -739,6 +755,7 @@ const IMPORT_FIELDS: { id: string; label: string; required?: boolean }[] = [
   { id: 'company',     label: 'Empresa' },
   { id: 'tipo',        label: 'Tipo (pf / pj)' },
   { id: 'cpfCnpj',     label: 'CPF / CNPJ' },
+  { id: 'birthDate',   label: 'Data de Nascimento' },
   { id: 'status',      label: 'Status' },
   { id: 'source',      label: 'Origem' },
   { id: 'tags',        label: 'Tags (vírgula)' },
@@ -759,6 +776,7 @@ const FIELD_ALIASES: Record<string, string[]> = {
   company:    ['empresa', 'company', 'negocio', 'negócio', 'corporação'],
   tipo:       ['tipo', 'type', 'pessoa'],
   cpfCnpj:   ['cpf', 'cnpj', 'cpf/cnpj', 'documento', 'doc'],
+  birthDate:  ['nascimento', 'aniversário', 'aniversario', 'data de nascimento', 'birthday', 'birthdate', 'dob'],
   status:     ['status', 'situação', 'situacao'],
   source:     ['origem', 'source', 'canal', 'procedência'],
   tags:       ['tags', 'etiquetas', 'categorias', 'labels'],
@@ -770,6 +788,31 @@ const FIELD_ALIASES: Record<string, string[]> = {
   municipio:  ['municipio', 'município', 'cidade', 'city'],
   uf:         ['uf', 'estado', 'state', 'province'],
 };
+
+/**
+ * Normaliza uma data de nascimento de CSV pra formato ISO YYYY-MM-DD.
+ * Aceita: ISO ("1990-05-04"), BR ("04/05/1990"), BR com 2-digit year ("04/05/90").
+ * Retorna '' (vazio) se ausente ou parse falhar — não falha a importação,
+ * só descarta o campo da linha problemática.
+ */
+function parseDateToIso(raw: string): string {
+  const v = (raw || '').trim();
+  if (!v) return '';
+  // Já em ISO?
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  // BR com slash ou hífen?
+  const m = v.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2}|\d{4})$/);
+  if (!m) return '';
+  const day = m[1].padStart(2, '0');
+  const month = m[2].padStart(2, '0');
+  let year = m[3];
+  if (year.length === 2) {
+    // 2-digit: <50 vira 20XX, >=50 vira 19XX (heurística usual pra DOB)
+    const n = Number(year);
+    year = n < 50 ? `20${year}` : `19${year}`;
+  }
+  return `${year}-${month}-${day}`;
+}
 
 function autoMap(headers: string[]): Record<string, string> {
   const used = new Set<string>();
@@ -844,6 +887,9 @@ function rowToFormData(row: Record<string, string>, mapping: Record<string, stri
     cpfCnpj: get('cpfCnpj'),
     inscricaoEstadual: '',
     indicadorIE: '',
+    // CSV: tenta importar data de nascimento. Aceita formatos ISO YYYY-MM-DD
+    // ou BR DD/MM/YYYY (normalizado pra ISO). Vazio se ausente ou inválido.
+    birthDate: parseDateToIso(get('birthDate')),
     source: get('source') ? normalizeSource(get('source')) : 'outro',
     status: get('status') ? normalizeStatus(get('status')) : 'ganho',
     notes: get('notes'),
@@ -2563,6 +2609,46 @@ function ClientDetailPanel({ client, onClose, onEdit, loyaltyConfig: loyaltyCfg 
               <span className="text-sm text-gray-700 dark:text-gray-300">{client.email}</span>
             </a>
           )}
+          {/* Aniversário (PF) ou Fundação (PJ) — base pra automação futura
+              de "feliz aniversário". Mostra quantos dias faltam pra vencer
+              quando >= hoje, ou "hoje 🎂" quando bate. */}
+          {client.birthDate && (() => {
+            const isPj = client.tipo === 'pj';
+            const label = isPj ? 'Fundação' : 'Nascimento';
+            // Parse ISO YYYY-MM-DD como date local pra evitar shift de UTC.
+            const [yStr, mStr, dStr] = client.birthDate.split('-');
+            const year = Number(yStr); const month = Number(mStr); const day = Number(dStr);
+            if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
+            const formatted = `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`;
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const thisYearAnniv = new Date(today.getFullYear(), month - 1, day);
+            const nextAnniv = thisYearAnniv >= today
+              ? thisYearAnniv
+              : new Date(today.getFullYear() + 1, month - 1, day);
+            const daysUntil = Math.round((nextAnniv.getTime() - today.getTime()) / 86400000);
+            const isToday = daysUntil === 0;
+            return (
+              <div className="flex items-center gap-3 p-2.5 rounded-lg">
+                <Calendar className="w-4 h-4 text-gray-400" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-gray-700 dark:text-gray-300">{formatted}</p>
+                  <p className={cn(
+                    'text-[11px] mt-0.5',
+                    isToday
+                      ? 'text-amber-600 dark:text-amber-400 font-semibold'
+                      : daysUntil <= 7
+                        ? 'text-amber-600 dark:text-amber-400'
+                        : 'text-gray-400 dark:text-gray-500',
+                  )}>
+                    {isToday
+                      ? `🎂 ${label} hoje!`
+                      : `${label} · em ${daysUntil} dia${daysUntil === 1 ? '' : 's'}`}
+                  </p>
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         {/* Fiscal */}
@@ -2670,6 +2756,10 @@ export default function ClientsModule() {
   const [filterStatus, setFilterStatus] = useState<LeadStatus | 'all'>('all');
   const [filterTags, setFilterTags] = useState<string[]>([]);
   const [filterChurnRisk, setFilterChurnRisk] = useState<ChurnRiskLevel | 'all'>('all');
+  // 'all' = sem filtro; 'this_month' = mês corrente; 'next_month' = próximo;
+  // 1-12 = mês específico (1=janeiro, 12=dezembro). Útil pra preparar
+  // promoções de aniversário antes de criar a campanha automatizada.
+  const [filterBirthMonth, setFilterBirthMonth] = useState<'all' | 'this_month' | 'next_month' | number>('all');
   const [sortBy, setSortBy] = useState<'name' | 'totalSpent' | 'createdAt' | 'churnRisk'>('name');
   const [showExport, setShowExport] = useState(false);
   const [showImport, setShowImport] = useState(false);
@@ -2780,6 +2870,9 @@ export default function ClientsModule() {
         indicadorIE: (['1', '2', '9'] as const).includes(data.indicadorIE as '1' | '2' | '9')
           ? (data.indicadorIE as '1' | '2' | '9')
           : undefined,
+        // ISO YYYY-MM-DD. Vazio vira undefined pra updateDoc descartar (o
+        // mecanismo de deleteField em editingClient cuida do limpar).
+        birthDate: data.birthDate.trim() || undefined,
         source: data.source,
         status: data.status,
         notes: data.notes.trim() || undefined,
@@ -2924,8 +3017,29 @@ export default function ClientsModule() {
         return getChurnLevel(risk) === filterChurnRisk;
       });
     }
+    // Filtro por mês de aniversário. ISO YYYY-MM-DD; mês são chars 5-6 (1-based MM).
+    if (filterBirthMonth !== 'all') {
+      const today = new Date();
+      const targetMonth: number =
+        filterBirthMonth === 'this_month' ? today.getMonth() + 1 :
+        filterBirthMonth === 'next_month' ? ((today.getMonth() + 1) % 12) + 1 :
+        filterBirthMonth;
+      list = list.filter(c => {
+        if (!c.birthDate || c.birthDate.length < 7) return false;
+        const month = Number(c.birthDate.slice(5, 7));
+        return month === targetMonth;
+      });
+    }
 
     list.sort((a, b) => {
+      // Sort especial quando filtrando por aniversário: ordena por dia do mês
+      // (ascendente). Operador escaneando "quem faz no próximo mês" prefere
+      // ver dia 1 → 31 em vez de alfabético.
+      if (filterBirthMonth !== 'all') {
+        const da = a.birthDate ? Number(a.birthDate.slice(8, 10)) : 99;
+        const db = b.birthDate ? Number(b.birthDate.slice(8, 10)) : 99;
+        if (da !== db) return da - db;
+      }
       if (sortBy === 'totalSpent') return (b.totalSpent || 0) - (a.totalSpent || 0);
       if (sortBy === 'createdAt') return (b.createdAt || '').localeCompare(a.createdAt || '');
       if (sortBy === 'churnRisk') return (b.scores?.churnRisk ?? 0) - (a.scores?.churnRisk ?? 0);
@@ -2933,7 +3047,7 @@ export default function ClientsModule() {
     });
 
     return list;
-  }, [clients, search, filterTipo, filterStatus, filterTags, filterChurnRisk, sortBy]);
+  }, [clients, search, filterTipo, filterStatus, filterTags, filterChurnRisk, filterBirthMonth, sortBy]);
 
   // ─── Duplicate count (for badge) ─────────────────────────────────────────────
   const dupeCount = useMemo(() => detectDuplicates(clients).length, [clients]);
@@ -2971,6 +3085,7 @@ export default function ClientsModule() {
         cpfCnpj: editingClient.cpfCnpj || '',
         inscricaoEstadual: editingClient.inscricaoEstadual || '',
         indicadorIE: editingClient.indicadorIE || '',
+        birthDate: editingClient.birthDate || '',
         source: editingClient.source,
         status: editingClient.status,
         notes: editingClient.notes || '',
@@ -3117,7 +3232,7 @@ export default function ClientsModule() {
           >
             <Filter className="w-4 h-4" />
             Filtros
-            {(filterTipo !== 'all' || filterStatus !== 'all' || filterTags.length > 0 || filterChurnRisk !== 'all') && (
+            {(filterTipo !== 'all' || filterStatus !== 'all' || filterTags.length > 0 || filterChurnRisk !== 'all' || filterBirthMonth !== 'all') && (
               <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
             )}
           </button>
@@ -3225,6 +3340,54 @@ export default function ClientsModule() {
                       {cfg.label}
                     </button>
                   ))}
+                </div>
+              </div>
+
+              {/* Aniversário — preparação para campanhas. "Este mês" e
+                  "Próximo mês" são atalhos pra fluxo recorrente; meses
+                  específicos pra planejamento longo prazo. Quando filtro
+                  está ativo, lista é re-ordenada por dia do mês. */}
+              <div>
+                <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2 block inline-flex items-center gap-1.5">
+                  <Gift className="w-3 h-3" />
+                  Aniversário
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={() => setFilterBirthMonth('all')}
+                    className={cn('px-3 py-1.5 rounded-lg text-xs font-medium transition-colors',
+                      filterBirthMonth === 'all'
+                        ? 'bg-red-600 text-white'
+                        : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+                    )}>Todos</button>
+                  <button onClick={() => setFilterBirthMonth('this_month')}
+                    className={cn('px-3 py-1.5 rounded-lg text-xs font-medium transition-colors',
+                      filterBirthMonth === 'this_month'
+                        ? 'bg-red-600 text-white'
+                        : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+                    )}>Este mês</button>
+                  <button onClick={() => setFilterBirthMonth('next_month')}
+                    className={cn('px-3 py-1.5 rounded-lg text-xs font-medium transition-colors',
+                      filterBirthMonth === 'next_month'
+                        ? 'bg-red-600 text-white'
+                        : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+                    )}>Próximo mês</button>
+                  <select
+                    value={typeof filterBirthMonth === 'number' ? filterBirthMonth : ''}
+                    onChange={e => {
+                      const v = e.target.value;
+                      if (!v) return;
+                      setFilterBirthMonth(Number(v));
+                    }}
+                    className={cn('px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border-0 focus:outline-none focus:ring-1 focus:ring-red-400 cursor-pointer',
+                      typeof filterBirthMonth === 'number'
+                        ? 'bg-red-600 text-white'
+                        : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+                    )}>
+                    <option value="">Mês específico…</option>
+                    {['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'].map((m, i) => (
+                      <option key={i + 1} value={i + 1}>{m}</option>
+                    ))}
+                  </select>
                 </div>
               </div>
 
@@ -3390,6 +3553,31 @@ export default function ClientsModule() {
 
                     {/* Right col */}
                     <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+                      {/* Birthday badge — só aparece se aniversário <= 30 dias.
+                          Cor amber pra urgência sem competir com status do CRM.
+                          Útil pra operador escanear quem precisa de campanha. */}
+                      {(() => {
+                        if (!client.birthDate || client.birthDate.length < 10) return null;
+                        const month = Number(client.birthDate.slice(5, 7));
+                        const day = Number(client.birthDate.slice(8, 10));
+                        if (!Number.isFinite(month) || !Number.isFinite(day)) return null;
+                        const today = new Date();
+                        today.setHours(0, 0, 0, 0);
+                        const thisYear = new Date(today.getFullYear(), month - 1, day);
+                        const next = thisYear >= today ? thisYear : new Date(today.getFullYear() + 1, month - 1, day);
+                        const daysUntil = Math.round((next.getTime() - today.getTime()) / 86400000);
+                        if (daysUntil > 30) return null;
+                        return (
+                          <span className={cn(
+                            'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium',
+                            daysUntil === 0
+                              ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300 ring-1 ring-amber-400'
+                              : 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400',
+                          )}>
+                            🎂 {daysUntil === 0 ? 'Hoje!' : daysUntil === 1 ? 'Amanhã' : `${daysUntil}d`}
+                          </span>
+                        );
+                      })()}
                       <span className={cn('inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium', statusCfg.color)}>
                         <span className={cn('w-1 h-1 rounded-full', statusCfg.dot)} />
                         {statusCfg.label}

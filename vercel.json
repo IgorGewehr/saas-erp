@@ -3,6 +3,10 @@
     {
       "path": "/api/agent/scheduled/run",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/birthday-campaigns/run",
+      "schedule": "0 * * * *"
     }
   ]
 }

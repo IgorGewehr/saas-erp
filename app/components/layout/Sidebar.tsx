@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
-import { collection, query, where, getDocs, doc, updateDoc } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, updateDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import type { SidebarPrefs, SidebarSectionPref } from '@/lib/types';
 import {
@@ -370,17 +370,69 @@ function SidebarContent({
     refetchInterval: 10 * 60 * 1000,
   });
 
+  // Conversas atribuídas a mim que precisam de resposta. Real-time via
+  // onSnapshot — necessário pra que o badge zere assim que o operador
+  // resolve/responde uma conversa, sem aguardar polling de 60s.
+  //
+  // Custo: subscribe a uma query por usuário online (where businessId,
+  // assignedTo). Volume típico: 10-50 docs por operador — caro inicial mas
+  // só reads de mudança depois. Polling getDocs equivalente custaria
+  // ~3000 reads/h vs ~55 reads/h aqui.
+  //
+  // Index composto (businessId, assignedTo) declarado em firestore.indexes.json.
+  const [myAwaitingCount, setMyAwaitingCount] = useState(0);
+  useEffect(() => {
+    if (!business?.id || !user?.uid) {
+      setMyAwaitingCount(0);
+      return;
+    }
+    const q = query(
+      collection(db, 'conversations'),
+      where('businessId', '==', business.id),
+      where('assignedTo', '==', user.uid),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const now = Date.now();
+        const count = snap.docs.reduce((acc, d) => {
+          const c = d.data();
+          if (c.status !== 'open' || c.lastMessageDirection !== 'inbound') return acc;
+          // Pula soneca ativa: operador deliberadamente disse "não agora",
+          // não deveria aparecer no badge "atribuídas a mim aguardando".
+          if (c.snoozedUntil) {
+            const until = new Date(c.snoozedUntil).getTime();
+            if (Number.isFinite(until) && until > now) return acc;
+          }
+          return acc + 1;
+        }, 0);
+        setMyAwaitingCount(count);
+      },
+      (err) => {
+        // Fail-soft: índice ausente / rules / rede — mantém último valor
+        // visível pro operador. Loga só warn pra não poluir o console em
+        // outage curta.
+        console.warn('[Sidebar] mine-awaiting snapshot error:', err);
+      },
+    );
+    return () => unsub();
+  }, [business?.id, user?.uid]);
+
   const filterItems = useCallback((items: MenuItemConfig[]) =>
     items.filter((item) => {
       if (item.enterpriseOnly && !isEnterprise) return false;
       if (item.useCases && !item.useCases.includes(currentUseCase)) return false;
       if (item.minRole && userRoleValue < ROLE_HIERARCHY[item.minRole]) return false;
       return true;
-    }).map(item =>
-      item.id === 'Financeiro' && urgentRecurringCount > 0
-        ? { ...item, badgeCount: urgentRecurringCount }
-        : item
-    ), [isEnterprise, currentUseCase, userRoleValue, urgentRecurringCount]);
+    }).map(item => {
+      if (item.id === 'Financeiro' && urgentRecurringCount > 0) {
+        return { ...item, badgeCount: urgentRecurringCount };
+      }
+      if (item.id === 'Conversas' && myAwaitingCount > 0) {
+        return { ...item, badgeCount: myAwaitingCount };
+      }
+      return item;
+    }), [isEnterprise, currentUseCase, userRoleValue, urgentRecurringCount, myAwaitingCount]);
 
   // ── Build effective sections from prefs + hardcoded defaults ─────────────
   const PROTECTED = useMemo(() => new Set<string>(['Dashboard', 'Configurações']), []);
