@@ -398,6 +398,11 @@ function SidebarContent({
         const now = Date.now();
         const count = snap.docs.reduce((acc, d) => {
           const c = d.data();
+          // Conversas soft-deletadas: somem da lista do operador (filtro em
+          // ConversasModule), então não devem inflar o badge. Sem este check
+          // o badge mostrava "3" enquanto a UI reportava 0 não lidas — o
+          // operador não conseguia clicar pra zerar (a conversa nem aparecia).
+          if (c.isDeleted) return acc;
           // Sem mensagens não lidas — não conta
           if (!c.unreadCount || c.unreadCount <= 0) return acc;
           // Soneca ativa — operador silenciou, não deveria notificar
