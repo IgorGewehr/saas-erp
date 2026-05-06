@@ -80,9 +80,10 @@ services:
 
   # Cron interno — dispara endpoints scheduled do saas-erp.
   # Self-contained (não depende de cron-job.org externo). Roda sempre.
-  #   - process-scheduled (broadcasts):  a cada 1 minuto
-  #   - agent/scheduled/run (agente IA): a cada 1 hora
-  # Ambos autenticam com Authorization: Bearer ${CRON_SECRET}
+  #   - process-scheduled (broadcasts):       a cada 1 minuto
+  #   - agent/scheduled/run (agente IA):      a cada 1 hora
+  #   - birthday-campaigns/run (aniversário): a cada 1 hora
+  # Todos autenticam com Authorization: Bearer ${CRON_SECRET}
   # Usa o nome do serviço Docker (`app:3000`) na rede interna — não vai
   # pelo Cloudflare/internet (mais rápido e não consome quota tunnel).
   cron:
@@ -97,7 +98,7 @@ services:
     command: |
       sh -c '
         apk add --no-cache curl > /dev/null 2>&1
-        echo "[cron] iniciado — process-scheduled a cada 1min, agent a cada 1h"
+        echo "[cron] iniciado — process-scheduled a cada 1min, agent + birthday a cada 1h"
         TICK=0
         while true; do
           # broadcasts: a cada 1 minuto
@@ -106,12 +107,22 @@ services:
             http://app:3000/api/broadcasts/process-scheduled \
             || echo "[cron] process-scheduled falhou em $$(date -Iseconds)"
 
-          # agente IA: a cada 60 ticks (1h)
+          # tarefas horárias: rodam quando TICK é múltiplo de 60 (1x por hora).
+          # Disparam em sequência pra evitar pico simultâneo na app.
           if [ $$((TICK % 60)) -eq 0 ]; then
+            # agente IA
             curl -fsS -m 60 -o /dev/null \
               -H "Authorization: Bearer $$CRON_SECRET" \
               http://app:3000/api/agent/scheduled/run \
               || echo "[cron] agent/scheduled/run falhou em $$(date -Iseconds)"
+
+            # campanhas de aniversário (varre clientes elegíveis e dispara
+            # mensagens conforme sendAtHour de cada campanha; idempotente
+            # via birthdayCampaignLogs/{campaignId_clientId_year})
+            curl -fsS -m 120 -o /dev/null \
+              -H "Authorization: Bearer $$CRON_SECRET" \
+              http://app:3000/api/birthday-campaigns/run \
+              || echo "[cron] birthday-campaigns/run falhou em $$(date -Iseconds)"
           fi
 
           TICK=$$((TICK + 1))
