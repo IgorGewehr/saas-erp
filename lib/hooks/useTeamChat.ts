@@ -122,12 +122,11 @@ export function useTeamChat(): UseTeamChatResult {
 
   const chats = useMemo(() => {
     const merged = [...globalChats, ...dmChats];
-    // Ordena por última atividade (lastMessageAt) desc; sem mensagens vai pro fim.
-    merged.sort((a, b) => {
-      const ta = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
-      const tb = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
-      return tb - ta;
-    });
+    // Ordena por atividade desc. Fallback pra updatedAt/createdAt: DM acabada
+    // de criar (sem lastMessageAt) deve ir pro topo, não pro fim.
+    const ts = (c: TeamChat): number =>
+      new Date(c.lastMessageAt ?? c.updatedAt ?? c.createdAt).getTime();
+    merged.sort((a, b) => ts(b) - ts(a));
     return merged;
   }, [globalChats, dmChats]);
 
@@ -198,26 +197,50 @@ export function useTeamChat(): UseTeamChatResult {
 
   // Cria DM 1:1 lazy. ID determinístico — se dois usuários clicarem um no outro
   // ao mesmo tempo, ambos resolvem pro mesmo chatId e o setDoc(merge:true)
-  // garante idempotência. memberIds sorted pra match com o ID.
+  // garante idempotência. memberIds sorted pra match com o ID. Erros (típico:
+  // permission-denied) populam o `error` state pra UI mostrar feedback.
+  // De-dup por otherUid: clicks rápidos no mesmo membro reusam a mesma
+  // promise, evitando 2× write faturável.
+  const ensuringDMRef = useRef<Map<string, Promise<string>>>(new Map());
   const ensureDM = useCallback(async (otherUid: string): Promise<string> => {
     if (!businessId || !user) throw new Error('Sem business/auth');
     if (otherUid === user.uid) throw new Error('Não pode iniciar DM consigo mesmo');
+
     const id = dmChatId(user.uid, otherUid);
-    const ref = doc(db, 'teamChats', id);
-    const snap = await getDoc(ref);
-    if (!snap.exists()) {
-      const now = new Date().toISOString();
-      const sortedMembers = [user.uid, otherUid].sort();
-      await setDoc(ref, {
-        businessId,
-        type: 'dm',
-        memberIds: sortedMembers,
-        lastReadAt: {},
-        createdAt: now,
-        updatedAt: now,
-      }, { merge: true });
+    const inflight = ensuringDMRef.current.get(otherUid);
+    if (inflight) return inflight;
+
+    const promise = (async () => {
+      const ref = doc(db, 'teamChats', id);
+      const snap = await getDoc(ref);
+      if (!snap.exists()) {
+        const now = new Date().toISOString();
+        const sortedMembers = [user.uid, otherUid].sort();
+        await setDoc(ref, {
+          businessId,
+          type: 'dm',
+          memberIds: sortedMembers,
+          lastReadAt: {},
+          createdAt: now,
+          updatedAt: now,
+        }, { merge: true });
+      }
+      return id;
+    })();
+
+    ensuringDMRef.current.set(otherUid, promise);
+    try {
+      const result = await promise;
+      // Se ensure voltou ok, limpa erro residual de DM.
+      setError(prev => (prev?.startsWith('[ensureDM]') ? null : prev));
+      return result;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'falha ao criar DM';
+      setError(`[ensureDM] ${msg}`);
+      throw err;
+    } finally {
+      ensuringDMRef.current.delete(otherUid);
     }
-    return id;
   }, [businessId, user]);
 
   const sendMessage = useCallback(async (chatId: string, text: string) => {

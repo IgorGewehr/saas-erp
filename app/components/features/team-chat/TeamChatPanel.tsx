@@ -208,7 +208,10 @@ function TeamChatDropdown({ members, teamChat }: { members: UserType[]; teamChat
     try {
       const chatId = await ensureDM(otherUid);
       setView({ type: 'chat', chatId });
-      void markAsRead(chatId);
+      // Só marca como lido se a DM já existia com mensagens — DM nova não tem
+      // nada pra marcar e o snapshot ainda não populou `chats` mesmo.
+      const existing = chats.find(c => c.id === chatId);
+      if (existing?.lastMessageAt) void markAsRead(chatId);
     } catch (err) {
       console.error('[TeamChat] openDM failed:', err);
     }
@@ -440,6 +443,13 @@ function ListView({
             <ChatRow key={c.id} chat={c} members={members} userUid={userUid} unread={hasUnread(c.id)} onClick={() => onSelect(c.id)} />
           ))}
         </div>
+        {/* Hint quando o usuário ainda não tem nenhuma DM — aparece só se o
+            Geral está carregado, pra não confundir com o estado de erro. */}
+        {others.length === 0 && globalChat && (
+          <p className="text-[10.5px] text-gray-400 dark:text-gray-500 text-center px-4 py-2 italic leading-snug">
+            {t('teamChat.noConversationsYet')}
+          </p>
+        )}
 
         <div className="px-3 pt-4 pb-1.5">
           <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">
