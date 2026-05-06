@@ -243,6 +243,13 @@ function extractMediaType(msg: proto.IMessage | null | undefined): 'image' | 'vi
   return null;
 }
 
+/** Apenas documentos: nome de arquivo declarado pelo emissor — usado pra
+ *  popular `fileName` na mensagem inbound e renderizar no card do operador. */
+function extractInboundFileName(msg: proto.IMessage | null | undefined): string | null {
+  if (!msg) return null;
+  return msg.documentMessage?.fileName || null;
+}
+
 function getMediaLabel(type: string | null): string {
   switch (type) {
     case 'image': return '[Imagem]';
@@ -649,6 +656,7 @@ async function handleInboundMessage(
   const msgContent = waMessage.message;
   const text = extractMessageText(msgContent);
   const mediaType = extractMediaType(msgContent);
+  const inboundFileName = mediaType === 'document' ? extractInboundFileName(msgContent) : null;
   if (!text && !mediaType) return false;
 
   const displayText = text || getMediaLabel(mediaType);
@@ -940,6 +948,7 @@ async function handleInboundMessage(
       senderName: contactName,
       mediaType: mediaType ?? null,
       mediaUrl,
+      ...(inboundFileName ? { fileName: inboundFileName } : {}),
       sentAt: timestamp,
       createdAt: now,
     });

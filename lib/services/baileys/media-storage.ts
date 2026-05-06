@@ -148,6 +148,32 @@ export interface DownloadAndUploadParams {
 }
 
 /**
+ * Persiste falha do pipeline em `webhookFailures` para diagnóstico via UI
+ * (Configurações → Enterprise → Logs). Não throw — registrar erro nunca pode
+ * causar segundo erro.
+ */
+async function logMediaFailure(
+  source: string,
+  businessId: string,
+  conversationId: string | null,
+  details: Record<string, unknown>,
+): Promise<void> {
+  try {
+    const { adminDb } = await import('@/lib/config/firebaseAdmin');
+    await adminDb.collection('webhookFailures').add({
+      source,
+      channel: 'whatsapp',
+      businessId,
+      ...(conversationId ? { conversationId } : {}),
+      ...details,
+      createdAt: new Date().toISOString(),
+    });
+  } catch (logErr) {
+    console.warn('[Baileys Media] webhookFailures log failed (non-fatal):', logErr);
+  }
+}
+
+/**
  * Baixa a mídia da mensagem Baileys, opcionalmente converte áudio pra M4A,
  * e faz upload pro Firebase Storage. Retorna a URL pública (signed) do arquivo,
  * ou null se algo falhar (caller mantém mediaUrl=null nesse caso).
@@ -155,6 +181,9 @@ export interface DownloadAndUploadParams {
  * Não lança — mídia que falha em download/upload não pode bloquear a persistência
  * da mensagem no Firestore (operador veria menos do que deveria, mas pelo menos
  * o texto/preview chega).
+ *
+ * Falhas são persistidas em `webhookFailures` para diagnóstico via UI
+ * (Configurações → Enterprise → Logs), sem precisar de acesso aos logs do servidor.
  */
 export async function downloadAndUploadBaileysMedia(
   params: DownloadAndUploadParams,
@@ -167,6 +196,17 @@ export async function downloadAndUploadBaileysMedia(
     // Mensagem não é mídia — não há o que baixar.
     return null;
   }
+
+  // Tipo extraído pra logging — mantém parity com extractMediaType do caller
+  // sem importar (dependência circular).
+  const mediaTypeForLog =
+    waMessage.message.imageMessage ? 'image' :
+    waMessage.message.videoMessage ? 'video' :
+    waMessage.message.audioMessage ? 'audio' :
+    waMessage.message.documentMessage ? 'document' :
+    waMessage.message.stickerMessage ? 'sticker' : 'unknown';
+  const messageId = waMessage.key.id || null;
+  const declaredFileName = extractFileName(waMessage.message);
 
   try {
     // 1. Download via Baileys (decodifica E2EE blobs).
@@ -197,9 +237,18 @@ export async function downloadAndUploadBaileysMedia(
     let buffer = Buffer.isBuffer(downloaded) ? downloaded : Buffer.from(downloaded);
 
     // 2. Limites de tamanho (defesa contra OOM com vídeos enormes).
-    const MAX_BYTES = 50 * 1024 * 1024; // 50MB — alinhado com limite Meta
+    const MAX_BYTES = 100 * 1024 * 1024; // 100MB — alinhado com Cloud doc limit
     if (buffer.length > MAX_BYTES) {
       console.warn(`[Baileys Media] Arquivo grande demais (${buffer.length} bytes), pulando upload`);
+      await logMediaFailure('baileys-media-oversize', businessId, conversationId, {
+        mediaType: mediaTypeForLog,
+        declaredMime,
+        bufferSize: buffer.length,
+        maxBytes: MAX_BYTES,
+        messageId,
+        declaredFileName,
+        error: `Arquivo excede limite (${(buffer.length / 1024 / 1024).toFixed(1)}MB > ${MAX_BYTES / 1024 / 1024}MB)`,
+      });
       return null;
     }
 
@@ -214,7 +263,20 @@ export async function downloadAndUploadBaileysMedia(
         buffer = await convertAudioToM4a(buffer, mimeToExtension(contentType));
         contentType = 'audio/mp4';
       } catch (convErr) {
+        // Falha de ffmpeg é uma das suspeitas mais prováveis pro problema
+        // "operador não recebe áudio". Persistimos no webhookFailures pro
+        // operador conseguir confirmar a hipótese sem acesso ao log.
         console.warn('[Baileys Media] Falha na conversão de áudio (mantendo original):', convErr);
+        await logMediaFailure('baileys-audio-conversion', businessId, conversationId, {
+          mediaType: 'audio',
+          declaredMime,
+          contentType,
+          bufferSize: buffer.length,
+          messageId,
+          error: convErr instanceof Error ? convErr.message : String(convErr),
+          errorStack: convErr instanceof Error ? convErr.stack?.slice(0, 500) : undefined,
+          severity: 'warning', // não-fatal: mantém arquivo original
+        });
       }
     }
 
@@ -235,6 +297,14 @@ export async function downloadAndUploadBaileysMedia(
     return { mediaUrl: downloadUrl, contentType };
   } catch (err) {
     console.error('[Baileys Media] Erro no download/upload:', err);
+    await logMediaFailure('baileys-media-download', businessId, conversationId, {
+      mediaType: mediaTypeForLog,
+      declaredMime,
+      messageId,
+      declaredFileName,
+      error: err instanceof Error ? err.message : String(err),
+      errorStack: err instanceof Error ? err.stack?.slice(0, 500) : undefined,
+    });
     return null;
   }
 }

@@ -41,6 +41,31 @@ function getStorageBucket() {
   return getStorage(app);
 }
 
+/**
+ * Persiste falha do pipeline de mídia em `webhookFailures` para diagnóstico
+ * via UI (Configurações → Enterprise → Logs). Não throw — registrar erro
+ * nunca pode causar segundo erro.
+ */
+async function logMediaFailure(
+  source: string,
+  businessId: string | null,
+  conversationId: string | null,
+  details: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await adminDb.collection('webhookFailures').add({
+      source,
+      channel: 'whatsapp',
+      ...(businessId ? { businessId } : {}),
+      ...(conversationId ? { conversationId } : {}),
+      ...details,
+      createdAt: new Date().toISOString(),
+    });
+  } catch (logErr) {
+    console.warn('[Media] webhookFailures log failed (non-fatal):', logErr);
+  }
+}
+
 // ─── Media Download & Upload ─────────────────────────────────────────────────
 
 /**
@@ -70,7 +95,15 @@ async function downloadAndUploadMedia(params: {
     );
 
     if (!metaRes.ok) {
-      console.error('[Media] Failed to get media URL:', metaRes.status, await metaRes.text().catch(() => ''));
+      const errBody = await metaRes.text().catch(() => '');
+      console.error('[Media] Failed to get media URL:', metaRes.status, errBody);
+      await logMediaFailure('meta-media-url-fetch', params.businessId, params.conversationId, {
+        mediaId: params.mediaId,
+        declaredMime: params.mimeType,
+        httpStatus: metaRes.status,
+        error: `Meta media URL fetch failed: HTTP ${metaRes.status}`,
+        errorBody: errBody?.slice(0, 500),
+      });
       return null;
     }
 
@@ -78,6 +111,12 @@ async function downloadAndUploadMedia(params: {
     const mediaUrl = metaData.url;
     if (!mediaUrl) {
       console.error('[Media] No URL in Meta response:', metaData);
+      await logMediaFailure('meta-media-url-missing', params.businessId, params.conversationId, {
+        mediaId: params.mediaId,
+        declaredMime: params.mimeType,
+        error: 'Meta API retornou response sem campo `url`',
+        metaResponse: JSON.stringify(metaData).slice(0, 500),
+      });
       return null;
     }
 
@@ -89,6 +128,12 @@ async function downloadAndUploadMedia(params: {
 
     if (!mediaRes.ok) {
       console.error('[Media] Failed to download media:', mediaRes.status);
+      await logMediaFailure('meta-media-download', params.businessId, params.conversationId, {
+        mediaId: params.mediaId,
+        declaredMime: params.mimeType,
+        httpStatus: mediaRes.status,
+        error: `Meta CDN download failed: HTTP ${mediaRes.status}`,
+      });
       return null;
     }
 
@@ -109,7 +154,19 @@ async function downloadAndUploadMedia(params: {
         uploadBuffer = await convertAudioToM4a(buffer, mimeToExtension(realContentType));
         uploadContentType = 'audio/mp4';
       } catch (convErr) {
+        // Falha de ffmpeg é uma das causas suspeitas pra "operador não recebe áudio".
+        // Persistimos pra diagnóstico via UI sem precisar acessar logs do servidor.
         console.warn('[Media] Audio conversion failed, keeping original format:', convErr);
+        await logMediaFailure('meta-audio-conversion', params.businessId, params.conversationId, {
+          mediaType: 'audio',
+          declaredMime: params.mimeType,
+          contentType: realContentType,
+          bufferSize: buffer.length,
+          mediaId: params.mediaId,
+          error: convErr instanceof Error ? convErr.message : String(convErr),
+          errorStack: convErr instanceof Error ? convErr.stack?.slice(0, 500) : undefined,
+          severity: 'warning', // não-fatal: mantém arquivo original
+        });
       }
     }
 
@@ -128,6 +185,12 @@ async function downloadAndUploadMedia(params: {
     return downloadUrl;
   } catch (err) {
     console.error('[Media] Error downloading/uploading media:', err);
+    await logMediaFailure('meta-media-pipeline', params.businessId, params.conversationId, {
+      mediaId: params.mediaId,
+      declaredMime: params.mimeType,
+      error: err instanceof Error ? err.message : String(err),
+      errorStack: err instanceof Error ? err.stack?.slice(0, 500) : undefined,
+    });
     return null;
   }
 }
@@ -349,6 +412,9 @@ interface ExtractedContent {
   mediaId?: string;
   mediaUrl?: string;
   mediaMimeType?: string;
+  /** Apenas documentos: nome de arquivo declarado pelo emissor.
+   *  Vai pro doc Firestore como `fileName` pra renderizar no card. */
+  fileName?: string;
 }
 
 interface InboundMessageParams {
@@ -365,6 +431,8 @@ interface InboundMessageParams {
   mediaId?: string;
   mediaUrl?: string;
   mediaMimeType?: string;
+  /** Documentos: nome de arquivo do emissor — gravado em `fileName`. */
+  fileName?: string;
   replyToMessageId?: string;
   timestamp: string;
 }
@@ -565,6 +633,7 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
           mediaId: extracted.mediaId,
           mediaUrl: firebaseMediaUrl,
           mediaMimeType: extracted.mediaMimeType,
+          fileName: extracted.fileName,
           replyToMessageId: msg.context?.id,
           timestamp: new Date(parseInt(msg.timestamp) * 1000).toISOString(),
         });
@@ -1733,6 +1802,7 @@ async function saveInboundMessage(params: InboundMessageParams) {
     if (params.mediaId) msgDoc.mediaId = params.mediaId;
     if (params.mediaUrl) msgDoc.mediaUrl = params.mediaUrl;
     if (params.mediaMimeType) msgDoc.mediaMimeType = params.mediaMimeType;
+    if (params.fileName) msgDoc.fileName = params.fileName;
     if (params.replyToMessageId) msgDoc.replyToMessageId = params.replyToMessageId;
     if (params.senderAvatarUrl) msgDoc.senderAvatarUrl = params.senderAvatarUrl;
     const msgRef = await adminDb.collection('conversationMessages').add(msgDoc);
@@ -2000,6 +2070,7 @@ function extractMessageContent(msg: MetaWhatsAppMessage): ExtractedContent {
         content: msg.document?.caption || '',
         mediaId: msg.document?.id,
         mediaMimeType: msg.document?.mime_type,
+        fileName: msg.document?.filename,
       };
     case 'sticker':
       return { content: '', mediaId: msg.sticker?.id };

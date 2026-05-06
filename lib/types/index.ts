@@ -2145,6 +2145,9 @@ export interface ConversationMessage {
   senderAvatarUrl?: string;
   mediaUrl?: string;
   mediaType?: 'image' | 'audio' | 'video' | 'document';
+  /** Nome do arquivo original para documentos. Renderizado no card; preserva
+   *  o filename real ao invés de virar caption duplicada na bolha de texto. */
+  fileName?: string;
   isInternal?: boolean;
   mentionedUserIds?: string[];
   sentAt: string;

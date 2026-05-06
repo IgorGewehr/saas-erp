@@ -22,6 +22,28 @@ const CHANNEL_CFG: Record<ConversationChannel, { label: string; color: string; t
   instagram: { label: 'Instagram', color: '#E1306C', textColor: 'text-[#E1306C]', bgColor: 'bg-[#E1306C]/10' },
 };
 
+/** Limites por tipo de mídia (alinhados com WhatsApp Cloud API):
+ *  imagem 5MB · áudio/vídeo 16MB · documento 100MB.  */
+const MEDIA_SIZE_LIMITS_MB = { image: 5, video: 16, audio: 16, document: 100 } as const;
+
+function detectMediaTypeFromFile(file: File): 'image' | 'video' | 'audio' | 'document' {
+  if (file.type.startsWith('image/')) return 'image';
+  if (file.type.startsWith('video/')) return 'video';
+  if (file.type.startsWith('audio/')) return 'audio';
+  return 'document';
+}
+
+function validateFileSize(file: File): boolean {
+  const mt = detectMediaTypeFromFile(file);
+  const limitMb = MEDIA_SIZE_LIMITS_MB[mt];
+  if (file.size > limitMb * 1024 * 1024) {
+    const labels = { image: 'imagem', video: 'vídeo', audio: 'áudio', document: 'documento' } as const;
+    toast.warn(`Arquivo de ${labels[mt]} muito grande (máximo ${limitMb}MB).`);
+    return false;
+  }
+  return true;
+}
+
 export function OmnichannelInbox({ businessId, contacts }: { businessId: string; contacts: CRMContact[] }) {
   const { t } = useTranslation();
   const { user } = useAuth();
@@ -121,10 +143,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 16 * 1024 * 1024) {
-      toast.warn(t('crm.inbox.fileTooLarge', 'Arquivo muito grande. Máximo 16MB.'));
-      return;
-    }
+    if (!validateFileSize(file)) return;
     setAttachment(file);
     if (file.type.startsWith('image/')) {
       const url = URL.createObjectURL(file);
@@ -205,10 +224,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
     setIsDragging(false);
     const file = e.dataTransfer.files?.[0];
     if (!file) return;
-    if (file.size > 16 * 1024 * 1024) {
-      toast.warn(t('crm.inbox.fileTooLarge', 'Arquivo muito grande. Máximo 16MB.'));
-      return;
-    }
+    if (!validateFileSize(file)) return;
     setAttachment(file);
     if (file.type.startsWith('image/')) {
       setAttachmentPreview(URL.createObjectURL(file));
@@ -263,6 +279,9 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
       };
       if (mediaUrl) msgData.mediaUrl = mediaUrl;
       if (mediaType) msgData.mediaType = mediaType;
+      // Filename real só faz sentido pra documentos — outras mídias usam o
+      // próprio mediaUrl como identidade visual e não devem ter caption-by-name.
+      if (mediaType === 'document' && currentFile?.name) msgData.fileName = currentFile.name;
       const msgRef = await addDoc(collection(db, 'conversationMessages'), msgData);
 
       // 2. Update conversation metadata
@@ -291,6 +310,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
           sendBody.type = 'media';
           sendBody.mediaUrl = mediaUrl;
           sendBody.mediaType = mediaType;
+          if (mediaType === 'document' && currentFile?.name) sendBody.fileName = currentFile.name;
         }
 
         const res = await fetch('/api/conversations/send', {
@@ -640,7 +660,7 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
                         <Paperclip size={22} className="text-red-500" />
                       </div>
                       <p className="text-sm font-semibold text-red-600 dark:text-red-400">{t('crm.inbox.dropFile', 'Solte o arquivo aqui')}</p>
-                      <p className="text-[10px] text-gray-400">{t('crm.inbox.dropFileDesc', 'Imagem, vídeo, áudio ou documento (max 16MB)')}</p>
+                      <p className="text-[10px] text-gray-400">{t('crm.inbox.dropFileDesc', 'Imagem (5MB) · áudio/vídeo (16MB) · documento (100MB)')}</p>
                     </div>
                   </motion.div>
                 )}
@@ -674,10 +694,15 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
                       )}
                       {msg.mediaUrl && msg.mediaType === 'document' && (
                         <a href={msg.mediaUrl} target="_blank" rel="noopener noreferrer"
-                          className="mb-1 flex items-center gap-2 px-3 py-2 rounded-xl bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 transition-colors min-w-[160px]">
+                          title={msg.fileName || 'Documento'}
+                          className="mb-1 flex items-center gap-2 px-3 py-2 rounded-xl bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 transition-colors min-w-[160px] max-w-[280px]">
                           <FileText className="w-4 h-4 text-gray-400 shrink-0" />
                           <span className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                            {msg.content?.replace(/^\[(Documento|Audio|Video|Imagem)\]\s?/, '') || 'Documento'}
+                            {/* Prioridade: campo fileName (novo) > content que NÃO seja só [Tag] (legado) > fallback */}
+                            {msg.fileName
+                              || (msg.content && !/^\[(Documento|Audio|Video|Imagem)\]$/i.test(msg.content)
+                                ? msg.content.replace(/^\[(Documento|Audio|Video|Imagem)\]\s?/, '')
+                                : 'Documento')}
                           </span>
                         </a>
                       )}

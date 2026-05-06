@@ -842,15 +842,29 @@ service cloud.firestore {
     // WEBHOOK FAILURES COLLECTION (Dead-letter queue)
     // ============================================
     match /webhookFailures/{docId} {
-      // Only admins can read failed webhook entries
-      allow read: if isAuthenticated() && isAdmin();
+      // Only admins can read failed webhook entries.
+      // Tenant isolation: admins veem apenas falhas do próprio business OU
+      // entradas system-level (sem businessId — caso típico: webhook que não
+      // conseguiu resolver o tenant). Sem o filtro, qualquer admin via doc
+      // inteiro de outros tenants — vazamento cross-tenant em coleção sensível.
+      allow read: if isAuthenticated()
+                  && isAdmin()
+                  && (
+                    !('businessId' in resource.data)
+                    || resource.data.businessId == userBusinessId()
+                  );
 
       // Written by webhook handler (server-side, no auth context)
       // HMAC signature verification on the webhook endpoint provides the security layer
       allow create: if true;
 
-      // Only admins can update or delete
-      allow update, delete: if isAuthenticated() && isAdmin();
+      // Only admins can update or delete (mesmo isolamento da read)
+      allow update, delete: if isAuthenticated()
+                            && isAdmin()
+                            && (
+                              !('businessId' in resource.data)
+                              || resource.data.businessId == userBusinessId()
+                            );
     }
 
     // ============================================

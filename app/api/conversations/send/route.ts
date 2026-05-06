@@ -42,6 +42,10 @@ interface SendRequestBody {
   templateParams?: unknown[]; // template component parameters
   mediaUrl?: string; // URL of the media file (Firebase Storage)
   mediaType?: 'image' | 'video' | 'audio' | 'document'; // type of media
+  /** Nome do arquivo original para documentos. Cloud API usa em
+   *  document.filename; Baileys em fileName. Sem isso, o filename viraria
+   *  caption duplicada na bolha — bug conhecido pré-fix. */
+  fileName?: string;
   clientMessageId?: string; // idempotency key — retries with same key are deduped
 }
 
@@ -155,7 +159,7 @@ export async function POST(req: NextRequest) {
     // Read the body as text first so we can (a) verify HMAC when agent-signed and (b) reuse it as JSON.
     const rawBody = await req.text();
     const body: SendRequestBody = JSON.parse(rawBody);
-    const { businessId, conversationId, messageId, messageDocId, channel, recipientId, content, type, templateName, templateLanguage, templateParams, mediaUrl, mediaType, clientMessageId } = body;
+    const { businessId, conversationId, messageId, messageDocId, channel, recipientId, content, type, templateName, templateLanguage, templateParams, mediaUrl, mediaType, fileName, clientMessageId } = body;
 
     // Authentication: accept either a Firebase session (UI) or an HMAC-signed agent call.
     const agentSignature = req.headers.get('x-agent-signature');
@@ -428,7 +432,7 @@ export async function POST(req: NextRequest) {
     // Send via the appropriate Meta API
     let result: { externalMessageId: string };
 
-    const mediaOpts = isMedia ? { mediaUrl: mediaUrl!, mediaType: mediaType || 'document' as const } : undefined;
+    const mediaOpts = isMedia ? { mediaUrl: mediaUrl!, mediaType: mediaType || 'document' as const, fileName } : undefined;
 
     // Captura o transporte usado (cloud vs baileys) pra denormalizar na mensagem.
     // Setado dentro do case 'whatsapp'; outros canais (FB/IG) ficam undefined.
@@ -695,9 +699,30 @@ async function sendWhatsAppBaileys(
       case 'video':
         messageContent = { video: mediaBuffer, caption: content || undefined };
         break;
-      case 'document':
-        messageContent = { document: mediaBuffer, mimetype: mimeType, fileName: content || 'document' };
+      case 'document': {
+        // Dois call paths convivem:
+        //   (a) Novo (UI/CRM):   mediaOpts.fileName = nome real, content = ''
+        //                        → fileName=nome, sem caption.
+        //   (b) Novo c/ legenda: mediaOpts.fileName = nome, content = "legenda"
+        //                        → fileName=nome, caption=legenda.
+        //   (c) Legado (REST v1, agent):  mediaOpts.fileName = undefined,
+        //                        content = "nome ou legenda"
+        //                        → preserva comportamento antigo:
+        //                        fileName=content, sem caption (evita duplicar
+        //                        o mesmo string nos dois campos).
+        const hasExplicitFileName = !!mediaOpts.fileName;
+        const docFileName = mediaOpts.fileName || content || 'document';
+        const docCaption = hasExplicitFileName && content && content !== mediaOpts.fileName
+          ? content
+          : undefined;
+        messageContent = {
+          document: mediaBuffer,
+          mimetype: mimeType,
+          fileName: docFileName,
+          ...(docCaption ? { caption: docCaption } : {}),
+        };
         break;
+      }
       default:
         messageContent = { text: content };
     }
@@ -729,6 +754,8 @@ async function sendWhatsAppBaileys(
 interface MediaOptions {
   mediaUrl: string;
   mediaType: 'image' | 'video' | 'audio' | 'document';
+  /** Nome de arquivo original — só relevante para documentos. */
+  fileName?: string;
 }
 
 interface WhatsAppTemplateOptions {
@@ -772,16 +799,24 @@ async function sendWhatsApp(
       },
     };
   } else if (templateOptions?.type === 'media' && templateOptions.media) {
-    const { mediaUrl, mediaType } = templateOptions.media;
-    // WhatsApp media message format
+    const { mediaUrl, mediaType, fileName } = templateOptions.media;
+    // WhatsApp media message format.
+    // - audio: nem caption nem filename são suportados pela Cloud API.
+    // - document: usa `filename` (não caption) pra preservar nome real do
+    //   arquivo no card do contato. Caption só vai se operador digitou texto.
+    // - image/video: caption só se houver texto explícito.
+    const mediaPayload: Record<string, unknown> = { link: mediaUrl };
+    if (mediaType === 'document') {
+      if (fileName) mediaPayload.filename = fileName;
+      if (content) mediaPayload.caption = content;
+    } else if (mediaType !== 'audio' && content) {
+      mediaPayload.caption = content;
+    }
     messageBody = {
       messaging_product: 'whatsapp',
       to: recipientId,
       type: mediaType,
-      [mediaType]: {
-        link: mediaUrl,
-        ...(mediaType !== 'audio' ? { caption: content || undefined } : {}),
-      },
+      [mediaType]: mediaPayload,
     };
   } else {
     messageBody = {

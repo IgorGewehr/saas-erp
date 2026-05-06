@@ -1412,12 +1412,24 @@ function ThreadHeader({
 
 // ─── Media Attachment Renderer ────────────────────────────────────────────────
 
+/** Heurística: o `content` é só o filename do arquivo? Usado pra esconder a
+ *  bolha de texto que duplicaria o nome quando ele já está no card do
+ *  documento. Cobre mensagens legadas (gravadas antes da Phase X, quando
+ *  setávamos content=file.name) sem precisar migração de dados. */
+function looksLikeFilename(s: string): boolean {
+  const trimmed = s.trim();
+  if (!trimmed || trimmed.length > 200) return false;
+  return /\.(pdf|docx?|xlsx?|pptx?|csv|txt|zip|rar|7z|jpg|jpeg|png|gif|webp|mp4|mov|avi|mp3|m4a|aac|amr|ogg|opus|wav|webm)$/i.test(trimmed);
+}
+
 function MediaAttachment({
   mediaUrl,
   mediaType,
+  fileName,
 }: {
   mediaUrl: string;
   mediaType?: ConversationMessage['mediaType'];
+  fileName?: string;
 }) {
   const { t } = useTranslation();
 
@@ -1461,15 +1473,17 @@ function MediaAttachment({
   }
 
   if (mediaType === 'document') {
+    const label = fileName || t('conversations.mediaDocument', 'Documento');
     return (
       <a
         href={mediaUrl}
         target="_blank"
         rel="noopener noreferrer"
-        className="mb-1.5 flex items-center gap-2 px-3 py-2 rounded-xl bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 transition-colors min-w-[160px]"
+        title={label}
+        className="mb-1.5 flex items-center gap-2 px-3 py-2 rounded-xl bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 transition-colors min-w-[160px] max-w-[280px]"
       >
         <FileText className="w-4 h-4 text-gray-400 flex-shrink-0" />
-        <span className="text-xs text-gray-500 dark:text-gray-400 truncate">{t('conversations.mediaDocument', 'Documento')}</span>
+        <span className="text-xs text-gray-500 dark:text-gray-400 truncate">{label}</span>
       </a>
     );
   }
@@ -1574,11 +1588,20 @@ function MessageBubble({
       <div className={cn('max-w-[75%] sm:max-w-[65%] flex flex-col', isOut ? 'items-end' : 'items-start')}>
         {/* Media attachment */}
         {message.mediaUrl && message.mediaType && (
-          <MediaAttachment mediaUrl={message.mediaUrl} mediaType={message.mediaType} />
+          <MediaAttachment mediaUrl={message.mediaUrl} mediaType={message.mediaType} fileName={message.fileName} />
         )}
 
-        {/* Text content */}
-        {message.content && (
+        {/* Text content — esconde bolha de texto que duplicaria o card de mídia:
+            (1) placeholders genéricos "[Documento]"/"[Imagem]" gravados no
+            inbound quando não há caption real;
+            (2) filename como content (legado pré-fix gravava file.name aqui)
+            ou content == fileName (UI nova com fileName explícito). */}
+        {message.content
+          && !(message.mediaType
+            && /^\[(Imagem|Audio|Áudio|Video|Vídeo|Sticker|Documento|Midia|Mídia)\]$/i.test(message.content))
+          && !(message.mediaType === 'document'
+            && (message.content === message.fileName || looksLikeFilename(message.content)))
+          && (
           <div
             className={cn(
               'relative px-3.5 py-2.5 text-sm leading-relaxed shadow-sm',
@@ -5935,8 +5958,20 @@ export default function ConversasModule() {
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 16 * 1024 * 1024) {
-      alert(t('conversations.fileTooLarge', 'Arquivo muito grande. Máximo 16MB.'));
+
+    // Limites por tipo — alinhados com WhatsApp Cloud API.
+    // Documento: 100MB (Cloud); imagem 5MB; áudio/vídeo 16MB. Baileys aceita
+    // até ~50MB no pipeline atual mas o Cloud é mais restrito, então usamos
+    // os limites Cloud como ceiling pra UX consistente entre canais.
+    const mt: 'image' | 'video' | 'audio' | 'document' = file.type.startsWith('image/') ? 'image'
+      : file.type.startsWith('video/') ? 'video'
+      : file.type.startsWith('audio/') ? 'audio'
+      : 'document';
+    const limits = { image: 5, video: 16, audio: 16, document: 100 } as const;
+    const limitMb = limits[mt];
+    if (file.size > limitMb * 1024 * 1024) {
+      const labels = { image: 'imagem', video: 'vídeo', audio: 'áudio', document: 'documento' } as const;
+      alert(`Arquivo de ${labels[mt]} muito grande (máximo ${limitMb}MB).`);
       return;
     }
 
@@ -5967,7 +6002,11 @@ export default function ConversasModule() {
       : file.type.startsWith('audio/') ? 'audio'
       : 'document';
     const now = new Date().toISOString();
-    const messageContent = mediaType === 'document' ? file.name : '';
+    // Caption sempre vazio: o nome do arquivo NÃO deve virar texto da bolha.
+    // Pra documento, o filename real vai no campo dedicado `fileName`, que o
+    // renderer mostra no card e a API repassa via document.filename (Cloud)
+    // ou fileName (Baileys). Pra outras mídias, sem texto = sem caption.
+    const messageContent = '';
 
     let msgRef: Awaited<ReturnType<typeof addDoc>> | null = null;
 
@@ -5989,6 +6028,7 @@ export default function ConversasModule() {
         content: messageContent,
         mediaUrl,
         mediaType,
+        ...(mediaType === 'document' ? { fileName: file.name } : {}),
         status: asInternal ? 'delivered' as const : 'sending' as const,
         senderName: user.name,
         ...(asInternal ? { isInternal: true } : {}),
@@ -6032,10 +6072,12 @@ export default function ConversasModule() {
           conversationId: selectedConversation.id,
           channel: selectedConversation.channel,
           recipientId: selectedConversation.contactExternalId,
-          content: file.name,
+          // Sem caption automática — o filename real vai em fileName separado.
+          content: '',
           type: 'media',
           mediaUrl,
           mediaType,
+          ...(mediaType === 'document' ? { fileName: file.name } : {}),
         }),
       });
 
