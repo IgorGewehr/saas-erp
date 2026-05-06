@@ -52,7 +52,9 @@ export default function OperatorChatPanel() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const autonomous = !!business?.settings?.aiAgent?.operator?.autonomousMode;
-  const canUse = !!business?.settings?.aiAgent?.enabled;
+  // Dashboard AI sempre disponível — `aiAgent.enabled` controla só o agente
+  // autônomo de atendimento ao cliente. Ver AgentHeroInput pro contexto.
+  const canUse = true;
 
   // Auto-scroll to bottom on new message
   useEffect(() => {

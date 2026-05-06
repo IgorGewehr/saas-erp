@@ -78,7 +78,11 @@ export default function AgentHeroInput({
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const autonomous = !!business?.settings?.aiAgent?.operator?.autonomousMode;
-  const canUse = !!business?.settings?.aiAgent?.enabled;
+  // Dashboard AI (chat operador/analista pra gerenciar o ERP) é INDEPENDENTE
+  // da flag aiAgent.enabled — esse toggle controla apenas o agente autônomo
+  // de atendimento em /Conversas. O dashboard chat sempre está disponível
+  // pra operator+; checagem de role é feita server-side em /api/agent/operator/chat.
+  const canUse = true;
   const hasConversation = messages.length > 0;
 
   useEffect(() => {

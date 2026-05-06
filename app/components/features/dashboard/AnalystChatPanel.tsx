@@ -55,7 +55,9 @@ export default function AnalystChatPanel() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const canUse = !!business?.settings?.aiAgent?.enabled;
+  // Dashboard AI sempre disponível — `aiAgent.enabled` controla só o agente
+  // autônomo de atendimento ao cliente. Ver AgentHeroInput pro contexto.
+  const canUse = true;
 
   useEffect(() => {
     if (scrollRef.current) {

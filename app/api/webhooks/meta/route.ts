@@ -32,6 +32,30 @@ import { uploadServerMedia } from '@/lib/services/storage/adminUpload';
  * via UI (Configurações → Enterprise → Logs). Não throw — registrar erro
  * nunca pode causar segundo erro.
  */
+/**
+ * Verifica se o agente IA autônomo está ativo para um business — usado pra
+ * gatear features que só fazem sentido quando o tenant pediu o agente:
+ *
+ *   - Transcrição de áudio (Whisper) e descrição de imagem (GPT-4o vision):
+ *     a saída substitui o `content` da mensagem pra que o agente possa
+ *     raciocinar sobre o conteúdo. Sem agente ligado, isso só polui a
+ *     bolha de texto pro operador humano (que já vê o player/imagem) e
+ *     gera custo OpenAI sem benefício.
+ *
+ * Nota arquitetural: `aiAgent.enabled` controla APENAS o agente autônomo
+ * de atendimento ao cliente. Não confundir com o Dashboard AI (chat operador/
+ * analista pra gerenciar o ERP), que é independente e sempre disponível.
+ */
+async function isAgentEnabled(businessId: string): Promise<boolean> {
+  try {
+    const snap = await adminDb.collection('businesses').doc(businessId).get();
+    return !!snap.data()?.settings?.aiAgent?.enabled;
+  } catch (err) {
+    console.warn('[meta-webhook] Failed to check aiAgent.enabled, defaulting to false:', err);
+    return false;
+  }
+}
+
 async function logMediaFailure(
   source: string,
   businessId: string | null,
@@ -558,17 +582,20 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
         const hasMedia = MEDIA_TYPES.has(msg.type) && !!extracted.mediaId;
         const mediaType = hasMedia ? (msg.type === 'sticker' ? 'image' : msg.type) as 'image' | 'audio' | 'video' | 'document' : undefined;
 
-        // Download media from Meta and upload to Firebase Storage
+        // Download media from Meta and upload to Firebase Storage. Hoist
+        // `resolvedBusinessId` pro escopo do msg pra reusar no gate de
+        // enrichment abaixo (evita 2ª chamada a resolveBusinessId).
         let firebaseMediaUrl: string | undefined;
+        let resolvedBusinessId: string | null = null;
         if (hasMedia && extracted.mediaId) {
-          const businessId = await resolveBusinessId('whatsapp', phoneNumberId);
-          if (businessId) {
-            const accessToken = await getWhatsAppAccessToken(businessId);
+          resolvedBusinessId = await resolveBusinessId('whatsapp', phoneNumberId);
+          if (resolvedBusinessId) {
+            const accessToken = await getWhatsAppAccessToken(resolvedBusinessId);
             if (accessToken) {
               const url = await downloadAndUploadMedia({
                 mediaId: extracted.mediaId,
                 accessToken,
-                businessId,
+                businessId: resolvedBusinessId,
                 conversationId: `wa_${msg.from}`, // Temp path; actual conv ID resolved inside saveInboundMessage
                 mimeType: extracted.mediaMimeType,
                 channel: 'whatsapp',
@@ -587,9 +614,12 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
           || (hasMedia ? MEDIA_PREVIEW[msg.type] || '[Midia]' : '');
 
         // ─── Humanization: enrich voice notes + images into text for the agent ──
-        // This runs inline (adds ~1-3s to webhook latency) but keeps the agent's
-        // message history as plain text — no tool-call detour to understand media.
-        if (hasMedia && firebaseMediaUrl && !extracted.content) {
+        // Só roda quando o agente autônomo está ligado (aiAgent.enabled). Caso
+        // contrário, a transcrição/descrição apareceria como bolha de texto pro
+        // operador humano — duplicando info que ele já vê no player/imagem.
+        // Também evita custo OpenAI desnecessário em tenants sem agente ativo.
+        if (hasMedia && firebaseMediaUrl && !extracted.content && resolvedBusinessId
+            && await isAgentEnabled(resolvedBusinessId)) {
           if (mediaType === 'audio') {
             const { enrichAudio } = await import('@/lib/channels/media-enrichment');
             const enriched = await enrichAudio({ mediaUrl: firebaseMediaUrl, mimeType: extracted.mediaMimeType });
@@ -817,15 +847,17 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
 
       // For audio: always download and convert OGG→M4A, then store in Firebase.
       // Meta CDN audio URLs expire and OGG/Opus is not supported in Safari or Instagram.
+      // resolvedBusinessId hoisted pra reusar no gate de enrichment abaixo.
       let resolvedMediaUrl = attachmentUrl;
+      let resolvedBusinessId: string | null = null;
       if (mappedMediaType === 'audio' && attachmentUrl) {
-        const bizId = await resolveBusinessId(channel, channelIdentifier);
-        if (bizId) {
-          const pageToken = await getDecryptedPageToken(bizId);
+        resolvedBusinessId = await resolveBusinessId(channel, channelIdentifier);
+        if (resolvedBusinessId) {
+          const pageToken = await getDecryptedPageToken(resolvedBusinessId);
           const stored = await downloadAndUploadAttachment({
             url: attachmentUrl,
             mediaType: 'audio',
-            businessId: bizId,
+            businessId: resolvedBusinessId,
             tempConvId: `${channel}_${event.sender.id}`,
             pageToken: pageToken || undefined,
           }).catch((err) => { console.warn('[Attachment FB] audio store failed:', err); return null; });
@@ -834,17 +866,27 @@ async function handleFacebookEvent(entry: MetaWebhookEntry) {
       }
 
       // Humanization: enrich voice notes and images so the agent sees text.
+      // Gated por aiAgent.enabled — sem agente autônomo, transcrição vira só
+      // poluição visual na bolha + custo OpenAI sem benefício. Quando o
+      // resolvedBusinessId não foi setado (mídia não-áudio sem download),
+      // resolve-se aqui sob demanda.
       const fallbackLabel = `[${attachmentType === 'file' ? 'Documento' : attachmentType === 'image' ? 'Imagem' : attachmentType === 'video' ? 'Video' : attachmentType === 'audio' ? 'Audio' : 'Anexo'}]`;
       let agentContent = event.message.text || fallbackLabel;
-      if (!event.message.text && resolvedMediaUrl) {
-        if (mappedMediaType === 'audio') {
-          const { enrichAudio } = await import('@/lib/channels/media-enrichment');
-          const enriched = await enrichAudio({ mediaUrl: resolvedMediaUrl });
-          if (enriched) agentContent = enriched.content;
-        } else if (mappedMediaType === 'image') {
-          const { enrichImage } = await import('@/lib/channels/media-enrichment');
-          const enriched = await enrichImage({ mediaUrl: resolvedMediaUrl });
-          if (enriched) agentContent = enriched.content;
+      if (!event.message.text && resolvedMediaUrl
+          && (mappedMediaType === 'audio' || mappedMediaType === 'image')) {
+        if (!resolvedBusinessId) {
+          resolvedBusinessId = await resolveBusinessId(channel, channelIdentifier);
+        }
+        if (resolvedBusinessId && await isAgentEnabled(resolvedBusinessId)) {
+          if (mappedMediaType === 'audio') {
+            const { enrichAudio } = await import('@/lib/channels/media-enrichment');
+            const enriched = await enrichAudio({ mediaUrl: resolvedMediaUrl });
+            if (enriched) agentContent = enriched.content;
+          } else if (mappedMediaType === 'image') {
+            const { enrichImage } = await import('@/lib/channels/media-enrichment');
+            const enriched = await enrichImage({ mediaUrl: resolvedMediaUrl });
+            if (enriched) agentContent = enriched.content;
+          }
         }
       }
 
