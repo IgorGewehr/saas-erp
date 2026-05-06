@@ -2,20 +2,19 @@
 
 import { useEffect, useRef, useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, Send, Users, Wifi, Clock, MessageCircle, Loader2 } from 'lucide-react';
+import { ArrowLeft, Send, Users, Wifi, Clock, MessageCircle, Loader2, AlertTriangle } from 'lucide-react';
 import { collection, query, where, getDocs, getDocsFromCache } from 'firebase/firestore';
 import { useQuery } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import { db } from '@/lib/config/firebase';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import { useTeamChat, useTeamChatMessages, hasUnreadFor } from '@/lib/hooks/useTeamChat';
+import { useTeamChat, useTeamChatMessages } from '@/lib/hooks/useTeamChat';
 import { CachedImage } from '@/app/components/ui/CachedImage';
 import { getInitials } from '@/lib/utils/format';
 import type { User as UserType, TeamChat, TeamChatMessage } from '@/lib/types';
 
-// ─── Helpers compartilhados ──────────────────────────────────────────────────
-// Duplicados da TopBar de propósito — manter o painel desacoplado pra evoluir
-// sem mexer na TopBar a cada ajuste.
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function getMemberDisplayStatus(member: UserType): 'online' | 'busy' | 'offline' {
   if (member.userStatus === 'invisible') return 'offline';
@@ -28,13 +27,15 @@ function isOnline(member: UserType): boolean {
   return getMemberDisplayStatus(member) !== 'offline';
 }
 
-function relativeTime(dateStr?: string | null): string {
-  if (!dateStr) return 'Nunca';
+type RelTime = (key: string, opts?: Record<string, unknown>) => string;
+
+function relativeTime(dateStr: string | null | undefined, t: RelTime): string {
+  if (!dateStr) return t('teamChat.never');
   const diff = Date.now() - new Date(dateStr).getTime();
-  if (diff < 60_000)         return 'agora';
-  if (diff < 3_600_000)      return `${Math.floor(diff / 60_000)}min atrás`;
-  if (diff < 86_400_000)     return `${Math.floor(diff / 3_600_000)}h atrás`;
-  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)}d atrás`;
+  if (diff < 60_000)         return t('teamChat.now');
+  if (diff < 3_600_000)      return t('teamChat.minsAgo',  { count: Math.floor(diff / 60_000) });
+  if (diff < 86_400_000)     return t('teamChat.hoursAgo', { count: Math.floor(diff / 3_600_000) });
+  if (diff < 7 * 86_400_000) return t('teamChat.daysAgo',  { count: Math.floor(diff / 86_400_000) });
   return new Date(dateStr).toLocaleDateString();
 }
 
@@ -74,10 +75,15 @@ function GlobalAvatar({ size = 32 }: { size?: number }) {
 
 type View = { type: 'list' } | { type: 'chat'; chatId: string };
 
+// `useTeamChat` retorna esse shape; reutilizamos pra passar como prop e evitar
+// duplicar subscription.
+type TeamChatBundle = ReturnType<typeof useTeamChat>;
+
 // ─── Trigger + dropdown (substitui TeamPresencePanel original) ──────────────
 
 export function TeamChatPanel() {
-  const { user, business } = useAuth();
+  const { t } = useTranslation();
+  const { business } = useAuth();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const businessId = business?.id;
@@ -101,7 +107,8 @@ export function TeamChatPanel() {
     refetchInterval: 60_000,
   });
 
-  const { totalUnread } = useTeamChat();
+  // Single subscription — `teamChat` é compartilhado entre o badge e o dropdown.
+  const teamChat = useTeamChat();
   const onlineCount = members.filter(isOnline).length;
 
   // Fecha no clique fora.
@@ -117,7 +124,7 @@ export function TeamChatPanel() {
     <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen(!open)}
-        title="Equipe e chat interno"
+        title={t('teamChat.buttonTitle')}
         className={cn(
           'relative flex items-center gap-1.5 h-9 px-2.5 rounded-xl',
           'text-gray-500 dark:text-gray-400 transition-all duration-150 active:scale-95',
@@ -148,18 +155,18 @@ export function TeamChatPanel() {
           </span>
         )}
         {/* Indicador de unread — sobrepõe o pulse com prioridade visual maior */}
-        {totalUnread > 0 && (
+        {teamChat.totalUnread > 0 && (
           <span
             className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold leading-none"
-            title={`${totalUnread} ${totalUnread === 1 ? 'conversa nova' : 'conversas novas'}`}
+            title={t('teamChat.unreadBadgeTitle', { count: teamChat.totalUnread })}
           >
-            {totalUnread > 99 ? '99+' : totalUnread}
+            {teamChat.totalUnread > 99 ? '99+' : teamChat.totalUnread}
           </span>
         )}
       </button>
 
       <AnimatePresence>
-        {open && <TeamChatDropdown members={members} />}
+        {open && <TeamChatDropdown members={members} teamChat={teamChat} />}
       </AnimatePresence>
     </div>
   );
@@ -167,16 +174,18 @@ export function TeamChatPanel() {
 
 // ─── Dropdown (lista + view de chat) ────────────────────────────────────────
 
-function TeamChatDropdown({ members }: { members: UserType[] }) {
+function TeamChatDropdown({ members, teamChat }: { members: UserType[]; teamChat: TeamChatBundle }) {
+  const { t } = useTranslation();
   const { user } = useAuth();
   const {
     chats,
     globalChat,
-    totalUnread,
+    error,
     ensureGlobalChat,
     markAsRead,
     sendMessage,
-  } = useTeamChat();
+    hasUnread,
+  } = teamChat;
 
   const [view, setView] = useState<View>({ type: 'list' });
 
@@ -194,23 +203,22 @@ function TeamChatDropdown({ members }: { members: UserType[] }) {
 
   const goBack = () => setView({ type: 'list' });
 
-  // ── Header dinâmico ─────────────────────────────────────────────────────
   const renderHeader = () => {
     if (view.type === 'list') {
       return (
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-700/50">
           <div className="flex items-center gap-2">
             <Users className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
-            <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-200">Equipe</span>
+            <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-200">{t('teamChat.panelTitle')}</span>
           </div>
           <div className="flex items-center gap-1.5">
             {onlineCount > 0 ? (
               <span className="flex items-center gap-1 text-[11.5px] font-medium text-emerald-600 dark:text-emerald-400">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                {onlineCount} online
+                {t('teamChat.onlineCount', { count: onlineCount })}
               </span>
             ) : (
-              <span className="text-[11.5px] text-gray-400 dark:text-gray-500">Ninguém online</span>
+              <span className="text-[11.5px] text-gray-400 dark:text-gray-500">{t('teamChat.noOneOnline')}</span>
             )}
           </div>
         </div>
@@ -221,20 +229,25 @@ function TeamChatDropdown({ members }: { members: UserType[] }) {
     if (!chat) {
       return (
         <ChatHeader
-          title="Conversa"
+          title={t('teamChat.general')}
           subtitle=""
           onBack={goBack}
           left={<GlobalAvatar size={28} />}
+          backLabel={t('teamChat.back')}
         />
       );
     }
     if (chat.type === 'global') {
       return (
         <ChatHeader
-          title="Geral"
-          subtitle={`${members.length} membro${members.length === 1 ? '' : 's'} · ${onlineCount} online`}
+          title={t('teamChat.general')}
+          subtitle={t('teamChat.membersAndOnline', {
+            members: t('teamChat.membersCount', { count: members.length }),
+            online: onlineCount,
+          })}
           onBack={goBack}
           left={<GlobalAvatar size={28} />}
+          backLabel={t('teamChat.back')}
         />
       );
     }
@@ -243,10 +256,11 @@ function TeamChatDropdown({ members }: { members: UserType[] }) {
     const other = members.find(m => m.uid === otherUid);
     return (
       <ChatHeader
-        title={other?.name ?? 'Conversa'}
-        subtitle={other ? statusLabel(other) : ''}
+        title={other?.name ?? '—'}
+        subtitle={other ? statusLabel(other, t) : ''}
         onBack={goBack}
         left={<Avatar name={other?.name ?? '?'} photoURL={other?.photoURL} size={28} />}
+        backLabel={t('teamChat.back')}
       />
     );
   };
@@ -259,7 +273,7 @@ function TeamChatDropdown({ members }: { members: UserType[] }) {
       transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
       className={cn(
         'absolute right-0 top-full mt-2 z-50',
-        'w-[380px] max-w-[calc(100vw-32px)]',
+        'w-[380px] max-w-[calc(100vw_-_32px)]',
         'bg-white dark:bg-[#1e293b] rounded-2xl',
         'border border-gray-200/80 dark:border-gray-700/50',
         'shadow-[0_8px_30px_rgba(0,0,0,0.12)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.4)]',
@@ -269,7 +283,17 @@ function TeamChatDropdown({ members }: { members: UserType[] }) {
     >
       {renderHeader()}
 
-      {/* Body — alterna entre list e chat com animação */}
+      {/* Banner de erro — aparece quando subscriptions/ensure falham (típico:
+          rules não publicadas). Some quando se recuperam. */}
+      {error && view.type === 'list' && (
+        <div className="px-4 py-2.5 bg-amber-50 dark:bg-amber-500/10 border-b border-amber-200/60 dark:border-amber-500/20 flex items-start gap-2">
+          <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
+          <p className="text-[11px] text-amber-700 dark:text-amber-300 leading-snug">
+            {t('teamChat.permissionError')}
+          </p>
+        </div>
+      )}
+
       <div className="flex-1 min-h-0 overflow-hidden relative">
         <AnimatePresence mode="wait" initial={false}>
           {view.type === 'list' ? (
@@ -286,7 +310,8 @@ function TeamChatDropdown({ members }: { members: UserType[] }) {
                 globalChat={globalChat}
                 members={members}
                 userUid={user?.uid}
-                totalUnread={totalUnread}
+                totalUnread={teamChat.totalUnread}
+                hasUnread={hasUnread}
                 onSelect={openChat}
               />
             </motion.div>
@@ -314,19 +339,20 @@ function TeamChatDropdown({ members }: { members: UserType[] }) {
 // ─── ChatHeader ──────────────────────────────────────────────────────────────
 
 function ChatHeader({
-  title, subtitle, onBack, left,
+  title, subtitle, onBack, left, backLabel,
 }: {
   title: string;
   subtitle: string;
   onBack: () => void;
   left: React.ReactNode;
+  backLabel: string;
 }) {
   return (
     <div className="flex items-center gap-2 px-2 py-2.5 border-b border-gray-100 dark:border-gray-700/50">
       <button
         onClick={onBack}
         className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors"
-        title="Voltar"
+        title={backLabel}
       >
         <ArrowLeft className="w-4 h-4" />
       </button>
@@ -349,6 +375,7 @@ function ListView({
   members,
   userUid,
   totalUnread,
+  hasUnread,
   onSelect,
 }: {
   chats: TeamChat[];
@@ -356,8 +383,11 @@ function ListView({
   members: UserType[];
   userUid: string | undefined;
   totalUnread: number;
+  hasUnread: (chatId: string) => boolean;
   onSelect: (chatId: string) => void;
 }) {
+  const { t } = useTranslation();
+
   // Geral fica sempre primeiro independente de lastMessageAt; pinned by design.
   const pinned = useMemo(() => (globalChat ? [globalChat] : []), [globalChat]);
   const others = useMemo(() => chats.filter(c => c.type !== 'global'), [chats]);
@@ -376,25 +406,29 @@ function ListView({
   return (
     <div className="flex flex-col h-full">
       <div className="flex-1 overflow-y-auto" style={{ scrollbarWidth: 'thin' }}>
-        {/* Section: Conversas */}
         <div className="px-3 pt-3 pb-1.5 flex items-center justify-between">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">Conversas</span>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+            {t('teamChat.sectionConversations')}
+          </span>
           {totalUnread > 0 && (
-            <span className="text-[10px] font-bold text-red-500">{totalUnread} {totalUnread === 1 ? 'nova' : 'novas'}</span>
+            <span className="text-[10px] font-bold text-red-500">
+              {t('teamChat.newConversations', { count: totalUnread })}
+            </span>
           )}
         </div>
         <div className="px-1.5 space-y-0.5">
           {pinned.map(c => (
-            <ChatRow key={c.id} chat={c} userUid={userUid} onClick={() => onSelect(c.id)} />
+            <ChatRow key={c.id} chat={c} userUid={userUid} unread={hasUnread(c.id)} onClick={() => onSelect(c.id)} />
           ))}
           {others.map(c => (
-            <ChatRow key={c.id} chat={c} userUid={userUid} onClick={() => onSelect(c.id)} />
+            <ChatRow key={c.id} chat={c} userUid={userUid} unread={hasUnread(c.id)} onClick={() => onSelect(c.id)} />
           ))}
         </div>
 
-        {/* Section: Membros */}
         <div className="px-3 pt-4 pb-1.5">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">Membros</span>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+            {t('teamChat.sectionMembers')}
+          </span>
         </div>
         <div className="px-1.5 pb-2 space-y-0.5">
           {sortedMembers.map(member => (
@@ -405,7 +439,7 @@ function ListView({
 
       <div className="px-4 py-2 border-t border-gray-100 dark:border-gray-700/50 bg-gray-50/50 dark:bg-white/[0.01]">
         <p className="text-[10.5px] text-gray-400 dark:text-gray-500 text-center">
-          Atualiza em tempo real · presença detectada automaticamente
+          {t('teamChat.realTimeUpdate')}
         </p>
       </div>
     </div>
@@ -415,13 +449,14 @@ function ListView({
 // ─── Row de chat (lista) ─────────────────────────────────────────────────────
 
 function ChatRow({
-  chat, userUid, onClick,
+  chat, userUid, unread, onClick,
 }: {
   chat: TeamChat;
   userUid: string | undefined;
+  unread: boolean;
   onClick: () => void;
 }) {
-  const unread = hasUnreadFor(chat, userUid);
+  const { t } = useTranslation();
   const isGlobal = chat.type === 'global';
   const lastMsg = chat.lastMessage;
 
@@ -440,7 +475,8 @@ function ChatRow({
             'text-[13px] truncate leading-tight',
             unread ? 'font-bold text-gray-900 dark:text-gray-100' : 'font-medium text-gray-800 dark:text-gray-100',
           )}>
-            {isGlobal ? 'Geral' : 'Conversa'}
+            {/* Fase 2: pra DM, resolver o nome do outro membro via lookup em members[]. */}
+            {isGlobal ? t('teamChat.general') : (lastMsg?.senderName ?? '—')}
           </p>
           {chat.lastMessageAt && (
             <span className="text-[10.5px] text-gray-400 dark:text-gray-500 flex-shrink-0">
@@ -454,8 +490,8 @@ function ChatRow({
             unread ? 'text-gray-700 dark:text-gray-300 font-medium' : 'text-gray-500 dark:text-gray-400',
           )}>
             {lastMsg
-              ? `${lastMsg.senderId === userUid ? 'Você: ' : ''}${lastMsg.text}`
-              : (isGlobal ? 'Mande a primeira mensagem para o time' : 'Sem mensagens ainda')}
+              ? `${lastMsg.senderId === userUid ? t('teamChat.youPrefix') : ''}${lastMsg.text}`
+              : t('teamChat.lastMessageEmpty')}
           </p>
           {unread && (
             <span className="flex-shrink-0 w-2 h-2 rounded-full bg-red-500" />
@@ -469,6 +505,7 @@ function ChatRow({
 // ─── Row de membro (lista) ───────────────────────────────────────────────────
 
 function MemberRow({ member, isSelf }: { member: UserType; isSelf: boolean }) {
+  const { t } = useTranslation();
   const ms = getMemberDisplayStatus(member);
   const lastSeen = member.lastSeenAt || member.lastLoginAt;
 
@@ -478,31 +515,31 @@ function MemberRow({ member, isSelf }: { member: UserType; isSelf: boolean }) {
         <Avatar name={member.name} photoURL={member.photoURL} size={28} />
         <div className={cn(
           'absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-[#1e293b]',
-          ms === 'online' ? 'bg-emerald-400' : ms === 'busy' ? 'bg-amber-400' : 'bg-gray-300 dark:bg-gray-600'
+          ms === 'online' ? 'bg-emerald-400' : ms === 'busy' ? 'bg-amber-400' : 'bg-gray-300 dark:bg-gray-600',
         )} />
       </div>
       <div className="flex-1 min-w-0">
         <p className="text-[12.5px] font-medium text-gray-800 dark:text-gray-100 truncate leading-tight">
           {member.name}
-          {isSelf && <span className="text-gray-400 dark:text-gray-500 font-normal text-[11px]"> · você</span>}
+          {isSelf && <span className="text-gray-400 dark:text-gray-500 font-normal text-[11px]"> · {t('teamChat.you')}</span>}
         </p>
         <div className="flex items-center gap-1 mt-0.5">
           {ms === 'online' && (
             <>
               <Wifi className="w-2.5 h-2.5 text-emerald-500 flex-shrink-0" />
-              <span className="text-[10.5px] font-medium text-emerald-600 dark:text-emerald-400">online</span>
+              <span className="text-[10.5px] font-medium text-emerald-600 dark:text-emerald-400">{t('teamChat.online')}</span>
             </>
           )}
           {ms === 'busy' && (
             <>
               <Clock className="w-2.5 h-2.5 text-amber-500 flex-shrink-0" />
-              <span className="text-[10.5px] font-medium text-amber-600 dark:text-amber-400">ocupado</span>
+              <span className="text-[10.5px] font-medium text-amber-600 dark:text-amber-400">{t('teamChat.busy')}</span>
             </>
           )}
           {ms === 'offline' && (
             <>
               <Clock className="w-2.5 h-2.5 text-gray-400 dark:text-gray-500 flex-shrink-0" />
-              <span className="text-[10.5px] text-gray-400 dark:text-gray-500 truncate">{relativeTime(lastSeen)}</span>
+              <span className="text-[10.5px] text-gray-400 dark:text-gray-500 truncate">{relativeTime(lastSeen, t)}</span>
             </>
           )}
         </div>
@@ -511,11 +548,11 @@ function MemberRow({ member, isSelf }: { member: UserType; isSelf: boolean }) {
   );
 }
 
-function statusLabel(member: UserType): string {
+function statusLabel(member: UserType, t: RelTime): string {
   const ms = getMemberDisplayStatus(member);
-  if (ms === 'online') return 'online';
-  if (ms === 'busy') return 'ocupado';
-  return relativeTime(member.lastSeenAt || member.lastLoginAt);
+  if (ms === 'online') return t('teamChat.online');
+  if (ms === 'busy') return t('teamChat.busy');
+  return relativeTime(member.lastSeenAt || member.lastLoginAt, t);
 }
 
 // ─── ChatView ────────────────────────────────────────────────────────────────
@@ -527,6 +564,7 @@ function ChatView({
   chatId: string;
   onSend: (text: string) => Promise<void>;
 }) {
+  const { t } = useTranslation();
   const { user } = useAuth();
   const { messages, loading } = useTeamChatMessages(chatId);
   const [text, setText] = useState('');
@@ -541,11 +579,21 @@ function ChatView({
     el.scrollTop = el.scrollHeight;
   }, [messages.length]);
 
+  // Auto-resize do textarea: cresce até max-h, depois rola interno.
+  const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setText(e.target.value);
+    const el = e.target;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 128)}px`;
+  };
+
   const handleSend = async () => {
     const v = text.trim();
     if (!v || sending) return;
     setSending(true);
     setText('');
+    // Reseta altura do textarea após limpar.
+    if (composerRef.current) composerRef.current.style.height = 'auto';
     try {
       await onSend(v);
     } catch (err) {
@@ -566,7 +614,6 @@ function ChatView({
 
   return (
     <div className="flex flex-col h-full">
-      {/* Mensagens */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-2" style={{ scrollbarWidth: 'thin' }}>
         {loading && messages.length === 0 ? (
           <div className="h-full flex items-center justify-center">
@@ -577,8 +624,8 @@ function ChatView({
             <div className="w-12 h-12 rounded-2xl bg-gray-100 dark:bg-white/[0.04] flex items-center justify-center mb-3">
               <MessageCircle className="w-6 h-6 text-gray-400 dark:text-gray-500" />
             </div>
-            <p className="text-[13px] font-medium text-gray-600 dark:text-gray-300">Nenhuma mensagem ainda</p>
-            <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">Seja o primeiro a escrever pro time.</p>
+            <p className="text-[13px] font-medium text-gray-600 dark:text-gray-300">{t('teamChat.emptyTitle')}</p>
+            <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">{t('teamChat.emptySubtitle')}</p>
           </div>
         ) : (
           groupByConsecutiveSender(messages).map((group, gi) => (
@@ -587,16 +634,15 @@ function ChatView({
         )}
       </div>
 
-      {/* Composer */}
       <div className="border-t border-gray-100 dark:border-gray-700/50 px-2 py-2 bg-gray-50/40 dark:bg-white/[0.02]">
         <div className="flex items-end gap-1.5">
           <textarea
             ref={composerRef}
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={handleTextChange}
             onKeyDown={handleKey}
             rows={1}
-            placeholder="Mensagem para o time"
+            placeholder={t('teamChat.messagePlaceholder')}
             className={cn(
               'flex-1 resize-none rounded-xl px-3 py-2 text-[13px] leading-relaxed',
               'bg-white dark:bg-[#0f172a] border border-gray-200 dark:border-gray-700/60',
@@ -614,7 +660,7 @@ function ChatView({
               'bg-red-500 hover:bg-red-600 text-white transition-colors',
               'disabled:opacity-40 disabled:cursor-not-allowed',
             )}
-            title="Enviar (Enter)"
+            title={t('teamChat.sendButton')}
           >
             {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
           </button>
@@ -630,7 +676,6 @@ function groupByConsecutiveSender(messages: TeamChatMessage[]): TeamChatMessage[
   const out: TeamChatMessage[][] = [];
   for (const m of messages) {
     const last = out[out.length - 1];
-    // Agrupa se mesmo sender e dentro de 5 min
     if (last && last[0].senderId === m.senderId &&
         new Date(m.createdAt).getTime() - new Date(last[last.length - 1].createdAt).getTime() < 5 * 60_000) {
       last.push(m);
