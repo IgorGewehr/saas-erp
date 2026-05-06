@@ -236,7 +236,9 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
 
   return (
     <header className={cn(
-      'sticky top-0 z-30',
+      // TabBar é z-[40]; TopBar precisa ficar acima pra dropdowns (equipe,
+      // notificações, user menu) não serem cobertos pelas tabs.
+      'sticky top-0 z-50',
       'bg-white/80 dark:bg-[#0a0e17]/80 backdrop-blur-xl',
       'border-b border-gray-200/50 dark:border-gray-800/50',
       'shadow-[0_1px_0_0_rgba(0,0,0,0.04)] dark:shadow-none',
