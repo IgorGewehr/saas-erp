@@ -10,7 +10,7 @@ import {
   Upload, UserCheck, Gift,
   FileDown, Settings, Plus as PlusIcon, Trophy, LayoutList, AlignJustify,
 } from 'lucide-react';
-import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch, deleteField } from 'firebase/firestore';
+import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, limit as firestoreLimit, writeBatch, deleteField } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -697,6 +697,13 @@ export default function ClientsModule() {
   // 1-12 = mês específico (1=janeiro, 12=dezembro). Útil pra preparar
   // promoções de aniversário antes de criar a campanha automatizada.
   const [filterBirthMonth, setFilterBirthMonth] = useState<'all' | 'this_month' | 'next_month' | number>('all');
+  // Filtros Fase 5 — usam infra das fases 2/3/4:
+  //   filterChannel: lê client.channelIdentities (fase 2);
+  //   filterAcquisition: lê client.acquisitionProductId/OfferLabel (fase 4);
+  //   filterCampaign: query broadcastMessages → set de contactIds (fase 3).
+  const [filterChannel, setFilterChannel] = useState<'all' | 'whatsapp' | 'facebook' | 'instagram'>('all');
+  const [filterAcquisition, setFilterAcquisition] = useState<'all' | 'with_product' | 'with_offer' | 'none' | string>('all');
+  const [filterCampaign, setFilterCampaign] = useState<string>('');  // broadcastId ou ''
   const [sortBy, setSortBy] = useState<'name' | 'totalSpent' | 'createdAt' | 'churnRisk'>('name');
   const [showExport, setShowExport] = useState(false);
   const [showImport, setShowImport] = useState(false);
@@ -773,6 +780,54 @@ export default function ClientsModule() {
     },
     enabled: !!business?.id,
     staleTime: 10 * 60 * 1000,
+  });
+
+  // Lista enxuta de broadcasts (id + nome) pra alimentar filtro "Participou
+  // de campanha". Cache 5min — broadcasts mudam pouco depois de criados.
+  const { data: broadcastsForFilter = [] } = useQuery({
+    queryKey: ['broadcasts-filter-select', business?.id],
+    queryFn: async (): Promise<Array<{ id: string; name: string; createdAt: string }>> => {
+      if (!business?.id) return [];
+      const snap = await getDocs(query(
+        collection(db, 'broadcasts'),
+        where('businessId', '==', business.id),
+      ));
+      return snap.docs
+        .map(d => ({
+          id: d.id,
+          name: (d.data().name as string) || '(sem nome)',
+          createdAt: (d.data().createdAt as string) || '',
+        }))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    },
+    enabled: !!business?.id,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Quando filterCampaign está ativo, busca os contactIds que receberam essa
+  // campanha. Usa o índice (businessId, broadcastId, createdAt) que já existia
+  // pra outras telas — sem custo adicional. Limit 500 cobre 99% (campanhas
+  // típicas vão pra 50-300 contatos; quem manda pra 500+ provavelmente não
+  // está usando esse filtro pra recortar lista de clientes).
+  const { data: campaignContactIds = new Set<string>() } = useQuery({
+    queryKey: ['campaign-contact-ids', filterCampaign, business?.id],
+    queryFn: async (): Promise<Set<string>> => {
+      if (!filterCampaign || !business?.id) return new Set();
+      const snap = await getDocs(query(
+        collection(db, 'broadcastMessages'),
+        where('businessId', '==', business.id),
+        where('broadcastId', '==', filterCampaign),
+        firestoreLimit(500),
+      ));
+      const ids = new Set<string>();
+      snap.docs.forEach(d => {
+        const cid = d.data().contactId as string | undefined;
+        if (cid) ids.add(cid);
+      });
+      return ids;
+    },
+    enabled: !!filterCampaign && !!business?.id,
+    staleTime: 2 * 60 * 1000,
   });
 
   // ─── Pré-seleção via sessionStorage ─────────────────────────────────────────
@@ -991,6 +1046,32 @@ export default function ClientsModule() {
         return month === targetMonth;
       });
     }
+    // Filtros Fase 5 — leem fields denormalizados (channelIdentities/socialMedia,
+    // acquisition*) ou Set carregado via useQuery (campaignContactIds).
+    if (filterChannel !== 'all') {
+      list = list.filter(c => {
+        const ci = c.channelIdentities?.[filterChannel];
+        if (ci) return true;
+        // Fallback pra socialMedia (FB/IG cadastrados manualmente)
+        if (filterChannel === 'facebook') return !!c.socialMedia?.facebook;
+        if (filterChannel === 'instagram') return !!c.socialMedia?.instagram;
+        // WhatsApp também pode estar no campo `whatsapp`/`phone` legacy
+        if (filterChannel === 'whatsapp') return !!c.whatsapp || !!c.phone;
+        return false;
+      });
+    }
+    if (filterAcquisition !== 'all') {
+      list = list.filter(c => {
+        if (filterAcquisition === 'with_product') return !!c.acquisitionProductId;
+        if (filterAcquisition === 'with_offer') return !!c.acquisitionOfferLabel;
+        if (filterAcquisition === 'none') return !c.acquisitionProductId && !c.acquisitionOfferLabel;
+        // String != aos 4 valores especiais → assume productId específico
+        return c.acquisitionProductId === filterAcquisition;
+      });
+    }
+    if (filterCampaign) {
+      list = list.filter(c => campaignContactIds.has(c.id));
+    }
 
     list.sort((a, b) => {
       // Sort especial quando filtrando por aniversário: ordena por dia do mês
@@ -1008,7 +1089,7 @@ export default function ClientsModule() {
     });
 
     return list;
-  }, [clients, search, filterTipo, filterStatus, filterTags, filterChurnRisk, filterBirthMonth, sortBy]);
+  }, [clients, search, filterTipo, filterStatus, filterTags, filterChurnRisk, filterBirthMonth, filterChannel, filterAcquisition, filterCampaign, campaignContactIds, sortBy]);
 
   // ─── Duplicate count (for badge) ─────────────────────────────────────────────
   const dupeCount = useMemo(() => detectDuplicates(clients).length, [clients]);
@@ -1195,7 +1276,7 @@ export default function ClientsModule() {
           >
             <Filter className="w-4 h-4" />
             Filtros
-            {(filterTipo !== 'all' || filterStatus !== 'all' || filterTags.length > 0 || filterChurnRisk !== 'all' || filterBirthMonth !== 'all') && (
+            {(filterTipo !== 'all' || filterStatus !== 'all' || filterTags.length > 0 || filterChurnRisk !== 'all' || filterBirthMonth !== 'all' || filterChannel !== 'all' || filterAcquisition !== 'all' || filterCampaign !== '') && (
               <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
             )}
           </button>
@@ -1381,6 +1462,102 @@ export default function ClientsModule() {
                       );
                     })}
                   </div>
+                </div>
+              )}
+
+              {/* Filtro Canal — checa channelIdentities (PSID/IGSID/wa real) +
+                  fallback pra socialMedia/whatsapp/phone (cadastro manual). */}
+              <div>
+                <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2 block">
+                  Canal ativo
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {(['all', 'whatsapp', 'facebook', 'instagram'] as const).map(ch => (
+                    <button
+                      key={ch}
+                      onClick={() => setFilterChannel(ch)}
+                      className={cn('px-3 py-1.5 rounded-lg text-xs font-medium transition-colors',
+                        filterChannel === ch
+                          ? 'bg-red-600 text-white'
+                          : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+                      )}>
+                      {ch === 'all' ? 'Todos' : ch === 'whatsapp' ? 'WhatsApp' : ch === 'facebook' ? 'Facebook' : 'Instagram'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Filtro Aquisição — combina chips fixos (com/sem oferta) com
+                  select de produto específico. Quando productId é selecionado,
+                  filterAcquisition vira o id; chips ficam inativos. */}
+              <div>
+                <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2 block">
+                  Aquisição
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {([
+                    { id: 'all',          label: 'Todos' },
+                    { id: 'with_product', label: 'Com produto' },
+                    { id: 'with_offer',   label: 'Com oferta' },
+                    { id: 'none',         label: 'Sem aquisição' },
+                  ] as const).map(opt => (
+                    <button
+                      key={opt.id}
+                      onClick={() => setFilterAcquisition(opt.id)}
+                      className={cn('px-3 py-1.5 rounded-lg text-xs font-medium transition-colors',
+                        filterAcquisition === opt.id
+                          ? 'bg-red-600 text-white'
+                          : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+                      )}>
+                      {opt.label}
+                    </button>
+                  ))}
+                  {productsForAcquisition.length > 0 && (
+                    <select
+                      value={
+                        ['all', 'with_product', 'with_offer', 'none'].includes(filterAcquisition)
+                          ? ''
+                          : filterAcquisition
+                      }
+                      onChange={e => {
+                        const v = e.target.value;
+                        setFilterAcquisition(v || 'all');
+                      }}
+                      className={cn('px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border-0 focus:outline-none focus:ring-1 focus:ring-red-400 cursor-pointer',
+                        !['all', 'with_product', 'with_offer', 'none'].includes(filterAcquisition)
+                          ? 'bg-red-600 text-white'
+                          : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+                      )}>
+                      <option value="">Produto específico…</option>
+                      {productsForAcquisition.map(p => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              </div>
+
+              {/* Filtro Campanha — só aparece se há broadcasts cadastrados.
+                  Vazio = sem filtro; selecionar broadcastId carrega o set
+                  de contactIds via useQuery e filtra a lista. */}
+              {broadcastsForFilter.length > 0 && (
+                <div>
+                  <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2 block">
+                    Participou de campanha
+                  </label>
+                  <select
+                    value={filterCampaign}
+                    onChange={e => setFilterCampaign(e.target.value)}
+                    className={cn('w-full sm:w-auto px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border-0 focus:outline-none focus:ring-1 focus:ring-red-400 cursor-pointer',
+                      filterCampaign
+                        ? 'bg-red-600 text-white'
+                        : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+                    )}>
+                    <option value="">Todas (sem filtro)</option>
+                    {broadcastsForFilter.map(b => (
+                      <option key={b.id} value={b.id}>{b.name}</option>
+                    ))}
+                  </select>
                 </div>
               )}
             </div>
