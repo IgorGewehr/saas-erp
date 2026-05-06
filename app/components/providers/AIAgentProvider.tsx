@@ -11,9 +11,14 @@
  * Importante: histórico ainda é só em memória — recarregar a página zera.
  * Se quisermos persistência de verdade depois, troca pra Firestore aqui
  * sem mexer nos consumidores.
+ *
+ * Polish da Fase 3:
+ *  - Histórico zera ao trocar de business (evita misturar dados entre tenants).
+ *  - isLoading split por modo (operator/analyst rodam em paralelo).
+ *  - sendingRef síncrono previne reentrancy em janelas <1ms.
  */
 
-import { createContext, useCallback, useContext, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { getAuth } from 'firebase/auth';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 
@@ -36,6 +41,10 @@ export interface AIChatMessage {
 interface AIAgentContextValue {
   operatorMsgs: AIChatMessage[];
   analystMsgs: AIChatMessage[];
+  /** Loading por modo — usar pra desabilitar UI só do modo ativo. */
+  loadingByMode: Record<AIMode, boolean>;
+  /** True quando QUALQUER modo está carregando (atalho pra previews tipo
+   *  "Pensando..." em rows que não conhecem o modo atual do consumidor). */
   isLoading: boolean;
   sessionId: string;
   /** Envia uma mensagem no modo escolhido. Atualiza estado e dispara API. */
@@ -59,31 +68,58 @@ export function useAIAgent(): AIAgentContextValue {
 // ─── Provider ────────────────────────────────────────────────────────────────
 
 export function AIAgentProvider({ children }: { children: ReactNode }) {
-  const { user } = useAuth();
+  const { user, business } = useAuth();
+  const businessId = business?.id;
+
   const [operatorMsgs, setOperatorMsgs] = useState<AIChatMessage[]>([]);
   const [analystMsgs, setAnalystMsgs] = useState<AIChatMessage[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [loadingByMode, setLoadingByMode] = useState<Record<AIMode, boolean>>({
+    operator: false,
+    analyst: false,
+  });
   // sessionId fixo por sessão de browser — o backend agrupa runs com mesmo
   // prefixo. Mode é concatenado dentro de send() pra separar operator/analyst.
   const [sessionId] = useState<string>(() => `${user?.uid || 'anon'}_${Date.now()}`);
 
+  // Refs pra leitura síncrona em send() — evitam closures stale e reentrancy.
+  const operatorMsgsRef = useRef(operatorMsgs);
+  const analystMsgsRef = useRef(analystMsgs);
+  operatorMsgsRef.current = operatorMsgs;
+  analystMsgsRef.current = analystMsgs;
+  const sendingRef = useRef<Set<AIMode>>(new Set());
+
+  // Reset ao trocar de business — histórico de outro tenant não pode vazar.
+  // Skipping primeiro render (prev === undefined) pra não zerar no mount inicial.
+  const prevBusinessIdRef = useRef<string | undefined>(businessId);
+  useEffect(() => {
+    if (prevBusinessIdRef.current !== undefined && prevBusinessIdRef.current !== businessId) {
+      setOperatorMsgs([]);
+      setAnalystMsgs([]);
+    }
+    prevBusinessIdRef.current = businessId;
+  }, [businessId]);
+
   const send = useCallback(async (mode: AIMode, text: string) => {
     const message = text.trim();
-    if (!message || isLoading || !user) return;
+    if (!message || !user) return;
+
+    // Reentrancy guard síncrono — se já tem send do mesmo modo in-flight,
+    // ignora. Mais robusto que ler isLoading do closure (que pode estar stale).
+    if (sendingRef.current.has(mode)) return;
+    sendingRef.current.add(mode);
 
     const setMessages = mode === 'operator' ? setOperatorMsgs : setAnalystMsgs;
     const userMsg: AIChatMessage = { role: 'user', content: message, timestamp: Date.now() };
     setMessages(prev => [...prev, userMsg]);
-    setIsLoading(true);
+    setLoadingByMode(prev => ({ ...prev, [mode]: true }));
 
     try {
       const token = await getAuth().currentUser?.getIdToken();
       if (!token) throw new Error('Autenticação expirada');
 
-      // Buscar histórico atual (do mesmo modo) sem incluir a mensagem que
-      // acabou de ser adicionada. Pegamos do estado ANTES do setMessages
-      // assíncrono — usar functional update pra ler o estado mais novo.
-      const prevHistory = mode === 'operator' ? operatorMsgs : analystMsgs;
+      // Lê do ref pra pegar o estado atual (sem incluir userMsg recém-adicionada
+      // — ref ainda aponta pro array anterior porque setMessages é assíncrono).
+      const prevHistory = mode === 'operator' ? operatorMsgsRef.current : analystMsgsRef.current;
       const history = prevHistory.slice(-12).map(m => ({ role: m.role, content: m.content }));
 
       const res = await fetch('/api/agent/operator/chat', {
@@ -97,7 +133,6 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
       catch { throw new Error('Resposta inválida do servidor'); }
       if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
-      // Detect empty response — agente sem texto final. Mostra diagnóstico.
       const hasText = typeof data.response === 'string' && data.response.trim().length > 0;
       const toolCount = (data.toolCalls || []).length;
       const fallbackContent = toolCount > 0
@@ -121,17 +156,28 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
         timestamp: Date.now(),
       }]);
     } finally {
-      setIsLoading(false);
+      setLoadingByMode(prev => ({ ...prev, [mode]: false }));
+      sendingRef.current.delete(mode);
     }
-  }, [user, sessionId, isLoading, operatorMsgs, analystMsgs]);
+  }, [user, sessionId]);
 
   const clear = useCallback((mode: AIMode) => {
     if (mode === 'operator') setOperatorMsgs([]);
     else setAnalystMsgs([]);
   }, []);
 
+  const isLoading = loadingByMode.operator || loadingByMode.analyst;
+
   return (
-    <AIAgentContext.Provider value={{ operatorMsgs, analystMsgs, isLoading, sessionId, send, clear }}>
+    <AIAgentContext.Provider value={{
+      operatorMsgs,
+      analystMsgs,
+      loadingByMode,
+      isLoading,
+      sessionId,
+      send,
+      clear,
+    }}>
       {children}
     </AIAgentContext.Provider>
   );

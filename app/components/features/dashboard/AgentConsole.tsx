@@ -60,7 +60,7 @@ export default function AgentConsole() {
   const { business } = useAuth();
   // Estado compartilhado vem do provider (também alimenta o widget de chat
   // interno na TopBar). Local UI continua aqui.
-  const { operatorMsgs, analystMsgs, isLoading, send: sendShared } = useAIAgent();
+  const { operatorMsgs, analystMsgs, loadingByMode, send: sendShared } = useAIAgent();
 
   const [mode, setMode] = useState<Mode>('operator');
   const [isOpen, setIsOpen] = useState(false);
@@ -68,6 +68,9 @@ export default function AgentConsole() {
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
 
   const messages = mode === 'operator' ? operatorMsgs : analystMsgs;
+  // Loading só do modo ATIVO — assim o usuário pode estar enviando no Operador
+  // e abrir Analista pra escrever paralelamente.
+  const isLoading = loadingByMode[mode];
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 

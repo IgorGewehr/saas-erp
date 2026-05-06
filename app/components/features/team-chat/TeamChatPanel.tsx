@@ -9,9 +9,10 @@ import { useTranslation } from 'react-i18next';
 import { db } from '@/lib/config/firebase';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import { useAIAgent, type AIMode } from '@/app/components/providers/AIAgentProvider';
+import { useAIAgent, type AIMode, type AIChatMessage } from '@/app/components/providers/AIAgentProvider';
 import { useTeamChat, useTeamChatMessages } from '@/lib/hooks/useTeamChat';
 import { CachedImage } from '@/app/components/ui/CachedImage';
+import { RenderMarkdown } from '@/app/components/features/dashboard/markdown';
 import { getInitials } from '@/lib/utils/format';
 import type { User as UserType, TeamChat, TeamChatMessage } from '@/lib/types';
 
@@ -833,6 +834,21 @@ function MessageGroup({ group, myUid }: { group: TeamChatMessage[]; myUid: strin
   );
 }
 
+// ─── AI Chat: sugestões compactas pro empty state ───────────────────────────
+// Versão enxuta (2 por modo) das suggestions do AgentConsole no Dashboard —
+// no painel há menos espaço, então cortamos pra 2 mais úteis.
+
+const AI_WIDGET_SUGGESTIONS: Record<AIMode, string[]> = {
+  operator: ['Como está o dia hoje?', 'Produtos com estoque baixo'],
+  analyst: ['Resumo de vendas da semana', 'Top 10 clientes por faturamento'],
+};
+
+// Helper local pra timestamp em ms (AIChatMessage usa number, não ISO).
+function formatTimestampMs(ms: number): string {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 // ─── AI Chat Row (entrada na lista, pinned no topo) ─────────────────────────
 
 function AIChatRow({ onClick }: { onClick: () => void }) {
@@ -882,22 +898,23 @@ function AIChatRow({ onClick }: { onClick: () => void }) {
 
 function AIChatView() {
   const { t } = useTranslation();
-  const { operatorMsgs, analystMsgs, isLoading, send } = useAIAgent();
+  const { operatorMsgs, analystMsgs, loadingByMode, send } = useAIAgent();
   const [mode, setMode] = useState<AIMode>('operator');
   const [text, setText] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
   const messages = mode === 'operator' ? operatorMsgs : analystMsgs;
+  // Loading só do modo ativo — usuário pode digitar no Operador enquanto
+  // Analista responde, e vice-versa.
+  const isLoading = loadingByMode[mode];
 
-  // Auto-scroll quando mensagens mudam ou loading toggle.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
   }, [messages.length, isLoading]);
 
-  // Auto-resize do textarea.
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setText(e.target.value);
     const el = e.target;
@@ -917,6 +934,11 @@ function AIChatView() {
     }
   };
 
+  const handleSuggestion = (s: string) => {
+    if (isLoading) return;
+    void send(mode, s);
+  };
+
   const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -932,6 +954,7 @@ function AIChatView() {
           const active = mode === m;
           const Icon = m === 'operator' ? Command : BarChart3;
           const count = m === 'operator' ? operatorMsgs.length : analystMsgs.length;
+          const modeLoading = loadingByMode[m];
           return (
             <button
               key={m}
@@ -945,7 +968,8 @@ function AIChatView() {
             >
               <Icon className="w-3 h-3" />
               {m === 'operator' ? t('teamChat.aiChat.modeOperator') : t('teamChat.aiChat.modeAnalyst')}
-              {count > 0 && (
+              {modeLoading && <Loader2 className="w-3 h-3 animate-spin" />}
+              {!modeLoading && count > 0 && (
                 <span className="text-[9px] px-1 rounded bg-gray-100 dark:bg-gray-700/60">{count}</span>
               )}
             </button>
@@ -956,7 +980,7 @@ function AIChatView() {
       {/* Mensagens */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-2" style={{ scrollbarWidth: 'thin' }}>
         {messages.length === 0 && !isLoading && (
-          <div className="h-full flex flex-col items-center justify-center text-center px-6">
+          <div className="h-full flex flex-col items-center justify-center text-center px-4 py-2">
             <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-red-500 to-rose-600 flex items-center justify-center mb-3 shadow-sm">
               <Sparkles className="w-6 h-6 text-white" />
             </div>
@@ -966,11 +990,23 @@ function AIChatView() {
             <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1 leading-snug">
               {t('teamChat.aiChat.continuesDashboard')}
             </p>
+            <div className="flex flex-col gap-1.5 w-full mt-4">
+              {AI_WIDGET_SUGGESTIONS[mode].map(s => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => handleSuggestion(s)}
+                  className="text-[11.5px] text-left px-2.5 py-1.5 rounded-lg bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700/60 text-gray-700 dark:text-gray-300 hover:border-red-300 dark:hover:border-red-700/70 hover:bg-red-50/40 dark:hover:bg-red-950/20 transition-colors truncate"
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
         {messages.map((m, i) => (
-          <AIMessageBubble key={`${m.timestamp}-${i}`} role={m.role} content={m.content} isFallback={m.isFallback} />
+          <AIMessageBubble key={`${m.timestamp}-${i}`} msg={m} />
         ))}
 
         {isLoading && (
@@ -1020,21 +1056,42 @@ function AIChatView() {
   );
 }
 
-function AIMessageBubble({ role, content, isFallback }: { role: 'user' | 'assistant'; content: string; isFallback?: boolean }) {
-  const mine = role === 'user';
+function AIMessageBubble({ msg }: { msg: AIChatMessage }) {
+  const mine = msg.role === 'user';
+  const hasTools = !mine && (msg.toolCalls?.length ?? 0) > 0;
+  // Para mensagens de fallback ou do usuário, render texto cru. Para assistant
+  // normal, render markdown — paridade com o Dashboard (RenderMarkdown trata
+  // negrito, listas, tabelas, code blocks).
   return (
     <div className={cn('flex gap-2', mine && 'flex-row-reverse')}>
       {!mine && <AIAvatar size={24} />}
       <div className={cn(
-        'rounded-2xl px-3 py-1.5 text-[13px] leading-relaxed break-words whitespace-pre-wrap max-w-[78%]',
+        'rounded-2xl px-3 py-1.5 text-[13px] leading-relaxed break-words max-w-[78%]',
         mine
-          ? 'bg-red-500 text-white rounded-br-sm'
-          : isFallback
-            ? 'bg-amber-50 dark:bg-amber-500/10 text-amber-900 dark:text-amber-200 border border-amber-200/60 dark:border-amber-500/20 rounded-bl-sm'
+          ? 'bg-red-500 text-white rounded-br-sm whitespace-pre-wrap'
+          : msg.isFallback
+            ? 'bg-amber-50 dark:bg-amber-500/10 text-amber-900 dark:text-amber-200 border border-amber-200/60 dark:border-amber-500/20 rounded-bl-sm whitespace-pre-wrap'
             : 'bg-gray-100 dark:bg-white/[0.06] text-gray-900 dark:text-gray-100 rounded-bl-sm',
       )}>
-        {content}
+        {mine || msg.isFallback
+          ? msg.content
+          : <RenderMarkdown source={msg.content} />}
+        {/* Linha de info: tool calls + duração + custo (só assistant com tools) */}
+        {hasTools && (
+          <div className="mt-1 pt-1 border-t border-gray-200 dark:border-white/[0.08] text-[10px] text-gray-500 dark:text-gray-400 leading-tight">
+            {msg.toolCalls!.length} {msg.toolCalls!.length === 1 ? 'ação' : 'ações'}
+            {msg.durationMs ? ` · ${(msg.durationMs / 1000).toFixed(1)}s` : ''}
+            {msg.costUsd != null && msg.costUsd > 0 ? ` · $${msg.costUsd.toFixed(4)}` : ''}
+          </div>
+        )}
+        <div className={cn(
+          'mt-0.5 text-[9.5px] leading-tight',
+          mine ? 'text-white/70 text-right' : 'text-gray-400 dark:text-gray-500',
+        )}>
+          {formatTimestampMs(msg.timestamp)}
+        </div>
       </div>
     </div>
   );
 }
+
