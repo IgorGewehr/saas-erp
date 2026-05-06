@@ -2492,6 +2492,54 @@ export interface Snippet {
 }
 
 // ============================================
+// Team Chat (chat interno entre membros)
+// ============================================
+//
+// Coleções dedicadas — separadas de `conversations` (omnichannel externo) pra
+// não poluir filtros/relatórios. Fluxo:
+//   • Global: 1 doc por business, ID determinístico `global_{businessId}`,
+//     visível para todos os membros do tenant. memberIds fica vazio.
+//   • DM: ID determinístico `dm_{[uidA,uidB].sort().join('_')}` pra evitar
+//     duplicatas; visível apenas pelos 2 participantes.
+//
+// Unread = `lastMessageAt > lastReadAt[uid]`. Boolean é suficiente pra badge;
+// contagem exata sai mais barata se evoluirmos pra contador no doc depois.
+
+export type TeamChatType = 'dm' | 'global';
+
+export interface TeamChat {
+  id: string;
+  businessId: string;
+  type: TeamChatType;
+  /** DM: [uidA, uidB] ordenados; global: vazio (todos do business têm acesso). */
+  memberIds: string[];
+  lastMessage?: {
+    text: string;
+    senderId: string;
+    senderName: string;
+    sentAt: string;
+  };
+  /** ISO duplicado de lastMessage.sentAt — usado pra ordenar e pra unread. */
+  lastMessageAt?: string;
+  /** uid → ISO da última leitura. Comparado com lastMessageAt. */
+  lastReadAt: Record<string, string>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TeamChatMessage {
+  id: string;
+  businessId: string;
+  chatId: string;
+  senderId: string;
+  senderName: string;
+  senderInitials: string;
+  senderPhotoURL?: string;
+  text: string;
+  createdAt: string;
+}
+
+// ============================================
 // CRM Segments
 // ============================================
 

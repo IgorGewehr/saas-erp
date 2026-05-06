@@ -7,10 +7,10 @@ import { useTranslation } from 'react-i18next';
 import { getInitials } from '@/lib/utils/format';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
-import { collection, query, where, orderBy, limit, onSnapshot, updateDoc, doc, writeBatch, getDocsFromCache, getDocs } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, onSnapshot, updateDoc, doc, writeBatch, getDocs } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useQuery } from '@tanstack/react-query';
-import type { User as UserType, AppNotification } from '@/lib/types';
+import type { AppNotification } from '@/lib/types';
 import {
   Search,
   Bell,
@@ -21,10 +21,8 @@ import {
   User as UserIcon,
   Sun,
   Moon,
-  Users,
-  Wifi,
-  Clock,
   Check,
+  Clock,
   Calendar,
   CheckSquare,
   MessageSquare,
@@ -35,6 +33,7 @@ import {
 import type { UserStatus } from '@/lib/types';
 import type { MenuPage } from './Sidebar';
 import { CachedImage } from '@/app/components/ui/CachedImage';
+import { TeamChatPanel } from '@/app/components/features/team-chat/TeamChatPanel';
 
 interface TopBarProps {
   activePage?: MenuPage;
@@ -42,7 +41,7 @@ interface TopBarProps {
   onNavigate?: (page: MenuPage) => void;
 }
 
-// ─── Presence helpers ─────────────────────────────────
+// ─── Status style (user's own status — picker no dropdown do avatar) ──
 
 const STATUS_STYLE: Record<UserStatus, { dot: string; text: string; bg: string }> = {
   online:    { dot: 'bg-emerald-400', text: 'text-emerald-700 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
@@ -50,253 +49,6 @@ const STATUS_STYLE: Record<UserStatus, { dot: string; text: string; bg: string }
   invisible: { dot: 'bg-gray-400',    text: 'text-gray-500 dark:text-gray-400',       bg: 'bg-gray-100 dark:bg-gray-700/40'      },
   offline:   { dot: 'bg-gray-400',    text: 'text-gray-500 dark:text-gray-400',       bg: 'bg-gray-100 dark:bg-gray-700/40'      },
 };
-
-// Returns the visible display status for a member (invisible = appears offline)
-function getMemberDisplayStatus(member: UserType): 'online' | 'busy' | 'offline' {
-  if (member.userStatus === 'invisible') return 'offline';
-  if (!member.isOnline || !member.lastSeenAt) return 'offline';
-  if (Date.now() - new Date(member.lastSeenAt).getTime() >= 3 * 60 * 1000) return 'offline';
-  return member.userStatus === 'busy' ? 'busy' : 'online';
-}
-
-function isOnline(member: UserType): boolean {
-  return getMemberDisplayStatus(member) !== 'offline';
-}
-
-function relativeTime(dateStr?: string | null, t?: (key: string, opts?: Record<string, unknown>) => string): string {
-  if (!dateStr) return t ? t('settings.users.never') : 'Nunca';
-  const diff = Date.now() - new Date(dateStr).getTime();
-  if (diff < 60_000)         return t ? t('settings.users.justNow') : 'Agora mesmo';
-  if (diff < 3_600_000)      return t ? t('settings.users.minsAgo', { mins: Math.floor(diff / 60_000) }) : `${Math.floor(diff / 60_000)}min atrás`;
-  if (diff < 86_400_000)     return t ? t('settings.users.hoursAgo', { hours: Math.floor(diff / 3_600_000) }) : `${Math.floor(diff / 3_600_000)}h atrás`;
-  if (diff < 7 * 86_400_000) return t ? t('settings.users.daysAgo', { days: Math.floor(diff / 86_400_000) }) : `${Math.floor(diff / 86_400_000)}d atrás`;
-  return new Date(dateStr).toLocaleDateString();
-}
-
-// ─── Team Presence Panel ──────────────────────────────
-function TeamPresencePanel() {
-  const { t } = useTranslation();
-  const { user, business } = useAuth();
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  // Poll every 60s (aligned with the heartbeat interval — presence data is only
-  // accurate to within 60s anyway, so there's no value in a persistent socket here).
-  const { data: members = [] } = useQuery({
-    queryKey: ['team-presence', business?.id],
-    queryFn: async () => {
-      const q = query(collection(db, 'users'), where('businessId', '==', business!.id));
-      // Serve from IndexedDB cache first for instant paint, then validate against network
-      let snap;
-      try {
-        snap = await getDocsFromCache(q);
-        if (snap.empty) snap = await getDocs(q);
-      } catch {
-        snap = await getDocs(q);
-      }
-      const data = snap.docs.map(d => ({ ...d.data(), id: d.id }) as UserType);
-      data.sort((a, b) => {
-        const ao = isOnline(a) ? 1 : 0;
-        const bo = isOnline(b) ? 1 : 0;
-        if (ao !== bo) return bo - ao;
-        return a.name.localeCompare(b.name);
-      });
-      return data;
-    },
-    enabled: !!business?.id,
-    staleTime: 30_000,
-    refetchInterval: 60_000,
-  });
-
-  // Close on outside click
-  useEffect(() => {
-    const h = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', h);
-    return () => document.removeEventListener('mousedown', h);
-  }, []);
-
-  const onlineCount = members.filter(isOnline).length;
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        onClick={() => setOpen(!open)}
-        title={t('topbar.teamOnline')}
-        className={cn(
-          'relative flex items-center gap-1.5 h-9 px-2.5 rounded-xl',
-          'text-gray-500 dark:text-gray-400 transition-all duration-150 active:scale-95',
-          open
-            ? 'bg-gray-100 dark:bg-white/[0.06] text-gray-700 dark:text-gray-200'
-            : 'hover:bg-gray-100 dark:hover:bg-white/[0.06] hover:text-gray-700 dark:hover:text-gray-200'
-        )}
-      >
-        <Users className="w-[17px] h-[17px]" />
-        {/* Online count badge */}
-        <AnimatePresence>
-          {onlineCount > 0 && (
-            <motion.span
-              key={onlineCount}
-              initial={{ scale: 0.6, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.6, opacity: 0 }}
-              transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-              className="flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-emerald-500 text-white text-[10px] font-bold leading-none"
-            >
-              {onlineCount}
-            </motion.span>
-          )}
-        </AnimatePresence>
-        {/* Live pulse when anyone is online */}
-        {onlineCount > 0 && (
-          <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-emerald-400">
-            <span className="absolute inset-0 rounded-full bg-emerald-400 animate-ping opacity-75" />
-          </span>
-        )}
-      </button>
-
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ opacity: 0, y: 6, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 6, scale: 0.96 }}
-            transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
-            className={cn(
-              'absolute right-0 top-full mt-2 w-72 z-50',
-              'bg-white dark:bg-[#1e293b] rounded-2xl',
-              'border border-gray-200/80 dark:border-gray-700/50',
-              'shadow-[0_8px_30px_rgba(0,0,0,0.12)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.4)]',
-              'overflow-hidden'
-            )}
-          >
-            {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-700/50">
-              <div className="flex items-center gap-2">
-                <Users className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
-                <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-200">{t('topbar.team')}</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                {onlineCount > 0 ? (
-                  <span className="flex items-center gap-1 text-[11.5px] font-medium text-emerald-600 dark:text-emerald-400">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                    {onlineCount} {t('topbar.online')}
-                  </span>
-                ) : (
-                  <span className="text-[11.5px] text-gray-400 dark:text-gray-500">{t('topbar.noOneOnline')}</span>
-                )}
-              </div>
-            </div>
-
-            {/* Members list */}
-            <div className="max-h-[320px] overflow-y-auto" style={{ scrollbarWidth: 'thin' }}>
-              {members.length === 0 ? (
-                <div className="py-8 text-center text-[13px] text-gray-400 dark:text-gray-500">
-                  {t('topbar.loadingTeam')}
-                </div>
-              ) : (
-                <div className="p-1.5 space-y-0.5">
-                  {members.map((member) => {
-                    const online    = isOnline(member);
-                    const isSelf    = member.uid === user?.uid;
-                    const lastSeen  = member.lastSeenAt || member.lastLoginAt;
-                    return (
-                      <div
-                        key={member.id}
-                        className="flex items-center gap-2.5 px-2.5 py-2 rounded-xl hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors"
-                      >
-                        {/* Avatar */}
-                        <div className="relative flex-shrink-0">
-                          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-red-100 to-rose-100 dark:from-red-900/40 dark:to-rose-900/30 border border-red-200/60 dark:border-red-800/40 flex items-center justify-center text-[11px] font-bold text-red-700 dark:text-red-400">
-                            {member.photoURL
-                              ? <CachedImage src={member.photoURL} alt={member.name} className="w-full h-full rounded-full object-cover" />
-                              : getInitials(member.name)
-                            }
-                          </div>
-                          {/* Presence dot */}
-                          {(() => {
-                            const ms = getMemberDisplayStatus(member);
-                            return (
-                              <div className={cn(
-                                'absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-[#1e293b] transition-colors duration-300',
-                                ms === 'online' ? 'bg-emerald-400' : ms === 'busy' ? 'bg-amber-400' : 'bg-gray-300 dark:bg-gray-600'
-                              )}>
-                                {ms === 'online' && <span className="absolute inset-0 rounded-full bg-emerald-400 animate-ping opacity-75" />}
-                                {ms === 'busy'   && <span className="absolute inset-0 rounded-full bg-amber-400 animate-ping opacity-75" />}
-                              </div>
-                            );
-                          })()}
-                        </div>
-
-                        {/* Info */}
-                        <div className="flex-1 min-w-0">
-                          <p className="text-[13px] font-medium text-gray-800 dark:text-gray-100 truncate leading-tight">
-                            {member.name}
-                            {isSelf && <span className="text-gray-400 dark:text-gray-500 font-normal text-[11px]"> · {t('topbar.you')}</span>}
-                          </p>
-                          {(() => {
-                            const ms = getMemberDisplayStatus(member);
-                            return (
-                              <div className="flex items-center gap-1 mt-0.5">
-                                {ms === 'online' && (
-                                  <>
-                                    <Wifi className="w-2.5 h-2.5 text-emerald-500 flex-shrink-0" />
-                                    <span className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400">{t('topbar.onlineNow')}</span>
-                                  </>
-                                )}
-                                {ms === 'busy' && (
-                                  <>
-                                    <Clock className="w-2.5 h-2.5 text-amber-500 flex-shrink-0" />
-                                    <span className="text-[11px] font-medium text-amber-600 dark:text-amber-400">{t('topbar.busy')}</span>
-                                  </>
-                                )}
-                                {ms === 'offline' && (
-                                  <>
-                                    <Clock className="w-2.5 h-2.5 text-gray-400 dark:text-gray-500 flex-shrink-0" />
-                                    <span className="text-[11px] text-gray-400 dark:text-gray-500 truncate">
-                                      {relativeTime(lastSeen, t)}
-                                    </span>
-                                  </>
-                                )}
-                              </div>
-                            );
-                          })()}
-                        </div>
-
-                        {/* Status pill */}
-                        {(() => {
-                          const ms = getMemberDisplayStatus(member);
-                          return (
-                            <div className={cn(
-                              'flex-shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-md',
-                              ms === 'online' ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
-                                : ms === 'busy' ? 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400'
-                                : 'bg-gray-100 dark:bg-gray-700/50 text-gray-500 dark:text-gray-400'
-                            )}>
-                              {ms === 'online' ? t('topbar.statusOnline') : ms === 'busy' ? t('topbar.statusBusy') : t('topbar.statusOffline')}
-                            </div>
-                          );
-                        })()}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
-            {/* Footer note */}
-            <div className="px-4 py-2.5 border-t border-gray-100 dark:border-gray-700/50 bg-gray-50/50 dark:bg-white/[0.01]">
-              <p className="text-[10.5px] text-gray-400 dark:text-gray-500 text-center">
-                {t('topbar.realTimeUpdate')}
-              </p>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-}
 
 // ─── Theme Toggle ─────────────────────────────────────
 function ThemeToggle() {
@@ -522,8 +274,8 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
         {/* ── Right: Presence + Theme + Bell + User ── */}
         <div className="flex items-center gap-1.5 sm:gap-2">
 
-          {/* Team presence */}
-          <TeamPresencePanel />
+          {/* Equipe + chat interno */}
+          <TeamChatPanel />
 
           {/* Theme toggle */}
           <ThemeToggle />
