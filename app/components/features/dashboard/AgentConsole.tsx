@@ -10,33 +10,23 @@
  *
  * Design: closed by default (just a compact header strip) to keep the
  * dashboard clean. One click expands to a reasonable 340px-tall chat area.
- * Per-mode history preserved independently while the console stays open.
+ *
+ * Estado de mensagens, isLoading e sessionId vivem no AIAgentProvider
+ * (Fase 3 do team-chat) — o widget de chat interno na TopBar consome a
+ * mesma instância pra continuar conversas iniciadas aqui. UI local (mode,
+ * isOpen, input, expandedRunId) continua aqui mesmo.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import { getAuth } from 'firebase/auth';
+import { useAIAgent, type AIMode as Mode, type AIChatMessage as ChatMessage } from '@/app/components/providers/AIAgentProvider';
 import {
   Sparkles, Send, Loader2, ChevronDown, ChevronUp, Zap, Lock,
   BarChart3, Command, TrendingUp, Users, DollarSign, Calendar,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { RenderMarkdown } from './markdown';
-
-type Role = 'user' | 'assistant';
-type Mode = 'operator' | 'analyst';
-
-interface ChatMessage {
-  role: Role;
-  content: string;
-  runId?: string;
-  toolCalls?: Array<{ name: string; args?: unknown; error?: string }>;
-  costUsd?: number;
-  durationMs?: number;
-  timestamp: number;
-  isFallback?: boolean;
-}
 
 const SUGGESTIONS: Record<Mode, Array<{ icon: typeof Command; text: string }>> = {
   operator: [
@@ -67,20 +57,17 @@ const MODE_META: Record<Mode, { label: string; color: string; accent: string }> 
 };
 
 export default function AgentConsole() {
-  const { user, business } = useAuth();
+  const { business } = useAuth();
+  // Estado compartilhado vem do provider (também alimenta o widget de chat
+  // interno na TopBar). Local UI continua aqui.
+  const { operatorMsgs, analystMsgs, isLoading, send: sendShared } = useAIAgent();
+
   const [mode, setMode] = useState<Mode>('operator');
   const [isOpen, setIsOpen] = useState(false);
   const [input, setInput] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
 
-  // Independent message history per mode — switching tabs preserves each chat.
-  const [operatorMsgs, setOperatorMsgs] = useState<ChatMessage[]>([]);
-  const [analystMsgs, setAnalystMsgs] = useState<ChatMessage[]>([]);
   const messages = mode === 'operator' ? operatorMsgs : analystMsgs;
-  const setMessages = mode === 'operator' ? setOperatorMsgs : setAnalystMsgs;
-
-  const [sessionId] = useState<string>(() => `${user?.uid || 'anon'}_${Date.now()}`);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -98,63 +85,9 @@ export default function AgentConsole() {
 
   const send = async (text?: string) => {
     const message = (text ?? input).trim();
-    if (!message || isLoading || !user) return;
-
-    const userMsg: ChatMessage = { role: 'user', content: message, timestamp: Date.now() };
-    setMessages((prev) => [...prev, userMsg]);
+    if (!message) return;
     setInput('');
-    setIsLoading(true);
-
-    try {
-      const token = await getAuth().currentUser?.getIdToken();
-      if (!token) throw new Error('Autenticação expirada');
-
-      const history = messages.slice(-12).map((m) => ({ role: m.role, content: m.content }));
-
-      const res = await fetch('/api/agent/operator/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ message, history, sessionId: `${mode}_${sessionId}`, mode }),
-      });
-
-      let data;
-      try { data = await res.json(); } catch { throw new Error('Resposta inválida do servidor'); }
-      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-
-      // Detect empty response — server succeeded but agent couldn't produce text.
-      // Happens when: iteration cap hit, all planner turns emitted tool_calls,
-      // or tool errors prevented a final draft. Show a helpful diagnostic.
-      const hasText = typeof data.response === 'string' && data.response.trim().length > 0;
-      const toolCount = (data.toolCalls || []).length;
-      const fallbackContent = toolCount > 0
-        ? `Tentei ${toolCount} ação${toolCount > 1 ? 'ões' : ''} mas não consegui formular uma resposta. Pode reformular ou tentar algo mais específico?`
-        : 'Não consegui processar agora. Tenta reformular com mais detalhes (ex: "tenho agendamentos essa semana?").';
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: hasText ? data.response : fallbackContent,
-          runId: data.runId,
-          toolCalls: data.toolCalls || [],
-          costUsd: data.costUsd,
-          durationMs: data.durationMs,
-          timestamp: Date.now(),
-          isFallback: !hasText,
-        },
-      ]);
-    } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: `⚠️ Erro: ${err instanceof Error ? err.message : String(err)}`,
-          timestamp: Date.now(),
-        },
-      ]);
-    } finally {
-      setIsLoading(false);
-    }
+    await sendShared(mode, message);
   };
 
   const keyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

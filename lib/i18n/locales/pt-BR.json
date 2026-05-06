@@ -1153,7 +1153,20 @@
     "unreadBadgeTitle_other": "{{count}} conversas novas",
     "startDM": "Iniciar conversa",
     "unknownUser": "Usuário",
-    "noConversationsYet": "Nenhuma conversa direta ainda. Clique em um membro abaixo pra começar."
+    "noConversationsYet": "Nenhuma conversa direta ainda. Clique em um membro abaixo pra começar.",
+    "aiChat": {
+      "title": "Chat IA",
+      "subtitle": "Operador e Analista",
+      "tagline": "Pergunte ou comande seu negócio em linguagem natural.",
+      "thinking": "Pensando...",
+      "modeOperator": "Operador",
+      "modeAnalyst": "Analista",
+      "placeholderOperator": "Comande ou pergunte...",
+      "placeholderAnalyst": "Pergunte sobre dados, métricas...",
+      "emptyOperator": "Pergunte ou comande algo. Ex: \"Como está o dia?\"",
+      "emptyAnalyst": "Pergunte sobre dados. Ex: \"Top 10 clientes do mês\"",
+      "continuesDashboard": "Continua a conversa iniciada no Dashboard."
+    }
   },
   "common": {
     "save": "Salvar",

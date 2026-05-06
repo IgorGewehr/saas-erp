@@ -2,13 +2,14 @@
 
 import { useEffect, useRef, useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, Send, Users, Wifi, Clock, MessageCircle, Loader2, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Send, Users, Wifi, Clock, MessageCircle, Loader2, AlertTriangle, Sparkles, BarChart3, Command } from 'lucide-react';
 import { collection, query, where, getDocs, getDocsFromCache } from 'firebase/firestore';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { db } from '@/lib/config/firebase';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
+import { useAIAgent, type AIMode } from '@/app/components/providers/AIAgentProvider';
 import { useTeamChat, useTeamChatMessages } from '@/lib/hooks/useTeamChat';
 import { CachedImage } from '@/app/components/ui/CachedImage';
 import { getInitials } from '@/lib/utils/format';
@@ -73,7 +74,19 @@ function GlobalAvatar({ size = 32 }: { size?: number }) {
   );
 }
 
-type View = { type: 'list' } | { type: 'chat'; chatId: string };
+function AIAvatar({ size = 32 }: { size?: number }) {
+  const px = `${size}px`;
+  return (
+    <div
+      className="rounded-full bg-gradient-to-br from-red-500 to-rose-600 flex items-center justify-center text-white flex-shrink-0 shadow-sm"
+      style={{ width: px, height: px }}
+    >
+      <Sparkles style={{ width: size * 0.5, height: size * 0.5 }} />
+    </div>
+  );
+}
+
+type View = { type: 'list' } | { type: 'chat'; chatId: string } | { type: 'ai' };
 
 // `useTeamChat` retorna esse shape; reutilizamos pra passar como prop e evitar
 // duplicar subscription.
@@ -217,6 +230,8 @@ function TeamChatDropdown({ members, teamChat }: { members: UserType[]; teamChat
     }
   };
 
+  const openAI = () => setView({ type: 'ai' });
+
   const goBack = () => setView({ type: 'list' });
 
   const renderHeader = () => {
@@ -238,6 +253,18 @@ function TeamChatDropdown({ members, teamChat }: { members: UserType[]; teamChat
             )}
           </div>
         </div>
+      );
+    }
+
+    if (view.type === 'ai') {
+      return (
+        <ChatHeader
+          title={t('teamChat.aiChat.title')}
+          subtitle={t('teamChat.aiChat.subtitle')}
+          onBack={goBack}
+          left={<AIAvatar size={28} />}
+          backLabel={t('teamChat.back')}
+        />
       );
     }
 
@@ -312,7 +339,7 @@ function TeamChatDropdown({ members, teamChat }: { members: UserType[]; teamChat
 
       <div className="flex-1 min-h-0 overflow-hidden relative">
         <AnimatePresence mode="wait" initial={false}>
-          {view.type === 'list' ? (
+          {view.type === 'list' && (
             <motion.div
               key="list"
               initial={{ opacity: 0, x: -8 }}
@@ -330,9 +357,11 @@ function TeamChatDropdown({ members, teamChat }: { members: UserType[]; teamChat
                 hasUnread={hasUnread}
                 onSelect={openChat}
                 onSelectMember={openDM}
+                onSelectAI={openAI}
               />
             </motion.div>
-          ) : (
+          )}
+          {view.type === 'chat' && (
             <motion.div
               key={`chat-${view.chatId}`}
               initial={{ opacity: 0, x: 8 }}
@@ -345,6 +374,18 @@ function TeamChatDropdown({ members, teamChat }: { members: UserType[]; teamChat
                 chatId={view.chatId}
                 onSend={(text) => sendMessage(view.chatId, text)}
               />
+            </motion.div>
+          )}
+          {view.type === 'ai' && (
+            <motion.div
+              key="ai"
+              initial={{ opacity: 0, x: 8 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 8 }}
+              transition={{ duration: 0.15 }}
+              className="absolute inset-0 flex flex-col"
+            >
+              <AIChatView />
             </motion.div>
           )}
         </AnimatePresence>
@@ -395,6 +436,7 @@ function ListView({
   hasUnread,
   onSelect,
   onSelectMember,
+  onSelectAI,
 }: {
   chats: TeamChat[];
   globalChat: TeamChat | null;
@@ -404,6 +446,7 @@ function ListView({
   hasUnread: (chatId: string) => boolean;
   onSelect: (chatId: string) => void;
   onSelectMember: (otherUid: string) => void;
+  onSelectAI: () => void;
 }) {
   const { t } = useTranslation();
 
@@ -436,6 +479,7 @@ function ListView({
           )}
         </div>
         <div className="px-1.5 space-y-0.5">
+          <AIChatRow onClick={onSelectAI} />
           {pinned.map(c => (
             <ChatRow key={c.id} chat={c} members={members} userUid={userUid} unread={hasUnread(c.id)} onClick={() => onSelect(c.id)} />
           ))}
@@ -784,6 +828,212 @@ function MessageGroup({ group, myUid }: { group: TeamChatMessage[]; myUid: strin
             </span>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── AI Chat Row (entrada na lista, pinned no topo) ─────────────────────────
+
+function AIChatRow({ onClick }: { onClick: () => void }) {
+  const { t } = useTranslation();
+  const { operatorMsgs, analystMsgs, isLoading } = useAIAgent();
+  const total = operatorMsgs.length + analystMsgs.length;
+  const lastMsg = useMemo(() => {
+    // Pega a mensagem mais recente entre os dois modos pra exibir como preview.
+    const opLast = operatorMsgs[operatorMsgs.length - 1];
+    const anLast = analystMsgs[analystMsgs.length - 1];
+    if (!opLast && !anLast) return null;
+    if (!opLast) return anLast;
+    if (!anLast) return opLast;
+    return opLast.timestamp >= anLast.timestamp ? opLast : anLast;
+  }, [operatorMsgs, analystMsgs]);
+
+  return (
+    <button
+      onClick={onClick}
+      className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl transition-colors text-left hover:bg-gray-50 dark:hover:bg-white/[0.04]"
+    >
+      <AIAvatar size={36} />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-[13px] font-medium text-gray-800 dark:text-gray-100 truncate leading-tight">
+            {t('teamChat.aiChat.title')}
+          </p>
+          {total > 0 && (
+            <span className="text-[10.5px] text-gray-400 dark:text-gray-500 flex-shrink-0">
+              {total}
+            </span>
+          )}
+        </div>
+        <p className="text-[11.5px] truncate text-gray-500 dark:text-gray-400 mt-0.5">
+          {isLoading
+            ? t('teamChat.aiChat.thinking')
+            : lastMsg
+              ? `${lastMsg.role === 'user' ? t('teamChat.youPrefix') : ''}${lastMsg.content}`
+              : t('teamChat.aiChat.tagline')}
+        </p>
+      </div>
+    </button>
+  );
+}
+
+// ─── AI Chat View (conversa com o agente, dentro do painel) ─────────────────
+
+function AIChatView() {
+  const { t } = useTranslation();
+  const { operatorMsgs, analystMsgs, isLoading, send } = useAIAgent();
+  const [mode, setMode] = useState<AIMode>('operator');
+  const [text, setText] = useState('');
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+
+  const messages = mode === 'operator' ? operatorMsgs : analystMsgs;
+
+  // Auto-scroll quando mensagens mudam ou loading toggle.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages.length, isLoading]);
+
+  // Auto-resize do textarea.
+  const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setText(e.target.value);
+    const el = e.target;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 128)}px`;
+  };
+
+  const handleSend = async () => {
+    const v = text.trim();
+    if (!v || isLoading) return;
+    setText('');
+    if (composerRef.current) composerRef.current.style.height = 'auto';
+    try {
+      await send(mode, v);
+    } finally {
+      composerRef.current?.focus();
+    }
+  };
+
+  const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      void handleSend();
+    }
+  };
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Mode tabs — compactas */}
+      <div className="flex items-center gap-1 px-3 pt-2 border-b border-gray-100 dark:border-gray-700/50">
+        {(['operator', 'analyst'] as AIMode[]).map(m => {
+          const active = mode === m;
+          const Icon = m === 'operator' ? Command : BarChart3;
+          const count = m === 'operator' ? operatorMsgs.length : analystMsgs.length;
+          return (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              className={cn(
+                'inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11.5px] font-medium border-b-2 transition-colors',
+                active
+                  ? (m === 'analyst' ? 'text-rose-600 dark:text-rose-400 border-rose-500' : 'text-red-600 dark:text-red-400 border-red-500')
+                  : 'text-gray-500 dark:text-gray-400 border-transparent hover:text-gray-700 dark:hover:text-gray-300',
+              )}
+            >
+              <Icon className="w-3 h-3" />
+              {m === 'operator' ? t('teamChat.aiChat.modeOperator') : t('teamChat.aiChat.modeAnalyst')}
+              {count > 0 && (
+                <span className="text-[9px] px-1 rounded bg-gray-100 dark:bg-gray-700/60">{count}</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Mensagens */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-2" style={{ scrollbarWidth: 'thin' }}>
+        {messages.length === 0 && !isLoading && (
+          <div className="h-full flex flex-col items-center justify-center text-center px-6">
+            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-red-500 to-rose-600 flex items-center justify-center mb-3 shadow-sm">
+              <Sparkles className="w-6 h-6 text-white" />
+            </div>
+            <p className="text-[12.5px] font-medium text-gray-700 dark:text-gray-300">
+              {mode === 'operator' ? t('teamChat.aiChat.emptyOperator') : t('teamChat.aiChat.emptyAnalyst')}
+            </p>
+            <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1 leading-snug">
+              {t('teamChat.aiChat.continuesDashboard')}
+            </p>
+          </div>
+        )}
+
+        {messages.map((m, i) => (
+          <AIMessageBubble key={`${m.timestamp}-${i}`} role={m.role} content={m.content} isFallback={m.isFallback} />
+        ))}
+
+        {isLoading && (
+          <div className="flex items-center gap-2 px-1">
+            <AIAvatar size={24} />
+            <span className="text-[11.5px] text-gray-500 dark:text-gray-400">{t('teamChat.aiChat.thinking')}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Composer */}
+      <div className="border-t border-gray-100 dark:border-gray-700/50 px-2 py-2 bg-gray-50/40 dark:bg-white/[0.02]">
+        <div className="flex items-end gap-1.5">
+          <textarea
+            ref={composerRef}
+            value={text}
+            onChange={handleTextChange}
+            onKeyDown={handleKey}
+            rows={1}
+            disabled={isLoading}
+            placeholder={mode === 'operator' ? t('teamChat.aiChat.placeholderOperator') : t('teamChat.aiChat.placeholderAnalyst')}
+            className={cn(
+              'flex-1 resize-none rounded-xl px-3 py-2 text-[13px] leading-relaxed',
+              'bg-white dark:bg-[#0f172a] border border-gray-200 dark:border-gray-700/60',
+              'text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500',
+              'focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400',
+              'max-h-32 disabled:opacity-60',
+            )}
+            style={{ minHeight: 38 }}
+          />
+          <button
+            onClick={handleSend}
+            disabled={!text.trim() || isLoading}
+            className={cn(
+              'h-[38px] w-[38px] flex items-center justify-center rounded-xl flex-shrink-0',
+              'text-white transition-colors',
+              mode === 'analyst' ? 'bg-rose-600 hover:bg-rose-700' : 'bg-red-500 hover:bg-red-600',
+              'disabled:opacity-40 disabled:cursor-not-allowed',
+            )}
+            title={t('teamChat.sendButton')}
+          >
+            {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AIMessageBubble({ role, content, isFallback }: { role: 'user' | 'assistant'; content: string; isFallback?: boolean }) {
+  const mine = role === 'user';
+  return (
+    <div className={cn('flex gap-2', mine && 'flex-row-reverse')}>
+      {!mine && <AIAvatar size={24} />}
+      <div className={cn(
+        'rounded-2xl px-3 py-1.5 text-[13px] leading-relaxed break-words whitespace-pre-wrap max-w-[78%]',
+        mine
+          ? 'bg-red-500 text-white rounded-br-sm'
+          : isFallback
+            ? 'bg-amber-50 dark:bg-amber-500/10 text-amber-900 dark:text-amber-200 border border-amber-200/60 dark:border-amber-500/20 rounded-bl-sm'
+            : 'bg-gray-100 dark:bg-white/[0.06] text-gray-900 dark:text-gray-100 rounded-bl-sm',
+      )}>
+        {content}
       </div>
     </div>
   );

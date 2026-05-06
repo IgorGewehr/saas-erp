@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/app/components/providers/AuthProvider';
+import { AIAgentProvider } from '@/app/components/providers/AIAgentProvider';
 import Sidebar, { type MenuPage } from '@/app/components/layout/Sidebar';
 import TopBar from '@/app/components/layout/TopBar';
 import { TabProvider, useTabContext } from '@/app/components/layout/TabContext';
@@ -152,6 +153,7 @@ function AppLayoutContent({ children }: { children: React.ReactNode }) {
 
   return (
     <AppContext.Provider value={{ activePage, setActivePage: handleMenuSelect, sidebarCollapsed }}>
+      <AIAgentProvider>
       <AmbientBackground />
 
       {/* Global command palette — listens to Cmd+K globally */}
@@ -182,6 +184,7 @@ function AppLayoutContent({ children }: { children: React.ReactNode }) {
           </main>
         </div>
       </div>
+      </AIAgentProvider>
     </AppContext.Provider>
   );
 }
