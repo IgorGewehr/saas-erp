@@ -370,17 +370,19 @@ function SidebarContent({
     refetchInterval: 10 * 60 * 1000,
   });
 
-  // Conversas atribuídas a mim que precisam de resposta. Real-time via
-  // onSnapshot — necessário pra que o badge zere assim que o operador
-  // resolve/responde uma conversa, sem aguardar polling de 60s.
+  // Badge de Conversas: conta quantas conversas têm mensagens NÃO LIDAS
+  // visíveis pro usuário atual. Real-time via onSnapshot — zera assim
+  // que operador abre/marca como lida.
   //
-  // Custo: subscribe a uma query por usuário online (where businessId,
-  // assignedTo). Volume típico: 10-50 docs por operador — caro inicial mas
-  // só reads de mudança depois. Polling getDocs equivalente custaria
-  // ~3000 reads/h vs ~55 reads/h aqui.
+  // Visibilidade replicada: admin/founder vê tudo do tenant; demais veem
+  // canais 'business' + canais pessoais que são deles. Soneca ativa é
+  // sempre escondida (operador silenciou propositalmente).
   //
-  // Index composto (businessId, assignedTo) declarado em firestore.indexes.json.
+  // Query: filtra só por businessId (single-field, sem composite index).
+  // Volume típico: 50-500 conversations no tenant — cheap pra subscribe.
   const [myAwaitingCount, setMyAwaitingCount] = useState(0);
+  const sidebarUserRoleValue = ROLE_HIERARCHY[user?.role ?? 'viewer'];
+  const sidebarIsAdmin = sidebarUserRoleValue >= ROLE_HIERARCHY['admin'];
   useEffect(() => {
     if (!business?.id || !user?.uid) {
       setMyAwaitingCount(0);
@@ -389,7 +391,6 @@ function SidebarContent({
     const q = query(
       collection(db, 'conversations'),
       where('businessId', '==', business.id),
-      where('assignedTo', '==', user.uid),
     );
     const unsub = onSnapshot(
       q,
@@ -397,14 +398,21 @@ function SidebarContent({
         const now = Date.now();
         const count = snap.docs.reduce((acc, d) => {
           const c = d.data();
-          if (c.status !== 'open' || c.lastMessageDirection !== 'inbound') return acc;
-          // Pula soneca ativa: operador deliberadamente disse "não agora",
-          // não deveria aparecer no badge "atribuídas a mim aguardando".
+          // Sem mensagens não lidas — não conta
+          if (!c.unreadCount || c.unreadCount <= 0) return acc;
+          // Soneca ativa — operador silenciou, não deveria notificar
           if (c.snoozedUntil) {
             const until = new Date(c.snoozedUntil).getTime();
             if (Number.isFinite(until) && until > now) return acc;
           }
-          return acc + 1;
+          // Visibilidade — espelha a lógica de ConversasModule.
+          // Admin vê tudo; demais veem business OU canais pessoais próprios.
+          if (sidebarIsAdmin) return acc + 1;
+          if (c.channelOwnerType === 'business') return acc + 1;
+          if (c.channelOwnerId === user.uid) return acc + 1;
+          // Conversa legada (sem channelOwnerType) — fica oculta pra non-admin
+          // por segurança. Após backfill, esse caminho some.
+          return acc;
         }, 0);
         setMyAwaitingCount(count);
       },
@@ -416,7 +424,7 @@ function SidebarContent({
       },
     );
     return () => unsub();
-  }, [business?.id, user?.uid]);
+  }, [business?.id, user?.uid, sidebarIsAdmin]);
 
   const filterItems = useCallback((items: MenuItemConfig[]) =>
     items.filter((item) => {
