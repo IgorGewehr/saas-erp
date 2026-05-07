@@ -2046,22 +2046,40 @@ export default function AgendaModule() {
   // FIRESTORE QUERIES
   // ==========================================
 
-  // Fetch appointments
-  const { data: appointments = [], isLoading: appointmentsLoading } = useQuery({
-    queryKey: ['appointments', business?.id],
-    queryFn: async () => {
-      if (!business?.id) return [];
-      const q = query(
-        collection(db, 'appointments'),
-        where('businessId', '==', business.id),
-        orderBy('date', 'asc')
-      );
-      const snap = await getDocs(q);
-      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as Appointment));
-    },
-    enabled: !!business?.id,
-    staleTime: 2 * 60 * 1000,
-  });
+  // Appointments — listener em tempo real (refactor sync multi-user):
+  //
+  // ANTES: useQuery + getDocs com staleTime 2min. Operador A criava/movia
+  // agendamento, recepcionista B (outra aba) só via mudança após 2min ou
+  // window focus — péssimo num ambiente onde a agenda é a fonte de verdade
+  // pro fluxo do dia (cliente pergunta horário, B confirma um slot que A
+  // já reservou há 30s).
+  //
+  // AGORA: onSnapshot. Mudanças propagam em tempo real pra todas as sessões.
+  // services/clients continuam em useQuery — staleTime 5min cobre o uso
+  // (services mudam raramente; clients aqui é dropdown lookup, não dado vivo).
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [appointmentsLoading, setAppointmentsLoading] = useState(true);
+  useEffect(() => {
+    if (!business?.id) { setAppointmentsLoading(false); return; }
+    setAppointmentsLoading(true);
+    const q = query(
+      collection(db, 'appointments'),
+      where('businessId', '==', business.id),
+      orderBy('date', 'asc'),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        setAppointments(snap.docs.map((d) => ({ ...d.data(), id: d.id } as Appointment)));
+        setAppointmentsLoading(false);
+      },
+      (err) => {
+        console.error('[Agenda] appointments snapshot error:', err);
+        setAppointmentsLoading(false);
+      },
+    );
+    return () => unsub();
+  }, [business?.id]);
 
   // Fetch services
   const { data: services = [], isLoading: servicesLoading } = useQuery({
