@@ -1224,6 +1224,38 @@ service cloud.firestore {
     }
 
     // ============================================
+    // SPREADSHEETS COLLECTION
+    // ============================================
+    // Visibility ('private' | 'sectors' | 'all') é ENFORCED CLIENT-SIDE via
+    // canUserAccess() em SpreadsheetsModule. Server-side só impomos isolamento
+    // de tenant — qualquer membro do business pode ler/escrever, mas nunca
+    // cross-tenant. Isso espelha o padrão de kanbanBoards (também aberto por
+    // role e filtrado client-side por visibility/sectorIds).
+    //
+    // Restrições server-side:
+    //   - create: o caller precisa ser o owner declarado no doc.
+    //   - delete: só admin OU o próprio owner.
+    match /spreadsheets/{spreadsheetId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isOperator();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator()
+                    && request.resource.data.ownerId == request.auth.uid;
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && (isAdmin() || resource.data.ownerId == request.auth.uid);
+    }
+
+    // ============================================
     // NOTIFICATIONS COLLECTION
     // ============================================
     match /notifications/{notifId} {
