@@ -2535,6 +2535,9 @@ export interface TeamChat {
   lastMessageAt?: string;
   /** uid → ISO da última leitura. Comparado com lastMessageAt. */
   lastReadAt: Record<string, string>;
+  /** uid → ISO da última batida do composer. Lido com TTL ~4s no client
+   *  (entries velhas viram garbage até serem limpas explicitamente). */
+  typing?: Record<string, string>;
   createdAt: string;
   updatedAt: string;
 }

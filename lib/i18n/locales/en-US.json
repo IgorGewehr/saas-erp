@@ -1162,6 +1162,10 @@
       "uploadFailed": "Failed to upload. Try again.",
       "unauthorized": "File type not allowed by server."
     },
+    "typing": {
+      "one": "{{name}} is typing...",
+      "many": "{{count}} people are typing..."
+    },
     "aiChat": {
       "title": "AI Chat",
       "subtitle": "Operator and Analyst",

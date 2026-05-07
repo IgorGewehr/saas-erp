@@ -200,6 +200,7 @@ function TeamChatDropdown({ members, teamChat }: { members: UserType[]; teamChat
     ensureDM,
     markAsRead,
     sendMessage,
+    setTyping,
     hasUnread,
   } = teamChat;
 
@@ -382,6 +383,7 @@ function TeamChatDropdown({ members, teamChat }: { members: UserType[]; teamChat
                 businessId={business?.id ?? ''}
                 members={members}
                 onSend={(text, attachments) => sendMessage(view.chatId, text, attachments)}
+                onTypingChange={(typing) => setTyping(view.chatId, typing)}
               />
             </motion.div>
           )}
@@ -687,12 +689,14 @@ function ChatView({
   businessId,
   members,
   onSend,
+  onTypingChange,
 }: {
   chatId: string;
   chat: TeamChat | undefined;
   businessId: string;
   members: UserType[];
   onSend: (text: string, attachments?: TeamChatAttachment[]) => Promise<void>;
+  onTypingChange: (isTyping: boolean) => Promise<void>;
 }) {
   const { t } = useTranslation();
   const { user } = useAuth();
@@ -710,6 +714,30 @@ function ChatView({
     const iso = chat.lastReadAt[otherUid];
     return iso ? new Date(iso).getTime() : 0;
   }, [isDM, otherUid, chat?.lastReadAt]);
+
+  // Typing indicators: lê chat.typing, filtra entries velhas (TTL 4s) e
+  // mostra os outros membros que estão digitando AGORA.
+  const TYPING_TTL_MS = 4000;
+  const [typingTick, setTypingTick] = useState(0);
+  const typingMembers = useMemo(() => {
+    if (!chat?.typing) return [] as UserType[];
+    const nowMs = Date.now();
+    return Object.entries(chat.typing)
+      .filter(([uid, iso]) => uid !== user?.uid && nowMs - new Date(iso).getTime() < TYPING_TTL_MS)
+      .map(([uid]) => members.find(m => m.uid === uid))
+      .filter((m): m is UserType => !!m);
+    // typingTick força re-cálculo a cada segundo enquanto há entries ativas.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chat?.typing, members, user?.uid, typingTick]);
+
+  // Tick a cada segundo enquanto houver typing entries — pra entries
+  // velhas saírem do array sem precisar de novo snapshot.
+  useEffect(() => {
+    if (!chat?.typing || Object.keys(chat.typing).length === 0) return;
+    const id = setInterval(() => setTypingTick(t => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [chat?.typing]);
+
   const { messages, loading } = useTeamChatMessages(chatId);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
@@ -727,6 +755,14 @@ function ChatView({
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Timer de "parou de digitar" — limpa typing[uid] quando user fica
+  // 3.5s sem teclar (um pouco antes do TTL de 4s — evita ping-pong).
+  const typingIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Flag pra evitar updateDoc desperdiçado no cleanup quando user só abriu
+  // o chat sem teclar — `setTyping(false)` aqui chama deleteField() de algo
+  // que nem foi setado. Vira true no primeiro keystroke, false após clear.
+  const hasTypedRef = useRef(false);
+  const TYPING_IDLE_MS = 3500;
 
   useLayoutEffect(() => {
     if (pendingCursor == null || !composerRef.current) return;
@@ -734,6 +770,21 @@ function ChatView({
     composerRef.current.setSelectionRange(pendingCursor, pendingCursor);
     setPendingCursor(null);
   }, [pendingCursor]);
+
+  // Cleanup ao trocar de chat ou desmontar — limpa typing[uid] do chat
+  // anterior pra outros membros não verem "fulano digitando" eternamente.
+  // Só dispara write se user realmente digitou (poupa updateDoc desperdiçado).
+  useEffect(() => {
+    return () => {
+      if (typingIdleTimerRef.current) clearTimeout(typingIdleTimerRef.current);
+      if (hasTypedRef.current) {
+        void onTypingChange(false).catch(() => {});
+        hasTypedRef.current = false;
+      }
+    };
+    // chatId muda → cleanup roda → próximo mount com novo chatId
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatId]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -783,6 +834,24 @@ function ChatView({
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 128)}px`;
     updateMentionState(value, el.selectionStart);
+
+    // Sinaliza typing pro outro lado (debounced internamente em useTeamChat).
+    // Reseta o idle timer — após TYPING_IDLE_MS sem teclar, limpa o flag.
+    if (value.length > 0) {
+      hasTypedRef.current = true;
+      void onTypingChange(true).catch(() => {});
+      if (typingIdleTimerRef.current) clearTimeout(typingIdleTimerRef.current);
+      typingIdleTimerRef.current = setTimeout(() => {
+        void onTypingChange(false).catch(() => {});
+        hasTypedRef.current = false;
+      }, TYPING_IDLE_MS);
+    } else if (hasTypedRef.current) {
+      // Texto ficou vazio (apagou tudo) — clara já. Mas só se user já tinha
+      // sinalizado typing antes (senão é write desperdiçado).
+      if (typingIdleTimerRef.current) clearTimeout(typingIdleTimerRef.current);
+      void onTypingChange(false).catch(() => {});
+      hasTypedRef.current = false;
+    }
   };
 
   // Insere `<@uid> ` na posição do @ atual e fecha o popup. Cursor é movido
@@ -877,6 +946,13 @@ function ChatView({
     setText('');
     setPendingAttachments([]);
     if (composerRef.current) composerRef.current.style.height = 'auto';
+    // Mensagem enviada — para de digitar imediatamente. Só escreve se já
+    // tinha sinalizado typing antes (evita write desperdiçado em msgs só-anexo).
+    if (typingIdleTimerRef.current) clearTimeout(typingIdleTimerRef.current);
+    if (hasTypedRef.current) {
+      void onTypingChange(false).catch(() => {});
+      hasTypedRef.current = false;
+    }
     try {
       await onSend(v, hasAtts ? sentAttachments : undefined);
     } catch (err) {
@@ -974,7 +1050,25 @@ function ChatView({
         )}
       </div>
 
-      <div className="relative border-t border-gray-100 dark:border-gray-700/50 px-2 py-2 bg-gray-50/40 dark:bg-white/[0.02]">
+      {/* Banner "X está digitando..." — fica acima do divider do composer. */}
+      {typingMembers.length > 0 && (
+        <div className="px-3 py-1 text-[11px] text-gray-500 dark:text-gray-400 italic flex items-center gap-1.5 border-t border-gray-100 dark:border-gray-700/50 bg-gray-50/40 dark:bg-white/[0.02]">
+          <span className="inline-flex items-center gap-0.5">
+            <span className="w-1 h-1 rounded-full bg-gray-400 animate-pulse" />
+            <span className="w-1 h-1 rounded-full bg-gray-400 animate-pulse" style={{ animationDelay: '200ms' }} />
+            <span className="w-1 h-1 rounded-full bg-gray-400 animate-pulse" style={{ animationDelay: '400ms' }} />
+          </span>
+          {typingMembers.length === 1
+            ? t('teamChat.typing.one', '{{name}} está digitando...', { name: typingMembers[0].name })
+            : t('teamChat.typing.many', '{{count}} pessoas estão digitando...', { count: typingMembers.length })}
+        </div>
+      )}
+
+      <div className={cn(
+        'relative px-2 py-2 bg-gray-50/40 dark:bg-white/[0.02]',
+        // Border só se NÃO há banner de typing acima (evita borda dupla).
+        typingMembers.length === 0 && 'border-t border-gray-100 dark:border-gray-700/50',
+      )}>
         {/* Popup de autocomplete de mentions — flutua acima do composer.
             Posicionado absoluto pra não empurrar layout. */}
         {mentionState.open && mentionMatches.length > 0 && (

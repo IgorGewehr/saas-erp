@@ -1162,6 +1162,10 @@
       "uploadFailed": "Erro ao enviar arquivo. Tente novamente.",
       "unauthorized": "Tipo de arquivo não permitido pelo servidor."
     },
+    "typing": {
+      "one": "{{name}} está digitando...",
+      "many": "{{count}} pessoas estão digitando..."
+    },
     "aiChat": {
       "title": "Chat IA",
       "subtitle": "Operador e Analista",

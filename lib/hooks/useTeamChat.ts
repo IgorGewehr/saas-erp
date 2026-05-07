@@ -14,6 +14,7 @@ import {
   getDocs,
   addDoc,
   updateDoc,
+  deleteField,
 } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -83,6 +84,11 @@ interface UseTeamChatResult {
   ensureDM: (otherUid: string) => Promise<string>;
   sendMessage: (chatId: string, text: string, attachments?: TeamChatAttachment[]) => Promise<void>;
   markAsRead: (chatId: string) => Promise<void>;
+  /** Sinaliza que o usuário está digitando (true) ou parou (false). Writes
+   *  são debounced internamente (1 write a cada ~2s enquanto ativo) — chamar
+   *  toda vez que o composer mudar é seguro. Ao parar/enviar/desmontar, chame
+   *  com `false` pra limpar a entrada do Firestore. */
+  setTyping: (chatId: string, isTyping: boolean) => Promise<void>;
 }
 
 export function useTeamChat(): UseTeamChatResult {
@@ -391,6 +397,38 @@ export function useTeamChat(): UseTeamChatResult {
     }
   }, [uid, chats]);
 
+  // Typing indicator: debounce de writes pra evitar spam (1 a cada 2s).
+  // Set false escreve `deleteField()` pra limpar a entrada — Firestore não
+  // mantém garbage do user.
+  const lastTypingWriteRef = useRef<Record<string, number>>({});
+  const TYPING_DEBOUNCE_MS = 2000;
+  const setTyping = useCallback(async (chatId: string, isTyping: boolean) => {
+    if (!user || !businessId) return;
+    const ref = doc(db, 'teamChats', chatId);
+    if (!isTyping) {
+      // Limpa imediatamente — writes de "parei de digitar" não são frequentes.
+      try {
+        await updateDoc(ref, { [`typing.${user.uid}`]: deleteField() });
+      } catch {
+        // Erros silenciosos — typing é cosmético, não vale alarme.
+      }
+      delete lastTypingWriteRef.current[chatId];
+      return;
+    }
+    // Debounce: só escreve se passou >= TYPING_DEBOUNCE_MS desde o último.
+    const now = Date.now();
+    const last = lastTypingWriteRef.current[chatId] ?? 0;
+    if (now - last < TYPING_DEBOUNCE_MS) return;
+    lastTypingWriteRef.current[chatId] = now;
+    try {
+      await updateDoc(ref, { [`typing.${user.uid}`]: new Date(now).toISOString() });
+    } catch {
+      // Pode falhar se chat doc ainda não existir (ex: DM nova antes de send).
+      // OK — typing aparece a partir da primeira mensagem.
+      delete lastTypingWriteRef.current[chatId];
+    }
+  }, [user, businessId]);
+
   return {
     chats,
     globalChat,
@@ -402,6 +440,7 @@ export function useTeamChat(): UseTeamChatResult {
     ensureDM,
     sendMessage,
     markAsRead,
+    setTyping,
   };
 }
 
