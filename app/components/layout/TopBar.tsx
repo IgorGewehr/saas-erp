@@ -7,9 +7,8 @@ import { useTranslation } from 'react-i18next';
 import { getInitials } from '@/lib/utils/format';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
-import { collection, query, where, orderBy, limit, onSnapshot, updateDoc, doc, writeBatch, getDocs } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, onSnapshot, updateDoc, doc, writeBatch } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
-import { useQuery } from '@tanstack/react-query';
 import type { AppNotification } from '@/lib/types';
 import {
   Search,
@@ -125,23 +124,30 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
 
   const userName = user?.name || 'Usuário';
 
-  // ── Unread conversation count (real-time badge) ──
+  // ── Unread conversation count (real-time badge via onSnapshot) ──
+  // ANTES: useQuery + getDocs com refetchInterval 30s. Comentário dizia
+  // "real-time badge" mas era polling — atendente recebia mensagem nova
+  // e o badge demorava até 30s pra atualizar.
+  // AGORA: onSnapshot. Badge cresce no instante que mensagem chega.
   const businessId = business?.id;
-
-  const { data: unreadCount = 0 } = useQuery({
-    queryKey: ['unread-conversations', businessId],
-    queryFn: async () => {
-      const q = query(
-        collection(db, 'conversations'),
-        where('businessId', '==', businessId),
-        where('unreadCount', '>', 0),
-      );
-      const snap = await getDocs(q);
-      return snap.docs.reduce((sum, d) => sum + ((d.data().unreadCount as number) || 0), 0);
-    },
-    enabled: !!businessId,
-    refetchInterval: 30000, // Refresh every 30s
-  });
+  const [unreadCount, setUnreadCount] = useState(0);
+  useEffect(() => {
+    if (!businessId) { setUnreadCount(0); return; }
+    const q = query(
+      collection(db, 'conversations'),
+      where('businessId', '==', businessId),
+      where('unreadCount', '>', 0),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const total = snap.docs.reduce((sum, d) => sum + ((d.data().unreadCount as number) || 0), 0);
+        setUnreadCount(total);
+      },
+      (err) => console.error('[TopBar] unread count snapshot error:', err),
+    );
+    return () => unsub();
+  }, [businessId]);
 
   // ── In-app notifications (real-time) ──
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
