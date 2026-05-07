@@ -606,6 +606,15 @@ export default function VendasModule() {
     return () => unsub();
   }, [business?.id]);
 
+  // Sync selectedOrder com snapshot — outro vendedor muda o status do
+  // pedido aberto no painel, atualiza referência. Se for deletado, fecha.
+  useEffect(() => {
+    if (!selectedOrder) return;
+    const fresh = orders.find(o => o.id === selectedOrder.id);
+    if (!fresh) { setSelectedOrder(null); return; }
+    if (fresh.updatedAt !== selectedOrder.updatedAt) setSelectedOrder(fresh);
+  }, [orders, selectedOrder]);
+
   // ─── Mutations ──────────────────────────────────────────────────────────────
   const { mutate: createOrder, isPending: isCreating } = useMutation({
     mutationFn: async (data: OrderFormData) => {

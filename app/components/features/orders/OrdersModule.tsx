@@ -1080,6 +1080,16 @@ export default function OrdersModule() {
     return () => unsub();
   }, [business?.id]);
 
+  // Sync selectedOrder com snapshot. Em ambiente delivery multi-atendente,
+  // se outro user muda o status/dados do pedido aberto no painel, atualiza
+  // a referência. Se o pedido for deletado externamente, fecha o painel.
+  useEffect(() => {
+    if (!selectedOrder) return;
+    const fresh = orders.find(o => o.id === selectedOrder.id);
+    if (!fresh) { setSelectedOrder(null); return; }
+    if (fresh.updatedAt !== selectedOrder.updatedAt) setSelectedOrder(fresh);
+  }, [orders, selectedOrder]);
+
   // Filtered orders
   const filteredOrders = useMemo(() => {
     const term = search.trim().toLowerCase();
