@@ -17,7 +17,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { formatCurrency, formatDateTime } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
 import { toast } from 'react-toastify';
@@ -1056,30 +1056,31 @@ export default function OrdersModule() {
     return unsub;
   }, [business?.id]);
 
-  // Related data
-  const { data: clients = [] } = useQuery({
-    queryKey: ['clients', business?.id],
-    queryFn: async () => {
-      if (!business?.id) return [];
-      const q = query(collection(db, 'clients'), where('businessId', '==', business.id), orderBy('name'));
-      const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Client));
-    },
-    enabled: !!business?.id,
-    staleTime: 3 * 60 * 1000,
-  });
+  // Related data — onSnapshot (refactor sync multi-user):
+  //
+  // Em ambiente delivery multi-atendente, lookups de clients/products
+  // mudam o tempo todo: cliente novo via Conversas é cadastrado, produto
+  // tem preço atualizado em Estoque. ANTES: staleTime 2-3min mostrava
+  // dados antigos no formulário de pedido. AGORA: real-time.
+  const [clients, setClients] = useState<Client[]>([]);
+  useEffect(() => {
+    if (!business?.id) return;
+    const q = query(collection(db, 'clients'), where('businessId', '==', business.id), orderBy('name'));
+    const unsub = onSnapshot(q, (snap) => {
+      setClients(snap.docs.map(d => ({ ...d.data(), id: d.id } as Client)));
+    }, (err) => console.error('[Orders] clients snapshot error:', err));
+    return () => unsub();
+  }, [business?.id]);
 
-  const { data: products = [] } = useQuery({
-    queryKey: ['products', business?.id],
-    queryFn: async () => {
-      if (!business?.id) return [];
-      const q = query(collection(db, 'products'), where('businessId', '==', business.id));
-      const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Product));
-    },
-    enabled: !!business?.id,
-    staleTime: 2 * 60 * 1000,
-  });
+  const [products, setProducts] = useState<Product[]>([]);
+  useEffect(() => {
+    if (!business?.id) return;
+    const q = query(collection(db, 'products'), where('businessId', '==', business.id));
+    const unsub = onSnapshot(q, (snap) => {
+      setProducts(snap.docs.map(d => ({ ...d.data(), id: d.id } as Product)));
+    }, (err) => console.error('[Orders] products snapshot error:', err));
+    return () => unsub();
+  }, [business?.id]);
 
   // Filtered orders
   const filteredOrders = useMemo(() => {
