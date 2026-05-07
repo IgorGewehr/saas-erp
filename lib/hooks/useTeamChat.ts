@@ -325,18 +325,25 @@ export function useTeamChat(): UseTeamChatResult {
 
     // 1. Cria a mensagem. Campos opcionais incluídos condicionalmente —
     // Firestore armazena undefined como null se passados; evitamos por clareza.
-    await addDoc(collection(db, 'teamChatMessages'), {
-      businessId,
-      chatId,
-      senderId: user.uid,
-      senderName: user.name,
-      senderInitials: getInitials(user.name),
-      text: trimmed,
-      createdAt: now,
-      ...(user.photoURL ? { senderPhotoURL: user.photoURL } : {}),
-      ...(hasAttachments ? { attachments } : {}),
-      ...(mentionedUserIds.length > 0 ? { mentionedUserIds } : {}),
-    });
+    try {
+      await addDoc(collection(db, 'teamChatMessages'), {
+        businessId,
+        chatId,
+        senderId: user.uid,
+        senderName: user.name,
+        senderInitials: getInitials(user.name),
+        text: trimmed,
+        createdAt: now,
+        ...(user.photoURL ? { senderPhotoURL: user.photoURL } : {}),
+        ...(hasAttachments ? { attachments } : {}),
+        ...(mentionedUserIds.length > 0 ? { mentionedUserIds } : {}),
+      });
+    } catch (err) {
+      console.error('[sendMessage] step 1 (addDoc teamChatMessages) failed:', err, {
+        chatId, businessId, senderId: user.uid, hasText: !!trimmed, hasAttachments,
+      });
+      throw err;
+    }
 
     // 2. Atualiza o chat: lastMessage + lastReadAt do sender. Preview do
     // lastMessage usa texto "limpo" (sem `<@uid>` markers) — fallback @uid se
@@ -345,17 +352,26 @@ export function useTeamChat(): UseTeamChatResult {
       ? strippedMentions(trimmed, () => 'usuário')
       : buildAttachmentSummary(attachments!);
 
-    await updateDoc(doc(db, 'teamChats', chatId), {
-      lastMessage: {
-        text: previewText,
-        senderId: user.uid,
-        senderName: user.name,
-        sentAt: now,
-      },
-      lastMessageAt: now,
-      [`lastReadAt.${user.uid}`]: now,
-      updatedAt: now,
-    });
+    try {
+      await updateDoc(doc(db, 'teamChats', chatId), {
+        lastMessage: {
+          text: previewText,
+          senderId: user.uid,
+          senderName: user.name,
+          sentAt: now,
+        },
+        lastMessageAt: now,
+        [`lastReadAt.${user.uid}`]: now,
+        updatedAt: now,
+      });
+    } catch (err) {
+      console.error('[sendMessage] step 2 (updateDoc teamChats) failed:', err, {
+        chatId, businessId, senderId: user.uid,
+      });
+      // NÃO throw — mensagem já foi criada (step 1 passou). UI vai mostrar a msg
+      // via onSnapshot, só que o preview no header da lista pode ficar
+      // desatualizado. Bug visual mas não data loss.
+    }
 
     // 3. Cria notificação pra cada mencionado. Filtra antes pra apenas membros
     // do business — defesa contra mention manual `<@uid_de_outro_tenant>` que
