@@ -76,9 +76,23 @@ function getPeriodRange(period: Period): { start: Date; end: Date } {
 }
 
 /** Date string can be YYYY-MM-DD or ISO datetime */
+/** Parser de data tolerante a timezone:
+ *  - "YYYY-MM-DD" puro (ex: Appointment.date) → meia-noite LOCAL.
+ *    Antes: `new Date("2024-01-15")` virava UTC midnight; em GMT-3 isso
+ *    deslocava o dia 1 dia pra trás, fazendo o Appointment do dia 15 cair
+ *    fora do range "15/01 00h–23h59 local".
+ *  - ISO datetime ou qualquer outra string → comportamento default do Date. */
+function parseLocalDate(s: string): Date {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const [y, m, d] = s.split('-').map(Number);
+    return new Date(y, m - 1, d);
+  }
+  return new Date(s);
+}
+
 function inPeriod(dateStr: string | undefined | null, start: Date, end: Date): boolean {
   if (!dateStr) return false;
-  const d = new Date(dateStr);
+  const d = parseLocalDate(dateStr);
   if (isNaN(d.getTime())) return false;
   return d >= start && d <= end;
 }
@@ -272,9 +286,11 @@ function VendasTab({ transactions, periodRange, periodLabel }: {
 // Agrega items[] de sales (PDV) + orders (delivery/orçamentos) + appointments
 // (serviços agendados) em dois rankings: produtos e serviços.
 //
-// Status considerados (filtra fora cancelado/no-show):
+// Status considerados (só conta o que é venda efetiva):
 //   - Sale:        'finalizada'
-//   - Order:       qualquer != 'cancelado' && != 'pendente'
+//   - Order:       'confirmado' | 'faturado' | 'enviado' | 'entregue'
+//                  (exclui 'pendente', 'condicional' e 'cancelado' —
+//                  condicional é reserva, não venda concretizada)
 //   - Appointment: 'concluido'
 //
 // Chave de agregação: productId/serviceId quando disponível, senão usa o nome
@@ -283,6 +299,8 @@ function VendasTab({ transactions, periodRange, periodLabel }: {
 
 interface RankRow { name: string; qty: number; total: number; key: string }
 
+type SourceKey = 'pdv' | 'pedidos' | 'agenda';
+
 function ProdutosTab({ sales, orders, appointments, periodRange, periodLabel }: {
   sales: Sale[];
   orders: Order[];
@@ -290,27 +308,37 @@ function ProdutosTab({ sales, orders, appointments, periodRange, periodLabel }: 
   periodRange: { start: Date; end: Date };
   periodLabel: string;
 }) {
-  // ─── Filtra por período + status válido ────────────────────────────────────
+  // Filtros de fonte. Default todos ligados. Permite ao operador isolar
+  // origem em fluxos onde o mesmo serviço é registrado duas vezes (ex:
+  // cliente reserva via Agenda E paga via PDV → desliga "Agenda" pra
+  // evitar overcount).
+  const [sources, setSources] = useState<Record<SourceKey, boolean>>({
+    pdv: true, pedidos: true, agenda: true,
+  });
+  const toggleSource = (k: SourceKey) =>
+    setSources(prev => ({ ...prev, [k]: !prev[k] }));
+
+  // ─── Filtra por período + status válido + fonte habilitada ────────────────
   const validSales = useMemo(
-    () => sales.filter(s =>
+    () => !sources.pdv ? [] : sales.filter(s =>
       s.status === 'finalizada' &&
       inPeriod(s.createdAt, periodRange.start, periodRange.end)
     ),
-    [sales, periodRange],
+    [sales, periodRange, sources.pdv],
   );
   const validOrders = useMemo(
-    () => orders.filter(o =>
-      o.status !== 'cancelado' && o.status !== 'pendente' &&
+    () => !sources.pedidos ? [] : orders.filter(o =>
+      (o.status === 'confirmado' || o.status === 'faturado' || o.status === 'enviado' || o.status === 'entregue') &&
       inPeriod(o.createdAt, periodRange.start, periodRange.end)
     ),
-    [orders, periodRange],
+    [orders, periodRange, sources.pedidos],
   );
   const validAppts = useMemo(
-    () => appointments.filter(a =>
+    () => !sources.agenda ? [] : appointments.filter(a =>
       a.status === 'concluido' &&
       inPeriod(a.date, periodRange.start, periodRange.end)
     ),
-    [appointments, periodRange],
+    [appointments, periodRange, sources.agenda],
   );
 
   // ─── Agregação ─────────────────────────────────────────────────────────────
@@ -388,8 +416,34 @@ function ProdutosTab({ sales, orders, appointments, periodRange, periodLabel }: 
     ],
   );
 
+  const SOURCE_LABEL: Record<SourceKey, string> = {
+    pdv: 'PDV',
+    pedidos: 'Pedidos',
+    agenda: 'Agenda',
+  };
+
   return (
     <div className="space-y-5">
+      {/* Toggles de fonte — útil pra desligar "Agenda" quando o mesmo serviço
+          é registrado em Sale (PDV) E Appointment (overcount potencial). */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs font-medium text-gray-500 dark:text-gray-400 mr-1">Incluir:</span>
+        {(['pdv', 'pedidos', 'agenda'] as const).map(k => (
+          <button
+            key={k}
+            onClick={() => toggleSource(k)}
+            className={cn(
+              'px-3 py-1 rounded-full text-xs font-medium transition-colors border',
+              sources[k]
+                ? 'bg-red-500 border-red-500 text-white'
+                : 'bg-transparent border-gray-300 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.04]',
+            )}
+          >
+            {SOURCE_LABEL[k]}
+          </button>
+        ))}
+      </div>
+
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <KpiCard title="Receita produtos"  value={formatCurrency(totalProdutos)} color="green"  icon={Package} />
         <KpiCard title="Itens vendidos"    value={String(qtyProdutos)}           color="blue"   icon={ShoppingBag} />
