@@ -1,7 +1,11 @@
 'use client';
 
 import React, { useState, useMemo, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import dynamicImport from 'next/dynamic';
 import { motion, AnimatePresence } from 'framer-motion';
+
+const SpreadsheetView = dynamicImport(() => import('@/app/components/features/spreadsheets/SpreadsheetView'), { ssr: false });
 import {
   Dialog,
   DialogTitle,
@@ -45,6 +49,7 @@ import {
   Image as ImageIcon,
   Upload,
   Camera,
+  FileSpreadsheet,
 } from 'lucide-react';
 import {
   collection,
@@ -2017,6 +2022,7 @@ export default function InventoryModule() {
   const [deletingProduct, setDeletingProduct] = useState<Product | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [categoriesManagerOpen, setCategoriesManagerOpen] = useState(false);
+  const [showSpreadsheetView, setShowSpreadsheetView] = useState(false);
   const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([]);
 
   const deliveryEnabled = business?.settings?.useCase === 'pedidos';
@@ -2462,6 +2468,14 @@ export default function InventoryModule() {
             </button>
           )}
           <button
+            onClick={() => setShowSpreadsheetView(true)}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-medium hover:border-red-300 dark:hover:border-red-700 hover:bg-red-50/50 dark:hover:bg-red-900/10 transition-all"
+            title="Abrir lista de produtos como planilha"
+          >
+            <FileSpreadsheet className="w-4 h-4 text-emerald-500" />
+            Planilha
+          </button>
+          <button
             onClick={handleNewProduct}
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-gradient-to-r from-red-600 to-red-500 text-white text-sm font-medium hover:from-red-700 hover:to-red-600 transition-all shadow-sm"
           >
@@ -2768,6 +2782,19 @@ export default function InventoryModule() {
         productName={deletingProduct?.name || ''}
         isDeleting={isDeleting}
       />
+
+      {/* Spreadsheet view (overlay full-screen) */}
+      {showSpreadsheetView && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-50 bg-black/40 p-4 flex items-stretch justify-center">
+          <div className="w-full max-w-[1600px]">
+            <SpreadsheetView
+              collection="products"
+              onClose={() => setShowSpreadsheetView(false)}
+            />
+          </div>
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }

@@ -9,7 +9,7 @@ import {
   TrendingUp, ShoppingCart, Star,
   Upload, UserCheck, Gift,
   FileDown, Settings, Plus as PlusIcon, Trophy, LayoutList, AlignJustify,
-  Megaphone, MessageSquare, CheckSquare,
+  Megaphone, MessageSquare, CheckSquare, FileSpreadsheet,
 } from 'lucide-react';
 import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, limit as firestoreLimit, writeBatch, deleteField, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
@@ -30,6 +30,8 @@ import { ClientForm, emptyForm, type ClientFormData } from './ClientForm';
 import { ExportModal } from './ExportModal';
 import { ImportModal } from './ImportModal';
 import { ClientDetailPanel } from './detail/ClientDetailPanel';
+import dynamicImport from 'next/dynamic';
+const SpreadsheetView = dynamicImport(() => import('@/app/components/features/spreadsheets/SpreadsheetView'), { ssr: false });
 // Constantes/helpers compartilhados — usados aqui (lista, filtros) e nos
 // componentes extraídos. Ficam num ponto único pra rótulos/cores baterem.
 import { STATUS_CONFIG, SOURCE_LABELS, TIPO_LABELS } from './shared/constants';
@@ -733,6 +735,7 @@ export default function ClientsModule() {
   // clica "Selecionar". Reduz ruído visual no fluxo principal (consultar lista
   // e clicar em cliente pra ver detalhe).
   const [selectionMode, setSelectionMode] = useState(false);
+  const [showSpreadsheetView, setShowSpreadsheetView] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
 
@@ -1353,6 +1356,14 @@ export default function ClientsModule() {
           >
             <CheckSquare className="w-4 h-4" />
             {selectionMode ? 'Sair da seleção' : 'Selecionar'}
+          </button>
+          <button
+            onClick={() => setShowSpreadsheetView(true)}
+            className="inline-flex items-center gap-2 px-4 py-2.5 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 text-sm font-medium rounded-xl transition-colors"
+            title="Abrir lista como planilha"
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            Planilha
           </button>
           <button
             onClick={() => setShowImport(true)}
@@ -2111,6 +2122,19 @@ export default function ClientsModule() {
           />
         )}
       </AnimatePresence>
+
+      {/* Spreadsheet view (overlay full-screen) */}
+      {showSpreadsheetView && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-50 bg-black/40 p-4 flex items-stretch justify-center">
+          <div className="w-full max-w-[1600px]">
+            <SpreadsheetView
+              collection="clients"
+              onClose={() => setShowSpreadsheetView(false)}
+            />
+          </div>
+        </div>,
+        document.body,
+      )}
 
       {/* Bulk delete confirm — destrutiva, daí confirmação dura antes de prosseguir */}
       {typeof document !== 'undefined' && createPortal(

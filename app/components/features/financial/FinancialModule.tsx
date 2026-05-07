@@ -1,6 +1,10 @@
 'use client';
 
 import React, { useState, useMemo, useCallback, useEffect, useDeferredValue, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import dynamicImport from 'next/dynamic';
+
+const SpreadsheetView = dynamicImport(() => import('@/app/components/features/spreadsheets/SpreadsheetView'), { ssr: false });
 import {
   Dialog,
   DialogTitle,
@@ -260,6 +264,7 @@ function FinancialModuleBody() {
   const { isDark } = useTheme();
   const { business, user, sectors } = useAuth();
   const queryClient = useQueryClient();
+  const [showSpreadsheetView, setShowSpreadsheetView] = useState(false);
 
   const TABS: { key: FinancialTab; label: string; icon: React.ReactNode }[] = [
     { key: 'visao-geral', label: t('financial.tabs.overview', 'Visão Geral'), icon: <BarChart3 size={16} /> },
@@ -1577,6 +1582,7 @@ function FinancialModuleBody() {
                 bankAccounts={bankAccounts}
                 onSaveFilters={saveTxFilters}
                 onClearFilters={clearTxFilters}
+                onOpenSpreadsheet={() => setShowSpreadsheetView(true)}
               />
             )}
 
@@ -2488,6 +2494,19 @@ function FinancialModuleBody() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Spreadsheet view overlay */}
+      {showSpreadsheetView && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-50 bg-black/40 p-4 flex items-stretch justify-center">
+          <div className="w-full max-w-[1600px]">
+            <SpreadsheetView
+              collection="transactions"
+              onClose={() => setShowSpreadsheetView(false)}
+            />
+          </div>
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }
@@ -5255,6 +5274,7 @@ function TransactionsContent({
   clientName, onClientNameChange,
   availableCategories, bankAccounts,
   onSaveFilters, onClearFilters,
+  onOpenSpreadsheet,
 }: {
   transactions: Transaction[];
   allTransactions: Transaction[];
@@ -5284,6 +5304,7 @@ function TransactionsContent({
   bankAccounts: import('@/lib/types').BankAccount[];
   onSaveFilters: () => void;
   onClearFilters: () => void;
+  onOpenSpreadsheet?: () => void;
 }) {
   const formatCurrency = useCurrencyFormat();
   const { t } = useTranslation();
@@ -5316,6 +5337,15 @@ function TransactionsContent({
                 className="w-full pl-9 pr-4 py-2 bg-slate-50 dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-xl text-sm text-slate-900 dark:text-gray-100 placeholder:text-slate-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 transition-all"
               />
             </div>
+            {onOpenSpreadsheet && (
+              <button
+                onClick={onOpenSpreadsheet}
+                title="Abrir transações como planilha"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
+              >
+                <FileSpreadsheet size={13} className="text-emerald-500" /> Planilha
+              </button>
+            )}
             <button
               onClick={() => exportTransactionsCSV(transactions)}
               title={t('financial.export.csvTooltip', 'Exportar CSV')}
