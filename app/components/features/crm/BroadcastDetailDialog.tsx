@@ -682,6 +682,12 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
           </div>
         </div>
 
+        {/* Body scrollável único — antes só a lista de mensagens scrollava
+            (flex-1 overflow-y-auto interno), o que cortava as seções de
+            toolbars/sessões em viewport pequeno. Agora todo o conteúdo
+            entre header e fim modela como uma área única scrollável. */}
+        <div className="flex-1 overflow-y-auto min-h-0">
+
         {/* 5.12 — Auditoria LGPD */}
         {broadcast.consentBasis && (
           <div className="px-5 py-2.5 bg-amber-50/60 dark:bg-amber-500/5 border-b border-amber-100 dark:border-amber-500/10">
@@ -1082,8 +1088,8 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
           </div>
         )}
 
-        {/* List */}
-        <div className="flex-1 overflow-y-auto">
+        {/* List — scroll vem do wrapper externo agora; aqui só estilo. */}
+        <div>
           {loading ? (
             <div className="p-6 text-center text-sm text-gray-400">Carregando mensagens…</div>
           ) : filtered.length === 0 ? (
@@ -1135,6 +1141,9 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
             Mostrando primeiras 500 mensagens — campanhas maiores precisam de paginação completa
           </div>
         )}
+
+        </div>
+        {/* /body scrollável */}
       </motion.div>
     </motion.div>,
     document.body,
