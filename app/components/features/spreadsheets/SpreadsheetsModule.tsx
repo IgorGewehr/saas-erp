@@ -43,6 +43,15 @@ const SpreadsheetEditor = dynamic(() => import('./SpreadsheetEditor'), {
   ),
 });
 
+// ─── Lock helpers ─────────────────────────────────────────────────────────────
+// Lock visual cooperativo. Quando user abre uma planilha standalone, marca
+// currentEditorId/editingExpiresAt. TTL longo (90s) — heartbeat opcional
+// renova enquanto editor montado. Outro user que tenta abrir vê o badge mas
+// pode editar mesmo assim (last-writer-wins). Sem race-free atomic, conflict
+// raro em prática (1 editor por planilha é o caso comum).
+const LOCK_TTL_MS = 90_000;
+const LOCK_HEARTBEAT_MS = 30_000;
+
 // ─── Visibility config ───────────────────────────────────────────────────────
 const VISIBILITY_CFG: Record<SpreadsheetVisibility, { label: string; icon: React.ElementType; color: string }> = {
   private: { label: 'Privada',     icon: Lock,     color: 'text-gray-500 dark:text-gray-400' },
@@ -191,38 +200,15 @@ export default function SpreadsheetsModule() {
 
   // ─── Render: editor full-screen quando uma planilha está aberta ────────────
   if (openSheet) {
-    const canEdit = !!user && (
-      ROLE_HIERARCHY[user.role] >= ROLE_HIERARCHY['operator'] ||
-      openSheet.ownerId === user.uid
-    );
     return (
-      <div className="flex flex-col h-full">
-        {/* Header do editor */}
-        <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
-          <button
-            onClick={() => setOpenId(null)}
-            className="inline-flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            Voltar
-          </button>
-          <div className="flex-1 min-w-0">
-            <h2 className="text-sm font-semibold text-gray-900 dark:text-white truncate">{openSheet.name}</h2>
-            {openSheet.description && (
-              <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{openSheet.description}</p>
-            )}
-          </div>
-          <SpreadsheetVisibilityBadge spreadsheet={openSheet} />
-        </div>
-        {/* Editor */}
-        <div className="flex-1 min-h-0">
-          <SpreadsheetEditor
-            snapshot={openSheet.snapshot}
-            onChange={(snap) => handleSaveSnapshot(openSheet.id, snap)}
-            readOnly={!canEdit}
-          />
-        </div>
-      </div>
+      <SpreadsheetEditorScreen
+        sheet={openSheet}
+        currentUserId={user?.uid}
+        currentUserName={user?.name}
+        currentUserRole={user?.role}
+        onClose={() => setOpenId(null)}
+        onSave={(snap) => handleSaveSnapshot(openSheet.id, snap)}
+      />
     );
   }
 
@@ -331,6 +317,97 @@ export default function SpreadsheetsModule() {
 }
 
 // ─── Sub-componentes ─────────────────────────────────────────────────────────
+
+/** Tela full-screen do editor com lock cooperativo. Sub-componente próprio
+ *  pra ter ciclo de vida independente — useEffect de lock só dispara quando
+ *  user abre uma planilha (vs a lista do módulo). */
+function SpreadsheetEditorScreen({ sheet, currentUserId, currentUserName, currentUserRole, onClose, onSave }: {
+  sheet: Spreadsheet;
+  currentUserId?: string;
+  currentUserName?: string;
+  currentUserRole?: string;
+  onClose: () => void;
+  onSave: (snapshot: Record<string, unknown>) => void;
+}) {
+  // Marca/limpa lock ao montar/desmontar. Heartbeat renova TTL enquanto
+  // editor montado. Se outro user já tem lock vivo, render mostra warning
+  // mas não bloqueia edição (last-writer-wins resolve via campo `version`).
+  useEffect(() => {
+    if (!currentUserId || !currentUserName) return;
+    const ref = doc(db, 'spreadsheets', sheet.id);
+    const setLock = () => {
+      const now = Date.now();
+      void updateDoc(ref, {
+        currentEditorId: currentUserId,
+        currentEditorName: currentUserName,
+        editingExpiresAt: new Date(now + LOCK_TTL_MS).toISOString(),
+      }).catch(err => console.error('[Spreadsheets] lock set error:', err));
+    };
+    setLock();
+    const heartbeat = setInterval(setLock, LOCK_HEARTBEAT_MS);
+    return () => {
+      clearInterval(heartbeat);
+      // Best-effort clear. Se a aba fechou abrupto (browser kill), TTL
+      // expira sozinho em 90s e o lock some — sem orphan permanente.
+      void updateDoc(ref, {
+        currentEditorId: null,
+        currentEditorName: null,
+        editingExpiresAt: null,
+      }).catch(() => { /* ok */ });
+    };
+  }, [sheet.id, currentUserId, currentUserName]);
+
+  const canEdit = !!currentUserRole && (
+    ROLE_HIERARCHY[currentUserRole as keyof typeof ROLE_HIERARCHY] >= ROLE_HIERARCHY['operator'] ||
+    sheet.ownerId === currentUserId
+  );
+
+  // Detecta lock de OUTRO user (vivo: TTL não expirou).
+  const otherEditor = useMemo(() => {
+    if (!sheet.currentEditorId || sheet.currentEditorId === currentUserId) return null;
+    if (!sheet.editingExpiresAt) return null;
+    if (new Date(sheet.editingExpiresAt).getTime() < Date.now()) return null;
+    return sheet.currentEditorName || 'Outro usuário';
+  }, [sheet.currentEditorId, sheet.editingExpiresAt, sheet.currentEditorName, currentUserId]);
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header do editor */}
+      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
+        <button
+          onClick={onClose}
+          className="inline-flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          Voltar
+        </button>
+        <div className="flex-1 min-w-0">
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-white truncate">{sheet.name}</h2>
+          {sheet.description && (
+            <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{sheet.description}</p>
+          )}
+        </div>
+        {otherEditor && (
+          <div
+            title="Conflito de edição — última escrita ganha"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 dark:bg-amber-500/15 text-amber-700 dark:text-amber-400 text-xs font-medium"
+          >
+            <AlertCircle className="w-3.5 h-3.5" />
+            <span className="truncate max-w-[180px]">{otherEditor} está editando</span>
+          </div>
+        )}
+        <SpreadsheetVisibilityBadge spreadsheet={sheet} />
+      </div>
+      <div className="flex-1 min-h-0">
+        <SpreadsheetEditor
+          snapshot={sheet.snapshot}
+          onChange={onSave}
+          readOnly={!canEdit}
+        />
+      </div>
+    </div>
+  );
+}
 
 function SpreadsheetVisibilityBadge({ spreadsheet }: { spreadsheet: Spreadsheet }) {
   const cfg = VISIBILITY_CFG[spreadsheet.visibility];
