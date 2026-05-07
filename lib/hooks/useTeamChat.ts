@@ -11,6 +11,7 @@ import {
   doc,
   setDoc,
   getDoc,
+  getDocs,
   addDoc,
   updateDoc,
 } from 'firebase/firestore';
@@ -26,6 +27,21 @@ function buildAttachmentSummary(atts: TeamChatAttachment[]): string {
   const imgCount = atts.filter(a => a.type === 'image').length;
   if (imgCount === atts.length) return `🖼️ ${atts.length} imagens`;
   return `📎 ${atts.length} arquivos`;
+}
+
+/** Extrai UIDs de marcadores `<@uid>` no texto. Dedup. */
+export function parseMentionedUserIds(text: string): string[] {
+  const re = /<@([A-Za-z0-9_-]+)>/g;
+  const ids = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) ids.add(m[1]);
+  return Array.from(ids);
+}
+
+/** Versão "limpa" do texto pra preview de lastMessage — substitui `<@uid>`
+ *  por `@nome` ou `@usuário` se uid não for resolvível. */
+function strippedMentions(text: string, resolveName: (uid: string) => string): string {
+  return text.replace(/<@([A-Za-z0-9_-]+)>/g, (_, uid) => `@${resolveName(uid)}`);
 }
 
 // ─── IDs determinísticos ─────────────────────────────────────────────────────
@@ -271,8 +287,13 @@ export function useTeamChat(): UseTeamChatResult {
 
     const now = new Date().toISOString();
 
-    // 1. Cria a mensagem. senderPhotoURL e attachments incluídos condicionalmente
-    // — Firestore armazena nulls/undefined explicitamente, omitimos quando vazio.
+    // Extrai UIDs mencionados via `<@uid>` no texto. Notificações disparadas
+    // pra cada destinatário (exceto o próprio sender — não notifica self).
+    const mentionedUserIds = parseMentionedUserIds(trimmed);
+    const notifyTargets = mentionedUserIds.filter(uid => uid !== user.uid);
+
+    // 1. Cria a mensagem. Campos opcionais incluídos condicionalmente —
+    // Firestore armazena undefined como null se passados; evitamos por clareza.
     await addDoc(collection(db, 'teamChatMessages'), {
       businessId,
       chatId,
@@ -283,15 +304,19 @@ export function useTeamChat(): UseTeamChatResult {
       createdAt: now,
       ...(user.photoURL ? { senderPhotoURL: user.photoURL } : {}),
       ...(hasAttachments ? { attachments } : {}),
+      ...(mentionedUserIds.length > 0 ? { mentionedUserIds } : {}),
     });
 
-    // 2. Atualiza o chat: lastMessage + lastReadAt do sender. Quando a mensagem
-    // só tem anexos (sem texto), preview do lastMessage usa um label resumido.
-    const lastMessageText = trimmed || buildAttachmentSummary(attachments!);
+    // 2. Atualiza o chat: lastMessage + lastReadAt do sender. Preview do
+    // lastMessage usa texto "limpo" (sem `<@uid>` markers) — fallback @uid se
+    // o nome não estiver no `chats` ainda (raro: snapshot lag).
+    const previewText = trimmed
+      ? strippedMentions(trimmed, () => 'usuário')
+      : buildAttachmentSummary(attachments!);
 
     await updateDoc(doc(db, 'teamChats', chatId), {
       lastMessage: {
-        text: lastMessageText,
+        text: previewText,
         senderId: user.uid,
         senderName: user.name,
         sentAt: now,
@@ -300,6 +325,42 @@ export function useTeamChat(): UseTeamChatResult {
       [`lastReadAt.${user.uid}`]: now,
       updatedAt: now,
     });
+
+    // 3. Cria notificação pra cada mencionado. Filtra antes pra apenas membros
+    // do business — defesa contra mention manual `<@uid_de_outro_tenant>` que
+    // criaria notification ruidosa (rules de notifications/ não validam o
+    // userId é membro). Custo: 1 read por send (cacheado pelo Firestore).
+    if (notifyTargets.length > 0) {
+      const cleanText = strippedMentions(trimmed, () => 'usuário');
+      const body = cleanText.length > 80 ? cleanText.slice(0, 77) + '…' : cleanText;
+
+      let safeTargets = notifyTargets;
+      try {
+        const usersSnap = await getDocs(query(
+          collection(db, 'users'),
+          where('businessId', '==', businessId),
+        ));
+        const validUids = new Set(usersSnap.docs.map(d => d.id));
+        safeTargets = notifyTargets.filter(uid => validUids.has(uid));
+      } catch (err) {
+        // Se falhar a validação, melhor não enviar nada do que enviar pra alvos
+        // não validados — evita propagar lixo cross-tenant.
+        console.warn('[useTeamChat] mention validation failed, skipping notifs:', err);
+        safeTargets = [];
+      }
+
+      await Promise.all(safeTargets.map(targetUid =>
+        addDoc(collection(db, 'notifications'), {
+          businessId,
+          userId: targetUid,
+          type: 'chat_mentioned',
+          title: `${user.name} te mencionou`,
+          body,
+          isRead: false,
+          createdAt: now,
+        }).catch(err => console.error('[useTeamChat] mention notif failed:', err))
+      ));
+    }
   }, [user, businessId, ensureGlobalChat]);
 
   const markAsRead = useCallback(async (chatId: string) => {

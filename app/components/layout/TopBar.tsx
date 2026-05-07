@@ -203,6 +203,7 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
     appointment_reminder: Calendar,
     review_received: Check,
     conversation_assigned: MessageSquare,
+    chat_mentioned: MessageSquare,
   };
 
   const NOTIF_COLOR: Record<string, string> = {
@@ -213,6 +214,7 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
     appointment_reminder: 'text-emerald-500 bg-emerald-50 dark:bg-emerald-500/10',
     review_received: 'text-emerald-500 bg-emerald-50 dark:bg-emerald-500/10',
     conversation_assigned: 'text-red-500 bg-red-50 dark:bg-red-500/10',
+    chat_mentioned: 'text-purple-500 bg-purple-50 dark:bg-purple-500/10',
   };
 
   function timeAgo(iso: string): string {

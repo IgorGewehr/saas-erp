@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, useMemo } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, Send, Users, Wifi, Clock, MessageCircle, Loader2, AlertTriangle, Sparkles, BarChart3, Command, Paperclip, X, Download, ImageIcon } from 'lucide-react';
 import { collection, query, where, getDocs, getDocsFromCache } from 'firebase/firestore';
@@ -379,6 +379,7 @@ function TeamChatDropdown({ members, teamChat }: { members: UserType[]; teamChat
               <ChatView
                 chatId={view.chatId}
                 businessId={business?.id ?? ''}
+                members={members}
                 onSend={(text, attachments) => sendMessage(view.chatId, text, attachments)}
               />
             </motion.div>
@@ -682,10 +683,12 @@ const ATTACHMENT_ACCEPT = 'image/*,video/*,audio/*,.pdf,.xml,.json,.csv,.txt,.do
 function ChatView({
   chatId,
   businessId,
+  members,
   onSend,
 }: {
   chatId: string;
   businessId: string;
+  members: UserType[];
   onSend: (text: string, attachments?: TeamChatAttachment[]) => Promise<void>;
 }) {
   const { t } = useTranslation();
@@ -695,9 +698,25 @@ function ChatView({
   const [sending, setSending] = useState(false);
   const [pendingAttachments, setPendingAttachments] = useState<TeamChatAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [mentionState, setMentionState] = useState<{
+    open: boolean;
+    prefix: string;
+    atIndex: number;
+    activeIndex: number;
+  }>({ open: false, prefix: '', atIndex: -1, activeIndex: 0 });
+  // Cursor target posto pelo insertMention; useLayoutEffect aplica antes do
+  // browser pintar — evita jitter visual entre setText e setSelectionRange.
+  const [pendingCursor, setPendingCursor] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useLayoutEffect(() => {
+    if (pendingCursor == null || !composerRef.current) return;
+    composerRef.current.focus();
+    composerRef.current.setSelectionRange(pendingCursor, pendingCursor);
+    setPendingCursor(null);
+  }, [pendingCursor]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -705,11 +724,62 @@ function ChatView({
     el.scrollTop = el.scrollHeight;
   }, [messages.length]);
 
+  // Mentions filtradas: members que batem no prefixo, exceto o próprio user.
+  const mentionMatches = useMemo(() => {
+    if (!mentionState.open) return [] as UserType[];
+    const q = mentionState.prefix.toLowerCase();
+    return members
+      .filter(m => m.uid !== user?.uid)
+      .filter(m => !q || m.name.toLowerCase().includes(q))
+      .slice(0, 6);
+  }, [mentionState.open, mentionState.prefix, members, user?.uid]);
+
+  // Detecta se o cursor está dentro de um @-token (sem espaço entre @ e cursor).
+  // Quando sim, abre o popup com o prefixo. Caso contrário, fecha.
+  const updateMentionState = (value: string, cursor: number) => {
+    const before = value.slice(0, cursor);
+    const at = before.lastIndexOf('@');
+    if (at < 0) {
+      setMentionState(s => (s.open ? { ...s, open: false } : s));
+      return;
+    }
+    // @ no começo do texto OU precedido por whitespace — senão é parte de
+    // um email (ex: foo@bar.com), não mention. Usa /\s/ pra cobrir tab, NBSP,
+    // line separator, etc — mais robusto que listar chars manualmente.
+    const charBefore = at > 0 ? value[at - 1] : '';
+    if (at > 0 && !/\s/.test(charBefore)) {
+      setMentionState(s => (s.open ? { ...s, open: false } : s));
+      return;
+    }
+    const prefix = before.slice(at + 1);
+    if (/\s/.test(prefix)) {
+      setMentionState(s => (s.open ? { ...s, open: false } : s));
+      return;
+    }
+    setMentionState({ open: true, prefix, atIndex: at, activeIndex: 0 });
+  };
+
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setText(e.target.value);
+    const value = e.target.value;
+    setText(value);
     const el = e.target;
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 128)}px`;
+    updateMentionState(value, el.selectionStart);
+  };
+
+  // Insere `<@uid> ` na posição do @ atual e fecha o popup. Cursor é movido
+  // via pendingCursor + useLayoutEffect — sem rAF, sem flicker.
+  const insertMention = (member: UserType) => {
+    if (mentionState.atIndex < 0 || !composerRef.current) return;
+    const cursor = composerRef.current.selectionStart;
+    const before = text.slice(0, mentionState.atIndex);
+    const after = text.slice(cursor);
+    const insert = `<@${member.uid}> `;
+    const newText = before + insert + after;
+    setText(newText);
+    setMentionState({ open: false, prefix: '', atIndex: -1, activeIndex: 0 });
+    setPendingCursor(before.length + insert.length);
   };
 
   // Upload pra Storage. Sucesso → adiciona em pendingAttachments. Falha por
@@ -804,6 +874,31 @@ function ChatView({
   };
 
   const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Popup de mentions aberto: setas/Enter/Tab navegam/selecionam, Esc fecha.
+    if (mentionState.open && mentionMatches.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setMentionState(s => ({ ...s, activeIndex: (s.activeIndex + 1) % mentionMatches.length }));
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMentionState(s => ({ ...s, activeIndex: (s.activeIndex - 1 + mentionMatches.length) % mentionMatches.length }));
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        const m = mentionMatches[mentionState.activeIndex];
+        if (m) insertMention(m);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setMentionState(s => ({ ...s, open: false }));
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void handleSend();
@@ -850,12 +945,41 @@ function ChatView({
           </div>
         ) : (
           groupByConsecutiveSender(messages).map((group, gi) => (
-            <MessageGroup key={`${group[0].id}-${gi}`} group={group} myUid={user?.uid} />
+            <MessageGroup
+              key={`${group[0].id}-${gi}`}
+              group={group}
+              myUid={user?.uid}
+              members={members}
+            />
           ))
         )}
       </div>
 
-      <div className="border-t border-gray-100 dark:border-gray-700/50 px-2 py-2 bg-gray-50/40 dark:bg-white/[0.02]">
+      <div className="relative border-t border-gray-100 dark:border-gray-700/50 px-2 py-2 bg-gray-50/40 dark:bg-white/[0.02]">
+        {/* Popup de autocomplete de mentions — flutua acima do composer.
+            Posicionado absoluto pra não empurrar layout. */}
+        {mentionState.open && mentionMatches.length > 0 && (
+          <div className="absolute bottom-full left-2 right-2 mb-1 max-h-48 overflow-y-auto bg-white dark:bg-[#1e293b] border border-gray-200 dark:border-gray-700/60 rounded-xl shadow-lg z-10">
+            {mentionMatches.map((m, i) => (
+              <button
+                key={m.uid}
+                type="button"
+                onClick={() => insertMention(m)}
+                onMouseEnter={() => setMentionState(s => ({ ...s, activeIndex: i }))}
+                className={cn(
+                  'w-full flex items-center gap-2 px-2.5 py-1.5 text-left transition-colors',
+                  mentionState.activeIndex === i
+                    ? 'bg-red-50 dark:bg-red-500/10'
+                    : 'hover:bg-gray-50 dark:hover:bg-white/[0.04]',
+                )}
+              >
+                <Avatar name={m.name} photoURL={m.photoURL} size={24} />
+                <span className="text-[12.5px] text-gray-800 dark:text-gray-100 truncate flex-1">{m.name}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
         {/* Preview de anexos pendentes — aparece acima do composer */}
         {pendingAttachments.length > 0 && (
           <div className="px-1 pb-2 flex flex-wrap gap-1.5">
@@ -915,6 +1039,11 @@ function ChatView({
             value={text}
             onChange={handleTextChange}
             onKeyDown={handleKey}
+            // Blur fecha popup com delay — onClick no item do popup precisa
+            // disparar antes (mousedown→blur→click; o setTimeout dá fôlego).
+            onBlur={() => {
+              setTimeout(() => setMentionState(s => (s.open ? { ...s, open: false } : s)), 150);
+            }}
             rows={1}
             placeholder={t('teamChat.messagePlaceholder')}
             className={cn(
@@ -960,7 +1089,13 @@ function groupByConsecutiveSender(messages: TeamChatMessage[]): TeamChatMessage[
   return out;
 }
 
-function MessageGroup({ group, myUid }: { group: TeamChatMessage[]; myUid: string | undefined }) {
+function MessageGroup({
+  group, myUid, members,
+}: {
+  group: TeamChatMessage[];
+  myUid: string | undefined;
+  members: UserType[];
+}) {
   const sender = group[0];
   const mine = sender.senderId === myUid;
   return (
@@ -973,14 +1108,75 @@ function MessageGroup({ group, myUid }: { group: TeamChatMessage[]; myUid: strin
           </span>
         )}
         {group.map((m, i) => (
-          <MessageBubble key={m.id} msg={m} mine={mine} firstInGroup={i === 0} />
+          <MessageBubble
+            key={m.id}
+            msg={m}
+            mine={mine}
+            firstInGroup={i === 0}
+            members={members}
+            myUid={myUid}
+          />
         ))}
       </div>
     </div>
   );
 }
 
-function MessageBubble({ msg, mine, firstInGroup }: { msg: TeamChatMessage; mine: boolean; firstInGroup: boolean }) {
+/** Renderiza texto com markers `<@uid>` substituídos por spans estilizados.
+ *  Mention do próprio user destaca em outra cor (highlight pra "você foi
+ *  mencionado"). */
+function renderTextWithMentions(
+  text: string,
+  members: UserType[],
+  myUid: string | undefined,
+  isOwn: boolean,
+): React.ReactNode[] {
+  const re = /<@([A-Za-z0-9_-]+)>/g;
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let key = 0;
+  while ((match = re.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+    const uid = match[1];
+    const member = members.find(m => m.uid === uid);
+    const isMe = uid === myUid;
+    const isMissing = !member;
+    parts.push(
+      <span
+        key={`m${key++}`}
+        title={isMissing ? 'Usuário não está mais na equipe' : member.name}
+        className={cn(
+          'inline-block rounded px-1',
+          isMissing
+            ? 'italic opacity-60 ' + (isOwn ? 'text-white/80' : 'text-gray-500 dark:text-gray-400')
+            : 'font-medium ' + (isMe
+              ? (isOwn ? 'bg-white/25 text-white' : 'bg-amber-200/70 dark:bg-amber-500/30 text-amber-900 dark:text-amber-100')
+              : (isOwn ? 'bg-white/15 text-white' : 'bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-300')),
+        )}
+      >
+        @{member?.name ?? 'usuário'}
+      </span>,
+    );
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+  return parts;
+}
+
+function MessageBubble({
+  msg, mine, firstInGroup, members, myUid,
+}: {
+  msg: TeamChatMessage;
+  mine: boolean;
+  firstInGroup: boolean;
+  members: UserType[];
+  myUid: string | undefined;
+}) {
   const images = (msg.attachments ?? []).filter(a => a.type === 'image');
   const files = (msg.attachments ?? []).filter(a => a.type === 'file');
   const hasText = msg.text.trim().length > 0;
@@ -1051,7 +1247,7 @@ function MessageBubble({ msg, mine, firstInGroup }: { msg: TeamChatMessage; mine
       {/* Texto + timestamp. Quando não há texto mas há anexos, timestamp aparece como linha curta. */}
       {hasText ? (
         <span className="whitespace-pre-wrap">
-          {msg.text}
+          {renderTextWithMentions(msg.text, members, myUid, mine)}
           <span className={cn(
             'ml-1.5 text-[9.5px] align-baseline',
             mine ? 'text-white/70' : 'text-gray-400 dark:text-gray-500',

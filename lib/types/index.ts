@@ -2559,9 +2559,15 @@ export interface TeamChatMessage {
   senderName: string;
   senderInitials: string;
   senderPhotoURL?: string;
-  /** Texto da mensagem. Pode ser vazio quando há `attachments`. */
+  /** Texto da mensagem. Pode ser vazio quando há `attachments`.
+   *  Marcadores de mention seguem o formato `<@uid>` — o render resolve pro
+   *  nome atual do usuário (não armazenamos snapshot do nome pra evitar
+   *  ficar desatualizado). */
   text: string;
   attachments?: TeamChatAttachment[];
+  /** UIDs dos usuários mencionados via `<@uid>` no texto. Usado pra
+   *  disparar notificações sem ter que parsear o texto no destinatário. */
+  mentionedUserIds?: string[];
   createdAt: string;
 }
 
