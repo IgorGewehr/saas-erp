@@ -4,7 +4,6 @@ import { useTranslation } from 'react-i18next';
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { useQuery } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -289,22 +288,29 @@ function ProfileTab() {
   const [workingHours, setWorkingHours] = useState<WorkingHours>(DEFAULT_WORKING_HOURS);
   const [isSavingSchedule, setIsSavingSchedule] = useState(false);
 
-  // Fetch active services for this business
-  const { data: services = [], isLoading: isLoadingServices } = useQuery({
-    queryKey: ['services', business?.id],
-    queryFn: async () => {
-      if (!business?.id) return [];
-      const q = query(
-        collection(db, 'services'),
-        where('businessId', '==', business.id),
-        where('isActive', '==', true)
-      );
-      const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Service));
-    },
-    enabled: !!business?.id,
-    staleTime: 5 * 60 * 1000,
-  });
+  // Fetch active services — onSnapshot pra consistência com resto do
+  // SettingsModule (sectors/members/etc. já são listeners). Volume baixo
+  // (raros services por business), custo negligível.
+  const [services, setServices] = useState<Service[]>([]);
+  const [isLoadingServices, setIsLoadingServices] = useState(true);
+  useEffect(() => {
+    if (!business?.id) { setIsLoadingServices(false); return; }
+    setIsLoadingServices(true);
+    const q = query(
+      collection(db, 'services'),
+      where('businessId', '==', business.id),
+      where('isActive', '==', true),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        setServices(snap.docs.map(d => ({ ...d.data(), id: d.id } as Service)));
+        setIsLoadingServices(false);
+      },
+      (err) => { console.error('[Settings] services snapshot error:', err); setIsLoadingServices(false); },
+    );
+    return () => unsub();
+  }, [business?.id]);
 
   // Time slot options from 06:00 to 22:00 in 30-min intervals
   const timeSlots = useMemo(() => {
