@@ -1412,6 +1412,84 @@ service cloud.firestore {
     }
 
     // ============================================
+    // BUDGETS COLLECTION (orçamentos financeiros)
+    // ============================================
+    match /budgets/{budgetId} {
+      allow read: if isAuthenticated() && isOwnBusiness() && isOperator();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isManager();
+      allow update: if isAuthenticated() && isOwnBusiness() && isManager() && incomingBelongsToBusiness();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isManager();
+    }
+
+    // ============================================
+    // DAS RECORDS COLLECTION (Documento de Arrecadação do Simples)
+    // ============================================
+    // Registros fiscais — escrita restrita a admin pra evitar ruído
+    // contábil; leitura mais ampla pra Financeiro/Fiscal consultarem.
+    match /dasRecords/{recordId} {
+      allow read: if isAuthenticated() && isOwnBusiness() && isManager();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isAdmin();
+      allow update: if isAuthenticated() && isOwnBusiness() && isAdmin() && incomingBelongsToBusiness();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    // ============================================
+    // CRM AUDIT LOG (trilha imutável de mudanças no CRM)
+    // ============================================
+    // Append-only: qualquer operator+ cria entradas (o sistema loga sua
+    // própria ação). Manager+ lê pra revisar histórico. Sem update/delete.
+    match /crmAuditLog/{logId} {
+      allow read: if isAuthenticated() && isOwnBusiness() && isManager();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isOperator();
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // ============================================
+    // LOYALTY HISTORY (histórico de pontos por cliente)
+    // ============================================
+    // Append-only — mudanças de pontos sempre criam entrada nova,
+    // nunca editam histórico existente.
+    match /loyaltyHistory/{entryId} {
+      allow read: if isAuthenticated() && isOwnBusiness() && isOperator();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isOperator();
+      allow update: if false;
+      allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    // ============================================
+    // LOYALTY TRANSACTIONS (movimentações de pontos)
+    // ============================================
+    match /loyaltyTransactions/{txId} {
+      allow read: if isAuthenticated() && isOwnBusiness() && isOperator();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isOperator();
+      allow update: if false;
+      allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    // ============================================
+    // GIFT CARDS COLLECTION
+    // ============================================
+    // PDV consulta giftCards na hora do pagamento (read amplo).
+    // Vendas de gift card são operação financeira — manager+ pra create/update.
+    match /giftCards/{giftCardId} {
+      allow read: if isAuthenticated() && isOwnBusiness() && isOperator();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isManager();
+      allow update: if isAuthenticated() && isOwnBusiness() && isOperator() && incomingBelongsToBusiness();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    // ============================================
+    // RECONCILIATION RULES (regras de auto-categorização bancária)
+    // ============================================
+    match /reconciliationRules/{ruleId} {
+      allow read: if isAuthenticated() && isOwnBusiness() && isOperator();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isManager();
+      allow update: if isAuthenticated() && isOwnBusiness() && isManager() && incomingBelongsToBusiness();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isManager();
+    }
+
+    // ============================================
     // CATCH-ALL: Deny everything else
     // ============================================
     match /{document=**} {
