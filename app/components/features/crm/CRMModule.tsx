@@ -3205,24 +3205,24 @@ export default function CRMModule() {
 
   const handleStatusChange = useCallback(async (contactId: string, newStatus: LeadStatus) => {
     if (!business?.id || !user) return;
-    const qk = ['clients', business.id] as const;
-    const prevContact = (queryClient.getQueryData(qk) as CRMContact[] | undefined)?.find(c => c.id === contactId);
-    // Optimistic update — card moves instantly, no snap-back
-    queryClient.setQueryData(qk, (old: CRMContact[] = []) =>
-      old.map((c) => c.id === contactId ? { ...c, status: newStatus } : c)
-    );
+    // Optimistic update direto no useState — antes era via queryClient.setQueryData
+    // mas após refactor pra onSnapshot (contacts deixou de ter useQuery cache),
+    // setQueryData virou no-op. Mexer no useState local mantém o efeito de drag&drop
+    // instantâneo; o snapshot subsequente reconcilia com o servidor.
+    const prevContact = contacts.find(c => c.id === contactId);
+    setContacts((old) => old.map((c) => c.id === contactId ? { ...c, status: newStatus } : c));
     try {
       await updateDoc(doc(db, 'clients', contactId), { status: newStatus, updatedAt: new Date().toISOString() });
-      queryClient.invalidateQueries({ queryKey: qk });
       if (prevContact) {
         void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'status_changed', contactId, details: `${getStageLabel(stages, prevContact.status)} → ${getStageLabel(stages, newStatus)}` });
       }
     } catch (err) {
       console.error('[CRM] Error changing lead status:', err);
       toast.error(t('crm.toast.errorMoveLead', 'Erro ao mover lead'));
-      queryClient.invalidateQueries({ queryKey: qk }); // revert on failure
+      // Revert: snapshot vai trazer estado correto do Firestore — não precisa
+      // restaurar manualmente. Em <1s o card volta pro lugar.
     }
-  }, [business?.id, user, queryClient, t, stages]);
+  }, [business?.id, user, contacts, t, stages]);
 
   const handleTagsChange = useCallback(async (contactId: string, tags: string[]) => {
     if (!business?.id || !user) return;
