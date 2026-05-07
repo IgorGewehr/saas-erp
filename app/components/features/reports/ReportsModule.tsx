@@ -316,7 +316,11 @@ function ProdutosTab({ sales, orders, appointments, periodRange, periodLabel }: 
   // ─── Agregação ─────────────────────────────────────────────────────────────
   // Produtos: SaleItem com productId (ou sem serviceId) + OrderItem.
   // Serviços: SaleItem com serviceId + Appointment.
-  const { produtos, servicos } = useMemo(() => {
+  //
+  // KPIs agregam o universo COMPLETO (todos os items). Os rankings exibidos
+  // são limitados a top 20 — se totalizássemos só o top 20, tenants com >20
+  // SKUs teriam KPIs furados (auditoria detectou).
+  const { produtos, servicos, totalProdutos, totalServicos, qtyProdutos, qtyServicos } = useMemo(() => {
     const prodMap = new Map<string, RankRow>();
     const servMap = new Map<string, RankRow>();
 
@@ -355,16 +359,21 @@ function ProdutosTab({ sales, orders, appointments, periodRange, periodLabel }: 
       bump(servMap, a.serviceId, a.serviceName, 1, a.price || 0);
     }
 
-    const produtos = Array.from(prodMap.values()).sort((a, b) => b.total - a.total).slice(0, 20);
-    const servicos = Array.from(servMap.values()).sort((a, b) => b.total - a.total).slice(0, 20);
-    return { produtos, servicos };
-  }, [validSales, validOrders, validAppts]);
+    const allProdutos = Array.from(prodMap.values());
+    const allServicos = Array.from(servMap.values());
 
-  // ─── KPIs agregados ────────────────────────────────────────────────────────
-  const totalProdutos = produtos.reduce((s, r) => s + r.total, 0);
-  const totalServicos = servicos.reduce((s, r) => s + r.total, 0);
-  const qtyProdutos = produtos.reduce((s, r) => s + r.qty, 0);
-  const qtyServicos = servicos.reduce((s, r) => s + r.qty, 0);
+    // Totais sobre o universo completo (não só top 20).
+    const totalProdutos = allProdutos.reduce((acc, r) => acc + r.total, 0);
+    const totalServicos = allServicos.reduce((acc, r) => acc + r.total, 0);
+    const qtyProdutos = allProdutos.reduce((acc, r) => acc + r.qty, 0);
+    const qtyServicos = allServicos.reduce((acc, r) => acc + r.qty, 0);
+
+    // Rankings exibidos: top 20 por receita.
+    const produtos = allProdutos.sort((a, b) => b.total - a.total).slice(0, 20);
+    const servicos = allServicos.sort((a, b) => b.total - a.total).slice(0, 20);
+
+    return { produtos, servicos, totalProdutos, totalServicos, qtyProdutos, qtyServicos };
+  }, [validSales, validOrders, validAppts]);
 
   const maxProd = produtos[0]?.total || 1;
   const maxServ = servicos[0]?.total || 1;
@@ -385,7 +394,7 @@ function ProdutosTab({ sales, orders, appointments, periodRange, periodLabel }: 
         <KpiCard title="Receita produtos"  value={formatCurrency(totalProdutos)} color="green"  icon={Package} />
         <KpiCard title="Itens vendidos"    value={String(qtyProdutos)}           color="blue"   icon={ShoppingBag} />
         <KpiCard title="Receita serviços"  value={formatCurrency(totalServicos)} color="violet" icon={Calendar} />
-        <KpiCard title="Atendimentos"      value={String(qtyServicos)}           color="amber"  icon={TrendingUp} />
+        <KpiCard title="Serviços vendidos" value={String(qtyServicos)}           color="amber"  icon={TrendingUp} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
