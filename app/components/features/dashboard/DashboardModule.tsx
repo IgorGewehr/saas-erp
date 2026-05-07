@@ -13,7 +13,7 @@
  * pedidos).
  */
 
-import { useMemo } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
@@ -46,9 +46,8 @@ import {
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { enUS as enUSLocale } from 'date-fns/locale';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
-import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import type { MenuPage } from '@/app/components/layout/Sidebar';
 import AgentHeroInput from './AgentHeroInput';
@@ -118,63 +117,78 @@ export default function DashboardModule() {
   const showAgenda = useCase === 'servicos';
   const showOrders = useCase === 'pedidos';
 
-  // ── Data queries — pequenas, focadas só no que os mini-cards precisam ─────
+  // ── Data — listeners em tempo real (refactor sync multi-user) ─────────────
+  // ANTES: 5x useQuery + getDocs com staleTime 60s. KPIs do Dashboard
+  // (primeira tela ao abrir o app) podiam mostrar números defasados —
+  // operador A marcava agendamento, gerente B abria Dashboard e via
+  // contagem antiga até o staleTime expirar.
+  // AGORA: onSnapshot. KPIs sempre refletem o estado atual da operação.
   const todayStr = new Date().toISOString().split('T')[0];
 
-  const { data: appointments = [], isLoading: loadingAppts } = useQuery({
-    queryKey: ['dashboard-appointments', business?.id],
-    queryFn: async () => {
-      const q = query(collection(db, 'appointments'), where('businessId', '==', business!.id));
-      const snap = await getDocs(q);
-      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as Appointment));
-    },
-    enabled: !!business?.id && showAgenda,
-    staleTime: 60_000,
-  });
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [loadingAppts, setLoadingAppts] = useState(true);
+  useEffect(() => {
+    if (!business?.id || !showAgenda) { setLoadingAppts(false); return; }
+    setLoadingAppts(true);
+    const q = query(collection(db, 'appointments'), where('businessId', '==', business.id));
+    const unsub = onSnapshot(q, (snap) => {
+      setAppointments(snap.docs.map((d) => ({ ...d.data(), id: d.id } as Appointment)));
+      setLoadingAppts(false);
+    }, (err) => { console.error('[Dashboard] appointments snapshot error:', err); setLoadingAppts(false); });
+    return () => unsub();
+  }, [business?.id, showAgenda]);
 
-  const { data: deliveryOrders = [], isLoading: loadingOrders } = useQuery({
-    queryKey: ['dashboard-orders', business?.id],
-    queryFn: async () => {
-      const q = query(collection(db, 'deliveryOrders'), where('businessId', '==', business!.id));
-      const snap = await getDocs(q);
-      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as DeliveryOrder));
-    },
-    enabled: !!business?.id && showOrders,
-    staleTime: 60_000,
-  });
+  const [deliveryOrders, setDeliveryOrders] = useState<DeliveryOrder[]>([]);
+  const [loadingOrders, setLoadingOrders] = useState(true);
+  useEffect(() => {
+    if (!business?.id || !showOrders) { setLoadingOrders(false); return; }
+    setLoadingOrders(true);
+    const q = query(collection(db, 'deliveryOrders'), where('businessId', '==', business.id));
+    const unsub = onSnapshot(q, (snap) => {
+      setDeliveryOrders(snap.docs.map((d) => ({ ...d.data(), id: d.id } as DeliveryOrder)));
+      setLoadingOrders(false);
+    }, (err) => { console.error('[Dashboard] orders snapshot error:', err); setLoadingOrders(false); });
+    return () => unsub();
+  }, [business?.id, showOrders]);
 
-  const { data: transactions = [], isLoading: loadingTx } = useQuery({
-    queryKey: ['dashboard-transactions', business?.id],
-    queryFn: async () => {
-      const q = query(collection(db, 'transactions'), where('businessId', '==', business!.id));
-      const snap = await getDocs(q);
-      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as Transaction));
-    },
-    enabled: !!business?.id,
-    staleTime: 60_000,
-  });
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [loadingTx, setLoadingTx] = useState(true);
+  useEffect(() => {
+    if (!business?.id) { setLoadingTx(false); return; }
+    setLoadingTx(true);
+    const q = query(collection(db, 'transactions'), where('businessId', '==', business.id));
+    const unsub = onSnapshot(q, (snap) => {
+      setTransactions(snap.docs.map((d) => ({ ...d.data(), id: d.id } as Transaction)));
+      setLoadingTx(false);
+    }, (err) => { console.error('[Dashboard] transactions snapshot error:', err); setLoadingTx(false); });
+    return () => unsub();
+  }, [business?.id]);
 
-  const { data: conversations = [], isLoading: loadingConvs } = useQuery({
-    queryKey: ['dashboard-conversations', business?.id],
-    queryFn: async () => {
-      const q = query(collection(db, 'conversations'), where('businessId', '==', business!.id));
-      const snap = await getDocs(q);
-      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as Conversation));
-    },
-    enabled: !!business?.id,
-    staleTime: 60_000,
-  });
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [loadingConvs, setLoadingConvs] = useState(true);
+  useEffect(() => {
+    if (!business?.id) { setLoadingConvs(false); return; }
+    setLoadingConvs(true);
+    const q = query(collection(db, 'conversations'), where('businessId', '==', business.id));
+    const unsub = onSnapshot(q, (snap) => {
+      setConversations(snap.docs.map((d) => ({ ...d.data(), id: d.id } as Conversation)));
+      setLoadingConvs(false);
+    }, (err) => { console.error('[Dashboard] conversations snapshot error:', err); setLoadingConvs(false); });
+    return () => unsub();
+  }, [business?.id]);
 
-  const { data: crmContacts = [], isLoading: loadingCrm } = useQuery({
-    queryKey: ['dashboard-crm', business?.id],
-    queryFn: async () => {
-      const q = query(collection(db, 'crmContacts'), where('businessId', '==', business!.id));
-      const snap = await getDocs(q);
-      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as CRMContact));
-    },
-    enabled: !!business?.id,
-    staleTime: 60_000,
-  });
+  const [crmContacts, setCrmContacts] = useState<CRMContact[]>([]);
+  const [loadingCrm, setLoadingCrm] = useState(true);
+  useEffect(() => {
+    if (!business?.id) { setLoadingCrm(false); return; }
+    setLoadingCrm(true);
+    const q = query(collection(db, 'crmContacts'), where('businessId', '==', business.id));
+    const unsub = onSnapshot(q, (snap) => {
+      setCrmContacts(snap.docs.map((d) => ({ ...d.data(), id: d.id } as CRMContact)));
+      setLoadingCrm(false);
+    }, (err) => { console.error('[Dashboard] crm snapshot error:', err); setLoadingCrm(false); });
+    return () => unsub();
+  }, [business?.id]);
 
   // ── Derived KPIs ─────────────────────────────────────────────────────────
   const todayAppointmentsCount = useMemo(
