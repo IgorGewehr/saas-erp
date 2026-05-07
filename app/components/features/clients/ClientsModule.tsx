@@ -9,7 +9,7 @@ import {
   TrendingUp, ShoppingCart, Star,
   Upload, UserCheck, Gift,
   FileDown, Settings, Plus as PlusIcon, Trophy, LayoutList, AlignJustify,
-  Megaphone, MessageSquare,
+  Megaphone, MessageSquare, CheckSquare,
 } from 'lucide-react';
 import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, limit as firestoreLimit, writeBatch, deleteField } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
@@ -729,6 +729,10 @@ export default function ClientsModule() {
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<Client | null>(null);
   // Multi-seleção pra exclusão em massa (importação errada, etc.)
+  // Selection mode é off por default — checkboxes só aparecem quando operador
+  // clica "Selecionar". Reduz ruído visual no fluxo principal (consultar lista
+  // e clicar em cliente pra ver detalhe).
+  const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
 
@@ -1288,6 +1292,27 @@ export default function ClientsModule() {
               </span>
             </button>
           )}
+          {/* Selecionar — toggle do selection mode. Sai do modo + zera seleção
+              quando clicado de novo. Útil pra bulk delete sem sujar a tela
+              com checkboxes durante consulta normal. */}
+          <button
+            onClick={() => {
+              if (selectionMode) {
+                // Sair do modo: limpa seleção pra evitar estado fantasma
+                setSelectedIds(new Set());
+              }
+              setSelectionMode(v => !v);
+            }}
+            className={cn(
+              'inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-xl transition-colors border',
+              selectionMode
+                ? 'border-red-300 dark:border-red-500/50 bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-500/20'
+                : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800',
+            )}
+          >
+            <CheckSquare className="w-4 h-4" />
+            {selectionMode ? 'Sair da seleção' : 'Selecionar'}
+          </button>
           <button
             onClick={() => setShowImport(true)}
             className="inline-flex items-center gap-2 px-4 py-2.5 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 text-sm font-medium rounded-xl transition-colors"
@@ -1749,16 +1774,19 @@ export default function ClientsModule() {
               selectedClientId={selectedClient?.id ?? null}
               onSelectClient={setSelectedClient}
               selectedIds={selectedIds}
-              onToggleSelectId={(id) => setSelectedIds(prev => {
+              // ClientTableView esconde a coluna de checkbox quando
+              // onToggleSelectId é undefined. Passa só em selection mode pra
+              // remover ruído visual no fluxo principal de consulta.
+              onToggleSelectId={selectionMode ? (id) => setSelectedIds(prev => {
                 const next = new Set(prev);
                 if (next.has(id)) next.delete(id); else next.add(id);
                 return next;
-              })}
-              onToggleSelectAll={() => {
+              }) : undefined}
+              onToggleSelectAll={selectionMode ? () => {
                 const allIds = filtered.map(c => c.id);
                 const allSelected = allIds.every(id => selectedIds.has(id));
                 setSelectedIds(allSelected ? new Set() : new Set(allIds));
-              }}
+              } : undefined}
             />
           ) : (
             <div className="space-y-1.5 overflow-y-auto pr-1">
