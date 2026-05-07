@@ -246,11 +246,14 @@ export function ChannelsTab({ client, businessId }: { client: Client; businessId
                     type="button"
                     onClick={() => isClickable && handleCardClick(ch)}
                     disabled={!isClickable}
+                    title={!isClickable && isRegistered && ch.id !== 'whatsapp'
+                      ? 'Não é possível iniciar conversa por aqui — Facebook/Instagram só permitem responder mensagens recebidas.'
+                      : undefined}
                     className={cn(
                       'flex-1 flex items-start gap-3 p-3 text-left transition-colors rounded-l-2xl',
                       isClickable
                         ? 'cursor-pointer hover:bg-gray-50/40 dark:hover:bg-gray-800/30'
-                        : 'cursor-default',
+                        : 'cursor-not-allowed',
                     )}
                   >
                     {/* Channel icon — usa cor da marca como fundo claro. */}

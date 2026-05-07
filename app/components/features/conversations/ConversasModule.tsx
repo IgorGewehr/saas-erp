@@ -5154,29 +5154,47 @@ export default function ConversasModule() {
   // Abrir conversa existente quando o ID chega via pending. Aguarda a lista
   // carregar (find retorna match) — se não está na lista (filtrada por ownership
   // ou ainda hidratando), o effect re-roda quando `conversations` atualiza.
+  // Timeout de 5s evita pending pendurado pra sempre se a conversa for
+  // invisível pro user (ex: filtrada por ownership de canal pessoal).
   useEffect(() => {
     if (!pendingOpenConversationId) return;
     const conv = conversations.find(c => c.id === pendingOpenConversationId);
-    if (!conv) return;
-    setSelectedConversation(conv);
-    setShowMobileThread(true);
-    setPendingOpenConversationId(null);
+    if (conv) {
+      setSelectedConversation(conv);
+      setShowMobileThread(true);
+      setPendingOpenConversationId(null);
+      return;
+    }
+    // Não achou ainda — agenda cleanup defensivo.
+    const t = setTimeout(() => {
+      toast.warn('Conversa não encontrada. Pode ter sido deletada ou pertencer a outro canal.');
+      setPendingOpenConversationId(null);
+    }, 5000);
+    return () => clearTimeout(t);
   }, [pendingOpenConversationId, conversations, setPendingOpenConversationId]);
 
   // Iniciar conversa nova com pré-fill — abre NewConversationDialog populado
   // com client/channel/modo. clientsList precisa ter carregado pra resolver
-  // o client por ID (Channels tab passa só clientId pra evitar duplicar dados).
+  // o client por ID. Timeout 5s pra liberar pending caso o cliente esteja
+  // filtrado por sector/visibility e nunca apareça em clientsList.
   useEffect(() => {
     if (!pendingNewConversation) return;
     const client = clientsList.find(c => c.id === pendingNewConversation.clientId);
-    if (!client) return; // aguarda clientsList hidratar
-    setNewConvPrefill({
-      client,
-      channel: pendingNewConversation.channel,
-      whatsappMode: pendingNewConversation.whatsappMode,
-    });
-    setShowNewConversation(true);
-    setPendingNewConversation(null);
+    if (client) {
+      setNewConvPrefill({
+        client,
+        channel: pendingNewConversation.channel,
+        whatsappMode: pendingNewConversation.whatsappMode,
+      });
+      setShowNewConversation(true);
+      setPendingNewConversation(null);
+      return;
+    }
+    const t = setTimeout(() => {
+      toast.warn('Cliente não encontrado na sua visualização. Verifique se está em um setor que você acessa.');
+      setPendingNewConversation(null);
+    }, 5000);
+    return () => clearTimeout(t);
   }, [pendingNewConversation, clientsList, setPendingNewConversation]);
 
   // ── Real-time: Conversations list ──────────────────────────────────────────

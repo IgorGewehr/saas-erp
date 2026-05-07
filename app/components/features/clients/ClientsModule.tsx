@@ -754,16 +754,28 @@ export default function ClientsModule() {
     return () => { el.style.overflowY = prevOverflow; };
   }, [showForm, showImport, showExport, showMerge, showLoyaltySettings, deleteConfirm, bulkDeleteOpen]);
 
-  // Quando o usuário seleciona um cliente pra ver detalhes, sobe a viewport
-  // pra topo do wrapper de tab — sem isso, se ele tinha scrollado a lista
-  // pra baixo procurando o cliente, o painel lateral abre fora da área visível.
+  // ESC fecha o drawer de detalhe — UX padrão. Antes existia um effect aqui
+  // que rolava a viewport pro topo no select (necessário porque o painel ficava
+  // inline no flex layout e ficava fora de visão se o user estivesse scrollando
+  // pra baixo). Agora o painel é drawer fixo flutuante — não precisa rolar
+  // viewport, e fazê-lo é EXATAMENTE o bug reportado ("clicar embaixo joga
+  // pra cima"). Removido junto com a refatoração de drawer.
+  //
+  // Guard contra modais por cima: se Edit modal (showForm), Delete confirm
+  // (deleteConfirm), Bulk action ou Importar/Exportar estiver aberto, ESC
+  // pertence ao modal — não fechar o drawer (modal está em z-50, drawer em
+  // z-40, então o modal é o "elemento ativo"). Sem isso, ESC fecha drawer
+  // injustamente e modal fica aberto sem contexto do cliente.
   useEffect(() => {
     if (!selectedClient) return;
-    const el = document.querySelector<HTMLElement>(
-      '.will-change-transform.pointer-events-auto.overflow-y-auto',
-    );
-    if (el) el.scrollTo({ top: 0, behavior: 'smooth' });
-  }, [selectedClient?.id]);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (showForm || deleteConfirm || showImport || showExport) return;
+      setSelectedClient(null);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [selectedClient, showForm, deleteConfirm, showImport, showExport]);
 
   // ─── Data fetching ──────────────────────────────────────────────────────────
   // Real-time listener (refactor de sincronização multi-user):
@@ -1991,10 +2003,30 @@ export default function ClientsModule() {
           )}
         </div>
 
-        {/* Detail panel */}
+        {/* Detail panel renderizado via portal mais abaixo (drawer fixo direita).
+            Antes vivia AQUI dentro do flex container ao lado da lista — quando
+            abria, a lista perdia largura, re-flow do overflow-y-auto resetava
+            scrollTop, mandando o user pra o topo. Usuário precisava re-scrollar
+            cada vez que clicava num cliente lá embaixo. Drawer fixo resolve:
+            lista permanece intocada (mesma largura, mesmo scroll), painel
+            flutua sobre conteúdo à direita. */}
+      </div>
+
+      {/* Detail drawer — flutua sobre o conteúdo à direita. Sem backdrop:
+          o operador continua clicando em outras linhas da lista (que ficam
+          visíveis à esquerda do drawer) pra trocar o cliente em inspeção.
+          Fecha via X (no próprio painel) ou ESC. */}
+      {typeof document !== 'undefined' && createPortal(
         <AnimatePresence>
           {selectedClient && (
-            <div className="w-full lg:w-80 xl:w-96 flex-shrink-0 rounded-2xl overflow-hidden border border-gray-200 dark:border-gray-800">
+            <motion.div
+              key="client-detail-drawer"
+              initial={{ x: 480, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: 480, opacity: 0 }}
+              transition={{ duration: 0.22, ease: [0.4, 0, 0.2, 1] }}
+              className="fixed top-[60px] right-0 bottom-0 sm:top-[68px] sm:right-4 sm:bottom-4 w-full sm:w-[440px] max-w-[calc(100vw-2rem)] z-40 sm:rounded-2xl overflow-hidden border-l sm:border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-2xl"
+            >
               <ClientDetailPanel
                 client={selectedClient}
                 onClose={() => setSelectedClient(null)}
@@ -2003,10 +2035,11 @@ export default function ClientsModule() {
                 products={productsForAcquisition}
                 offers={offersForAcquisition}
               />
-            </div>
+            </motion.div>
           )}
-        </AnimatePresence>
-      </div>
+        </AnimatePresence>,
+        document.body
+      )}
 
       {/* Create/Edit modal */}
       {typeof document !== 'undefined' && createPortal(
