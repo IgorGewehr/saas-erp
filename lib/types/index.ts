@@ -2539,6 +2539,18 @@ export interface TeamChat {
   updatedAt: string;
 }
 
+/** Anexo de mensagem do team chat. Mesmo shape de NoteAttachment pra consistência. */
+export interface TeamChatAttachment {
+  id: string;
+  name: string;
+  url: string;
+  /** Path no Storage — usado pra cleanup/delete posterior. */
+  path: string;
+  type: 'image' | 'file';
+  size: number;
+  createdAt: string;
+}
+
 export interface TeamChatMessage {
   id: string;
   businessId: string;
@@ -2547,7 +2559,9 @@ export interface TeamChatMessage {
   senderName: string;
   senderInitials: string;
   senderPhotoURL?: string;
+  /** Texto da mensagem. Pode ser vazio quando há `attachments`. */
   text: string;
+  attachments?: TeamChatAttachment[];
   createdAt: string;
 }
 

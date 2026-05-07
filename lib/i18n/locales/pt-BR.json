@@ -1154,6 +1154,14 @@
     "startDM": "Iniciar conversa",
     "unknownUser": "Usuário",
     "noConversationsYet": "Nenhuma conversa direta ainda. Clique em um membro abaixo pra começar.",
+    "attachments": {
+      "attach": "Anexar arquivo ou imagem",
+      "remove": "Remover anexo",
+      "maxFiles": "Máximo de {{max}} arquivos por mensagem.",
+      "tooLarge": "\"{{name}}\" excede {{max}}MB.",
+      "uploadFailed": "Erro ao enviar arquivo. Tente novamente.",
+      "unauthorized": "Tipo de arquivo não permitido pelo servidor."
+    },
     "aiChat": {
       "title": "Chat IA",
       "subtitle": "Operador e Analista",

@@ -1141,10 +1141,13 @@ service cloud.firestore {
                   && parentTeamChatAccessible(resource.data.chatId);
 
       // Sender precisa ser o próprio usuário; chat-pai precisa ser acessível.
+      // Mensagem deve ter texto OU anexos (não pode ser vazia).
       allow create: if isAuthenticated()
                     && incomingBelongsToBusiness()
                     && request.auth.uid == request.resource.data.senderId
-                    && isNonEmptyString(request.resource.data.text)
+                    && (isNonEmptyString(request.resource.data.text)
+                        || (request.resource.data.attachments is list
+                            && request.resource.data.attachments.size() > 0))
                     && parentTeamChatAccessible(request.resource.data.chatId);
 
       // Mensagens são imutáveis depois de enviadas (sem edit/delete na fase 1).

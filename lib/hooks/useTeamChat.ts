@@ -16,8 +16,17 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import type { TeamChat, TeamChatMessage } from '@/lib/types';
+import type { TeamChat, TeamChatMessage, TeamChatAttachment } from '@/lib/types';
 import { getInitials } from '@/lib/utils/format';
+
+/** Preview do lastMessage quando a msg só tem anexos. Hardcoded em PT — i18n
+ *  no preview do chat ficaria pesado pra um label minúsculo. */
+function buildAttachmentSummary(atts: TeamChatAttachment[]): string {
+  if (atts.length === 1) return `📎 ${atts[0].name}`;
+  const imgCount = atts.filter(a => a.type === 'image').length;
+  if (imgCount === atts.length) return `🖼️ ${atts.length} imagens`;
+  return `📎 ${atts.length} arquivos`;
+}
 
 // ─── IDs determinísticos ─────────────────────────────────────────────────────
 // Ambos baseados no business/uids — evitam corrida que crie duplicatas se dois
@@ -56,7 +65,7 @@ interface UseTeamChatResult {
   ensureGlobalChat: () => Promise<string>;
   /** Cria (se não existir) um DM 1:1 com `otherUid` e retorna o chatId. */
   ensureDM: (otherUid: string) => Promise<string>;
-  sendMessage: (chatId: string, text: string) => Promise<void>;
+  sendMessage: (chatId: string, text: string, attachments?: TeamChatAttachment[]) => Promise<void>;
   markAsRead: (chatId: string) => Promise<void>;
 }
 
@@ -243,10 +252,16 @@ export function useTeamChat(): UseTeamChatResult {
     }
   }, [businessId, user]);
 
-  const sendMessage = useCallback(async (chatId: string, text: string) => {
+  const sendMessage = useCallback(async (
+    chatId: string,
+    text: string,
+    attachments?: TeamChatAttachment[],
+  ) => {
     if (!user || !businessId) throw new Error('Sem auth/business');
     const trimmed = text.trim();
-    if (!trimmed) return;
+    const hasAttachments = (attachments?.length ?? 0) > 0;
+    // Mensagem vazia (sem texto E sem anexos) não envia nada.
+    if (!trimmed && !hasAttachments) return;
 
     // Garante que o chat global exista antes de updateDoc — evita falha se o
     // ensureGlobalChat do mount ainda não rodou ou foi rejeitado por rules.
@@ -256,8 +271,8 @@ export function useTeamChat(): UseTeamChatResult {
 
     const now = new Date().toISOString();
 
-    // 1. Cria a mensagem. senderPhotoURL é incluído condicionalmente — Firestore
-    // armazena nulls explicitamente, então omitimos quando não há foto.
+    // 1. Cria a mensagem. senderPhotoURL e attachments incluídos condicionalmente
+    // — Firestore armazena nulls/undefined explicitamente, omitimos quando vazio.
     await addDoc(collection(db, 'teamChatMessages'), {
       businessId,
       chatId,
@@ -267,12 +282,16 @@ export function useTeamChat(): UseTeamChatResult {
       text: trimmed,
       createdAt: now,
       ...(user.photoURL ? { senderPhotoURL: user.photoURL } : {}),
+      ...(hasAttachments ? { attachments } : {}),
     });
 
-    // 2. Atualiza o chat: lastMessage + lastReadAt do sender.
+    // 2. Atualiza o chat: lastMessage + lastReadAt do sender. Quando a mensagem
+    // só tem anexos (sem texto), preview do lastMessage usa um label resumido.
+    const lastMessageText = trimmed || buildAttachmentSummary(attachments!);
+
     await updateDoc(doc(db, 'teamChats', chatId), {
       lastMessage: {
-        text: trimmed,
+        text: lastMessageText,
         senderId: user.uid,
         senderName: user.name,
         sentAt: now,

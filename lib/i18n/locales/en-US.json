@@ -1154,6 +1154,14 @@
     "startDM": "Start conversation",
     "unknownUser": "User",
     "noConversationsYet": "No direct conversations yet. Click a member below to start.",
+    "attachments": {
+      "attach": "Attach file or image",
+      "remove": "Remove attachment",
+      "maxFiles": "Maximum {{max}} files per message.",
+      "tooLarge": "\"{{name}}\" exceeds {{max}}MB.",
+      "uploadFailed": "Failed to upload. Try again.",
+      "unauthorized": "File type not allowed by server."
+    },
     "aiChat": {
       "title": "AI Chat",
       "subtitle": "Operator and Analyst",

@@ -2,11 +2,12 @@
 
 import { useEffect, useRef, useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, Send, Users, Wifi, Clock, MessageCircle, Loader2, AlertTriangle, Sparkles, BarChart3, Command } from 'lucide-react';
+import { ArrowLeft, Send, Users, Wifi, Clock, MessageCircle, Loader2, AlertTriangle, Sparkles, BarChart3, Command, Paperclip, X, Download, ImageIcon } from 'lucide-react';
 import { collection, query, where, getDocs, getDocsFromCache } from 'firebase/firestore';
+import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { db } from '@/lib/config/firebase';
+import { db, storage } from '@/lib/config/firebase';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAIAgent, type AIMode, type AIChatMessage } from '@/app/components/providers/AIAgentProvider';
@@ -14,7 +15,7 @@ import { useTeamChat, useTeamChatMessages } from '@/lib/hooks/useTeamChat';
 import { CachedImage } from '@/app/components/ui/CachedImage';
 import { RenderMarkdown } from '@/app/components/features/dashboard/markdown';
 import { getInitials } from '@/lib/utils/format';
-import type { User as UserType, TeamChat, TeamChatMessage } from '@/lib/types';
+import type { User as UserType, TeamChat, TeamChatMessage, TeamChatAttachment } from '@/lib/types';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -190,7 +191,7 @@ export function TeamChatPanel() {
 
 function TeamChatDropdown({ members, teamChat }: { members: UserType[]; teamChat: TeamChatBundle }) {
   const { t } = useTranslation();
-  const { user } = useAuth();
+  const { user, business } = useAuth();
   const {
     chats,
     globalChat,
@@ -377,7 +378,8 @@ function TeamChatDropdown({ members, teamChat }: { members: UserType[]; teamChat
             >
               <ChatView
                 chatId={view.chatId}
-                onSend={(text) => sendMessage(view.chatId, text)}
+                businessId={business?.id ?? ''}
+                onSend={(text, attachments) => sendMessage(view.chatId, text, attachments)}
               />
             </motion.div>
           )}
@@ -672,29 +674,37 @@ function statusLabel(member: UserType, t: RelTime): string {
 
 // ─── ChatView ────────────────────────────────────────────────────────────────
 
+// Limites — alinhados com Notas pra consistência cross-feature.
+const MAX_ATTACHMENTS = 10;
+const MAX_FILE_MB = 10;
+const ATTACHMENT_ACCEPT = 'image/*,video/*,audio/*,.pdf,.xml,.json,.csv,.txt,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.zip,.rar,.7z';
+
 function ChatView({
   chatId,
+  businessId,
   onSend,
 }: {
   chatId: string;
-  onSend: (text: string) => Promise<void>;
+  businessId: string;
+  onSend: (text: string, attachments?: TeamChatAttachment[]) => Promise<void>;
 }) {
   const { t } = useTranslation();
   const { user } = useAuth();
   const { messages, loading } = useTeamChatMessages(chatId);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
+  const [pendingAttachments, setPendingAttachments] = useState<TeamChatAttachment[]>([]);
+  const [uploading, setUploading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Auto-scroll quando novas mensagens chegam (e no mount).
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
   }, [messages.length]);
 
-  // Auto-resize do textarea: cresce até max-h, depois rola interno.
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setText(e.target.value);
     const el = e.target;
@@ -702,18 +712,91 @@ function ChatView({
     el.style.height = `${Math.min(el.scrollHeight, 128)}px`;
   };
 
+  // Upload pra Storage. Sucesso → adiciona em pendingAttachments. Falha por
+  // tamanho/tipo → alert (no-op). Mantém pendingAttachments coerente.
+  const handleFilePick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = ''; // permite re-selecionar mesmo arquivo
+    if (!files.length || !businessId) return;
+
+    const remaining = MAX_ATTACHMENTS - pendingAttachments.length;
+    if (remaining <= 0) {
+      alert(t('teamChat.attachments.maxFiles', { max: MAX_ATTACHMENTS }));
+      return;
+    }
+
+    const valid = files.slice(0, remaining).filter(f => {
+      if (f.size > MAX_FILE_MB * 1024 * 1024) {
+        alert(t('teamChat.attachments.tooLarge', { name: f.name, max: MAX_FILE_MB }));
+        return false;
+      }
+      return true;
+    });
+    if (!valid.length) return;
+
+    setUploading(true);
+    try {
+      const newAtts: TeamChatAttachment[] = [];
+      for (const file of valid) {
+        const fileId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const path = `businesses/${businessId}/teamChats/${chatId}/${fileId}_${safeName}`;
+        const sRef = storageRef(storage, path);
+        // Detecta content-type — extensões "exóticas" (xml, json) podem vir vazias do browser.
+        const ext = file.name.toLowerCase().split('.').pop() || '';
+        const inferredType = file.type
+          || (ext === 'xml' ? 'application/xml'
+            : ext === 'json' ? 'application/json'
+            : ext === 'csv' ? 'text/csv'
+            : ext === 'txt' ? 'text/plain'
+            : 'application/octet-stream');
+        await uploadBytes(sRef, file, { contentType: inferredType });
+        const url = await getDownloadURL(sRef);
+        newAtts.push({
+          id: fileId,
+          name: file.name,
+          url,
+          path,
+          type: file.type.startsWith('image/') ? 'image' : 'file',
+          size: file.size,
+          createdAt: new Date().toISOString(),
+        });
+      }
+      setPendingAttachments(prev => [...prev, ...newAtts]);
+    } catch (err) {
+      console.error('[ChatView] upload failed:', err);
+      const code = (err as { code?: string })?.code;
+      const msg = code === 'storage/unauthorized'
+        ? t('teamChat.attachments.unauthorized')
+        : t('teamChat.attachments.uploadFailed');
+      alert(msg);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleRemoveAttachment = async (att: TeamChatAttachment) => {
+    setPendingAttachments(prev => prev.filter(a => a.id !== att.id));
+    // Remove do Storage também — não houve send ainda, é orfão.
+    try { await deleteObject(storageRef(storage, att.path)); } catch { /* já pode estar fora */ }
+  };
+
   const handleSend = async () => {
     const v = text.trim();
-    if (!v || sending) return;
+    const hasAtts = pendingAttachments.length > 0;
+    if ((!v && !hasAtts) || sending) return;
     setSending(true);
+    const sentAttachments = pendingAttachments;
     setText('');
-    // Reseta altura do textarea após limpar.
+    setPendingAttachments([]);
     if (composerRef.current) composerRef.current.style.height = 'auto';
     try {
-      await onSend(v);
+      await onSend(v, hasAtts ? sentAttachments : undefined);
     } catch (err) {
       console.error('[ChatView] send error:', err);
-      setText(v); // restaura para o usuário tentar de novo
+      // Restaura state pra o usuário tentar de novo.
+      setText(v);
+      setPendingAttachments(sentAttachments);
     } finally {
       setSending(false);
       composerRef.current?.focus();
@@ -726,6 +809,29 @@ function ChatView({
       void handleSend();
     }
   };
+
+  // Ref com snapshot atual de pending attachments — atualizado a cada render
+  // pra ler valor mais novo no cleanup do unmount sem depender de closure.
+  // **Declarado ANTES** do useEffect que o consome (TDZ-safe).
+  const pendingAttachmentsRefValue = useRef<TeamChatAttachment[]>([]);
+  pendingAttachmentsRefValue.current = pendingAttachments;
+
+  // Cleanup: se ChatView desmonta com anexos pendentes (usuário fechou painel
+  // ou trocou de chat sem enviar), apaga os arquivos do Storage pra não vazar
+  // custo. Trade-off conhecido: trocar de chat com anexos pendentes perde os
+  // arquivos sem aviso. Aceitável pra Fase 2 — usuário deve enviar antes de
+  // navegar. Polish futuro: badge de "anexos não enviados" ou state lifted.
+  useEffect(() => {
+    return () => {
+      const toClean = pendingAttachmentsRefValue.current;
+      if (toClean.length === 0) return;
+      for (const att of toClean) {
+        deleteObject(storageRef(storage, att.path)).catch(() => { /* ignore */ });
+      }
+    };
+  }, []);
+
+  const canSend = (text.trim().length > 0 || pendingAttachments.length > 0) && !sending && !uploading;
 
   return (
     <div className="flex flex-col h-full">
@@ -750,7 +856,60 @@ function ChatView({
       </div>
 
       <div className="border-t border-gray-100 dark:border-gray-700/50 px-2 py-2 bg-gray-50/40 dark:bg-white/[0.02]">
+        {/* Preview de anexos pendentes — aparece acima do composer */}
+        {pendingAttachments.length > 0 && (
+          <div className="px-1 pb-2 flex flex-wrap gap-1.5">
+            {pendingAttachments.map(att => (
+              <div key={att.id} className="group/att relative">
+                {att.type === 'image' ? (
+                  <img
+                    src={att.url}
+                    alt={att.name}
+                    loading="lazy"
+                    className="h-12 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-700"
+                  />
+                ) : (
+                  <div className="h-12 w-16 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-white/[0.04] flex flex-col items-center justify-center gap-0.5 px-1">
+                    <Paperclip className="w-3 h-3 text-gray-400" />
+                    <span className="text-[8.5px] text-gray-500 dark:text-gray-400 truncate w-full text-center">{att.name}</span>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => handleRemoveAttachment(att)}
+                  className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full flex items-center justify-center opacity-0 group-hover/att:opacity-100 transition-opacity shadow-sm"
+                  title={t('teamChat.attachments.remove')}
+                >
+                  <X className="w-2.5 h-2.5 text-white" />
+                </button>
+              </div>
+            ))}
+            {uploading && (
+              <div className="h-12 w-16 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-white/[0.04] flex items-center justify-center">
+                <Loader2 className="w-3.5 h-3.5 text-gray-400 animate-spin" />
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="flex items-end gap-1.5">
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading || sending || pendingAttachments.length >= MAX_ATTACHMENTS}
+            title={t('teamChat.attachments.attach')}
+            className="h-[38px] w-[38px] flex items-center justify-center rounded-xl flex-shrink-0 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Paperclip className="w-4 h-4" />}
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept={ATTACHMENT_ACCEPT}
+            onChange={handleFilePick}
+            className="hidden"
+          />
           <textarea
             ref={composerRef}
             value={text}
@@ -769,7 +928,7 @@ function ChatView({
           />
           <button
             onClick={handleSend}
-            disabled={!text.trim() || sending}
+            disabled={!canSend}
             className={cn(
               'h-[38px] w-[38px] flex items-center justify-center rounded-xl flex-shrink-0',
               'bg-red-500 hover:bg-red-600 text-white transition-colors',
@@ -814,28 +973,108 @@ function MessageGroup({ group, myUid }: { group: TeamChatMessage[]; myUid: strin
           </span>
         )}
         {group.map((m, i) => (
-          <div
-            key={m.id}
-            className={cn(
-              'rounded-2xl px-3 py-1.5 text-[13px] leading-relaxed break-words whitespace-pre-wrap',
-              mine
-                ? 'bg-red-500 text-white rounded-br-sm'
-                : 'bg-gray-100 dark:bg-white/[0.06] text-gray-900 dark:text-gray-100 rounded-bl-sm',
-              i === 0 && (mine ? 'rounded-tr-2xl' : 'rounded-tl-2xl'),
-            )}
-          >
-            {m.text}
-            <span className={cn(
-              'ml-1.5 text-[9.5px] align-baseline',
-              mine ? 'text-white/70' : 'text-gray-400 dark:text-gray-500',
-            )}>
-              {formatTime(m.createdAt)}
-            </span>
-          </div>
+          <MessageBubble key={m.id} msg={m} mine={mine} firstInGroup={i === 0} />
         ))}
       </div>
     </div>
   );
+}
+
+function MessageBubble({ msg, mine, firstInGroup }: { msg: TeamChatMessage; mine: boolean; firstInGroup: boolean }) {
+  const images = (msg.attachments ?? []).filter(a => a.type === 'image');
+  const files = (msg.attachments ?? []).filter(a => a.type === 'file');
+  const hasText = msg.text.trim().length > 0;
+
+  return (
+    <div
+      className={cn(
+        'rounded-2xl text-[13px] leading-relaxed break-words',
+        // Sem padding extra quando só tem imagens — bubble apertado em volta da img.
+        hasText || files.length > 0 ? 'px-3 py-1.5' : 'p-1',
+        mine
+          ? 'bg-red-500 text-white rounded-br-sm'
+          : 'bg-gray-100 dark:bg-white/[0.06] text-gray-900 dark:text-gray-100 rounded-bl-sm',
+        firstInGroup && (mine ? 'rounded-tr-2xl' : 'rounded-tl-2xl'),
+      )}
+    >
+      {/* Imagens — grid simples, click abre em nova aba pra ver tamanho real. */}
+      {images.length > 0 && (
+        <div className={cn('flex flex-wrap gap-1', (hasText || files.length > 0) && 'mb-1.5')}>
+          {images.map(img => (
+            <a
+              key={img.id}
+              href={img.url}
+              target="_blank"
+              rel="noreferrer"
+              className="block relative rounded-lg overflow-hidden hover:opacity-95 transition-opacity"
+              style={{ maxWidth: 220 }}
+            >
+              <img
+                src={img.url}
+                alt={img.name}
+                loading="lazy"
+                className="max-h-44 max-w-full object-cover rounded-lg"
+              />
+            </a>
+          ))}
+        </div>
+      )}
+
+      {/* Arquivos não-imagem — link de download. */}
+      {files.length > 0 && (
+        <div className={cn('flex flex-col gap-1', hasText && 'mb-1')}>
+          {files.map(f => (
+            <a
+              key={f.id}
+              href={f.url}
+              target="_blank"
+              rel="noreferrer"
+              className={cn(
+                'flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11.5px] transition-colors',
+                mine
+                  ? 'bg-red-600/40 hover:bg-red-600/60 text-white'
+                  : 'bg-gray-200/60 dark:bg-white/[0.06] hover:bg-gray-300/70 dark:hover:bg-white/[0.10] text-gray-800 dark:text-gray-100',
+              )}
+              title={f.name}
+            >
+              <Paperclip className="w-3 h-3 flex-shrink-0" />
+              <span className="truncate flex-1 min-w-0">{f.name}</span>
+              <span className={cn('text-[9.5px] flex-shrink-0', mine ? 'text-white/70' : 'text-gray-500 dark:text-gray-400')}>
+                {formatBytes(f.size)}
+              </span>
+              <Download className="w-3 h-3 flex-shrink-0 opacity-50" />
+            </a>
+          ))}
+        </div>
+      )}
+
+      {/* Texto + timestamp. Quando não há texto mas há anexos, timestamp aparece como linha curta. */}
+      {hasText ? (
+        <span className="whitespace-pre-wrap">
+          {msg.text}
+          <span className={cn(
+            'ml-1.5 text-[9.5px] align-baseline',
+            mine ? 'text-white/70' : 'text-gray-400 dark:text-gray-500',
+          )}>
+            {formatTime(msg.createdAt)}
+          </span>
+        </span>
+      ) : (
+        <div className={cn(
+          'text-[9.5px] leading-tight px-1.5 pb-0.5 text-right',
+          mine ? 'text-white/70' : 'text-gray-400 dark:text-gray-500',
+        )}>
+          {formatTime(msg.createdAt)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 // ─── AI Chat: sugestões compactas pro empty state ───────────────────────────
