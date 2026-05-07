@@ -88,6 +88,8 @@ import {
   Image as ImageIcon,
   Video,
   FileQuestion,
+  Wrench,
+  PlayCircle,
 } from 'lucide-react';
 import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector, Service, WorkingHours, DaySchedule, UseCase } from '@/lib/types';
 import { WHATSAPP_TEMPLATE_CATALOG, renderTemplatePreview } from '@/lib/constants/whatsapp-template-catalog';
@@ -1043,6 +1045,172 @@ function AppleCalendarSection() {
 // EMPRESA TAB
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ─── Maintenance card (admin tools) ──────────────────────────────────────────
+//
+// Ferramentas de manutenção pontuais que admin/founder pode rodar pra
+// reparar dados após bugs. Cada ação tem dry-run obrigatório antes do
+// commit real, retornando exemplos do que seria mudado.
+
+interface RepairResult {
+  scanned: number;
+  fixed: number;
+  examples: Array<{ id: string; before: string; after: string }>;
+}
+
+interface RepairResponse {
+  ok?: boolean;
+  dryRun?: boolean;
+  conversations?: RepairResult;
+  clients?: RepairResult;
+  broadcastMessages?: RepairResult;
+  error?: string;
+}
+
+function MaintenanceCard() {
+  const { firebaseUser } = useAuth();
+  const [running, setRunning] = useState<'idle' | 'preview' | 'apply'>('idle');
+  const [preview, setPreview] = useState<RepairResponse | null>(null);
+  const [applied, setApplied] = useState<RepairResponse | null>(null);
+
+  const callRepair = useCallback(async (dryRun: boolean): Promise<RepairResponse> => {
+    if (!firebaseUser) throw new Error('Não autenticado');
+    const token = await firebaseUser.getIdToken();
+    const res = await fetch('/api/admin/repair-contact-names', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ dryRun }),
+    });
+    const data: RepairResponse = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  }, [firebaseUser]);
+
+  const handlePreview = useCallback(async () => {
+    setRunning('preview');
+    setApplied(null);
+    try {
+      const data = await callRepair(true);
+      setPreview(data);
+      const total = (data.conversations?.fixed ?? 0) + (data.clients?.fixed ?? 0) + (data.broadcastMessages?.fixed ?? 0);
+      if (total === 0) {
+        toast.success('Nenhum nome corrompido encontrado.');
+      } else {
+        toast.info(`Pré-visualização: ${total} registros seriam corrigidos.`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Erro desconhecido';
+      toast.error(`Erro: ${msg}`);
+    } finally {
+      setRunning('idle');
+    }
+  }, [callRepair]);
+
+  const handleApply = useCallback(async () => {
+    setRunning('apply');
+    try {
+      const data = await callRepair(false);
+      setApplied(data);
+      setPreview(null);
+      const total = (data.conversations?.fixed ?? 0) + (data.clients?.fixed ?? 0) + (data.broadcastMessages?.fixed ?? 0);
+      toast.success(`${total} registros corrigidos com sucesso.`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Erro desconhecido';
+      toast.error(`Erro: ${msg}`);
+    } finally {
+      setRunning('idle');
+    }
+  }, [callRepair]);
+
+  const renderResult = (data: RepairResponse | null, kind: 'preview' | 'applied') => {
+    if (!data) return null;
+    const totalFixed = (data.conversations?.fixed ?? 0) + (data.clients?.fixed ?? 0) + (data.broadcastMessages?.fixed ?? 0);
+    const allExamples = [
+      ...(data.conversations?.examples || []).map(e => ({ ...e, src: 'Conversa' })),
+      ...(data.clients?.examples || []).map(e => ({ ...e, src: 'Cliente' })),
+      ...(data.broadcastMessages?.examples || []).map(e => ({ ...e, src: 'Broadcast' })),
+    ].slice(0, 12);
+
+    return (
+      <div className={cn(
+        'mt-4 rounded-xl border px-4 py-3',
+        kind === 'preview'
+          ? 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30'
+          : 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/30',
+      )}>
+        <p className="text-xs font-semibold text-gray-700 dark:text-gray-200 mb-2">
+          {kind === 'preview' ? `Pré-visualização: ${totalFixed} registros seriam corrigidos` : `${totalFixed} registros corrigidos`}
+        </p>
+        <div className="grid grid-cols-3 gap-2 text-[11px] text-gray-600 dark:text-gray-400 mb-2">
+          <div>Conversas: <strong>{data.conversations?.fixed ?? 0}</strong>/{data.conversations?.scanned ?? 0}</div>
+          <div>Clientes: <strong>{data.clients?.fixed ?? 0}</strong>/{data.clients?.scanned ?? 0}</div>
+          <div>Broadcasts: <strong>{data.broadcastMessages?.fixed ?? 0}</strong>/{data.broadcastMessages?.scanned ?? 0}</div>
+        </div>
+        {allExamples.length > 0 && (
+          <details className="mt-2">
+            <summary className="text-[11px] text-gray-500 dark:text-gray-400 cursor-pointer hover:text-gray-700 dark:hover:text-gray-200">
+              Ver {allExamples.length} exemplos
+            </summary>
+            <div className="mt-2 space-y-1 max-h-48 overflow-y-auto">
+              {allExamples.map((ex, i) => (
+                <div key={i} className="text-[11px] font-mono bg-white/50 dark:bg-black/20 rounded px-2 py-1 flex items-center gap-2">
+                  <span className="text-gray-400 dark:text-gray-500 shrink-0">[{ex.src}]</span>
+                  <span className="line-through text-red-500/70 dark:text-red-400/70 truncate">{ex.before}</span>
+                  <span className="text-gray-400">→</span>
+                  <span className="text-emerald-600 dark:text-emerald-400 truncate">{ex.after}</span>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <SectionCard title="Manutenção" icon={Wrench}>
+      <div className="space-y-4">
+        <div className="rounded-xl bg-gray-50 dark:bg-white/[0.02] border border-gray-200 dark:border-gray-700/40 px-4 py-3">
+          <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">
+            Reparar nomes de contato corrompidos
+          </h4>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-3 leading-relaxed">
+            Limpa caracteres espúrios nas pontas de nomes (ex: <code className="bg-gray-200 dark:bg-gray-800 px-1 rounded">(- Daia Salão</code> → <code className="bg-gray-200 dark:bg-gray-800 px-1 rounded">Daia Salão</code>).
+            Afeta conversas, clientes e broadcasts deste tenant. A operação é
+            idempotente — pode rodar múltiplas vezes sem efeito colateral.
+            Recomendado: pré-visualizar antes de aplicar.
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={handlePreview}
+              disabled={running !== 'idle'}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {running === 'preview' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlayCircle className="w-3.5 h-3.5" />}
+              Pré-visualizar
+            </button>
+            <button
+              type="button"
+              onClick={handleApply}
+              disabled={running !== 'idle' || !preview || ((preview.conversations?.fixed ?? 0) + (preview.clients?.fixed ?? 0) + (preview.broadcastMessages?.fixed ?? 0)) === 0}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-red-600 hover:bg-red-700 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              title={!preview ? 'Pré-visualize primeiro' : 'Aplica as correções no Firestore'}
+            >
+              {running === 'apply' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wrench className="w-3.5 h-3.5" />}
+              Aplicar correções
+            </button>
+          </div>
+          {preview && renderResult(preview, 'preview')}
+          {applied && renderResult(applied, 'applied')}
+        </div>
+      </div>
+    </SectionCard>
+  );
+}
+
 function EmpresaTab() {
   const { t } = useTranslation();
   const { user, business, refreshUser } = useAuth();
@@ -1751,6 +1919,9 @@ function EmpresaTab() {
             <SaveButton loading={isSaving} label={t('settings.company.saveButton', 'Salvar Dados da Empresa')} />
           </div>
         )}
+
+        {/* Manutenção (admin/founder only) */}
+        {canEditSettings && <MaintenanceCard />}
       </form>
     </motion.div>
   );
