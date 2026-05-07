@@ -1,16 +1,15 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   UtensilsCrossed, Search, Clock, Package, ImageOff, Plus, Tag, AlertCircle,
   Sparkles, ShoppingCart, X, ChevronRight, Minus, Leaf,
 } from 'lucide-react';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
-import { useQuery } from '@tanstack/react-query';
 import { formatCurrency } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
 import type { Product } from '@/lib/types';
@@ -361,22 +360,39 @@ export default function CardapioModule() {
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [cart, setCart] = useState<CartMap>(new Map());
 
-  const { data: products = [], isLoading } = useQuery({
-    queryKey: ['products-menu', business?.id],
-    queryFn: async () => {
-      if (!business?.id) return [];
-      const q = query(
-        collection(db, 'products'),
-        where('businessId', '==', business.id),
-        where('isDeliverable', '==', true),
-        where('isActive', '==', true),
-      );
-      const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Product));
-    },
-    enabled: !!business?.id,
-    staleTime: 60 * 1000,
-  });
+  // Real-time listener (refactor sync multi-user):
+  //
+  // ANTES: useQuery + getDocs com staleTime 60s. Cliente final via cardápio
+  // desatualizado quando atendente alterava preço/disponibilidade no PDV
+  // ou Estoque — refetch só ocorria a cada 60s ou no foco da janela.
+  //
+  // AGORA: onSnapshot. Toggle de isActive/isDeliverable em estoque reflete
+  // imediatamente no cardápio aberto (mesmo em outra aba/dispositivo).
+  // Crítico pra "esgotou item" — evita pedido de produto indisponível.
+  const [products, setProducts] = useState<Product[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  useEffect(() => {
+    if (!business?.id) { setIsLoading(false); return; }
+    setIsLoading(true);
+    const q = query(
+      collection(db, 'products'),
+      where('businessId', '==', business.id),
+      where('isDeliverable', '==', true),
+      where('isActive', '==', true),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        setProducts(snap.docs.map(d => ({ ...d.data(), id: d.id } as Product)));
+        setIsLoading(false);
+      },
+      (err) => {
+        console.error('[Cardapio] products snapshot error:', err);
+        setIsLoading(false);
+      },
+    );
+    return () => unsub();
+  }, [business?.id]);
 
   const categories = useMemo(() => {
     const set = new Set<string>();
