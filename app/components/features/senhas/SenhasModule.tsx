@@ -157,6 +157,9 @@ export function VaultTab() {
           return {
             ...rest,
             id: d.id,
+            // Guard: title é required em VaultEntry mas docs migrados/legacy
+            // podem não ter. Fallback evita crash em sort/render.
+            title: (rest.title as string | undefined) ?? '(sem título)',
             hasPassword: !!_encryptedPassword,
           } as VaultListItem;
         });

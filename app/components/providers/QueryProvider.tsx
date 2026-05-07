@@ -22,10 +22,12 @@ import { useState, ReactNode } from 'react';
  *   por algum motivo histórico — provavelmente pra evitar refetch agressivo
  *   no dev, mas em prod o tradeoff inverte).
  *
- * - `refetchOnMount: 'always'` — quando componente montar, sempre refetch
- *   (mesmo que cache esteja "fresco" no React Query). Garante que navegar
- *   entre páginas sempre vê dados atuais. Sem isso, voltar pra Clientes
- *   após editar em outra aba mostra dados antigos do cache.
+ * - `refetchOnMount: true` (default explícito) — refetcha ao montar SE o
+ *   dado está stale (idade > staleTime). Combinado com staleTime: 30s,
+ *   cobre o cenário multi-user sem refetch redundante. Considerei `'always'`
+ *   (refetch a cada montagem ignorando staleTime) mas é overkill: causa
+ *   reads desnecessárias quando user navega entre páginas em <30s, e
+ *   refetchOnWindowFocus já garante atualização ao voltar de outra aba.
  *
  * - `retry: 1` mantido — Firestore raramente falha; 1 retry cobre flakiness.
  *
@@ -40,7 +42,7 @@ export default function QueryProvider({ children }: { children: ReactNode }) {
           queries: {
             staleTime: 30 * 1000,           // 30s (era 5min)
             refetchOnWindowFocus: true,     // (era false)
-            refetchOnMount: 'always',
+            refetchOnMount: true,           // default (refetch só se stale)
             retry: 1,
           },
         },
