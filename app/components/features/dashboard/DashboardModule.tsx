@@ -46,7 +46,7 @@ import {
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { enUS as enUSLocale } from 'date-fns/locale';
-import { collection, query, where, or, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, or, and, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { cn } from '@/lib/utils';
 import type { MenuPage } from '@/app/components/layout/Sidebar';
@@ -173,14 +173,18 @@ export default function DashboardModule() {
     // que o user vê na lista. Sem isso, dashboard mostra unread inflado de
     // canais alheios e conversas deletadas.
     const userIsAdmin = ROLE_HIERARCHY[user.role || 'viewer'] >= ROLE_HIERARCHY['admin'];
+    // Firestore v10+: composite OR exige and() wrapper quando combinado com
+    // outros where() — TS reclama e runtime rejeita sem o wrapper.
     const q = userIsAdmin
       ? query(collection(db, 'conversations'), where('businessId', '==', business.id))
       : query(
           collection(db, 'conversations'),
-          where('businessId', '==', business.id),
-          or(
-            where('channelOwnerType', '==', 'business'),
-            where('channelOwnerId', '==', user.uid),
+          and(
+            where('businessId', '==', business.id),
+            or(
+              where('channelOwnerType', '==', 'business'),
+              where('channelOwnerId', '==', user.uid),
+            ),
           ),
         );
     const unsub = onSnapshot(q, (snap) => {

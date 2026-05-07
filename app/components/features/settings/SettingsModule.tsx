@@ -124,7 +124,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'setores' | 'enterprise' | 'canais' | 'meus-canais' | 'modo' | 'agente' | 'cofre' | 'interface' | 'respostas' | 'logs';
+type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'setores' | 'enterprise' | 'canais' | 'meus-canais' | 'modo' | 'agente' | 'cofre' | 'interface' | 'logs';
 
 interface CertStatus {
   hasCertificate: boolean;
@@ -7106,6 +7106,13 @@ function CanaisTab() {
         );
       })()}
 
+      {/* ── Respostas Rápidas (sub-seção: atalhos /shortcode no composer) ──
+          Antes era uma tab top-level separada, mas é configuração de mensagens
+          igual o resto desta página — fica abaixo das conexões de canal. */}
+      <div className="mt-8 pt-6 border-t border-gray-200 dark:border-gray-700/50">
+        <QuickRepliesTab />
+      </div>
+
       {/* ── Channel Selection Modal (multi-page / multi-phone picker) ── */}
       {channelSelectionPending && createPortal(
         <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
@@ -7609,7 +7616,9 @@ export default function SettingsModule() {
     { id: 'usuarios'   as Tab, label: t('settings.tabs.usuarios', 'Usuários'),   icon: Users      },
     { id: 'setores'    as Tab, label: t('settings.tabs.setores',  'Setores'),    icon: Layers     },
     { id: 'canais'     as Tab, label: t('settings.tabs.canais',   'Canais'),     icon: Plug2      },
-    { id: 'respostas'  as Tab, label: t('settings.tabs.respostas', 'Respostas'), icon: Zap        },
+    // 'respostas' foi unificado dentro de 'canais' como sub-seção (Respostas
+    // Rápidas aparece abaixo das conexões de canal). Tab top-level removida
+    // pra reduzir poluição na barra de configurações.
     { id: 'meus-canais' as Tab, label: 'Meus Canais',                            icon: Smartphone },
     { id: 'enterprise' as Tab, label: t('settings.tabs.enterprise', 'Enterprise'), icon: Blocks     },
     { id: 'logs'       as Tab, label: t('settings.tabs.logs',       'Logs'),       icon: ScrollText },
@@ -7733,7 +7742,6 @@ export default function SettingsModule() {
 
         {activeTab === 'canais'     && <CanaisTab key="canais" />}
         {activeTab === 'meus-canais' && <MyChannelsTab key="meus-canais" />}
-        {activeTab === 'respostas'  && <QuickRepliesTab key="respostas" />}
         {activeTab === 'enterprise' && <EnterpriseTab key="enterprise" />}
         {activeTab === 'logs'       && <LogsTab key="logs" />}
       </AnimatePresence>

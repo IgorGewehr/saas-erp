@@ -73,6 +73,7 @@ import {
   Slash,
   ChevronUp,
   Loader2,
+  Save,
   ClipboardCheck,
   Sparkles,
   SparklesIcon,
@@ -4965,6 +4966,12 @@ export default function ConversasModule() {
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [showSnippets, setShowSnippets] = useState(false);
   const [snippetSearch, setSnippetSearch] = useState('');
+  // Modo "criar atalho rápido" inline no popup — operador pode criar uma
+  // resposta sem sair de Conversas. Quando true, popup mostra form curto
+  // (atalho + mensagem) em vez da lista. Permissão = manager+.
+  const [snippetCreateMode, setSnippetCreateMode] = useState(false);
+  const [snippetDraftContent, setSnippetDraftContent] = useState('');
+  const [snippetSaving, setSnippetSaving] = useState(false);
 
   // Sector assignment
   const [showSectorAssign, setShowSectorAssign] = useState(false);
@@ -6498,7 +6505,64 @@ export default function ConversasModule() {
   const handleSlashWhenEmpty = useCallback(() => {
     setShowSnippets(true);
     setSnippetSearch('');
+    setSnippetCreateMode(false);
+    setSnippetDraftContent('');
   }, []);
+
+  const closeSnippetsPopup = useCallback(() => {
+    setShowSnippets(false);
+    setSnippetCreateMode(false);
+    setSnippetDraftContent('');
+    setSnippetSearch('');
+  }, []);
+
+  // ── Snippet quick-create (inline no popup, sem sair de Conversas) ──────────
+  // Permissão idêntica à QuickRepliesTab: manager+ pode criar/editar.
+  const canCreateSnippet = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['manager'];
+
+  const handleQuickCreateSnippet = useCallback(async () => {
+    if (!canCreateSnippet || !business?.id || !user) return;
+    // Sanitiza atalho: lowercase, sem espaços, só [a-z0-9_-]
+    const shortcode = snippetSearch.trim().toLowerCase().replace(/\s+/g, '_');
+    const content = snippetDraftContent.trim();
+    if (!shortcode) { toast.error('Digite o atalho na busca pra criar'); return; }
+    if (!/^[a-z0-9_-]+$/.test(shortcode)) {
+      toast.error('Atalho aceita só letras minúsculas, números, _ e -');
+      return;
+    }
+    if (shortcode.length > 32) { toast.error('Atalho excede 32 caracteres'); return; }
+    if (!content) { toast.error('Mensagem obrigatória'); return; }
+    if (content.length > 2000) { toast.error('Mensagem excede 2000 caracteres'); return; }
+
+    // Dedup com snippets existentes
+    if (snippets.some(s => s.shortcode.toLowerCase() === shortcode)) {
+      toast.error(`Atalho "/${shortcode}" já existe`);
+      return;
+    }
+
+    setSnippetSaving(true);
+    try {
+      const now = new Date().toISOString();
+      await addDoc(collection(db, 'snippets'), {
+        businessId: business.id,
+        shortcode,
+        content,
+        createdBy: user.uid,
+        createdAt: now,
+        updatedAt: now,
+      });
+      toast.success(`Atalho /${shortcode} criado`);
+      setSnippetCreateMode(false);
+      setSnippetDraftContent('');
+      // Mantém o popup aberto pra user inserir o snippet recém-criado.
+      // onSnapshot vai trazer ele na lista filtrada em <100ms.
+    } catch (err) {
+      console.error('[Snippet quick-create] error:', err);
+      toast.error('Erro ao criar atalho');
+    } finally {
+      setSnippetSaving(false);
+    }
+  }, [canCreateSnippet, business?.id, user, snippetSearch, snippetDraftContent, snippets]);
 
   // ── Snippet insertion ──────────────────────────────────────────────────────
 
@@ -7537,56 +7601,120 @@ export default function ConversasModule() {
                   );
                 })()}
 
-                {/* Snippets Popup */}
+                {/* Snippets Popup — modo lista (default) ou criação inline (manager+).
+                    Padrão Slack: user busca, se não acha, oferece criar com 1 clique
+                    sem precisar abrir Configurações → Canais → Respostas. */}
                 <AnimatePresence>
                   {showSnippets && (
                     <motion.div
                       initial={{ opacity: 0, y: 8 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: 8 }}
-                      className="absolute bottom-20 left-4 right-4 max-h-64 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-2xl overflow-hidden z-30"
+                      className="absolute bottom-20 left-4 right-4 max-h-80 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-2xl overflow-hidden z-30"
                     >
                       <div className="p-3 border-b border-gray-100 dark:border-gray-800">
                         <div className="flex items-center gap-2">
                           <Slash className="w-4 h-4 text-gray-400" />
                           <input
                             type="text"
-                            placeholder={t('conversations.searchSnippets', 'Buscar respostas rápidas...')}
+                            placeholder={snippetCreateMode
+                              ? 'Digite o atalho (ex: ola, fim_dia)'
+                              : t('conversations.searchSnippets', 'Buscar respostas rápidas...')}
                             value={snippetSearch}
                             onChange={(e) => setSnippetSearch(e.target.value)}
                             className="flex-1 text-sm bg-transparent text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none"
                             autoFocus
                           />
-                          <button onClick={() => setShowSnippets(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                          {canCreateSnippet && !snippetCreateMode && (
+                            <button
+                              onClick={() => { setSnippetCreateMode(true); setSnippetDraftContent(''); }}
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-semibold bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors"
+                              title="Criar nova resposta rápida"
+                            >
+                              <Plus className="w-3 h-3" /> Novo
+                            </button>
+                          )}
+                          <button onClick={closeSnippetsPopup} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
                             <X className="w-4 h-4" />
                           </button>
                         </div>
                       </div>
-                      <div className="overflow-y-auto max-h-48">
-                        {filteredSnippets.length === 0 ? (
-                          <div className="p-4 text-center text-xs text-gray-400 dark:text-gray-500">
-                            {snippets.length === 0 ? t('conversations.noSnippets', 'Nenhuma resposta rápida cadastrada') : t('conversations.noSnippetsFound', 'Nenhum resultado encontrado')}
+
+                      {/* MODO CRIAÇÃO inline */}
+                      {snippetCreateMode ? (
+                        <div className="p-3 space-y-2">
+                          <div className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">
+                            Atalho: <code className="font-mono text-red-500 dark:text-red-400">/{snippetSearch.trim().toLowerCase().replace(/\s+/g, '_') || '?'}</code>
                           </div>
-                        ) : (
-                          filteredSnippets.map((s) => (
-                            <button
-                              key={s.id}
-                              onClick={() => handleInsertSnippet(s)}
-                              className="w-full text-left px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors border-b border-gray-50 dark:border-gray-800/50 last:border-0"
-                            >
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs font-mono text-red-500 dark:text-red-400">/{s.shortcode}</span>
-                                {s.sectorId && (
-                                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400">
-                                    {t('conversations.sectorLabel', 'setor')}
-                                  </span>
-                                )}
-                              </div>
-                              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{s.content}</p>
-                            </button>
-                          ))
-                        )}
-                      </div>
+                          <textarea
+                            value={snippetDraftContent}
+                            onChange={(e) => setSnippetDraftContent(e.target.value.slice(0, 2000))}
+                            placeholder="Mensagem completa que o atalho vai inserir..."
+                            rows={4}
+                            className="w-full px-3 py-2 text-sm bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-xl text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400 resize-none"
+                          />
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] text-gray-400">{snippetDraftContent.length}/2000</span>
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => { setSnippetCreateMode(false); setSnippetDraftContent(''); }}
+                                className="px-3 py-1.5 rounded-lg text-xs font-medium text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
+                                disabled={snippetSaving}
+                              >
+                                Cancelar
+                              </button>
+                              <button
+                                onClick={handleQuickCreateSnippet}
+                                disabled={snippetSaving || !snippetSearch.trim() || !snippetDraftContent.trim()}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-600 hover:bg-red-700 text-white disabled:opacity-50"
+                              >
+                                {snippetSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                                Salvar atalho
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="overflow-y-auto max-h-60">
+                          {filteredSnippets.length === 0 ? (
+                            <div className="p-4 text-center">
+                              <p className="text-xs text-gray-400 dark:text-gray-500">
+                                {snippets.length === 0
+                                  ? t('conversations.noSnippets', 'Nenhuma resposta rápida cadastrada')
+                                  : t('conversations.noSnippetsFound', 'Nenhum resultado encontrado')}
+                              </p>
+                              {/* Sugestão: criar atalho com o termo da busca atual */}
+                              {canCreateSnippet && snippetSearch.trim() && (
+                                <button
+                                  onClick={() => { setSnippetCreateMode(true); setSnippetDraftContent(''); }}
+                                  className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors"
+                                >
+                                  <Plus className="w-3 h-3" />
+                                  Criar atalho /{snippetSearch.trim().toLowerCase().replace(/\s+/g, '_')}
+                                </button>
+                              )}
+                            </div>
+                          ) : (
+                            filteredSnippets.map((s) => (
+                              <button
+                                key={s.id}
+                                onClick={() => handleInsertSnippet(s)}
+                                className="w-full text-left px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors border-b border-gray-50 dark:border-gray-800/50 last:border-0"
+                              >
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs font-mono text-red-500 dark:text-red-400">/{s.shortcode}</span>
+                                  {s.sectorId && (
+                                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400">
+                                      {t('conversations.sectorLabel', 'setor')}
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{s.content}</p>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      )}
                     </motion.div>
                   )}
                 </AnimatePresence>

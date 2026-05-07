@@ -7,7 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { getInitials } from '@/lib/utils/format';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
-import { collection, query, where, or, orderBy, limit, onSnapshot, updateDoc, doc, writeBatch } from 'firebase/firestore';
+import { collection, query, where, or, and, orderBy, limit, onSnapshot, updateDoc, doc, writeBatch } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import type { AppNotification } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
@@ -147,6 +147,8 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
     // que o user CONSEGUE ver na lista — sem isso, bagde mostrava unread
     // de canais Baileys pessoais alheios (que o user nem visualiza) e de
     // conversas com isDeleted=true. Resultado: badge "9" + lista vazia.
+    // Firestore v10+: composite OR exige and() wrapper quando combinado com
+    // outros where() — TS reclama (QueryCompositeFilterConstraint != QueryConstraint).
     const q = isAdmin
       ? query(
           collection(db, 'conversations'),
@@ -154,10 +156,12 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
         )
       : query(
           collection(db, 'conversations'),
-          where('businessId', '==', businessId),
-          or(
-            where('channelOwnerType', '==', 'business'),
-            where('channelOwnerId', '==', userUid),
+          and(
+            where('businessId', '==', businessId),
+            or(
+              where('channelOwnerType', '==', 'business'),
+              where('channelOwnerId', '==', userUid),
+            ),
           ),
         );
     const unsub = onSnapshot(
