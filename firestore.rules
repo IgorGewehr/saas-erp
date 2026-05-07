@@ -1151,6 +1151,29 @@ service cloud.firestore {
     }
 
     // ============================================
+    // AI CHAT MESSAGES (histórico persistente do agente IA)
+    // ============================================
+    // Per-user (cada pessoa tem sua conversa privada com o agente). Imutáveis
+    // depois de criadas — só delete pra clear-all do próprio usuário.
+    match /aiChatMessages/{msgId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && resource.data.userId == request.auth.uid;
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && request.resource.data.userId == request.auth.uid
+                    && request.resource.data.mode in ['operator', 'analyst']
+                    && request.resource.data.role in ['user', 'assistant']
+                    && isNonEmptyString(request.resource.data.content);
+
+      allow delete: if isAuthenticated()
+                    && resource.data.userId == request.auth.uid;
+
+      // Sem update — mensagens são append-only.
+    }
+
+    // ============================================
     // NOTIFICATIONS COLLECTION
     // ============================================
     match /notifications/{notifId} {

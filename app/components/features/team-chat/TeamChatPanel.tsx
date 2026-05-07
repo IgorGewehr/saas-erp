@@ -902,7 +902,7 @@ function AIChatRow({ onClick }: { onClick: () => void }) {
 
 function AIChatView() {
   const { t } = useTranslation();
-  const { operatorMsgs, analystMsgs, loadingByMode, send } = useAIAgent();
+  const { operatorMsgs, analystMsgs, loadingByMode, hydrating, send } = useAIAgent();
   const [mode, setMode] = useState<AIMode>('operator');
   const [text, setText] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -983,7 +983,13 @@ function AIChatView() {
 
       {/* Mensagens */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-2" style={{ scrollbarWidth: 'thin' }}>
-        {messages.length === 0 && !isLoading && (
+        {/* Hydrating: primeira fetch do Firestore. Spinner enquanto carrega. */}
+        {hydrating && messages.length === 0 && (
+          <div className="h-full flex items-center justify-center">
+            <Loader2 className="w-4 h-4 text-gray-400 dark:text-gray-500 animate-spin" />
+          </div>
+        )}
+        {!hydrating && messages.length === 0 && !isLoading && (
           <div className="h-full flex flex-col items-center justify-center text-center px-4 py-2">
             <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-red-500 to-rose-600 flex items-center justify-center mb-3 shadow-sm">
               <Sparkles className="w-6 h-6 text-white" />

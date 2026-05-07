@@ -2552,6 +2552,34 @@ export interface TeamChatMessage {
 }
 
 // ============================================
+// AI Chat Messages (histórico persistente do AIAgentProvider)
+// ============================================
+//
+// Coleção `aiChatMessages` — uma mensagem por doc. Histórico per-user (cada
+// pessoa tem sua conversa privada com o agente). Sem update — mensagens
+// imutáveis após create. Delete só pra clear-all.
+
+export type AIChatMessageRole = 'user' | 'assistant';
+export type AIChatMessageMode = 'operator' | 'analyst';
+
+export interface AIChatMessageDoc {
+  id: string;
+  businessId: string;
+  userId: string;
+  mode: AIChatMessageMode;
+  role: AIChatMessageRole;
+  content: string;
+  /** ISO. Timestamp do client — usado pra ordenação e exibição. */
+  createdAt: string;
+  // Metadados do agente (só presentes em mensagens de assistant).
+  runId?: string;
+  toolCalls?: Array<{ name: string; args?: unknown; error?: string }>;
+  costUsd?: number;
+  durationMs?: number;
+  isFallback?: boolean;
+}
+
+// ============================================
 // CRM Segments
 // ============================================
 
