@@ -2044,21 +2044,42 @@ export default function InventoryModule() {
   // FIRESTORE QUERIES
   // ==========================================
 
-  const { data: products = [], isLoading: productsLoading } = useQuery({
-    queryKey: ['products', business?.id],
-    queryFn: async () => {
-      if (!business?.id) return [];
-      const q = query(
-        collection(db, 'products'),
-        where('businessId', '==', business.id),
-        orderBy('name', 'asc'),
-      );
-      const snap = await getDocs(q);
-      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as Product));
-    },
-    enabled: !!business?.id,
-    staleTime: 5 * 60 * 1000,
-  });
+  // Real-time listener (refactor sync multi-user):
+  //
+  // ANTES: useQuery + getDocs com staleTime 5min. Operador A ajustava estoque
+  // ou cadastrava produto, operador B (PDV/Cardápio em outra sessão) só via
+  // mudança após refetch (window focus ou mutation própria).
+  //
+  // AGORA: onSnapshot. Mudanças propagam em tempo real pra todos os clients
+  // — crítico no PDV multiuser, onde estoque desatualizado leva a venda
+  // de produto sem saldo.
+  //
+  // As chamadas de invalidateQueries(['products', ...]) que sobraram viram
+  // no-op pra essa key, mas continuam invalidando keys correlatos (ex: PDV
+  // refetcha sua própria lookup de products quando relevante).
+  const [products, setProducts] = useState<Product[]>([]);
+  const [productsLoading, setProductsLoading] = useState(true);
+  React.useEffect(() => {
+    if (!business?.id) { setProductsLoading(false); return; }
+    setProductsLoading(true);
+    const q = query(
+      collection(db, 'products'),
+      where('businessId', '==', business.id),
+      orderBy('name', 'asc'),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        setProducts(snap.docs.map((d) => ({ ...d.data(), id: d.id } as Product)));
+        setProductsLoading(false);
+      },
+      (err) => {
+        console.error('[Inventory] products snapshot error:', err);
+        setProductsLoading(false);
+      },
+    );
+    return () => unsub();
+  }, [business?.id]);
 
   const { data: movements = [], isLoading: movementsLoading } = useQuery({
     queryKey: ['stockMovements', business?.id],
