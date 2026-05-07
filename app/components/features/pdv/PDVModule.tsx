@@ -671,9 +671,7 @@ export default function PDVModule() {
           accessKey: json.data.chaveAcesso,
         });
         setNfceModalState('authorized');
-
-        // Invalidate fiscal documents cache
-        queryClient.invalidateQueries({ queryKey: ['fiscalDocuments'] });
+        // FiscalModule usa onSnapshot agora — invalidação não é mais necessária.
 
         return { success: true, accessKey: json.data.chaveAcesso };
       } else {
@@ -899,9 +897,10 @@ export default function PDVModule() {
       }
       giftCardRedemptions.current.clear();
 
-      // Invalidate caches
+      // Invalidate caches: sales (PDV salesHistory), transactions (Reports),
+      // clients (Reports/Agenda). 'products' não tem mais consumers (todos
+      // viraram onSnapshot) — removido.
       queryClient.invalidateQueries({ queryKey: ['sales'] });
-      queryClient.invalidateQueries({ queryKey: ['products'] });
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
 
@@ -1059,9 +1058,9 @@ export default function PDVModule() {
         }
       }
 
-      // Invalidate caches
+      // Invalidate caches: sales (PDV salesHistory), transactions (Reports),
+      // clients (Reports/Agenda). 'products' já não tem consumers via useQuery.
       queryClient.invalidateQueries({ queryKey: ['sales'] });
-      queryClient.invalidateQueries({ queryKey: ['products'] });
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
 

@@ -2053,10 +2053,6 @@ export default function InventoryModule() {
   // AGORA: onSnapshot. Mudanças propagam em tempo real pra todos os clients
   // — crítico no PDV multiuser, onde estoque desatualizado leva a venda
   // de produto sem saldo.
-  //
-  // As chamadas de invalidateQueries(['products', ...]) que sobraram viram
-  // no-op pra essa key, mas continuam invalidando keys correlatos (ex: PDV
-  // refetcha sua própria lookup de products quando relevante).
   const [products, setProducts] = useState<Product[]>([]);
   const [productsLoading, setProductsLoading] = useState(true);
   React.useEffect(() => {
@@ -2221,9 +2217,8 @@ export default function InventoryModule() {
       }
       toast.success(t('inventory.toast.productCreated', 'Produto cadastrado com sucesso!'));
     }
-
-    queryClient.invalidateQueries({ queryKey: ['products', business.id] });
-  }, [business?.id, user, editingProduct, queryClient]);
+    // products via onSnapshot — invalidação não é mais necessária.
+  }, [business?.id, user, editingProduct]);
 
   const handleSaveMovement = useCallback(async (data: MovementFormData) => {
     if (!business?.id || !user) return;
@@ -2268,7 +2263,7 @@ export default function InventoryModule() {
     });
 
     toast.success(t('inventory.toast.movementCreated', 'Movimentação registrada com sucesso!'));
-    queryClient.invalidateQueries({ queryKey: ['products', business.id] });
+    // products via onSnapshot. stockMovements continua em useQuery local.
     queryClient.invalidateQueries({ queryKey: ['stockMovements', business.id] });
   }, [business?.id, user, products, queryClient]);
 
@@ -2278,7 +2273,7 @@ export default function InventoryModule() {
     try {
       await deleteDoc(doc(db, 'products', deletingProduct.id));
       toast.success(t('inventory.toast.productDeleted', 'Produto excluído com sucesso'));
-      queryClient.invalidateQueries({ queryKey: ['products', business.id] });
+      // products via onSnapshot — listener vai atualizar a lista automaticamente.
       setDeleteDialogOpen(false);
       setDeletingProduct(null);
     } catch (err) {
@@ -2287,7 +2282,7 @@ export default function InventoryModule() {
     } finally {
       setIsDeleting(false);
     }
-  }, [business?.id, deletingProduct, queryClient]);
+  }, [business?.id, deletingProduct]);
 
   // ==========================================
   // COMPUTED VALUES

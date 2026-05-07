@@ -773,10 +773,10 @@ export default function ClientsModule() {
   // real, incluindo edits via /api (admin SDK bypassa rules mas listeners
   // dos clients ainda recebem o evento de update).
   //
-  // As 5 chamadas de queryClient.invalidateQueries(['clients', ...]) que ainda
-  // existem no código viram no-op (não tem mais essa query no cache), mas
-  // mantidas pra não quebrar outras invalidações em queryKeys correlatos
-  // (e.g., 'products-acquisition-select').
+  // As chamadas de invalidateQueries(['clients', ...]) ao salvar continuam
+  // úteis: invalidam o cache do Reports/Agenda (que ainda usam useQuery
+  // com essa key), forçando refetch com dados frescos sem precisar de
+  // window focus.
   const [clients, setClients] = useState<Client[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   useEffect(() => {
