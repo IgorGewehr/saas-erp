@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useImperativeHandle, forwardRef, memo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
@@ -1753,30 +1753,32 @@ function MessageList({
 
 // ─── Composer ────────────────────────────────────────────────────────────────
 
-function Composer({
-  value,
-  onChange,
-  onSend,
-  onKeyDown,
-  inputRef,
-  channel,
-  connectedVia,
-  isSending,
-  attachment,
-  onAttachmentSelect,
-  onAttachmentRemove,
-  disabled,
-  onTemplateClick,
-  isInternalNote,
-  onToggleInternalNote,
-  onSnippetClick,
-  crossOperatorWarning,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  onSend: () => void;
-  onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
-  inputRef: React.RefObject<HTMLTextAreaElement | null>;
+/**
+ * API imperativa do Composer — usada pelo pai pra ler/escrever o texto sem
+ * controlar o estado externamente. Antes o `value` vivia em useState do
+ * ConversasModule (~8000 linhas), e cada tecla disparava re-render do
+ * módulo inteiro: lista de 177 conversas, painel de mensagens, sidebar,
+ * tudo. Latência de ~30-50ms por tecla → segurar 'a' travava a UI.
+ *
+ * Agora o estado fica LOCAL ao Composer (componente pequeno). Pai lê/escreve
+ * via ref imperativa em momentos pontuais (send, snippet, retry).
+ */
+export interface ComposerHandle {
+  /** Lê o texto atual — chamado por handleSend antes de mandar. */
+  getText: () => string;
+  /** Define o texto — usado em retry (restore após erro), insert de snippet/template. */
+  setText: (s: string) => void;
+  /** Foca a textarea — usado após send/snippet pra cursor voltar pro input. */
+  focus: () => void;
+}
+
+interface ComposerProps {
+  /** Recebe o texto atual via parâmetro — pai NÃO precisa rastrear estado. */
+  onSend: (text: string) => void;
+  /** Chamado quando user digita "/" com texto vazio — pai abre popover de snippets. */
+  onSlashWhenEmpty?: () => void;
+  /** Disparado a cada keystroke (debounced internamente em sendTypingIndicator). */
+  onTyping?: () => void;
   channel: ConversationChannel;
   connectedVia?: string;
   isSending: boolean;
@@ -1794,10 +1796,47 @@ function Composer({
    * sair do número do Igor — operador precisa ter ciência. Banner âmbar.
    */
   crossOperatorWarning?: { ownerName: string };
-}) {
+}
+
+const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Composer({
+  onSend,
+  onSlashWhenEmpty,
+  onTyping,
+  channel,
+  connectedVia,
+  isSending,
+  attachment,
+  onAttachmentSelect,
+  onAttachmentRemove,
+  disabled,
+  onTemplateClick,
+  isInternalNote,
+  onToggleInternalNote,
+  onSnippetClick,
+  crossOperatorWarning,
+}, ref) {
   const { t } = useTranslation();
   const cfg = getConvConfig({ channel, connectedVia: connectedVia as 'baileys' | 'embedded_signup' | undefined });
-  const hasContent = value.trim().length > 0 || !!attachment;
+
+  // Estado local — re-renders ficam contidos no Composer.
+  const [text, setText] = useState('');
+  const taRef = useRef<HTMLTextAreaElement>(null);
+
+  // textRef serve pro getText() do imperative handle ler valor sem closure stale.
+  const textRef = useRef('');
+  textRef.current = text;
+
+  useImperativeHandle(ref, () => ({
+    getText: () => textRef.current,
+    setText: (s: string) => {
+      setText(s);
+      textRef.current = s;
+      // Sync de altura (auto-resize) acontece no useEffect [text] abaixo.
+    },
+    focus: () => taRef.current?.focus(),
+  }), []);
+
+  const hasContent = text.trim().length > 0 || !!attachment;
   const isDisabled = disabled || false;
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -1823,15 +1862,31 @@ function Composer({
     setPreviewUrl(null);
   }, [attachment]);
 
-  // Sincroniza altura da textarea com value — necessário pra resetar pra
-  // 1 linha após onSend (que zera value programaticamente), retry, ou
-  // template/snippet inserido. Sem isso, textarea ficava esticada vazia.
+  // Sincroniza altura da textarea com text — resetar pra 1 linha após send,
+  // restore em retry, ou insert de snippet/template (cenários onde setText
+  // é chamado externamente via imperative handle).
   useEffect(() => {
-    const ta = inputRef.current;
+    const ta = taRef.current;
     if (!ta) return;
     ta.style.height = 'auto';
     ta.style.height = `${Math.min(ta.scrollHeight, 144)}px`;
-  }, [value, inputRef]);
+  }, [text]);
+
+  // Handler de Enter (send) e "/" (open snippets) — agora vive dentro do
+  // Composer pra ter acesso direto ao text local. Antes o pai precisava
+  // recriar handleKeyDown a cada mudança de messageInput (dep no useCallback).
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (hasContent && !isSending) {
+        onSend(textRef.current);
+      }
+      return;
+    }
+    if (e.key === '/' && textRef.current === '') {
+      onSlashWhenEmpty?.();
+    }
+  };
 
   const formatFileSize = (bytes: number) => {
     if (bytes < 1024) return `${bytes} B`;
@@ -1945,7 +2000,15 @@ function Composer({
                   className="absolute bottom-full mb-2 left-0 z-20 bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 p-2.5 w-56">
                   <div className="grid grid-cols-6 gap-1">
                     {EMOJIS.map(e => (
-                      <button key={e} onClick={() => { onChange(value + e); setShowEmojiPicker(false); inputRef.current?.focus(); }}
+                      <button key={e} onClick={() => {
+                        setText(prev => {
+                          const next = prev + e;
+                          textRef.current = next;
+                          return next;
+                        });
+                        setShowEmojiPicker(false);
+                        taRef.current?.focus();
+                      }}
                         className="w-8 h-8 flex items-center justify-center text-lg rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
                         {e}
                       </button>
@@ -2003,10 +2066,14 @@ function Composer({
         {/* Textarea */}
         <div className="flex-1 relative">
           <textarea
-            ref={inputRef}
-            value={value}
+            ref={taRef}
+            value={text}
             onChange={(e) => {
-              onChange(e.target.value);
+              const v = e.target.value;
+              setText(v);
+              textRef.current = v;
+              // Notifica pai pra disparar typing indicator (debounced internamente).
+              onTyping?.();
               // Auto-resize estilo WhatsApp Web: cresce conforme texto, capa
               // em max-h-36 (144px ~6 linhas) onde o overflow-y entra. O reset
               // pra 'auto' antes é necessário pra encolher quando user apaga.
@@ -2014,23 +2081,23 @@ function Composer({
               ta.style.height = 'auto';
               ta.style.height = `${Math.min(ta.scrollHeight, 144)}px`;
             }}
-            onKeyDown={onKeyDown}
+            onKeyDown={handleKeyDown}
             rows={1}
             placeholder={t('conversations.messagePlaceholder', 'Digite uma mensagem...')}
             disabled={isSending}
             className="w-full resize-none bg-gray-100 dark:bg-white/[0.04] border border-transparent dark:border-white/[0.06] rounded-2xl px-4 py-2.5 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-red-500/50 focus:bg-white dark:focus:bg-white/[0.06] transition-colors leading-relaxed max-h-36 overflow-y-auto disabled:opacity-50"
             style={{ minHeight: '42px' }}
           />
-          {value.length > 200 && (
+          {text.length > 200 && (
             <span className="absolute bottom-1 right-3 text-[10px] text-gray-400 dark:text-gray-600">
-              {value.length}/1000
+              {text.length}/1000
             </span>
           )}
         </div>
 
         {/* Send button */}
         <motion.button
-          onClick={onSend}
+          onClick={() => onSend(textRef.current)}
           whileHover={hasContent && !isSending ? { scale: 1.05 } : undefined}
           whileTap={hasContent && !isSending ? { scale: 0.95 } : undefined}
           disabled={!hasContent || isSending}
@@ -2061,7 +2128,8 @@ function Composer({
       </div>
     </div>
   );
-}
+}));
+Composer.displayName = 'Composer';
 
 // ─── Advanced Filters ────────────────────────────────────────────────────────
 
@@ -4877,7 +4945,10 @@ export default function ConversasModule() {
   const [editingView, setEditingView] = useState<ConversationView | null>(null);
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [messageInput, setMessageInput] = useState('');
+  // messageInput removido: vive agora dentro do Composer (perf — antes
+  // cada keystroke causava re-render do módulo inteiro). Pai lê/escreve
+  // via composerRef.
+  const composerRef = useRef<ComposerHandle | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showMobileThread, setShowMobileThread] = useState(false);
@@ -4910,7 +4981,8 @@ export default function ConversasModule() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const isLoadingOlderRef = useRef(false);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  // inputRef removido — Composer agora gerencia sua própria textarea internamente
+  // e expõe focus()/setText()/getText() via composerRef (ComposerHandle).
   // Ref pra barra de tabs de canal (Todos / WA Oficial / WA Web / Messenger /
   // Instagram). Sem scroll-wheel handler, o operador só conseguia scroll
   // horizontal via shift+wheel ou trackpad — quebrava o comentário
@@ -6284,14 +6356,17 @@ export default function ConversasModule() {
 
   // ── Send message ───────────────────────────────────────────────────────────
 
-  const handleSend = useCallback(async () => {
-    const hasText = messageInput.trim().length > 0;
+  const handleSend = useCallback(async (rawText?: string) => {
+    // rawText vem do Composer (Enter ou click no botão). Pra cenários onde
+    // o pai chama handleSend() sem arg, lê via ref como fallback.
+    const sourceText = rawText ?? composerRef.current?.getText() ?? '';
+    const hasText = sourceText.trim().length > 0;
     const hasFile = !!attachment;
     if ((!hasText && !hasFile) || !selectedConversation || !business?.id || !user || isSending) return;
 
-    const content = messageInput.trim();
+    const content = sourceText.trim();
     const currentAttachment = attachment;
-    setMessageInput('');
+    composerRef.current?.setText('');
     setAttachment(null);
     setIsSending(true);
 
@@ -6304,7 +6379,7 @@ export default function ConversasModule() {
     // If no text, just finish
     if (!hasText) {
       setIsSending(false);
-      inputRef.current?.focus();
+      composerRef.current?.focus();
       return;
     }
 
@@ -6409,28 +6484,21 @@ export default function ConversasModule() {
       } else {
         toast.error(`Falha ao salvar mensagem: ${errMsg}`);
       }
-      setMessageInput(content);
+      composerRef.current?.setText(content);
     } finally {
       setIsSending(false);
-      inputRef.current?.focus();
+      composerRef.current?.focus();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messageInput, attachment, selectedConversation, business?.id, user, isSending, sendMediaMessage, isInternalNote]);
+  }, [attachment, selectedConversation, business?.id, user, isSending, sendMediaMessage, isInternalNote]);
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        handleSend();
-      }
-      // Trigger snippet autocomplete with /
-      if (e.key === '/' && messageInput === '') {
-        setShowSnippets(true);
-        setSnippetSearch('');
-      }
-    },
-    [handleSend, messageInput],
-  );
+  // handleKeyDown removido daqui — Enter e "/" agora são tratados dentro do
+  // próprio Composer, com acesso direto ao text local. Pai só recebe via
+  // callback `onSlashWhenEmpty` quando precisa abrir o popover de snippets.
+  const handleSlashWhenEmpty = useCallback(() => {
+    setShowSnippets(true);
+    setSnippetSearch('');
+  }, []);
 
   // ── Snippet insertion ──────────────────────────────────────────────────────
 
@@ -6440,9 +6508,9 @@ export default function ConversasModule() {
     if (selectedConversation) {
       content = content.replace(/\{\{contact\.name\}\}/g, selectedConversation.customContactName ?? selectedConversation.contactName);
     }
-    setMessageInput(content);
+    composerRef.current?.setText(content);
     setShowSnippets(false);
-    inputRef.current?.focus();
+    composerRef.current?.focus();
   }, [selectedConversation]);
 
   // ── Sector assignment ──────────────────────────────────────────────────────
@@ -7446,11 +7514,10 @@ export default function ConversasModule() {
                     : undefined;
                   return (
                     <Composer
-                      value={messageInput}
-                      onChange={(v) => { setMessageInput(v); sendTypingIndicator(); }}
+                      ref={composerRef}
                       onSend={handleSend}
-                      onKeyDown={handleKeyDown}
-                      inputRef={inputRef}
+                      onSlashWhenEmpty={handleSlashWhenEmpty}
+                      onTyping={sendTypingIndicator}
                       channel={selectedConversation.channel}
                       connectedVia={selectedConversation.connectedVia}
                       isSending={isSending}
