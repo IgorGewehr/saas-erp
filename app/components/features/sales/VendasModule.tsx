@@ -14,7 +14,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation } from '@tanstack/react-query';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
 import type {
@@ -546,7 +546,6 @@ function OrderDetailPanel({
 
 export default function VendasModule() {
   const { business, user } = useAuth();
-  const queryClient = useQueryClient();
 
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState<OrderStatus | 'all'>('all');
@@ -647,7 +646,8 @@ export default function VendasModule() {
       await addDoc(collection(db, 'orders'), payload);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['orders', business?.id] });
+      // onSnapshot no listener acima recebe o doc novo automaticamente — sem
+      // precisar invalidar cache de useQuery.
       toast.success('Pedido criado com sucesso!');
       setShowForm(false);
     },
@@ -668,7 +668,8 @@ export default function VendasModule() {
       await updateDoc(doc(db, 'orders', id), { status, statusHistory: history, updatedAt: now });
     },
     onSuccess: (_, { id, status }) => {
-      queryClient.invalidateQueries({ queryKey: ['orders', business?.id] });
+      // Snapshot atualiza orders automaticamente; aqui só sincroniza o
+      // selectedOrder em viewing pra refletir status na UI imediatamente.
       toast.success(`Status atualizado para: ${STATUS_LABELS[status]}`);
       setSelectedOrder(prev => prev?.id === id ? { ...prev, status, updatedAt: new Date().toISOString() } : prev);
     },

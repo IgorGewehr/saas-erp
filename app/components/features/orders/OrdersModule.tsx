@@ -17,7 +17,6 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import { useQueryClient } from '@tanstack/react-query';
 import { formatCurrency, formatDateTime } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
 import { toast } from 'react-toastify';
@@ -985,7 +984,6 @@ type ViewMode = 'board' | 'list';
 
 export default function OrdersModule() {
   const { user, business } = useAuth();
-  const queryClient = useQueryClient();
 
   const [viewMode, setViewMode] = useState<ViewMode>('board');
   const [search, setSearch] = useState('');
