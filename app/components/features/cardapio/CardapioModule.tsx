@@ -394,6 +394,22 @@ export default function CardapioModule() {
     return () => unsub();
   }, [business?.id]);
 
+  // Sync selectedProduct com snapshot — fecha modal se produto foi
+  // desativado/removido por outro user; refresca display se preço mudou.
+  // Filtro do query já exclui isActive=false e isDeliverable=false, então
+  // qualquer doc removido do `products` significa indisponível.
+  useEffect(() => {
+    if (!selectedProduct) return;
+    const fresh = products.find(p => p.id === selectedProduct.id);
+    if (!fresh) {
+      setSelectedProduct(null);
+      return;
+    }
+    if (fresh.updatedAt !== selectedProduct.updatedAt) {
+      setSelectedProduct(fresh);
+    }
+  }, [products, selectedProduct]);
+
   const categories = useMemo(() => {
     const set = new Set<string>();
     for (const p of products) if (p.menuCategory) set.add(p.menuCategory);
