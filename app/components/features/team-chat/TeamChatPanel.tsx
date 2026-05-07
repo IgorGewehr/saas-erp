@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, Send, Users, Wifi, Clock, MessageCircle, Loader2, AlertTriangle, Sparkles, BarChart3, Command, Paperclip, X, Download, ImageIcon, Check, CheckCheck } from 'lucide-react';
+import { ArrowLeft, Send, Users, Wifi, Clock, MessageCircle, Loader2, AlertTriangle, Sparkles, BarChart3, Command, Paperclip, X, Download, Check, CheckCheck } from 'lucide-react';
 import { collection, query, where, getDocs, getDocsFromCache } from 'firebase/firestore';
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { useQuery } from '@tanstack/react-query';
