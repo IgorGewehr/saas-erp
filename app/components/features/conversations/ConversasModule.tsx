@@ -1823,6 +1823,16 @@ function Composer({
     setPreviewUrl(null);
   }, [attachment]);
 
+  // Sincroniza altura da textarea com value — necessário pra resetar pra
+  // 1 linha após onSend (que zera value programaticamente), retry, ou
+  // template/snippet inserido. Sem isso, textarea ficava esticada vazia.
+  useEffect(() => {
+    const ta = inputRef.current;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = `${Math.min(ta.scrollHeight, 144)}px`;
+  }, [value, inputRef]);
+
   const formatFileSize = (bytes: number) => {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -1995,7 +2005,15 @@ function Composer({
           <textarea
             ref={inputRef}
             value={value}
-            onChange={(e) => onChange(e.target.value)}
+            onChange={(e) => {
+              onChange(e.target.value);
+              // Auto-resize estilo WhatsApp Web: cresce conforme texto, capa
+              // em max-h-36 (144px ~6 linhas) onde o overflow-y entra. O reset
+              // pra 'auto' antes é necessário pra encolher quando user apaga.
+              const ta = e.currentTarget;
+              ta.style.height = 'auto';
+              ta.style.height = `${Math.min(ta.scrollHeight, 144)}px`;
+            }}
             onKeyDown={onKeyDown}
             rows={1}
             placeholder={t('conversations.messagePlaceholder', 'Digite uma mensagem...')}
@@ -5981,12 +5999,23 @@ export default function ConversasModule() {
 
   // ── Typing indicator (Task 4) ─────────────────────────────────────────────
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // Snapshot via ref evita recriar o debounce a cada render. Antes a dep era
+  // o objeto `selectedConversation` inteiro — toda vez que o snapshot do
+  // listener re-emitia a conversa, ganhava nova referência, useMemo refazia
+  // a função, e `leading: true` disparava fetch de novo. Resultado prático:
+  // CADA tecla pressionada = 1 fetch HTTP no main thread, freeze ao segurar
+  // tecla. Com ref, o debounce instance vive estável e o leading-true só
+  // dispara 1x por janela de 3s.
+  const typingTargetRef = useRef<{ channel: ConversationChannel; recipientId?: string } | null>(null);
+  typingTargetRef.current = selectedConversation
+    ? { channel: selectedConversation.channel, recipientId: selectedConversation.contactExternalId }
+    : null;
+
   const sendTypingIndicator = useMemo(
     () => debounce(async () => {
-      if (!selectedConversation || !business?.id) return;
+      const target = typingTargetRef.current;
+      if (!target || !business?.id) return;
       try {
-        // Auth header obrigatório — backend usa verifyAuth() e devolve 401 sem token.
         const token = await getAuth().currentUser?.getIdToken();
         if (!token) return;
         await fetch('/api/conversations/typing', {
@@ -5997,15 +6026,15 @@ export default function ConversasModule() {
           },
           body: JSON.stringify({
             businessId: business.id,
-            channel: selectedConversation.channel,
-            recipientId: selectedConversation.contactExternalId,
+            channel: target.channel,
+            recipientId: target.recipientId,
           }),
         });
       } catch {
         // Silent fail - typing indicators are non-critical
       }
     }, 3000, { leading: true, trailing: false }),
-    [selectedConversation, business?.id],
+    [business?.id],
   );
 
   // Cleanup debounce on unmount
