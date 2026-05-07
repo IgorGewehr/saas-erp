@@ -298,15 +298,19 @@ function ProfileTab() {
   useEffect(() => {
     if (!business?.id) { setIsLoadingServices(false); return; }
     setIsLoadingServices(true);
+    // Single-field — isActive filtrado client-side (evita composite
+    // index services/businessId+isActive).
     const q = query(
       collection(db, 'services'),
       where('businessId', '==', business.id),
-      where('isActive', '==', true),
     );
     const unsub = onSnapshot(
       q,
       (snap) => {
-        setServices(snap.docs.map(d => ({ ...d.data(), id: d.id } as Service)));
+        const list = snap.docs
+          .map(d => ({ ...d.data(), id: d.id } as Service))
+          .filter(s => (s as { isActive?: boolean }).isActive !== false);
+        setServices(list);
         setIsLoadingServices(false);
       },
       (err) => { console.error('[Settings] services snapshot error:', err); setIsLoadingServices(false); },

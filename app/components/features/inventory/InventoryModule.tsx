@@ -2064,15 +2064,19 @@ export default function InventoryModule() {
   React.useEffect(() => {
     if (!business?.id) { setProductsLoading(false); return; }
     setProductsLoading(true);
+    // Single-field — sort client-side (evita composite index
+    // products/businessId+name).
     const q = query(
       collection(db, 'products'),
       where('businessId', '==', business.id),
-      orderBy('name', 'asc'),
     );
     const unsub = onSnapshot(
       q,
       (snap) => {
-        setProducts(snap.docs.map((d) => ({ ...d.data(), id: d.id } as Product)));
+        const list = snap.docs
+          .map((d) => ({ ...d.data(), id: d.id } as Product))
+          .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+        setProducts(list);
         setProductsLoading(false);
       },
       (err) => {

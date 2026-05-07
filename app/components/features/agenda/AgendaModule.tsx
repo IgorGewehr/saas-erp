@@ -2086,14 +2086,16 @@ export default function AgendaModule() {
     queryKey: ['services', business?.id],
     queryFn: async () => {
       if (!business?.id) return [];
+      // Single-field — isActive + sort name client-side.
       const q = query(
         collection(db, 'services'),
         where('businessId', '==', business.id),
-        where('isActive', '==', true),
-        orderBy('name', 'asc')
       );
       const snap = await getDocs(q);
-      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as Service));
+      return snap.docs
+        .map((d) => ({ ...d.data(), id: d.id } as Service))
+        .filter(s => (s as { isActive?: boolean }).isActive !== false)
+        .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
     },
     enabled: !!business?.id,
     staleTime: 5 * 60 * 1000,
@@ -2104,14 +2106,17 @@ export default function AgendaModule() {
     queryKey: ['clients', business?.id],
     queryFn: async () => {
       if (!business?.id) return [];
+      // Single-field — isActive + sort name aplicados client-side
+      // (composite index clients/businessId+isActive+name evitado).
       const q = query(
         collection(db, 'clients'),
         where('businessId', '==', business.id),
-        where('isActive', '==', true),
-        orderBy('name', 'asc')
       );
       const snap = await getDocs(q);
-      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as CRMContact));
+      return snap.docs
+        .map((d) => ({ ...d.data(), id: d.id } as CRMContact))
+        .filter(c => (c as { isActive?: boolean }).isActive !== false)
+        .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
     },
     enabled: !!business?.id,
     staleTime: 5 * 60 * 1000,

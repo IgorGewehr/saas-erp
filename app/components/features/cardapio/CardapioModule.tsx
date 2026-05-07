@@ -374,16 +374,19 @@ export default function CardapioModule() {
   useEffect(() => {
     if (!business?.id) { setIsLoading(false); return; }
     setIsLoading(true);
+    // Single-field — isDeliverable + isActive filtrados client-side
+    // (evita composite index 3-field products/businessId+isDeliverable+isActive).
     const q = query(
       collection(db, 'products'),
       where('businessId', '==', business.id),
-      where('isDeliverable', '==', true),
-      where('isActive', '==', true),
     );
     const unsub = onSnapshot(
       q,
       (snap) => {
-        setProducts(snap.docs.map(d => ({ ...d.data(), id: d.id } as Product)));
+        const list = snap.docs
+          .map(d => ({ ...d.data(), id: d.id } as Product))
+          .filter(p => p.isActive !== false && (p as { isDeliverable?: boolean }).isDeliverable === true);
+        setProducts(list);
         setIsLoading(false);
       },
       (err) => {

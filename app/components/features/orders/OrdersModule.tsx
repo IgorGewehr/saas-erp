@@ -1063,9 +1063,13 @@ export default function OrdersModule() {
   const [clients, setClients] = useState<Client[]>([]);
   useEffect(() => {
     if (!business?.id) return;
-    const q = query(collection(db, 'clients'), where('businessId', '==', business.id), orderBy('name'));
+    // Single-field query — sort por name client-side (evita composite index).
+    const q = query(collection(db, 'clients'), where('businessId', '==', business.id));
     const unsub = onSnapshot(q, (snap) => {
-      setClients(snap.docs.map(d => ({ ...d.data(), id: d.id } as Client)));
+      const list = snap.docs
+        .map(d => ({ ...d.data(), id: d.id } as Client))
+        .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      setClients(list);
     }, (err) => console.error('[Orders] clients snapshot error:', err));
     return () => unsub();
   }, [business?.id]);

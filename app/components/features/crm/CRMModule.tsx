@@ -3067,15 +3067,22 @@ export default function CRMModule() {
   const [lc, setLc] = useState(true);
   const [ld, setLd] = useState(true);
   const [la, setLa] = useState(true);
+  // Helper local — sort por createdAt desc usado pra contacts/deals/activities.
+  // Mantido client-side pra evitar composite indexes (clients/businessId+
+  // createdAt, crmDeals/businessId+createdAt, etc.).
+  const sortByCreatedAtDesc = <T extends { createdAt?: string }>(arr: T[]): T[] =>
+    arr.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+
   useEffect(() => {
     if (!business?.id) { setLc(false); return; }
     setLc(true);
-    const q = query(collection(db, 'clients'), where('businessId', '==', business.id), orderBy('createdAt', 'desc'));
+    const q = query(collection(db, 'clients'), where('businessId', '==', business.id));
     const unsub = onSnapshot(q, (snap) => {
-      setContacts(snap.docs.map((d) => {
+      const list = snap.docs.map((d) => {
         const data = d.data();
         return { ...data, id: d.id, status: (data.status ?? 'novo') as CRMContact['status'], source: (data.source ?? 'outro') as CRMContact['source'], score: data.score ?? 0 } as CRMContact;
-      }).filter((c) => c.tipo !== 'pj'));
+      }).filter((c) => c.tipo !== 'pj');
+      setContacts(sortByCreatedAtDesc(list));
       setLc(false);
     }, (err) => { console.error('[CRM] contacts snapshot error:', err); setLc(false); });
     return () => unsub();
@@ -3083,9 +3090,10 @@ export default function CRMModule() {
   useEffect(() => {
     if (!business?.id) { setLd(false); return; }
     setLd(true);
-    const q = query(collection(db, 'crmDeals'), where('businessId', '==', business.id), orderBy('createdAt', 'desc'));
+    const q = query(collection(db, 'crmDeals'), where('businessId', '==', business.id));
     const unsub = onSnapshot(q, (snap) => {
-      setDeals(snap.docs.map((d) => ({ ...d.data(), id: d.id } as CRMDeal)));
+      const list = snap.docs.map((d) => ({ ...d.data(), id: d.id } as CRMDeal));
+      setDeals(sortByCreatedAtDesc(list));
       setLd(false);
     }, (err) => { console.error('[CRM] deals snapshot error:', err); setLd(false); });
     return () => unsub();
@@ -3093,9 +3101,10 @@ export default function CRMModule() {
   useEffect(() => {
     if (!business?.id) { setLa(false); return; }
     setLa(true);
-    const q = query(collection(db, 'crmActivities'), where('businessId', '==', business.id), orderBy('createdAt', 'desc'));
+    const q = query(collection(db, 'crmActivities'), where('businessId', '==', business.id));
     const unsub = onSnapshot(q, (snap) => {
-      setActivities(snap.docs.map((d) => ({ ...d.data(), id: d.id } as CRMActivity)));
+      const list = snap.docs.map((d) => ({ ...d.data(), id: d.id } as CRMActivity));
+      setActivities(sortByCreatedAtDesc(list));
       setLa(false);
     }, (err) => { console.error('[CRM] activities snapshot error:', err); setLa(false); });
     return () => unsub();

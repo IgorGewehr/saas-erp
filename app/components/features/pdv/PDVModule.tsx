@@ -256,14 +256,18 @@ export default function PDVModule() {
   useEffect(() => {
     if (!business?.id) { setLoadingProducts(false); return; }
     setLoadingProducts(true);
+    // Single-field query — isActive + sort por name client-side (evita
+    // composite index products/businessId+isActive+name).
     const q = query(
       collection(db, 'products'),
       where('businessId', '==', business.id),
-      where('isActive', '==', true),
-      orderBy('name', 'asc'),
     );
     const unsub = onSnapshot(q, (snap) => {
-      setProducts(snap.docs.map(d => ({ ...d.data(), id: d.id } as Product)));
+      const list = snap.docs
+        .map(d => ({ ...d.data(), id: d.id } as Product))
+        .filter(p => p.isActive !== false)
+        .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      setProducts(list);
       setLoadingProducts(false);
     }, (err) => { console.error('[PDV] products snapshot error:', err); setLoadingProducts(false); });
     return () => unsub();
@@ -275,11 +279,12 @@ export default function PDVModule() {
       const q = query(
         collection(db, 'services'),
         where('businessId', '==', business!.id),
-        where('isActive', '==', true),
-        orderBy('name', 'asc'),
       );
       const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Service));
+      return snap.docs
+        .map(d => ({ ...d.data(), id: d.id } as Service))
+        .filter(s => (s as { isActive?: boolean }).isActive !== false)
+        .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
     },
     enabled: !!business?.id,
   });
@@ -289,19 +294,24 @@ export default function PDVModule() {
   useEffect(() => {
     if (!business?.id) { setLoadingClients(false); return; }
     setLoadingClients(true);
+    // Single-field filter (businessId apenas). isActive + sort por name
+    // aplicados client-side pra evitar composite index (clients/businessId+
+    // isActive+name) que exigiria criação manual no Firebase console.
     const q = query(
       collection(db, 'clients'),
       where('businessId', '==', business.id),
-      where('isActive', '==', true),
-      orderBy('name', 'asc'),
     );
     const unsub = onSnapshot(q, (snap) => {
-      setClients(snap.docs.map(d => {
-        const data = d.data();
-        // Normalize legacy `nome` field to `name` (migration from old CRM schema)
-        if (!data.name && data.nome) data.name = data.nome;
-        return { ...data, id: d.id } as CRMContact;
-      }));
+      const list = snap.docs
+        .map(d => {
+          const data = d.data();
+          // Normalize legacy `nome` field to `name` (migration from old CRM schema)
+          if (!data.name && data.nome) data.name = data.nome;
+          return { ...data, id: d.id } as CRMContact;
+        })
+        .filter(c => (c as { isActive?: boolean }).isActive !== false)
+        .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      setClients(list);
       setLoadingClients(false);
     }, (err) => { console.error('[PDV] clients snapshot error:', err); setLoadingClients(false); });
     return () => unsub();

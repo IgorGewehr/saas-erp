@@ -589,9 +589,13 @@ export default function VendasModule() {
   const [clients, setClients] = useState<Client[]>([]);
   useEffect(() => {
     if (!business?.id) return;
-    const q = query(collection(db, 'clients'), where('businessId', '==', business.id), orderBy('name', 'asc'));
+    // Single-field query — sort client-side (evita composite index).
+    const q = query(collection(db, 'clients'), where('businessId', '==', business.id));
     const unsub = onSnapshot(q, (snap) => {
-      setClients(snap.docs.map(d => ({ ...d.data(), id: d.id } as Client)));
+      const list = snap.docs
+        .map(d => ({ ...d.data(), id: d.id } as Client))
+        .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      setClients(list);
     }, (err) => console.error('[Vendas] clients snapshot error:', err));
     return () => unsub();
   }, [business?.id]);
@@ -599,9 +603,13 @@ export default function VendasModule() {
   const [products, setProducts] = useState<Product[]>([]);
   useEffect(() => {
     if (!business?.id) return;
-    const q = query(collection(db, 'products'), where('businessId', '==', business.id), orderBy('name', 'asc'));
+    // Single-field query — sort client-side.
+    const q = query(collection(db, 'products'), where('businessId', '==', business.id));
     const unsub = onSnapshot(q, (snap) => {
-      setProducts(snap.docs.map(d => ({ ...d.data(), id: d.id } as Product)));
+      const list = snap.docs
+        .map(d => ({ ...d.data(), id: d.id } as Product))
+        .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      setProducts(list);
     }, (err) => console.error('[Vendas] products snapshot error:', err));
     return () => unsub();
   }, [business?.id]);
