@@ -2551,20 +2551,17 @@ export default function AgendaModule() {
     if (!editingAppointment?.recurrenceId || !business?.id) return;
     setDeleteLoading(true);
     try {
-      // Fetch all appointments with the same recurrenceId + businessId (multi-tenant safety).
-      const seriesQuery = query(
-        collection(db, 'appointments'),
-        where('businessId', '==', business.id),
-        where('recurrenceId', '==', editingAppointment.recurrenceId),
+      // Filtra a série em memória (appointments já carregados via onSnapshot
+      // single-field). Evita composite index appointments/businessId+recurrenceId.
+      const seriesItems = appointments.filter(
+        a => a.recurrenceId === editingAppointment.recurrenceId,
       );
-      const snap = await getDocs(seriesQuery);
 
       // Aggregate client metric deltas from any 'concluido' items in the series.
       const clientDeltas = new Map<string, { visits: number; price: number }>();
       const commissionIds: (string | undefined)[] = [];
       const batch = writeBatch(db);
-      for (const docSnap of snap.docs) {
-        const a = docSnap.data() as Appointment;
+      for (const a of seriesItems) {
         if (a.status === 'concluido') {
           if (a.clientId) {
             const d = clientDeltas.get(a.clientId) || { visits: 0, price: 0 };
@@ -2575,7 +2572,7 @@ export default function AgendaModule() {
           // Collect commission IDs to cancel after batch delete
           if (a.commissionTransactionId) commissionIds.push(a.commissionTransactionId);
         }
-        batch.delete(docSnap.ref);
+        batch.delete(doc(db, 'appointments', a.id));
       }
       await batch.commit();
 
@@ -2598,7 +2595,7 @@ export default function AgendaModule() {
       setEditingAppointment(null);
       setSnackbar({
         open: true,
-        message: t('agenda.seriesDeleted', `Série excluída (${snap.size} agendamentos)`, { count: snap.size }),
+        message: t('agenda.seriesDeleted', `Série excluída (${seriesItems.length} agendamentos)`, { count: seriesItems.length }),
         severity: 'info',
       });
     } catch (err) {
@@ -2607,7 +2604,7 @@ export default function AgendaModule() {
     } finally {
       setDeleteLoading(false);
     }
-  }, [editingAppointment, business?.id, queryClient, t]);
+  }, [editingAppointment, business?.id, queryClient, t, appointments]);
 
   const handleCancelAppointment = useCallback(async () => {
     if (!editingAppointment || !business?.id) return;

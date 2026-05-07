@@ -5141,8 +5141,15 @@ export default function ConversasModule() {
 
   useEffect(() => {
     if (!business?.id) return;
-    const q = query(collection(db, 'conversationViews'), where('businessId', '==', business.id), orderBy('createdAt', 'asc'));
-    const unsub = onSnapshot(q, snap => setSavedViews(snap.docs.map(d => ({ ...d.data(), id: d.id } as ConversationView))));
+    // Single-field query — sort client-side por createdAt asc (evita
+    // composite index conversationViews/businessId+createdAt).
+    const q = query(collection(db, 'conversationViews'), where('businessId', '==', business.id));
+    const unsub = onSnapshot(q, snap => {
+      const list = snap.docs
+        .map(d => ({ ...d.data(), id: d.id } as ConversationView))
+        .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+      setSavedViews(list);
+    });
     return () => unsub();
   }, [business?.id]);
 

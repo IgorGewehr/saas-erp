@@ -3164,12 +3164,13 @@ export default function CRMModule() {
   const handleDeleteContact = useCallback(async () => {
     if (!deleteContactConfirm || !business?.id || !user) return;
     try {
-      // Cascade: delete deals linked to this contact
-      const dealsSnap = await getDocs(query(collection(db, 'crmDeals'), where('businessId', '==', business.id), where('contactId', '==', deleteContactConfirm.id)));
-      for (const d of dealsSnap.docs) await deleteDoc(doc(db, 'crmDeals', d.id));
-      // Cascade: delete activities linked to this contact
-      const activitiesSnap = await getDocs(query(collection(db, 'crmActivities'), where('businessId', '==', business.id), where('contactId', '==', deleteContactConfirm.id)));
-      for (const a of activitiesSnap.docs) await deleteDoc(doc(db, 'crmActivities', a.id));
+      // Cascade via state local (deals/activities já carregados via onSnapshot
+      // single-field). Antes usava getDocs com (businessId, contactId) que
+      // exigia composite index — desnecessário, podemos filtrar in-memory.
+      const dealsToDelete = deals.filter(d => d.contactId === deleteContactConfirm.id);
+      for (const d of dealsToDelete) await deleteDoc(doc(db, 'crmDeals', d.id));
+      const activitiesToDelete = activities.filter(a => a.contactId === deleteContactConfirm.id);
+      for (const a of activitiesToDelete) await deleteDoc(doc(db, 'crmActivities', a.id));
       // Delete the contact itself
       void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'contact_deleted', contactId: deleteContactConfirm.id, details: deleteContactConfirm.name });
       await deleteDoc(doc(db, 'clients', deleteContactConfirm.id));
@@ -3179,7 +3180,7 @@ export default function CRMModule() {
       queryClient.invalidateQueries({ queryKey: ['crmActivities', business.id] });
       setDeleteContactConfirm(null);
     } catch (err) { console.error('[CRM] Error deleting contact:', err); toast.error(t('crm.toast.errorDelete', 'Erro ao excluir')); }
-  }, [deleteContactConfirm, business?.id, user, queryClient, t]);
+  }, [deleteContactConfirm, business?.id, user, queryClient, t, deals, activities]);
 
   const handleSaveDeal = useCallback(async (data: Partial<CRMDeal>) => {
     if (!business?.id || !user) return; const now = new Date().toISOString();
