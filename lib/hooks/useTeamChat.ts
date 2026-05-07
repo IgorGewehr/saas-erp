@@ -197,8 +197,23 @@ export function useTeamChat(): UseTeamChatResult {
     if (ensuringRef.current) return ensuringRef.current;
     const promise = (async () => {
       const ref = doc(db, 'teamChats', id);
-      const snap = await getDoc(ref);
-      if (!snap.exists()) {
+      // Tenta detectar se já existe via getDoc. Pode falhar com
+      // "permission-denied" em docs INEXISTENTES — Firestore avalia rules
+      // sobre `resource.data` que é null nesse caso, e a regra
+      // `resource.data.type == 'global'` retorna falsy → deny.
+      // Tratamos esse erro como "não existe" e seguimos pra criação.
+      let exists = false;
+      try {
+        const snap = await getDoc(ref);
+        exists = snap.exists();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message.toLowerCase() : '';
+        if (!msg.includes('permission') && !msg.includes('insufficient')) {
+          throw err; // erro genuíno (network, etc.) — propaga
+        }
+        exists = false;
+      }
+      if (!exists) {
         const now = new Date().toISOString();
         await setDoc(ref, {
           businessId,
@@ -207,7 +222,7 @@ export function useTeamChat(): UseTeamChatResult {
           lastReadAt: {},
           createdAt: now,
           updatedAt: now,
-        }, { merge: true });
+        });
       }
       return id;
     })();
@@ -243,8 +258,18 @@ export function useTeamChat(): UseTeamChatResult {
 
     const promise = (async () => {
       const ref = doc(db, 'teamChats', id);
-      const snap = await getDoc(ref);
-      if (!snap.exists()) {
+      // Mesmo tratamento do ensureGlobalChat: getDoc em doc inexistente pode
+      // retornar permission-denied porque a rule depende de resource.data.
+      let exists = false;
+      try {
+        const snap = await getDoc(ref);
+        exists = snap.exists();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message.toLowerCase() : '';
+        if (!msg.includes('permission') && !msg.includes('insufficient')) throw err;
+        exists = false;
+      }
+      if (!exists) {
         const now = new Date().toISOString();
         const sortedMembers = [user.uid, otherUid].sort();
         await setDoc(ref, {
@@ -254,7 +279,7 @@ export function useTeamChat(): UseTeamChatResult {
           lastReadAt: {},
           createdAt: now,
           updatedAt: now,
-        }, { merge: true });
+        });
       }
       return id;
     })();
