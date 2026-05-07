@@ -4972,6 +4972,8 @@ export default function ConversasModule() {
   const [snippetCreateMode, setSnippetCreateMode] = useState(false);
   const [snippetDraftContent, setSnippetDraftContent] = useState('');
   const [snippetSaving, setSnippetSaving] = useState(false);
+  // Ref pro outside-click handler — fechar popup ao clicar fora dele.
+  const snippetsPopupRef = useRef<HTMLDivElement>(null);
 
   // Sector assignment
   const [showSectorAssign, setShowSectorAssign] = useState(false);
@@ -6516,6 +6518,25 @@ export default function ConversasModule() {
     setSnippetSearch('');
   }, []);
 
+  // Outside-click: fecha popup quando user clica fora (padrão dropdown).
+  // Antes só fechava no X. Mesmo padrão do emoji picker do Composer.
+  useEffect(() => {
+    if (!showSnippets) return;
+    const handler = (e: MouseEvent) => {
+      const popup = snippetsPopupRef.current;
+      if (popup && !popup.contains(e.target as Node)) {
+        closeSnippetsPopup();
+      }
+    };
+    // mousedown (não click) pra capturar antes do focus/blur do input;
+    // delay 0 evita disparo imediato pelo próprio click que abriu o popup.
+    const t = setTimeout(() => document.addEventListener('mousedown', handler), 0);
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener('mousedown', handler);
+    };
+  }, [showSnippets, closeSnippetsPopup]);
+
   // ── Snippet quick-create (inline no popup, sem sair de Conversas) ──────────
   // Permissão idêntica à QuickRepliesTab: manager+ pode criar/editar.
   const canCreateSnippet = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['manager'];
@@ -7607,10 +7628,11 @@ export default function ConversasModule() {
                 <AnimatePresence>
                   {showSnippets && (
                     <motion.div
+                      ref={snippetsPopupRef}
                       initial={{ opacity: 0, y: 8 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: 8 }}
-                      className="absolute bottom-20 left-4 right-4 max-h-80 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-2xl overflow-hidden z-30"
+                      className="absolute bottom-20 left-4 right-4 max-h-[440px] bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-2xl overflow-hidden z-30"
                     >
                       <div className="p-3 border-b border-gray-100 dark:border-gray-800">
                         <div className="flex items-center gap-2">
@@ -7675,7 +7697,7 @@ export default function ConversasModule() {
                           </div>
                         </div>
                       ) : (
-                        <div className="overflow-y-auto max-h-60">
+                        <div className="overflow-y-auto max-h-[360px]">
                           {filteredSnippets.length === 0 ? (
                             <div className="p-4 text-center">
                               <p className="text-xs text-gray-400 dark:text-gray-500">

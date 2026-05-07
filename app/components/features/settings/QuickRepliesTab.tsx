@@ -14,6 +14,7 @@
  */
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'react-toastify';
 import {
@@ -59,6 +60,11 @@ export default function QuickRepliesTab() {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<Snippet | null>(null);
+
+  // Mount-check pra createPortal: document.body só existe no browser. Evita
+  // hydration mismatch no SSR. Mesmo padrão do RecurrenceDetailDialog.
+  const [portalReady, setPortalReady] = useState(false);
+  useEffect(() => { setPortalReady(true); }, []);
 
   // ── Subscribe Firestore ────────────────────────────────────────────────
   useEffect(() => {
@@ -347,7 +353,12 @@ export default function QuickRepliesTab() {
         )}
       </div>
 
-      {/* Form Modal */}
+      {/* Form Modal — renderizado via portal pra evitar bug de containing
+          block: motion components ancestrais (shell da app, AnimatePresence
+          de página) criam transform context que captura position:fixed,
+          fazendo o modal aparecer descentralizado/fora do viewport. Portal
+          monta direto no document.body, fora da árvore. */}
+      {portalReady && createPortal(
       <AnimatePresence>
         {showForm && (
           <motion.div
@@ -458,9 +469,12 @@ export default function QuickRepliesTab() {
             </motion.div>
           </motion.div>
         )}
-      </AnimatePresence>
+      </AnimatePresence>,
+      document.body
+      )}
 
-      {/* Delete confirm */}
+      {/* Delete confirm — também via portal pelo mesmo motivo. */}
+      {portalReady && createPortal(
       <AnimatePresence>
         {deleteConfirm && (
           <motion.div
@@ -506,7 +520,9 @@ export default function QuickRepliesTab() {
             </motion.div>
           </motion.div>
         )}
-      </AnimatePresence>
+      </AnimatePresence>,
+      document.body
+      )}
     </motion.div>
   );
 }
