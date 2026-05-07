@@ -21,12 +21,13 @@ import {
   Loader2,
   ShoppingBag,
   Star,
+  Package,
 } from 'lucide-react';
-import type { Transaction, Appointment, Client, Review } from '@/lib/types';
+import type { Transaction, Appointment, Client, Review, Sale, Order } from '@/lib/types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type ReportTab = 'vendas' | 'agenda' | 'financeiro' | 'clientes' | 'comissoes' | 'avaliacoes';
+type ReportTab = 'vendas' | 'produtos' | 'agenda' | 'financeiro' | 'clientes' | 'comissoes' | 'avaliacoes';
 type Period = '7d' | '30d' | '90d' | 'mes' | 'mes_anterior' | 'ano';
 
 interface PeriodOption { value: Period; label: string }
@@ -262,6 +263,169 @@ function VendasTab({ transactions, periodRange, periodLabel }: {
         </Card>
       </div>
       <ExportBtn onClick={handleExport} disabled={filtered.length === 0} />
+    </div>
+  );
+}
+
+// ─── Tab: Produtos & Serviços ────────────────────────────────────────────────
+//
+// Agrega items[] de sales (PDV) + orders (delivery/orçamentos) + appointments
+// (serviços agendados) em dois rankings: produtos e serviços.
+//
+// Status considerados (filtra fora cancelado/no-show):
+//   - Sale:        'finalizada'
+//   - Order:       qualquer != 'cancelado' && != 'pendente'
+//   - Appointment: 'concluido'
+//
+// Chave de agregação: productId/serviceId quando disponível, senão usa o nome
+// (description/productName/serviceName) em lowercase pra evitar que mesma
+// venda registrada com IDs diferentes vire ranks separados.
+
+interface RankRow { name: string; qty: number; total: number; key: string }
+
+function ProdutosTab({ sales, orders, appointments, periodRange, periodLabel }: {
+  sales: Sale[];
+  orders: Order[];
+  appointments: Appointment[];
+  periodRange: { start: Date; end: Date };
+  periodLabel: string;
+}) {
+  // ─── Filtra por período + status válido ────────────────────────────────────
+  const validSales = useMemo(
+    () => sales.filter(s =>
+      s.status === 'finalizada' &&
+      inPeriod(s.createdAt, periodRange.start, periodRange.end)
+    ),
+    [sales, periodRange],
+  );
+  const validOrders = useMemo(
+    () => orders.filter(o =>
+      o.status !== 'cancelado' && o.status !== 'pendente' &&
+      inPeriod(o.createdAt, periodRange.start, periodRange.end)
+    ),
+    [orders, periodRange],
+  );
+  const validAppts = useMemo(
+    () => appointments.filter(a =>
+      a.status === 'concluido' &&
+      inPeriod(a.date, periodRange.start, periodRange.end)
+    ),
+    [appointments, periodRange],
+  );
+
+  // ─── Agregação ─────────────────────────────────────────────────────────────
+  // Produtos: SaleItem com productId (ou sem serviceId) + OrderItem.
+  // Serviços: SaleItem com serviceId + Appointment.
+  const { produtos, servicos } = useMemo(() => {
+    const prodMap = new Map<string, RankRow>();
+    const servMap = new Map<string, RankRow>();
+
+    const bump = (map: Map<string, RankRow>, rawKey: string | undefined, name: string, qty: number, total: number) => {
+      const key = rawKey || `name:${name.trim().toLowerCase()}`;
+      const cleanName = name.trim() || '(sem nome)';
+      const cur = map.get(key);
+      if (cur) {
+        cur.qty += qty;
+        cur.total += total;
+      } else {
+        map.set(key, { key, name: cleanName, qty, total });
+      }
+    };
+
+    // Sales — items podem ser produto OU serviço (campo discriminador).
+    for (const s of validSales) {
+      for (const item of s.items || []) {
+        if (item.serviceId) {
+          bump(servMap, item.serviceId, item.description, item.quantity, item.total);
+        } else {
+          bump(prodMap, item.productId, item.description, item.quantity, item.total);
+        }
+      }
+    }
+
+    // Orders — items são sempre produtos.
+    for (const o of validOrders) {
+      for (const item of o.items || []) {
+        bump(prodMap, item.productId, item.productName, item.quantity, item.total);
+      }
+    }
+
+    // Appointments — 1 serviço por agendamento.
+    for (const a of validAppts) {
+      bump(servMap, a.serviceId, a.serviceName, 1, a.price || 0);
+    }
+
+    const produtos = Array.from(prodMap.values()).sort((a, b) => b.total - a.total).slice(0, 20);
+    const servicos = Array.from(servMap.values()).sort((a, b) => b.total - a.total).slice(0, 20);
+    return { produtos, servicos };
+  }, [validSales, validOrders, validAppts]);
+
+  // ─── KPIs agregados ────────────────────────────────────────────────────────
+  const totalProdutos = produtos.reduce((s, r) => s + r.total, 0);
+  const totalServicos = servicos.reduce((s, r) => s + r.total, 0);
+  const qtyProdutos = produtos.reduce((s, r) => s + r.qty, 0);
+  const qtyServicos = servicos.reduce((s, r) => s + r.qty, 0);
+
+  const maxProd = produtos[0]?.total || 1;
+  const maxServ = servicos[0]?.total || 1;
+
+  const handleExport = () => exportPDF(
+    'Produtos & Serviços vendidos',
+    periodLabel,
+    ['Tipo', 'Item', 'Qtd', 'Receita (R$)', '% do Tipo'],
+    [
+      ...produtos.map(r => ['Produto', r.name, String(r.qty), formatCurrency(r.total), pct((r.total / (totalProdutos || 1)) * 100)]),
+      ...servicos.map(r => ['Serviço', r.name, String(r.qty), formatCurrency(r.total), pct((r.total / (totalServicos || 1)) * 100)]),
+    ],
+  );
+
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <KpiCard title="Receita produtos"  value={formatCurrency(totalProdutos)} color="green"  icon={Package} />
+        <KpiCard title="Itens vendidos"    value={String(qtyProdutos)}           color="blue"   icon={ShoppingBag} />
+        <KpiCard title="Receita serviços"  value={formatCurrency(totalServicos)} color="violet" icon={Calendar} />
+        <KpiCard title="Atendimentos"      value={String(qtyServicos)}           color="amber"  icon={TrendingUp} />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <Card title="Top 20 produtos vendidos">
+          {produtos.length === 0
+            ? <Empty icon={Package} msg="Nenhum produto vendido neste período" />
+            : <div className="space-y-3">
+                {produtos.map(r => (
+                  <div key={r.key}>
+                    <div className="flex justify-between mb-1 gap-2">
+                      <span className="text-sm text-gray-700 dark:text-gray-300 truncate flex-1">{r.name}</span>
+                      <span className="text-xs text-gray-500 dark:text-gray-400 tabular-nums whitespace-nowrap">{r.qty}×</span>
+                      <span className="text-sm font-semibold tabular-nums whitespace-nowrap">{formatCurrency(r.total)}</span>
+                    </div>
+                    <Bar value={r.total} max={maxProd} color="#10B981" />
+                  </div>
+                ))}
+              </div>
+          }
+        </Card>
+        <Card title="Top 20 serviços realizados">
+          {servicos.length === 0
+            ? <Empty icon={Calendar} msg="Nenhum serviço concluído neste período" />
+            : <div className="space-y-3">
+                {servicos.map(r => (
+                  <div key={r.key}>
+                    <div className="flex justify-between mb-1 gap-2">
+                      <span className="text-sm text-gray-700 dark:text-gray-300 truncate flex-1">{r.name}</span>
+                      <span className="text-xs text-gray-500 dark:text-gray-400 tabular-nums whitespace-nowrap">{r.qty}×</span>
+                      <span className="text-sm font-semibold tabular-nums whitespace-nowrap">{formatCurrency(r.total)}</span>
+                    </div>
+                    <Bar value={r.total} max={maxServ} color="#8B5CF6" />
+                  </div>
+                ))}
+              </div>
+          }
+        </Card>
+      </div>
+
+      <ExportBtn onClick={handleExport} disabled={produtos.length === 0 && servicos.length === 0} />
     </div>
   );
 }
@@ -704,15 +868,40 @@ export default function ReportsModule() {
     staleTime: 5 * 60 * 1000,
   });
 
+  // Sales (PDV) — usado pra ranking de produtos/serviços vendidos.
+  const { data: sales = [] } = useQuery({
+    queryKey: ['reports-sales', businessId],
+    queryFn: async () => {
+      if (!businessId) return [];
+      const q = query(collection(db, 'sales'), where('businessId', '==', businessId), orderBy('createdAt', 'desc'));
+      return (await getDocs(q)).docs.map(d => ({ ...d.data(), id: d.id } as Sale));
+    },
+    enabled: !!businessId,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Orders (delivery / orçamentos) — também tem items[] pra agregação.
+  const { data: orders = [] } = useQuery({
+    queryKey: ['reports-orders', businessId],
+    queryFn: async () => {
+      if (!businessId) return [];
+      const q = query(collection(db, 'orders'), where('businessId', '==', businessId), orderBy('createdAt', 'desc'));
+      return (await getDocs(q)).docs.map(d => ({ ...d.data(), id: d.id } as Order));
+    },
+    enabled: !!businessId,
+    staleTime: 5 * 60 * 1000,
+  });
+
   const isLoading = loadingTx || loadingAppt || loadingClients;
 
   const tabs: { id: ReportTab; label: string; icon: React.ElementType }[] = [
-    { id: 'vendas',     label: 'Vendas',     icon: DollarSign },
-    { id: 'agenda',     label: 'Agenda',     icon: Calendar },
-    { id: 'financeiro', label: 'Financeiro', icon: BarChart3 },
-    { id: 'clientes',   label: 'Clientes',   icon: Users },
-    { id: 'comissoes',  label: 'Comissões',  icon: Award },
-    { id: 'avaliacoes', label: 'Avaliações', icon: Star },
+    { id: 'vendas',     label: 'Vendas',         icon: DollarSign },
+    { id: 'produtos',   label: 'Produtos & Serviços', icon: Package },
+    { id: 'agenda',     label: 'Agenda',         icon: Calendar },
+    { id: 'financeiro', label: 'Financeiro',     icon: BarChart3 },
+    { id: 'clientes',   label: 'Clientes',       icon: Users },
+    { id: 'comissoes',  label: 'Comissões',      icon: Award },
+    { id: 'avaliacoes', label: 'Avaliações',     icon: Star },
   ];
 
   return (
@@ -811,6 +1000,7 @@ export default function ReportsModule() {
               transition={{ duration: 0.18 }}
             >
               {activeTab === 'vendas'     && <VendasTab     transactions={transactions} periodRange={periodRange} periodLabel={periodLabel} />}
+              {activeTab === 'produtos'   && <ProdutosTab   sales={sales} orders={orders} appointments={appointments} periodRange={periodRange} periodLabel={periodLabel} />}
               {activeTab === 'agenda'     && <AgendaTab     appointments={appointments} periodRange={periodRange} periodLabel={periodLabel} />}
               {activeTab === 'financeiro' && <FinanceiroTab  transactions={transactions} periodRange={periodRange} periodLabel={periodLabel} />}
               {activeTab === 'clientes'   && <ClientesTab    clients={clients} appointments={appointments} periodRange={periodRange} periodLabel={periodLabel} />}
