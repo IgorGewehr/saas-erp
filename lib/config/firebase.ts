@@ -34,12 +34,36 @@ if (!g._fb_app) {
 if (!g._fb_auth) g._fb_auth = getAuth(g._fb_app);
 if (!g._fb_db) {
   // Use initializeFirestore only on first call (before getFirestore would lock the instance).
-  // persistentLocalCache stores snapshots in IndexedDB — second visit loads from cache
-  // in <50ms instead of waiting for a network round trip.
+  //
+  // persistentLocalCache (IndexedDB) acelera segunda visita em ~50ms, MAS no
+  // SDK 11.4.0 tem bug conhecido onde, se uma query falha com índice ausente
+  // OU se o HMR do Next.js cria múltiplos clients durante dev, o IndexedDB
+  // entra em estado inconsistente. Sintoma: "INTERNAL ASSERTION FAILED:
+  // Unexpected state" disparado de QUALQUER listener, não só do que causou
+  // — e persiste entre reloads porque o cache sobrevive.
+  //
+  // Estratégia:
+  //   - DEV: cache em memória (default sem opt). Eliminamos a fonte do bug
+  //     já que HMR é o trigger principal.
+  //   - PROD: persistentLocalCache mantido (sem HMR, cache vale a pena).
+  //   - Override via env var NEXT_PUBLIC_FIREBASE_OFFLINE_CACHE=force/off
+  //     pra debugging.
+  //
+  // Pra recuperar de cache JÁ corrompido (após bug ter ocorrido): user
+  // precisa limpar IndexedDB do browser uma vez (DevTools → Application →
+  // Storage → Clear site data). Sem isso, mesmo este código novo não
+  // resolve — o cache antigo ainda está lá e dispara o assertion error.
+  const cacheOverride = process.env.NEXT_PUBLIC_FIREBASE_OFFLINE_CACHE;
+  const usePersistent =
+    cacheOverride === 'force'
+      ? true
+      : cacheOverride === 'off'
+        ? false
+        : process.env.NODE_ENV === 'production';
   try {
-    g._fb_db = initializeFirestore(g._fb_app, {
-      localCache: persistentLocalCache(),
-    });
+    g._fb_db = usePersistent
+      ? initializeFirestore(g._fb_app, { localCache: persistentLocalCache() })
+      : initializeFirestore(g._fb_app, {});
   } catch {
     g._fb_db = getFirestore(g._fb_app);
   }
