@@ -487,15 +487,23 @@ export function useTeamChat(): UseTeamChatResult {
 
 // ─── Hook auxiliar: mensagens de UM chat ────────────────────────────────────
 
-export function useTeamChatMessages(chatId: string | null, max = 50) {
+export function useTeamChatMessages(businessId: string | null, chatId: string | null, max = 50) {
   const [messages, setMessages] = useState<TeamChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (!chatId) { setMessages([]); return; }
+    if (!businessId || !chatId) { setMessages([]); return; }
     setLoading(true);
+    // IMPORTANTE: o where('businessId') aqui é OBRIGATÓRIO mesmo que chatId já
+    // restrinja o resultado. A rule de list em /teamChatMessages é
+    //   allow list: if isOwnBusiness();          // resource.data.businessId == userBiz
+    // O Firestore tem análise estática de constraints — quando a rule depende
+    // de um campo que a query não filtra, ele rejeita o LIST inteiro com
+    // permission-denied (não só docs individuais). Sem esse where, o listener
+    // dispara erro mesmo se a rule estaria correta no run-time.
     const q = query(
       collection(db, 'teamChatMessages'),
+      where('businessId', '==', businessId),
       where('chatId', '==', chatId),
       orderBy('createdAt', 'asc'),
       limit(max),
@@ -504,11 +512,11 @@ export function useTeamChatMessages(chatId: string | null, max = 50) {
       setMessages(snap.docs.map(d => ({ ...d.data(), id: d.id } as TeamChatMessage)));
       setLoading(false);
     }, err => {
-      console.error('[useTeamChatMessages] error:', err);
+      console.warn('[useTeamChatMessages] error:', err);
       setLoading(false);
     });
     return () => unsub();
-  }, [chatId, max]);
+  }, [businessId, chatId, max]);
 
   return { messages, loading };
 }

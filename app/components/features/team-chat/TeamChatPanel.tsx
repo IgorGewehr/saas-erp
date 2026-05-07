@@ -736,7 +736,7 @@ function ChatView({
     return () => clearInterval(id);
   }, [chat?.typing]);
 
-  const { messages, loading } = useTeamChatMessages(chatId);
+  const { messages, loading } = useTeamChatMessages(businessId, chatId);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [pendingAttachments, setPendingAttachments] = useState<TeamChatAttachment[]>([]);
