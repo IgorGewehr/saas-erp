@@ -313,14 +313,17 @@ export function ChannelsTab({ client, businessId }: { client: Client; businessId
                       )}
 
                       {hasActivity && (
-                        <div className="mt-1.5 flex items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400">
-                          <span>
+                        // Layout vertical: timestamp em cima, preview da última
+                        // mensagem em linha separada com truncate (drawer estreito,
+                        // formato horizontal antes vazava o conteúdo pra fora do card).
+                        <div className="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400 min-w-0">
+                          <div>
                             Última mensagem: <span className="text-gray-700 dark:text-gray-300">{relativeDate(lastConv.lastMessageAt)}</span>
-                          </span>
+                          </div>
                           {lastConv.lastMessage && (
-                            <span className="truncate text-gray-400 dark:text-gray-500">
-                              · {lastConv.lastMessage.slice(0, 60)}
-                            </span>
+                            <div className="truncate text-gray-400 dark:text-gray-500 mt-0.5" title={lastConv.lastMessage}>
+                              {lastConv.lastMessage}
+                            </div>
                           )}
                         </div>
                       )}
