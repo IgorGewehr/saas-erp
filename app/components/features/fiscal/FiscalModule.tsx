@@ -1009,6 +1009,16 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
     return () => unsub();
   }, [business?.id, type, isManager, t]);
 
+  // Sync selectedDoc com snapshot — DocumentDetailDialog não fecha após
+  // handleSyncStatus (sync SEFAZ) e mostra `doc` vindo da prop. Sem este
+  // sync, o dialog ficaria com status antigo após o updateDoc no servidor.
+  useEffect(() => {
+    if (!selectedDoc) return;
+    const fresh = documents.find(d => d.id === selectedDoc.id);
+    if (!fresh) { setSelectedDoc(null); setDetailOpen(false); return; }
+    if (fresh.updatedAt !== selectedDoc.updatedAt) setSelectedDoc(fresh);
+  }, [documents, selectedDoc]);
+
   // Filter documents by status and search
   const filteredDocuments = useMemo(() => {
     let docs = documents;
