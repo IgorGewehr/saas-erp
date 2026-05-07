@@ -54,7 +54,7 @@ const PRODUCT_COLUMNS: ColumnSpec<Product>[] = [
   { key: 'currentStock',  label: 'Estoque atual', width: 110 },
   { key: 'minStock',      label: 'Estoque min',   width: 110 },
   { key: 'unit',          label: 'Un.',           width: 60 },
-  { key: 'isActive',      label: 'Ativo',         width: 70,  format: (v) => v === false ? 'Não' : 'Sim' },
+  { key: 'isActive',      label: 'Ativo',         width: 70,  format: (v) => v === undefined || v === null ? '' : (v === false ? 'Não' : 'Sim') },
 ];
 
 const TRANSACTION_COLUMNS: ColumnSpec<Transaction>[] = [

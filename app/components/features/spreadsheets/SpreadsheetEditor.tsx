@@ -27,11 +27,15 @@ import type { FUniver } from '@univerjs/core/facade';
 
 interface SpreadsheetEditorProps {
   /** Workbook serializado (resultado de `workbook.save()` no Univer).
+   *  Lido APENAS no mount — para reagir a mudanças externas (outro user
+   *  salvou no Firestore), o callsite deve passar `key={version}` pra
+   *  forçar remount limpo. Trade-off documentado: user atual perde
+   *  scroll/seleção quando outro salva — lock visual já avisa "X está
+   *  editando", então não esperamos edição simultânea frequente.
    *  Undefined cria workbook vazio. */
   snapshot?: Record<string, unknown>;
-  /** Disparado quando o conteúdo muda. Debounced internamente — chame este
-   *  callback pra persistir no Firestore. NÃO modifique `snapshot` aqui;
-   *  isso reentraria no editor e criaria loop. */
+  /** Disparado quando o conteúdo muda. Debounced internamente. NÃO modifique
+   *  `snapshot` aqui; isso reentraria no editor e criaria loop. */
   onChange?: (snapshot: Record<string, unknown>) => void;
   /** Read-only desabilita edição (pra views com permissão de leitura). */
   readOnly?: boolean;
@@ -135,9 +139,9 @@ export default function SpreadsheetEditor({
         });
 
         if (disposed) {
-          // Race: cleanup rodou antes do init terminar. Dispose imediato.
-          univer.dispose();
-          univerRef.current = null;
+          // Race: cleanup rodou antes do init terminar. O cleanup já fez
+          // o dispose via univerRef (set null). Aqui não duplicamos —
+          // checamos antes de cada operação.
           return;
         }
 

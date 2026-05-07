@@ -43,6 +43,19 @@ const SpreadsheetEditor = dynamic(() => import('./SpreadsheetEditor'), {
   ),
 });
 
+// ─── Sanitize helper ─────────────────────────────────────────────────────────
+// Univer's `workbook.save()` retorna IWorkbookData com campos opcionais que
+// podem ser `undefined`. Firestore rejeita `updateDoc` com undefined em
+// qualquer chave (FirebaseError: Function updateDoc() called with invalid
+// data. Unsupported field value: undefined).
+//
+// Roundtrip via JSON serializa undefined → omitido (preserva null), perde
+// funções/symbols (não existem no IWorkbookData), e Date (Univer não usa).
+// Custo: 1x serialização extra a cada save. Aceitável dado debounce 1.5s.
+function sanitizeForFirestore<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
 // ─── Lock helpers ─────────────────────────────────────────────────────────────
 // Lock visual cooperativo. Quando user abre uma planilha standalone, marca
 // currentEditorId/editingExpiresAt. TTL longo (90s) — heartbeat opcional
@@ -131,11 +144,21 @@ export default function SpreadsheetsModule() {
     );
   }, [visible, search]);
 
-  // Planilha aberta no editor.
-  const openSheet = useMemo(
-    () => (openId ? spreadsheets.find(s => s.id === openId) ?? null : null),
-    [openId, spreadsheets],
-  );
+  // Planilha aberta no editor. Filtra deletadas — se outro user soft-deletou
+  // a planilha que este tem aberta, retorna null e o render volta pra lista
+  // (auditoria: doc deletado externamente não devia continuar editável).
+  const openSheet = useMemo(() => {
+    if (!openId) return null;
+    const found = spreadsheets.find(s => s.id === openId);
+    if (!found || found.isDeleted) return null;
+    return found;
+  }, [openId, spreadsheets]);
+
+  // Sync: se openId aponta pra planilha que sumiu (deletada/sem acesso),
+  // limpa o state pra UI voltar pra lista limpa.
+  useEffect(() => {
+    if (openId && !openSheet) setOpenId(null);
+  }, [openId, openSheet]);
 
   // ─── Mutations ──────────────────────────────────────────────────────────────
 
@@ -168,7 +191,7 @@ export default function SpreadsheetsModule() {
       const target = spreadsheets.find(s => s.id === id);
       const nextVersion = (target?.version ?? 0) + 1;
       await updateDoc(doc(db, 'spreadsheets', id), {
-        snapshot,
+        snapshot: sanitizeForFirestore(snapshot),
         version: nextVersion,
         updatedAt: new Date().toISOString(),
       });
