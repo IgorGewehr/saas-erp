@@ -868,6 +868,29 @@ service cloud.firestore {
     }
 
     // ============================================
+    // OFFERS COLLECTION (Fase 4B do módulo Clientes)
+    // ============================================
+    // Catálogo de ofertas/campanhas de aquisição. Operadores podem ler (pra
+    // o select no form de cliente); só admin/founder cria/edita (entidade
+    // de configuração, não tem fluxo operacional).
+    match /offers/{offerId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isAdmin();
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isAdmin()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isAdmin();
+    }
+
+    // ============================================
     // SECTORS COLLECTION
     // ============================================
     match /sectors/{sectorId} {

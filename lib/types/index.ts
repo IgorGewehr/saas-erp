@@ -1879,16 +1879,19 @@ export interface Client {
   optInMarketing?: boolean;
   optInAt?: string;
 
-  // ── Aquisição / atribuição (Fase 4 do módulo Clientes) ─────────────────────
+  // ── Aquisição / atribuição (Fases 4A + 4B do módulo Clientes) ──────────────
   // Diferencia "veio da campanha X" de "comprou produto Y" — o source genérico
   // (LeadSource: whatsapp/site/etc) só captura canal, não a oferta específica.
-  // Estes campos são manuais (operador preenche no cadastro). Iteração futura
-  // (opção C do plano) modela `offers/{id}` como entidade própria com agregação.
-  /** Produto/serviço que originou o cadastro deste cliente — usado pra
-   *  filtrar "clientes que vieram da oferta Black Friday Rinoplastia". */
+  // 3 níveis de granularidade coexistem (preferência: offerId > productId > label):
+  /** Oferta formal — referencia `offers/{id}`. Preferido quando o tenant
+   *  modelou a campanha como entidade (Fase 4B): permite agregar ROI e
+   *  reusar a mesma oferta entre clientes. */
+  acquisitionOfferId?: string;
+  /** Produto/serviço que originou o cadastro — fallback quando não há
+   *  oferta formal mas há produto formalizado (Fase 4A). */
   acquisitionProductId?: string;
-  /** Label livre da oferta apresentada — útil quando não há produto formal
-   *  (ex: "promo aniversário 30% off", "indicação parceiro X"). */
+  /** Label livre — fallback final quando não há nem oferta nem produto
+   *  formais (ex: "promo aniversário 30% off", "indicação parceiro X"). */
   acquisitionOfferLabel?: string;
 
   // ── Dados Cadastrais / Fiscal ───────────────────────
@@ -1929,6 +1932,57 @@ export interface Client {
 
 /** @deprecated Use Client instead — unified client model */
 export type CRMContact = Client;
+
+// ============================================================================
+// Offers — Fase 4B do módulo Clientes
+// ============================================================================
+//
+// Modelo de "oferta" como entidade própria — cliente.acquisitionOfferId aponta
+// pra um doc deste collection. Permite:
+//   - Reusar a mesma oferta em vários clientes (vs label livre que duplicava).
+//   - Agregar ROI por oferta (sum de Sales linkados, taxa de conversão).
+//   - Versionar oferta (validFrom/validUntil) sem perder histórico de quem veio.
+//
+// Coexiste com `acquisitionProductId` (Fase 4A): operador pode tagear cliente
+// com offerId quando há campanha formal, ou só productId quando é compra
+// avulsa sem oferta promocional. Display prioriza offer > product > label.
+//
+// Stats (contactCount, conversionCount, totalRevenue) são denormalizados —
+// atualizados por triggers/jobs futuros. MVP: campos opcionais, populados
+// sob demanda quando relatórios começarem a usar.
+
+export interface Offer {
+  id: string;
+  businessId: string;
+  /** Nome curto exibido em selects e badges. Ex: "Black Friday Rino 2026". */
+  name: string;
+  /** Descrição/contexto interno — não exibido pra cliente. */
+  description?: string;
+  /** Produto/serviço associado (opcional). Quando vazio, oferta é "geral"
+   *  (ex: indicação, evento sem SKU específico). */
+  productId?: string;
+  /** Canal principal onde a oferta é divulgada. 'multi' = mais de um. */
+  channel?: ConversationChannel | 'multi';
+  /** Soft-disable sem deletar — mantém histórico de quem veio. Default true. */
+  isActive: boolean;
+  /** Data de início da campanha. ISO YYYY-MM-DD. Vazio = sem início definido. */
+  validFrom?: string;
+  /** Data de fim da campanha. Vazio = sem fim definido (oferta perene). */
+  validUntil?: string;
+
+  // ── Stats agregados (denormalizados, opcionais — populados por jobs futuros) ──
+  /** Quantidade de clientes com `acquisitionOfferId` apontando pra esta oferta. */
+  contactCount?: number;
+  /** Subset de contactCount que virou Cliente (status='ganho'). */
+  conversionCount?: number;
+  /** Soma de Sales onde firstOfferId === this.id. */
+  totalRevenue?: number;
+
+  createdAt: string;
+  updatedAt?: string;
+  createdBy?: string;
+  createdByName?: string;
+}
 
 export interface CRMDeal {
   id: string;

@@ -44,9 +44,10 @@ export interface ClientFormData {
   bairro: string;
   municipio: string;
   uf: string;
-  /** Aquisição (Fase 4): qual oferta/produto trouxe o cliente. Manual.
-   *  acquisitionProductId vincula a um Product opcionalmente; se vazio,
-   *  acquisitionOfferLabel vira o texto exibido (free-form). */
+  /** Aquisição (Fases 4A + 4B): 3 níveis de granularidade — preferência
+   *  acquisitionOfferId (oferta formal) > acquisitionProductId (produto) >
+   *  acquisitionOfferLabel (free-form). Manual no cadastro. */
+  acquisitionOfferId: string;
   acquisitionProductId: string;
   acquisitionOfferLabel: string;
 }
@@ -57,7 +58,7 @@ export const emptyForm: ClientFormData = {
   birthDate: '',
   source: 'outro', status: 'ganho', notes: '', tags: [],
   cep: '', logradouro: '', numero: '', complemento: '', bairro: '', municipio: '', uf: '',
-  acquisitionProductId: '', acquisitionOfferLabel: '',
+  acquisitionOfferId: '', acquisitionProductId: '', acquisitionOfferLabel: '',
 };
 
 // ─── Tag editor ──────────────────────────────────────────────────────────────
@@ -136,6 +137,8 @@ export function ClientForm({
   isSaving,
   tagSuggestions,
   products = [],
+  offers = [],
+  onManageOffers,
 }: {
   initial: ClientFormData;
   onSave: (data: ClientFormData) => void;
@@ -146,6 +149,12 @@ export function ClientForm({
    *  Opcional: se vazio, só o input de label livre aparece. ClientsModule
    *  passa via useQuery em products collection. */
   products?: Array<{ id: string; name: string }>;
+  /** Ofertas formais (Fase 4B). Quando vazio, só product+label aparecem. */
+  offers?: Array<{ id: string; name: string; isActive?: boolean }>;
+  /** Callback pra abrir o modal de gerenciar ofertas (admin-only).
+   *  Se não passado, o link "Gerenciar ofertas" não aparece — útil pra
+   *  contextos onde o operador não tem permissão. */
+  onManageOffers?: () => void;
 }) {
   const [form, setForm] = useState<ClientFormData>(initial);
   const [cepLoading, setCepLoading] = useState(false);
@@ -274,30 +283,61 @@ export function ClientForm({
         </div>
       </div>
 
-      {/* Aquisição — produto/oferta que trouxe o cliente.
-          Diferente de "Origem" (canal genérico) — aqui captura QUAL oferta
-          específica converteu. Útil pra ROI por oferta no futuro. */}
+      {/* Aquisição — 3 níveis (Fase 4B):
+          1. Oferta formal (entidade com nome, produto, validade) — preferido
+          2. Produto direto — fallback quando não há campanha formal
+          3. Label livre — fallback final pra casos sem produto/oferta */}
       <div>
-        <label className={labelCls}>Aquisição (opcional)</label>
+        <label className={cn(labelCls, 'flex items-center justify-between')}>
+          <span>Aquisição (opcional)</span>
+          {onManageOffers && (
+            <button
+              type="button"
+              onClick={onManageOffers}
+              className="text-[10px] text-red-500 hover:text-red-700 normal-case tracking-normal"
+            >
+              Gerenciar ofertas
+            </button>
+          )}
+        </label>
         <p className="text-[11px] text-gray-400 dark:text-gray-500 -mt-1 mb-2">
-          Qual oferta ou produto trouxe este cliente.
+          Qual oferta, produto ou contexto trouxe este cliente.
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {offers.length > 0 && (
+            <select
+              className={inputCls}
+              value={form.acquisitionOfferId}
+              onChange={e => set('acquisitionOfferId', e.target.value)}
+            >
+              <option value="">— Sem oferta formal —</option>
+              {offers.map(o => (
+                <option key={o.id} value={o.id}>
+                  {o.name}{o.isActive === false ? ' (arquivada)' : ''}
+                </option>
+              ))}
+            </select>
+          )}
           {products.length > 0 && (
             <select
               className={inputCls}
               value={form.acquisitionProductId}
               onChange={e => set('acquisitionProductId', e.target.value)}
             >
-              <option value="">— Selecionar produto —</option>
+              <option value="">— Sem produto específico —</option>
               {products.map(p => (
                 <option key={p.id} value={p.id}>{p.name}</option>
               ))}
             </select>
           )}
           <input
-            className={cn(inputCls, products.length === 0 && 'sm:col-span-2')}
-            placeholder="Label livre da oferta — ex: Black Friday, indicação parceiro X"
+            className={cn(
+              inputCls,
+              // Quando só o input de label aparece (sem offers nem products),
+              // ele vai full-width pra não ficar metade vazia
+              offers.length === 0 && products.length === 0 && 'sm:col-span-2',
+            )}
+            placeholder="Label livre — ex: indicação parceiro X"
             value={form.acquisitionOfferLabel}
             onChange={e => set('acquisitionOfferLabel', e.target.value)}
           />

@@ -40,14 +40,17 @@ export function ClientDetailPanel({
   onEdit,
   loyaltyConfig: loyaltyCfg,
   products = [],
+  offers = [],
 }: {
   client: Client;
   onClose: () => void;
   onEdit: () => void;
   loyaltyConfig?: LoyaltyConfig;
-  /** Lookup id→nome de produto pra renderizar acquisitionProductId humanizado.
-   *  Mesma lista usada pelo ClientForm; mantém um único query no parent. */
+  /** Lookup id→nome de produto pra renderizar acquisitionProductId humanizado. */
   products?: Array<{ id: string; name: string }>;
+  /** Lookup id→nome de oferta (Fase 4B) — preferido sobre product/label
+   *  quando acquisitionOfferId está set no cliente. */
+  offers?: Array<{ id: string; name: string }>;
 }) {
   const { business, user } = useAuth();
   const queryClient = useQueryClient();
@@ -346,22 +349,22 @@ export function ClientDetailPanel({
             <span className="text-xs text-gray-400">Origem</span>
             <span className="text-xs text-gray-600 dark:text-gray-400">{SOURCE_LABELS[client.source] || client.source}</span>
           </div>
-          {/* Aquisição (Fase 4) — produto e/ou label livre da oferta. Renderiza
-              só quando há ao menos um dos dois preenchidos. Concatena com " · "
-              quando ambos pra mostrar contexto completo (ex: "Rinoplastia Padrão · Black Friday"). */}
-          {(client.acquisitionProductId || client.acquisitionOfferLabel) && (() => {
+          {/* Aquisição (Fases 4A+4B) — 3 níveis. Renderiza só quando há ao
+              menos um preenchido. Concatena com " · " pra mostrar contexto
+              completo (ex: "Black Friday · Rinoplastia Padrão · indicação Maria"). */}
+          {(client.acquisitionOfferId || client.acquisitionProductId || client.acquisitionOfferLabel) && (() => {
+            const offerName = client.acquisitionOfferId
+              ? offers.find(o => o.id === client.acquisitionOfferId)?.name
+              : null;
             const productName = client.acquisitionProductId
               ? products.find(p => p.id === client.acquisitionProductId)?.name
               : null;
             const parts: string[] = [];
+            if (offerName) parts.push(offerName);
+            else if (client.acquisitionOfferId) parts.push('Oferta removida');
             if (productName) parts.push(productName);
+            else if (client.acquisitionProductId && !offerName) parts.push('Produto removido');
             if (client.acquisitionOfferLabel) parts.push(client.acquisitionOfferLabel);
-            // Fallback: produto não encontrado mas id existe (lista ainda
-            // carregando ou produto deletado) — mostra "Produto removido"
-            // pra não esconder a info crítica.
-            if (parts.length === 0 && client.acquisitionProductId) {
-              parts.push('Produto removido');
-            }
             return (
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs text-gray-400 flex-shrink-0">Aquisição</span>

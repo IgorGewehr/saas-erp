@@ -37,6 +37,7 @@ import { CHURN_CFG, getChurnLevel, type ChurnRiskLevel } from './shared/health';
 import { findDuplicate, digits, normEmail } from './shared/duplicates';
 import { HealthBadge } from './shared/HealthBadge';
 import { TierBadge } from './shared/loyalty';
+import { OffersManagerModal } from './offers/OffersManagerModal';
 
 
 // ─── Mapa de extrações (Fases 1a + 1b) ──────────────────────────────────────
@@ -714,6 +715,7 @@ export default function ClientsModule() {
   const [showImport, setShowImport] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
   const [showLoyaltySettings, setShowLoyaltySettings] = useState(false);
+  const [showOffersManager, setShowOffersManager] = useState(false);
   const [loyaltyConfig, setLoyaltyConfig] = useState<LoyaltyConfig | undefined>(business?.settings?.loyalty);
   const isAdmin = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
   const [showFilters, setShowFilters] = useState(false);
@@ -785,6 +787,38 @@ export default function ClientsModule() {
     },
     enabled: !!business?.id,
     staleTime: 10 * 60 * 1000,
+  });
+
+  // Ofertas (Fase 4B): id + name + isActive pra alimentar select e badge.
+  // Cache 5min — operador pode criar oferta nova via OffersManagerModal e
+  // ela já aparece ao reabrir o cadastro depois.
+  const { data: offersForAcquisition = [] } = useQuery({
+    queryKey: ['offers-acquisition-select', business?.id],
+    queryFn: async (): Promise<Array<{ id: string; name: string; isActive: boolean }>> => {
+      if (!business?.id) return [];
+      const snap = await getDocs(query(
+        collection(db, 'offers'),
+        where('businessId', '==', business.id),
+      ));
+      return snap.docs
+        .map(d => {
+          const data = d.data();
+          return {
+            id: d.id,
+            name: (data.name as string) || '(sem nome)',
+            isActive: data.isActive !== false,
+          };
+        })
+        // Ativas primeiro (alfabético), arquivadas depois — operador raramente
+        // taga cliente novo com oferta arquivada, mas precisa visualizar pra
+        // edit de cliente histórico.
+        .sort((a, b) => {
+          if (a.isActive !== b.isActive) return a.isActive ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        });
+    },
+    enabled: !!business?.id,
+    staleTime: 5 * 60 * 1000,
   });
 
   // Lista enxuta de broadcasts (id + nome) pra alimentar filtro "Participou
@@ -922,8 +956,9 @@ export default function ClientsModule() {
         status: data.status,
         notes: data.notes.trim() || undefined,
         tags: data.tags.length ? data.tags : undefined,
-        // Aquisição (Fase 4) — produto e/ou label livre da oferta. Vazio vira
+        // Aquisição (Fases 4A+4B) — 3 níveis de granularidade. Vazio vira
         // undefined pra updateDoc → deleteField() limpar quando user remove.
+        acquisitionOfferId: data.acquisitionOfferId.trim() || undefined,
         acquisitionProductId: data.acquisitionProductId.trim() || undefined,
         acquisitionOfferLabel: data.acquisitionOfferLabel.trim() || undefined,
         updatedAt: now,
@@ -1102,10 +1137,21 @@ export default function ClientsModule() {
     }
     if (filterAcquisition !== 'all') {
       list = list.filter(c => {
+        if (filterAcquisition === 'with_offer_id') return !!c.acquisitionOfferId;
         if (filterAcquisition === 'with_product') return !!c.acquisitionProductId;
-        if (filterAcquisition === 'with_offer') return !!c.acquisitionOfferLabel;
-        if (filterAcquisition === 'none') return !c.acquisitionProductId && !c.acquisitionOfferLabel;
-        // String != aos 4 valores especiais → assume productId específico
+        if (filterAcquisition === 'with_label') return !!c.acquisitionOfferLabel;
+        if (filterAcquisition === 'none') {
+          return !c.acquisitionOfferId && !c.acquisitionProductId && !c.acquisitionOfferLabel;
+        }
+        // Prefixed strings: 'offer:${id}' / 'product:${id}'. Plain id sem
+        // prefix continua significando productId pra retrocompat (estado
+        // serializado ou shortcut antigo).
+        if (filterAcquisition.startsWith('offer:')) {
+          return c.acquisitionOfferId === filterAcquisition.slice('offer:'.length);
+        }
+        if (filterAcquisition.startsWith('product:')) {
+          return c.acquisitionProductId === filterAcquisition.slice('product:'.length);
+        }
         return c.acquisitionProductId === filterAcquisition;
       });
     }
@@ -1179,6 +1225,7 @@ export default function ClientsModule() {
         bairro: editingClient.endereco?.bairro || '',
         municipio: editingClient.endereco?.municipio || '',
         uf: editingClient.endereco?.uf || '',
+        acquisitionOfferId: editingClient.acquisitionOfferId || '',
         acquisitionProductId: editingClient.acquisitionProductId || '',
         acquisitionOfferLabel: editingClient.acquisitionOfferLabel || '',
       }
@@ -1544,19 +1591,21 @@ export default function ClientsModule() {
                 </div>
               </div>
 
-              {/* Filtro Aquisição — combina chips fixos (com/sem oferta) com
-                  select de produto específico. Quando productId é selecionado,
-                  filterAcquisition vira o id; chips ficam inativos. */}
+              {/* Filtro Aquisição (Fases 4A+4B) — chips fixos por categoria
+                  + select com 2 grupos (Ofertas/Produtos). Quando seleção
+                  específica, filterAcquisition vira "offer:${id}" ou
+                  "product:${id}"; chips ficam inativos. */}
               <div>
                 <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2 block">
                   Aquisição
                 </label>
                 <div className="flex flex-wrap gap-2">
                   {([
-                    { id: 'all',          label: 'Todos' },
-                    { id: 'with_product', label: 'Com produto' },
-                    { id: 'with_offer',   label: 'Com oferta' },
-                    { id: 'none',         label: 'Sem aquisição' },
+                    { id: 'all',           label: 'Todos' },
+                    { id: 'with_offer_id', label: 'Com oferta' },
+                    { id: 'with_product',  label: 'Com produto' },
+                    { id: 'with_label',    label: 'Com label' },
+                    { id: 'none',          label: 'Sem aquisição' },
                   ] as const).map(opt => (
                     <button
                       key={opt.id}
@@ -1569,28 +1618,38 @@ export default function ClientsModule() {
                       {opt.label}
                     </button>
                   ))}
-                  {productsForAcquisition.length > 0 && (
-                    <select
-                      value={
-                        ['all', 'with_product', 'with_offer', 'none'].includes(filterAcquisition)
-                          ? ''
-                          : filterAcquisition
-                      }
-                      onChange={e => {
-                        const v = e.target.value;
-                        setFilterAcquisition(v || 'all');
-                      }}
-                      className={cn('px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border-0 focus:outline-none focus:ring-1 focus:ring-red-400 cursor-pointer',
-                        !['all', 'with_product', 'with_offer', 'none'].includes(filterAcquisition)
-                          ? 'bg-red-600 text-white'
-                          : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
-                      )}>
-                      <option value="">Produto específico…</option>
-                      {productsForAcquisition.map(p => (
-                        <option key={p.id} value={p.id}>{p.name}</option>
-                      ))}
-                    </select>
-                  )}
+                  {(offersForAcquisition.length > 0 || productsForAcquisition.length > 0) && (() => {
+                    const KNOWN_CHIPS = ['all', 'with_offer_id', 'with_product', 'with_label', 'none'];
+                    const isSpecific = !KNOWN_CHIPS.includes(filterAcquisition);
+                    return (
+                      <select
+                        value={isSpecific ? filterAcquisition : ''}
+                        onChange={e => setFilterAcquisition(e.target.value || 'all')}
+                        className={cn('px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border-0 focus:outline-none focus:ring-1 focus:ring-red-400 cursor-pointer',
+                          isSpecific
+                            ? 'bg-red-600 text-white'
+                            : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+                        )}>
+                        <option value="">Específico…</option>
+                        {offersForAcquisition.length > 0 && (
+                          <optgroup label="Ofertas">
+                            {offersForAcquisition.map(o => (
+                              <option key={o.id} value={`offer:${o.id}`}>
+                                {o.name}{!o.isActive ? ' (arquivada)' : ''}
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+                        {productsForAcquisition.length > 0 && (
+                          <optgroup label="Produtos">
+                            {productsForAcquisition.map(p => (
+                              <option key={p.id} value={`product:${p.id}`}>{p.name}</option>
+                            ))}
+                          </optgroup>
+                        )}
+                      </select>
+                    );
+                  })()}
                 </div>
               </div>
 
@@ -1794,17 +1853,24 @@ export default function ClientsModule() {
                           </span>
                         </>
                       )}
-                      {/* Aquisição (Fase 4) — badge sutil mostrando produto/oferta
-                          que trouxe o cliente. Resolve productId via productsForAcquisition;
-                          fallback pra offerLabel quando não há produto, ou pra "Produto
-                          removido" quando o id existe mas o produto sumiu (race). */}
-                      {(client.acquisitionProductId || client.acquisitionOfferLabel) && (() => {
+                      {/* Aquisição (Fases 4A+4B) — badge sutil. Prioridade:
+                          1. Oferta formal (offerId → offers[].name) — mais específico
+                          2. Produto (productId → products[].name)
+                          3. Label livre (offerLabel) — texto direto
+                          Fallbacks "Oferta/Produto removido" quando o id existe
+                          mas o doc sumiu (race ou hard-delete). */}
+                      {(client.acquisitionOfferId || client.acquisitionProductId || client.acquisitionOfferLabel) && (() => {
+                        const offerName = client.acquisitionOfferId
+                          ? offersForAcquisition.find(o => o.id === client.acquisitionOfferId)?.name
+                          : null;
                         const productName = client.acquisitionProductId
                           ? productsForAcquisition.find(p => p.id === client.acquisitionProductId)?.name
                           : null;
-                        const label = productName
+                        const label = offerName
+                          || productName
                           || client.acquisitionOfferLabel
-                          || (client.acquisitionProductId ? 'Produto removido' : '');
+                          || (client.acquisitionOfferId ? 'Oferta removida'
+                            : client.acquisitionProductId ? 'Produto removido' : '');
                         if (!label) return null;
                         return (
                           <span
@@ -1850,6 +1916,7 @@ export default function ClientsModule() {
                 onEdit={() => openEdit(selectedClient)}
                 loyaltyConfig={loyaltyConfig}
                 products={productsForAcquisition}
+                offers={offersForAcquisition}
               />
             </div>
           )}
@@ -1896,6 +1963,10 @@ export default function ClientsModule() {
                     isSaving={isSaving}
                     tagSuggestions={allTags}
                     products={productsForAcquisition}
+                    offers={offersForAcquisition}
+                    // Só admin vê o link "Gerenciar ofertas" — operador só usa
+                    // ofertas existentes; criação/edição é admin-only no rule.
+                    onManageOffers={isAdmin ? () => setShowOffersManager(true) : undefined}
                   />
                 </div>
               </motion.div>
@@ -1913,6 +1984,18 @@ export default function ClientsModule() {
             businessId={business!.id}
             onClose={() => setShowLoyaltySettings(false)}
             onSaved={cfg => setLoyaltyConfig(cfg)}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Offers manager modal — admin-only (Fase 4B) */}
+      <AnimatePresence>
+        {showOffersManager && user && (
+          <OffersManagerModal
+            businessId={business!.id}
+            user={{ uid: user.uid, name: user.name }}
+            products={productsForAcquisition}
+            onClose={() => setShowOffersManager(false)}
           />
         )}
       </AnimatePresence>

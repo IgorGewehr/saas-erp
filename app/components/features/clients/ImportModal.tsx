@@ -185,9 +185,10 @@ function rowToFormData(row: Record<string, string>, mapping: Record<string, stri
     bairro: get('bairro'),
     municipio: get('municipio'),
     uf: get('uf').toUpperCase().slice(0, 2),
-    // Aquisição (Fase 4): CSV não mapeia produto por id (usuário não conhece
-    // o id Firestore). Vazio na importação — operador preenche manualmente
-    // depois se quiser tag específica de oferta.
+    // Aquisição (Fases 4A+4B): CSV não mapeia produto/oferta por id (usuário
+    // não conhece o id Firestore). Vazio na importação — operador preenche
+    // manualmente depois se quiser tag específica.
+    acquisitionOfferId: '',
     acquisitionProductId: '',
     acquisitionOfferLabel: '',
   };
