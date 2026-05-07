@@ -1586,7 +1586,11 @@ function MessageBubble({
         isGrouped ? 'mt-0.5' : 'mt-3',
       )}
     >
-      <div className={cn('max-w-[75%] sm:max-w-[65%] flex flex-col', isOut ? 'items-end' : 'items-start')}>
+      {/* Largura dual: percentual em telas estreitas (mobile bonito) + cap
+          absoluto em telas largas (espelha WhatsApp Web — bolha não estica
+          o texto até a metade do monitor em mensagens longas). 600px é
+          ~80 chars de texto, ponto de leitura confortável. */}
+      <div className={cn('max-w-[85%] sm:max-w-[min(75%,600px)] flex flex-col', isOut ? 'items-end' : 'items-start')}>
         {/* Media attachment */}
         {message.mediaUrl && message.mediaType && (
           <MediaAttachment mediaUrl={message.mediaUrl} mediaType={message.mediaType} fileName={message.fileName} />
