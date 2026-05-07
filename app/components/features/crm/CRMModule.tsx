@@ -3051,10 +3051,55 @@ export default function CRMModule() {
     return () => unsub();
   }, [business?.id]);
 
-  // Data fetching
-  const { data: contacts = [], isLoading: lc } = useQuery({ queryKey: ['clients', business?.id], queryFn: async () => { const q = query(collection(db, 'clients'), where('businessId', '==', business!.id), orderBy('createdAt', 'desc')); const snap = await getDocs(q); return snap.docs.map((d) => { const data = d.data(); return { ...data, id: d.id, status: (data.status ?? 'novo') as CRMContact['status'], source: (data.source ?? 'outro') as CRMContact['source'], score: data.score ?? 0 } as CRMContact; }).filter((c) => c.tipo !== 'pj'); }, enabled: !!business?.id });
-  const { data: deals = [], isLoading: ld } = useQuery({ queryKey: ['crmDeals', business?.id], queryFn: async () => { const q = query(collection(db, 'crmDeals'), where('businessId', '==', business!.id), orderBy('createdAt', 'desc')); const snap = await getDocs(q); return snap.docs.map((d) => ({ ...d.data(), id: d.id } as CRMDeal)); }, enabled: !!business?.id });
-  const { data: activities = [], isLoading: la } = useQuery({ queryKey: ['crmActivities', business?.id], queryFn: async () => { const q = query(collection(db, 'crmActivities'), where('businessId', '==', business!.id), orderBy('createdAt', 'desc')); const snap = await getDocs(q); return snap.docs.map((d) => ({ ...d.data(), id: d.id } as CRMActivity)); }, enabled: !!business?.id });
+  // Data fetching — listeners em tempo real (refactor sync multi-user):
+  //
+  // ANTES: 3x useQuery + getDocs sem staleTime explícito (caía no global,
+  // antes 5min, agora 30s). Vendedor A movia deal de etapa, vendedor B só
+  // via mudança após refetch — em pipeline drag&drop colaborativo isso é
+  // crítico (B podia mover o mesmo deal pra outro stage assumindo dados
+  // antigos, criando confusão).
+  //
+  // AGORA: onSnapshot pra contacts/deals/activities. Mudanças propagam
+  // imediatamente em todos os boards Kanban e timeline de atividade.
+  const [contacts, setContacts] = useState<CRMContact[]>([]);
+  const [deals, setDeals] = useState<CRMDeal[]>([]);
+  const [activities, setActivities] = useState<CRMActivity[]>([]);
+  const [lc, setLc] = useState(true);
+  const [ld, setLd] = useState(true);
+  const [la, setLa] = useState(true);
+  useEffect(() => {
+    if (!business?.id) { setLc(false); return; }
+    setLc(true);
+    const q = query(collection(db, 'clients'), where('businessId', '==', business.id), orderBy('createdAt', 'desc'));
+    const unsub = onSnapshot(q, (snap) => {
+      setContacts(snap.docs.map((d) => {
+        const data = d.data();
+        return { ...data, id: d.id, status: (data.status ?? 'novo') as CRMContact['status'], source: (data.source ?? 'outro') as CRMContact['source'], score: data.score ?? 0 } as CRMContact;
+      }).filter((c) => c.tipo !== 'pj'));
+      setLc(false);
+    }, (err) => { console.error('[CRM] contacts snapshot error:', err); setLc(false); });
+    return () => unsub();
+  }, [business?.id]);
+  useEffect(() => {
+    if (!business?.id) { setLd(false); return; }
+    setLd(true);
+    const q = query(collection(db, 'crmDeals'), where('businessId', '==', business.id), orderBy('createdAt', 'desc'));
+    const unsub = onSnapshot(q, (snap) => {
+      setDeals(snap.docs.map((d) => ({ ...d.data(), id: d.id } as CRMDeal)));
+      setLd(false);
+    }, (err) => { console.error('[CRM] deals snapshot error:', err); setLd(false); });
+    return () => unsub();
+  }, [business?.id]);
+  useEffect(() => {
+    if (!business?.id) { setLa(false); return; }
+    setLa(true);
+    const q = query(collection(db, 'crmActivities'), where('businessId', '==', business.id), orderBy('createdAt', 'desc'));
+    const unsub = onSnapshot(q, (snap) => {
+      setActivities(snap.docs.map((d) => ({ ...d.data(), id: d.id } as CRMActivity)));
+      setLa(false);
+    }, (err) => { console.error('[CRM] activities snapshot error:', err); setLa(false); });
+    return () => unsub();
+  }, [business?.id]);
 
   const isLoading = lc || ld || la;
   const ROTTING_DAYS = 7;
