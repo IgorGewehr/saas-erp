@@ -5982,9 +5982,15 @@ export default function ConversasModule() {
     () => debounce(async () => {
       if (!selectedConversation || !business?.id) return;
       try {
+        // Auth header obrigatório — backend usa verifyAuth() e devolve 401 sem token.
+        const token = await getAuth().currentUser?.getIdToken();
+        if (!token) return;
         await fetch('/api/conversations/typing', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
           body: JSON.stringify({
             businessId: business.id,
             channel: selectedConversation.channel,

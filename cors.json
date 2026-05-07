@@ -2,6 +2,7 @@
   {
     "origin": [
       "http://localhost:3000",
+      "https://aevo.tensorroot.com",
       "https://aevoapp.netlify.app",
       "https://service-provider-1cd0d.firebaseapp.com"
     ],
