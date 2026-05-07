@@ -57,7 +57,7 @@ import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch, increment, deleteField } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch, increment, deleteField, onSnapshot } from 'firebase/firestore';
 import { toast } from 'react-toastify';
 import { deductStock, restoreStock, checkStockAvailability } from '@/lib/services/stock';
 import { calculateEarnedPoints, addLoyaltyPoints, redeemLoyaltyPoints, pointsToReais, reaisToPoints } from '@/lib/services/loyalty';
@@ -240,20 +240,34 @@ export default function PDVModule() {
   }, [mainView]);
 
   // --- Firestore Queries ---
-  const { data: products = [], isLoading: loadingProducts } = useQuery({
-    queryKey: ['products', business?.id],
-    queryFn: async () => {
-      const q = query(
-        collection(db, 'products'),
-        where('businessId', '==', business!.id),
-        where('isActive', '==', true),
-        orderBy('name', 'asc'),
-      );
-      const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Product));
-    },
-    enabled: !!business?.id,
-  });
+  // Products + clients via onSnapshot (refactor sync multi-user):
+  //
+  // ANTES: useQuery + getDocs sem staleTime explícito (caía no global,
+  // antes 5min, agora 30s). Cenário multi-PDV: caixa A vende produto X
+  // (estoque cai), caixa B só via novo estoque após refetch — risco de
+  // vender unidades já consumidas.
+  //
+  // AGORA: onSnapshot pra products e clients. Estoque/disponibilidade
+  // refletem em todos os PDVs em tempo real. services e salesHistory
+  // continuam em useQuery (volume baixo, mudança rara, ou histórico que
+  // não exige real-time).
+  const [products, setProducts] = useState<Product[]>([]);
+  const [loadingProducts, setLoadingProducts] = useState(true);
+  useEffect(() => {
+    if (!business?.id) { setLoadingProducts(false); return; }
+    setLoadingProducts(true);
+    const q = query(
+      collection(db, 'products'),
+      where('businessId', '==', business.id),
+      where('isActive', '==', true),
+      orderBy('name', 'asc'),
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      setProducts(snap.docs.map(d => ({ ...d.data(), id: d.id } as Product)));
+      setLoadingProducts(false);
+    }, (err) => { console.error('[PDV] products snapshot error:', err); setLoadingProducts(false); });
+    return () => unsub();
+  }, [business?.id]);
 
   const { data: services = [], isLoading: loadingServices } = useQuery({
     queryKey: ['services', business?.id],
@@ -270,25 +284,28 @@ export default function PDVModule() {
     enabled: !!business?.id,
   });
 
-  const { data: clients = [], isLoading: loadingClients } = useQuery({
-    queryKey: ['clients', business?.id],
-    queryFn: async () => {
-      const q = query(
-        collection(db, 'clients'),
-        where('businessId', '==', business!.id),
-        where('isActive', '==', true),
-        orderBy('name', 'asc'),
-      );
-      const snap = await getDocs(q);
-      return snap.docs.map(d => {
+  const [clients, setClients] = useState<CRMContact[]>([]);
+  const [loadingClients, setLoadingClients] = useState(true);
+  useEffect(() => {
+    if (!business?.id) { setLoadingClients(false); return; }
+    setLoadingClients(true);
+    const q = query(
+      collection(db, 'clients'),
+      where('businessId', '==', business.id),
+      where('isActive', '==', true),
+      orderBy('name', 'asc'),
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      setClients(snap.docs.map(d => {
         const data = d.data();
         // Normalize legacy `nome` field to `name` (migration from old CRM schema)
         if (!data.name && data.nome) data.name = data.nome;
         return { ...data, id: d.id } as CRMContact;
-      });
-    },
-    enabled: !!business?.id,
-  });
+      }));
+      setLoadingClients(false);
+    }, (err) => { console.error('[PDV] clients snapshot error:', err); setLoadingClients(false); });
+    return () => unsub();
+  }, [business?.id]);
 
   const { data: salesHistory = [], isLoading: loadingSales } = useQuery({
     queryKey: ['sales', business?.id],
