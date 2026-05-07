@@ -154,7 +154,7 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
         }, 0);
         setUnreadCount(total);
       },
-      (err) => console.error('[TopBar] unread count snapshot error:', err),
+      (err) => console.warn('[TopBar] unread count snapshot error:', err),
     );
     return () => unsub();
   }, [businessId]);

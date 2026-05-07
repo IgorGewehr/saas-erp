@@ -70,7 +70,10 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
 
-  // Fetch conversations with error handling
+  // Fetch conversations com retry exponencial (espelha ConversasModule).
+  // Sem retry o listener morre permanente em qualquer erro transitório
+  // (rede, índice em build, rules deploy em andamento) e a UI fica congelada
+  // com snapshot velho sem indicação pro operador.
   useEffect(() => {
     if (!businessId) return;
     setIsLoading(true);
@@ -79,22 +82,37 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
       where('businessId', '==', businessId),
       orderBy('lastMessageAt', 'desc'),
     );
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        // Filter out soft-deleted conversations
-        const docs = snap.docs
-          .map((d) => ({ ...d.data(), id: d.id } as Conversation & { isDeleted?: boolean }))
-          .filter((c) => !c.isDeleted);
-        setConversations(docs);
-        setIsLoading(false);
-      },
-      (err) => {
-        console.error('[OmnichannelInbox] Error fetching conversations:', err);
-        setIsLoading(false);
-      },
-    );
-    return () => unsub();
+
+    let unsub: (() => void) | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryCount = 0;
+
+    const subscribe = () => {
+      unsub = onSnapshot(
+        q,
+        (snap) => {
+          retryCount = 0;
+          const docs = snap.docs
+            .map((d) => ({ ...d.data(), id: d.id } as Conversation & { isDeleted?: boolean }))
+            .filter((c) => !c.isDeleted);
+          setConversations(docs);
+          setIsLoading(false);
+        },
+        (err) => {
+          console.warn('[OmnichannelInbox] snapshot error:', err);
+          setIsLoading(false);
+          const delay = Math.min(3000 * Math.pow(2, retryCount), 30_000);
+          retryCount++;
+          retryTimer = setTimeout(subscribe, delay);
+        },
+      );
+    };
+
+    subscribe();
+    return () => {
+      if (retryTimer) clearTimeout(retryTimer);
+      unsub?.();
+    };
   }, [businessId]);
 
   // Fetch messages for selected conversation

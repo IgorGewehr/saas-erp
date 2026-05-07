@@ -167,16 +167,33 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
       orderBy('createdAt', 'desc'),
       fbLimit(HISTORY_LIMIT),
     );
-    const unsub = onSnapshot(q, snap => {
-      const docs = snap.docs.map(d => ({ ...d.data(), id: d.id }) as AIChatMessageDoc);
-      docs.reverse();
-      setOperatorPersisted(docs.map(docToMessage));
-      setOperatorHydrating(false);
-    }, err => {
-      console.error('[AIAgentProvider] operator subscription error:', err);
-      setOperatorHydrating(false);
-    });
-    return () => unsub();
+
+    // Retry exponencial (fail-soft) — sem isso, qualquer erro transitório
+    // (rede, rules em deploy) mata o listener permanentemente e o histórico
+    // do chat IA fica vazio até reload.
+    let unsub: (() => void) | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryCount = 0;
+    const subscribe = () => {
+      unsub = onSnapshot(q, snap => {
+        retryCount = 0;
+        const docs = snap.docs.map(d => ({ ...d.data(), id: d.id }) as AIChatMessageDoc);
+        docs.reverse();
+        setOperatorPersisted(docs.map(docToMessage));
+        setOperatorHydrating(false);
+      }, err => {
+        console.warn('[AIAgentProvider] operator subscription error:', err);
+        setOperatorHydrating(false);
+        const delay = Math.min(3000 * Math.pow(2, retryCount), 30_000);
+        retryCount++;
+        retryTimer = setTimeout(subscribe, delay);
+      });
+    };
+    subscribe();
+    return () => {
+      if (retryTimer) clearTimeout(retryTimer);
+      unsub?.();
+    };
   }, [businessId, uid]);
 
   useEffect(() => {
@@ -194,16 +211,30 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
       orderBy('createdAt', 'desc'),
       fbLimit(HISTORY_LIMIT),
     );
-    const unsub = onSnapshot(q, snap => {
-      const docs = snap.docs.map(d => ({ ...d.data(), id: d.id }) as AIChatMessageDoc);
-      docs.reverse();
-      setAnalystPersisted(docs.map(docToMessage));
-      setAnalystHydrating(false);
-    }, err => {
-      console.error('[AIAgentProvider] analyst subscription error:', err);
-      setAnalystHydrating(false);
-    });
-    return () => unsub();
+
+    let unsub: (() => void) | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryCount = 0;
+    const subscribe = () => {
+      unsub = onSnapshot(q, snap => {
+        retryCount = 0;
+        const docs = snap.docs.map(d => ({ ...d.data(), id: d.id }) as AIChatMessageDoc);
+        docs.reverse();
+        setAnalystPersisted(docs.map(docToMessage));
+        setAnalystHydrating(false);
+      }, err => {
+        console.warn('[AIAgentProvider] analyst subscription error:', err);
+        setAnalystHydrating(false);
+        const delay = Math.min(3000 * Math.pow(2, retryCount), 30_000);
+        retryCount++;
+        retryTimer = setTimeout(subscribe, delay);
+      });
+    };
+    subscribe();
+    return () => {
+      if (retryTimer) clearTimeout(retryTimer);
+      unsub?.();
+    };
   }, [businessId, uid]);
 
   // ── Send: write user msg → call API → write assistant msg ─────────────────
