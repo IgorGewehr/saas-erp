@@ -7,9 +7,10 @@ import { useTranslation } from 'react-i18next';
 import { getInitials } from '@/lib/utils/format';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
-import { collection, query, where, orderBy, limit, onSnapshot, updateDoc, doc, writeBatch } from 'firebase/firestore';
+import { collection, query, where, or, orderBy, limit, onSnapshot, updateDoc, doc, writeBatch } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import type { AppNotification } from '@/lib/types';
+import { ROLE_HIERARCHY } from '@/lib/types';
 import {
   Search,
   Bell,
@@ -137,19 +138,35 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
   // filter client-side é trivial em termos de CPU e remove fricção de
   // setup. Mesmo padrão usado em outros listeners do projeto.
   const businessId = business?.id;
+  const userUid = user?.uid;
+  const isAdmin = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['admin'];
   const [unreadCount, setUnreadCount] = useState(0);
   useEffect(() => {
-    if (!businessId) { setUnreadCount(0); return; }
-    const q = query(
-      collection(db, 'conversations'),
-      where('businessId', '==', businessId),
-    );
+    if (!businessId || !userUid) { setUnreadCount(0); return; }
+    // Mirror da query do ConversasModule pra que o badge conte só conversas
+    // que o user CONSEGUE ver na lista — sem isso, bagde mostrava unread
+    // de canais Baileys pessoais alheios (que o user nem visualiza) e de
+    // conversas com isDeleted=true. Resultado: badge "9" + lista vazia.
+    const q = isAdmin
+      ? query(
+          collection(db, 'conversations'),
+          where('businessId', '==', businessId),
+        )
+      : query(
+          collection(db, 'conversations'),
+          where('businessId', '==', businessId),
+          or(
+            where('channelOwnerType', '==', 'business'),
+            where('channelOwnerId', '==', userUid),
+          ),
+        );
     const unsub = onSnapshot(
       q,
       (snap) => {
         const total = snap.docs.reduce((sum, d) => {
-          const data = d.data();
-          const n = (data.unreadCount as number) || 0;
+          const data = d.data() as { unreadCount?: number; isDeleted?: boolean };
+          if (data.isDeleted) return sum;
+          const n = data.unreadCount || 0;
           return n > 0 ? sum + n : sum;
         }, 0);
         setUnreadCount(total);
@@ -157,7 +174,7 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
       (err) => console.warn('[TopBar] unread count snapshot error:', err),
     );
     return () => unsub();
-  }, [businessId]);
+  }, [businessId, userUid, isAdmin]);
 
   // ── In-app notifications (real-time) ──
   const [notifications, setNotifications] = useState<AppNotification[]>([]);

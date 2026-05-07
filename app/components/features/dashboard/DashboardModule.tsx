@@ -46,7 +46,7 @@ import {
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { enUS as enUSLocale } from 'date-fns/locale';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, or, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { cn } from '@/lib/utils';
 import type { MenuPage } from '@/app/components/layout/Sidebar';
@@ -167,15 +167,32 @@ export default function DashboardModule() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loadingConvs, setLoadingConvs] = useState(true);
   useEffect(() => {
-    if (!business?.id) { setLoadingConvs(false); return; }
+    if (!business?.id || !user?.uid) { setLoadingConvs(false); return; }
     setLoadingConvs(true);
-    const q = query(collection(db, 'conversations'), where('businessId', '==', business.id));
+    // Mirror do query do ConversasModule pra que o KPI de unread conte só o
+    // que o user vê na lista. Sem isso, dashboard mostra unread inflado de
+    // canais alheios e conversas deletadas.
+    const userIsAdmin = ROLE_HIERARCHY[user.role || 'viewer'] >= ROLE_HIERARCHY['admin'];
+    const q = userIsAdmin
+      ? query(collection(db, 'conversations'), where('businessId', '==', business.id))
+      : query(
+          collection(db, 'conversations'),
+          where('businessId', '==', business.id),
+          or(
+            where('channelOwnerType', '==', 'business'),
+            where('channelOwnerId', '==', user.uid),
+          ),
+        );
     const unsub = onSnapshot(q, (snap) => {
-      setConversations(snap.docs.map((d) => ({ ...d.data(), id: d.id } as Conversation)));
+      setConversations(
+        snap.docs
+          .map((d) => ({ ...d.data(), id: d.id } as Conversation & { isDeleted?: boolean }))
+          .filter((c) => !c.isDeleted),
+      );
       setLoadingConvs(false);
-    }, (err) => { console.error('[Dashboard] conversations snapshot error:', err); setLoadingConvs(false); });
+    }, (err) => { console.warn('[Dashboard] conversations snapshot error:', err); setLoadingConvs(false); });
     return () => unsub();
-  }, [business?.id]);
+  }, [business?.id, user?.uid, user?.role]);
 
   const [crmContacts, setCrmContacts] = useState<CRMContact[]>([]);
   const [loadingCrm, setLoadingCrm] = useState(true);
