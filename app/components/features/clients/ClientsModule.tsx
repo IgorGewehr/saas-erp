@@ -701,14 +701,19 @@ export default function ClientsModule() {
   const [filterBirthMonth, setFilterBirthMonth] = useState<'all' | 'this_month' | 'next_month' | number>('all');
   // Filtros Fase 5 — usam infra das fases 2/3/4:
   //   filterChannel: lê client.channelIdentities (fase 2);
-  //   filterAcquisition: lê client.acquisitionProductId/OfferLabel (fase 4);
+  //   filterAcquisition: lê acquisitionOfferId/ProductId/OfferLabel (fases 4A+4B);
   //   filterCampaign: query broadcastMessages → set de contactIds (fase 3).
   const [filterChannel, setFilterChannel] = useState<'all' | 'whatsapp' | 'facebook' | 'instagram'>('all');
   // Quando true, filterChannel só conta clientes que têm conversation REAL no
   // canal (não só identifier cadastrado). Default false — manter retrocompat
   // com fluxo anterior. Toggle ao lado dos chips de canal no painel de filtros.
   const [filterChannelHasConv, setFilterChannelHasConv] = useState(false);
-  const [filterAcquisition, setFilterAcquisition] = useState<'all' | 'with_product' | 'with_offer' | 'none' | string>('all');
+  // Valores possíveis (filter chain detecta cada um):
+  //   'all' | 'with_offer_id' | 'with_product' | 'with_label' | 'none'
+  //   'offer:${id}' | 'product:${id}' | productId raw (retrocompat)
+  // String catch-all simplifica state mas perde narrowing — equality checks
+  // no chain são exhaustivos.
+  const [filterAcquisition, setFilterAcquisition] = useState<string>('all');
   const [filterCampaign, setFilterCampaign] = useState<string>('');  // broadcastId ou ''
   const [sortBy, setSortBy] = useState<'name' | 'totalSpent' | 'createdAt' | 'churnRisk'>('name');
   const [showExport, setShowExport] = useState(false);

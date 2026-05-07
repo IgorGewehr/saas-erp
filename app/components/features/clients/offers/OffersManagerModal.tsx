@@ -25,7 +25,7 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   collection, query, where, getDocs, addDoc, updateDoc,
-  deleteDoc, doc, orderBy as fsOrderBy,
+  deleteDoc, doc, orderBy as fsOrderBy, deleteField,
 } from 'firebase/firestore';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
@@ -105,11 +105,17 @@ export function OffersManagerModal({
         isActive: editing?.isActive ?? true,
         updatedAt: now,
       };
-      // Strip undefined pra Firestore não rejeitar
-      const cleaned = Object.fromEntries(Object.entries(payload).filter(([, v]) => v !== undefined));
       if (editing) {
-        await updateDoc(doc(db, 'offers', editing.id), cleaned);
+        // updateDoc rejeita undefined — converte pra deleteField() pra limpar
+        // campos opcionais quando user esvaziar (ex: tirou o produto vinculado).
+        // Sem isso, edit mantém valores antigos no Firestore.
+        const updatePayload = Object.fromEntries(
+          Object.entries(payload).map(([k, v]) => [k, v === undefined ? deleteField() : v]),
+        );
+        await updateDoc(doc(db, 'offers', editing.id), updatePayload);
       } else {
+        // addDoc: remove undefined pra não gravar campos vazios
+        const cleaned = Object.fromEntries(Object.entries(payload).filter(([, v]) => v !== undefined));
         await addDoc(collection(db, 'offers'), {
           ...cleaned,
           createdAt: now,
