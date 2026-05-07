@@ -16,12 +16,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { collection, doc, query, where, orderBy, onSnapshot, limit as firestoreLimit } from 'firebase/firestore';
+import { collection, doc, query, where, orderBy, onSnapshot, limit as firestoreLimit, getDoc } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 import { db } from '@/lib/config/firebase';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
-import { X, RefreshCw, Loader2, AlertTriangle, Check, CheckCheck, Clock, Send, Shield, RotateCcw, Trash2, Pause, Layers } from 'lucide-react';
+import { X, RefreshCw, Loader2, AlertTriangle, Check, CheckCheck, Clock, Send, Shield, RotateCcw, Trash2, Pause, Layers, Megaphone } from 'lucide-react';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import type { Broadcast, BroadcastMessage, BroadcastMessageStatus } from '@/lib/types';
 import { CONSENT_BASIS_LABELS } from '@/lib/types';
@@ -53,6 +53,24 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<BroadcastMessageStatus | 'all'>('all');
   const [retrying, setRetrying] = useState(false);
+  // Resolve nome da oferta vinculada (Fase 4B do módulo Clientes). Single
+  // getDoc por mount — evita prop drilling do parent. Cache implícito via
+  // stable broadcast.offerId reference.
+  const [offerName, setOfferName] = useState<string | null>(null);
+  useEffect(() => {
+    if (!broadcast.offerId) { setOfferName(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const snap = await getDoc(doc(db, 'offers', broadcast.offerId!));
+        if (cancelled) return;
+        setOfferName(snap.exists() ? ((snap.data().name as string) || '(sem nome)') : 'Oferta removida');
+      } catch (err) {
+        console.warn('[BroadcastDetail] Failed to resolve offer name:', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [broadcast.offerId]);
 
   // Lock the tab scroll container while open. Como agora portalamos pra
   // document.body, buscamos o wrapper de tab ativo via classes (ele tem
@@ -642,6 +660,12 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
             <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
               <span className="capitalize">{broadcast.channel}</span> · {(broadcast.recipients?.length ?? messages.length)} recipientes · status: <span className="font-semibold">{broadcast.status}</span>
             </p>
+            {offerName && (
+              <p className="text-[11px] text-blue-600 dark:text-blue-400 mt-0.5 inline-flex items-center gap-1">
+                <Megaphone className="w-3 h-3" />
+                Oferta: <span className="font-medium">{offerName}</span>
+              </p>
+            )}
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">
             <button

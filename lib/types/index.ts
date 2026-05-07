@@ -2828,6 +2828,10 @@ export interface Broadcast {
   recipients?: BroadcastRecipient[];
   /** ID do broadcast original quando este é um retry — auditoria. */
   retryOf?: string;
+  /** Oferta vinculada (Fase 4B do módulo Clientes) — `offers/{id}`. Quando set,
+   *  pode auto-tagear recipientes com `acquisitionOfferId` no momento do envio
+   *  (futuro) e alimenta agregações tipo "broadcasts da oferta X". */
+  offerId?: string;
   /** Quando true e channel === 'whatsapp', envia via Baileys (WhatsApp Web) em vez de Cloud API. */
   viaBaileys?: boolean;
   /**

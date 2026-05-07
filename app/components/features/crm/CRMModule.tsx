@@ -1317,6 +1317,9 @@ function CampaignsTab({ businessId }: { businessId: string }) {
   const [formTemplate, setFormTemplate] = useState<TemplateSelection | null>(null);
   const [formContent, setFormContent] = useState('');
   const [formEmailSubject, setFormEmailSubject] = useState('');
+  // Oferta (Fase 4B do módulo Clientes) — vínculo opcional pra atribuição.
+  // Quando set, recipientes que viram clientes herdam acquisitionOfferId.
+  const [formOfferId, setFormOfferId] = useState<string>('');
   const [formScheduledAt, setFormScheduledAt] = useState(''); // datetime-local string ou ''
   /**
    * Limite opcional de recipientes a enviar (slice from start).
@@ -1475,6 +1478,34 @@ function CampaignsTab({ businessId }: { businessId: string }) {
     return () => unsub();
   }, [businessId]);
 
+  // Ofertas (Fase 4B do módulo Clientes) — alimenta o select opcional na
+  // criação de broadcast pra vincular campanha à oferta. Limit implícito
+  // (typical 0-50 ofertas por business). Cache via React state — se o user
+  // criar nova oferta no modal de Clientes durante uma sessão, precisa
+  // recarregar a página pra aparecer aqui (acceptable trade-off).
+  const [campaignOffers, setCampaignOffers] = useState<Array<{ id: string; name: string; isActive: boolean }>>([]);
+  useEffect(() => {
+    if (!businessId) return;
+    const q = query(collection(db, 'offers'), where('businessId', '==', businessId));
+    const unsub = onSnapshot(q, (snap) => {
+      const list = snap.docs
+        .map(d => {
+          const data = d.data();
+          return {
+            id: d.id,
+            name: (data.name as string) || '(sem nome)',
+            isActive: data.isActive !== false,
+          };
+        })
+        .sort((a, b) => {
+          if (a.isActive !== b.isActive) return a.isActive ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        });
+      setCampaignOffers(list);
+    }, (err) => console.warn('[CRM:Campaigns] Error fetching offers:', err));
+    return () => unsub();
+  }, [businessId]);
+
   const handleCreate = async () => {
     if (!businessId || !user || !formName.trim()) return;
     if (formAudienceType === 'list' && formRecipients.length === 0) {
@@ -1600,6 +1631,8 @@ function CampaignsTab({ businessId }: { businessId: string }) {
         scheduledAt: scheduledAtIso,
         status: initialStatus,
         stats: { total: recipientsTotal, sent: 0, delivered: 0, read: 0, failed: 0, replied: 0 },
+        // Vínculo opcional com oferta (Fase 4B do módulo Clientes).
+        offerId: formOfferId || undefined,
         // 5.12 LGPD — base legal + auditoria de quem aprovou
         consentBasis: formConsentBasis,
         consentSource: formConsentSource.trim() || undefined,
@@ -1661,6 +1694,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       setFormViaBaileys(false);
       setFormChannelConnectionId('');
       setFormScheduledAt('');
+      setFormOfferId('');
       setFormRecipientLimit('');
       setFormThrottlePreset('human');
       setFormThrottle(THROTTLE_PRESETS.human.throttle);
@@ -2370,6 +2404,30 @@ function CampaignsTab({ businessId }: { businessId: string }) {
             fullWidth
             size="small"
           />
+
+          {/* Vínculo com oferta (Fase 4B do módulo Clientes) — opcional, só
+              aparece quando o business tem ofertas cadastradas. Permite atribuir
+              ROI e identificar qual campanha trouxe quais clientes. */}
+          {campaignOffers.length > 0 && (
+            <TextField
+              label="Vincular oferta (opcional)"
+              select
+              value={formOfferId}
+              onChange={(e) => setFormOfferId(e.target.value)}
+              SelectProps={{ native: true }}
+              InputLabelProps={{ shrink: true }}
+              helperText="Quando set, a campanha fica vinculada à oferta — útil pra atribuição e relatórios futuros."
+              fullWidth
+              size="small"
+            >
+              <option value="">— Sem oferta vinculada —</option>
+              {campaignOffers.map(o => (
+                <option key={o.id} value={o.id}>
+                  {o.name}{!o.isActive ? ' (arquivada)' : ''}
+                </option>
+              ))}
+            </TextField>
+          )}
 
           {/* 5.12 LGPD — base legal do envio (obrigatório) */}
           <div className="rounded-xl border-2 border-amber-200 dark:border-amber-500/30 bg-amber-50/50 dark:bg-amber-500/5 p-3 space-y-3">
