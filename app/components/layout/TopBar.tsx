@@ -31,6 +31,8 @@ import {
   Trash2,
   Volume2,
   VolumeX,
+  MessageCircle,
+  MessageCircleOff,
 } from 'lucide-react';
 import { useNotificationPrefs } from '@/lib/utils/notification-prefs';
 import { getDesktopPermission, requestDesktopPermission } from '@/lib/utils/notification-alerts';
@@ -164,6 +166,10 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
 
   const handleToggleSound = useCallback(() => {
     setNotifPrefs({ ...notifPrefs, soundEnabled: !notifPrefs.soundEnabled });
+  }, [notifPrefs, setNotifPrefs]);
+
+  const handleToggleConvoSound = useCallback(() => {
+    setNotifPrefs({ ...notifPrefs, conversationsSoundEnabled: !notifPrefs.conversationsSoundEnabled });
   }, [notifPrefs, setNotifPrefs]);
 
   const handleToggleDesktop = useCallback(async () => {
@@ -368,7 +374,8 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
                       {t('topbar.notif.title', 'Notificações')}
                     </h3>
                     <div className="flex items-center gap-1">
-                      {/* Toggle de som */}
+                      {/* Toggle de som — notificações do sistema (atribuição,
+                          mention, lembrete) */}
                       <button
                         onClick={handleToggleSound}
                         className={cn(
@@ -378,10 +385,25 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
                             : 'text-gray-300 dark:text-gray-600 hover:text-gray-500 dark:hover:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06]',
                         )}
                         title={notifPrefs.soundEnabled
-                          ? t('topbar.notif.soundOn', 'Som ligado — clique pra desativar')
-                          : t('topbar.notif.soundOff', 'Som desligado — clique pra ativar')}
+                          ? t('topbar.notif.soundOn', 'Som de notificações: ligado — clique pra desativar')
+                          : t('topbar.notif.soundOff', 'Som de notificações: desligado — clique pra ativar')}
                       >
                         {notifPrefs.soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+                      </button>
+                      {/* Toggle de som — mensagens novas em Conversas */}
+                      <button
+                        onClick={handleToggleConvoSound}
+                        className={cn(
+                          'px-2 py-1 rounded-lg transition-colors',
+                          notifPrefs.conversationsSoundEnabled
+                            ? 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/[0.06]'
+                            : 'text-gray-300 dark:text-gray-600 hover:text-gray-500 dark:hover:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06]',
+                        )}
+                        title={notifPrefs.conversationsSoundEnabled
+                          ? t('topbar.notif.convoSoundOn', 'Som de conversas: ligado — clique pra desativar')
+                          : t('topbar.notif.convoSoundOff', 'Som de conversas: desligado — clique pra ativar')}
+                      >
+                        {notifPrefs.conversationsSoundEnabled ? <MessageCircle className="w-4 h-4" /> : <MessageCircleOff className="w-4 h-4" />}
                       </button>
                       {/* Toggle de desktop notifications. Estado depende da permissão. */}
                       {desktopPerm !== 'unsupported' && (

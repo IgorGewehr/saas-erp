@@ -15,14 +15,22 @@
 import { useCallback, useEffect, useState } from 'react';
 
 export interface NotificationPrefs {
-  /** Toca um beep curto quando chega notificação. */
+  /** Toca um beep curto quando chega notificação do sistema (atribuição,
+   *  menção, lembrete de tarefa, etc.). */
   soundEnabled: boolean;
+  /** Toca um beep quando chega mensagem nova em qualquer conversa do
+   *  business (unreadCount aumentando). Separado de `soundEnabled` porque
+   *  são naturezas diferentes — atendente pode querer alerta pra "fui
+   *  atribuído numa task" mas mute pra mensagens de cliente enquanto está
+   *  focado em outra coisa. */
+  conversationsSoundEnabled: boolean;
   /** Mostra notificação nativa do SO (browser API). Requer permissão concedida. */
   desktopEnabled: boolean;
 }
 
 export const DEFAULT_PREFS: NotificationPrefs = {
   soundEnabled: true,
+  conversationsSoundEnabled: true,
   // Falso por padrão — pra ser true precisa permissão do browser concedida.
   // Permissão exige user gesture, então o toggle do TopBar liga isso quando
   // o usuário clica e concede. Antes disso, deixar `true` no localStorage

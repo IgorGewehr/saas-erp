@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { AIAgentProvider } from '@/app/components/providers/AIAgentProvider';
 import { useNotificationAlerts } from '@/lib/hooks/useNotificationAlerts';
+import { useConversationsAlerts } from '@/lib/hooks/useConversationsAlerts';
 import Sidebar, { type MenuPage } from '@/app/components/layout/Sidebar';
 import TopBar from '@/app/components/layout/TopBar';
 import { TabProvider, useTabContext } from '@/app/components/layout/TabContext';
@@ -110,8 +111,9 @@ function AppLayoutContent({ children }: { children: React.ReactNode }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const waRestored = useRef(false);
 
-  // Mountado em UM lugar só — duplicar dispararia dings duplos por notificação.
+  // Mountados em UM lugar só — duplicar dispararia dings duplos.
   useNotificationAlerts();
+  useConversationsAlerts();
 
   // activePage is always derived from the active tab
   const activePage = (activeTabId ?? 'Dashboard') as MenuPage;
