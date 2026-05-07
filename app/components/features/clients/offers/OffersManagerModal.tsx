@@ -90,6 +90,39 @@ export function OffersManagerModal({
     [offers, showInactive],
   );
 
+  // Stats on-demand (Fase 4C-2): conta clientes e campanhas vinculados
+  // a cada oferta. Single query simples (where businessId ==), filtro client-side
+  // pra evitar exigir índices compostos (`!=` requer ordering específica).
+  // Cache 2min — operador abre modal poucas vezes por sessão.
+  // Trade-off: download de TODOS os clients/broadcasts do business no open
+  // do modal (raramente mais que 2k docs total). Não leak entre tenants
+  // porque businessId já filtra. Pra business grande (10k+ clients) considerar
+  // cron que denormaliza pro Offer.contactCount/broadcastCount em iteração futura.
+  const { data: offerStats = { clients: new Map<string, number>(), broadcasts: new Map<string, number>() } } = useQuery({
+    queryKey: ['offer-stats', businessId],
+    queryFn: async () => {
+      const [clientSnap, broadcastSnap] = await Promise.all([
+        getDocs(query(collection(db, 'clients'), where('businessId', '==', businessId))),
+        getDocs(query(collection(db, 'broadcasts'), where('businessId', '==', businessId))),
+      ]);
+      const clients = new Map<string, number>();
+      const broadcasts = new Map<string, number>();
+      clientSnap.docs.forEach(d => {
+        const offerId = d.data().acquisitionOfferId as string | undefined;
+        if (!offerId) return;
+        clients.set(offerId, (clients.get(offerId) ?? 0) + 1);
+      });
+      broadcastSnap.docs.forEach(d => {
+        const offerId = d.data().offerId as string | undefined;
+        if (!offerId) return;
+        broadcasts.set(offerId, (broadcasts.get(offerId) ?? 0) + 1);
+      });
+      return { clients, broadcasts };
+    },
+    enabled: !!businessId,
+    staleTime: 2 * 60 * 1000,
+  });
+
   const { mutate: saveOffer, isPending: isSaving } = useMutation({
     mutationFn: async () => {
       if (!form.name.trim()) throw new Error('Nome é obrigatório');
@@ -405,12 +438,30 @@ export function OffersManagerModal({
                                   {formatDate(o.validFrom)}{o.validUntil ? ` → ${formatDate(o.validUntil)}` : ''}
                                 </span>
                               )}
-                              {(o.contactCount ?? 0) > 0 && (
-                                <span className="inline-flex items-center gap-1">
-                                  <UsersIcon className="w-3 h-3" />
-                                  {o.contactCount} clientes
-                                </span>
-                              )}
+                              {(() => {
+                                // Stats on-demand (Fase 4C-2): prioriza valor
+                                // computado live sobre o denormalizado (que vem
+                                // de jobs futuros). Quando 0, esconde o pill.
+                                const liveClients = offerStats.clients.get(o.id) ?? 0;
+                                const liveBroadcasts = offerStats.broadcasts.get(o.id) ?? 0;
+                                const clientCount = liveClients || (o.contactCount ?? 0);
+                                return (
+                                  <>
+                                    {clientCount > 0 && (
+                                      <span className="inline-flex items-center gap-1">
+                                        <UsersIcon className="w-3 h-3" />
+                                        {clientCount} cliente{clientCount === 1 ? '' : 's'}
+                                      </span>
+                                    )}
+                                    {liveBroadcasts > 0 && (
+                                      <span className="inline-flex items-center gap-1">
+                                        <Megaphone className="w-3 h-3" />
+                                        {liveBroadcasts} campanha{liveBroadcasts === 1 ? '' : 's'}
+                                      </span>
+                                    )}
+                                  </>
+                                );
+                              })()}
                             </div>
                             {o.description && (
                               <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1 line-clamp-1">
