@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { AIAgentProvider } from '@/app/components/providers/AIAgentProvider';
+import { useNotificationAlerts } from '@/lib/hooks/useNotificationAlerts';
 import Sidebar, { type MenuPage } from '@/app/components/layout/Sidebar';
 import TopBar from '@/app/components/layout/TopBar';
 import { TabProvider, useTabContext } from '@/app/components/layout/TabContext';
@@ -108,6 +109,9 @@ function AppLayoutContent({ children }: { children: React.ReactNode }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const waRestored = useRef(false);
+
+  // Mountado em UM lugar só — duplicar dispararia dings duplos por notificação.
+  useNotificationAlerts();
 
   // activePage is always derived from the active tab
   const activePage = (activeTabId ?? 'Dashboard') as MenuPage;

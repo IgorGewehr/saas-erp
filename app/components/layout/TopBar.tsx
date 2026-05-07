@@ -14,6 +14,7 @@ import type { AppNotification } from '@/lib/types';
 import {
   Search,
   Bell,
+  BellOff,
   Menu,
   ChevronDown,
   LogOut,
@@ -29,7 +30,11 @@ import {
   AlertTriangle,
   CheckCheck,
   Trash2,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
+import { useNotificationPrefs } from '@/lib/utils/notification-prefs';
+import { getDesktopPermission, requestDesktopPermission } from '@/lib/utils/notification-alerts';
 import type { UserStatus } from '@/lib/types';
 import type { MenuPage } from './Sidebar';
 import { CachedImage } from '@/app/components/ui/CachedImage';
@@ -142,6 +147,38 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
+
+  // ── Alerts: sound + desktop notifications. Hook em `useNotificationAlerts`
+  //    no layout consome essas prefs e dispara os alerts. Aqui é só o toggle UI.
+  const [notifPrefs, setNotifPrefs] = useNotificationPrefs();
+  const [desktopPerm, setDesktopPerm] = useState<NotificationPermission | 'unsupported'>('default');
+  useEffect(() => {
+    setDesktopPerm(getDesktopPermission());
+  }, [isNotifOpen]); // re-checa quando abre dropdown (após user clicar em "permitir")
+
+  const handleToggleSound = useCallback(() => {
+    setNotifPrefs({ ...notifPrefs, soundEnabled: !notifPrefs.soundEnabled });
+  }, [notifPrefs, setNotifPrefs]);
+
+  const handleToggleDesktop = useCallback(async () => {
+    if (desktopPerm === 'unsupported') return;
+    if (desktopPerm === 'denied') {
+      // Browser bloqueou — usuário precisa habilitar manualmente nas settings.
+      // Mostramos toast/alert leve. Sem janela de toast aqui; usar alert nativo.
+      alert(t('topbar.notif.desktopDenied', 'Notificações bloqueadas. Habilite nas configurações do navegador.'));
+      return;
+    }
+    if (desktopPerm === 'default') {
+      const result = await requestDesktopPermission();
+      setDesktopPerm(result);
+      if (result === 'granted') {
+        setNotifPrefs({ ...notifPrefs, desktopEnabled: true });
+      }
+      return;
+    }
+    // granted — só alterna a pref
+    setNotifPrefs({ ...notifPrefs, desktopEnabled: !notifPrefs.desktopEnabled });
+  }, [desktopPerm, notifPrefs, setNotifPrefs, t]);
 
   useEffect(() => {
     if (!user?.uid || !businessId) return;
@@ -325,6 +362,47 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
                       {t('topbar.notif.title', 'Notificações')}
                     </h3>
                     <div className="flex items-center gap-1">
+                      {/* Toggle de som */}
+                      <button
+                        onClick={handleToggleSound}
+                        className={cn(
+                          'px-2 py-1 rounded-lg transition-colors',
+                          notifPrefs.soundEnabled
+                            ? 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/[0.06]'
+                            : 'text-gray-300 dark:text-gray-600 hover:text-gray-500 dark:hover:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06]',
+                        )}
+                        title={notifPrefs.soundEnabled
+                          ? t('topbar.notif.soundOn', 'Som ligado — clique pra desativar')
+                          : t('topbar.notif.soundOff', 'Som desligado — clique pra ativar')}
+                      >
+                        {notifPrefs.soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+                      </button>
+                      {/* Toggle de desktop notifications. Estado depende da permissão. */}
+                      {desktopPerm !== 'unsupported' && (
+                        <button
+                          onClick={handleToggleDesktop}
+                          className={cn(
+                            'px-2 py-1 rounded-lg transition-colors',
+                            desktopPerm === 'granted' && notifPrefs.desktopEnabled
+                              ? 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/[0.06]'
+                              : 'text-gray-300 dark:text-gray-600 hover:text-gray-500 dark:hover:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06]',
+                          )}
+                          title={
+                            desktopPerm === 'denied'
+                              ? t('topbar.notif.desktopBlocked', 'Bloqueado pelo navegador')
+                              : desktopPerm === 'default'
+                                ? t('topbar.notif.desktopAsk', 'Clique pra permitir notificações no desktop')
+                                : notifPrefs.desktopEnabled
+                                  ? t('topbar.notif.desktopOn', 'Notificações desktop ligadas')
+                                  : t('topbar.notif.desktopOff', 'Notificações desktop desligadas')
+                          }
+                        >
+                          {desktopPerm === 'granted' && notifPrefs.desktopEnabled
+                            ? <Bell className="w-4 h-4" />
+                            : <BellOff className="w-4 h-4" />}
+                        </button>
+                      )}
+                      <div className="w-px h-4 bg-gray-200 dark:bg-gray-700/60 mx-0.5" />
                       {unreadNotifCount > 0 && (
                         <button
                           onClick={handleMarkAllRead}
