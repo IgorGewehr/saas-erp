@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, Send, Users, Wifi, Clock, MessageCircle, Loader2, AlertTriangle, Sparkles, BarChart3, Command, Paperclip, X, Download, ImageIcon } from 'lucide-react';
+import { ArrowLeft, Send, Users, Wifi, Clock, MessageCircle, Loader2, AlertTriangle, Sparkles, BarChart3, Command, Paperclip, X, Download, ImageIcon, Check, CheckCheck } from 'lucide-react';
 import { collection, query, where, getDocs, getDocsFromCache } from 'firebase/firestore';
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { useQuery } from '@tanstack/react-query';
@@ -378,6 +378,7 @@ function TeamChatDropdown({ members, teamChat }: { members: UserType[]; teamChat
             >
               <ChatView
                 chatId={view.chatId}
+                chat={chats.find(c => c.id === view.chatId)}
                 businessId={business?.id ?? ''}
                 members={members}
                 onSend={(text, attachments) => sendMessage(view.chatId, text, attachments)}
@@ -682,17 +683,33 @@ const ATTACHMENT_ACCEPT = 'image/*,video/*,audio/*,.pdf,.xml,.json,.csv,.txt,.do
 
 function ChatView({
   chatId,
+  chat,
   businessId,
   members,
   onSend,
 }: {
   chatId: string;
+  chat: TeamChat | undefined;
   businessId: string;
   members: UserType[];
   onSend: (text: string, attachments?: TeamChatAttachment[]) => Promise<void>;
 }) {
   const { t } = useTranslation();
   const { user } = useAuth();
+
+  // Read receipts: só DMs (Geral seria ruidoso com N membros). Calcula a
+  // timestamp em ms da última leitura do OUTRO usuário pra cada mensagem
+  // própria comparar contra seu createdAt.
+  const isDM = chat?.type === 'dm';
+  const otherUid = useMemo(
+    () => (isDM && user?.uid ? chat?.memberIds.find(id => id !== user.uid) : undefined),
+    [isDM, chat?.memberIds, user?.uid],
+  );
+  const otherLastReadMs = useMemo(() => {
+    if (!isDM || !otherUid || !chat?.lastReadAt) return 0;
+    const iso = chat.lastReadAt[otherUid];
+    return iso ? new Date(iso).getTime() : 0;
+  }, [isDM, otherUid, chat?.lastReadAt]);
   const { messages, loading } = useTeamChatMessages(chatId);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
@@ -950,6 +967,8 @@ function ChatView({
               group={group}
               myUid={user?.uid}
               members={members}
+              isDM={isDM}
+              otherLastReadMs={otherLastReadMs}
             />
           ))
         )}
@@ -1090,11 +1109,13 @@ function groupByConsecutiveSender(messages: TeamChatMessage[]): TeamChatMessage[
 }
 
 function MessageGroup({
-  group, myUid, members,
+  group, myUid, members, isDM, otherLastReadMs,
 }: {
   group: TeamChatMessage[];
   myUid: string | undefined;
   members: UserType[];
+  isDM: boolean;
+  otherLastReadMs: number;
 }) {
   const sender = group[0];
   const mine = sender.senderId === myUid;
@@ -1115,6 +1136,8 @@ function MessageGroup({
             firstInGroup={i === 0}
             members={members}
             myUid={myUid}
+            isDM={isDM}
+            otherLastReadMs={otherLastReadMs}
           />
         ))}
       </div>
@@ -1169,17 +1192,27 @@ function renderTextWithMentions(
 }
 
 function MessageBubble({
-  msg, mine, firstInGroup, members, myUid,
+  msg, mine, firstInGroup, members, myUid, isDM, otherLastReadMs,
 }: {
   msg: TeamChatMessage;
   mine: boolean;
   firstInGroup: boolean;
   members: UserType[];
   myUid: string | undefined;
+  isDM: boolean;
+  otherLastReadMs: number;
 }) {
   const images = (msg.attachments ?? []).filter(a => a.type === 'image');
   const files = (msg.attachments ?? []).filter(a => a.type === 'file');
   const hasText = msg.text.trim().length > 0;
+  // Read receipt: ✓ enviado, ✓✓ lido. Só renderiza pra mensagens próprias
+  // em DM (Geral seria ruidoso com N membros). otherLastReadMs vem do
+  // chat.lastReadAt[outroUid] computed em ChatView.
+  const wasRead = mine && isDM && otherLastReadMs > 0
+    && new Date(msg.createdAt).getTime() <= otherLastReadMs;
+  const ReadIcon = mine && isDM
+    ? (wasRead ? CheckCheck : Check)
+    : null;
 
   return (
     <div
@@ -1244,23 +1277,31 @@ function MessageBubble({
         </div>
       )}
 
-      {/* Texto + timestamp. Quando não há texto mas há anexos, timestamp aparece como linha curta. */}
+      {/* Texto + timestamp + read receipt (DMs próprias). */}
       {hasText ? (
         <span className="whitespace-pre-wrap">
           {renderTextWithMentions(msg.text, members, myUid, mine)}
           <span className={cn(
-            'ml-1.5 text-[9.5px] align-baseline',
+            'ml-1.5 text-[9.5px] align-baseline inline-flex items-center gap-0.5',
             mine ? 'text-white/70' : 'text-gray-400 dark:text-gray-500',
           )}>
             {formatTime(msg.createdAt)}
+            {ReadIcon && (
+              // Distinção via opacity (não hue): combina com paleta vermelha do
+              // bubble. Sólido = lido; mais transparente = só enviado.
+              <ReadIcon className={cn('w-3 h-3', wasRead ? 'text-white' : 'text-white/55')} />
+            )}
           </span>
         </span>
       ) : (
         <div className={cn(
-          'text-[9.5px] leading-tight px-1.5 pb-0.5 text-right',
+          'text-[9.5px] leading-tight px-1.5 pb-0.5 text-right inline-flex items-center justify-end gap-0.5',
           mine ? 'text-white/70' : 'text-gray-400 dark:text-gray-500',
         )}>
           {formatTime(msg.createdAt)}
+          {ReadIcon && (
+            <ReadIcon className={cn('w-3 h-3', wasRead ? 'text-white' : 'text-white/55')} />
+          )}
         </div>
       )}
     </div>
