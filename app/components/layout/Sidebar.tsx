@@ -5,8 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useTranslation } from 'react-i18next';
-import { useQuery } from '@tanstack/react-query';
-import { collection, query, where, getDocs, doc, updateDoc, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, doc, updateDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import type { SidebarPrefs, SidebarSectionPref } from '@/lib/types';
 import {
@@ -347,28 +346,36 @@ function SidebarContent({
   const currentUseCase: UseCase = (business?.settings?.useCase as UseCase) || 'servicos';
   const userRoleValue = ROLE_HIERARCHY[user?.role ?? 'viewer'];
 
-  // Urgent recurring transactions count for Financial badge.
-  // Only filters on (businessId, recurrence.nextDueDate) to avoid requiring a 3-field
-  // composite index on nested fields — isActive is filtered client-side.
-  const { data: urgentRecurringCount = 0 } = useQuery({
-    queryKey: ['sidebar-urgent-recurring', business?.id],
-    queryFn: async () => {
-      if (!business?.id) return 0;
-      const todayStr = new Date().toISOString().slice(0, 10);
-      const in3d = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
-      const snap = await getDocs(query(
-        collection(db, 'transactions'),
-        where('businessId', '==', business.id),
-        where('recurrence.nextDueDate', '>=', todayStr),
-        where('recurrence.nextDueDate', '<=', in3d),
-      ));
-      // Filter isActive in-memory to avoid 3-field compound index on nested fields
-      return snap.docs.filter(d => d.data().recurrence?.isActive === true).length;
-    },
-    enabled: !!business?.id,
-    staleTime: 5 * 60 * 1000,
-    refetchInterval: 10 * 60 * 1000,
-  });
+  // Urgent recurring transactions count for Financial badge — onSnapshot.
+  // ANTES: useQuery + getDocs com refetchInterval 10min. Recurrence vencendo
+  // hoje só aparecia no badge até 10min depois do operador adicioná-la,
+  // confundindo a equipe de financeiro.
+  // AGORA: real-time. Range de datas (hoje → +3d) fica frozen no momento
+  // do subscribe (mesmo trade-off do useQuery anterior — usuário que deixa
+  // aba aberta cruzando meia-noite vê range desatualizado até refresh).
+  // Filter por (businessId, recurrence.nextDueDate) evita compound index
+  // de 3 campos em fields aninhados; isActive checa client-side.
+  const [urgentRecurringCount, setUrgentRecurringCount] = useState(0);
+  useEffect(() => {
+    if (!business?.id) { setUrgentRecurringCount(0); return; }
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const in3d = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
+    const q = query(
+      collection(db, 'transactions'),
+      where('businessId', '==', business.id),
+      where('recurrence.nextDueDate', '>=', todayStr),
+      where('recurrence.nextDueDate', '<=', in3d),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const count = snap.docs.filter(d => d.data().recurrence?.isActive === true).length;
+        setUrgentRecurringCount(count);
+      },
+      (err) => console.error('[Sidebar] urgent recurring snapshot error:', err),
+    );
+    return () => unsub();
+  }, [business?.id]);
 
   // Badge de Conversas: conta quantas conversas têm mensagens NÃO LIDAS
   // visíveis pro usuário atual. Real-time via onSnapshot — zera assim
