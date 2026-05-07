@@ -1,0 +1,512 @@
+'use client';
+
+/**
+ * SpreadsheetsModule — módulo "Planilhas".
+ *
+ * Lista de planilhas do tenant + editor full-screen quando uma é aberta.
+ * Padrão multi-user via onSnapshot (segue refactor de sync). Soft-delete
+ * em vez de hard-delete (preserva histórico igual clients).
+ *
+ * Permissão por setor — replica padrão Kanban: visibility ∈ {'private',
+ * 'sectors', 'all'}. Operadores só veem planilhas que têm acesso.
+ *
+ * Editor é lazy-loaded (Univer ~300KB). Quando user volta pra lista, o
+ * editor desmonta e libera o canvas.
+ */
+
+import { useState, useEffect, useMemo, useCallback } from 'react';
+import dynamic from 'next/dynamic';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  Plus, Search, FileSpreadsheet, ArrowLeft, Trash2,
+  Lock, Users as UsersIcon, Globe, AlertCircle,
+  Loader2,
+} from 'lucide-react';
+import {
+  collection, query, where, onSnapshot, addDoc, updateDoc, doc,
+} from 'firebase/firestore';
+import { db } from '@/lib/config/firebase';
+import { useAuth } from '@/app/components/providers/AuthProvider';
+import { formatDateTime } from '@/lib/utils/format';
+import { cn } from '@/lib/utils';
+import { ROLE_HIERARCHY } from '@/lib/types';
+import type { Spreadsheet, SpreadsheetVisibility } from '@/lib/types';
+import { toast } from 'react-toastify';
+
+// Editor é lazy + ssr:false (Univer usa canvas/window).
+const SpreadsheetEditor = dynamic(() => import('./SpreadsheetEditor'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex items-center justify-center h-full">
+      <Loader2 className="w-6 h-6 animate-spin text-red-500" />
+    </div>
+  ),
+});
+
+// ─── Visibility config ───────────────────────────────────────────────────────
+const VISIBILITY_CFG: Record<SpreadsheetVisibility, { label: string; icon: React.ElementType; color: string }> = {
+  private: { label: 'Privada',     icon: Lock,     color: 'text-gray-500 dark:text-gray-400' },
+  sectors: { label: 'Por setor',   icon: UsersIcon, color: 'text-blue-500 dark:text-blue-400' },
+  all:     { label: 'Toda equipe', icon: Globe,    color: 'text-emerald-500 dark:text-emerald-400' },
+};
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Decide se o user tem acesso a uma planilha com base no padrão de
+ *  visibilidade. Replica lógica do Kanban pra consistência. */
+function canUserAccess(s: Spreadsheet, userId: string, userRole: string, userSectorIds: string[]): boolean {
+  // Admin/founder veem tudo (mesmo private de outros).
+  if (ROLE_HIERARCHY[userRole as keyof typeof ROLE_HIERARCHY] >= ROLE_HIERARCHY['admin']) return true;
+  // Owner sempre vê o que criou.
+  if (s.ownerId === userId) return true;
+  if (s.visibility === 'all') return true;
+  if (s.visibility === 'private') return false;
+  if (s.visibility === 'sectors') {
+    return (s.sectorIds || []).some(sid => userSectorIds.includes(sid));
+  }
+  return false;
+}
+
+// ─── Main ────────────────────────────────────────────────────────────────────
+
+export default function SpreadsheetsModule() {
+  const { user, business, userSectorIds } = useAuth();
+  const [spreadsheets, setSpreadsheets] = useState<Spreadsheet[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [search, setSearch] = useState('');
+
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState<Spreadsheet | null>(null);
+
+  const isAdmin = !!user && ROLE_HIERARCHY[user.role] >= ROLE_HIERARCHY['admin'];
+
+  // ─── Listener de planilhas (real-time, multi-user) ──────────────────────────
+  useEffect(() => {
+    if (!business?.id) { setIsLoading(false); return; }
+    setIsLoading(true);
+    const q = query(
+      collection(db, 'spreadsheets'),
+      where('businessId', '==', business.id),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const list = snap.docs.map(d => ({ ...d.data(), id: d.id } as Spreadsheet));
+        setSpreadsheets(list);
+        setIsLoading(false);
+      },
+      (err) => {
+        console.error('[Spreadsheets] snapshot error:', err);
+        setIsLoading(false);
+      },
+    );
+    return () => unsub();
+  }, [business?.id]);
+
+  // Lista visível pro user (filtra deletadas + permissão).
+  const visible = useMemo(() => {
+    if (!user) return [];
+    return spreadsheets
+      .filter(s => !s.isDeleted)
+      .filter(s => canUserAccess(s, user.uid, user.role, userSectorIds))
+      .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+  }, [spreadsheets, user, userSectorIds]);
+
+  const filtered = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    if (!term) return visible;
+    return visible.filter(s =>
+      s.name.toLowerCase().includes(term) ||
+      s.description?.toLowerCase().includes(term)
+    );
+  }, [visible, search]);
+
+  // Planilha aberta no editor.
+  const openSheet = useMemo(
+    () => (openId ? spreadsheets.find(s => s.id === openId) ?? null : null),
+    [openId, spreadsheets],
+  );
+
+  // ─── Mutations ──────────────────────────────────────────────────────────────
+
+  const handleCreate = useCallback(async (name: string, visibility: SpreadsheetVisibility) => {
+    if (!user || !business?.id) return;
+    try {
+      const now = new Date().toISOString();
+      const ref = await addDoc(collection(db, 'spreadsheets'), {
+        businessId: business.id,
+        source: 'standalone',
+        name: name.trim() || 'Sem título',
+        ownerId: user.uid,
+        ownerName: user.name,
+        visibility,
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+      });
+      setShowCreate(false);
+      setOpenId(ref.id); // abre editor direto
+    } catch (err) {
+      console.error('[Spreadsheets] create error:', err);
+      toast.error('Erro ao criar planilha');
+    }
+  }, [user, business?.id]);
+
+  const handleSaveSnapshot = useCallback(async (id: string, snapshot: Record<string, unknown>) => {
+    try {
+      // Optimistic concurrency: incrementa version. Em race, last-writer-wins.
+      const target = spreadsheets.find(s => s.id === id);
+      const nextVersion = (target?.version ?? 0) + 1;
+      await updateDoc(doc(db, 'spreadsheets', id), {
+        snapshot,
+        version: nextVersion,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('[Spreadsheets] save snapshot error:', err);
+      toast.error('Erro ao salvar planilha');
+    }
+  }, [spreadsheets]);
+
+  const handleSoftDelete = useCallback(async (s: Spreadsheet) => {
+    if (!user) return;
+    try {
+      const now = new Date().toISOString();
+      await updateDoc(doc(db, 'spreadsheets', s.id), {
+        isDeleted: true,
+        deletedAt: now,
+        deletedBy: user.uid,
+        deletedByName: user.name,
+        updatedAt: now,
+      });
+      toast.success('Planilha excluída');
+      setDeleteConfirm(null);
+      if (openId === s.id) setOpenId(null);
+    } catch (err) {
+      console.error('[Spreadsheets] delete error:', err);
+      toast.error('Erro ao excluir');
+    }
+  }, [user, openId]);
+
+  // ─── Render: editor full-screen quando uma planilha está aberta ────────────
+  if (openSheet) {
+    const canEdit = !!user && (
+      ROLE_HIERARCHY[user.role] >= ROLE_HIERARCHY['operator'] ||
+      openSheet.ownerId === user.uid
+    );
+    return (
+      <div className="flex flex-col h-full">
+        {/* Header do editor */}
+        <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
+          <button
+            onClick={() => setOpenId(null)}
+            className="inline-flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            Voltar
+          </button>
+          <div className="flex-1 min-w-0">
+            <h2 className="text-sm font-semibold text-gray-900 dark:text-white truncate">{openSheet.name}</h2>
+            {openSheet.description && (
+              <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{openSheet.description}</p>
+            )}
+          </div>
+          <SpreadsheetVisibilityBadge spreadsheet={openSheet} />
+        </div>
+        {/* Editor */}
+        <div className="flex-1 min-h-0">
+          <SpreadsheetEditor
+            snapshot={openSheet.snapshot}
+            onChange={(snap) => handleSaveSnapshot(openSheet.id, snap)}
+            readOnly={!canEdit}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Render: lista ──────────────────────────────────────────────────────────
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <motion.div
+        initial={{ opacity: 0, y: -8 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6"
+      >
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white font-display flex items-center gap-2.5">
+            <FileSpreadsheet className="w-6 h-6 text-red-500" />
+            Planilhas
+          </h1>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
+            {visible.length} planilhas {business?.razaoSocial ? `em ${business.razaoSocial}` : ''}
+          </p>
+        </div>
+        <button
+          onClick={() => setShowCreate(true)}
+          className="inline-flex items-center gap-2 px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded-xl transition-colors shadow-sm"
+        >
+          <Plus className="w-4 h-4" />
+          Nova planilha
+        </button>
+      </motion.div>
+
+      {/* Search */}
+      <div className="relative mb-5">
+        <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+        <input
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Buscar planilha por nome ou descrição..."
+          className="w-full pl-10 pr-4 py-2.5 bg-white dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 rounded-xl text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
+        />
+      </div>
+
+      {/* Lista */}
+      {isLoading ? (
+        <div className="flex items-center justify-center py-20">
+          <Loader2 className="w-6 h-6 animate-spin text-red-500" />
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-20 text-center">
+          <div className="w-16 h-16 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center mb-4">
+            <FileSpreadsheet className="w-7 h-7 text-gray-400" />
+          </div>
+          <p className="text-sm font-medium text-gray-900 dark:text-white mb-1">
+            {search.trim() ? 'Nenhuma planilha encontrada' : 'Nenhuma planilha ainda'}
+          </p>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-4 max-w-sm">
+            {search.trim()
+              ? 'Tente outro termo de busca.'
+              : 'Crie sua primeira planilha pra anotações, cálculos ou relatórios manuais.'}
+          </p>
+          {!search.trim() && (
+            <button
+              onClick={() => setShowCreate(true)}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded-xl transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              Criar planilha
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {filtered.map(s => (
+            <SpreadsheetCard
+              key={s.id}
+              spreadsheet={s}
+              onOpen={() => setOpenId(s.id)}
+              onDelete={() => setDeleteConfirm(s)}
+              canDelete={isAdmin || s.ownerId === user?.uid}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Modal: criar */}
+      <AnimatePresence>
+        {showCreate && (
+          <CreateModal
+            onCancel={() => setShowCreate(false)}
+            onCreate={handleCreate}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Modal: confirmar exclusão */}
+      <AnimatePresence>
+        {deleteConfirm && (
+          <DeleteConfirmModal
+            spreadsheet={deleteConfirm}
+            onCancel={() => setDeleteConfirm(null)}
+            onConfirm={() => handleSoftDelete(deleteConfirm)}
+          />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+// ─── Sub-componentes ─────────────────────────────────────────────────────────
+
+function SpreadsheetVisibilityBadge({ spreadsheet }: { spreadsheet: Spreadsheet }) {
+  const cfg = VISIBILITY_CFG[spreadsheet.visibility];
+  return (
+    <div className={cn('inline-flex items-center gap-1.5 text-xs', cfg.color)}>
+      <cfg.icon className="w-3.5 h-3.5" />
+      <span>{cfg.label}</span>
+    </div>
+  );
+}
+
+function SpreadsheetCard({ spreadsheet, onOpen, onDelete, canDelete }: {
+  spreadsheet: Spreadsheet;
+  onOpen: () => void;
+  onDelete: () => void;
+  canDelete: boolean;
+}) {
+  const cfg = VISIBILITY_CFG[spreadsheet.visibility];
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      whileHover={{ y: -2 }}
+      className="group relative surface rounded-2xl p-4 cursor-pointer hover:shadow-md transition-shadow"
+      onClick={onOpen}
+    >
+      <div className="flex items-start justify-between mb-3">
+        <div className="w-10 h-10 rounded-xl bg-emerald-50 dark:bg-emerald-500/15 flex items-center justify-center">
+          <FileSpreadsheet className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+        </div>
+        {canDelete && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-500/10 opacity-0 group-hover:opacity-100 transition-all"
+            title="Excluir planilha"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        )}
+      </div>
+      <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-1 truncate">
+        {spreadsheet.name}
+      </h3>
+      {spreadsheet.description && (
+        <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2 mb-3">
+          {spreadsheet.description}
+        </p>
+      )}
+      <div className="flex items-center justify-between text-[11px] text-gray-500 dark:text-gray-400">
+        <div className={cn('inline-flex items-center gap-1', cfg.color)}>
+          <cfg.icon className="w-3 h-3" />
+          <span>{cfg.label}</span>
+        </div>
+        <span>{formatDateTime(spreadsheet.updatedAt)}</span>
+      </div>
+    </motion.div>
+  );
+}
+
+function CreateModal({ onCancel, onCreate }: {
+  onCancel: () => void;
+  onCreate: (name: string, visibility: SpreadsheetVisibility) => void;
+}) {
+  const [name, setName] = useState('');
+  const [visibility, setVisibility] = useState<SpreadsheetVisibility>('private');
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      onClick={onCancel}
+    >
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-md p-6"
+        onClick={e => e.stopPropagation()}
+      >
+        <h2 className="text-lg font-bold text-gray-900 dark:text-white mb-4">Nova planilha</h2>
+        <label className="block mb-4">
+          <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Nome</span>
+          <input
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder="Ex: Fluxo de caixa Janeiro"
+            autoFocus
+            className="mt-1 w-full px-3 py-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
+          />
+        </label>
+        <label className="block mb-6">
+          <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2 block">Visibilidade</span>
+          <div className="grid grid-cols-3 gap-2">
+            {(Object.keys(VISIBILITY_CFG) as SpreadsheetVisibility[]).map(v => {
+              const cfg = VISIBILITY_CFG[v];
+              return (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setVisibility(v)}
+                  className={cn(
+                    'flex flex-col items-center gap-1 px-2 py-3 rounded-xl border text-xs transition-colors',
+                    visibility === v
+                      ? 'border-red-400 bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-400'
+                      : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-white/[0.04]',
+                  )}
+                >
+                  <cfg.icon className="w-4 h-4" />
+                  {cfg.label}
+                </button>
+              );
+            })}
+          </div>
+        </label>
+        <div className="flex gap-2 justify-end">
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 rounded-xl text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06]"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={() => onCreate(name, visibility)}
+            disabled={!name.trim()}
+            className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Criar
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function DeleteConfirmModal({ spreadsheet, onCancel, onConfirm }: {
+  spreadsheet: Spreadsheet;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      onClick={onCancel}
+    >
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-md p-6"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-start gap-3 mb-4">
+          <div className="w-10 h-10 rounded-full bg-red-50 dark:bg-red-500/10 flex items-center justify-center flex-shrink-0">
+            <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400" />
+          </div>
+          <div>
+            <h2 className="text-lg font-bold text-gray-900 dark:text-white">Excluir planilha?</h2>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+              "{spreadsheet.name}" será movida pra lixeira (soft-delete). Pode ser restaurada por um admin.
+            </p>
+          </div>
+        </div>
+        <div className="flex gap-2 justify-end">
+          <button onClick={onCancel} className="px-4 py-2 rounded-xl text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06]">
+            Cancelar
+          </button>
+          <button onClick={onConfirm} className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold">
+            Excluir
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}

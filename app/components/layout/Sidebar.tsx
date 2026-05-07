@@ -33,6 +33,7 @@ import {
   BarChart3,
   KeyRound,
   StickyNote,
+  FileSpreadsheet,
 } from 'lucide-react';
 import type { UseCase, UserRole } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
@@ -57,6 +58,7 @@ export type MenuPage =
   | 'NFe'
   | 'Relatórios'
   | 'Senhas'
+  | 'Planilhas'
   | 'Configurações';
 
 // Which use cases each module appears under. `undefined` means "always visible".
@@ -108,6 +110,7 @@ function useMenuSections(): MenuSection[] {
         { id: 'Estoque', label: t('sidebar.estoque'), icon: Package, useCases: ['pedidos', 'servicos', 'simples'] },
         { id: 'Compras', label: t('sidebar.compras'), icon: ShoppingBag, useCases: ['pedidos', 'servicos', 'simples'] },
         { id: 'Senhas', label: 'Senhas', icon: KeyRound, minRole: 'admin' as UserRole },
+        { id: 'Planilhas', label: 'Planilhas', icon: FileSpreadsheet },
       ],
     },
     {

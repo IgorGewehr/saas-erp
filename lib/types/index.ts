@@ -3576,3 +3576,74 @@ export interface CalendarSyncToken {
   connectedAt: string;
   lastSyncAt?: string;
 }
+
+// ---- Spreadsheets (módulo Planilhas) ----
+//
+// Duas modalidades:
+//
+//  1. **Standalone** (`source: 'standalone'`) — planilha livre criada pelo
+//     operador pra anotações, cálculos ad-hoc, relatórios manuais. O
+//     workbook completo é serializado em `snapshot` (JSON gerado pela API
+//     `workbook.save()` do Univer).
+//
+//  2. **View** (`source: 'view'`) — visualização tipo planilha sobre uma
+//     coleção existente do sistema (clients, products, transactions). O
+//     `snapshot` aqui guarda só presentação (largura de coluna, ordenação,
+//     formatação condicional); os DADOS vêm sempre da coleção original via
+//     `viewConfig`. Edições inline disparam mutation na coleção source.
+
+export type SpreadsheetSource = 'standalone' | 'view';
+export type SpreadsheetSourceCollection = 'clients' | 'products' | 'transactions';
+
+/** Configuração quando `source === 'view'`. Define qual coleção a planilha
+ *  reflete e quais campos viram colunas. */
+export interface SpreadsheetViewConfig {
+  collection: SpreadsheetSourceCollection;
+  /** Campos do doc → ordem das colunas. Ex: ['name', 'email', 'totalSpent'] */
+  columns: string[];
+  /** Filtros aplicados na query (subset do filtering do módulo nativo). */
+  filters?: Array<{ field: string; op: '==' | '!=' | '>' | '<' | '>=' | '<='; value: string | number | boolean }>;
+  /** Ordenação default. */
+  sort?: { field: string; direction: 'asc' | 'desc' };
+  /** Limit de docs (proteção contra views gigantes). Default 500. */
+  limit?: number;
+}
+
+/** Permissão de visualização da planilha. Reusa o padrão Kanban
+ *  (visibility por setor) pra consistência. */
+export type SpreadsheetVisibility = 'private' | 'sectors' | 'all';
+
+export interface Spreadsheet {
+  id: string;
+  businessId: string;
+  source: SpreadsheetSource;
+  /** Só presente quando source === 'view'. */
+  viewConfig?: SpreadsheetViewConfig;
+  name: string;
+  description?: string;
+  ownerId: string;
+  ownerName: string;
+  visibility: SpreadsheetVisibility;
+  /** Quando visibility === 'sectors', os setores que podem acessar. */
+  sectorIds?: string[];
+  /** Snapshot serializado do workbook Univer (formato IWorkbookData).
+   *  Pode ser undefined em planilhas standalone recém-criadas que ainda
+   *  não foram editadas. Em views, guarda config de apresentação. */
+  snapshot?: Record<string, unknown>;
+  /** Optimistic concurrency: incrementa a cada save. Save rejeita se a
+   *  versão local for menor que a remota (last-writer-wins seguro). */
+  version: number;
+  /** Lock visual de edição: quem está editando agora + TTL.
+   *  TTL evita lock fantasma se o user fechou o browser sem unlock. */
+  currentEditorId?: string;
+  currentEditorName?: string;
+  /** ISO timestamp — quando o lock expira. Servidor ignora locks > now. */
+  editingExpiresAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  /** Soft delete (igual clients/conversations — preserva histórico). */
+  isDeleted?: boolean;
+  deletedAt?: string;
+  deletedBy?: string;
+  deletedByName?: string;
+}

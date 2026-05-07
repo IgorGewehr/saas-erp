@@ -43,6 +43,7 @@ export const PAGE_TITLES: Record<MenuPage, string> = {
   NFe: 'NF-e',
   'Relatórios': 'Relatórios',
   Senhas: 'Senhas',
+  Planilhas: 'Planilhas',
   'Configurações': 'Config.',
 };
 
