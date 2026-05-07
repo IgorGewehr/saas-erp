@@ -2675,6 +2675,7 @@ function NewConversationDialog({
   clientsLoadError,
   connections,
   myConnectionIds,
+  prefill,
 }: {
   open: boolean;
   onClose: () => void;
@@ -2687,6 +2688,14 @@ function NewConversationDialog({
   connections: import('@/lib/types').ChannelConnection[];
   /** IDs das connections 'user' do operador atual — pra exibir badge. */
   myConnectionIds: Set<string>;
+  /** Pré-preenche o dialog com cliente + canal/modo escolhidos.
+   *  Vem do AppContext.pendingNewConversation quando ChannelsTab do detalhe
+   *  do cliente aciona "Iniciar conversa". null = abre vazio (botão "+" do header). */
+  prefill?: {
+    client: Client;
+    channel: 'whatsapp' | 'facebook' | 'instagram';
+    whatsappMode?: 'cloud' | 'baileys';
+  } | null;
 }) {
   const { business, user } = useAuth();
   const channels = business?.channels as (NonNullable<typeof business>['channels'] & {
@@ -2738,16 +2747,39 @@ function NewConversationDialog({
       });
   }, [connections]);
 
-  // Reset everything on open and pick best default channel
+  // Reset everything on open. Quando há `prefill` (ChannelsTab do detalhe do
+  // cliente acionou "Iniciar conversa"), pré-popula client + phone + canal/modo.
+  // Caso contrário, abre vazio com defaults inteligentes (Baileys preferido).
   useEffect(() => {
     if (!open) return;
+    setMessageText('');
+    setSelectedTemplate(null);
+    setTemplateVars([]);
+
+    if (prefill) {
+      // Pré-fill: phone do client + selectedClient setado + mode escolhido.
+      const phone = prefill.client.whatsapp || prefill.client.phone || '';
+      setPhoneInput(phone);
+      setNameInput(prefill.client.name || '');
+      setClientSearch(prefill.client.name || '');
+      setSelectedClient(prefill.client);
+      // FB/IG não tem opção de modo — channelMode é só pra WA. Pra simplicidade
+      // mantemos cloud como default em FB/IG (tanto faz, a UI esconde a toggle).
+      if (prefill.channel === 'whatsapp' && prefill.whatsappMode) {
+        setChannelMode(prefill.whatsappMode);
+        setMessageMode(prefill.whatsappMode === 'baileys' ? 'text' : 'template');
+      } else if (prefill.channel === 'whatsapp') {
+        // Sem modo explícito — escolhe o disponível.
+        if (baileysAvailable) { setChannelMode('baileys'); setMessageMode('text'); }
+        else if (cloudAvailable) { setChannelMode('cloud'); setMessageMode('template'); }
+      }
+      return;
+    }
+
     setPhoneInput('');
     setNameInput('');
     setClientSearch('');
     setSelectedClient(null);
-    setMessageText('');
-    setSelectedTemplate(null);
-    setTemplateVars([]);
     if (baileysAvailable) {
       setChannelMode('baileys');
       setMessageMode('text');
@@ -2755,7 +2787,7 @@ function NewConversationDialog({
       setChannelMode('cloud');
       setMessageMode('template');
     }
-  }, [open, baileysAvailable, cloudAvailable]);
+  }, [open, prefill, baileysAvailable, cloudAvailable]);
 
   // Phase 3 audit P1.4: revalida selectedConnectionId quando channelMode muda
   // OU quando a lista de connections atualiza (ex: admin adicionou outra
@@ -4649,7 +4681,13 @@ function AgentDebugDrawer({
 export default function ConversasModule() {
   const { t } = useTranslation();
   const { user, business, sectors, userSectorIds, firebaseUser } = useAuth();
-  const { setActivePage } = useAppContext();
+  const {
+    setActivePage,
+    pendingOpenConversationId,
+    setPendingOpenConversationId,
+    pendingNewConversation,
+    setPendingNewConversation,
+  } = useAppContext();
 
   const isPedidosMode = business?.settings?.useCase === 'pedidos';
   const aiAgentEnabled = !!business?.settings?.aiAgent?.enabled;
@@ -4680,6 +4718,14 @@ export default function ConversasModule() {
   const [showMergeDialog, setShowMergeDialog] = useState(false);
   const [showTransferChannelDialog, setShowTransferChannelDialog] = useState(false);
   const [showNewConversation, setShowNewConversation] = useState(false);
+  // Prefill consumido do AppContext.pendingNewConversation — ChannelsTab do
+  // detalhe do cliente seta isso ao clicar "Iniciar conversa" no card de WA.
+  // null = dialog abriu sem prefill (botão genérico "+" no header).
+  const [newConvPrefill, setNewConvPrefill] = useState<{
+    client: Client;
+    channel: 'whatsapp' | 'facebook' | 'instagram';
+    whatsappMode?: 'cloud' | 'baileys';
+  } | null>(null);
   const [routingRules, setRoutingRules] = useState<RoutingRule[]>(business?.settings?.routingRules ?? []);
   useEffect(() => { setRoutingRules(business?.settings?.routingRules ?? []); }, [business?.settings?.routingRules]);
   const csatEnabled = !!business?.settings?.csatEnabled;
@@ -5099,6 +5145,39 @@ export default function ConversasModule() {
       }
     }
   }, [conversations, routingRules, business, sectors]);
+
+  // ── Cross-module intents (do AppContext) ───────────────────────────────────
+  // ChannelsTab do detalhe do cliente seta intents pra abrir conversa específica
+  // ou iniciar nova com pré-fill. Consumimos one-shot e limpamos o pending pra
+  // não re-disparar em re-renders.
+
+  // Abrir conversa existente quando o ID chega via pending. Aguarda a lista
+  // carregar (find retorna match) — se não está na lista (filtrada por ownership
+  // ou ainda hidratando), o effect re-roda quando `conversations` atualiza.
+  useEffect(() => {
+    if (!pendingOpenConversationId) return;
+    const conv = conversations.find(c => c.id === pendingOpenConversationId);
+    if (!conv) return;
+    setSelectedConversation(conv);
+    setShowMobileThread(true);
+    setPendingOpenConversationId(null);
+  }, [pendingOpenConversationId, conversations, setPendingOpenConversationId]);
+
+  // Iniciar conversa nova com pré-fill — abre NewConversationDialog populado
+  // com client/channel/modo. clientsList precisa ter carregado pra resolver
+  // o client por ID (Channels tab passa só clientId pra evitar duplicar dados).
+  useEffect(() => {
+    if (!pendingNewConversation) return;
+    const client = clientsList.find(c => c.id === pendingNewConversation.clientId);
+    if (!client) return; // aguarda clientsList hidratar
+    setNewConvPrefill({
+      client,
+      channel: pendingNewConversation.channel,
+      whatsappMode: pendingNewConversation.whatsappMode,
+    });
+    setShowNewConversation(true);
+    setPendingNewConversation(null);
+  }, [pendingNewConversation, clientsList, setPendingNewConversation]);
 
   // ── Real-time: Conversations list ──────────────────────────────────────────
 
@@ -7870,16 +7949,18 @@ export default function ConversasModule() {
         )}
         <NewConversationDialog
           open={showNewConversation}
-          onClose={() => setShowNewConversation(false)}
+          onClose={() => { setShowNewConversation(false); setNewConvPrefill(null); }}
           onCreated={(conv) => {
             // Select immediately; onSnapshot will upgrade with any server-side mutations
             setSelectedConversation(conv);
             setShowMobileThread(true);
+            setNewConvPrefill(null);
           }}
           clients={clientsList}
           clientsLoadError={clientsLoadError}
           connections={channelConnections}
           myConnectionIds={myConnectionIds}
+          prefill={newConvPrefill}
         />
         {showRoutingRules && isAdmin && business?.id && (
           <RoutingRulesDialog

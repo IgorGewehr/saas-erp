@@ -12,7 +12,7 @@ import TopBar from '@/app/components/layout/TopBar';
 import { TabProvider, useTabContext } from '@/app/components/layout/TabContext';
 import { TabBar } from '@/app/components/layout/TabBar';
 import { CommandPalette } from '@/app/components/layout/CommandPalette';
-import { AppContext } from './AppContext';
+import { AppContext, type PendingNewConversation } from './AppContext';
 
 // ─── Loading skeleton ────────────────────────────────────────────────────────
 function LoadingSkeleton() {
@@ -155,10 +155,23 @@ function AppLayoutContent({ children }: { children: React.ReactNode }) {
     setMobileMenuOpen(false);
   };
 
+  // Intents de navegação cross-module — ChannelsTab seta, ConversasModule consome.
+  // One-shot: ConversasModule limpa após processar pra evitar re-trigger em re-renders.
+  const [pendingOpenConversationId, setPendingOpenConversationId] = useState<string | null>(null);
+  const [pendingNewConversation, setPendingNewConversation] = useState<PendingNewConversation | null>(null);
+
   if (!isAuthReady || isLoading || !firebaseUser) return <LoadingSkeleton />;
 
   return (
-    <AppContext.Provider value={{ activePage, setActivePage: handleMenuSelect, sidebarCollapsed }}>
+    <AppContext.Provider value={{
+      activePage,
+      setActivePage: handleMenuSelect,
+      sidebarCollapsed,
+      pendingOpenConversationId,
+      setPendingOpenConversationId,
+      pendingNewConversation,
+      setPendingNewConversation,
+    }}>
       <AIAgentProvider>
       <AmbientBackground />
 
