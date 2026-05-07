@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -22,7 +22,7 @@ import type { Client, LeadStatus, LoyaltyConfig, LoyaltyTier } from '@/lib/types
 import { DEFAULT_LOYALTY_TIERS } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import { toast } from 'react-toastify';
-import { ClientTableView } from './ClientTableView';
+import { ClientTableView, type ClientSortField, type ClientSortDir } from './ClientTableView';
 // Modais, form e detalhe: extraídos pra arquivos próprios nas Fases 1a/1b
 // da modularização. ClientFormData vem do ClientForm pra que a mutationFn
 // que persiste o cliente não precise re-declarar o shape do payload.
@@ -717,7 +717,23 @@ export default function ClientsModule() {
   // no chain são exhaustivos.
   const [filterAcquisition, setFilterAcquisition] = useState<string>('all');
   const [filterCampaign, setFilterCampaign] = useState<string>('');  // broadcastId ou ''
-  const [sortBy, setSortBy] = useState<'name' | 'totalSpent' | 'createdAt' | 'churnRisk'>('name');
+  // Sort centralizado: dropdown de "Ordenar" e clicks nos headers do TableView
+  // ambos atualizam esse state. Antes tinha `sortBy` aqui + state interno no
+  // TableView que ignorava o sortBy → dropdown não fazia nada em modo tabela.
+  const [sortField, setSortField] = useState<ClientSortField>('name');
+  const [sortDir, setSortDir] = useState<ClientSortDir>('asc');
+  // Helper pro toggle nos headers da tabela: clicar no mesmo field alterna
+  // direção; clicar em outro reseta pra asc.
+  const handleSortToggle = useCallback((field: ClientSortField) => {
+    setSortField(prev => {
+      if (prev === field) {
+        setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+        return prev;
+      }
+      setSortDir('asc');
+      return field;
+    });
+  }, []);
   const [showExport, setShowExport] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
@@ -1233,14 +1249,29 @@ export default function ClientsModule() {
         const db = b.birthDate ? Number(b.birthDate.slice(8, 10)) : 99;
         if (da !== db) return da - db;
       }
-      if (sortBy === 'totalSpent') return (b.totalSpent || 0) - (a.totalSpent || 0);
-      if (sortBy === 'createdAt') return (b.createdAt || '').localeCompare(a.createdAt || '');
-      if (sortBy === 'churnRisk') return (b.scores?.churnRisk ?? 0) - (a.scores?.churnRisk ?? 0);
-      return a.name.localeCompare(b.name);
+      let cmp = 0;
+      if (sortField === 'name')             cmp = a.name.localeCompare(b.name, 'pt-BR');
+      else if (sortField === 'status')      cmp = (a.status || '').localeCompare(b.status || '');
+      else if (sortField === 'totalSpent')  cmp = (a.totalSpent ?? 0) - (b.totalSpent ?? 0);
+      else if (sortField === 'visitCount')  cmp = (a.visitCount ?? 0) - (b.visitCount ?? 0);
+      else if (sortField === 'churnRisk')   cmp = (a.scores?.churnRisk ?? 0) - (b.scores?.churnRisk ?? 0);
+      else if (sortField === 'createdAt')   cmp = (a.createdAt || '').localeCompare(b.createdAt || '');
+      else if (sortField === 'lastContact') {
+        const da = a.lastContactDate ?? a.updatedAt ?? '';
+        const db2 = b.lastContactDate ?? b.updatedAt ?? '';
+        cmp = da.localeCompare(db2);
+      }
+      // Tiebreaker estável: empate no critério principal cai no nome (asc).
+      // Sem isso, dois clientes com mesmo totalSpent/churnRisk ficam em ordem
+      // arbitrária a cada re-render, causando flicker visual.
+      if (cmp === 0 && sortField !== 'name') {
+        cmp = a.name.localeCompare(b.name, 'pt-BR');
+      }
+      return sortDir === 'asc' ? cmp : -cmp;
     });
 
     return list;
-  }, [clients, search, filterTipo, filterStatus, filterTags, filterChurnRisk, filterBirthMonth, filterChannel, filterChannelHasConv, contactIdsByChannel, filterAcquisition, filterCampaign, campaignContactIds, sortBy]);
+  }, [clients, search, filterTipo, filterStatus, filterTags, filterChurnRisk, filterBirthMonth, filterChannel, filterChannelHasConv, contactIdsByChannel, filterAcquisition, filterCampaign, campaignContactIds, sortField, sortDir]);
 
   // ─── Duplicate count (for badge) ─────────────────────────────────────────────
   const dupeCount = useMemo(() => detectDuplicates(clients).length, [clients]);
@@ -1461,15 +1492,24 @@ export default function ClientsModule() {
               <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
             )}
           </button>
+          {/* Dropdown codifica field+dir num value composto pra parecer
+              "preset de ordenação" pro user (esconde a complexidade do
+              asc/desc — cada preset tem direção fixa). Click nos headers
+              da tabela usa um caminho diferente (handleSortToggle), então
+              ambos coexistem sem conflito. */}
           <select
-            value={sortBy}
-            onChange={e => setSortBy(e.target.value as typeof sortBy)}
+            value={`${sortField}|${sortDir}`}
+            onChange={e => {
+              const [f, d] = e.target.value.split('|') as [ClientSortField, ClientSortDir];
+              setSortField(f);
+              setSortDir(d);
+            }}
             className="px-3 py-2.5 bg-white dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 rounded-xl text-sm text-gray-700 dark:text-gray-300 focus:outline-none"
           >
-            <option value="name">Nome A-Z</option>
-            <option value="totalSpent">Maior valor</option>
-            <option value="createdAt">Mais recentes</option>
-            <option value="churnRisk">Maior risco</option>
+            <option value="name|asc">Nome A-Z</option>
+            <option value="totalSpent|desc">Maior valor</option>
+            <option value="createdAt|desc">Mais recentes</option>
+            <option value="churnRisk|desc">Maior risco</option>
           </select>
           <div className="flex items-center gap-0.5 p-0.5 bg-gray-100 dark:bg-gray-800 rounded-xl">
             <button
@@ -1851,6 +1891,9 @@ export default function ClientsModule() {
                 const allSelected = allIds.every(id => selectedIds.has(id));
                 setSelectedIds(allSelected ? new Set() : new Set(allIds));
               } : undefined}
+              sortField={sortField}
+              sortDir={sortDir}
+              onSort={handleSortToggle}
             />
           ) : (
             <div className="space-y-1.5 overflow-y-auto pr-1">

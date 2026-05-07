@@ -1,14 +1,18 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { ChevronUp, ChevronDown, ChevronsUpDown, Building2, Tag, Gift } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatCurrency } from '@/lib/utils/format';
 import type { Client, LeadStatus } from '@/lib/types';
 
-type SortField = 'name' | 'status' | 'totalSpent' | 'visitCount' | 'lastContact' | 'churnRisk';
-type SortDir = 'asc' | 'desc';
+// Tipos exportados pro parent gerenciar o sort state — antes vivia em useState
+// interno aqui, mas isso fazia o TableView IGNORAR o dropdown de sort do
+// parent (ClientsModule), causando "filtros não funcionam" no modo tabela.
+// Agora é controlled — parent é fonte da verdade, header clicks notificam via onSort.
+export type ClientSortField = 'name' | 'status' | 'totalSpent' | 'visitCount' | 'lastContact' | 'churnRisk' | 'createdAt';
+export type ClientSortDir = 'asc' | 'desc';
 
 const STATUS_CFG: Record<LeadStatus, { label: string; bg: string; text: string; dot: string }> = {
   novo:       { label: 'Novo',        bg: 'bg-blue-100   dark:bg-blue-500/20',   text: 'text-blue-700   dark:text-blue-300',   dot: 'bg-blue-400'   },
@@ -39,6 +43,9 @@ export function ClientTableView({
   selectedIds,
   onToggleSelectId,
   onToggleSelectAll,
+  sortField,
+  sortDir,
+  onSort,
 }: {
   clients: Client[];
   selectedClientId: string | null;
@@ -48,38 +55,47 @@ export function ClientTableView({
   selectedIds?: Set<string>;
   onToggleSelectId?: (id: string) => void;
   onToggleSelectAll?: () => void;
+  // Sort controlado pelo parent — click no header chama onSort(field), parent
+  // alterna direção. ClientsModule também controla via dropdown de "Ordenar".
+  sortField: ClientSortField;
+  sortDir: ClientSortDir;
+  onSort: (field: ClientSortField) => void;
 }) {
-  const [sortField, setSortField] = useState<SortField>('name');
-  const [sortDir, setSortDir] = useState<SortDir>('asc');
+  // Sort local: replica a lógica do parent pra renderização. Mantido aqui
+  // (não no parent) pra evitar duplicar a regra de createdAt sort entre os
+  // dois lugares — o array `clients` chega já ordenado pelo parent, mas
+  // re-sortamos defensivamente caso o parent tenha enviado em ordem
+  // arbitrária ou queiramos diferenciar 'lastContact' (campo da tabela) de
+  // 'createdAt' (campo do dropdown). Se field for 'createdAt', deixa
+  // a ordem do parent passar reta — parent já sortou.
+  const sorted = useMemo(() => {
+    if (sortField === 'createdAt') return clients; // parent ja sortou
+    return [...clients].sort((a, b) => {
+      let cmp = 0;
+      if (sortField === 'name')            cmp = a.name.localeCompare(b.name, 'pt-BR');
+      else if (sortField === 'status')     cmp = STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status);
+      else if (sortField === 'totalSpent') cmp = (a.totalSpent ?? 0) - (b.totalSpent ?? 0);
+      else if (sortField === 'visitCount') cmp = (a.visitCount ?? 0) - (b.visitCount ?? 0);
+      else if (sortField === 'churnRisk')  cmp = (a.scores?.churnRisk ?? 0) - (b.scores?.churnRisk ?? 0);
+      else if (sortField === 'lastContact') {
+        const da = a.lastContactDate ?? a.updatedAt ?? '';
+        const db2 = b.lastContactDate ?? b.updatedAt ?? '';
+        cmp = da.localeCompare(db2);
+      }
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+  }, [clients, sortField, sortDir]);
 
-  const sorted = useMemo(() => [...clients].sort((a, b) => {
-    let cmp = 0;
-    if (sortField === 'name')        cmp = a.name.localeCompare(b.name, 'pt-BR');
-    else if (sortField === 'status') cmp = STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status);
-    else if (sortField === 'totalSpent') cmp = (a.totalSpent ?? 0) - (b.totalSpent ?? 0);
-    else if (sortField === 'visitCount') cmp = (a.visitCount ?? 0) - (b.visitCount ?? 0);
-    else if (sortField === 'churnRisk') cmp = (a.scores?.churnRisk ?? 0) - (b.scores?.churnRisk ?? 0);
-    else if (sortField === 'lastContact') {
-      const da = a.lastContactDate ?? a.updatedAt ?? '';
-      const db2 = b.lastContactDate ?? b.updatedAt ?? '';
-      cmp = da.localeCompare(db2);
-    }
-    return sortDir === 'asc' ? cmp : -cmp;
-  }), [clients, sortField, sortDir]);
+  const toggleSort = (field: ClientSortField) => onSort(field);
 
-  const toggleSort = (field: SortField) => {
-    if (sortField === field) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
-    else { setSortField(field); setSortDir('asc'); }
-  };
-
-  const SortIcon = ({ field }: { field: SortField }) => {
+  const SortIcon = ({ field }: { field: ClientSortField }) => {
     if (sortField !== field) return <ChevronsUpDown size={11} className="text-gray-300 dark:text-gray-600 shrink-0" />;
     return sortDir === 'asc'
       ? <ChevronUp size={11} className="text-red-500 shrink-0" />
       : <ChevronDown size={11} className="text-red-500 shrink-0" />;
   };
 
-  const COLS: { field: SortField; label: string }[] = [
+  const COLS: { field: ClientSortField; label: string }[] = [
     { field: 'name',        label: 'Nome'           },
     { field: 'status',      label: 'Status'         },
     { field: 'totalSpent',  label: 'Total gasto'    },
