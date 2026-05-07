@@ -130,7 +130,12 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
   // ANTES: useQuery + getDocs com refetchInterval 30s. Comentário dizia
   // "real-time badge" mas era polling — atendente recebia mensagem nova
   // e o badge demorava até 30s pra atualizar.
-  // AGORA: onSnapshot. Badge cresce no instante que mensagem chega.
+  // AGORA: onSnapshot single-field (businessId) + filter client-side.
+  // Tentei usar where('unreadCount', '>', 0) server-side mas Firestore
+  // exige composite index (businessId, unreadCount) — gera link dinâmico
+  // que exige user clicar. Volume típico < 1k conversations por tenant,
+  // filter client-side é trivial em termos de CPU e remove fricção de
+  // setup. Mesmo padrão usado em outros listeners do projeto.
   const businessId = business?.id;
   const [unreadCount, setUnreadCount] = useState(0);
   useEffect(() => {
@@ -138,12 +143,15 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
     const q = query(
       collection(db, 'conversations'),
       where('businessId', '==', businessId),
-      where('unreadCount', '>', 0),
     );
     const unsub = onSnapshot(
       q,
       (snap) => {
-        const total = snap.docs.reduce((sum, d) => sum + ((d.data().unreadCount as number) || 0), 0);
+        const total = snap.docs.reduce((sum, d) => {
+          const data = d.data();
+          const n = (data.unreadCount as number) || 0;
+          return n > 0 ? sum + n : sum;
+        }, 0);
         setUnreadCount(total);
       },
       (err) => console.error('[TopBar] unread count snapshot error:', err),

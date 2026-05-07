@@ -351,28 +351,34 @@ function SidebarContent({
 
   // Urgent recurring transactions count for Financial badge — onSnapshot.
   // ANTES: useQuery + getDocs com refetchInterval 10min. Recurrence vencendo
-  // hoje só aparecia no badge até 10min depois do operador adicioná-la,
-  // confundindo a equipe de financeiro.
-  // AGORA: real-time. Range de datas (hoje → +3d) fica frozen no momento
-  // do subscribe (mesmo trade-off do useQuery anterior — usuário que deixa
-  // aba aberta cruzando meia-noite vê range desatualizado até refresh).
-  // Filter por (businessId, recurrence.nextDueDate) evita compound index
-  // de 3 campos em fields aninhados; isActive checa client-side.
+  // hoje só aparecia no badge até 10min depois do operador adicioná-la.
+  // AGORA: real-time via single-field filter + client-side range/active
+  // checks. Tentei usar where('recurrence.nextDueDate', '>=' / '<=') no
+  // server, mas Firestore exige composite index pra (businessId,
+  // recurrence.nextDueDate) — link do console é gerado dinamicamente e
+  // exige user clicar pra criar. Filtrar client-side é simples (volume
+  // típico < 5k transactions por tenant) e robusto sem dependência de
+  // setup manual de índice.
   const [urgentRecurringCount, setUrgentRecurringCount] = useState(0);
   useEffect(() => {
     if (!business?.id) { setUrgentRecurringCount(0); return; }
-    const todayStr = new Date().toISOString().slice(0, 10);
-    const in3d = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
     const q = query(
       collection(db, 'transactions'),
       where('businessId', '==', business.id),
-      where('recurrence.nextDueDate', '>=', todayStr),
-      where('recurrence.nextDueDate', '<=', in3d),
     );
     const unsub = onSnapshot(
       q,
       (snap) => {
-        const count = snap.docs.filter(d => d.data().recurrence?.isActive === true).length;
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const in3d = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
+        const count = snap.docs.filter(d => {
+          const data = d.data();
+          const rec = data.recurrence;
+          if (!rec || rec.isActive !== true) return false;
+          const next = rec.nextDueDate;
+          if (typeof next !== 'string') return false;
+          return next >= todayStr && next <= in3d;
+        }).length;
         setUrgentRecurringCount(count);
       },
       (err) => console.error('[Sidebar] urgent recurring snapshot error:', err),
