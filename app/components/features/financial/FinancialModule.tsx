@@ -91,7 +91,7 @@ import {
   Pie,
   Cell,
 } from 'recharts';
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch, getDoc, arrayUnion } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch, getDoc, arrayUnion, onSnapshot } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { db, storage } from '@/lib/config/firebase';
 import { logAudit } from '@/lib/services/audit';
@@ -461,21 +461,44 @@ function FinancialModuleBody() {
   }, []);
 
   // ---- Firestore Queries ----
-  const { data: transactions = [], isLoading: isLoadingTransactions } = useTanstackQuery({
-    queryKey: ['transactions', business?.id],
-    queryFn: async () => {
-      if (!business?.id) return [];
-      const q = query(
-        collection(db, 'transactions'),
-        where('businessId', '==', business.id),
-        orderBy('dueDate', 'desc')
-      );
-      const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Transaction));
-    },
-    enabled: !!business?.id,
-    staleTime: 2 * 60 * 1000,
-  });
+  // Transactions — listener em tempo real (refactor sync multi-user):
+  //
+  // ANTES: useQuery + getDocs com staleTime 2min. Operador A marcava conta
+  // como paga, gerente B só via mudança após 2min OU window focus. Quando
+  // dois usuários trabalhavam no fluxo de caixa simultaneamente (operador
+  // dando baixa + financeiro conferindo), o B precisava recarregar pra ver
+  // o que A acabou de fazer.
+  //
+  // AGORA: onSnapshot. Mudanças de status/dueDate/recurrence propagam pra
+  // todas as sessões em tempo real. onSnapshot só transfere diffs após o
+  // initial load — custo recorrente proporcional ao throughput de mudança,
+  // similar ao useQuery (que fazia scan completo no refetch).
+  //
+  // bankAccounts continua em useQuery — volume mínimo (1-5 docs típicos) e
+  // edição rara, staleTime 2min cobre cenário de uso.
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [isLoadingTransactions, setIsLoadingTransactions] = useState(true);
+  useEffect(() => {
+    if (!business?.id) { setIsLoadingTransactions(false); return; }
+    setIsLoadingTransactions(true);
+    const q = query(
+      collection(db, 'transactions'),
+      where('businessId', '==', business.id),
+      orderBy('dueDate', 'desc'),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        setTransactions(snap.docs.map(d => ({ ...d.data(), id: d.id } as Transaction)));
+        setIsLoadingTransactions(false);
+      },
+      (err) => {
+        console.error('[Financial] transactions snapshot error:', err);
+        setIsLoadingTransactions(false);
+      },
+    );
+    return () => unsub();
+  }, [business?.id]);
 
   const { data: bankAccounts = [], isLoading: isLoadingBankAccounts } = useTanstackQuery({
     queryKey: ['bankAccounts', business?.id],
