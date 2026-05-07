@@ -3,9 +3,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, Send, Users, Wifi, Clock, MessageCircle, Loader2, AlertTriangle, Sparkles, BarChart3, Command, Paperclip, X, Download, Check, CheckCheck } from 'lucide-react';
-import { collection, query, where, getDocs, getDocsFromCache } from 'firebase/firestore';
+import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
-import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { db, storage } from '@/lib/config/firebase';
 import { cn } from '@/lib/utils';
@@ -103,24 +102,23 @@ export function TeamChatPanel() {
   const ref = useRef<HTMLDivElement>(null);
   const businessId = business?.id;
 
-  // Membros do business. Cache-first pra paint instantâneo.
-  const { data: members = [] } = useQuery({
-    queryKey: ['team-presence', businessId],
-    queryFn: async () => {
-      const q = query(collection(db, 'users'), where('businessId', '==', businessId!));
-      let snap;
-      try {
-        snap = await getDocsFromCache(q);
-        if (snap.empty) snap = await getDocs(q);
-      } catch {
-        snap = await getDocs(q);
-      }
-      return snap.docs.map(d => ({ ...d.data(), id: d.id }) as UserType);
-    },
-    enabled: !!businessId,
-    staleTime: 30_000,
-    refetchInterval: 60_000,
-  });
+  // Membros do business — onSnapshot pra presence em tempo real.
+  // ANTES: useQuery + getDocsFromCache + refetchInterval 60s. Status
+  // online (verde/âmbar/cinza) só atualizava a cada 60s — cara pendurava
+  // o trabalho e demorava 1 minuto pra equipe ver.
+  // AGORA: heartbeat do AuthProvider grava lastSeenAt → Firestore →
+  // snapshot dispara aqui em <1s. Estado online sempre fresco.
+  const [members, setMembers] = useState<UserType[]>([]);
+  useEffect(() => {
+    if (!businessId) { setMembers([]); return; }
+    const q = query(collection(db, 'users'), where('businessId', '==', businessId));
+    const unsub = onSnapshot(
+      q,
+      (snap) => setMembers(snap.docs.map(d => ({ ...d.data(), id: d.id }) as UserType)),
+      (err) => console.error('[TeamChat] members snapshot error:', err),
+    );
+    return () => unsub();
+  }, [businessId]);
 
   // Single subscription — `teamChat` é compartilhado entre o badge e o dropdown.
   const teamChat = useTeamChat();
