@@ -3,6 +3,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { db } from '@/lib/config/firebase';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { toast } from 'react-toastify';
@@ -100,7 +102,6 @@ export function VaultTab() {
   const [revealedValue, setRevealedValue] = useState<string | null>(null);
   const [revealTimer, setRevealTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
   const [revealing, setRevealing] = useState<string | null>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
   const [previewEntry, setPreviewEntry] = useState<VaultListItem | null>(null);
 
   const REVEAL_TIMEOUT_MS = 15_000;
@@ -122,37 +123,54 @@ export function VaultTab() {
     return () => { el.style.overflowY = prevOverflow; };
   }, [formOpen, previewEntry]);
 
+  // Real-time listener (refactor de sincronização multi-user):
+  //
+  // ANTES: fetch POST /api/vault { action: 'list' } no mount + após mutações
+  // próprias. Outro admin editava uma senha → invisível pra mim até reiniciar.
+  //
+  // AGORA: onSnapshot direto no Firestore. Rules de passwordVaultEntries já
+  // filtram por accessScope/sharedWith/createdBy server-side (defense in depth
+  // mantida — admin SDK das mutações continua aplicando mesma lógica). Web SDK
+  // recebe só docs que o user pode ler.
+  //
+  // O reveal continua via API (decripta + audit log). save/delete continuam
+  // via API (encripta + valida payload). Listener cobre só o LIST view.
+  //
+  // Mapeamento doc → VaultListItem: omit encryptedPassword + add hasPassword.
+  // Compat com a UI antiga que esperava esse shape.
   useEffect(() => {
     if (!business?.id) { setLoading(false); return; }
-    let cancelled = false;
     setLoading(true);
-    (async () => {
-      try {
-        const { getAuth } = await import('firebase/auth');
-        const token = await getAuth().currentUser?.getIdToken();
-        if (!token || cancelled) return;
-        const resp = await fetch('/api/vault', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ action: 'list', businessId: business.id, params: {} }),
+    const q = query(
+      collection(db, 'passwordVaultEntries'),
+      where('businessId', '==', business.id),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const list = snap.docs.map(d => {
+          const data = d.data();
+          // Destructure pra omitir `encryptedPassword` do shape retornado
+          // (Web SDK recebe o blob mas a UI não deve ter acesso direto —
+          // reveal continua via API com audit log). Prefix _ sinaliza unused.
+          const { encryptedPassword: _encryptedPassword, ...rest } = data;
+          return {
+            ...rest,
+            id: d.id,
+            hasPassword: !!_encryptedPassword,
+          } as VaultListItem;
         });
-        const json = await resp.json();
-        if (cancelled) return;
-        if (resp.ok && json.ok) {
-          const list: VaultListItem[] = json.data;
-          list.sort((a, b) => a.title.localeCompare(b.title));
-          setEntries(list);
-        } else {
-          console.error('[Vault] list error:', json?.error);
-        }
-      } catch (err) {
-        if (!cancelled) console.error('[Vault] fetch error:', err);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [business?.id, refreshKey]);
+        list.sort((a, b) => a.title.localeCompare(b.title));
+        setEntries(list);
+        setLoading(false);
+      },
+      (err) => {
+        console.error('[Vault] snapshot error:', err);
+        setLoading(false);
+      },
+    );
+    return () => unsub();
+  }, [business?.id]);
 
   useEffect(() => {
     return () => { if (revealTimer) clearTimeout(revealTimer); };
@@ -242,7 +260,7 @@ export function VaultTab() {
       });
       toast.success(editing ? 'Entrada atualizada' : 'Senha salva');
       setFormOpen(false);
-      setRefreshKey(k => k + 1);
+      // onSnapshot reflete a mudança automaticamente — sem refreshKey.
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Erro ao salvar');
     } finally {
@@ -257,7 +275,7 @@ export function VaultTab() {
     try {
       await callApi('delete', { id });
       toast.info('Entrada removida');
-      setRefreshKey(k => k + 1);
+      // onSnapshot reflete a remoção automaticamente — sem refreshKey.
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Erro ao excluir');
     } finally {

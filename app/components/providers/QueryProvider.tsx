@@ -3,14 +3,44 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState, ReactNode } from 'react';
 
+/**
+ * Defaults globais do TanStack Query.
+ *
+ * Decisões críticas pra resolver staleness em multi-user (refactor de
+ * sincronização):
+ *
+ * - `staleTime: 30s` — antes era 5min. Mudança feita por colega só era
+ *   visível depois de 5min OU mutação local. Agora 30s mantém balance
+ *   entre custo (refetch frequente) e percepção de live (~30s pior caso
+ *   sem foco). Telas críticas (Senhas/Clientes) usam `onSnapshot` direto
+ *   pra real-time verdadeiro — esse staleTime serve pras coleções "frias"
+ *   (Reports, Dashboard, listings auxiliares).
+ *
+ * - `refetchOnWindowFocus: true` — refetch automático ao voltar pra aba.
+ *   Cobre o cenário "operador deixou aba aberta a tarde toda, voltou e
+ *   continua vendo dados de manhã". Antes estava `false` (default era OFF
+ *   por algum motivo histórico — provavelmente pra evitar refetch agressivo
+ *   no dev, mas em prod o tradeoff inverte).
+ *
+ * - `refetchOnMount: 'always'` — quando componente montar, sempre refetch
+ *   (mesmo que cache esteja "fresco" no React Query). Garante que navegar
+ *   entre páginas sempre vê dados atuais. Sem isso, voltar pra Clientes
+ *   após editar em outra aba mostra dados antigos do cache.
+ *
+ * - `retry: 1` mantido — Firestore raramente falha; 1 retry cobre flakiness.
+ *
+ * Telas que precisam de tempo-real verdadeiro (não só ao mount/foco) usam
+ * onSnapshot direto, sobrescrevendo esses defaults.
+ */
 export default function QueryProvider({ children }: { children: ReactNode }) {
   const [queryClient] = useState(
     () =>
       new QueryClient({
         defaultOptions: {
           queries: {
-            staleTime: 5 * 60 * 1000, // 5 minutes
-            refetchOnWindowFocus: false,
+            staleTime: 30 * 1000,           // 30s (era 5min)
+            refetchOnWindowFocus: true,     // (era false)
+            refetchOnMount: 'always',
             retry: 1,
           },
         },
