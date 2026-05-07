@@ -498,15 +498,19 @@ export default function ComprasModule() {
   useEffect(() => {
     if (!business?.id) { setIsLoading(false); return; }
     setIsLoading(true);
+    // Single-field — sort por createdAt desc client-side (evita composite
+    // index purchaseNotes/businessId+createdAt).
     const q = query(
       collection(db, 'purchaseNotes'),
       where('businessId', '==', business.id),
-      orderBy('createdAt', 'desc'),
     );
     const unsub = onSnapshot(
       q,
       (snap) => {
-        setNotes(snap.docs.map(d => ({ ...d.data(), id: d.id } as PurchaseNote)));
+        const list = snap.docs
+          .map(d => ({ ...d.data(), id: d.id } as PurchaseNote))
+          .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+        setNotes(list);
         setIsLoading(false);
       },
       (err) => { console.error('[Compras] purchaseNotes snapshot error:', err); setIsLoading(false); },

@@ -1,10 +1,8 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
-import { db } from '@/lib/config/firebase';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { toast } from 'react-toastify';
@@ -123,57 +121,51 @@ export function VaultTab() {
     return () => { el.style.overflowY = prevOverflow; };
   }, [formOpen, previewEntry]);
 
-  // Real-time listener (refactor de sincronização multi-user):
+  // List via API route (admin SDK + rules per-doc).
   //
-  // ANTES: fetch POST /api/vault { action: 'list' } no mount + após mutações
-  // próprias. Outro admin editava uma senha → invisível pra mim até reiniciar.
+  // Tentativa anterior usou onSnapshot direto no Firestore — falhou com
+  // "Missing or insufficient permissions". Razão: rules em
+  // passwordVaultEntries são per-document (accessScope/sharedWith/createdBy
+  // checadas em resource.data) e Firestore rejeita LIST queries onde a regra
+  // depende de conteúdo do doc (all-or-nothing — se algum doc não passar, o
+  // query inteiro falha). Real-time direto exigiria refactor das rules pra
+  // permitir list (perde defense-in-depth) OU 3 onSnapshot separados (1 por
+  // critério) com merge client-side — complexidade alta.
   //
-  // AGORA: onSnapshot direto no Firestore. Rules de passwordVaultEntries já
-  // filtram por accessScope/sharedWith/createdBy server-side (defense in depth
-  // mantida — admin SDK das mutações continua aplicando mesma lógica). Web SDK
-  // recebe só docs que o user pode ler.
-  //
-  // O reveal continua via API (decripta + audit log). save/delete continuam
-  // via API (encripta + valida payload). Listener cobre só o LIST view.
-  //
-  // Mapeamento doc → VaultListItem: omit encryptedPassword + add hasPassword.
-  // Compat com a UI antiga que esperava esse shape.
+  // Solução: API route mantém defense in depth. Multi-user sync via:
+  //   - refetch ao mount + após mutations (save/delete chamam fetchEntries)
+  //   - refetch ao voltar pra aba (visibilitychange listener)
+  // Trade-off vs onSnapshot: outro admin que edita não atualiza minha lista
+  // até eu sair/voltar pra aba ou recarregar. Aceitável dado contexto
+  // (vault não é editado em rajada, mudanças são raras).
+  const fetchEntries = useCallback(async (silent = false) => {
+    if (!business?.id) return;
+    if (!silent) setLoading(true);
+    try {
+      const data = await callApi('list', {});
+      // API retorna VaultListItem[] já no shape correto (sem encryptedPassword)
+      const list = (data as VaultListItem[] | null | undefined) ?? [];
+      list.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+      setEntries(list);
+    } catch (err) {
+      console.error('[Vault] fetch error:', err);
+      if (!silent) toast.error('Erro ao carregar senhas');
+    } finally {
+      setLoading(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [business?.id]);
+
+  // Initial load + refetch ao voltar pra aba (sync multi-user lightweight).
   useEffect(() => {
     if (!business?.id) { setLoading(false); return; }
-    setLoading(true);
-    const q = query(
-      collection(db, 'passwordVaultEntries'),
-      where('businessId', '==', business.id),
-    );
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const list = snap.docs.map(d => {
-          const data = d.data();
-          // Destructure pra omitir `encryptedPassword` do shape retornado
-          // (Web SDK recebe o blob mas a UI não deve ter acesso direto —
-          // reveal continua via API com audit log). Prefix _ sinaliza unused.
-          const { encryptedPassword: _encryptedPassword, ...rest } = data;
-          return {
-            ...rest,
-            id: d.id,
-            // Guard: title é required em VaultEntry mas docs migrados/legacy
-            // podem não ter. Fallback evita crash em sort/render.
-            title: (rest.title as string | undefined) ?? '(sem título)',
-            hasPassword: !!_encryptedPassword,
-          } as VaultListItem;
-        });
-        list.sort((a, b) => a.title.localeCompare(b.title));
-        setEntries(list);
-        setLoading(false);
-      },
-      (err) => {
-        console.error('[Vault] snapshot error:', err);
-        setLoading(false);
-      },
-    );
-    return () => unsub();
-  }, [business?.id]);
+    void fetchEntries();
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') void fetchEntries(true);
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, [business?.id, fetchEntries]);
 
   useEffect(() => {
     return () => { if (revealTimer) clearTimeout(revealTimer); };
@@ -263,7 +255,8 @@ export function VaultTab() {
       });
       toast.success(editing ? 'Entrada atualizada' : 'Senha salva');
       setFormOpen(false);
-      // onSnapshot reflete a mudança automaticamente — sem refreshKey.
+      // Refetch — sem real-time, mutações próprias atualizam a lista local.
+      void fetchEntries(true);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Erro ao salvar');
     } finally {
@@ -278,7 +271,7 @@ export function VaultTab() {
     try {
       await callApi('delete', { id });
       toast.info('Entrada removida');
-      // onSnapshot reflete a remoção automaticamente — sem refreshKey.
+      void fetchEntries(true);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Erro ao excluir');
     } finally {
