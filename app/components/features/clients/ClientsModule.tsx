@@ -11,7 +11,7 @@ import {
   FileDown, Settings, Plus as PlusIcon, Trophy, LayoutList, AlignJustify,
   Megaphone, MessageSquare, CheckSquare,
 } from 'lucide-react';
-import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, limit as firestoreLimit, writeBatch, deleteField } from 'firebase/firestore';
+import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, limit as firestoreLimit, writeBatch, deleteField, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -763,20 +763,42 @@ export default function ClientsModule() {
   }, [selectedClient?.id]);
 
   // ─── Data fetching ──────────────────────────────────────────────────────────
-  const { data: clients = [], isLoading } = useQuery({
-    queryKey: ['clients', business?.id],
-    queryFn: async () => {
-      if (!business?.id) return [];
-      const q = query(
-        collection(db, 'clients'),
-        where('businessId', '==', business.id),
-      );
-      const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Client));
-    },
-    enabled: !!business?.id,
-    staleTime: 3 * 60 * 1000,
-  });
+  // Real-time listener (refactor de sincronização multi-user):
+  //
+  // ANTES: useQuery + getDocs com staleTime 3min. Operador A editava cliente,
+  // operador B (outra aba/sessão) só via a mudança após refetch (window focus
+  // ou após mutation própria).
+  //
+  // AGORA: onSnapshot direto. Mudanças propagam pra todas as sessões em tempo
+  // real, incluindo edits via /api (admin SDK bypassa rules mas listeners
+  // dos clients ainda recebem o evento de update).
+  //
+  // As 5 chamadas de queryClient.invalidateQueries(['clients', ...]) que ainda
+  // existem no código viram no-op (não tem mais essa query no cache), mas
+  // mantidas pra não quebrar outras invalidações em queryKeys correlatos
+  // (e.g., 'products-acquisition-select').
+  const [clients, setClients] = useState<Client[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  useEffect(() => {
+    if (!business?.id) { setIsLoading(false); return; }
+    setIsLoading(true);
+    const q = query(
+      collection(db, 'clients'),
+      where('businessId', '==', business.id),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        setClients(snap.docs.map(d => ({ ...d.data(), id: d.id } as Client)));
+        setIsLoading(false);
+      },
+      (err) => {
+        console.error('[Clients] snapshot error:', err);
+        setIsLoading(false);
+      },
+    );
+    return () => unsub();
+  }, [business?.id]);
 
   // Produtos (id + nome) pra alimentar o select de "Aquisição" no form.
   // Carregamento leve — só os 2 campos necessários, mesmo que seja preciso
