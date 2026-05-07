@@ -13,9 +13,13 @@
  * Throttle: max 1 beep / 3s pra evitar spam quando vários webhooks chegam
  * em rajada (ex: cliente mandou 5 mensagens em 1 segundo).
  *
+
  * Filtros aplicados:
  *  - snoozedUntil > now → silencia (operador escolheu não receber agora)
  *  - isDeleted → ignora
+ *  - lastMessageDirection !== 'inbound' → ignora (filtra "marcar como não
+ *    lida" manual via handleMarkUnread, que incrementa unreadCount sem
+ *    mexer em lastMessage* — beep falso positivo na auditoria)
  *
  * Multi-tab dedup via localStorage (igual useNotificationAlerts) pra evitar
  * 2 tabs do mesmo user beeparem juntas.
@@ -73,6 +77,7 @@ interface ConvoSnapshot {
   snoozedUntil?: string;
   isDeleted?: boolean;
   contactName?: string;
+  lastMessageDirection?: string; // 'inbound' | 'outbound'
 }
 
 export function useConversationsAlerts(): void {
@@ -133,9 +138,14 @@ export function useConversationsAlerts(): void {
           continue;
         }
 
-        // Beep apenas quando unreadCount AUMENTOU (nova mensagem chegou).
-        // Adicionar conversa nova com unreadCount > 0 também conta como aumento.
-        if (currUnread > prevUnread) {
+        // Beep apenas quando unreadCount AUMENTOU (nova mensagem chegou) E
+        // a última mensagem é inbound. Filtra falso positivo de
+        // handleMarkUnread (incrementa só unreadCount sem tocar em
+        // lastMessage*). Mensagens do operador também não devem beepar
+        // (são outbound — nem incrementam unreadCount, mas defesa extra).
+        const isInboundBump = currUnread > prevUnread
+          && data.lastMessageDirection === 'inbound';
+        if (isInboundBump) {
           // Multi-tab dedup: só uma tab beepa por bump.
           if (claimAlertSlot(id, currUnread)) {
             shouldBeep = true;
