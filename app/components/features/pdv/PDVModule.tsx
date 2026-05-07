@@ -323,6 +323,17 @@ export default function PDVModule() {
 
   const isLoading = loadingProducts || loadingServices || loadingClients;
 
+  // Sync selectedClient com snapshot — se o cliente associado à venda em
+  // progresso é editado por outro user, refresca dados (nome, telefone) na
+  // tela do PDV. Se for desativado/deletado externamente, desassocia da
+  // venda (operador continua o checkout sem cliente, last-write-wins).
+  useEffect(() => {
+    if (!selectedClient) return;
+    const fresh = clients.find(c => c.id === selectedClient.id);
+    if (!fresh) { setSelectedClient(null); return; }
+    if (fresh.updatedAt !== selectedClient.updatedAt) setSelectedClient(fresh);
+  }, [clients, selectedClient]);
+
   // --- Derived Data ---
   const categories = useMemo(() => {
     const todosLabel = t('pdv.catalog.all', 'Todos');
