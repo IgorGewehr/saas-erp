@@ -10,11 +10,11 @@ import {
   CalendarClock, ShoppingBag, Building2, User,
 } from 'lucide-react';
 import {
-  collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc,
+  collection, query, where, orderBy, addDoc, updateDoc, deleteDoc, doc, onSnapshot,
 } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
 import type {
@@ -567,46 +567,45 @@ export default function VendasModule() {
     return () => { el.style.overflowY = prevOverflow; };
   }, [showForm]);
 
-  // ─── Data ───────────────────────────────────────────────────────────────────
-  const { data: orders = [], isLoading } = useQuery({
-    queryKey: ['orders', business?.id],
-    queryFn: async () => {
-      if (!business?.id) return [];
-      const q = query(
-        collection(db, 'orders'),
-        where('businessId', '==', business.id),
-        orderBy('createdAt', 'desc'),
-      );
-      const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Order));
-    },
-    enabled: !!business?.id,
-    staleTime: 2 * 60 * 1000,
-  });
+  // ─── Data — onSnapshot (refactor sync multi-user) ───────────────────────────
+  // ANTES: 3x useQuery + getDocs com staleTime 2-5min. Vendedor A criava
+  // orçamento, vendedor B (em outra sessão) só via mudança de status após
+  // 2min — em equipe comercial isso atrapalha (gerente cobra status que já
+  // foi atualizado).
+  // AGORA: onSnapshot pra orders/clients/products. Real-time em todas as
+  // sessões.
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  useEffect(() => {
+    if (!business?.id) { setIsLoading(false); return; }
+    setIsLoading(true);
+    const q = query(collection(db, 'orders'), where('businessId', '==', business.id), orderBy('createdAt', 'desc'));
+    const unsub = onSnapshot(q, (snap) => {
+      setOrders(snap.docs.map(d => ({ ...d.data(), id: d.id } as Order)));
+      setIsLoading(false);
+    }, (err) => { console.error('[Vendas] orders snapshot error:', err); setIsLoading(false); });
+    return () => unsub();
+  }, [business?.id]);
 
-  const { data: clients = [] } = useQuery({
-    queryKey: ['clients', business?.id],
-    queryFn: async () => {
-      if (!business?.id) return [];
-      const q = query(collection(db, 'clients'), where('businessId', '==', business.id), orderBy('name', 'asc'));
-      const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Client));
-    },
-    enabled: !!business?.id,
-    staleTime: 5 * 60 * 1000,
-  });
+  const [clients, setClients] = useState<Client[]>([]);
+  useEffect(() => {
+    if (!business?.id) return;
+    const q = query(collection(db, 'clients'), where('businessId', '==', business.id), orderBy('name', 'asc'));
+    const unsub = onSnapshot(q, (snap) => {
+      setClients(snap.docs.map(d => ({ ...d.data(), id: d.id } as Client)));
+    }, (err) => console.error('[Vendas] clients snapshot error:', err));
+    return () => unsub();
+  }, [business?.id]);
 
-  const { data: products = [] } = useQuery({
-    queryKey: ['products', business?.id],
-    queryFn: async () => {
-      if (!business?.id) return [];
-      const q = query(collection(db, 'products'), where('businessId', '==', business.id), orderBy('name', 'asc'));
-      const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Product));
-    },
-    enabled: !!business?.id,
-    staleTime: 5 * 60 * 1000,
-  });
+  const [products, setProducts] = useState<Product[]>([]);
+  useEffect(() => {
+    if (!business?.id) return;
+    const q = query(collection(db, 'products'), where('businessId', '==', business.id), orderBy('name', 'asc'));
+    const unsub = onSnapshot(q, (snap) => {
+      setProducts(snap.docs.map(d => ({ ...d.data(), id: d.id } as Product)));
+    }, (err) => console.error('[Vendas] products snapshot error:', err));
+    return () => unsub();
+  }, [business?.id]);
 
   // ─── Mutations ──────────────────────────────────────────────────────────────
   const { mutate: createOrder, isPending: isCreating } = useMutation({
