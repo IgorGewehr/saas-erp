@@ -928,6 +928,25 @@ export default function ClientsModule() {
     staleTime: 2 * 60 * 1000,
   });
 
+  // ─── Sync selectedClient com snapshot ───────────────────────────────────────
+  // Quando outro usuário edita o cliente que está aberto no painel, o
+  // snapshot atualiza `clients` mas `selectedClient` (state local) ficaria
+  // congelado. Aqui sincronizamos: se o doc foi removido externamente, fecha
+  // o painel; se foi atualizado, refresca a referência. Compara pelo
+  // `updatedAt` pra evitar setState quando nada relevante mudou (Firestore
+  // emite snapshot a cada metadata change, não só quando o doc muda).
+  useEffect(() => {
+    if (!selectedClient) return;
+    const fresh = clients.find(c => c.id === selectedClient.id);
+    if (!fresh) {
+      setSelectedClient(null);
+      return;
+    }
+    if (fresh.updatedAt !== selectedClient.updatedAt) {
+      setSelectedClient(fresh);
+    }
+  }, [clients, selectedClient]);
+
   // ─── Pré-seleção via sessionStorage ─────────────────────────────────────────
   // Usado pelo Conversas → "Ver/editar contato" para abrir o cliente direto
   // quando navega pra cá. Limpa o storage após consumir (não persiste entre
