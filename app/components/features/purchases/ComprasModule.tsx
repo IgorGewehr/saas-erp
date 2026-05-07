@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ShoppingBag, Upload, Search, X, FileText, CheckCircle2, AlertCircle,
@@ -9,11 +9,11 @@ import {
   BarChart3, ArrowUpRight, Truck,
 } from 'lucide-react';
 import {
-  collection, query, where, orderBy, getDocs, addDoc, updateDoc, doc,
+  collection, query, where, orderBy, getDocs, addDoc, updateDoc, doc, onSnapshot,
 } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation } from '@tanstack/react-query';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
 import type { PurchaseNote, PurchaseNoteItem, PurchaseNoteStatus, Product } from '@/lib/types';
@@ -480,7 +480,6 @@ function NoteDetailPanel({
 
 export default function ComprasModule() {
   const { business, user } = useAuth();
-  const queryClient = useQueryClient();
 
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState<PurchaseNoteStatus | 'all'>('all');
@@ -488,22 +487,44 @@ export default function ComprasModule() {
   const [showImportModal, setShowImportModal] = useState(false);
   const [parsedXml, setParsedXml] = useState<{ data: ParsedNFe; xml: string } | null>(null);
 
-  // ─── Data ───────────────────────────────────────────────────────────────────
-  const { data: notes = [], isLoading } = useQuery({
-    queryKey: ['purchaseNotes', business?.id],
-    queryFn: async () => {
-      if (!business?.id) return [];
-      const q = query(
-        collection(db, 'purchaseNotes'),
-        where('businessId', '==', business.id),
-        orderBy('createdAt', 'desc'),
-      );
-      const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as PurchaseNote));
-    },
-    enabled: !!business?.id,
-    staleTime: 2 * 60 * 1000,
-  });
+  // ─── Data — onSnapshot (sync multi-user) ───────────────────────────────────
+  // ANTES: useQuery + getDocs com staleTime 2min. Comprador A importava NF-e
+  // de compra e dava entrada em estoque, comprador B (em outra sessão) só
+  // via a nota nova após 2min. Em equipe de compras isso geraria duplicidade
+  // de lançamento (B também tenta dar entrada da mesma nota).
+  // AGORA: onSnapshot. Notas novas aparecem em tempo real pra toda a equipe.
+  const [notes, setNotes] = useState<PurchaseNote[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  useEffect(() => {
+    if (!business?.id) { setIsLoading(false); return; }
+    setIsLoading(true);
+    const q = query(
+      collection(db, 'purchaseNotes'),
+      where('businessId', '==', business.id),
+      orderBy('createdAt', 'desc'),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        setNotes(snap.docs.map(d => ({ ...d.data(), id: d.id } as PurchaseNote)));
+        setIsLoading(false);
+      },
+      (err) => { console.error('[Compras] purchaseNotes snapshot error:', err); setIsLoading(false); },
+    );
+    return () => unsub();
+  }, [business?.id]);
+
+  // Sync selectedNote — outro comprador atualiza status (importada → lançada),
+  // ou nota é deletada externamente. Compara por updatedAt; se sem updatedAt
+  // (campo opcional na schema), não dispara setState desnecessário.
+  useEffect(() => {
+    if (!selectedNote) return;
+    const fresh = notes.find(n => n.id === selectedNote.id);
+    if (!fresh) { setSelectedNote(null); return; }
+    if ((fresh as { updatedAt?: string }).updatedAt !== (selectedNote as { updatedAt?: string }).updatedAt) {
+      setSelectedNote(fresh);
+    }
+  }, [notes, selectedNote]);
 
   // ─── Push-to-stock mutation ──────────────────────────────────────────────────
   // Matches each PurchaseNoteItem to a local product by SKU (cProd) first, then
@@ -567,8 +588,9 @@ export default function ComprasModule() {
       return { matchedCount: matched.length, unmatchedCount: unmatched.length };
     },
     onSuccess: ({ matchedCount, unmatchedCount }) => {
-      queryClient.invalidateQueries({ queryKey: ['purchaseNotes', business?.id] });
-      queryClient.invalidateQueries({ queryKey: ['products', business?.id] });
+      // notes vem via onSnapshot — não precisa invalidar manualmente.
+      // ['products', ...] não tem mais consumers via useQuery (Inventory/PDV
+      // viraram onSnapshot), então invalidação seria no-op.
       if (unmatchedCount > 0) {
         toast.success(`${matchedCount} itens lançados. ${unmatchedCount} sem match — cadastre os produtos e reimporte.`);
       } else {
@@ -601,7 +623,7 @@ export default function ComprasModule() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['purchaseNotes', business?.id] });
+      // notes vem via onSnapshot — não precisa invalidar.
       toast.success('Nota importada com sucesso!');
       setShowImportModal(false);
       setParsedXml(null);
