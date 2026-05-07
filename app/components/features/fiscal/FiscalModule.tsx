@@ -44,10 +44,9 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
-import { collection, query, where, orderBy, getDocs, doc as firestoreDoc, updateDoc } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, doc as firestoreDoc, updateDoc, onSnapshot } from 'firebase/firestore';
 import { ref as storageRef, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '@/lib/config/firebase';
-import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import type { FiscalDocument, FiscalDocType, FiscalDocStatus, FiscalItem } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
@@ -933,7 +932,6 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
   const { t } = useTranslation();
   const [documents, setDocuments] = useState<FiscalDocument[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState<StatusTab>('todas');
   const [searchQuery, setSearchQuery] = useState('');
   const [page, setPage] = useState(1);
@@ -956,7 +954,6 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
   const [accountingYear, setAccountingYear] = useState(new Date().getFullYear());
   const [isAccountingSending, setIsAccountingSending] = useState(false);
 
-  const queryClient = useQueryClient();
   const typeConfig = useMemo(() => ({
     title: t(`fiscal.title.${type}`, type === 'nfse' ? 'Notas Fiscais de Serviço (NFSe)' : type === 'nfce' ? 'Nota Fiscal de Consumidor (NFCe)' : 'Nota Fiscal Eletrônica (NFe)'),
     icon: TYPE_ICONS[type],
@@ -972,47 +969,45 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
     { value: 'erro', label: t('fiscal.tabs.erro', 'Erros') },
   ], [t]);
 
-  // Fetch documents from Firestore
-  const fetchDocuments = useCallback(async (showRefreshIndicator = false) => {
-    if (!business?.id || !isManager) return;
-
-    if (showRefreshIndicator) {
-      setIsRefreshing(true);
-    }
-
-    try {
-      const q = query(
-        collection(db, 'fiscalDocuments'),
-        where('businessId', '==', business.id),
-        where('type', '==', type),
-        orderBy('createdAt', 'desc'),
-      );
-
-      const snapshot = await getDocs(q);
-      const docs: FiscalDocument[] = snapshot.docs.map((d) => ({
-        ...d.data(),
-        id: d.id,
-      })) as FiscalDocument[];
-
-      setDocuments(docs);
-    } catch (error) {
-      console.error('[FiscalModule] Error fetching documents:', error);
-      toast.error(t('fiscal.sync.error', 'Erro ao carregar documentos fiscais.'));
-    } finally {
-      setIsLoading(false);
-      setIsRefreshing(false);
-    }
-  }, [business?.id, type]);
-
-  // Load documents on mount and when type changes
+  // Real-time listener (refactor sync multi-user):
+  //
+  // ANTES: getDocs com refresh manual via botão + após emissão. Emissor A
+  // emite NFe pra cliente X, gerente B em outra aba via Fiscal só veria
+  // a nova nota se clicasse "Atualizar" — UX ruim em ambiente fiscal
+  // (B precisa monitorar quando notas saem do status "processando").
+  //
+  // AGORA: onSnapshot. Status (processando → autorizada → cancelada)
+  // propaga em tempo real pra todas as sessões. Botão "Atualizar" foi
+  // removido (sem propósito com listener ativo). handleEmitSuccess virou
+  // no-op — o snapshot pega o doc novo automaticamente.
   useEffect(() => {
+    if (!business?.id || !isManager) { setIsLoading(false); return; }
     setIsLoading(true);
+    // Reset UI state ao trocar de tipo (NFe → NFCe → NFSe)
     setDocuments([]);
     setActiveTab('todas');
     setSearchQuery('');
     setPage(1);
-    fetchDocuments();
-  }, [fetchDocuments]);
+    const q = query(
+      collection(db, 'fiscalDocuments'),
+      where('businessId', '==', business.id),
+      where('type', '==', type),
+      orderBy('createdAt', 'desc'),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        setDocuments(snap.docs.map((d) => ({ ...d.data(), id: d.id })) as FiscalDocument[]);
+        setIsLoading(false);
+      },
+      (err) => {
+        console.error('[FiscalModule] snapshot error:', err);
+        toast.error(t('fiscal.sync.error', 'Erro ao carregar documentos fiscais.'));
+        setIsLoading(false);
+      },
+    );
+    return () => unsub();
+  }, [business?.id, type, isManager, t]);
 
   // Filter documents by status and search
   const filteredDocuments = useMemo(() => {
@@ -1063,13 +1058,13 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
     setPage(1);
   }, []);
 
-  const handleRefresh = useCallback(() => {
-    fetchDocuments(true);
-  }, [fetchDocuments]);
-
-  const handleEmitSuccess = useCallback(() => {
-    fetchDocuments(true);
-  }, [fetchDocuments]);
+  // Após refactor pra onSnapshot, refresh manual deixou de ser necessário —
+  // o listener já reflete mudanças em tempo real. Mantemos os callbacks como
+  // no-op pra não quebrar a API dos dialogs filhos (EmitirNotaDialog,
+  // FiscalDocumentDetailDialog). Podem ser removidos quando os componentes
+  // filhos forem refactorados pra não exigir esses callbacks.
+  const handleRefresh = useCallback(() => { /* no-op — onSnapshot ativo */ }, []);
+  const handleEmitSuccess = useCallback(() => { /* no-op — onSnapshot ativo */ }, []);
 
   // ── DANFE Print ──
   const handlePrintDanfe = async (document: FiscalDocument) => {
@@ -1135,7 +1130,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
       toast.success(t('fiscal.cartaCorrecao.success', 'Carta de correção enviada com sucesso!'));
       setCartaCorrecaoOpen(false);
       setCartaCorrecaoText('');
-      queryClient.invalidateQueries({ queryKey: ['fiscalDocs'] });
+      // onSnapshot reflete o updateDoc acima automaticamente.
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('fiscal.cartaCorrecao.error', 'Erro ao enviar carta de correção'));
     } finally {
@@ -1367,14 +1362,6 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <IconButton
-                onClick={handleRefresh}
-                disabled={isRefreshing}
-                size="small"
-                title={t('fiscal.actions.atualizar', 'Atualizar lista')}
-              >
-                <RefreshCw size={18} className={cn('text-muted-foreground', isRefreshing && 'animate-spin')} />
-              </IconButton>
               <Button
                 onClick={() => setCertOpen(true)}
                 startIcon={<Shield size={16} />}
