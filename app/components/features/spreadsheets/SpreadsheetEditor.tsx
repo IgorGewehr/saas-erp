@@ -158,13 +158,20 @@ export default function SpreadsheetEditor({
       cancelled = true;
       disposed = true;
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-      if (univerRef.current) {
-        try {
-          univerRef.current.univer.dispose();
-        } catch (e) {
-          console.warn('[SpreadsheetEditor] dispose error:', e);
-        }
-        univerRef.current = null;
+      // Defere dispose pro próximo macrotask — Univer monta sua própria árvore
+      // React internamente; chamar dispose() síncrono aqui faz unmount durante
+      // a fase de commit do React pai, disparando "synchronously unmount root
+      // while React was already rendering" (race condition).
+      const inst = univerRef.current;
+      univerRef.current = null;
+      if (inst) {
+        setTimeout(() => {
+          try {
+            inst.univer.dispose();
+          } catch (e) {
+            console.warn('[SpreadsheetEditor] dispose error:', e);
+          }
+        }, 0);
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
