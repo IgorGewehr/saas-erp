@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
+import { setActiveConversation } from '@/lib/utils/active-conversation';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
 import { getInitials } from '@/lib/utils/format';
@@ -5895,6 +5896,43 @@ export default function ConversasModule() {
       console.error('Error marking conversation as read:', err);
     }
   }, []);
+
+  // ── Signal de conversa ativa (consumido por useConversationsAlerts) ────────
+  // Registra/desregistra o ID da conversa atualmente aberta. Hook global
+  // checa esse signal pra suprimir o beep de uma msg que chega numa conversa
+  // que o operador já está vendo.
+  useEffect(() => {
+    setActiveConversation(selectedConversation?.id ?? null);
+    return () => setActiveConversation(null);
+  }, [selectedConversation?.id]);
+
+  // ── Auto-markAsRead em mensagens novas ──────────────────────────────────────
+  // Quando uma msg nova chega (snapshot atualiza unreadCount > 0) numa
+  // conversa que está ATUALMENTE selecionada e a aba está visível, marca
+  // como lida automaticamente. Antes precisava do user clicar de novo na
+  // conversa pra resetar — UX confusa em multi-user com cliente em rajada.
+  // Lê unreadCount direto do array `conversations` (atualizado via snapshot)
+  // pra evitar staleness do `selectedConversation` state.
+  //
+  // Também re-roda quando a aba volta a ficar visível (user troca pra essa
+  // aba e a conversa selecionada acumulou unread enquanto estava no fundo).
+  useEffect(() => {
+    const id = selectedConversation?.id;
+    if (!id) return;
+
+    const tryMark = () => {
+      const fresh = conversations.find(c => c.id === id);
+      if (!fresh || (fresh.unreadCount ?? 0) === 0) return;
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      void markAsRead(id);
+    };
+
+    tryMark();
+
+    if (typeof document === 'undefined') return;
+    document.addEventListener('visibilitychange', tryMark);
+    return () => document.removeEventListener('visibilitychange', tryMark);
+  }, [conversations, selectedConversation?.id, markAsRead]);
 
   // ── Send read receipt to platform (Task 3) ─────────────────────────────────
 

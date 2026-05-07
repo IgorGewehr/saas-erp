@@ -14,12 +14,17 @@
  * em rajada (ex: cliente mandou 5 mensagens em 1 segundo).
  *
 
+
  * Filtros aplicados:
  *  - snoozedUntil > now → silencia (operador escolheu não receber agora)
  *  - isDeleted → ignora
  *  - lastMessageDirection !== 'inbound' → ignora (filtra "marcar como não
  *    lida" manual via handleMarkUnread, que incrementa unreadCount sem
  *    mexer em lastMessage* — beep falso positivo na auditoria)
+ *  - conversa atualmente aberta + aba visível → ignora (operador já está
+ *    vendo a thread, beep seria redundante e irritante)
+ *  - throttle global compartilhado com useNotificationAlerts → evita
+ *    double-beep quando notificação de sistema e msg nova chegam juntas
  *
  * Multi-tab dedup via localStorage (igual useNotificationAlerts) pra evitar
  * 2 tabs do mesmo user beeparem juntas.
@@ -40,6 +45,8 @@ import {
   isDesktopNotificationSupported,
 } from '@/lib/utils/notification-alerts';
 import { useNotificationPrefs, type NotificationPrefs } from '@/lib/utils/notification-prefs';
+import { getActiveConversation, isTabVisible } from '@/lib/utils/active-conversation';
+import { claimGlobalBeepSlot } from '@/lib/utils/notification-throttle';
 
 // ─── Multi-tab dedup ────────────────────────────────────────────────────────
 
@@ -145,7 +152,14 @@ export function useConversationsAlerts(): void {
         // (são outbound — nem incrementam unreadCount, mas defesa extra).
         const isInboundBump = currUnread > prevUnread
           && data.lastMessageDirection === 'inbound';
-        if (isInboundBump) {
+
+        // Skip se operador já está vendo essa conversa com a aba em foco —
+        // beep seria redundante (msg aparece visualmente) e irritante.
+        // Quando a aba não está visível, beep ainda é desejável (alerta
+        // pra trazer atenção mesmo que conversa esteja "selecionada").
+        const isViewingThis = id === getActiveConversation() && isTabVisible();
+
+        if (isInboundBump && !isViewingThis) {
           // Multi-tab dedup: só uma tab beepa por bump.
           if (claimAlertSlot(id, currUnread)) {
             shouldBeep = true;
@@ -164,12 +178,16 @@ export function useConversationsAlerts(): void {
 
       if (!shouldBeep || !beepedConv) return;
 
-      // Throttle: max 1 beep / 3s — proteção contra rajadas de webhooks.
+      // Throttle local (rajadas de webhooks no mesmo hook).
       if (now - lastBeepAtRef.current < THROTTLE_MS) return;
       lastBeepAtRef.current = now;
 
       const currentPrefs = prefsRef.current;
-      if (currentPrefs.conversationsSoundEnabled) playNotificationBlip();
+      // Throttle global só é consumido se vamos beepar de fato — desktop
+      // alert sai independente de sound (é canal separado).
+      if (currentPrefs.conversationsSoundEnabled && claimGlobalBeepSlot()) {
+        playNotificationBlip();
+      }
       if (currentPrefs.desktopEnabled && isDesktopNotificationSupported()) {
         showDesktopNotification({
           title: beepedConv.contactName || 'Nova mensagem',

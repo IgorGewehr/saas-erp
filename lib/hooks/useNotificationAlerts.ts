@@ -23,6 +23,7 @@ import {
   isDesktopNotificationSupported,
 } from '@/lib/utils/notification-alerts';
 import { useNotificationPrefs, type NotificationPrefs } from '@/lib/utils/notification-prefs';
+import { claimGlobalBeepSlot } from '@/lib/utils/notification-throttle';
 
 // ─── Multi-tab dedup ────────────────────────────────────────────────────────
 
@@ -117,7 +118,13 @@ export function useNotificationAlerts(): void {
         }
 
         const currentPrefs = prefsRef.current;
-        if (currentPrefs.soundEnabled) playNotificationBlip();
+        // Throttle global (compartilhado com useConversationsAlerts) só é
+        // consumido quando vamos efetivamente beepar — desktop notification
+        // não conta. Evita double-beep quando notif system + msg nova
+        // chegam juntas, sem suprimir o desktop alert do outro hook.
+        if (currentPrefs.soundEnabled && claimGlobalBeepSlot()) {
+          playNotificationBlip();
+        }
         if (currentPrefs.desktopEnabled && isDesktopNotificationSupported()) {
           showDesktopNotification({
             title: data.title ?? 'Nova notificação',
