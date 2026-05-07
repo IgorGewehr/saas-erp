@@ -8,6 +8,7 @@ import { sendBaileysBroadcastMessage } from '@/app/api/whatsapp/baileys-manager'
 import { generateUnsubscribeToken } from '@/lib/utils/unsubscribeToken';
 import { getAlternativeBrazilianPhone } from '@/lib/utils/phoneAlternatives';
 import type { BroadcastTemplateParam, OptOutChannel } from '@/lib/types';
+import { cleanContactName } from '@/lib/utils/contactName';
 
 /** Compara strings em tempo constante — evita timing attack na CRON_SECRET. */
 function safeEqual(a: string, b: string): boolean {
@@ -172,7 +173,9 @@ function normalizeRecipients(
     seen.add(dedupKey);
     out.push({
       contactId: r.contactId,
-      name: r.name || r.contactName,
+      // Sanitiza no ponto de entrada — recipientes podem vir de CSV import,
+      // paste manual, agente IA ou retry de broadcast antigo (com lixo).
+      name: cleanContactName(r.name || r.contactName),
       recipientId,
       email: r.email,
       ...(r.customColumns && Object.keys(r.customColumns).length > 0
@@ -208,7 +211,8 @@ async function preCreateBroadcastMessages(
         createdAt: now,
       };
       if (r.contactId) payload.contactId = r.contactId;
-      if (r.name) payload.contactName = r.name;
+      const cleanName = cleanContactName(r.name);
+      if (cleanName) payload.contactName = cleanName;
       if (r.email) payload.email = r.email;
       // 5.12 LGPD: snapshot da base legal por mensagem para auditoria.
       if (consentBasis) payload.consentBasis = consentBasis;
@@ -349,7 +353,7 @@ async function upsertConversationFromBroadcast(params: {
         ...(params.channelConnectionId ? { channelConnectionId: params.channelConnectionId } : {}),
         channelOwnerType: params.channelOwnerType ?? 'business',
         ...(params.channelOwnerId ? { channelOwnerId: params.channelOwnerId } : {}),
-        contactName: params.contactName || params.recipientId,
+        contactName: cleanContactName(params.contactName) || params.recipientId,
         contactExternalId: params.recipientId,
         ...(phoneFormatted ? { contactPhone: phoneFormatted } : {}),
         ...(params.contactId ? { crmContactId: params.contactId } : {}),

@@ -280,12 +280,17 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
   const PHONE_SUBSTRING_RE = /(?:\+?\d[\d\s().-]{8,20}\d)/;
 
   const extractNameFromToken = useCallback((token: string): string | undefined => {
-    // Remove a sequência de phone do token e usa o resto como nome candidato
+    // Remove a sequência de phone do token e usa o resto como nome candidato.
+    // BUG corrigido: o cleanup anterior `[\s\-—,:•|]` não incluía parens/
+    // brackets/dots. Quando o phone vinha entre parênteses ("(54) 99..."),
+    // o phone match capturava só os dígitos+espaços+parens internos, deixando
+    // o `(` aberto na ponta. Resultado: nome no Firestore vinha como
+    // "(- Daia Salão" — visível em conversas/CRM.
     const phoneMatch = token.match(PHONE_SUBSTRING_RE);
     if (!phoneMatch) return undefined;
     const rest = token.replace(phoneMatch[0], '')
-      // Limpa separadores nas pontas (- — , : • | etc.) e espaços
-      .replace(/^[\s\-—,:•|]+|[\s\-—,:•|]+$/g, '')
+      // Limpa separadores comuns + parens/brackets/dots/asteriscos nas pontas
+      .replace(/^[\s\-—–_,:.;•|<>(){}\[\]*]+|[\s\-—–_,:.;•|<>(){}\[\]*]+$/g, '')
       .trim();
     // Filtra ruído: nomes muito curtos (< 2 chars), só dígitos, ou só símbolos
     if (rest.length < 2) return undefined;
@@ -299,7 +304,7 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
     if (!match) return {};
     const email = match[0];
     const rest = token.replace(email, '')
-      .replace(/^[\s\-—,:•|<>()]+|[\s\-—,:•|<>()]+$/g, '')
+      .replace(/^[\s\-—–_,:.;•|<>(){}\[\]*]+|[\s\-—–_,:.;•|<>(){}\[\]*]+$/g, '')
       .trim();
     const name = rest.length >= 2 && /[a-zA-ZÀ-ú]/.test(rest) ? rest.slice(0, 120) : undefined;
     return { email, name };
