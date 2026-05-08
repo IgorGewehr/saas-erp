@@ -150,23 +150,35 @@ export default function BirthdayCampaignDialog({
     }).length;
   }, [clients, daysBefore]);
 
-  const previewCount = useMemo(() => {
+  // Lista (não só count) dos aniversariantes que casam com filtros — usada
+  // pra exibir nomes/datas no toggle "ver lista". Ordenada por dia do mês
+  // pra operador entender quando cada um cai.
+  const previewClients = useMemo(() => {
     const target = new Date();
     target.setDate(target.getDate() + daysBefore);
     const targetMonth = target.getMonth() + 1;
-    return clients.filter(c => {
-      if (!c.birthDate || c.birthDate.length < 7) return false;
-      const month = Number(c.birthDate.slice(5, 7));
-      if (month !== targetMonth) return false;
-      if (filterTipo !== 'all' && c.tipo !== filterTipo) return false;
-      if (filterStatus.length && !filterStatus.includes(c.status)) return false;
-      if (filterTags.length) {
-        const cTags = (c.tags || []).map(t => t.toLowerCase());
-        if (!filterTags.every(t => cTags.includes(t))) return false;
-      }
-      return true;
-    }).length;
+    return clients
+      .filter(c => {
+        if (!c.birthDate || c.birthDate.length < 7) return false;
+        const month = Number(c.birthDate.slice(5, 7));
+        if (month !== targetMonth) return false;
+        if (filterTipo !== 'all' && c.tipo !== filterTipo) return false;
+        if (filterStatus.length && !filterStatus.includes(c.status)) return false;
+        if (filterTags.length) {
+          const cTags = (c.tags || []).map(t => t.toLowerCase());
+          if (!filterTags.every(t => cTags.includes(t))) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        const dayA = Number(a.birthDate!.slice(8, 10));
+        const dayB = Number(b.birthDate!.slice(8, 10));
+        return dayA - dayB;
+      });
   }, [clients, daysBefore, filterTipo, filterStatus, filterTags]);
+  const previewCount = previewClients.length;
+
+  const [showRecipients, setShowRecipients] = useState(false);
 
   const hasActiveFilters = filterTipo !== 'all' || filterStatus.length > 0 || filterTags.length > 0;
 
@@ -390,9 +402,18 @@ export default function BirthdayCampaignDialog({
 
         {/* Filtros — quem entra na campanha */}
         <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3 space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Filtros (quem recebe)</p>
-            <span className="text-[10px] text-amber-600 dark:text-amber-400 font-semibold">
+            <button
+              type="button"
+              onClick={() => previewCount > 0 && setShowRecipients(s => !s)}
+              disabled={previewCount === 0}
+              className={cn(
+                'text-[10px] text-amber-600 dark:text-amber-400 font-semibold text-right',
+                previewCount > 0 ? 'hover:underline cursor-pointer' : 'cursor-default opacity-80',
+              )}
+              title={previewCount > 0 ? (showRecipients ? 'Ocultar lista' : 'Ver lista de aniversariantes') : undefined}
+            >
               {(() => {
                 // Label do mês-alvo (mês de hoje + daysBefore). Quando
                 // daysBefore=0 mostra "este mês"; antecedências grandes
@@ -411,8 +432,39 @@ export default function BirthdayCampaignDialog({
                 }
                 return main;
               })()}
-            </span>
+              {previewCount > 0 && (
+                <span className="ml-1 text-[9px] opacity-70">
+                  {showRecipients ? '▴' : '▾'}
+                </span>
+              )}
+            </button>
           </div>
+
+          {/* Lista expandida — quem é cada um. Ordenada por dia do mês. */}
+          {showRecipients && previewCount > 0 && (
+            <div className="rounded-lg border border-amber-200/60 dark:border-amber-500/20 bg-amber-50/40 dark:bg-amber-500/[0.03] max-h-48 overflow-y-auto">
+              <ul className="divide-y divide-amber-200/40 dark:divide-amber-500/10">
+                {previewClients.map(c => {
+                  // birthDate é YYYY-MM-DD (validado no filter acima).
+                  const day = c.birthDate!.slice(8, 10);
+                  const month = c.birthDate!.slice(5, 7);
+                  return (
+                    <li
+                      key={c.id}
+                      className="flex items-center justify-between gap-2 px-2.5 py-1.5"
+                    >
+                      <span className="text-[12px] font-medium text-gray-800 dark:text-gray-100 truncate min-w-0 flex-1">
+                        {c.name}
+                      </span>
+                      <span className="text-[10.5px] text-amber-700 dark:text-amber-400 font-mono flex-shrink-0">
+                        {day}/{month}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
 
           <FormControl fullWidth size="small">
             <InputLabel>Tipo</InputLabel>
