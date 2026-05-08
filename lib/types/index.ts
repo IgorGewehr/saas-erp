@@ -2994,6 +2994,16 @@ export interface BirthdayCampaign {
   createdByName: string;
   createdAt: string;
   updatedAt: string;
+
+  // ── Fallback / detecção de disparo perdido ──────
+  /** YYYY-MM-DD do último dia em que a campanha disparou com sucesso (ao
+   *  menos 1 cliente processado, ou nenhum elegível). Usado pra detectar
+   *  "campanha tinha slot hoje E não rodou" em ticks subsequentes do cron. */
+  lastSuccessfulRunDate?: string;
+  /** YYYY-MM-DD da última notificação de "disparo perdido" enviada ao
+   *  owner. Idempotência: se cron tick X notificou hoje, ticks X+1, X+2...
+   *  do mesmo dia não renotificam. */
+  missedRunNotifiedDate?: string;
 }
 
 export type BroadcastMessageStatus = 'pending' | 'sent' | 'delivered' | 'read' | 'failed';
@@ -3338,7 +3348,11 @@ export type NotificationType =
   | 'task_mentioned'
   | 'appointment_reminder'
   | 'review_received'
-  | 'conversation_assigned';
+  | 'conversation_assigned'
+  // Disparo automático que perdeu o slot (servidor offline, erro transient).
+  // Genérico — birthday campaigns, broadcasts agendados, automações CRM.
+  // O usuário decide manualmente se quer reagendar.
+  | 'campaign_missed';
 
 export interface AppNotification {
   id: string;

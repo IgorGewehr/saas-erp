@@ -22,6 +22,10 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { FieldValue } from 'firebase-admin/firestore';
 import { decryptToken } from '@/lib/utils/encryption';
 import { sendBaileysBroadcastMessage } from '@/app/api/whatsapp/baileys-manager';
+import {
+  detectAndNotifyMissedRun,
+  markSuccessfulRun,
+} from '@/lib/services/scheduledFallback';
 import type {
   BirthdayCampaign,
   BroadcastTemplateParam,
@@ -66,6 +70,21 @@ function currentHourInTz(now: Date, tz: string): number {
   } catch {
     // TZ inválido — fallback pra UTC pra não quebrar a campanha inteira
     return now.getUTCHours();
+  }
+}
+
+/** Data atual YYYY-MM-DD no fuso do business. Usado pra comparar com
+ *  `lastSuccessfulRunDate`/`missedRunNotifiedDate` da campanha (idempotência
+ *  do fallback de disparo perdido). */
+function todayInTz(now: Date, tz: string): string {
+  try {
+    const fmt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+    });
+    return fmt.format(now); // en-CA produz YYYY-MM-DD direto
+  } catch {
+    return now.toISOString().slice(0, 10);
   }
 }
 
@@ -465,6 +484,35 @@ export async function runBirthdayCampaigns(now: Date = new Date()): Promise<RunS
     }
 
     const currentHour = currentHourInTz(now, tz);
+    const today = todayInTz(now, tz);
+
+    // ─── Fallback: detecta campanhas que perderam o slot do dia ──────────
+    // Filosofia (escolha do produto): NÃO fazer catch-up automático. Se um
+    // disparo agendado pra HH:00 não rodou (servidor offline, deploy
+    // quebrado, erro transient), notificamos o owner via AppNotification.
+    // Ele decide se reagenda manualmente. Idempotente: notifica 1× por dia
+    // via missedRunNotifiedDate.
+    for (const c of campaigns) {
+      if (!c.enabled) continue;
+      const hourStr = String(c.sendAtHour).padStart(2, '0');
+      await detectAndNotifyMissedRun(adminDb, {
+        entity: {
+          id: c.id,
+          businessId: c.businessId,
+          isActive: c.enabled,
+          lastSuccessfulRunDate: c.lastSuccessfulRunDate,
+          missedRunNotifiedDate: c.missedRunNotifiedDate,
+        },
+        collection: 'birthdayCampaigns',
+        slotHour: c.sendAtHour,
+        currentHour,
+        today,
+        ownerId: c.createdBy,
+        title: 'Disparo de aniversário não realizado',
+        body: `Campanha "${c.name}" estava agendada pra ${hourStr}:00 hoje mas não disparou. Servidor pode ter ficado offline. Reagende manualmente se necessário.`,
+        link: 'CRM',
+      });
+    }
 
     // Filtra campanhas cuja sendAtHour casa com a hora corrente
     const dueCampaigns = campaigns.filter(c => c.sendAtHour === currentHour);
@@ -489,6 +537,11 @@ export async function runBirthdayCampaigns(now: Date = new Date()): Promise<RunS
       const result = await executeCampaign(campaign, clients, now, tz);
       summary.campaignsExecuted++;
       summary.results.push(result);
+      // Marca como tendo rodado hoje — futuros ticks do cron NÃO vão
+      // disparar fallback de "missed run" pra essa campanha. Conta como
+      // sucesso mesmo se 0 clientes elegíveis (campanha rodou, só não
+      // tinha aniversariante hoje — comportamento esperado).
+      await markSuccessfulRun(adminDb, 'birthdayCampaigns', campaign.id, today);
     }
   }
 
