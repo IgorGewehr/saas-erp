@@ -131,9 +131,26 @@ export default function BirthdayCampaignDialog({
     .map(t => t.trim().toLowerCase())
     .filter(Boolean), [filterTagsInput]);
 
+  // Mês-alvo = mês de (hoje + daysBefore). Operador mudando o slider de
+  // antecedência vê o preview se ajustar imediatamente.
+  // Calculamos DUAS contagens:
+  //   - totalInMonth: aniversariantes no mês-alvo SEM filtros adicionais
+  //   - previewCount: aniversariantes que casam com filtros (Tipo/Status/Tags)
+  // Mostrar ambos torna explícito que filtro reduz, não bugga (op B do
+  // diagnóstico). Quando user vê "0 aniversariantes • 1 total", entende que
+  // o status/tag selecionado não combina com o aniversariante existente.
+  const totalInMonth = useMemo(() => {
+    const target = new Date();
+    target.setDate(target.getDate() + daysBefore);
+    const targetMonth = target.getMonth() + 1;
+    return clients.filter(c => {
+      if (!c.birthDate || c.birthDate.length < 7) return false;
+      const month = Number(c.birthDate.slice(5, 7));
+      return month === targetMonth;
+    }).length;
+  }, [clients, daysBefore]);
+
   const previewCount = useMemo(() => {
-    // Mês-alvo = mês de (hoje + daysBefore). Operador mudando o slider de
-    // antecedência vê o preview se ajustar imediatamente.
     const target = new Date();
     target.setDate(target.getDate() + daysBefore);
     const targetMonth = target.getMonth() + 1;
@@ -150,6 +167,8 @@ export default function BirthdayCampaignDialog({
       return true;
     }).length;
   }, [clients, daysBefore, filterTipo, filterStatus, filterTags]);
+
+  const hasActiveFilters = filterTipo !== 'all' || filterStatus.length > 0 || filterTags.length > 0;
 
   const canSave = useMemo(() => {
     if (!name.trim()) return false;
@@ -383,7 +402,14 @@ export default function BirthdayCampaignDialog({
                 const sameMonth = target.getMonth() === new Date().getMonth();
                 const monthName = target.toLocaleDateString('pt-BR', { month: 'long' });
                 const tail = sameMonth ? 'este mês' : `em ${monthName}`;
-                return `~${previewCount} aniversariante${previewCount !== 1 ? 's' : ''} ${tail}`;
+                const main = `~${previewCount} aniversariante${previewCount !== 1 ? 's' : ''} ${tail}`;
+                // Quando há filtro ativo E filtro REDUZIU o total, mostra
+                // o total no mês como contraste — operador entende que o
+                // filtro está restringindo, não que está bugado.
+                if (hasActiveFilters && totalInMonth !== previewCount) {
+                  return `${main} • ${totalInMonth} no total`;
+                }
+                return main;
               })()}
             </span>
           </div>
