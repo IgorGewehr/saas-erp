@@ -364,7 +364,7 @@ function ProfileTab() {
     const file = e.target.files?.[0];
     if (!file || !user) return;
     if (!file.type.startsWith('image/')) return;
-    if (file.size > 2 * 1024 * 1024) { toast.error('Foto deve ter no máximo 2MB'); return; }
+    if (file.size > 5 * 1024 * 1024) { toast.error('Foto deve ter no máximo 5MB'); return; }
 
     setIsUploadingPhoto(true);
     const reader = new FileReader();
