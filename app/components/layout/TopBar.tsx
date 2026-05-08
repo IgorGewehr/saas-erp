@@ -516,8 +516,9 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
                           <div
                             key={n.id}
                             onClick={() => {
-                              if (!n.isRead) handleMarkRead(n.id);
-                              if (n.link) { onNavigate?.(n.link as MenuPage); setIsNotifOpen(false); }
+                              if (n.link) onNavigate?.(n.link as MenuPage);
+                              setIsNotifOpen(false);
+                              handleDeleteNotif(n.id);
                             }}
                             className={cn(
                               'group relative w-full flex items-start gap-3 px-4 py-3 cursor-pointer transition-colors',
@@ -525,6 +526,9 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
                               !n.isRead && 'bg-blue-50/40 dark:bg-blue-500/[0.05]'
                             )}
                           >
+                            {!n.isRead && (
+                              <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-blue-500" />
+                            )}
                             <div className={cn('w-8 h-8 rounded-lg flex items-center justify-center shrink-0 mt-0.5', colorCls)}>
                               <Icon className="w-4 h-4" />
                             </div>
@@ -539,35 +543,29 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
                                 {timeAgo(n.createdAt)}
                               </p>
                             </div>
-                            {/* right: dot when idle, action buttons on hover */}
-                            <div className="shrink-0 flex items-start pt-1.5">
+                            <div className="shrink-0 flex items-start pt-1.5 gap-0.5">
                               {!n.isRead && (
-                                <div className="w-2 h-2 rounded-full bg-blue-500 group-hover:hidden mt-0.5" />
-                              )}
-                              <div className="hidden group-hover:flex items-center gap-0.5">
-                                {!n.isRead && (
-                                  <button
-                                    onClick={e => { e.stopPropagation(); handleMarkRead(n.id); }}
-                                    title="Marcar como lida"
-                                    className={cn(
-                                      'w-6 h-6 flex items-center justify-center rounded-md transition-colors',
-                                      'text-blue-500 hover:bg-blue-100 dark:hover:bg-blue-500/20'
-                                    )}
-                                  >
-                                    <Check className="w-3.5 h-3.5" />
-                                  </button>
-                                )}
                                 <button
-                                  onClick={e => { e.stopPropagation(); handleDeleteNotif(n.id); }}
-                                  title="Excluir notificação"
+                                  onClick={e => { e.stopPropagation(); handleMarkRead(n.id); }}
+                                  title={t('topbar.notif.markRead', 'Marcar como lida')}
                                   className={cn(
-                                    'w-6 h-6 flex items-center justify-center rounded-md transition-colors',
-                                    'text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/20'
+                                    'w-6 h-6 flex items-center justify-center rounded-md transition-all',
+                                    'text-blue-500 opacity-60 hover:opacity-100 hover:bg-blue-100 dark:hover:bg-blue-500/20'
                                   )}
                                 >
-                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <Check className="w-3.5 h-3.5" />
                                 </button>
-                              </div>
+                              )}
+                              <button
+                                onClick={e => { e.stopPropagation(); handleDeleteNotif(n.id); }}
+                                title={t('topbar.notif.delete', 'Excluir notificação')}
+                                className={cn(
+                                  'w-6 h-6 flex items-center justify-center rounded-md transition-all',
+                                  'text-gray-400 opacity-60 hover:opacity-100 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/20'
+                                )}
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
                             </div>
                           </div>
                         );

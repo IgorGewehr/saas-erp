@@ -3,21 +3,25 @@
 /**
  * Formulário de cadastro/edição de cliente.
  *
- * Extraído do ClientsModule monolítico durante a Fase 1 da modularização.
- * Recebe `initial` + callback `onSave` — não conhece Firestore. A persistência
- * fica em ClientsModule (mutationFn que valida duplicata e chama setDoc).
+ * Usa o padrão ModernSection do sistema. Os botões de ação ficam no footer
+ * do ModernDialog que envelopa este form (em ClientsModule.tsx) — este
+ * componente só renderiza o conteúdo (sections + campos).
  *
  * Exporta também:
  *   - ClientFormData (shape do payload, importado por ImportModal/ClientsModule)
  *   - emptyForm (estado inicial pra "novo cliente")
- *   - TagEditor (input de tags com autocomplete; reutilizável caso surja outro form)
+ *   - TagEditor (input de tags com autocomplete; reutilizável)
  */
 
-import { useState, useMemo } from 'react';
-import { User, Building2, Tag, X, CheckCircle2 } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import {
+  TextField, FormControl, InputLabel, Select, MenuItem, InputAdornment,
+} from '@mui/material';
+import { User, Building2, Tag, X, Phone, MapPin, FileText, Briefcase, Calendar, Mail, Hash } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { LeadSource, LeadStatus } from '@/lib/types';
 import { STATUS_CONFIG, SOURCE_LABELS, TIPO_LABELS } from './shared/constants';
+import { ModernSection, ModernPill } from '@/app/components/ui/dialog';
 
 export interface ClientFormData {
   name: string;
@@ -29,9 +33,7 @@ export interface ClientFormData {
   cpfCnpj: string;
   inscricaoEstadual: string;
   indicadorIE: '' | '1' | '2' | '9';
-  /** ISO date YYYY-MM-DD. PF = data de nascimento; PJ = data de fundação.
-   *  Mesmo campo serve aos dois casos pra simplificar automação de
-   *  "aniversário do cliente" no futuro. Vazio quando não informado. */
+  /** ISO date YYYY-MM-DD. PF = data de nascimento; PJ = data de fundação. */
   birthDate: string;
   source: LeadSource;
   status: LeadStatus;
@@ -44,9 +46,7 @@ export interface ClientFormData {
   bairro: string;
   municipio: string;
   uf: string;
-  /** Aquisição (Fases 4A + 4B): 3 níveis de granularidade — preferência
-   *  acquisitionOfferId (oferta formal) > acquisitionProductId (produto) >
-   *  acquisitionOfferLabel (free-form). Manual no cadastro. */
+  /** Aquisição (Fases 4A + 4B): 3 níveis de granularidade. */
   acquisitionOfferId: string;
   acquisitionProductId: string;
   acquisitionOfferLabel: string;
@@ -87,19 +87,21 @@ export function TagEditor({ tags, suggestions, onChange }: { tags: string[]; sug
 
   return (
     <div>
-      <div className="flex flex-wrap gap-1.5 mb-2">
-        {tags.map(tag => (
-          <span key={tag} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 border border-red-200/60 dark:border-red-500/20">
-            <Tag className="w-3 h-3" />
-            {tag}
-            <button type="button" onClick={() => remove(tag)} className="hover:text-red-800 dark:hover:text-red-300">
-              <X className="w-3 h-3" />
-            </button>
-          </span>
-        ))}
-      </div>
+      {tags.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {tags.map(tag => (
+            <span key={tag} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 border border-red-200/60 dark:border-red-500/20">
+              <Tag className="w-3 h-3" />
+              {tag}
+              <button type="button" onClick={() => remove(tag)} className="hover:text-red-800 dark:hover:text-red-300">
+                <X className="w-3 h-3" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       <div className="relative">
-        <input
+        <TextField
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={e => {
@@ -110,15 +112,19 @@ export function TagEditor({ tags, suggestions, onChange }: { tags: string[]; sug
               remove(tags[tags.length - 1]);
             }
           }}
-          placeholder="Digite uma tag e pressione Enter..."
-          className="w-full bg-gray-50 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:border-red-400 transition-all"
+          placeholder="Digite uma tag e pressione Enter…"
+          fullWidth
+          size="small"
+          InputProps={{
+            startAdornment: <InputAdornment position="start"><Tag size={14} className="text-slate-400" /></InputAdornment>,
+          }}
         />
         {input && filteredSuggestions.length > 0 && (
-          <div className="absolute z-10 left-0 right-0 mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg overflow-hidden">
+          <div className="absolute z-10 left-0 right-0 mt-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg overflow-hidden">
             {filteredSuggestions.map(s => (
               <button key={s} type="button" onClick={() => add(s)}
-                className="w-full text-left px-3 py-2 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/60 transition-colors">
-                <Tag className="w-3 h-3 inline mr-1.5 text-gray-400" />{s}
+                className="w-full text-left px-3 py-2 text-xs text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/60 transition-colors">
+                <Tag className="w-3 h-3 inline mr-1.5 text-slate-400" />{s}
               </button>
             ))}
           </div>
@@ -130,33 +136,29 @@ export function TagEditor({ tags, suggestions, onChange }: { tags: string[]; sug
 
 // ─── Form ────────────────────────────────────────────────────────────────────
 
+/**
+ * Conteúdo do formulário de cliente. Recebe o estado externamente — o
+ * componente pai (ClientsModule) controla `form` + `setForm` e os botões
+ * de salvar/cancelar (que ficam no footer do ModernDialog).
+ *
+ * Diferente da versão antiga, o ClientForm agora não renderiza Cancelar/Salvar:
+ * isso é responsabilidade do dialog wrapping.
+ */
 export function ClientForm({
-  initial,
-  onSave,
-  onCancel,
-  isSaving,
+  form,
+  setForm,
   tagSuggestions,
   products = [],
   offers = [],
   onManageOffers,
 }: {
-  initial: ClientFormData;
-  onSave: (data: ClientFormData) => void;
-  onCancel: () => void;
-  isSaving: boolean;
+  form: ClientFormData;
+  setForm: React.Dispatch<React.SetStateAction<ClientFormData>>;
   tagSuggestions: string[];
-  /** Produtos do business (id+nome) — alimenta o select de "Origem da aquisição".
-   *  Opcional: se vazio, só o input de label livre aparece. ClientsModule
-   *  passa via useQuery em products collection. */
   products?: Array<{ id: string; name: string }>;
-  /** Ofertas formais (Fase 4B). Quando vazio, só product+label aparecem. */
   offers?: Array<{ id: string; name: string; isActive?: boolean }>;
-  /** Callback pra abrir o modal de gerenciar ofertas (admin-only).
-   *  Se não passado, o link "Gerenciar ofertas" não aparece — útil pra
-   *  contextos onde o operador não tem permissão. */
   onManageOffers?: () => void;
 }) {
-  const [form, setForm] = useState<ClientFormData>(initial);
   const [cepLoading, setCepLoading] = useState(false);
 
   const set = <K extends keyof ClientFormData>(key: K, value: ClientFormData[K]) =>
@@ -182,14 +184,14 @@ export function ClientForm({
     finally { setCepLoading(false); }
   };
 
-  const inputCls = 'w-full bg-gray-50 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:border-red-400 transition-all';
-  const labelCls = 'block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1.5 uppercase tracking-wider';
-
   return (
-    <div className="space-y-6">
-      {/* Tipo */}
-      <div>
-        <label className={labelCls}>Tipo de cadastro</label>
+    <>
+      <ModernSection
+        icon={User}
+        title="Tipo & Identificação"
+        meta={<ModernPill tone={form.tipo === 'pj' ? 'blue' : 'red'}>{TIPO_LABELS[form.tipo]}</ModernPill>}
+      >
+        {/* Tipo selector — radio cards */}
         <div className="grid grid-cols-2 gap-3">
           {(['pf', 'pj'] as const).map(t => (
             <button
@@ -197,10 +199,10 @@ export function ClientForm({
               type="button"
               onClick={() => set('tipo', t)}
               className={cn(
-                'flex items-center gap-2.5 px-4 py-3 rounded-xl border-2 text-sm font-medium transition-all',
+                'flex items-center gap-2.5 px-4 py-3 rounded-xl border-2 text-sm font-semibold transition-all text-left',
                 form.tipo === t
                   ? 'border-red-500 bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400'
-                  : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:border-gray-300 dark:hover:border-gray-600'
+                  : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-slate-300 dark:hover:border-slate-600'
               )}
             >
               {t === 'pf' ? <User className="w-4 h-4" /> : <Building2 className="w-4 h-4" />}
@@ -208,196 +210,258 @@ export function ClientForm({
             </button>
           ))}
         </div>
-      </div>
 
-      {/* Basic info */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div className="sm:col-span-2">
-          <label className={labelCls}>Nome {form.tipo === 'pj' ? '/ Razão Social' : ''} *</label>
-          <input className={inputCls} placeholder="Nome completo" value={form.name}
-            onChange={e => set('name', e.target.value)} />
-        </div>
+        <TextField
+          label={`Nome ${form.tipo === 'pj' ? '/ Razão Social' : ''} *`}
+          value={form.name}
+          onChange={e => set('name', e.target.value)}
+          fullWidth size="small"
+          placeholder="Nome completo"
+        />
         {form.tipo === 'pj' && (
-          <div className="sm:col-span-2">
-            <label className={labelCls}>Nome Fantasia</label>
-            <input className={inputCls} placeholder="Nome fantasia" value={form.company}
-              onChange={e => set('company', e.target.value)} />
-          </div>
+          <TextField
+            label="Nome Fantasia"
+            value={form.company}
+            onChange={e => set('company', e.target.value)}
+            fullWidth size="small"
+          />
         )}
-        <div>
-          <label className={labelCls}>{form.tipo === 'pj' ? 'CNPJ' : 'CPF'}</label>
-          <input className={inputCls} placeholder={form.tipo === 'pj' ? '00.000.000/0000-00' : '000.000.000-00'}
-            value={form.cpfCnpj} onChange={e => set('cpfCnpj', e.target.value)} />
-        </div>
-        {form.tipo === 'pj' && (
-          <div>
-            <label className={labelCls}>Inscrição Estadual</label>
-            <input className={inputCls} placeholder="Inscrição Estadual" value={form.inscricaoEstadual}
-              onChange={e => set('inscricaoEstadual', e.target.value)} />
-          </div>
-        )}
-        <div>
-          <label className={labelCls}>Telefone</label>
-          <input className={inputCls} placeholder="(00) 00000-0000" value={form.phone}
-            onChange={e => set('phone', e.target.value)} />
-        </div>
-        <div>
-          <label className={labelCls}>WhatsApp</label>
-          <input className={inputCls} placeholder="(00) 00000-0000" value={form.whatsapp}
-            onChange={e => set('whatsapp', e.target.value)} />
-        </div>
-        <div className="sm:col-span-2">
-          <label className={labelCls}>E-mail</label>
-          <input className={inputCls} type="email" placeholder="email@exemplo.com" value={form.email}
-            onChange={e => set('email', e.target.value)} />
-        </div>
-        <div>
-          {/* PF: data de nascimento; PJ: data de fundação. Mesmo campo
-              `birthDate` serve aos dois — simplifica automação futura
-              de "aniversário do cliente" (compara só mês+dia). */}
-          <label className={labelCls}>
-            {form.tipo === 'pj' ? 'Data de Fundação' : 'Data de Nascimento'}
-          </label>
-          <input className={inputCls} type="date" value={form.birthDate}
-            onChange={e => set('birthDate', e.target.value)} />
-        </div>
-      </div>
-
-      {/* Status & source */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div>
-          <label className={labelCls}>Status</label>
-          <select className={inputCls} value={form.status} onChange={e => set('status', e.target.value as LeadStatus)}>
-            {Object.entries(STATUS_CONFIG).map(([k, v]) => (
-              <option key={k} value={k}>{v.label}</option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className={labelCls}>Origem</label>
-          <select className={inputCls} value={form.source} onChange={e => set('source', e.target.value as LeadSource)}>
-            {Object.entries(SOURCE_LABELS).map(([k, v]) => (
-              <option key={k} value={k}>{v}</option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      {/* Aquisição — 3 níveis (Fase 4B):
-          1. Oferta formal (entidade com nome, produto, validade) — preferido
-          2. Produto direto — fallback quando não há campanha formal
-          3. Label livre — fallback final pra casos sem produto/oferta */}
-      <div>
-        <label className={cn(labelCls, 'flex items-center justify-between')}>
-          <span>Aquisição (opcional)</span>
-          {onManageOffers && (
-            <button
-              type="button"
-              onClick={onManageOffers}
-              className="text-[10px] text-red-500 hover:text-red-700 normal-case tracking-normal"
-            >
-              Gerenciar ofertas
-            </button>
-          )}
-        </label>
-        <p className="text-[11px] text-gray-400 dark:text-gray-500 -mt-1 mb-2">
-          Qual oferta, produto ou contexto trouxe este cliente.
-        </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {offers.length > 0 && (
-            <select
-              className={inputCls}
-              value={form.acquisitionOfferId}
-              onChange={e => set('acquisitionOfferId', e.target.value)}
-            >
-              <option value="">— Sem oferta formal —</option>
-              {offers.map(o => (
-                <option key={o.id} value={o.id}>
-                  {o.name}{o.isActive === false ? ' (arquivada)' : ''}
-                </option>
-              ))}
-            </select>
+          <TextField
+            label={form.tipo === 'pj' ? 'CNPJ' : 'CPF'}
+            value={form.cpfCnpj}
+            onChange={e => set('cpfCnpj', e.target.value)}
+            fullWidth size="small"
+            placeholder={form.tipo === 'pj' ? '00.000.000/0000-00' : '000.000.000-00'}
+            InputProps={{
+              startAdornment: <InputAdornment position="start"><Hash size={14} className="text-slate-400" /></InputAdornment>,
+            }}
+          />
+          {form.tipo === 'pj' && (
+            <TextField
+              label="Inscrição Estadual"
+              value={form.inscricaoEstadual}
+              onChange={e => set('inscricaoEstadual', e.target.value)}
+              fullWidth size="small"
+            />
           )}
-          {products.length > 0 && (
-            <select
-              className={inputCls}
-              value={form.acquisitionProductId}
-              onChange={e => set('acquisitionProductId', e.target.value)}
-            >
-              <option value="">— Sem produto específico —</option>
-              {products.map(p => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
-          )}
-          <input
-            className={cn(
-              inputCls,
-              // Quando só o input de label aparece (sem offers nem products),
-              // ele vai full-width pra não ficar metade vazia
-              offers.length === 0 && products.length === 0 && 'sm:col-span-2',
-            )}
-            placeholder="Label livre — ex: indicação parceiro X"
-            value={form.acquisitionOfferLabel}
-            onChange={e => set('acquisitionOfferLabel', e.target.value)}
+        </div>
+      </ModernSection>
+
+      <ModernSection icon={Phone} title="Contato">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <TextField
+            label="Telefone"
+            value={form.phone}
+            onChange={e => set('phone', e.target.value)}
+            fullWidth size="small"
+            placeholder="(00) 00000-0000"
+            InputProps={{
+              startAdornment: <InputAdornment position="start"><Phone size={14} className="text-slate-400" /></InputAdornment>,
+            }}
+          />
+          <TextField
+            label="WhatsApp"
+            value={form.whatsapp}
+            onChange={e => set('whatsapp', e.target.value)}
+            fullWidth size="small"
+            placeholder="(00) 00000-0000"
+            InputProps={{
+              startAdornment: <InputAdornment position="start"><Phone size={14} className="text-emerald-500" /></InputAdornment>,
+            }}
           />
         </div>
-      </div>
-
-      {/* Address */}
-      <div>
-        <label className={labelCls}>Endereço</label>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <div className="flex gap-2">
-            <input className={inputCls} placeholder="CEP" value={form.cep}
-              onChange={e => set('cep', e.target.value)}
-              onBlur={searchCep} />
-            {cepLoading && <div className="flex items-center"><div className="w-4 h-4 border-2 border-red-500 border-t-transparent rounded-full animate-spin" /></div>}
-          </div>
-          <input className={cn(inputCls, 'sm:col-span-2')} placeholder="Logradouro" value={form.logradouro}
-            onChange={e => set('logradouro', e.target.value)} />
-          <input className={inputCls} placeholder="Número" value={form.numero}
-            onChange={e => set('numero', e.target.value)} />
-          <input className={cn(inputCls, 'sm:col-span-2')} placeholder="Complemento" value={form.complemento}
-            onChange={e => set('complemento', e.target.value)} />
-          <input className={inputCls} placeholder="Bairro" value={form.bairro}
-            onChange={e => set('bairro', e.target.value)} />
-          <input className={inputCls} placeholder="Município" value={form.municipio}
-            onChange={e => set('municipio', e.target.value)} />
-          <input className={inputCls} placeholder="UF" maxLength={2} value={form.uf}
-            onChange={e => set('uf', e.target.value.toUpperCase())} />
-        </div>
-      </div>
-
-      {/* Tags */}
-      <div>
-        <label className={labelCls}>Tags</label>
-        <TagEditor
-          tags={form.tags}
-          suggestions={tagSuggestions}
-          onChange={next => set('tags', next)}
+        <TextField
+          label="E-mail"
+          type="email"
+          value={form.email}
+          onChange={e => set('email', e.target.value)}
+          fullWidth size="small"
+          placeholder="email@exemplo.com"
+          InputProps={{
+            startAdornment: <InputAdornment position="start"><Mail size={14} className="text-slate-400" /></InputAdornment>,
+          }}
         />
-      </div>
+        <TextField
+          label={form.tipo === 'pj' ? 'Data de Fundação' : 'Data de Nascimento'}
+          type="date"
+          value={form.birthDate}
+          onChange={e => set('birthDate', e.target.value)}
+          InputLabelProps={{ shrink: true }}
+          fullWidth size="small"
+          InputProps={{
+            startAdornment: <InputAdornment position="start"><Calendar size={14} className={cn(form.birthDate ? 'text-emerald-500' : 'text-slate-400')} /></InputAdornment>,
+          }}
+        />
+      </ModernSection>
 
-      {/* Notes */}
-      <div>
-        <label className={labelCls}>Observações</label>
-        <textarea className={cn(inputCls, 'resize-none')} rows={3} placeholder="Notas internas sobre o cliente..."
-          value={form.notes} onChange={e => set('notes', e.target.value)} />
-      </div>
+      <ModernSection icon={Tag} title="Classificação & Aquisição">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <FormControl size="small" fullWidth>
+            <InputLabel>Status</InputLabel>
+            <Select value={form.status} label="Status" onChange={e => set('status', e.target.value as LeadStatus)}>
+              {Object.entries(STATUS_CONFIG).map(([k, v]) => (
+                <MenuItem key={k} value={k}>{v.label}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <FormControl size="small" fullWidth>
+            <InputLabel>Origem</InputLabel>
+            <Select value={form.source} label="Origem" onChange={e => set('source', e.target.value as LeadSource)}>
+              {Object.entries(SOURCE_LABELS).map(([k, v]) => (
+                <MenuItem key={k} value={k}>{v}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        </div>
 
-      {/* Actions */}
-      <div className="flex gap-3 pt-2">
-        <button type="button" onClick={onCancel}
-          className="flex-1 px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
-          Cancelar
-        </button>
-        <button type="button" onClick={() => onSave(form)} disabled={!form.name.trim() || isSaving}
-          className="flex-1 px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2">
-          {isSaving ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-          Salvar
-        </button>
-      </div>
-    </div>
+        {/* Aquisição — 3 níveis */}
+        <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-950/35 p-3 space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                Aquisição (opcional)
+              </p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                Qual oferta, produto ou contexto trouxe este cliente.
+              </p>
+            </div>
+            {onManageOffers && (
+              <button
+                type="button"
+                onClick={onManageOffers}
+                className="text-[10px] font-semibold text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
+              >
+                Gerenciar ofertas
+              </button>
+            )}
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {offers.length > 0 && (
+              <FormControl size="small" fullWidth>
+                <InputLabel>Oferta formal</InputLabel>
+                <Select
+                  value={form.acquisitionOfferId}
+                  label="Oferta formal"
+                  onChange={e => set('acquisitionOfferId', e.target.value)}
+                >
+                  <MenuItem value="">— Sem oferta —</MenuItem>
+                  {offers.map(o => (
+                    <MenuItem key={o.id} value={o.id}>
+                      {o.name}{o.isActive === false ? ' (arquivada)' : ''}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            )}
+            {products.length > 0 && (
+              <FormControl size="small" fullWidth>
+                <InputLabel>Produto</InputLabel>
+                <Select
+                  value={form.acquisitionProductId}
+                  label="Produto"
+                  onChange={e => set('acquisitionProductId', e.target.value)}
+                >
+                  <MenuItem value="">— Sem produto —</MenuItem>
+                  {products.map(p => (
+                    <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            )}
+          </div>
+          <TextField
+            label="Label livre"
+            placeholder="Ex: indicação parceiro X"
+            value={form.acquisitionOfferLabel}
+            onChange={e => set('acquisitionOfferLabel', e.target.value)}
+            fullWidth size="small"
+            InputProps={{
+              startAdornment: <InputAdornment position="start"><Briefcase size={14} className="text-slate-400" /></InputAdornment>,
+            }}
+          />
+        </div>
+      </ModernSection>
+
+      <ModernSection icon={MapPin} title="Endereço">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <TextField
+            label="CEP"
+            value={form.cep}
+            onChange={e => set('cep', e.target.value)}
+            onBlur={searchCep}
+            fullWidth size="small"
+            InputProps={{
+              endAdornment: cepLoading ? (
+                <InputAdornment position="end">
+                  <div className="w-3.5 h-3.5 border-2 border-red-500 border-t-transparent rounded-full animate-spin" />
+                </InputAdornment>
+              ) : undefined,
+            }}
+          />
+          <div className="sm:col-span-2">
+            <TextField
+              label="Logradouro"
+              value={form.logradouro}
+              onChange={e => set('logradouro', e.target.value)}
+              fullWidth size="small"
+            />
+          </div>
+          <TextField
+            label="Número"
+            value={form.numero}
+            onChange={e => set('numero', e.target.value)}
+            fullWidth size="small"
+          />
+          <div className="sm:col-span-2">
+            <TextField
+              label="Complemento"
+              value={form.complemento}
+              onChange={e => set('complemento', e.target.value)}
+              fullWidth size="small"
+            />
+          </div>
+          <TextField
+            label="Bairro"
+            value={form.bairro}
+            onChange={e => set('bairro', e.target.value)}
+            fullWidth size="small"
+          />
+          <TextField
+            label="Município"
+            value={form.municipio}
+            onChange={e => set('municipio', e.target.value)}
+            fullWidth size="small"
+          />
+          <TextField
+            label="UF"
+            value={form.uf}
+            onChange={e => set('uf', e.target.value.toUpperCase())}
+            inputProps={{ maxLength: 2 }}
+            fullWidth size="small"
+          />
+        </div>
+      </ModernSection>
+
+      <ModernSection icon={FileText} title="Tags & Observações">
+        <div>
+          <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Tags</p>
+          <TagEditor
+            tags={form.tags}
+            suggestions={tagSuggestions}
+            onChange={next => set('tags', next)}
+          />
+        </div>
+        <TextField
+          label="Observações"
+          value={form.notes}
+          onChange={e => set('notes', e.target.value)}
+          fullWidth size="small"
+          multiline
+          rows={3}
+          placeholder="Notas internas sobre o cliente…"
+        />
+      </ModernSection>
+    </>
   );
 }

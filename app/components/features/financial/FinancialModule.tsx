@@ -106,6 +106,10 @@ import { toast } from 'react-toastify';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
+import {
+  ModernDialog, ModernDialogActions, ModernCancelButton, ModernPrimaryButton,
+  ModernSection, ModernPill,
+} from '@/app/components/ui/dialog';
 import { CurrencyProvider, useCurrencyFormat } from './CurrencyContext';
 import CurrencyToggle from './CurrencyToggle';
 import RecurrenceDetailDialog from './RecurrenceDetailDialog';
@@ -1661,54 +1665,50 @@ function FinancialModuleBody() {
       </div>
 
       {/* ===== TRANSACTION FORM DIALOG ===== */}
-      <Dialog
+      <ModernDialog
         open={showForm}
         onClose={() => setShowForm(false)}
+        icon={formType === 'receita' ? ArrowUpRight : ArrowDownRight}
+        title={editingTransaction ? t('financial.form.editTransaction', 'Editar Transação') : t('financial.form.newTransaction', 'Nova Transação')}
+        badges={
+          <ModernPill tone={formType === 'receita' ? 'emerald' : 'red'}>
+            {formType === 'receita' ? t('financial.form.income', 'Receita') : t('financial.form.expense', 'Despesa')}
+          </ModernPill>
+        }
         maxWidth="sm"
-        fullWidth
-        PaperProps={{ sx: { borderRadius: '20px', maxHeight: '90vh', backgroundColor: isDark ? '#111827' : undefined } }}
+        footer={
+          <ModernDialogActions>
+            <ModernCancelButton onClick={() => setShowForm(false)}>
+              {t('financial.form.cancel', 'Cancelar')}
+            </ModernCancelButton>
+            <ModernPrimaryButton
+              onClick={() => {
+                if (editingTransaction?.recurrence?.isActive) {
+                  setShowScopeDialog(true);
+                } else {
+                  handleSaveTransaction('all');
+                }
+              }}
+              disabled={!formDescription || !formAmount || parseFloat(formAmount) <= 0 || isSaving}
+              startIcon={!isSaving ? (formType === 'receita' ? <ArrowUpRight size={15} /> : <ArrowDownRight size={15} />) : undefined}
+            >
+              {isSaving ? t('financial.form.saving', 'Salvando...') : editingTransaction ? t('financial.form.save', 'Salvar') : t('financial.form.createTransaction', 'Criar Transação')}
+            </ModernPrimaryButton>
+          </ModernDialogActions>
+        }
       >
-        {/* Custom header with type-color accent */}
-        <div className={cn(
-          'flex items-center justify-between px-6 pt-5 pb-4 border-b transition-colors duration-200',
-          formType === 'receita'
-            ? 'border-emerald-100 dark:border-emerald-900/40'
-            : 'border-red-100 dark:border-red-900/40',
-          isDark ? 'bg-gray-900' : 'bg-white'
-        )}>
-          <div className="flex items-center gap-3">
-            <div className={cn(
-              'w-9 h-9 rounded-xl flex items-center justify-center',
-              formType === 'receita'
-                ? 'bg-emerald-100 dark:bg-emerald-900/40'
-                : 'bg-red-100 dark:bg-red-900/40'
-            )}>
-              {formType === 'receita'
-                ? <ArrowUpRight size={18} className="text-emerald-600 dark:text-emerald-400" />
-                : <ArrowDownRight size={18} className="text-red-600 dark:text-red-400" />}
+          {/* Série recorrente banner — visível apenas ao editar transação com recorrência ativa */}
+          {editingTransaction?.recurrence?.isActive && (
+            <div className="px-3 py-2 rounded-xl bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/50 flex items-center gap-2">
+              <Repeat size={14} className="text-blue-500 dark:text-blue-400 shrink-0" />
+              <span className="text-xs font-medium text-blue-700 dark:text-blue-300">
+                Lançamento recorrente —{' '}
+                <strong>{RECURRENCE_LABELS[editingTransaction.recurrence.frequency] ?? editingTransaction.recurrence.frequency}</strong>
+                {editingTransaction.recurrence.dayOfMonth ? `, dia ${editingTransaction.recurrence.dayOfMonth}` : ''}
+              </span>
             </div>
-            <h2 className="text-base font-bold font-display text-gray-900 dark:text-gray-100">
-              {editingTransaction ? t('financial.form.editTransaction', 'Editar Transação') : t('financial.form.newTransaction', 'Nova Transação')}
-            </h2>
-          </div>
-          <button onClick={() => setShowForm(false)} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
-            <X size={18} className="text-gray-400 dark:text-gray-500" />
-          </button>
-        </div>
+          )}
 
-        {/* Série recorrente banner — visível apenas ao editar transação com recorrência ativa */}
-        {editingTransaction?.recurrence?.isActive && (
-          <div className="mx-6 mb-1 mt-0 px-3 py-2 rounded-xl bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/50 flex items-center gap-2">
-            <Repeat size={14} className="text-blue-500 dark:text-blue-400 shrink-0" />
-            <span className="text-xs font-medium text-blue-700 dark:text-blue-300">
-              Lançamento recorrente —{' '}
-              <strong>{RECURRENCE_LABELS[editingTransaction.recurrence.frequency] ?? editingTransaction.recurrence.frequency}</strong>
-              {editingTransaction.recurrence.dayOfMonth ? `, dia ${editingTransaction.recurrence.dayOfMonth}` : ''}
-            </span>
-          </div>
-        )}
-
-        <DialogContent sx={{ pt: 2.5, pb: 2 }}>
           <div className="space-y-4">
 
             {/* ── Tipo ─────────────────────────────────────────────── */}
@@ -2120,44 +2120,7 @@ function FinancialModuleBody() {
             </div>
 
           </div>
-        </DialogContent>
-        <div className={cn(
-          'flex items-center justify-between px-6 py-4 border-t',
-          isDark ? 'border-gray-800 bg-gray-900' : 'border-gray-100 bg-white'
-        )}>
-          <button
-            onClick={() => setShowForm(false)}
-            className="px-5 py-2 rounded-xl text-sm font-semibold text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-          >
-            {t('financial.form.cancel', 'Cancelar')}
-          </button>
-          <button
-            onClick={() => {
-              if (editingTransaction?.recurrence?.isActive) {
-                setShowScopeDialog(true);
-              } else {
-                handleSaveTransaction('all');
-              }
-            }}
-            disabled={!formDescription || !formAmount || parseFloat(formAmount) <= 0 || isSaving}
-            className={cn(
-              'flex items-center gap-2 px-6 py-2 rounded-xl text-sm font-bold text-white transition-all',
-              formType === 'receita'
-                ? 'bg-emerald-600 hover:bg-emerald-700 shadow-sm shadow-emerald-200 dark:shadow-emerald-900/30'
-                : 'bg-red-600 hover:bg-red-700 shadow-sm shadow-red-200 dark:shadow-red-900/30',
-              (!formDescription || !formAmount || parseFloat(formAmount) <= 0 || isSaving) && 'opacity-40 cursor-not-allowed'
-            )}
-          >
-            {isSaving ? (
-              <motion.div animate={{ rotate: 360 }} transition={{ duration: 0.7, repeat: Infinity, ease: 'linear' }}
-                className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full" />
-            ) : (
-              formType === 'receita' ? <ArrowUpRight size={15} /> : <ArrowDownRight size={15} />
-            )}
-            {isSaving ? t('financial.form.saving', 'Salvando...') : editingTransaction ? t('financial.form.save', 'Salvar') : t('financial.form.createTransaction', 'Criar Transação')}
-          </button>
-        </div>
-      </Dialog>
+      </ModernDialog>
 
       {/* ===== SCOPE DIALOG — editar série recorrente ===== */}
       <Dialog

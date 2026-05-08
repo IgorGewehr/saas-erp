@@ -50,6 +50,11 @@ import {
   Upload,
   Camera,
   FileSpreadsheet,
+  Tag,
+  FileText,
+  Boxes,
+  Truck,
+  Send,
 } from 'lucide-react';
 import {
   collection,
@@ -72,10 +77,14 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatDateTime } from '@/lib/utils/format';
 import ModifierGroupsEditor from './ModifierGroupsEditor';
+import {
+  ModernDialog, ModernDialogActions, ModernCancelButton, ModernPrimaryButton,
+  ModernSection, ModernPill,
+} from '@/app/components/ui/dialog';
 import MenuCategoriesManager from './MenuCategoriesManager';
 import NcmSelector from '@/app/components/features/fiscal/NcmSelector';
 import { onSnapshot } from 'firebase/firestore';
-import { Tag, Sparkles } from 'lucide-react';
+import { Sparkles } from 'lucide-react';
 
 // ==============================================
 // TYPES
@@ -1309,54 +1318,46 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
   }
 
   return (
-    <Dialog
+    <ModernDialog
       open={open}
-      onClose={isSaving ? undefined : onClose}
-      maxWidth="md"
-      fullWidth
-      PaperProps={{ sx: { borderRadius: '16px', maxHeight: '90vh' } }}
+      onClose={isSaving ? () => {} : onClose}
+      icon={Package}
+      title={isEditing ? t('inventory.productForm.editProduct', 'Editar Produto') : t('inventory.productForm.newProduct', 'Novo Produto')}
+      badges={
+        <ModernPill tone={form.isActive ? 'emerald' : 'slate'}>
+          {form.isActive ? 'Ativo' : 'Inativo'}
+        </ModernPill>
+      }
+      footer={
+        <ModernDialogActions>
+          <ModernCancelButton onClick={onClose}>
+            {t('inventory.cancel', 'Cancelar')}
+          </ModernCancelButton>
+          <ModernPrimaryButton
+            onClick={handleSubmit}
+            disabled={isSaving}
+            startIcon={!isSaving ? <Package size={16} /> : undefined}
+          >
+            {isSaving
+              ? t('inventory.productForm.saving', 'Salvando…')
+              : isEditing
+                ? t('inventory.productForm.save', 'Salvar')
+                : t('inventory.productForm.register', 'Cadastrar')}
+          </ModernPrimaryButton>
+        </ModernDialogActions>
+      }
     >
-      <DialogTitle
-        sx={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          pb: 1,
-          fontFamily: '"Plus Jakarta Sans", sans-serif',
-          fontWeight: 700,
-        }}
-      >
-        <span>{isEditing ? t('inventory.productForm.editProduct', 'Editar Produto') : t('inventory.productForm.newProduct', 'Novo Produto')}</span>
-        <IconButton onClick={onClose} disabled={isSaving} size="small">
-          <X size={20} />
-        </IconButton>
-      </DialogTitle>
+          <ModernSection icon={ImageIcon} title={t('inventory.productForm.productImage', 'Imagem do Produto')}>
+            <ImageDropZone
+              preview={form.imagePreview}
+              existingUrl={form.existingImageUrl}
+              onFileSelect={handleFileSelect}
+              onRemove={handleImageRemove}
+              error={imageError}
+            />
+          </ModernSection>
 
-      <Divider />
-
-      <DialogContent sx={{ pt: 3 }}>
-        <motion.div
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.2 }}
-        >
-          <div className="space-y-5">
-            {/* Image Upload */}
-            <div>
-              <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3 flex items-center gap-2">
-                <ImageIcon className="w-4 h-4" />
-                {t('inventory.productForm.productImage', 'Imagem do Produto')}
-              </p>
-              <ImageDropZone
-                preview={form.imagePreview}
-                existingUrl={form.existingImageUrl}
-                onFileSelect={handleFileSelect}
-                onRemove={handleImageRemove}
-                error={imageError}
-              />
-            </div>
-
-            {/* Nome + SKU */}
+          <ModernSection icon={Package} title="Identificação">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <TextField
                 label={t('inventory.productForm.productName', 'Nome do Produto')}
@@ -1378,7 +1379,6 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
               />
             </div>
 
-            {/* Descricao */}
             <TextField
               label={t('inventory.productForm.description', 'Descrição')}
               value={form.description}
@@ -1389,7 +1389,6 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
               size="small"
             />
 
-            {/* Codigo de Barras + Categoria + Unidade */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <TextField
                 label={t('inventory.productForm.barcode', 'Código de Barras')}
@@ -1423,86 +1422,89 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
                 </Select>
               </FormControl>
             </div>
+          </ModernSection>
 
-            {/* Prices */}
-            <div>
-              <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">{t('inventory.productForm.prices', 'Preços')}</p>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <CurrencyInput
-                  label={t('inventory.productForm.costPrice', 'Preço de Custo')}
-                  value={form.costPrice}
-                  onChange={(v) => updateField('costPrice', v)}
-                  error={errors.costPrice}
-                  required
-                />
-                <CurrencyInput
-                  label={t('inventory.productForm.salePrice', 'Preço de Venda')}
-                  value={form.salePrice}
-                  onChange={(v) => updateField('salePrice', v)}
-                  error={errors.salePrice}
-                  required
-                />
-                <div className="flex items-center px-3 rounded-lg bg-muted/40 border border-border/40">
-                  <div>
-                    <p className="text-[10px] text-muted-foreground uppercase tracking-wider">{t('inventory.productForm.margin', 'Margem')}</p>
-                    <p className={cn(
-                      'text-lg font-bold',
-                      margin > 0 ? 'text-emerald-600' : margin < 0 ? 'text-red-600' : 'text-muted-foreground',
-                    )}>
-                      {margin.toFixed(1)}%
-                    </p>
-                  </div>
+          <ModernSection
+            icon={DollarSign}
+            title={t('inventory.productForm.prices', 'Preços')}
+            meta={<ModernPill tone={margin > 0 ? 'emerald' : margin < 0 ? 'red' : 'slate'}>{margin.toFixed(1)}% margem</ModernPill>}
+          >
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <CurrencyInput
+                label={t('inventory.productForm.costPrice', 'Preço de Custo')}
+                value={form.costPrice}
+                onChange={(v) => updateField('costPrice', v)}
+                error={errors.costPrice}
+                required
+              />
+              <CurrencyInput
+                label={t('inventory.productForm.salePrice', 'Preço de Venda')}
+                value={form.salePrice}
+                onChange={(v) => updateField('salePrice', v)}
+                error={errors.salePrice}
+                required
+              />
+              <div className="flex items-center px-3 rounded-xl bg-slate-50 dark:bg-slate-950/35 border border-slate-200 dark:border-slate-700">
+                <div>
+                  <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('inventory.productForm.margin', 'Margem')}</p>
+                  <p className={cn(
+                    'text-lg font-bold',
+                    margin > 0 ? 'text-emerald-600' : margin < 0 ? 'text-red-600' : 'text-slate-500',
+                  )}>
+                    {margin.toFixed(1)}%
+                  </p>
                 </div>
               </div>
             </div>
+          </ModernSection>
 
-            {/* Stock Levels */}
-            <div>
-              <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">{t('inventory.productForm.stockSection', 'Estoque')}</p>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <TextField
-                  label={t('inventory.productForm.currentStock', 'Estoque Atual')}
-                  type="number"
-                  value={form.currentStock}
-                  onChange={(e) => updateField('currentStock', e.target.value)}
-                  error={!!errors.currentStock}
-                  helperText={errors.currentStock}
-                  fullWidth
-                  required
-                  size="small"
-                  slotProps={{ htmlInput: { min: 0 } }}
-                />
-                <TextField
-                  label={t('inventory.productForm.minStock', 'Estoque Mínimo')}
-                  type="number"
-                  value={form.minStock}
-                  onChange={(e) => updateField('minStock', e.target.value)}
-                  error={!!errors.minStock}
-                  helperText={errors.minStock}
-                  fullWidth
-                  required
-                  size="small"
-                  slotProps={{ htmlInput: { min: 0 } }}
-                />
-                <TextField
-                  label={t('inventory.productForm.maxStock', 'Estoque Máximo')}
-                  type="number"
-                  value={form.maxStock}
-                  onChange={(e) => updateField('maxStock', e.target.value)}
-                  fullWidth
-                  size="small"
-                  slotProps={{ htmlInput: { min: 0 } }}
-                />
-              </div>
+          <ModernSection icon={Boxes} title={t('inventory.productForm.stockSection', 'Estoque')}>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <TextField
+                label={t('inventory.productForm.currentStock', 'Estoque Atual')}
+                type="number"
+                value={form.currentStock}
+                onChange={(e) => updateField('currentStock', e.target.value)}
+                error={!!errors.currentStock}
+                helperText={errors.currentStock}
+                fullWidth
+                required
+                size="small"
+                slotProps={{ htmlInput: { min: 0 } }}
+              />
+              <TextField
+                label={t('inventory.productForm.minStock', 'Estoque Mínimo')}
+                type="number"
+                value={form.minStock}
+                onChange={(e) => updateField('minStock', e.target.value)}
+                error={!!errors.minStock}
+                helperText={errors.minStock}
+                fullWidth
+                required
+                size="small"
+                slotProps={{ htmlInput: { min: 0 } }}
+              />
+              <TextField
+                label={t('inventory.productForm.maxStock', 'Estoque Máximo')}
+                type="number"
+                value={form.maxStock}
+                onChange={(e) => updateField('maxStock', e.target.value)}
+                fullWidth
+                size="small"
+                slotProps={{ htmlInput: { min: 0 } }}
+              />
             </div>
+          </ModernSection>
 
-            {/* Fiscal */}
-            <div>
-              <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">{t('inventory.productForm.fiscalSection', 'Fiscal (Opcional)')}</p>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mb-3 -mt-1">
-                {t('inventory.productForm.fiscalDesc', 'Campos opcionais. Obrigatórios para emissão de NF-e/NFC-e.')}
-              </p>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <ModernSection
+            icon={FileText}
+            title={t('inventory.productForm.fiscalSection', 'Fiscal')}
+            meta={<ModernPill tone="slate">opcional</ModernPill>}
+          >
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              {t('inventory.productForm.fiscalDesc', 'Campos opcionais. Obrigatórios para emissão de NF-e/NFC-e.')}
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 {/* NCM com combobox de busca — usuário pode buscar por código,
                     descrição ou categoria. Se NCM não estiver no catálogo,
                     digitar 8 dígitos cria entrada custom. Mesmo componente
@@ -1589,34 +1591,34 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
                   <option value="7">7 - Estrangeira (adq. interno, sem similar)</option>
                 </TextField>
               </div>
-            </div>
+          </ModernSection>
 
-            {/* ======= Entrega / Cardápio ======= */}
-            {deliveryEnabled && (
-              <div className="pt-4 border-t border-gray-100 dark:border-gray-800 space-y-4">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
-                      <span className="text-base">🍽️</span> Entrega & Cardápio
-                    </h3>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                      Marque para exibir este produto no cardápio e permitir pedidos de entrega.
-                    </p>
-                  </div>
-                  <FormControlLabel
-                    control={
-                      <Switch
-                        checked={form.isDeliverable}
-                        onChange={(e) => updateField('isDeliverable', e.target.checked)}
-                        sx={{
-                          '& .MuiSwitch-switchBase.Mui-checked': { color: '#DC2626' },
-                          '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#DC2626' },
-                        }}
-                      />
-                    }
-                    label=""
-                  />
-                </div>
+          {/* ======= Entrega / Cardápio ======= */}
+          {deliveryEnabled && (
+            <ModernSection
+              icon={Truck}
+              title="Entrega & Cardápio"
+              meta={
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={form.isDeliverable}
+                      onChange={(e) => updateField('isDeliverable', e.target.checked)}
+                      size="small"
+                      sx={{
+                        '& .MuiSwitch-switchBase.Mui-checked': { color: '#DC2626' },
+                        '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#DC2626' },
+                      }}
+                    />
+                  }
+                  label={<span className="text-xs font-semibold text-slate-600 dark:text-slate-300">{form.isDeliverable ? 'No cardápio' : 'Não exibir'}</span>}
+                  sx={{ marginRight: 0 }}
+                />
+              }
+            >
+              <p className="text-xs text-slate-500 dark:text-slate-400 -mt-1">
+                Marque para exibir este produto no cardápio e permitir pedidos de entrega.
+              </p>
 
                 <AnimatePresence initial={false}>
                   {form.isDeliverable && (
@@ -1816,57 +1818,51 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
                     </motion.div>
                   )}
                 </AnimatePresence>
-              </div>
-            )}
-
-            {/* Active Toggle */}
-            <FormControlLabel
-              control={
-                <Switch
-                  checked={form.isActive}
-                  onChange={(e) => updateField('isActive', e.target.checked)}
-                  sx={{
-                    '& .MuiSwitch-switchBase.Mui-checked': { color: '#DC2626' },
-                    '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#DC2626' },
-                  }}
-                />
-              }
-              label={
-                <span className="text-sm font-medium text-foreground">
-                  {t('inventory.productForm.activeProduct', 'Produto Ativo')}
-                </span>
-              }
-            />
-          </div>
-        </motion.div>
-      </DialogContent>
-
-      <Divider />
-
-      <DialogActions sx={{ px: 3, py: 2 }}>
-        <Button onClick={onClose} disabled={isSaving} sx={{ color: '#64748B' }}>
-          {t('inventory.cancel', 'Cancelar')}
-        </Button>
-        <Button
-          onClick={handleSubmit}
-          variant="contained"
-          disabled={isSaving}
-          sx={{
-            backgroundColor: '#DC2626',
-            '&:hover': { backgroundColor: '#B91C1C' },
-            minWidth: 120,
-          }}
-        >
-          {isSaving ? (
-            <CircularProgress size={20} sx={{ color: 'white' }} />
-          ) : isEditing ? (
-            t('inventory.productForm.save', 'Salvar')
-          ) : (
-            t('inventory.productForm.register', 'Cadastrar')
+            </ModernSection>
           )}
-        </Button>
-      </DialogActions>
-    </Dialog>
+
+          {/* Active Toggle — toggle card padronizado */}
+          <button
+            type="button"
+            onClick={() => updateField('isActive', !form.isActive)}
+            className={cn(
+              'w-full flex items-center justify-between gap-3 p-3 rounded-2xl border-2 transition-all',
+              form.isActive
+                ? 'border-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 dark:border-emerald-500/40'
+                : 'border-slate-300 dark:border-slate-700 bg-white/60 dark:bg-slate-950/30'
+            )}
+          >
+            <div className="flex items-center gap-3">
+              <div className={cn(
+                'w-9 h-9 rounded-xl flex items-center justify-center transition-all',
+                form.isActive
+                  ? 'bg-emerald-500 text-white shadow-sm shadow-emerald-500/30'
+                  : 'bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
+              )}>
+                <Send size={16} />
+              </div>
+              <div className="text-left">
+                <p className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                  {t('inventory.productForm.activeProduct', 'Produto Ativo')}
+                </p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  {form.isActive
+                    ? 'Disponível para venda e exibição'
+                    : 'Inativo — não aparece em listagens nem PDV'}
+                </p>
+              </div>
+            </div>
+            <div className={cn(
+              'w-11 h-6 rounded-full p-0.5 transition-colors',
+              form.isActive ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-700'
+            )}>
+              <div className={cn(
+                'w-5 h-5 rounded-full bg-white shadow transition-transform',
+                form.isActive ? 'translate-x-5' : 'translate-x-0'
+              )} />
+            </div>
+          </button>
+    </ModernDialog>
   );
 }
 

@@ -27,6 +27,9 @@ import { ClientTableView, type ClientSortField, type ClientSortDir } from './Cli
 // da modularização. ClientFormData vem do ClientForm pra que a mutationFn
 // que persiste o cliente não precise re-declarar o shape do payload.
 import { ClientForm, emptyForm, type ClientFormData } from './ClientForm';
+import {
+  ModernDialog, ModernDialogActions, ModernCancelButton, ModernPrimaryButton, ModernPill,
+} from '@/app/components/ui/dialog';
 import { ExportModal } from './ExportModal';
 import { ImportModal } from './ImportModal';
 import { ClientDetailPanel } from './detail/ClientDetailPanel';
@@ -1307,7 +1310,7 @@ export default function ClientsModule() {
     setSelectedClient(null);
   };
 
-  const formInitial: ClientFormData = editingClient
+  const formInitial: ClientFormData = useMemo(() => editingClient
     ? {
         name: editingClient.name,
         email: editingClient.email || '',
@@ -1334,7 +1337,16 @@ export default function ClientsModule() {
         acquisitionProductId: editingClient.acquisitionProductId || '',
         acquisitionOfferLabel: editingClient.acquisitionOfferLabel || '',
       }
-    : emptyForm;
+    : emptyForm,
+    [editingClient]);
+
+  // Estado controlado do form — sincronizado com formInitial sempre que o
+  // dialog abre (novo cliente ou edição). useEffect dispara só quando showForm
+  // vira true ou quando troca o editing client; evita loop em render.
+  const [clientForm, setClientForm] = useState<ClientFormData>(emptyForm);
+  useEffect(() => {
+    if (showForm) setClientForm(formInitial);
+  }, [showForm, editingClient?.id, formInitial]);
 
   // Aggregated tag suggestions across all clients (dedup, case-insensitive)
   const allTags = useMemo(() => {
@@ -2093,58 +2105,41 @@ export default function ClientsModule() {
         document.body
       )}
 
-      {/* Create/Edit modal */}
-      {typeof document !== 'undefined' && createPortal(
-        <AnimatePresence>
-          {showForm && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
-              onClick={(e) => { if (e.target === e.currentTarget) { setShowForm(false); setEditingClient(null); } }}
+      {/* Create/Edit modal — agora padronizado com ModernDialog */}
+      <ModernDialog
+        open={showForm}
+        onClose={() => { setShowForm(false); setEditingClient(null); }}
+        icon={Users}
+        title={editingClient ? 'Editar cliente' : 'Novo cliente'}
+        badges={
+          <ModernPill tone={clientForm.tipo === 'pj' ? 'blue' : 'red'}>
+            {clientForm.tipo === 'pj' ? 'PJ' : 'PF'}
+          </ModernPill>
+        }
+        footer={
+          <ModernDialogActions>
+            <ModernCancelButton onClick={() => { setShowForm(false); setEditingClient(null); }}>
+              Cancelar
+            </ModernCancelButton>
+            <ModernPrimaryButton
+              onClick={() => saveClient(clientForm)}
+              disabled={isSaving || !clientForm.name.trim()}
+              startIcon={!isSaving ? <CheckCircle2 size={16} /> : undefined}
             >
-              <motion.div
-                initial={{ opacity: 0, scale: 0.95, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95, y: 20 }}
-                transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-                className="w-full max-w-2xl max-h-[calc(100vh-2rem)] overflow-y-auto bg-white dark:bg-gray-900 rounded-2xl shadow-2xl"
-              >
-                <div className="sticky top-0 z-10 bg-white dark:bg-gray-900 border-b border-gray-100 dark:border-gray-800 px-6 py-4 flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-lg bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
-                      <Users className="w-4 h-4 text-red-500" />
-                    </div>
-                    <h2 className="font-semibold text-gray-900 dark:text-white">
-                      {editingClient ? 'Editar cliente' : 'Novo cliente'}
-                    </h2>
-                  </div>
-                  <button onClick={() => { setShowForm(false); setEditingClient(null); }}
-                    className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 transition-colors">
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-                <div className="p-6">
-                  <ClientForm
-                    initial={formInitial}
-                    onSave={saveClient}
-                    onCancel={() => { setShowForm(false); setEditingClient(null); }}
-                    isSaving={isSaving}
-                    tagSuggestions={allTags}
-                    products={productsForAcquisition}
-                    offers={offersForAcquisition}
-                    // Só admin vê o link "Gerenciar ofertas" — operador só usa
-                    // ofertas existentes; criação/edição é admin-only no rule.
-                    onManageOffers={isAdmin ? () => setShowOffersManager(true) : undefined}
-                  />
-                </div>
-              </motion.div>
-            </motion.div>
-          )}
-        </AnimatePresence>,
-        document.body,
-      )}
+              {isSaving ? 'Salvando…' : editingClient ? 'Salvar alterações' : 'Criar cliente'}
+            </ModernPrimaryButton>
+          </ModernDialogActions>
+        }
+      >
+        <ClientForm
+          form={clientForm}
+          setForm={setClientForm}
+          tagSuggestions={allTags}
+          products={productsForAcquisition}
+          offers={offersForAcquisition}
+          onManageOffers={isAdmin ? () => setShowOffersManager(true) : undefined}
+        />
+      </ModernDialog>
 
       {/* Loyalty settings modal */}
       <AnimatePresence>
