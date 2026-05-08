@@ -1390,8 +1390,15 @@ function CampaignsTab({ businessId }: { businessId: string }) {
 
   // Carrega channelConnections disponíveis pro operador. A API filtra por role:
   // operator vê 'business' + suas próprias 'user'; admin/founder vê tudo.
+  //
+  // Dispara quando QUALQUER dialog que precisa do status (campanha normal OU
+  // de aniversário) abre. Bug anterior: só observava `showNew` — abrir o
+  // dialog de aniversário sem ter aberto a campanha normal antes deixava o
+  // state `availableConnections` vazio, e o BirthdayCampaignDialog mostrava
+  // tudo como desconectado mesmo com canais conectados.
   useEffect(() => {
-    if (!showNew || !businessId) return;
+    if (!businessId) return;
+    if (!showNew && !showNewBirthday) return;
     let cancelled = false;
     (async () => {
       try {
@@ -1409,7 +1416,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       }
     })();
     return () => { cancelled = true; };
-  }, [showNew, businessId]);
+  }, [showNew, showNewBirthday, businessId]);
 
   // Connections elegíveis pro canal + modo escolhidos. Filtra por type e
   // isConnected — desconectadas não dispararam.
