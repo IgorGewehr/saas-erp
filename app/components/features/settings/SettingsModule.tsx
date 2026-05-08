@@ -7330,9 +7330,19 @@ function BaileysDebugButton({ businessId }: { businessId: string }) {
       >
         <span className="font-mono">⚙</span> Diagnóstico
       </button>
-      {open && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setOpen(false)}>
-          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl p-5 max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+      {/* Portal pra document.body — o wrapper de tab tem `will-change-transform`,
+          que quebra `position: fixed` (resolve contra o wrapper scrollable em vez
+          do viewport). Sem o portal, o modal aparece deslocado/cortado quando a
+          página de Configurações está scrollada. Mesmo padrão do NotasModule. */}
+      {open && typeof document !== 'undefined' && createPortal(
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+          onClick={() => setOpen(false)}
+        >
+          <div
+            className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl p-5 max-w-2xl w-full max-h-[80vh] overflow-y-auto"
+            onClick={e => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-bold text-gray-900 dark:text-white">Diagnóstico Baileys</h3>
               <div className="flex gap-2">
@@ -7349,7 +7359,8 @@ function BaileysDebugButton({ businessId }: { businessId: string }) {
               </pre>
             )}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   );
