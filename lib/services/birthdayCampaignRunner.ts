@@ -35,6 +35,19 @@ import type {
 const META_GRAPH = 'https://graph.facebook.com/v21.0';
 const DEFAULT_TIMEZONE = 'America/Sao_Paulo';
 
+/**
+ * Janela de tolerância pra catch-up: se o cron não rodou a campanha no
+ * slot exato (sendAtHour), permite disparar nas N horas seguintes desde
+ * que `lastSuccessfulRunDate !== today`. Cobre falhas comuns:
+ *   - Vercel cron delays/throttle no início da hora cheia
+ *   - Deploy em andamento na hora exata do slot
+ *   - Falha transient no Firestore/Meta no slot
+ *
+ * 6h é conservador: um cliente que pediu 09:00 ainda recebe até 14:59 no
+ * mesmo dia se a janela for usada. Beyond that, fallback notifica o owner.
+ */
+const CATCHUP_WINDOW_HOURS = 6;
+
 interface RunResult {
   campaignId: string;
   campaignName: string;
@@ -486,12 +499,26 @@ export async function runBirthdayCampaigns(now: Date = new Date()): Promise<RunS
     const currentHour = currentHourInTz(now, tz);
     const today = todayInTz(now, tz);
 
-    // ─── Fallback: detecta campanhas que perderam o slot do dia ──────────
-    // Filosofia (escolha do produto): NÃO fazer catch-up automático. Se um
-    // disparo agendado pra HH:00 não rodou (servidor offline, deploy
-    // quebrado, erro transient), notificamos o owner via AppNotification.
-    // Ele decide se reagenda manualmente. Idempotente: notifica 1× por dia
-    // via missedRunNotifiedDate.
+    // Filtra campanhas devidas: hora exata OU dentro da janela de catch-up.
+    // Catch-up: se o cron pulou o slot por algum motivo (deploy, throttle
+    // da Vercel, deploy quebrado), tentamos disparar nas próximas 6h enquanto
+    // a campanha NÃO tiver rodado com sucesso hoje. Idempotência por
+    // (campaign, client, year) protege contra disparo duplicado mesmo se
+    // strict-match e catch-up rodarem no mesmo dia.
+    const dueCampaigns = campaigns.filter(c => {
+      // Hora exata — caminho normal
+      if (c.sendAtHour === currentHour) return true;
+      // Já rodou com sucesso hoje — não re-fire (evita trabalho redundante)
+      if (c.lastSuccessfulRunDate === today) return false;
+      // Catch-up: até CATCHUP_WINDOW_HOURS após o slot
+      const hoursLate = currentHour - c.sendAtHour;
+      return hoursLate > 0 && hoursLate <= CATCHUP_WINDOW_HOURS;
+    });
+
+    // ─── Fallback: notifica campanhas que perderam o slot E também a
+    //     janela de catch-up. Idempotente via missedRunNotifiedDate.
+    //     Truque: passamos slotHour = sendAtHour + CATCHUP_WINDOW_HOURS,
+    //     então o detector só dispara DEPOIS que o catch-up já desistiu.
     for (const c of campaigns) {
       if (!c.enabled) continue;
       const hourStr = String(c.sendAtHour).padStart(2, '0');
@@ -504,18 +531,16 @@ export async function runBirthdayCampaigns(now: Date = new Date()): Promise<RunS
           missedRunNotifiedDate: c.missedRunNotifiedDate,
         },
         collection: 'birthdayCampaigns',
-        slotHour: c.sendAtHour,
+        slotHour: c.sendAtHour + CATCHUP_WINDOW_HOURS,
         currentHour,
         today,
         ownerId: c.createdBy,
         title: 'Disparo de aniversário não realizado',
-        body: `Campanha "${c.name}" estava agendada pra ${hourStr}:00 hoje mas não disparou. Servidor pode ter ficado offline. Reagende manualmente se necessário.`,
+        body: `Campanha "${c.name}" estava agendada pra ${hourStr}:00 hoje mas não disparou (mesmo com janela de tolerância de ${CATCHUP_WINDOW_HOURS}h). Reagende manualmente se necessário.`,
         link: 'CRM',
       });
     }
 
-    // Filtra campanhas cuja sendAtHour casa com a hora corrente
-    const dueCampaigns = campaigns.filter(c => c.sendAtHour === currentHour);
     if (dueCampaigns.length === 0) continue;
 
     // Carrega clients do business uma única vez
