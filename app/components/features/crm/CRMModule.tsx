@@ -345,8 +345,12 @@ function DealFormDialog({ open, onClose, onSave, deal, contacts, members }: {
 // ACTIVITY FORM DIALOG
 // ==========================================
 
-function ActivityFormDialog({ open, onClose, onSave, activity, contacts, deals, members }: {
+function ActivityFormDialog({ open, onClose, onSave, activity, contacts, deals, members, defaultContactId }: {
   open: boolean; onClose: () => void; onSave: (data: Partial<CRMActivity>) => Promise<void>; activity: CRMActivity | null; contacts: CRMContact[]; deals: CRMDeal[]; members: User[];
+  /** Pré-preenche o contato ao criar uma nova interação. Usado quando o dialog
+   *  é aberto a partir do LeadDetailPanel — operador não precisa selecionar o
+   *  contato de novo. Ignorado quando `activity` está presente (modo edição). */
+  defaultContactId?: string;
 }) {
   const { t } = useTranslation();
   // Default 'ligacao' — antes era 'tarefa', mas tarefas migraram pro Kanban
@@ -358,8 +362,8 @@ function ActivityFormDialog({ open, onClose, onSave, activity, contacts, deals, 
   const [assignedTo, setAssignedTo] = useState(''); const [duration, setDuration] = useState(''); const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (open) { setType(activity?.type ?? 'ligacao'); setTitle(activity?.title ?? ''); setDescription(activity?.description ?? ''); setContactId(activity?.contactId ?? ''); setDealId(activity?.dealId ?? ''); setScheduledAt(activity?.scheduledAt ? activity.scheduledAt.slice(0, 16) : ''); setAssignedTo(activity?.assignedTo ?? ''); setDuration(activity?.duration ? String(activity.duration) : ''); }
-  }, [open, activity]);
+    if (open) { setType(activity?.type ?? 'ligacao'); setTitle(activity?.title ?? ''); setDescription(activity?.description ?? ''); setContactId(activity?.contactId ?? defaultContactId ?? ''); setDealId(activity?.dealId ?? ''); setScheduledAt(activity?.scheduledAt ? activity.scheduledAt.slice(0, 16) : ''); setAssignedTo(activity?.assignedTo ?? ''); setDuration(activity?.duration ? String(activity.duration) : ''); }
+  }, [open, activity, defaultContactId]);
 
   const handleSubmit = async () => {
     if (!title.trim()) return; setSaving(true);
@@ -446,57 +450,6 @@ function DeleteConfirmDialog({ open, title, message, onClose, onConfirm }: { ope
         <Button onClick={async () => { setLoading(true); try { await onConfirm(); } finally { setLoading(false); } }} disabled={loading} variant="contained" color="error" sx={{ borderRadius: '10px', textTransform: 'none' }}>{loading ? t('crm.action.deleting', 'Excluindo...') : t('crm.action.delete', 'Excluir')}</Button>
       </DialogActions>
     </Dialog>
-  );
-}
-
-// ==========================================
-// ACTIVITIES TAB (kept inline — tightly coupled to ACTIVITY_ICONS JSX)
-// ==========================================
-
-function ActivitiesTab({ activities, onEdit, onDelete, onToggle, onNew }: {
-  activities: CRMActivity[]; onEdit: (a: CRMActivity) => void; onDelete: (a: CRMActivity) => void; onToggle: (a: CRMActivity) => void; onNew: () => void;
-}) {
-  const { t } = useTranslation();
-  const [filter, setFilter] = useState<'all' | 'pending' | 'completed'>('all');
-  const sorted = useMemo(() => { let r = [...activities]; if (filter === 'pending') r = r.filter((a) => !a.isCompleted); if (filter === 'completed') r = r.filter((a) => a.isCompleted); return r.sort((a, b) => (b.completedAt || b.scheduledAt || b.createdAt).localeCompare(a.completedAt || a.scheduledAt || a.createdAt)); }, [activities, filter]);
-  const pending = activities.filter((a) => !a.isCompleted);
-  const completed = activities.filter((a) => a.isCompleted);
-  const todayStr = new Date().toISOString().split('T')[0];
-  const todayActs = activities.filter((a) => (a.scheduledAt || a.completedAt || '').startsWith(todayStr));
-
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-3 gap-4">
-        {[{ label: t('crm.tab.pending', 'Pendentes'), value: pending.length, color: 'text-amber-600 dark:text-amber-400', delay: 0 }, { label: t('crm.tab.today', 'Hoje'), value: todayActs.length, color: 'text-red-600 dark:text-red-400', delay: 0.06 }, { label: t('crm.tab.completed', 'Concluídas'), value: completed.length, color: 'text-emerald-600 dark:text-emerald-400', delay: 0.12 }].map((k) => (
-          <motion.div key={k.label} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: k.delay }} className="bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-2xl p-4">
-            <p className="text-[11px] text-gray-400 dark:text-gray-500 font-medium mb-1">{k.label}</p>
-            <p className={cn('text-xl font-display font-bold', k.color)}>{k.value}</p>
-          </motion.div>
-        ))}
-      </div>
-      <div className="flex items-center justify-between">
-        <div className="flex gap-1 p-0.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl w-fit">
-          {[{ key: 'all' as const, label: t('crm.tab.all', 'Todas') }, { key: 'pending' as const, label: t('crm.tab.pending', 'Pendentes') }, { key: 'completed' as const, label: t('crm.tab.completed', 'Concluídas') }].map((f) => (
-            <button key={f.key} onClick={() => setFilter(f.key)} className={cn('px-4 py-1.5 rounded-lg text-xs font-medium transition-all', filter === f.key ? 'bg-gray-900 dark:bg-gray-700 text-white' : 'text-gray-500 dark:text-gray-400')}>{f.label}</button>
-          ))}
-        </div>
-        <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={onNew} className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-500/10 rounded-lg"><Plus size={14} /> {t('crm.action.newActivity', 'Nova Atividade')}</motion.button>
-      </div>
-      <div className="space-y-3">
-        {sorted.map((activity, i) => { const ac = ACTIVITY_COLORS[activity.type]; const ds = activity.completedAt || activity.scheduledAt || activity.createdAt; return (
-          <motion.div key={activity.id} initial={{ opacity: 0, x: -12 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.04 }} className={cn('bg-white dark:bg-[#111827] border rounded-xl p-4 hover:shadow-md transition-all flex gap-4 group', activity.isCompleted ? 'border-gray-100 dark:border-gray-700/50' : 'border-l-4 border-gray-100 dark:border-gray-700/50')} style={!activity.isCompleted ? { borderLeftColor: ac } : undefined}>
-            <button onClick={() => onToggle(activity)} className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 hover:scale-110 transition-transform" style={{ backgroundColor: `${ac}15`, color: ac }}>{activity.isCompleted ? <CheckCircle2 size={14} /> : ACTIVITY_ICONS[activity.type]}</button>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-start justify-between gap-2"><div><p className={cn('text-sm font-semibold', activity.isCompleted ? 'text-gray-400 dark:text-gray-500 line-through' : 'text-gray-800 dark:text-gray-200')}>{activity.title}</p>{activity.description && <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{activity.description}</p>}</div><div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"><IconButton size="small" onClick={() => onEdit(activity)}><Edit3 size={13} className="text-gray-400" /></IconButton><IconButton size="small" onClick={() => onDelete(activity)}><Trash2 size={13} className="text-gray-400 hover:text-red-500" /></IconButton></div></div>
-              <div className="flex items-center flex-wrap gap-x-3 gap-y-1 mt-2 text-[11px] text-gray-400 dark:text-gray-500"><span className="font-medium px-1.5 py-0.5 rounded-md" style={{ backgroundColor: `${ac}15`, color: ac }}>{t('crm.activity.' + activity.type, ACTIVITY_LABELS[activity.type])}</span>{activity.contactName && <span className="font-medium text-gray-500 dark:text-gray-400">{activity.contactName}</span>}{activity.dealTitle && <span>· {activity.dealTitle}</span>}<span>· {formatDateTime(ds)}</span>{activity.duration && <span>· {activity.duration}min</span>}{activity.assignedToName && <span>· {activity.assignedToName}</span>}</div>
-            </div>
-          </motion.div>
-        ); })}
-      </div>
-      {sorted.length === 0 && activities.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-16 text-gray-400 dark:text-gray-500"><div className="w-16 h-16 rounded-2xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center mb-4"><Activity size={28} strokeWidth={1.5} /></div><p className="text-sm font-medium mb-1">{t('crm.tab.noActivity', 'Nenhuma atividade registrada')}</p><motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={onNew} className="mt-4 inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-red-600 to-red-500 text-white rounded-xl font-semibold text-sm"><Plus size={16} /> {t('crm.action.newActivity', 'Nova Atividade')}</motion.button></div>
-      )}
-    </div>
   );
 }
 
@@ -3544,7 +3497,6 @@ export default function CRMModule() {
 
   const TABS: { key: CRMTab; label: string; icon: React.ReactNode; desc: string }[] = useMemo(() => [
     { key: 'kanban', label: t('crm.tab.kanban', 'Pipeline'), icon: <Layers size={15} />, desc: t('crm.tab.kanban_desc', 'Kanban de leads') },
-    { key: 'atividades', label: t('crm.tab.activities', 'Atividades'), icon: <Activity size={15} />, desc: t('crm.tab.activities_desc', 'Tarefas e follow-ups') },
     { key: 'campanhas', label: t('crm.tab.campaigns', 'Campanhas'), icon: <Send size={15} />, desc: t('crm.tab.campaigns_desc', 'Broadcasts') },
     { key: 'segmentos', label: t('crm.tab.segments', 'Segmentos'), icon: <Filter size={15} />, desc: t('crm.tab.segments_desc', 'Filtros AND/OR') },
     { key: 'metricas', label: t('crm.tab.metrics', 'Inteligência'), icon: <Brain size={15} />, desc: t('crm.tab.metrics_desc', 'Scores e insights') },
@@ -3845,8 +3797,8 @@ export default function CRMModule() {
 
           {/* Actions */}
           <div className="flex items-center gap-2.5">
-            {/* Search — only on pipeline/activities tabs */}
-            {(activeTab === 'kanban' || activeTab === 'atividades') && (
+            {/* Search — only on pipeline tab */}
+            {activeTab === 'kanban' && (
               <div className="relative hidden sm:block">
                 <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
                 <input type="text" placeholder={t('crm.action.search', 'Buscar...')} value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
@@ -4039,16 +3991,6 @@ export default function CRMModule() {
               />
             )}
 
-            {activeTab === 'atividades' && (
-              <div className="flex-1 overflow-y-auto min-h-0">
-                <ActivitiesTab activities={activities}
-                  onEdit={(a) => { setEditingActivity(a); setActivityDialogOpen(true); }}
-                  onDelete={(a) => setDeleteActivityConfirm(a)}
-                  onToggle={handleToggleActivity}
-                  onNew={() => { setEditingActivity(null); setActivityDialogOpen(true); }} />
-              </div>
-            )}
-
             {activeTab === 'campanhas' && (
               <div className="flex-1 overflow-y-auto min-h-0">
                 <CampaignsTab businessId={business?.id || ''} />
@@ -4131,7 +4073,8 @@ export default function CRMModule() {
               onTagsChange={(tags) => handleTagsChange(selectedContact.id, tags)}
               onSchedule={() => { setScheduleContact(selectedContact); setScheduleDialogOpen(true); }}
               onOpenConversations={() => { setDetailOpen(false); setActivePage('Conversas'); }}
-              onCreateKanbanTask={() => setKanbanTaskContact(selectedContact)} />
+              onCreateKanbanTask={() => setKanbanTaskContact(selectedContact)}
+              onLogActivity={() => { setEditingActivity(null); setActivityDialogOpen(true); }} />
           </>
         )}
       </AnimatePresence>
@@ -4157,7 +4100,16 @@ export default function CRMModule() {
         />
       )}
       <DealFormDialog open={dealDialogOpen} onClose={() => { setDealDialogOpen(false); setEditingDeal(null); }} onSave={handleSaveDeal} deal={editingDeal} contacts={contacts} members={members} />
-      <ActivityFormDialog open={activityDialogOpen} onClose={() => { setActivityDialogOpen(false); setEditingActivity(null); }} onSave={handleSaveActivity} activity={editingActivity} contacts={contacts} deals={deals} members={members} />
+      {/* Pré-popula contactId quando o dialog é aberto via botão "Logar" do
+          LeadDetailPanel — operador não precisa selecionar o contato de novo. */}
+      <ActivityFormDialog
+        open={activityDialogOpen}
+        onClose={() => { setActivityDialogOpen(false); setEditingActivity(null); }}
+        onSave={handleSaveActivity}
+        activity={editingActivity}
+        contacts={contacts} deals={deals} members={members}
+        defaultContactId={detailOpen && selectedContact ? selectedContact.id : undefined}
+      />
 
       {/* Delete Confirmations */}
       <DeleteConfirmDialog open={!!deleteContactConfirm} title="Excluir Contato" message={`Excluir "${deleteContactConfirm?.name}"?`} onClose={() => setDeleteContactConfirm(null)} onConfirm={handleDeleteContact} />

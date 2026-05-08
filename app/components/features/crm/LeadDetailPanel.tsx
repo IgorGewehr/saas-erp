@@ -9,7 +9,7 @@ import {
   Brain, TrendingUp, TrendingDown, AlertTriangle, Heart,
   DollarSign, Target, Shield, Zap, Star, BarChart3,
   ThumbsUp, ThumbsDown, Timer, UserCheck, Ban, ArrowRight,
-  Eye, MapPin, Hash, History,
+  Eye, MapPin, Hash, History, Plus,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -108,7 +108,7 @@ function InsightChip({ text, variant = 'neutral' }: { text: string; variant?: 'p
 
 // ── Main Panel ─────────────────────────────────────────────────────────────
 
-export function LeadDetailPanel({ contact, activities, stages, onClose, onEdit, onDelete, onTagsChange, onSchedule, onOpenConversations, onCreateKanbanTask }: {
+export function LeadDetailPanel({ contact, activities, stages, onClose, onEdit, onDelete, onTagsChange, onSchedule, onOpenConversations, onCreateKanbanTask, onLogActivity }: {
   contact: CRMContact;
   activities: CRMActivity[];
   stages?: CRMStageConfig[];
@@ -121,6 +121,10 @@ export function LeadDetailPanel({ contact, activities, stages, onClose, onEdit, 
   /** Abre modal pra criar uma tarefa no Kanban vinculada a este contato.
    *  Substitui Activities tipo 'tarefa' (deprecated). */
   onCreateKanbanTask?: () => void;
+  /** Abre o ActivityFormDialog pra logar uma interação manual (ligação,
+   *  reunião, proposta etc.) já vinculada a este contato. Substitui o uso
+   *  da aba Atividades top-level que foi removida. */
+  onLogActivity?: () => void;
 }) {
   const { t } = useTranslation();
   const contactActivities = useMemo(
@@ -549,12 +553,37 @@ export function LeadDetailPanel({ contact, activities, stages, onClose, onEdit, 
         )}
 
         {/* ── Activity Timeline ───────────────────────────────── */}
+        {/* Aba "Atividades" top-level foi removida — log de interações vive
+            só aqui no painel do lead. Botão "Logar" abre o ActivityFormDialog
+            já com este contato pré-selecionado. */}
         <div className="space-y-2">
-          <SectionHeader icon={<Activity size={11} />} label={t('crm.detail.recentActivities', 'Atividades Recentes')} />
+          <div className="flex items-center justify-between gap-2">
+            <SectionHeader icon={<Activity size={11} />} label={t('crm.detail.recentActivities', 'Histórico de Interações')} />
+            {onLogActivity && (
+              <motion.button
+                whileHover={{ scale: 1.04 }}
+                whileTap={{ scale: 0.96 }}
+                onClick={onLogActivity}
+                className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-semibold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-500/10 rounded-md hover:bg-red-100 dark:hover:bg-red-500/15 transition-colors"
+                title="Logar uma ligação, reunião ou outra interação"
+              >
+                <Plus size={11} />
+                Logar
+              </motion.button>
+            )}
+          </div>
           {contactActivities.length === 0 ? (
             <div className="text-center py-6 text-gray-300 dark:text-gray-600">
               <Activity size={20} className="mx-auto mb-1.5" />
-              <p className="text-[11px]">{t('crm.tab.noActivity', 'Nenhuma atividade registrada')}</p>
+              <p className="text-[11px]">{t('crm.tab.noActivity', 'Nenhuma interação registrada')}</p>
+              {onLogActivity && (
+                <button
+                  onClick={onLogActivity}
+                  className="mt-2 text-[10px] text-red-500 dark:text-red-400 hover:underline font-semibold"
+                >
+                  Registrar primeira
+                </button>
+              )}
             </div>
           ) : (
             <div className="space-y-2">
