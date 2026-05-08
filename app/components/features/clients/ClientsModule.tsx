@@ -1046,15 +1046,24 @@ export default function ClientsModule() {
       };
 
       if (data.cep || data.logradouro || data.municipio) {
-        payload.endereco = {
-          cep: data.cep.trim() || undefined,
-          logradouro: data.logradouro.trim() || undefined,
-          numero: data.numero.trim() || undefined,
-          complemento: data.complemento.trim() || undefined,
-          bairro: data.bairro.trim() || undefined,
-          municipio: data.municipio.trim() || undefined,
-          uf: data.uf.trim() || undefined,
-        };
+        // IMPORTANTE: não usar `field: value || undefined` em objeto nested.
+        // O sanitizer logo abaixo converte undefined → deleteField() apenas
+        // no TOP-LEVEL do payload — undefined dentro de `endereco` passava
+        // direto pro Firestore, que recusa com:
+        //   "Function updateDoc() called with invalid data. Unsupported
+        //    field value: undefined (found in field endereco.complemento)"
+        // Solução: monta endereco só com chaves que têm valor real.
+        const endereco: Record<string, string> = {};
+        const cep = data.cep.trim();         if (cep) endereco.cep = cep;
+        const log = data.logradouro.trim();  if (log) endereco.logradouro = log;
+        const num = data.numero.trim();      if (num) endereco.numero = num;
+        const cmp = data.complemento.trim(); if (cmp) endereco.complemento = cmp;
+        const bai = data.bairro.trim();      if (bai) endereco.bairro = bai;
+        const mun = data.municipio.trim();   if (mun) endereco.municipio = mun;
+        const uf  = data.uf.trim();          if (uf)  endereco.uf = uf;
+        if (Object.keys(endereco).length > 0) {
+          payload.endereco = endereco;
+        }
       }
 
       if (editingClient) {
