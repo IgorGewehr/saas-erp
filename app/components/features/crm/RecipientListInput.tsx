@@ -425,21 +425,21 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
     : 'cliente@example.com\noutro@example.com';
 
   return (
-    <div className={cn('space-y-2', className)}>
+    <div className={cn('space-y-3 rounded-2xl border border-slate-200/80 dark:border-slate-700/70 bg-slate-50/70 dark:bg-slate-950/35 p-3', className)}>
       {/* Tab selector */}
-      <div className="flex gap-1 p-0.5 bg-gray-100 dark:bg-white/[0.04] rounded-lg">
-        <button type="button" onClick={() => setActiveTab('paste')}
-          className={cn('flex-1 flex items-center justify-center gap-1.5 text-[11px] py-1.5 rounded-md font-semibold transition-colors',
-            activeTab === 'paste' ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm' : 'text-gray-500 dark:text-gray-400')}>
-          <ClipboardPaste className="w-3 h-3" />
+      <div className="grid grid-cols-2 gap-1.5 p-1 bg-white dark:bg-slate-900/80 border border-slate-200/80 dark:border-slate-700/70 rounded-2xl">
+        <motion.button type="button" whileTap={{ scale: 0.98 }} onClick={() => setActiveTab('paste')}
+          className={cn('flex items-center justify-center gap-2 text-xs py-2.5 rounded-xl font-bold transition-all',
+            activeTab === 'paste' ? 'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-950 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.04]')}>
+          <ClipboardPaste className="w-3.5 h-3.5" />
           Colar lista
-        </button>
-        <button type="button" onClick={() => setActiveTab('csv')}
-          className={cn('flex-1 flex items-center justify-center gap-1.5 text-[11px] py-1.5 rounded-md font-semibold transition-colors',
-            activeTab === 'csv' ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm' : 'text-gray-500 dark:text-gray-400')}>
-          <Upload className="w-3 h-3" />
+        </motion.button>
+        <motion.button type="button" whileTap={{ scale: 0.98 }} onClick={() => setActiveTab('csv')}
+          className={cn('flex items-center justify-center gap-2 text-xs py-2.5 rounded-xl font-bold transition-all',
+            activeTab === 'csv' ? 'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-950 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.04]')}>
+          <Upload className="w-3.5 h-3.5" />
           Upload CSV
-        </button>
+        </motion.button>
       </div>
 
       {activeTab === 'paste' ? (
@@ -448,7 +448,7 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
           onChange={e => handleTextChange(e.target.value)}
           placeholder={placeholder}
           rows={4}
-          className="w-full px-3 py-2 text-sm bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-xl text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400 resize-none font-mono"
+          className="w-full min-h-[132px] px-4 py-3 text-sm leading-6 bg-white dark:bg-slate-900/80 border border-slate-200/80 dark:border-slate-700/70 rounded-2xl text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-4 focus:ring-red-500/10 focus:border-red-400 resize-none font-mono shadow-inner shadow-slate-100/80 dark:shadow-black/10 transition-all"
         />
       ) : (
         <div>
@@ -463,14 +463,16 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
               </button>
             </div>
           ) : (
-            <button type="button" onClick={() => fileInputRef.current?.click()}
-              className="w-full flex flex-col items-center justify-center gap-2 py-6 rounded-xl border-2 border-dashed border-gray-300 dark:border-gray-700 hover:border-red-400 dark:hover:border-red-500/50 transition-colors text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300">
-              <Upload className="w-5 h-5" />
-              <span className="text-xs">Clique para selecionar CSV</span>
+            <motion.button type="button" whileTap={{ scale: 0.99 }} onClick={() => fileInputRef.current?.click()}
+              className="w-full flex flex-col items-center justify-center gap-2 py-8 rounded-2xl border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-red-400 dark:hover:border-red-500/60 bg-white dark:bg-slate-900/70 transition-all text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200">
+              <span className="inline-flex h-10 w-10 items-center justify-center rounded-2xl bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400">
+                <Upload className="w-5 h-5" />
+              </span>
+              <span className="text-xs font-bold">Clique para selecionar CSV</span>
               <span className="text-[10px] text-gray-400">
                 {mode === 'phone' ? 'Coluna: nome, telefone' : 'Coluna: nome, email'}
               </span>
-            </button>
+            </motion.button>
           )}
           <input ref={fileInputRef} type="file" accept=".csv,text/csv" className="hidden"
             onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />

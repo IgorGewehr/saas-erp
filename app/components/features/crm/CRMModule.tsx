@@ -11,7 +11,7 @@ import {
   CheckCircle2, PhoneCall, Video, FileText, MessageCircle, BarChart3, Activity, Layers, Gauge,
   UserPlus, Briefcase, Tag, Hash, AlertTriangle, Heart, Shield, Zap, Brain,
   Sparkles, Filter, Crown, Settings2, GripVertical, Eye, EyeOff, ChevronUp, ChevronDown,
-  Download, Upload, GitBranch, LayoutList, LayoutDashboard,
+  Download, Upload, GitBranch, LayoutList, LayoutDashboard, Megaphone, Radio, SlidersHorizontal,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -1313,6 +1313,147 @@ function CampaignMiniBar({ label, rate, counts, color }: {
   );
 }
 
+const campaignDialogPaperSx = {
+  borderRadius: '28px',
+  overflow: 'hidden',
+  bgcolor: 'transparent',
+  boxShadow: '0 28px 90px rgba(2, 6, 23, 0.45)',
+  maxHeight: 'calc(100vh - 32px)',
+};
+
+const campaignDialogContentSx = {
+  p: 0,
+  bgcolor: 'rgb(248 250 252)',
+  color: 'rgb(15 23 42)',
+  '.dark &': {
+    bgcolor: 'rgb(9 15 27)',
+    color: 'rgb(241 245 249)',
+  },
+  '& .MuiTextField-root, & .MuiFormControl-root': {
+    '& .MuiInputLabel-root': {
+      color: 'rgb(100 116 139)',
+      fontWeight: 700,
+      fontSize: 13,
+    },
+    '& .MuiInputLabel-root.Mui-focused': {
+      color: 'rgb(220 38 38)',
+    },
+    '& .MuiOutlinedInput-root': {
+      minHeight: 46,
+      borderRadius: '14px',
+      backgroundColor: 'rgba(255,255,255,0.86)',
+      color: 'rgb(15 23 42)',
+      transition: 'box-shadow 160ms ease, border-color 160ms ease, background-color 160ms ease',
+      '& fieldset': {
+        borderColor: 'rgba(148,163,184,0.32)',
+      },
+      '&:hover fieldset': {
+        borderColor: 'rgba(220,38,38,0.45)',
+      },
+      '&.Mui-focused': {
+        boxShadow: '0 0 0 4px rgba(220,38,38,0.10)',
+        backgroundColor: 'rgba(255,255,255,0.98)',
+      },
+      '&.Mui-focused fieldset': {
+        borderColor: 'rgb(220 38 38)',
+        borderWidth: 1,
+      },
+      '& input, & textarea': {
+        fontSize: 14,
+      },
+    },
+    '& .MuiFormHelperText-root': {
+      marginLeft: 0,
+      color: 'rgb(100 116 139)',
+      fontSize: 11,
+    },
+    '& .MuiSelect-icon': {
+      color: 'rgb(100 116 139)',
+    },
+  },
+  '& .MuiButton-root': {
+    textTransform: 'none',
+    fontWeight: 800,
+  },
+  '.dark & .MuiTextField-root, .dark & .MuiFormControl-root': {
+    '& .MuiInputLabel-root': {
+      color: 'rgb(148 163 184)',
+    },
+    '& .MuiOutlinedInput-root': {
+      backgroundColor: 'rgba(15,23,42,0.72)',
+      color: 'rgb(241 245 249)',
+      '& fieldset': {
+        borderColor: 'rgba(148,163,184,0.22)',
+      },
+      '&:hover fieldset': {
+        borderColor: 'rgba(248,113,113,0.48)',
+      },
+      '&.Mui-focused': {
+        backgroundColor: 'rgba(15,23,42,0.92)',
+        boxShadow: '0 0 0 4px rgba(248,113,113,0.12)',
+      },
+      '&.Mui-focused fieldset': {
+        borderColor: 'rgb(248 113 113)',
+      },
+    },
+    '& .MuiFormHelperText-root': {
+      color: 'rgb(148 163 184)',
+    },
+    '& .MuiSelect-icon': {
+      color: 'rgb(148 163 184)',
+    },
+  },
+};
+
+function CampaignSection({
+  icon: Icon,
+  title,
+  meta,
+  children,
+}: {
+  icon: React.ComponentType<{ className?: string; size?: number }>;
+  title: string;
+  meta?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <motion.section
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+      className="rounded-2xl border border-slate-200/80 dark:border-slate-700/70 bg-white/90 dark:bg-slate-900/70 shadow-sm shadow-slate-200/50 dark:shadow-black/10 overflow-hidden"
+    >
+      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-100 dark:border-slate-800/80 bg-slate-50/70 dark:bg-white/[0.025]">
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400">
+            <Icon size={16} />
+          </span>
+          <h4 className="text-sm font-display font-bold text-slate-950 dark:text-slate-50 truncate">{title}</h4>
+        </div>
+        {meta && <div className="shrink-0">{meta}</div>}
+      </div>
+      <div className="p-4 space-y-4">
+        {children}
+      </div>
+    </motion.section>
+  );
+}
+
+function CampaignPill({ children, tone = 'slate' }: { children: React.ReactNode; tone?: 'slate' | 'red' | 'emerald' | 'amber' | 'blue' }) {
+  const tones = {
+    slate: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300',
+    red: 'bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-300',
+    emerald: 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+    amber: 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300',
+    blue: 'bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300',
+  };
+  return (
+    <span className={cn('inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold', tones[tone])}>
+      {children}
+    </span>
+  );
+}
+
 function CampaignsTab({ businessId }: { businessId: string }) {
   const { t } = useTranslation();
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
@@ -1670,6 +1811,23 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       { field: 'tags', operator: 'contains', value: 'remarketing' },
     ] }]);
   };
+
+  const channelLabel = formChannel === 'email' ? 'Email' : 'WhatsApp';
+  const audienceLabel = formAudienceType === 'list'
+    ? 'Lista direta'
+    : formAudienceType === 'filtered_clients'
+      ? 'Clientes filtrados'
+      : formAudienceType === 'segment'
+        ? 'Segmento salvo'
+        : formAudienceType === 'tags'
+          ? 'Tags'
+          : 'Todos os clientes';
+  const createDisabled = saving
+    || !formName.trim()
+    || !formConsentBasis
+    || !formConsentAck
+    || activeRecipients.length === 0
+    || (formChannel !== 'email' && eligibleConnections.length === 0);
 
   const handleCreate = async () => {
     if (!businessId || !user || !formName.trim()) return;
@@ -2092,11 +2250,71 @@ function CampaignsTab({ businessId }: { businessId: string }) {
           clients={existingClients}
         />
       )}
-      <Dialog open={showNew} onClose={() => setShowNew(false)} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: '1rem' } }}>
-        <DialogTitle sx={{ fontWeight: 700, fontFamily: '"Plus Jakarta Sans", sans-serif' }}>{t('crm.dialog.newCampaign', 'Nova Campanha')}</DialogTitle>
-        <DialogContent className="space-y-4 !pt-2">
-          <TextField label={t('crm.form.name', 'Nome')} value={formName} onChange={(e) => setFormName(e.target.value)} fullWidth size="small" />
-          <FormControl fullWidth size="small">
+      <Dialog
+        open={showNew}
+        onClose={() => setShowNew(false)}
+        maxWidth="md"
+        fullWidth
+        PaperProps={{ sx: campaignDialogPaperSx }}
+        BackdropProps={{ sx: { backdropFilter: 'blur(10px)', backgroundColor: 'rgba(2, 6, 23, 0.72)' } }}
+      >
+        <DialogTitle sx={{ p: 0 }}>
+          <div className="relative overflow-hidden bg-white dark:bg-slate-950 border-b border-slate-200/80 dark:border-slate-800">
+            <div className="h-1 bg-red-600" />
+            <div className="px-6 py-5">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-start gap-4 min-w-0">
+                  <div className="hidden sm:flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400">
+                    <Megaphone size={22} />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="font-display text-2xl font-bold text-slate-950 dark:text-slate-50">
+                        {t('crm.dialog.newCampaign', 'Nova Campanha')}
+                      </h3>
+                      {formViaBaileys && <CampaignPill tone="amber">WhatsApp Web</CampaignPill>}
+                    </div>
+                    <div className="mt-2 flex items-center gap-2 flex-wrap">
+                      <CampaignPill tone="red"><Send size={12} />{channelLabel}</CampaignPill>
+                      <CampaignPill tone="blue"><Users size={12} />{audienceLabel}</CampaignPill>
+                      <CampaignPill tone={activeRecipients.length > 0 ? 'emerald' : 'slate'}>
+                        {activeRecipients.length} destinatário{activeRecipients.length === 1 ? '' : 's'}
+                      </CampaignPill>
+                    </div>
+                  </div>
+                </div>
+                <IconButton
+                  onClick={() => setShowNew(false)}
+                  size="small"
+                  sx={{
+                    color: 'rgb(100 116 139)',
+                    border: '1px solid rgba(148,163,184,0.22)',
+                    borderRadius: '12px',
+                    '&:hover': { bgcolor: 'rgba(148,163,184,0.10)' },
+                  }}
+                  aria-label="Fechar"
+                >
+                  <X size={16} />
+                </IconButton>
+              </div>
+            </div>
+          </div>
+        </DialogTitle>
+        <DialogContent sx={campaignDialogContentSx}>
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+            className="px-4 sm:px-6 py-5 space-y-5"
+          >
+          <CampaignSection
+            icon={Settings2}
+            title="Configuração"
+            meta={<CampaignPill tone="slate">1</CampaignPill>}
+          >
+            <div className="grid grid-cols-1 md:grid-cols-[1.4fr_1fr] gap-3">
+              <TextField label={t('crm.form.name', 'Nome')} value={formName} onChange={(e) => setFormName(e.target.value)} fullWidth size="small" />
+              <FormControl fullWidth size="small">
             <InputLabel>{t('crm.form.channel', 'Canal')}</InputLabel>
             <Select
               value={formChannel}
@@ -2150,7 +2368,8 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                 Email {!notificationServerReady && '(configure notification-server)'}
               </MenuItem>
             </Select>
-          </FormControl>
+              </FormControl>
+            </div>
           {/* Toggle Cloud vs Baileys — só aparece se ambos disponíveis */}
           {formChannel === 'whatsapp' && baileysReady && (
             <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
@@ -2224,6 +2443,13 @@ function CampaignsTab({ businessId }: { businessId: string }) {
               </p>
             </div>
           )}
+          </CampaignSection>
+
+          <CampaignSection
+            icon={Users}
+            title="Audiência"
+            meta={<CampaignPill tone={activeRecipients.length > 0 ? 'emerald' : 'slate'}>{activeRecipients.length} prontos</CampaignPill>}
+          >
           <FormControl fullWidth size="small">
             <InputLabel>{t('crm.form.audience', 'Audiência')}</InputLabel>
             <Select value={formAudienceType} label={t('crm.form.audience', 'Audiência')} onChange={(e) => {
@@ -2563,11 +2789,17 @@ function CampaignsTab({ businessId }: { businessId: string }) {
               )}
             </div>
           )}
+          </CampaignSection>
 
           {/* Velocidade de envio (throttle anti-spam) — sempre visível.
               Operador pode pré-configurar antes de colar a lista. Estimativa
               de tempo aparece só quando há recipientes (count > 0). */}
-          <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3 space-y-3">
+          <CampaignSection
+            icon={SlidersHorizontal}
+            title="Entrega"
+            meta={<CampaignPill tone="slate">anti-spam</CampaignPill>}
+          >
+          <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-950/35 p-3 space-y-3">
               <div className="flex items-center justify-between">
                 <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
                   Velocidade de envio
@@ -2676,6 +2908,13 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                 />
               )}
             </div>
+          </CampaignSection>
+
+          <CampaignSection
+            icon={MessageSquare}
+            title="Mensagem"
+            meta={<CampaignPill tone={formMsgType === 'template' ? 'blue' : 'slate'}>{formChannel === 'email' || formViaBaileys ? 'Texto' : formMsgType === 'template' ? 'Template' : 'Texto'}</CampaignPill>}
+          >
 
           {/* Tipo de mensagem aparece só para canais Meta sem Baileys.
               Email = sempre texto livre. Baileys = sempre texto livre (sem template). */}
@@ -2754,8 +2993,14 @@ function CampaignsTab({ businessId }: { businessId: string }) {
               ))}
             </TextField>
           )}
+          </CampaignSection>
 
           {/* 5.12 LGPD — base legal do envio (obrigatório) */}
+          <CampaignSection
+            icon={Shield}
+            title="Compliance"
+            meta={<CampaignPill tone={formConsentBasis && formConsentAck ? 'emerald' : 'amber'}>LGPD</CampaignPill>}
+          >
           <div className="rounded-xl border-2 border-amber-200 dark:border-amber-500/30 bg-amber-50/50 dark:bg-amber-500/5 p-3 space-y-3">
             <div className="flex items-start gap-2">
               <Shield className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
@@ -2803,8 +3048,55 @@ function CampaignsTab({ businessId }: { businessId: string }) {
               </span>
             </label>
           </div>
+          </CampaignSection>
+          </motion.div>
         </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2 }}><Button onClick={() => setShowNew(false)}>{t('crm.action.cancel', 'Cancelar')}</Button><Button onClick={handleCreate} variant="contained" disabled={saving || !formName.trim() || !formConsentBasis || !formConsentAck || activeRecipients.length === 0 || (formChannel !== 'email' && eligibleConnections.length === 0)} sx={{ bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' }, borderRadius: '0.75rem' }}>{saving ? t('crm.action.creating', 'Criando...') : t('crm.action.create', 'Criar')}</Button></DialogActions>
+        <DialogActions sx={{ p: 0, bgcolor: 'transparent' }}>
+          <div className="w-full border-t border-slate-200/80 dark:border-slate-800 bg-white/95 dark:bg-slate-950/95 px-4 sm:px-6 py-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="hidden sm:flex items-center gap-2 min-w-0 text-xs text-slate-500 dark:text-slate-400">
+                <CampaignPill tone={activeRecipients.length > 0 ? 'emerald' : 'slate'}>
+                  {activeRecipients.length} destinatário{activeRecipients.length === 1 ? '' : 's'}
+                </CampaignPill>
+                <span className="truncate">{audienceLabel} · {channelLabel}</span>
+              </div>
+              <div className="flex items-center justify-end gap-2 w-full sm:w-auto">
+                <Button
+                  onClick={() => setShowNew(false)}
+                  sx={{
+                    borderRadius: '14px',
+                    px: 2.25,
+                    color: 'rgb(220 38 38)',
+                    '&:hover': { bgcolor: 'rgba(220,38,38,0.08)' },
+                  }}
+                >
+                  {t('crm.action.cancel', 'Cancelar')}
+                </Button>
+                <Button
+                  onClick={handleCreate}
+                  variant="contained"
+                  disabled={createDisabled}
+                  startIcon={!saving ? <Send size={16} /> : undefined}
+                  sx={{
+                    borderRadius: '14px',
+                    px: 2.75,
+                    minHeight: 44,
+                    bgcolor: '#DC2626',
+                    boxShadow: '0 14px 30px rgba(220,38,38,0.28)',
+                    '&:hover': { bgcolor: '#B91C1C', boxShadow: '0 16px 34px rgba(185,28,28,0.32)' },
+                    '&.Mui-disabled': {
+                      bgcolor: 'rgba(100,116,139,0.22)',
+                      color: 'rgba(148,163,184,0.70)',
+                      boxShadow: 'none',
+                    },
+                  }}
+                >
+                  {saving ? t('crm.action.creating', 'Criando...') : t('crm.action.create', 'Criar')}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </DialogActions>
       </Dialog>
     </div>
   );
