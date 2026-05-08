@@ -23,6 +23,7 @@ import {
   Loader2,
   Download,
   ExternalLink,
+  Tag as TagIcon,
 } from 'lucide-react';
 import {
   collection,
@@ -66,8 +67,21 @@ interface Note {
   scope: 'personal' | 'team';
   isPinned: boolean;
   attachments?: NoteAttachment[];
+  /** Tags livres (lowercase, trimmed, deduped) pra filtrar/agrupar notas. */
+  tags?: string[];
   createdAt: string;
   updatedAt: string;
+}
+
+const MAX_TAGS_PER_NOTE = 10;
+const MAX_TAG_LENGTH = 30;
+
+/** Normaliza uma tag bruta: trim + lowercase + remove caracteres
+ *  problemáticos. Retorna null se vazia ou inválida após normalizar. */
+function normalizeTag(raw: string): string | null {
+  const t = raw.trim().toLowerCase().replace(/\s+/g, ' ').slice(0, MAX_TAG_LENGTH);
+  if (!t) return null;
+  return t;
 }
 
 type NoteColor =
@@ -167,6 +181,88 @@ function ColorPicker({
   );
 }
 
+// ─── Tag Input (chip + input) ─────────────────────────────────────────────────
+
+/** Chip-input controlado de tags. Espaço/Enter/vírgula confirmam; Backspace
+ *  no input vazio remove a última. Dedupe + normalize na confirmação. */
+function TagInput({
+  value,
+  onChange,
+  textColorClass,
+}: {
+  value: string[];
+  onChange: (tags: string[]) => void;
+  textColorClass: string;
+}) {
+  const [draft, setDraft] = useState('');
+
+  const commit = () => {
+    const t = normalizeTag(draft);
+    setDraft('');
+    if (!t) return;
+    if (value.includes(t)) return;
+    if (value.length >= MAX_TAGS_PER_NOTE) return;
+    onChange([...value, t]);
+  };
+
+  const removeAt = (idx: number) => onChange(value.filter((_, i) => i !== idx));
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' || e.key === ',' || (e.key === ' ' && draft.trim())) {
+      e.preventDefault();
+      commit();
+    } else if (e.key === 'Backspace' && !draft && value.length > 0) {
+      e.preventDefault();
+      removeAt(value.length - 1);
+    }
+  };
+
+  const atLimit = value.length >= MAX_TAGS_PER_NOTE;
+
+  return (
+    <div className="flex-shrink-0 flex flex-wrap items-center gap-1.5">
+      <TagIcon className="w-3.5 h-3.5 text-black/40 dark:text-white/40 shrink-0" />
+      {value.map((tag, idx) => (
+        <span
+          key={tag}
+          className="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full bg-black/10 dark:bg-white/15 text-[11px] font-medium"
+        >
+          <span className={cn('truncate max-w-[140px]', textColorClass)}>{tag}</span>
+          <button
+            type="button"
+            onClick={() => removeAt(idx)}
+            className="p-0.5 rounded-full hover:bg-black/15 dark:hover:bg-white/20 transition-colors"
+            title="Remover tag"
+          >
+            <X className="w-2.5 h-2.5 text-black/55 dark:text-white/65" />
+          </button>
+        </span>
+      ))}
+      {!atLimit && (
+        <input
+          type="text"
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={onKeyDown}
+          onBlur={commit}
+          placeholder={value.length === 0 ? 'Tags (Enter ou vírgula)' : '+ tag'}
+          maxLength={MAX_TAG_LENGTH}
+          style={{ outline: 'none', boxShadow: 'none' }}
+          className={cn(
+            'bg-transparent border-0 text-[12px] placeholder-black/30 dark:placeholder-white/30 min-w-[100px] flex-1',
+            textColorClass,
+          )}
+        />
+      )}
+      {atLimit && (
+        <span className="text-[10px] text-black/40 dark:text-white/40 italic">
+          máx. {MAX_TAGS_PER_NOTE}
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ─── Note Card ────────────────────────────────────────────────────────────────
 
 function NoteCard({
@@ -175,6 +271,7 @@ function NoteCard({
   onEdit,
   onDelete,
   onPreview,
+  onTagClick,
   isTeam,
 }: {
   note: Note;
@@ -182,6 +279,7 @@ function NoteCard({
   onEdit: (note: Note) => void;
   onDelete: (note: Note) => void;
   onPreview: (note: Note) => void;
+  onTagClick: (tag: string) => void;
   isTeam: boolean;
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -311,6 +409,37 @@ function NoteCard({
         </p>
       </div>
 
+      {/* Tags — strip de chips entre conteúdo e footer. Click filtra a lista
+          (stopPropagation pra não abrir o preview do card). */}
+      {(note.tags?.length ?? 0) > 0 && (
+        <div
+          className="mt-2 flex flex-wrap items-center gap-1 shrink-0"
+          onClick={e => e.stopPropagation()}
+          onPointerDown={e => e.stopPropagation()}
+        >
+          {note.tags!.slice(0, 3).map(tag => (
+            <button
+              key={tag}
+              type="button"
+              onClick={() => onTagClick(tag)}
+              title={`Filtrar por #${tag}`}
+              className={cn(
+                'inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-black/10 dark:bg-white/15 hover:bg-black/20 dark:hover:bg-white/25 text-[10px] font-medium transition-colors max-w-[120px]',
+                color.text,
+              )}
+            >
+              <span className="opacity-60">#</span>
+              <span className="truncate">{tag}</span>
+            </button>
+          ))}
+          {note.tags!.length > 3 && (
+            <span className={cn('text-[10px] font-medium opacity-60', color.text)}>
+              +{note.tags!.length - 3}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Footer */}
       <div className="mt-2 pt-2 border-t border-black/10 dark:border-white/20 flex items-center justify-between gap-2 shrink-0">
         <span className="text-[11px] font-medium text-black/50 dark:text-white/60">
@@ -339,6 +468,7 @@ interface NoteFormData {
   color: NoteColor;
   scope: 'personal' | 'team';
   attachments: NoteAttachment[];
+  tags: string[];
 }
 
 const NOTE_MODAL_SIZE_KEY = 'notas_modal_size';
@@ -377,6 +507,7 @@ function NoteModal({
     color: initial?.color ?? 'yellow',
     scope: initial?.scope ?? tab,
     attachments: initial?.attachments ?? [],
+    tags: initial?.tags ?? [],
   });
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -604,6 +735,16 @@ function NoteModal({
             className="flex-1 w-full bg-transparent border-0 resize-none text-sm text-black/80 dark:text-white/80 placeholder-black/30 dark:placeholder-white/30 leading-relaxed min-h-0 overflow-y-auto"
           />
 
+          {/* Tags — chip-input acima dos anexos pra ficar visualmente próximo
+              ao conteúdo (parte semântica) sem competir com a área editável. */}
+          <div className="flex-shrink-0 border-t border-black/[0.06] dark:border-white/[0.06] pt-2">
+            <TagInput
+              value={form.tags}
+              onChange={tags => setForm(f => ({ ...f, tags }))}
+              textColorClass={color.text}
+            />
+          </div>
+
           {/* Attachments preview */}
           {form.attachments.length > 0 && (
             <div className="flex-shrink-0 border-t border-black/[0.06] dark:border-white/[0.06] pt-2 space-y-1.5">
@@ -759,6 +900,71 @@ function CreateBar({
   );
 }
 
+// ─── Tag Filter Bar ───────────────────────────────────────────────────────────
+
+/** Barra horizontal de tags pra filtrar a grid. Mostra todas as tags únicas
+ *  do scope ativo (excluindo as notas que não pertencem à tab corrente) com
+ *  contagem entre parênteses. Multi-select com lógica AND (precisa ter
+ *  TODAS as selecionadas). Quando há filtro ativo, exibe "Limpar". */
+function TagFilterBar({
+  tagCounts,
+  selected,
+  onToggle,
+  onClear,
+}: {
+  tagCounts: Map<string, number>;
+  selected: string[];
+  onToggle: (tag: string) => void;
+  onClear: () => void;
+}) {
+  if (tagCounts.size === 0) return null;
+  const entries = [...tagCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2 }}
+      className="flex items-center gap-2"
+    >
+      <TagIcon className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+      <div className="flex flex-wrap items-center gap-1.5 flex-1 min-w-0">
+        {entries.map(([tag, count]) => {
+          const active = selected.includes(tag);
+          return (
+            <button
+              key={tag}
+              type="button"
+              onClick={() => onToggle(tag)}
+              className={cn(
+                'inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium transition-all border',
+                active
+                  ? 'bg-red-500 text-white border-red-500 shadow-sm'
+                  : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-700 hover:border-red-300 dark:hover:border-red-700',
+              )}
+            >
+              <span className="opacity-70">#</span>
+              <span className="truncate max-w-[140px]">{tag}</span>
+              <span className={cn('opacity-60 tabular-nums', active ? 'text-white' : 'text-gray-400')}>
+                {count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      {selected.length > 0 && (
+        <button
+          onClick={onClear}
+          className="flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-red-500 hover:text-red-600 transition-colors shrink-0"
+        >
+          <X className="w-3 h-3" />
+          Limpar
+        </button>
+      )}
+    </motion.div>
+  );
+}
+
 // ─── Empty State ──────────────────────────────────────────────────────────────
 
 function EmptyState({ tab, onCreate }: { tab: ActiveTab; onCreate: () => void }) {
@@ -872,6 +1078,22 @@ function NotePreviewModal({
                 {note.title}
               </h2>
             )}
+            {(note.tags?.length ?? 0) > 0 && (
+              <div className="mt-2 flex flex-wrap items-center gap-1">
+                {note.tags!.map(tag => (
+                  <span
+                    key={tag}
+                    className={cn(
+                      'inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full bg-black/10 dark:bg-white/15 text-[11px] font-medium',
+                      color.text,
+                    )}
+                  >
+                    <span className="opacity-60">#</span>
+                    <span className="truncate max-w-[160px]">{tag}</span>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
           {/* select-none aqui evita que Ctrl+A no modal copie "Editar" / "X"
               junto com o conteúdo — usuário copiava da preview e colava em
@@ -981,6 +1203,7 @@ export default function NotasModule() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [showModal, setShowModal] = useState(false);
   const [editingNote, setEditingNote] = useState<Note | null>(null);
   const [previewNote, setPreviewNote] = useState<Note | null>(null);
@@ -1014,25 +1237,82 @@ export default function NotasModule() {
 
   // ── Sorted notes (tab filter + pinned first) ──────────────────────────────
 
-  const displayed = useMemo(() => {
-    let filtered = notes.filter(n =>
+  // Notas do scope ativo (sem aplicar tag/search ainda) — base pra contar tags.
+  const tabScoped = useMemo(() =>
+    notes.filter(n =>
       activeTab === 'personal'
         ? n.scope === 'personal' && n.authorId === user?.uid
         : n.scope === 'team',
-    );
+    ),
+  [notes, activeTab, user?.uid]);
+
+  // Mapa tag → quantas notas do scope ativo a usam. Usado pelo TagFilterBar.
+  const tagCounts = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const n of tabScoped) {
+      for (const t of n.tags ?? []) {
+        map.set(t, (map.get(t) ?? 0) + 1);
+      }
+    }
+    return map;
+  }, [tabScoped]);
+
+  // Limpa tags selecionadas que não existem mais no scope ativo (ex: trocou
+  // de tab e a tag só vivia no outro). Sem isso, o filtro fica "preso" em
+  // tag inexistente e a grid renderiza vazia sem motivo aparente.
+  useEffect(() => {
+    if (selectedTags.length === 0) return;
+    const stillValid = selectedTags.filter(t => tagCounts.has(t));
+    if (stillValid.length !== selectedTags.length) {
+      setSelectedTags(stillValid);
+    }
+  }, [tagCounts, selectedTags]);
+
+  const displayed = useMemo(() => {
+    let filtered = tabScoped;
+    // Filtro de tags — AND (precisa ter TODAS as selecionadas)
+    if (selectedTags.length > 0) {
+      filtered = filtered.filter(n => {
+        const noteTags = n.tags ?? [];
+        return selectedTags.every(t => noteTags.includes(t));
+      });
+    }
     if (search.trim()) {
       const q = search.toLowerCase();
       filtered = filtered.filter(n =>
-        n.title.toLowerCase().includes(q) || n.content.toLowerCase().includes(q),
+        n.title.toLowerCase().includes(q)
+        || n.content.toLowerCase().includes(q)
+        || (n.tags ?? []).some(t => t.includes(q)),
       );
     }
     return [
       ...filtered.filter(n => n.isPinned).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
       ...filtered.filter(n => !n.isPinned).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     ];
-  }, [notes, search, activeTab, user?.uid]);
+  }, [tabScoped, search, selectedTags]);
+
+  const toggleTag = (tag: string) => {
+    setSelectedTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
+  };
 
   // ── CRUD handlers ──────────────────────────────────────────────────────────
+
+  /** Sanitiza tags antes de persistir: normaliza cada uma e remove duplicatas
+   *  (defesa em profundidade — TagInput já normaliza, mas garante consistência
+   *  caso vire texto livre no futuro ou venha de import). */
+  const sanitizeTags = (raw: string[]): string[] => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const t of raw) {
+      const norm = normalizeTag(t);
+      if (!norm) continue;
+      if (seen.has(norm)) continue;
+      seen.add(norm);
+      out.push(norm);
+      if (out.length >= MAX_TAGS_PER_NOTE) break;
+    }
+    return out;
+  };
 
   const handleCreate = async (data: NoteFormData) => {
     if (!business?.id || !user?.uid) return;
@@ -1048,6 +1328,7 @@ export default function NotasModule() {
       color: data.color,
       scope: data.scope,
       attachments: data.attachments,
+      tags: sanitizeTags(data.tags),
       isPinned: false,
       createdAt: now,
       updatedAt: now,
@@ -1072,6 +1353,7 @@ export default function NotasModule() {
       color: data.color,
       scope: data.scope,
       attachments: data.attachments,
+      tags: sanitizeTags(data.tags),
       updatedAt: new Date().toISOString(),
     });
     setEditingNote(null);
@@ -1179,6 +1461,15 @@ export default function NotasModule() {
         ))}
       </div>
 
+      {/* Tag filter bar — só renderiza se houver pelo menos uma tag em uso
+          no scope ativo (TagFilterBar retorna null caso contrário). */}
+      <TagFilterBar
+        tagCounts={tagCounts}
+        selected={selectedTags}
+        onToggle={toggleTag}
+        onClear={() => setSelectedTags([])}
+      />
+
       {/* Create bar */}
       <CreateBar tab={activeTab} onExpand={openCreate} />
 
@@ -1204,6 +1495,14 @@ export default function NotasModule() {
                 <p className="text-sm text-gray-400 dark:text-gray-500">Nenhuma nota encontrada para "{search}"</p>
                 <button onClick={() => setSearch('')} className="text-xs text-red-500 hover:underline">Limpar busca</button>
               </div>
+            ) : selectedTags.length > 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 gap-3">
+                <TagIcon className="w-10 h-10 text-gray-300 dark:text-gray-600" />
+                <p className="text-sm text-gray-400 dark:text-gray-500">
+                  Nenhuma nota com {selectedTags.length === 1 ? 'a tag' : 'todas as tags'} {selectedTags.map(t => `#${t}`).join(' + ')}
+                </p>
+                <button onClick={() => setSelectedTags([])} className="text-xs text-red-500 hover:underline">Limpar filtro</button>
+              </div>
             ) : (
               <EmptyState tab={activeTab} onCreate={openCreate} />
             )}
@@ -1226,6 +1525,11 @@ export default function NotasModule() {
                 onEdit={openEdit}
                 onDelete={handleDelete}
                 onPreview={setPreviewNote}
+                onTagClick={(tag) => {
+                  if (!selectedTags.includes(tag)) {
+                    setSelectedTags(prev => [...prev, tag]);
+                  }
+                }}
               />
             ))}
           </motion.div>
