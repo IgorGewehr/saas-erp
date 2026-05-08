@@ -324,6 +324,8 @@ function KanbanCardItem({
   onDragOverCard,
   onDropOnCard,
   isDragging,
+  isDropTarget,
+  dropPosition,
 }: {
   card: KanbanCard;
   members: MemberDisplay[];
@@ -332,6 +334,8 @@ function KanbanCardItem({
   onDragOverCard: (e: React.DragEvent, card: KanbanCard, position: 'before' | 'after') => void;
   onDropOnCard: (e: React.DragEvent, card: KanbanCard) => void;
   isDragging: boolean;
+  isDropTarget: boolean;
+  dropPosition: 'before' | 'after' | null;
 }) {
   const checkDone = card.checklist?.filter(c => c.completed).length ?? 0;
   const checkTotal = card.checklist?.length ?? 0;
@@ -456,6 +460,14 @@ function KanbanCardItem({
         </div>
       </div>
 
+      {/* Drop indicator — absolute, doesn't affect layout flow */}
+      {isDropTarget && dropPosition === 'before' && (
+        <div className="pointer-events-none absolute -top-1.5 left-1 right-1 h-0.5 bg-blue-400 dark:bg-blue-500 rounded-full shadow-[0_0_4px_rgba(96,165,250,0.6)] z-10" />
+      )}
+      {isDropTarget && dropPosition === 'after' && (
+        <div className="pointer-events-none absolute -bottom-1.5 left-1 right-1 h-0.5 bg-blue-400 dark:bg-blue-500 rounded-full shadow-[0_0_4px_rgba(96,165,250,0.6)] z-10" />
+      )}
+
       {/* Drag handle indicator */}
       <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
         <GripVertical className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600" />
@@ -575,21 +587,9 @@ function KanbanColumnComponent({
         )}
       >
         <AnimatePresence mode="popLayout">
-          {cards.flatMap(card => {
+          {cards.map(card => {
             const isTarget = dragOverCardId === card.id && draggingCardId !== card.id;
-            const indicatorEl = (key: string) => (
-              <motion.div
-                key={key}
-                layout
-                initial={{ opacity: 0, scaleY: 0 }}
-                animate={{ opacity: 1, scaleY: 1 }}
-                exit={{ opacity: 0, scaleY: 0 }}
-                transition={{ duration: 0.12 }}
-                className="h-0.5 bg-blue-400 dark:bg-blue-500 rounded-full mx-1 origin-top"
-              />
-            );
-            return [
-              isTarget && dragOverPosition === 'before' ? indicatorEl(`${card.id}-before`) : null,
+            return (
               <KanbanCardItem
                 key={card.id}
                 card={card}
@@ -599,9 +599,10 @@ function KanbanColumnComponent({
                 onDragOverCard={onDragOverCard}
                 onDropOnCard={onDropOnCard}
                 isDragging={draggingCardId === card.id}
-              />,
-              isTarget && dragOverPosition === 'after' ? indicatorEl(`${card.id}-after`) : null,
-            ].filter((el): el is React.ReactElement => el !== null);
+                isDropTarget={isTarget}
+                dropPosition={isTarget ? dragOverPosition : null}
+              />
+            );
           })}
         </AnimatePresence>
 
@@ -1270,10 +1271,19 @@ function CardDetailDialog({
                             )}
                           >
                             <div className={cn(
-                              'w-3.5 h-3.5 rounded-full flex items-center justify-center text-[8px] font-bold flex-shrink-0',
+                              'relative w-3.5 h-3.5 rounded-full flex items-center justify-center text-[8px] font-bold flex-shrink-0 overflow-hidden',
                               selected ? 'bg-red-200 dark:bg-red-500/30 text-red-700 dark:text-red-400' : 'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400'
                             )}>
-                              {getInitials(member.name)}
+                              {member.photoURL ? (
+                                <img
+                                  src={member.photoURL}
+                                  alt={member.name}
+                                  className="absolute inset-0 w-full h-full object-cover"
+                                  referrerPolicy="no-referrer"
+                                />
+                              ) : (
+                                getInitials(member.name)
+                              )}
                             </div>
                             {(member.name || '?').split(' ')[0]}
                           </button>
@@ -1738,12 +1748,21 @@ function NewCardDialog({
                     )}
                   >
                     <div className={cn(
-                      'w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-bold',
+                      'relative w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-bold overflow-hidden',
                       selectedAssignees.includes(member.id)
                         ? 'bg-red-200 dark:bg-red-500/30 text-red-700 dark:text-red-400'
                         : 'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400'
                     )}>
-                      {getInitials(member.name)}
+                      {member.photoURL ? (
+                        <img
+                          src={member.photoURL}
+                          alt={member.name}
+                          className="absolute inset-0 w-full h-full object-cover"
+                          referrerPolicy="no-referrer"
+                        />
+                      ) : (
+                        getInitials(member.name)
+                      )}
                     </div>
                     {(member.name || '?').split(' ')[0]}
                   </button>
@@ -3371,17 +3390,18 @@ export default function KanbanModule() {
   const handleDragOver = useCallback((e: React.DragEvent, columnId: string) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    setDragOverColumn(columnId);
-    setDragOverCardId(null); // clear card indicator when hovering over empty column space
+    // Only update state if values actually changed (dragover fires ~60Hz)
+    setDragOverColumn(prev => prev === columnId ? prev : columnId);
+    setDragOverCardId(prev => prev === null ? prev : null);
   }, []);
 
   // Card-level drag over — stops propagation so column handler doesn't clear dragOverCardId
   const handleDragOverCard = useCallback((e: React.DragEvent, card: KanbanCard, position: 'before' | 'after') => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    setDragOverCardId(card.id);
-    setDragOverPosition(position);
-    setDragOverColumn(card.columnId); // highlight the column too
+    setDragOverCardId(prev => prev === card.id ? prev : card.id);
+    setDragOverPosition(prev => prev === position ? prev : position);
+    setDragOverColumn(prev => prev === card.columnId ? prev : card.columnId);
   }, []);
 
   const handleDrop = useCallback(async (e: React.DragEvent, targetColumnId: string) => {
