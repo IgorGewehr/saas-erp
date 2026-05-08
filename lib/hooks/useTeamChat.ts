@@ -501,15 +501,26 @@ export function useTeamChatMessages(businessId: string | null, chatId: string | 
     // de um campo que a query não filtra, ele rejeita o LIST inteiro com
     // permission-denied (não só docs individuais). Sem esse where, o listener
     // dispara erro mesmo se a rule estaria correta no run-time.
+    //
+    // ORDER: 'desc' + limit pega as N mensagens MAIS RECENTES — invertemos
+    // client-side pra renderizar em ordem cronológica. Bug anterior usava
+    // 'asc' + limit, o que pegava as N mais ANTIGAS — quando o chat passava
+    // de N msgs, novas ficavam fora do limit e nunca apareciam na UI mesmo
+    // sendo criadas no Firestore (sintoma: lastMessage da lista atualiza
+    // mas o thread fica congelado nas primeiras N msgs).
     const q = query(
       collection(db, 'teamChatMessages'),
       where('businessId', '==', businessId),
       where('chatId', '==', chatId),
-      orderBy('createdAt', 'asc'),
+      orderBy('createdAt', 'desc'),
       limit(max),
     );
     const unsub = onSnapshot(q, snap => {
-      setMessages(snap.docs.map(d => ({ ...d.data(), id: d.id } as TeamChatMessage)));
+      // .reverse() pra exibir cronológico (asc) na UI sem mudar a query.
+      const list = snap.docs
+        .map(d => ({ ...d.data(), id: d.id } as TeamChatMessage))
+        .reverse();
+      setMessages(list);
       setLoading(false);
     }, err => {
       console.warn('[useTeamChatMessages] error:', err);
