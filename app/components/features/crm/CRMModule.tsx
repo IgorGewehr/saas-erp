@@ -26,18 +26,19 @@ import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
 import { db } from '@/lib/config/firebase';
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot, increment, writeBatch } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot, increment, writeBatch, limit as firestoreLimit } from 'firebase/firestore';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   CRMContact, CRMDeal, CRMPipelineStage, CRMStageConfig, CRMPipelineConfig, CRMActivity, CRMActivityType,
   LeadStatus, LeadSource, User, Broadcast, BroadcastStatus, BroadcastRecipient, Client, ContactProfile, CRMAuditAction,
-  Segment, SegmentFilter, SegmentFilterGroup, SegmentFilterOperator,
+  Segment, SegmentFilter, SegmentFilterGroup, SegmentFilterOperator, BroadcastAudienceType, BroadcastChannel, ConversationChannel,
   BroadcastList, ConsentBasis, SendThrottle, ThrottlePresetKey,
   BirthdayCampaign,
 } from '@/lib/types';
 import { CONSENT_BASIS_LABELS, THROTTLE_PRESETS } from '@/lib/types';
 import { getAuth } from 'firebase/auth';
 import { ROLE_HIERARCHY } from '@/lib/types';
+import { resolveClientAudience, matchesAudienceFilterGroups, audienceTagsToFilterGroups } from '@/lib/campaigns/audience';
 
 // ── Extracted sub-components ────────────────────────────────────────────────
 import {
@@ -765,7 +766,7 @@ function MetricsTab({ deals, contacts, activities, stages, isDark, metrics, wonS
 // SEGMENTS TAB — OR/AND filter builder
 // ==========================================
 
-type SegFieldType = 'string' | 'number' | 'select' | 'tags' | 'lifecycle' | 'tipo';
+type SegFieldType = 'string' | 'number' | 'select' | 'tags' | 'lifecycle' | 'tipo' | 'boolean' | 'channel';
 
 interface SegFieldDef {
   id: string;
@@ -793,6 +794,16 @@ const SEGMENT_FIELDS: SegFieldDef[] = [
   { id: 'scores.overall', label: 'Score IA', type: 'number' },
   { id: 'totalSpent', label: 'Total gasto (R$)', type: 'number' },
   { id: 'visitCount', label: 'Nº de compras', type: 'number' },
+  { id: 'age', label: 'Idade', type: 'number' },
+  { id: 'birthMonth', label: 'Mês de nascimento', type: 'select',
+    options: ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
+      .map((m, i) => ({ value: String(i + 1), label: m })) },
+  { id: 'gender', label: 'Gênero', type: 'select',
+    options: [{ value: 'M', label: 'Masculino' }, { value: 'F', label: 'Feminino' }, { value: 'O', label: 'Outro' }] },
+  { id: 'preferredChannel', label: 'Canal preferido', type: 'select',
+    options: [{ value: 'whatsapp', label: 'WhatsApp' }, { value: 'facebook', label: 'Facebook' }, { value: 'instagram', label: 'Instagram' }] },
+  { id: 'optInMarketing', label: 'Opt-in marketing', type: 'boolean',
+    options: [{ value: 'true', label: 'Sim' }, { value: 'false', label: 'Não' }] },
   { id: 'tags', label: 'Tags', type: 'tags' },
   { id: 'company', label: 'Empresa (contém)', type: 'string' },
 ];
@@ -804,30 +815,45 @@ const OPS_BY_TYPE: Record<SegFieldType, { value: SegmentFilterOperator; label: s
   tags:      [{ value: 'contains', label: 'inclui tag' }, { value: 'not_contains', label: 'não inclui tag' }],
   lifecycle: [{ value: 'eq', label: '=' }, { value: 'neq', label: '≠' }],
   tipo:      [{ value: 'eq', label: '=' }],
+  boolean:   [{ value: 'eq', label: '=' }, { value: 'neq', label: '≠' }],
+  channel:   [{ value: 'contains', label: 'teve conversa' }, { value: 'not_contains', label: 'não teve conversa' }],
 };
 
-function getNestedVal(obj: unknown, path: string): unknown {
-  return path.split('.').reduce((acc, k) =>
-    (acc != null && typeof acc === 'object' ? (acc as Record<string, unknown>)[k] : undefined), obj);
+const CAMPAIGN_AUDIENCE_FIELDS: SegFieldDef[] = [
+  ...SEGMENT_FIELDS,
+  { id: 'conversationChannel', label: 'Conversa no canal', type: 'channel',
+    options: [{ value: 'whatsapp', label: 'WhatsApp' }, { value: 'facebook', label: 'Facebook Page' }, { value: 'instagram', label: 'Instagram' }] },
+  { id: 'hasWhatsapp', label: 'Tem WhatsApp válido', type: 'boolean',
+    options: [{ value: 'true', label: 'Sim' }, { value: 'false', label: 'Não' }] },
+  { id: 'hasFacebook', label: 'Tem ID Facebook', type: 'boolean',
+    options: [{ value: 'true', label: 'Sim' }, { value: 'false', label: 'Não' }] },
+  { id: 'hasInstagram', label: 'Tem ID Instagram', type: 'boolean',
+    options: [{ value: 'true', label: 'Sim' }, { value: 'false', label: 'Não' }] },
+  { id: 'hasEmail', label: 'Tem email válido', type: 'boolean',
+    options: [{ value: 'true', label: 'Sim' }, { value: 'false', label: 'Não' }] },
+];
+
+interface AudienceConversationIndex {
+  contactIdsByChannel: Map<ConversationChannel, Set<string>>;
+  recipientIdsByChannel: Map<ConversationChannel, Map<string, string>>;
+}
+
+function makeEmptyAudienceConversationIndex(): AudienceConversationIndex {
+  return {
+    contactIdsByChannel: new Map(),
+    recipientIdsByChannel: new Map(),
+  };
+}
+
+function getCampaignDestinationLabel(channel: BroadcastChannel): string {
+  if (channel === 'email') return 'email';
+  if (channel === 'facebook') return 'ID Facebook';
+  if (channel === 'instagram') return 'ID Instagram';
+  return 'WhatsApp';
 }
 
 function evalFilter(contact: CRMContact, filter: SegmentFilter): boolean {
-  const val = getNestedVal(contact, filter.field);
-  if (Array.isArray(val)) {
-    const arr = val as string[];
-    if (filter.operator === 'contains') return arr.includes(filter.value as string);
-    if (filter.operator === 'not_contains') return !arr.includes(filter.value as string);
-    return false;
-  }
-  switch (filter.operator) {
-    case 'eq': return val === filter.value;
-    case 'neq': return val !== filter.value;
-    case 'gt': return typeof val === 'number' && typeof filter.value === 'number' && val > filter.value;
-    case 'lt': return typeof val === 'number' && typeof filter.value === 'number' && val < filter.value;
-    case 'contains': return typeof val === 'string' && typeof filter.value === 'string' && val.toLowerCase().includes((filter.value as string).toLowerCase());
-    case 'not_contains': return !(typeof val === 'string' && typeof filter.value === 'string' && val.toLowerCase().includes((filter.value as string).toLowerCase()));
-    default: return false;
-  }
+  return matchesAudienceFilterGroups(contact, [{ id: 'single', filters: [filter] }]);
 }
 
 function matchesSegmentGroups(contact: CRMContact, filterGroups: SegmentFilterGroup[]): boolean {
@@ -837,17 +863,21 @@ function matchesSegmentGroups(contact: CRMContact, filterGroups: SegmentFilterGr
 
 function makeFilter(): SegmentFilter { return { field: 'status', operator: 'eq', value: 'novo' }; }
 function makeGroup(): SegmentFilterGroup { return { id: crypto.randomUUID(), filters: [makeFilter()] }; }
+function makeCampaignAudienceGroup(): SegmentFilterGroup {
+  return { id: crypto.randomUUID(), filters: [{ field: 'age', operator: 'gt', value: 30 }] };
+}
 
-function FilterRow({ filter, onChange, onRemove }: {
+function FilterRow({ filter, onChange, onRemove, fields = SEGMENT_FIELDS }: {
   filter: SegmentFilter;
   onChange: (f: SegmentFilter) => void;
   onRemove: () => void;
+  fields?: SegFieldDef[];
 }) {
-  const fieldDef = SEGMENT_FIELDS.find(f => f.id === filter.field) ?? SEGMENT_FIELDS[0];
+  const fieldDef = fields.find(f => f.id === filter.field) ?? fields[0];
   const ops = OPS_BY_TYPE[fieldDef.type];
 
   const handleFieldChange = (fieldId: string) => {
-    const def = SEGMENT_FIELDS.find(f => f.id === fieldId) ?? SEGMENT_FIELDS[0];
+    const def = fields.find(f => f.id === fieldId) ?? fields[0];
     const firstOp = OPS_BY_TYPE[def.type][0].value;
     const defaultVal = def.type === 'number' ? 0 : (def.options?.[0]?.value ?? '');
     onChange({ field: fieldId, operator: firstOp, value: defaultVal });
@@ -857,7 +887,7 @@ function FilterRow({ filter, onChange, onRemove }: {
     <div className="flex items-center gap-2 flex-wrap">
       <select value={filter.field} onChange={e => handleFieldChange(e.target.value)}
         className="px-2 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-700 dark:text-gray-300 focus:outline-none">
-        {SEGMENT_FIELDS.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+        {fields.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
       </select>
       <select value={filter.operator} onChange={e => onChange({ ...filter, operator: e.target.value as SegmentFilterOperator })}
         className="px-2 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-gray-700 dark:text-gray-300 focus:outline-none">
@@ -1308,7 +1338,10 @@ function CampaignsTab({ businessId }: { businessId: string }) {
   // Lista de connections disponíveis pro operador (carregada via API que já
   // filtra por role: operator vê 'business' + suas próprias 'user'; admin vê tudo).
   const [availableConnections, setAvailableConnections] = useState<import('@/lib/types').ChannelConnection[]>([]);
-  const [formAudienceType, setFormAudienceType] = useState<'all_contacts' | 'tags' | 'manual' | 'list'>('list');
+  const [formAudienceType, setFormAudienceType] = useState<Extract<BroadcastAudienceType, 'all_contacts' | 'tags' | 'segment' | 'filtered_clients' | 'list'>>('list');
+  const [formSegmentId, setFormSegmentId] = useState('');
+  const [formAudienceFilterGroups, setFormAudienceFilterGroups] = useState<SegmentFilterGroup[]>([makeCampaignAudienceGroup()]);
+  const [formRequireMarketingOptIn, setFormRequireMarketingOptIn] = useState(false);
   const [formTags, setFormTags] = useState('');
   const [formRecipients, setFormRecipients] = useState<BroadcastRecipient[]>([]);
   /** 5.8: nomes de colunas extras detectadas no último CSV importado — vão pro TemplateSelector. */
@@ -1465,6 +1498,50 @@ function CampaignsTab({ businessId }: { businessId: string }) {
     gcTime: 5 * 60 * 1000,
   });
 
+  const { data: availableSegments = [] } = useQuery<Segment[]>({
+    queryKey: ['campaign-segments', businessId],
+    queryFn: async () => {
+      if (!businessId) return [];
+      const snap = await getDocs(query(
+        collection(db, 'segments'),
+        where('businessId', '==', businessId),
+        orderBy('createdAt', 'desc'),
+      ));
+      return snap.docs.map(d => ({ ...(d.data() as Segment), id: d.id }));
+    },
+    enabled: !!businessId && showNew,
+    staleTime: 2 * 60 * 1000,
+  });
+
+  const { data: audienceConversationIndex = makeEmptyAudienceConversationIndex() } = useQuery<AudienceConversationIndex>({
+    queryKey: ['campaign-audience-conversations', businessId],
+    queryFn: async () => {
+      if (!businessId) return makeEmptyAudienceConversationIndex();
+      const snap = await getDocs(query(
+        collection(db, 'conversations'),
+        where('businessId', '==', businessId),
+        firestoreLimit(5000),
+      ));
+      const index = makeEmptyAudienceConversationIndex();
+      snap.docs.forEach(d => {
+        const data = d.data();
+        const channel = data.channel as ConversationChannel | undefined;
+        const clientId = data.crmContactId as string | undefined;
+        const recipientId = (data.contactExternalId as string | undefined)?.trim();
+        if (!channel || !clientId) return;
+        if (!index.contactIdsByChannel.has(channel)) index.contactIdsByChannel.set(channel, new Set());
+        index.contactIdsByChannel.get(channel)!.add(clientId);
+        if (recipientId) {
+          if (!index.recipientIdsByChannel.has(channel)) index.recipientIdsByChannel.set(channel, new Map());
+          index.recipientIdsByChannel.get(channel)!.set(clientId, recipientId);
+        }
+      });
+      return index;
+    },
+    enabled: !!businessId && showNew,
+    staleTime: 2 * 60 * 1000,
+  });
+
   // Subscription: campanhas de aniversário. Coleção `birthdayCampaigns`,
   // ordenadas por createdAt desc igual a broadcasts. Erro silencioso —
   // ausência da coleção (primeira instalação) é OK; UI só mostra empty state.
@@ -1513,10 +1590,105 @@ function CampaignsTab({ businessId }: { businessId: string }) {
     return () => unsub();
   }, [businessId]);
 
+  const selectedSegment = useMemo(
+    () => availableSegments.find(seg => seg.id === formSegmentId) ?? null,
+    [availableSegments, formSegmentId],
+  );
+
+  const effectiveAudienceFilterGroups = useMemo<SegmentFilterGroup[]>(() => {
+    if (formAudienceType === 'all_contacts') return [];
+    if (formAudienceType === 'tags') {
+      return audienceTagsToFilterGroups(formTags.split(',').map(t => t.trim()).filter(Boolean));
+    }
+    if (formAudienceType === 'segment') {
+      if (!selectedSegment) return [];
+      return selectedSegment.filterGroups?.length
+        ? selectedSegment.filterGroups
+        : [{ id: 'segment-legacy', filters: selectedSegment.filters ?? [] }];
+    }
+    if (formAudienceType === 'filtered_clients') return formAudienceFilterGroups;
+    return [];
+  }, [formAudienceType, formTags, selectedSegment, formAudienceFilterGroups]);
+
+  const resolvedClientAudience = useMemo(() => resolveClientAudience(
+    existingClients,
+    effectiveAudienceFilterGroups,
+    {
+      channel: formChannel,
+      conversationContactIdsByChannel: audienceConversationIndex.contactIdsByChannel,
+      conversationRecipientIdsByChannel: audienceConversationIndex.recipientIdsByChannel,
+      requireMarketingOptIn: formRequireMarketingOptIn,
+    },
+  ), [existingClients, effectiveAudienceFilterGroups, formChannel, audienceConversationIndex, formRequireMarketingOptIn]);
+
+  const audienceSelectionIncomplete =
+    (formAudienceType === 'tags' && formTags.split(',').map(t => t.trim()).filter(Boolean).length === 0) ||
+    (formAudienceType === 'segment' && !selectedSegment) ||
+    (formAudienceType === 'filtered_clients' && !formAudienceFilterGroups.some(g => g.filters.length > 0));
+
+  const activeRecipients = formAudienceType === 'list'
+    ? formRecipients
+    : audienceSelectionIncomplete
+      ? []
+      : resolvedClientAudience.recipients;
+
+  const updateAudienceGroup = (gIdx: number, patch: Partial<SegmentFilterGroup>) =>
+    setFormAudienceFilterGroups(prev => prev.map((g, i) => i === gIdx ? { ...g, ...patch } : g));
+
+  const addAudienceFilter = (gIdx: number) =>
+    updateAudienceGroup(gIdx, { filters: [...formAudienceFilterGroups[gIdx].filters, { field: 'status', operator: 'eq', value: 'ganho' }] });
+
+  const updateAudienceFilter = (gIdx: number, fIdx: number, filter: SegmentFilter) =>
+    updateAudienceGroup(gIdx, {
+      filters: formAudienceFilterGroups[gIdx].filters.map((existing, i) => i === fIdx ? filter : existing),
+    });
+
+  const removeAudienceFilter = (gIdx: number, fIdx: number) => {
+    const nextFilters = formAudienceFilterGroups[gIdx].filters.filter((_, i) => i !== fIdx);
+    if (nextFilters.length === 0) {
+      setFormAudienceFilterGroups(prev => prev.length > 1 ? prev.filter((_, i) => i !== gIdx) : [makeCampaignAudienceGroup()]);
+    } else {
+      updateAudienceGroup(gIdx, { filters: nextFilters });
+    }
+  };
+
+  const setAudiencePreset = (preset: 'age30' | 'facebook' | 'tag') => {
+    if (preset === 'age30') {
+      setFormAudienceFilterGroups([{ id: crypto.randomUUID(), filters: [
+        { field: 'age', operator: 'gt', value: 30 },
+        { field: 'hasWhatsapp', operator: 'eq', value: 'true' },
+      ] }]);
+      return;
+    }
+    if (preset === 'facebook') {
+      setFormAudienceFilterGroups([{ id: crypto.randomUUID(), filters: [
+        { field: 'conversationChannel', operator: 'contains', value: 'facebook' },
+      ] }]);
+      return;
+    }
+    setFormAudienceFilterGroups([{ id: crypto.randomUUID(), filters: [
+      { field: 'tags', operator: 'contains', value: 'remarketing' },
+    ] }]);
+  };
+
   const handleCreate = async () => {
     if (!businessId || !user || !formName.trim()) return;
-    if (formAudienceType === 'list' && formRecipients.length === 0) {
-      toast.error('Adicione pelo menos um recipiente na lista.');
+    if (formAudienceType === 'tags' && formTags.split(',').map(t => t.trim()).filter(Boolean).length === 0) {
+      toast.error('Informe ao menos uma tag para montar a audiência.');
+      return;
+    }
+    if (formAudienceType === 'segment' && !selectedSegment) {
+      toast.error('Selecione um segmento salvo.');
+      return;
+    }
+    if (formAudienceType === 'filtered_clients' && !formAudienceFilterGroups.some(g => g.filters.length > 0)) {
+      toast.error('Adicione ao menos um filtro de cliente.');
+      return;
+    }
+    if (activeRecipients.length === 0) {
+      toast.error(formAudienceType === 'list'
+        ? 'Adicione pelo menos um recipiente na lista.'
+        : 'Nenhum cliente elegível com destino válido para este canal.');
       return;
     }
     // 5.12 — LGPD: base legal obrigatória + auto-confirmação do operador
@@ -1548,12 +1720,10 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       }
     }
     // Firestore tem limite de 1 MiB por documento. Estimativa conservadora ~80% do limite.
-    if (formAudienceType === 'list') {
-      const recipientsSizeEstimate = JSON.stringify(formRecipients).length;
-      if (recipientsSizeEstimate > 800_000) {
-        toast.error(`Lista muito grande (${formRecipients.length} contatos, ~${Math.round(recipientsSizeEstimate / 1024)}KB). Limite por campanha: ~10.000 contatos. Divida em múltiplas.`);
-        return;
-      }
+    const recipientsSizeEstimate = JSON.stringify(activeRecipients).length;
+    if (recipientsSizeEstimate > 800_000) {
+      toast.error(`Lista muito grande (${activeRecipients.length} contatos, ~${Math.round(recipientsSizeEstimate / 1024)}KB). Limite por campanha: ~10.000 contatos. Divida em múltiplas.`);
+      return;
     }
     setSaving(true);
     try {
@@ -1565,25 +1735,24 @@ function CampaignsTab({ businessId }: { businessId: string }) {
         ? formRecipientLimit
         : null;
       const sourceRecipients = limitNum
-        ? formRecipients.slice(0, limitNum)
-        : formRecipients;
-      const recipientsTotal = formAudienceType === 'list' ? sourceRecipients.length : 0;
+        ? activeRecipients.slice(0, limitNum)
+        : activeRecipients;
+      const recipientsTotal = sourceRecipients.length;
       // Limpa undefined dentro de cada recipient (Firestore aceita undefined no top-level via SDK
       // mas armazena como null em arrays — preferimos omitir o campo)
-      const cleanRecipients: BroadcastRecipient[] = formAudienceType === 'list'
-        ? sourceRecipients.map(r => {
+      const cleanRecipients: BroadcastRecipient[] = sourceRecipients.map(r => {
             const cleaned: BroadcastRecipient = {};
             if (r.contactId) cleaned.contactId = r.contactId;
             if (r.name) cleaned.name = r.name;
             if (r.phoneNumber) cleaned.phoneNumber = r.phoneNumber;
+            if (r.recipientId) cleaned.recipientId = r.recipientId;
             if (r.email) cleaned.email = r.email;
             // 5.8: preserva colunas CSV extras (necessárias se template usar csvColumn).
             if (r.customColumns && Object.keys(r.customColumns).length > 0) {
               cleaned.customColumns = r.customColumns;
             }
             return cleaned;
-          })
-        : [];
+          });
       // Email e Baileys forçam messageType=text; outros canais respeitam a escolha
       const isBaileysSend = formChannel === 'whatsapp' && formViaBaileys;
       const effectiveMsgType = (formChannel === 'email' || isBaileysSend) ? 'text' : formMsgType;
@@ -1622,6 +1791,11 @@ function CampaignsTab({ businessId }: { businessId: string }) {
         channelConnectionId: formChannelConnectionId || undefined,
         audienceType: formAudienceType,
         audienceTags: formAudienceType === 'tags' ? formTags.split(',').map(t => t.trim()).filter(Boolean) : [],
+        audienceSegmentId: formAudienceType === 'segment' && selectedSegment ? selectedSegment.id : undefined,
+        audienceFilterGroups: formAudienceType === 'filtered_clients' ? formAudienceFilterGroups : undefined,
+        audienceSnapshotCount: recipientsTotal,
+        audienceResolvedAt: now,
+        audienceRequireMarketingOptIn: formRequireMarketingOptIn || undefined,
         messageType: effectiveMsgType,
         throttle: throttleClean,
         templateName: effectiveMsgType === 'template' && formTemplate ? formTemplate.name : undefined,
@@ -1650,7 +1824,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
         createdAt: now,
         updatedAt: now,
       };
-      if (formAudienceType === 'list') payload.recipients = cleanRecipients;
+      payload.recipients = cleanRecipients;
       // Remove undefineds em primeiro nível
       Object.keys(payload).forEach(k => payload[k] === undefined && delete payload[k]);
       await addDoc(collection(db, 'broadcasts'), payload);
@@ -1706,6 +1880,11 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       setFormThrottlePreset('human');
       setFormThrottle(THROTTLE_PRESETS.human.throttle);
       setSelectedListId('');
+      setFormAudienceType('list');
+      setFormTags('');
+      setFormSegmentId('');
+      setFormAudienceFilterGroups([makeCampaignAudienceGroup()]);
+      setFormRequireMarketingOptIn(false);
       setSaveAsList(false);
       setListSaveName('');
       setRecipientResetKey(k => k + 1);
@@ -2070,12 +2249,110 @@ function CampaignsTab({ businessId }: { businessId: string }) {
               }
             }}>
               <MenuItem value="list">Lista direta (cole ou CSV)</MenuItem>
-              <MenuItem value="all_contacts">{t('crm.form.all', 'Todos os contatos CRM')}</MenuItem>
+              <MenuItem value="filtered_clients">Clientes cadastrados filtrados</MenuItem>
+              <MenuItem value="segment">Segmento salvo</MenuItem>
               <MenuItem value="tags">{t('crm.form.byTags', 'Por tags')}</MenuItem>
-              <MenuItem value="manual">{t('crm.form.manual', 'Manual')}</MenuItem>
+              <MenuItem value="all_contacts">{t('crm.form.all', 'Todos os contatos CRM')}</MenuItem>
             </Select>
           </FormControl>
-          {formAudienceType === 'tags' && <TextField label={t('crm.form.tags', 'Tags')} value={formTags} onChange={(e) => setFormTags(e.target.value)} fullWidth size="small" />}
+          {formAudienceType === 'tags' && (
+            <TextField
+              label={t('crm.form.tags', 'Tags')}
+              value={formTags}
+              onChange={(e) => setFormTags(e.target.value)}
+              fullWidth
+              size="small"
+              helperText="Separe múltiplas tags por vírgula. O cliente precisa ter todas."
+            />
+          )}
+          {formAudienceType === 'segment' && (
+            <FormControl fullWidth size="small">
+              <InputLabel>Segmento</InputLabel>
+              <Select value={formSegmentId} label="Segmento" onChange={(e) => setFormSegmentId(e.target.value)}>
+                <MenuItem value="">Selecione um segmento…</MenuItem>
+                {availableSegments.map(seg => (
+                  <MenuItem key={seg.id} value={seg.id}>
+                    {seg.name} ({existingClients.filter(c => matchesAudienceFilterGroups(
+                      c,
+                      seg.filterGroups?.length ? seg.filterGroups : [{ id: 'legacy', filters: seg.filters ?? [] }],
+                      {
+                        channel: formChannel,
+                        conversationContactIdsByChannel: audienceConversationIndex.contactIdsByChannel,
+                        conversationRecipientIdsByChannel: audienceConversationIndex.recipientIdsByChannel,
+                      },
+                    )).length})
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          )}
+          {formAudienceType === 'filtered_clients' && (
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Filtros de clientes</p>
+                <div className="flex items-center gap-1.5">
+                  <button type="button" onClick={() => setAudiencePreset('age30')}
+                    className="px-2 py-1 rounded-lg bg-gray-100 dark:bg-gray-800 text-[10px] font-semibold text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700">
+                    30+ WhatsApp
+                  </button>
+                  <button type="button" onClick={() => setAudiencePreset('facebook')}
+                    className="px-2 py-1 rounded-lg bg-blue-50 dark:bg-blue-500/10 text-[10px] font-semibold text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-500/20">
+                    Facebook Page
+                  </button>
+                  <button type="button" onClick={() => setAudiencePreset('tag')}
+                    className="px-2 py-1 rounded-lg bg-red-50 dark:bg-red-500/10 text-[10px] font-semibold text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-500/20">
+                    Tag remarketing
+                  </button>
+                </div>
+              </div>
+
+              {formAudienceFilterGroups.map((group, gIdx) => (
+                <React.Fragment key={group.id}>
+                  {gIdx > 0 && (
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1 h-px bg-gray-200 dark:bg-gray-700" />
+                      <span className="text-[10px] font-bold text-red-500 bg-red-50 dark:bg-red-500/10 px-2 py-1 rounded-full">OU</span>
+                      <div className="flex-1 h-px bg-gray-200 dark:bg-gray-700" />
+                    </div>
+                  )}
+                  <div className="rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+                    <div className="flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-800/60">
+                      <p className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                        {formAudienceFilterGroups.length > 1 ? `Grupo ${gIdx + 1}` : 'Todas as condições'}
+                      </p>
+                      {formAudienceFilterGroups.length > 1 && (
+                        <button type="button" onClick={() => setFormAudienceFilterGroups(prev => prev.filter((_, i) => i !== gIdx))}
+                          className="text-[10px] text-red-500 hover:text-red-700 font-medium">
+                          Remover grupo
+                        </button>
+                      )}
+                    </div>
+                    <div className="p-3 space-y-2">
+                      {group.filters.map((filter, fIdx) => (
+                        <React.Fragment key={`${group.id}-${fIdx}`}>
+                          {fIdx > 0 && <p className="text-[9px] font-bold text-gray-400 uppercase px-1">E</p>}
+                          <FilterRow
+                            filter={filter}
+                            fields={CAMPAIGN_AUDIENCE_FIELDS}
+                            onChange={next => updateAudienceFilter(gIdx, fIdx, next)}
+                            onRemove={() => removeAudienceFilter(gIdx, fIdx)}
+                          />
+                        </React.Fragment>
+                      ))}
+                      <button type="button" onClick={() => addAudienceFilter(gIdx)}
+                        className="text-xs font-medium text-red-600 dark:text-red-400 hover:text-red-700 flex items-center gap-1 mt-1">
+                        <Plus size={11} />Adicionar condição
+                      </button>
+                    </div>
+                  </div>
+                </React.Fragment>
+              ))}
+              <button type="button" onClick={() => setFormAudienceFilterGroups(prev => [...prev, makeCampaignAudienceGroup()])}
+                className="w-full py-2 rounded-xl border-2 border-dashed border-red-200 dark:border-red-500/20 text-xs font-semibold text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/5 transition-colors flex items-center justify-center gap-1.5">
+                <Plus size={12} />Adicionar grupo (OU)
+              </button>
+            </div>
+          )}
           {formAudienceType === 'list' && (() => {
             const desiredType = formChannel === 'email' ? 'email' : 'phone';
             // Filtra listas compatíveis com canal atual: 'mixed' serve para ambos.
@@ -2198,11 +2475,53 @@ function CampaignsTab({ businessId }: { businessId: string }) {
               </div>
             );
           })()}
-          {/* Limite de envio — só faz sentido com lista direta (recipients
-              resolvidos client-side). Para outros audienceTypes os recipients
-              são resolvidos no backend; aplicar limite lá ficaria fora do
-              escopo desta UI. */}
-          {formAudienceType === 'list' && formRecipients.length > 0 && (
+          {formAudienceType !== 'list' && (
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-0.5">Audiência resolvida</p>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                    {audienceSelectionIncomplete ? 0 : resolvedClientAudience.matchedClients.length} cliente(s) encontrados · {activeRecipients.length} com destino válido
+                  </p>
+                </div>
+                <span className={cn(
+                  'text-xs font-bold px-2.5 py-1 rounded-full',
+                  activeRecipients.length > 0
+                    ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+                    : 'bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-400',
+                )}>
+                  {activeRecipients.length}
+                </span>
+              </div>
+              {!audienceSelectionIncomplete && (
+                <div className="flex items-center gap-3 flex-wrap text-[10px] text-gray-500 dark:text-gray-400">
+                  {resolvedClientAudience.skipped.missingDestination > 0 && (
+                    <span>{resolvedClientAudience.skipped.missingDestination} sem {getCampaignDestinationLabel(formChannel)}</span>
+                  )}
+                  {resolvedClientAudience.skipped.optInMissing > 0 && (
+                    <span>{resolvedClientAudience.skipped.optInMissing} sem opt-in</span>
+                  )}
+                  {resolvedClientAudience.skipped.duplicateDestination > 0 && (
+                    <span>{resolvedClientAudience.skipped.duplicateDestination} duplicado(s)</span>
+                  )}
+                </div>
+              )}
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={formRequireMarketingOptIn}
+                  onChange={(e) => setFormRequireMarketingOptIn(e.target.checked)}
+                  className="w-4 h-4 rounded accent-red-600"
+                />
+                <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">
+                  Apenas clientes com opt-in marketing
+                </span>
+              </label>
+            </div>
+          )}
+          {/* Limite de envio — agora toda audiência é materializada em recipients[]
+              antes de criar a campanha, seja lista direta ou clientes filtrados. */}
+          {activeRecipients.length > 0 && (
             <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0 flex-1">
@@ -2212,25 +2531,25 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                   <p className="text-[11px] text-gray-500 dark:text-gray-400">
                     {(() => {
                       const limit = typeof formRecipientLimit === 'number' && formRecipientLimit > 0
-                        ? Math.min(formRecipientLimit, formRecipients.length)
-                        : formRecipients.length;
-                      return limit === formRecipients.length
-                        ? `Enviar para todos os ${formRecipients.length} recipientes da lista`
-                        : `Enviar para os primeiros ${limit} de ${formRecipients.length} recipientes`;
+                        ? Math.min(formRecipientLimit, activeRecipients.length)
+                        : activeRecipients.length;
+                      return limit === activeRecipients.length
+                        ? `Enviar para todos os ${activeRecipients.length} recipientes`
+                        : `Enviar para os primeiros ${limit} de ${activeRecipients.length} recipientes`;
                     })()}
                   </p>
                 </div>
                 <input
                   type="number"
                   min={1}
-                  max={formRecipients.length}
+                  max={activeRecipients.length}
                   value={formRecipientLimit}
                   onChange={(e) => {
                     const v = e.target.value;
                     if (v === '') { setFormRecipientLimit(''); return; }
                     const n = parseInt(v, 10);
                     if (Number.isFinite(n) && n > 0) {
-                      setFormRecipientLimit(Math.min(n, formRecipients.length));
+                      setFormRecipientLimit(Math.min(n, activeRecipients.length));
                     }
                   }}
                   placeholder="todos"
@@ -2346,12 +2665,12 @@ function CampaignsTab({ businessId }: { businessId: string }) {
 
               {/* Estimativa só aparece com count > 0 (lista colada).
                   Antes disso, operador vê só os presets/inputs. */}
-              {formRecipients.length > 0 && (
+              {activeRecipients.length > 0 && (
                 <ThrottleEstimate
                   recipientCount={
                     typeof formRecipientLimit === 'number' && formRecipientLimit > 0
-                      ? Math.min(formRecipientLimit, formRecipients.length)
-                      : formRecipients.length
+                      ? Math.min(formRecipientLimit, activeRecipients.length)
+                      : activeRecipients.length
                   }
                   throttle={formThrottle}
                 />
@@ -2372,9 +2691,9 @@ function CampaignsTab({ businessId }: { businessId: string }) {
               businessId={businessId}
               value={formTemplate}
               onChange={setFormTemplate}
-              sampleRecipient={formRecipients[0]}
+              sampleRecipient={activeRecipients[0]}
               channel={formChannel}
-              csvColumns={formCsvColumns}
+              csvColumns={formAudienceType === 'list' ? formCsvColumns : []}
             />
           ) : formChannel === 'email' ? (
             <div>
@@ -2485,7 +2804,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
             </label>
           </div>
         </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2 }}><Button onClick={() => setShowNew(false)}>{t('crm.action.cancel', 'Cancelar')}</Button><Button onClick={handleCreate} variant="contained" disabled={saving || !formName.trim() || !formConsentBasis || !formConsentAck || (formChannel !== 'email' && eligibleConnections.length === 0)} sx={{ bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' }, borderRadius: '0.75rem' }}>{saving ? t('crm.action.creating', 'Criando...') : t('crm.action.create', 'Criar')}</Button></DialogActions>
+        <DialogActions sx={{ px: 3, pb: 2 }}><Button onClick={() => setShowNew(false)}>{t('crm.action.cancel', 'Cancelar')}</Button><Button onClick={handleCreate} variant="contained" disabled={saving || !formName.trim() || !formConsentBasis || !formConsentAck || activeRecipients.length === 0 || (formChannel !== 'email' && eligibleConnections.length === 0)} sx={{ bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' }, borderRadius: '0.75rem' }}>{saving ? t('crm.action.creating', 'Criando...') : t('crm.action.create', 'Criar')}</Button></DialogActions>
       </Dialog>
     </div>
   );

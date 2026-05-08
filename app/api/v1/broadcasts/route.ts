@@ -3,7 +3,7 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
 
 const VALID_STATUSES = new Set(['draft', 'scheduled', 'sending', 'sent', 'paused', 'failed']);
-const VALID_CHANNELS = new Set(['whatsapp', 'facebook', 'instagram']);
+const VALID_CHANNELS = new Set(['whatsapp', 'facebook', 'instagram', 'email']);
 
 // =============================================================================
 // GET /api/v1/broadcasts — List broadcasts
@@ -90,7 +90,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Validate optional audienceType
-    const validAudienceTypes = ['all_contacts', 'segment', 'tags', 'manual'];
+    const validAudienceTypes = ['all_contacts', 'segment', 'tags', 'manual', 'list', 'filtered_clients'];
     if (body.audienceType && !validAudienceTypes.includes(body.audienceType)) {
       return apiError(`Invalid audienceType. Valid values: ${validAudienceTypes.join(', ')}`, 400);
     }
@@ -128,6 +128,11 @@ export async function POST(req: NextRequest) {
     if (body.audienceSegmentId) broadcastData.audienceSegmentId = body.audienceSegmentId;
     if (Array.isArray(body.audienceTags)) broadcastData.audienceTags = body.audienceTags;
     if (Array.isArray(body.audienceContactIds)) broadcastData.audienceContactIds = body.audienceContactIds;
+    if (Array.isArray(body.audienceFilterGroups)) broadcastData.audienceFilterGroups = body.audienceFilterGroups;
+    if (typeof body.audienceSnapshotCount === 'number') broadcastData.audienceSnapshotCount = body.audienceSnapshotCount;
+    if (body.audienceResolvedAt) broadcastData.audienceResolvedAt = body.audienceResolvedAt;
+    if (typeof body.audienceRequireMarketingOptIn === 'boolean') broadcastData.audienceRequireMarketingOptIn = body.audienceRequireMarketingOptIn;
+    if (Array.isArray(body.recipients)) broadcastData.recipients = body.recipients;
     if (body.templateName) broadcastData.templateName = body.templateName;
     if (body.templateLanguage) broadcastData.templateLanguage = body.templateLanguage;
     if (Array.isArray(body.templateParams)) broadcastData.templateParams = body.templateParams;

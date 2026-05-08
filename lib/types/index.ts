@@ -2695,7 +2695,7 @@ export interface Segment {
 // ============================================
 
 export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent' | 'paused' | 'failed';
-export type BroadcastAudienceType = 'segment' | 'tags' | 'all_contacts' | 'manual' | 'list';
+export type BroadcastAudienceType = 'segment' | 'tags' | 'all_contacts' | 'manual' | 'list' | 'filtered_clients';
 
 /** Recipiente direto de uma lista (paste/CSV) — não exige contato CRM. */
 export interface BroadcastRecipient {
@@ -2704,6 +2704,8 @@ export interface BroadcastRecipient {
   name?: string;
   /** Telefone em formato E.164 (apenas dígitos). Para canais WhatsApp. */
   phoneNumber?: string;
+  /** ID externo do destinatário em canais sociais (PSID Facebook, IGSID Instagram) ou legado. */
+  recipientId?: string;
   email?: string;
   /**
    * Colunas extras vindas de CSV importado (5.8). Chaves são nomes de
@@ -2824,6 +2826,14 @@ export interface Broadcast {
   audienceSegmentId?: string;
   audienceTags?: string[];
   audienceContactIds?: string[];
+  /** Filtros usados para materializar recipients[] quando audienceType === 'filtered_clients'. */
+  audienceFilterGroups?: SegmentFilterGroup[];
+  /** Snapshot de quantos clientes viraram recipientes no momento da criação. */
+  audienceSnapshotCount?: number;
+  /** Timestamp ISO de quando a audiência dinâmica foi resolvida em recipients[]. */
+  audienceResolvedAt?: string;
+  /** Se true, só clientes com optInMarketing explícito entraram na audiência. */
+  audienceRequireMarketingOptIn?: boolean;
   /** Lista direta de recipientes (paste/CSV) — usado quando audienceType === 'list'. */
   recipients?: BroadcastRecipient[];
   /** ID do broadcast original quando este é um retry — auditoria. */

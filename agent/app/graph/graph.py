@@ -259,6 +259,17 @@ async def run_agent(*, run_id: str, business_id: str, req: ProcessRequest) -> Ag
             model=model,
         )
 
+    # Post-graph CRM enrichment (fire-and-forget). Tags conversa concluída
+    # com tags + aiSummary para alimentar segmentação de campanhas. Best-effort:
+    # nunca bloqueia a resposta nem propaga erro. Roda só em runs bem-sucedidos
+    # (final_response presente) e em use_cases customer-facing.
+    if final.get("final_response") or final.get("interactive_sent"):
+        try:
+            from .enricher import schedule_enricher
+            schedule_enricher(final)  # type: ignore[arg-type]
+        except Exception as e:
+            log.warning("enricher.schedule_failed", run_id=run_id, error=str(e))
+
     latency = int((time.time() - t0) * 1000)
     tokens_in = final.get("total_tokens_in", 0)
     tokens_out = final.get("total_tokens_out", 0)
