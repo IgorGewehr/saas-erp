@@ -3,7 +3,7 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   Dialog, DialogTitle, DialogContent, DialogActions,
-  TextField, Button, IconButton, Chip, Select, MenuItem, FormControl, InputLabel, Tooltip, Slider,
+  TextField, Button, IconButton, Chip, Select, MenuItem, FormControl, InputLabel, Tooltip, Slider, InputAdornment,
 } from '@mui/material';
 import {
   Plus, Search, X, Phone, Mail, MessageSquare, Calendar, Clock, Edit3, Trash2,
@@ -12,6 +12,7 @@ import {
   UserPlus, Briefcase, Tag, Hash, AlertTriangle, Heart, Shield, Zap, Brain,
   Sparkles, Filter, Crown, Settings2, GripVertical, Eye, EyeOff, ChevronUp, ChevronDown,
   Download, Upload, GitBranch, LayoutList, LayoutDashboard, Megaphone, Radio, SlidersHorizontal,
+  Check, Link as LinkIcon,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -53,6 +54,10 @@ import {
 import RecipientListInput from './RecipientListInput';
 import BroadcastDetailDialog from './BroadcastDetailDialog';
 import BirthdayCampaignDialog from './BirthdayCampaignDialog';
+import {
+  ModernDialog, ModernDialogActions, ModernCancelButton, ModernPrimaryButton,
+  ModernSection, ModernPill, type ModernPillTone,
+} from '@/app/components/ui/dialog';
 import TemplateSelector, { type TemplateSelection, isTemplateSelectionValid } from './TemplateSelector';
 import EmailBodyEditor from './EmailBodyEditor';
 import { KanbanBoard } from './KanbanBoard';
@@ -200,66 +205,70 @@ function ContactFormDialog({ open, onClose, onSave, contact, members, stages }: 
     } finally { setSaving(false); }
   };
 
-  const inputSx = { '& .MuiOutlinedInput-root': { borderRadius: '10px' } };
-
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: '16px' } }}>
-      <DialogTitle sx={{ pb: 1 }}>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center"><UserPlus size={18} className="text-white" /></div>
-            <span className="text-base font-display font-bold text-gray-900 dark:text-gray-100">{contact ? t('crm.dialog.editContact', 'Editar Contato') : t('crm.dialog.newContact', 'Novo Contato')}</span>
-          </div>
-          <IconButton onClick={onClose} size="small"><X size={18} /></IconButton>
+    <ModernDialog
+      open={open}
+      onClose={onClose}
+      icon={UserPlus}
+      title={contact ? t('crm.dialog.editContact', 'Editar Contato') : t('crm.dialog.newContact', 'Novo Contato')}
+      maxWidth="sm"
+      footer={
+        <ModernDialogActions>
+          <ModernCancelButton onClick={onClose}>{t('crm.action.cancel', 'Cancelar')}</ModernCancelButton>
+          <ModernPrimaryButton onClick={handleSubmit} disabled={saving || !name.trim()}>
+            {saving ? t('crm.action.saving', 'Salvando...') : contact ? t('crm.action.save', 'Salvar') : t('crm.action.createContact', 'Criar Contato')}
+          </ModernPrimaryButton>
+        </ModernDialogActions>
+      }
+    >
+      <ModernSection icon={UserPlus} title="Identificação">
+        <TextField label={t('crm.form.nameReq', 'Nome *')} value={name} onChange={(e) => setName(e.target.value)} fullWidth size="small" />
+        <div className="grid grid-cols-2 gap-3">
+          <TextField label={t('crm.form.email', 'E-mail')} value={email} onChange={(e) => setEmail(e.target.value)} fullWidth size="small" type="email" />
+          <TextField label={t('crm.form.phone', 'Telefone')} value={phone} onChange={(e) => setPhone(applyPhoneMask(e.target.value))} fullWidth size="small" />
         </div>
-      </DialogTitle>
-      <DialogContent sx={{ pt: '12px !important' }}>
-        <div className="space-y-4">
-          {/* ── Dados Base ──────────────────────────── */}
-          <TextField label={t('crm.form.nameReq', 'Nome *')} value={name} onChange={(e) => setName(e.target.value)} fullWidth size="small" sx={inputSx} />
-          <div className="grid grid-cols-2 gap-3">
-            <TextField label={t('crm.form.email', 'E-mail')} value={email} onChange={(e) => setEmail(e.target.value)} fullWidth size="small" type="email" sx={inputSx} />
-            <TextField label={t('crm.form.phone', 'Telefone')} value={phone} onChange={(e) => setPhone(applyPhoneMask(e.target.value))} fullWidth size="small" sx={inputSx} />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <TextField label="WhatsApp" value={whatsapp} onChange={(e) => setWhatsapp(applyPhoneMask(e.target.value))} fullWidth size="small" sx={inputSx} />
-            <TextField label={t('crm.form.company', 'Empresa')} value={company} onChange={(e) => setCompany(e.target.value)} fullWidth size="small" sx={inputSx} />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <TextField label={t('crm.form.role', 'Cargo')} value={role} onChange={(e) => setRole(e.target.value)} fullWidth size="small" sx={inputSx} />
-            <FormControl size="small" fullWidth><InputLabel>{t('crm.filter.source', 'Origem')}</InputLabel><Select value={source} onChange={(e) => setSource(e.target.value as LeadSource)} label={t('crm.form.source', 'Origem')} sx={{ borderRadius: '10px' }}>{ALL_SOURCES.map((s) => <MenuItem key={s} value={s}>{t('crm.source.' + s, SOURCE_LABELS[s])}</MenuItem>)}</Select></FormControl>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <FormControl size="small" fullWidth><InputLabel>{t('crm.form.status', 'Status')}</InputLabel><Select value={status} onChange={(e) => setStatus(e.target.value as LeadStatus)} label={t('crm.form.status', 'Status')} sx={{ borderRadius: '10px' }}>{stages.map((s) => <MenuItem key={s.id} value={s.id}>{s.name}</MenuItem>)}</Select></FormControl>
-            <FormControl size="small" fullWidth><InputLabel>{t('crm.form.assignedTo', 'Responsável')}</InputLabel><Select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} label={t('crm.form.assignedTo', 'Responsável')} sx={{ borderRadius: '10px' }}><MenuItem value="">{t('crm.form.none', 'Nenhum')}</MenuItem>{members.map((m) => <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>)}</Select></FormControl>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <FormControl size="small" fullWidth><InputLabel>{t('crm.form.preferredChannel', 'Canal Preferido')}</InputLabel><Select value={preferredChannel} onChange={(e) => setPreferredChannel(e.target.value)} label={t('crm.form.preferredChannel', 'Canal Preferido')} sx={{ borderRadius: '10px' }}><MenuItem value="">{t('crm.form.none', 'Nenhum')}</MenuItem><MenuItem value="whatsapp">WhatsApp</MenuItem><MenuItem value="facebook">Messenger</MenuItem><MenuItem value="instagram">Instagram</MenuItem></Select></FormControl>
-            <FormControl size="small" fullWidth><InputLabel>{t('crm.form.profile', 'Perfil')}</InputLabel><Select value={profile} onChange={(e) => setProfile(e.target.value)} label={t('crm.form.profile', 'Perfil')} sx={{ borderRadius: '10px' }}><MenuItem value="">{t('crm.form.auto', 'Auto')}</MenuItem><MenuItem value="vip">👑 VIP</MenuItem><MenuItem value="regular">● {t('crm.profile.regular', 'Regular')}</MenuItem><MenuItem value="sporadic">◌ {t('crm.profile.sporadic', 'Esporádico')}</MenuItem><MenuItem value="new">✦ {t('crm.profile.new', 'Novo')}</MenuItem><MenuItem value="at_risk">⚠ {t('crm.profile.risk', 'Em Risco')}</MenuItem><MenuItem value="churned">✕ {t('crm.profile.churn', 'Perdido')}</MenuItem></Select></FormControl>
-          </div>
-          <div><p className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">Score: {score}</p><Slider value={score} onChange={(_, v) => setScore(v as number)} min={0} max={100} step={5} sx={{ color: score >= 80 ? '#10B981' : score >= 50 ? '#F59E0B' : '#94A3B8' }} /></div>
-          <TextField label="Tags (separadas por vírgula)" value={tags} onChange={(e) => setTags(e.target.value)} fullWidth size="small" placeholder="quente, tem interesse" sx={inputSx} />
-          <TextField label={t('crm.form.notes', 'Observações')} value={notes} onChange={(e) => setNotes(e.target.value)} fullWidth size="small" multiline rows={2} sx={inputSx} />
+        <div className="grid grid-cols-2 gap-3">
+          <TextField label="WhatsApp" value={whatsapp} onChange={(e) => setWhatsapp(applyPhoneMask(e.target.value))} fullWidth size="small" />
+          <TextField label={t('crm.form.company', 'Empresa')} value={company} onChange={(e) => setCompany(e.target.value)} fullWidth size="small" />
+        </div>
+        <TextField label={t('crm.form.role', 'Cargo')} value={role} onChange={(e) => setRole(e.target.value)} fullWidth size="small" />
+      </ModernSection>
 
-          {/* ── Inteligência (toggle) ──────────────── */}
-          <button type="button" onClick={() => setShowAdvanced(!showAdvanced)}
-            className="flex items-center gap-2 text-xs font-semibold text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors">
-            <Zap size={13} />
-            {showAdvanced ? t('crm.action.hideIntelligence', 'Ocultar campos de inteligência ▲') : t('crm.action.showIntelligence', 'Campos de inteligência ▼')}
-          </button>
-          {showAdvanced && (
-            <div className="space-y-3 p-3 rounded-xl bg-gray-50 dark:bg-white/[0.02] border border-gray-100 dark:border-white/[0.06]">
-              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">{t('crm.form.aiData', 'Dados para Agente IA')}</p>
-              <TextField label={t('crm.form.suggestedAction', 'Próxima ação sugerida')} value={suggestedAction} onChange={(e) => setSuggestedAction(e.target.value)} fullWidth size="small" placeholder={t('crm.form.suggestedActionPlaceholder', 'Ligar para reativar, oferecer desconto...')} sx={inputSx} />
-            </div>
-          )}
+      <ModernSection icon={Tag} title="Classificação">
+        <div className="grid grid-cols-2 gap-3">
+          <FormControl size="small" fullWidth><InputLabel>{t('crm.filter.source', 'Origem')}</InputLabel><Select value={source} onChange={(e) => setSource(e.target.value as LeadSource)} label={t('crm.form.source', 'Origem')}>{ALL_SOURCES.map((s) => <MenuItem key={s} value={s}>{t('crm.source.' + s, SOURCE_LABELS[s])}</MenuItem>)}</Select></FormControl>
+          <FormControl size="small" fullWidth><InputLabel>{t('crm.form.status', 'Status')}</InputLabel><Select value={status} onChange={(e) => setStatus(e.target.value as LeadStatus)} label={t('crm.form.status', 'Status')}>{stages.map((s) => <MenuItem key={s.id} value={s.id}>{s.name}</MenuItem>)}</Select></FormControl>
         </div>
-      </DialogContent>
-      <DialogActions sx={{ px: 3, pb: 2.5 }}>
-        <Button onClick={onClose} disabled={saving} sx={{ borderRadius: '10px', textTransform: 'none' }}>{t('crm.action.cancel', 'Cancelar')}</Button>
-        <Button onClick={handleSubmit} disabled={saving || !name.trim()} variant="contained" sx={{ borderRadius: '10px', textTransform: 'none', bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' } }}>{saving ? t('crm.action.saving', 'Salvando...') : contact ? t('crm.action.save', 'Salvar') : t('crm.action.createContact', 'Criar Contato')}</Button>
-      </DialogActions>
-    </Dialog>
+        <div className="grid grid-cols-2 gap-3">
+          <FormControl size="small" fullWidth><InputLabel>{t('crm.form.assignedTo', 'Responsável')}</InputLabel><Select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} label={t('crm.form.assignedTo', 'Responsável')}><MenuItem value="">{t('crm.form.none', 'Nenhum')}</MenuItem>{members.map((m) => <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>)}</Select></FormControl>
+          <FormControl size="small" fullWidth><InputLabel>{t('crm.form.preferredChannel', 'Canal Preferido')}</InputLabel><Select value={preferredChannel} onChange={(e) => setPreferredChannel(e.target.value)} label={t('crm.form.preferredChannel', 'Canal Preferido')}><MenuItem value="">{t('crm.form.none', 'Nenhum')}</MenuItem><MenuItem value="whatsapp">WhatsApp</MenuItem><MenuItem value="facebook">Messenger</MenuItem><MenuItem value="instagram">Instagram</MenuItem></Select></FormControl>
+        </div>
+        <FormControl size="small" fullWidth><InputLabel>{t('crm.form.profile', 'Perfil')}</InputLabel><Select value={profile} onChange={(e) => setProfile(e.target.value)} label={t('crm.form.profile', 'Perfil')}><MenuItem value="">{t('crm.form.auto', 'Auto')}</MenuItem><MenuItem value="vip">👑 VIP</MenuItem><MenuItem value="regular">● {t('crm.profile.regular', 'Regular')}</MenuItem><MenuItem value="sporadic">◌ {t('crm.profile.sporadic', 'Esporádico')}</MenuItem><MenuItem value="new">✦ {t('crm.profile.new', 'Novo')}</MenuItem><MenuItem value="at_risk">⚠ {t('crm.profile.risk', 'Em Risco')}</MenuItem><MenuItem value="churned">✕ {t('crm.profile.churn', 'Perdido')}</MenuItem></Select></FormControl>
+        <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-950/35 p-3">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Score</p>
+            <ModernPill tone={score >= 80 ? 'emerald' : score >= 50 ? 'amber' : 'slate'}>{score}</ModernPill>
+          </div>
+          <Slider value={score} onChange={(_, v) => setScore(v as number)} min={0} max={100} step={5} sx={{ color: score >= 80 ? '#10B981' : score >= 50 ? '#F59E0B' : '#94A3B8' }} />
+        </div>
+      </ModernSection>
+
+      <ModernSection icon={FileText} title="Notas & Inteligência">
+        <TextField label="Tags (separadas por vírgula)" value={tags} onChange={(e) => setTags(e.target.value)} fullWidth size="small" placeholder="quente, tem interesse" />
+        <TextField label={t('crm.form.notes', 'Observações')} value={notes} onChange={(e) => setNotes(e.target.value)} fullWidth size="small" multiline rows={2} />
+        <button type="button" onClick={() => setShowAdvanced(!showAdvanced)}
+          className="flex items-center gap-2 text-xs font-semibold text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors">
+          <Zap size={13} />
+          {showAdvanced ? t('crm.action.hideIntelligence', 'Ocultar campos de inteligência ▲') : t('crm.action.showIntelligence', 'Campos de inteligência ▼')}
+        </button>
+        {showAdvanced && (
+          <div className="space-y-3 p-3 rounded-xl bg-slate-50 dark:bg-white/[0.02] border border-slate-200 dark:border-white/[0.06]">
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">{t('crm.form.aiData', 'Dados para Agente IA')}</p>
+            <TextField label={t('crm.form.suggestedAction', 'Próxima ação sugerida')} value={suggestedAction} onChange={(e) => setSuggestedAction(e.target.value)} fullWidth size="small" placeholder={t('crm.form.suggestedActionPlaceholder', 'Ligar para reativar, oferecer desconto...')} />
+          </div>
+        )}
+      </ModernSection>
+    </ModernDialog>
   );
 }
 
@@ -289,29 +298,45 @@ function DealFormDialog({ open, onClose, onSave, deal, contacts, members }: {
   };
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: '16px' } }}>
-      <DialogTitle sx={{ pb: 1 }}><div className="flex items-center justify-between"><div className="flex items-center gap-2"><div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center"><Briefcase size={18} className="text-white" /></div><span className="text-base font-display font-bold text-gray-900 dark:text-gray-100">{deal ? t('crm.dialog.editDeal', 'Editar Deal') : t('crm.dialog.newDeal', 'Novo Deal')}</span></div><IconButton onClick={onClose} size="small"><X size={18} /></IconButton></div></DialogTitle>
-      <DialogContent sx={{ pt: '12px !important' }}>
-        <div className="space-y-4">
-          <TextField label={t('crm.form.titleReq', 'Título *')} value={title} onChange={(e) => setTitle(e.target.value)} fullWidth size="small" sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
-          <FormControl size="small" fullWidth><InputLabel>{t('crm.form.contactReq', 'Contato *')}</InputLabel><Select value={contactId} onChange={(e) => setContactId(e.target.value)} label={t('crm.form.contactReq', 'Contato *')} sx={{ borderRadius: '10px' }}>{contacts.map((c) => <MenuItem key={c.id} value={c.id}>{c.name}{c.company ? ` - ${c.company}` : ''}</MenuItem>)}</Select></FormControl>
-          <div className="grid grid-cols-2 gap-3">
-            <TextField label={t('crm.form.value', 'Valor (R$)')} value={valueStr} onChange={(e) => setValueStr(e.target.value)} fullWidth size="small" placeholder="0,00" sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
-            <FormControl size="small" fullWidth><InputLabel>{t('crm.form.stage', 'Etapa')}</InputLabel><Select value={stage} onChange={(e) => handleStageChange(e.target.value)} label={t('crm.form.stage', 'Etapa')} sx={{ borderRadius: '10px' }}>{PIPELINE_STAGES.map((s) => (<MenuItem key={s.id} value={s.id}><div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: s.color }} />{t('crm.stage.' + s.id, s.name)}</div></MenuItem>))}</Select></FormControl>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div><p className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">{t('crm.form.prob', 'Probabilidade: ')}{probability}%</p><Slider value={probability} onChange={(_, v) => setProbability(v as number)} min={0} max={100} step={5} sx={{ color: '#DC2626' }} /></div>
-            <TextField label={t('crm.form.expectedCloseDate', 'Previsão de Fechamento')} value={expectedCloseDate} onChange={(e) => setExpectedCloseDate(e.target.value)} fullWidth size="small" type="date" InputLabelProps={{ shrink: true }} inputProps={{ min: new Date().toISOString().split('T')[0] }} sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
-          </div>
-          <FormControl size="small" fullWidth><InputLabel>{t('crm.form.assignedTo', 'Responsável')}</InputLabel><Select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} label={t('crm.form.assignedTo', 'Responsável')} sx={{ borderRadius: '10px' }}><MenuItem value="">{t('crm.form.none', 'Nenhum')}</MenuItem>{members.map((m) => <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>)}</Select></FormControl>
-          <TextField label={t('crm.form.notes', 'Observações')} value={notes} onChange={(e) => setNotes(e.target.value)} fullWidth size="small" multiline rows={3} sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
+    <ModernDialog
+      open={open}
+      onClose={onClose}
+      icon={Briefcase}
+      title={deal ? t('crm.dialog.editDeal', 'Editar Deal') : t('crm.dialog.newDeal', 'Novo Deal')}
+      maxWidth="sm"
+      footer={
+        <ModernDialogActions>
+          <ModernCancelButton onClick={onClose}>{t('crm.action.cancel', 'Cancelar')}</ModernCancelButton>
+          <ModernPrimaryButton onClick={handleSubmit} disabled={saving || !title.trim() || !contactId}>
+            {saving ? t('crm.action.saving', 'Salvando...') : deal ? t('crm.action.save', 'Salvar') : t('crm.action.createDeal', 'Criar Deal')}
+          </ModernPrimaryButton>
+        </ModernDialogActions>
+      }
+    >
+      <ModernSection icon={Briefcase} title="Sobre o deal">
+        <TextField label={t('crm.form.titleReq', 'Título *')} value={title} onChange={(e) => setTitle(e.target.value)} fullWidth size="small" />
+        <FormControl size="small" fullWidth><InputLabel>{t('crm.form.contactReq', 'Contato *')}</InputLabel><Select value={contactId} onChange={(e) => setContactId(e.target.value)} label={t('crm.form.contactReq', 'Contato *')}>{contacts.map((c) => <MenuItem key={c.id} value={c.id}>{c.name}{c.company ? ` - ${c.company}` : ''}</MenuItem>)}</Select></FormControl>
+        <FormControl size="small" fullWidth><InputLabel>{t('crm.form.assignedTo', 'Responsável')}</InputLabel><Select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} label={t('crm.form.assignedTo', 'Responsável')}><MenuItem value="">{t('crm.form.none', 'Nenhum')}</MenuItem>{members.map((m) => <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>)}</Select></FormControl>
+        <TextField label={t('crm.form.notes', 'Observações')} value={notes} onChange={(e) => setNotes(e.target.value)} fullWidth size="small" multiline rows={3} />
+      </ModernSection>
+
+      <ModernSection icon={DollarSign} title="Valor & Etapa">
+        <div className="grid grid-cols-2 gap-3">
+          <TextField label={t('crm.form.value', 'Valor (R$)')} value={valueStr} onChange={(e) => setValueStr(e.target.value)} fullWidth size="small" placeholder="0,00" />
+          <FormControl size="small" fullWidth><InputLabel>{t('crm.form.stage', 'Etapa')}</InputLabel><Select value={stage} onChange={(e) => handleStageChange(e.target.value)} label={t('crm.form.stage', 'Etapa')}>{PIPELINE_STAGES.map((s) => (<MenuItem key={s.id} value={s.id}><div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: s.color }} />{t('crm.stage.' + s.id, s.name)}</div></MenuItem>))}</Select></FormControl>
         </div>
-      </DialogContent>
-      <DialogActions sx={{ px: 3, pb: 2.5 }}>
-        <Button onClick={onClose} disabled={saving} sx={{ borderRadius: '10px', textTransform: 'none' }}>{t('crm.action.cancel', 'Cancelar')}</Button>
-        <Button onClick={handleSubmit} disabled={saving || !title.trim() || !contactId} variant="contained" sx={{ borderRadius: '10px', textTransform: 'none', bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' } }}>{saving ? t('crm.action.saving', 'Salvando...') : deal ? t('crm.action.save', 'Salvar') : t('crm.action.createDeal', 'Criar Deal')}</Button>
-      </DialogActions>
-    </Dialog>
+        <div className="grid grid-cols-2 gap-3 items-start">
+          <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-950/35 px-3 py-2.5">
+            <div className="flex items-center justify-between mb-1.5">
+              <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('crm.form.prob', 'Probabilidade')}</p>
+              <ModernPill tone={probability >= 70 ? 'emerald' : probability >= 40 ? 'amber' : 'slate'}>{probability}%</ModernPill>
+            </div>
+            <Slider value={probability} onChange={(_, v) => setProbability(v as number)} min={0} max={100} step={5} sx={{ color: '#DC2626', mt: 0.5 }} />
+          </div>
+          <TextField label={t('crm.form.expectedCloseDate', 'Previsão de Fechamento')} value={expectedCloseDate} onChange={(e) => setExpectedCloseDate(e.target.value)} fullWidth size="small" type="date" InputLabelProps={{ shrink: true }} inputProps={{ min: new Date().toISOString().split('T')[0] }} />
+        </div>
+      </ModernSection>
+    </ModernDialog>
   );
 }
 
@@ -338,29 +363,65 @@ function ActivityFormDialog({ open, onClose, onSave, activity, contacts, deals, 
   };
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: '16px' } }}>
-      <DialogTitle sx={{ pb: 1 }}><div className="flex items-center justify-between"><div className="flex items-center gap-2"><div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center"><Activity size={18} className="text-white" /></div><span className="text-base font-display font-bold text-gray-900 dark:text-gray-100">{activity ? t('crm.dialog.editActivity', 'Editar Atividade') : t('crm.dialog.newActivity', 'Nova Atividade')}</span></div><IconButton onClick={onClose} size="small"><X size={18} /></IconButton></div></DialogTitle>
-      <DialogContent sx={{ pt: '12px !important' }}>
-        <div className="space-y-4">
-          <FormControl size="small" fullWidth><InputLabel>{t('crm.form.type', 'Tipo')}</InputLabel><Select value={type} onChange={(e) => setType(e.target.value as CRMActivityType)} label={t('crm.form.type', 'Tipo')} sx={{ borderRadius: '10px' }}>{ALL_ACTIVITY_TYPES.map((typeKey) => (<MenuItem key={typeKey} value={typeKey}><div className="flex items-center gap-2"><span style={{ color: ACTIVITY_COLORS[typeKey] }}>{ACTIVITY_ICONS[typeKey]}</span>{t('crm.activity.' + typeKey, ACTIVITY_LABELS[typeKey])}</div></MenuItem>))}</Select></FormControl>
-          <TextField label={t('crm.form.titleReq', 'Título *')} value={title} onChange={(e) => setTitle(e.target.value)} fullWidth size="small" sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
-          <TextField label={t('crm.form.desc', 'Descrição')} value={description} onChange={(e) => setDescription(e.target.value)} fullWidth size="small" multiline rows={2} sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
-          <div className="grid grid-cols-2 gap-3">
-            <FormControl size="small" fullWidth><InputLabel>Contato</InputLabel><Select value={contactId} onChange={(e) => setContactId(e.target.value)} label="Contato" sx={{ borderRadius: '10px' }}><MenuItem value="">{t('crm.form.none', 'Nenhum')}</MenuItem>{contacts.map((c) => <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>)}</Select></FormControl>
-            <FormControl size="small" fullWidth><InputLabel>{t('crm.form.deal', 'Deal')}</InputLabel><Select value={dealId} onChange={(e) => setDealId(e.target.value)} label={t('crm.form.deal', 'Deal')} sx={{ borderRadius: '10px' }}><MenuItem value="">{t('crm.form.none', 'Nenhum')}</MenuItem>{deals.map((d) => <MenuItem key={d.id} value={d.id}>{d.title}</MenuItem>)}</Select></FormControl>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <TextField label={t('crm.form.dateTime', 'Data/Hora')} value={scheduledAt} onChange={(e) => setScheduledAt(e.target.value)} fullWidth size="small" type="datetime-local" InputLabelProps={{ shrink: true }} sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
-            <TextField label={t('crm.form.duration', 'Duração (min)')} value={duration} onChange={(e) => setDuration(e.target.value.replace(/\D/g, ''))} fullWidth size="small" sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
-          </div>
-          <FormControl size="small" fullWidth><InputLabel>{t('crm.form.assignedTo', 'Responsável')}</InputLabel><Select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} label={t('crm.form.assignedTo', 'Responsável')} sx={{ borderRadius: '10px' }}><MenuItem value="">{t('crm.form.none', 'Nenhum')}</MenuItem>{members.map((m) => <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>)}</Select></FormControl>
+    <ModernDialog
+      open={open}
+      onClose={onClose}
+      icon={Activity}
+      title={activity ? t('crm.dialog.editActivity', 'Editar Atividade') : t('crm.dialog.newActivity', 'Nova Atividade')}
+      maxWidth="sm"
+      footer={
+        <ModernDialogActions>
+          <ModernCancelButton onClick={onClose}>{t('crm.action.cancel', 'Cancelar')}</ModernCancelButton>
+          <ModernPrimaryButton onClick={handleSubmit} disabled={saving || !title.trim()}>
+            {saving ? t('crm.action.saving', 'Salvando...') : activity ? t('crm.action.save', 'Salvar') : t('crm.action.createActivity', 'Criar Atividade')}
+          </ModernPrimaryButton>
+        </ModernDialogActions>
+      }
+    >
+      <ModernSection icon={Activity} title="Detalhes">
+        <FormControl size="small" fullWidth><InputLabel>{t('crm.form.type', 'Tipo')}</InputLabel><Select value={type} onChange={(e) => setType(e.target.value as CRMActivityType)} label={t('crm.form.type', 'Tipo')}>{ALL_ACTIVITY_TYPES.map((typeKey) => (<MenuItem key={typeKey} value={typeKey}><div className="flex items-center gap-2"><span style={{ color: ACTIVITY_COLORS[typeKey] }}>{ACTIVITY_ICONS[typeKey]}</span>{t('crm.activity.' + typeKey, ACTIVITY_LABELS[typeKey])}</div></MenuItem>))}</Select></FormControl>
+        <TextField label={t('crm.form.titleReq', 'Título *')} value={title} onChange={(e) => setTitle(e.target.value)} fullWidth size="small" />
+        <TextField label={t('crm.form.desc', 'Descrição')} value={description} onChange={(e) => setDescription(e.target.value)} fullWidth size="small" multiline rows={2} />
+      </ModernSection>
+
+      <ModernSection icon={Calendar} title="Contexto & Agendamento">
+        <div className="grid grid-cols-2 gap-3">
+          <FormControl size="small" fullWidth><InputLabel>Contato</InputLabel><Select value={contactId} onChange={(e) => setContactId(e.target.value)} label="Contato"><MenuItem value="">{t('crm.form.none', 'Nenhum')}</MenuItem>{contacts.map((c) => <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>)}</Select></FormControl>
+          <FormControl size="small" fullWidth><InputLabel>{t('crm.form.deal', 'Deal')}</InputLabel><Select value={dealId} onChange={(e) => setDealId(e.target.value)} label={t('crm.form.deal', 'Deal')}><MenuItem value="">{t('crm.form.none', 'Nenhum')}</MenuItem>{deals.map((d) => <MenuItem key={d.id} value={d.id}>{d.title}</MenuItem>)}</Select></FormControl>
         </div>
-      </DialogContent>
-      <DialogActions sx={{ px: 3, pb: 2.5 }}>
-        <Button onClick={onClose} disabled={saving} sx={{ borderRadius: '10px', textTransform: 'none' }}>{t('crm.action.cancel', 'Cancelar')}</Button>
-        <Button onClick={handleSubmit} disabled={saving || !title.trim()} variant="contained" sx={{ borderRadius: '10px', textTransform: 'none', bgcolor: '#DC2626', '&:hover': { bgcolor: '#B91C1C' } }}>{saving ? t('crm.action.saving', 'Salvando...') : activity ? t('crm.action.save', 'Salvar') : t('crm.action.createActivity', 'Criar Atividade')}</Button>
-      </DialogActions>
-    </Dialog>
+        <div className="grid grid-cols-2 gap-3">
+          <TextField
+            label={t('crm.form.dateTime', 'Data/Hora')}
+            value={scheduledAt}
+            onChange={(e) => setScheduledAt(e.target.value)}
+            fullWidth size="small"
+            type="datetime-local"
+            InputLabelProps={{ shrink: true }}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <Calendar size={15} className={cn(scheduledAt ? 'text-emerald-500' : 'text-slate-400')} />
+                </InputAdornment>
+              ),
+            }}
+          />
+          <TextField
+            label={t('crm.form.duration', 'Duração (min)')}
+            value={duration}
+            onChange={(e) => setDuration(e.target.value.replace(/\D/g, ''))}
+            fullWidth size="small"
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <Clock size={15} className="text-slate-400" />
+                </InputAdornment>
+              ),
+            }}
+          />
+        </div>
+        <FormControl size="small" fullWidth><InputLabel>{t('crm.form.assignedTo', 'Responsável')}</InputLabel><Select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} label={t('crm.form.assignedTo', 'Responsável')}><MenuItem value="">{t('crm.form.none', 'Nenhum')}</MenuItem>{members.map((m) => <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>)}</Select></FormControl>
+      </ModernSection>
+    </ModernDialog>
   );
 }
 
@@ -1236,22 +1297,21 @@ function ThrottleInput({ label, valueMs, onChangeMs }: {
   onChangeMs: (ms: number) => void;
 }) {
   return (
-    <div>
-      <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 block">
-        {label}
-      </label>
-      <input
-        type="number"
-        min={0}
-        max={3600}
-        value={Math.round(valueMs / 1000)}
-        onChange={(e) => {
-          const n = parseInt(e.target.value, 10);
-          if (Number.isFinite(n) && n >= 0) onChangeMs(n * 1000);
-        }}
-        className="w-full px-2.5 py-1.5 text-xs bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-lg text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400"
-      />
-    </div>
+    <TextField
+      label={label}
+      type="number"
+      size="small"
+      fullWidth
+      value={Math.round(valueMs / 1000)}
+      onChange={(e) => {
+        const n = parseInt(e.target.value, 10);
+        if (Number.isFinite(n) && n >= 0) onChangeMs(n * 1000);
+      }}
+      inputProps={{ min: 0, max: 3600 }}
+      InputProps={{
+        endAdornment: <InputAdornment position="end"><span className="text-[11px] font-semibold text-slate-400">s</span></InputAdornment>,
+      }}
+    />
   );
 }
 
@@ -1310,147 +1370,6 @@ function CampaignMiniBar({ label, rate, counts, color }: {
         <div className={cn('h-full rounded-full transition-all duration-500', cfg.bar)} style={{ width: `${pct}%` }} />
       </div>
     </div>
-  );
-}
-
-const campaignDialogPaperSx = {
-  borderRadius: '28px',
-  overflow: 'hidden',
-  bgcolor: 'transparent',
-  boxShadow: '0 28px 90px rgba(2, 6, 23, 0.45)',
-  maxHeight: 'calc(100vh - 32px)',
-};
-
-const campaignDialogContentSx = {
-  p: 0,
-  bgcolor: 'rgb(248 250 252)',
-  color: 'rgb(15 23 42)',
-  '.dark &': {
-    bgcolor: 'rgb(9 15 27)',
-    color: 'rgb(241 245 249)',
-  },
-  '& .MuiTextField-root, & .MuiFormControl-root': {
-    '& .MuiInputLabel-root': {
-      color: 'rgb(100 116 139)',
-      fontWeight: 700,
-      fontSize: 13,
-    },
-    '& .MuiInputLabel-root.Mui-focused': {
-      color: 'rgb(220 38 38)',
-    },
-    '& .MuiOutlinedInput-root': {
-      minHeight: 46,
-      borderRadius: '14px',
-      backgroundColor: 'rgba(255,255,255,0.86)',
-      color: 'rgb(15 23 42)',
-      transition: 'box-shadow 160ms ease, border-color 160ms ease, background-color 160ms ease',
-      '& fieldset': {
-        borderColor: 'rgba(148,163,184,0.32)',
-      },
-      '&:hover fieldset': {
-        borderColor: 'rgba(220,38,38,0.45)',
-      },
-      '&.Mui-focused': {
-        boxShadow: '0 0 0 4px rgba(220,38,38,0.10)',
-        backgroundColor: 'rgba(255,255,255,0.98)',
-      },
-      '&.Mui-focused fieldset': {
-        borderColor: 'rgb(220 38 38)',
-        borderWidth: 1,
-      },
-      '& input, & textarea': {
-        fontSize: 14,
-      },
-    },
-    '& .MuiFormHelperText-root': {
-      marginLeft: 0,
-      color: 'rgb(100 116 139)',
-      fontSize: 11,
-    },
-    '& .MuiSelect-icon': {
-      color: 'rgb(100 116 139)',
-    },
-  },
-  '& .MuiButton-root': {
-    textTransform: 'none',
-    fontWeight: 800,
-  },
-  '.dark & .MuiTextField-root, .dark & .MuiFormControl-root': {
-    '& .MuiInputLabel-root': {
-      color: 'rgb(148 163 184)',
-    },
-    '& .MuiOutlinedInput-root': {
-      backgroundColor: 'rgba(15,23,42,0.72)',
-      color: 'rgb(241 245 249)',
-      '& fieldset': {
-        borderColor: 'rgba(148,163,184,0.22)',
-      },
-      '&:hover fieldset': {
-        borderColor: 'rgba(248,113,113,0.48)',
-      },
-      '&.Mui-focused': {
-        backgroundColor: 'rgba(15,23,42,0.92)',
-        boxShadow: '0 0 0 4px rgba(248,113,113,0.12)',
-      },
-      '&.Mui-focused fieldset': {
-        borderColor: 'rgb(248 113 113)',
-      },
-    },
-    '& .MuiFormHelperText-root': {
-      color: 'rgb(148 163 184)',
-    },
-    '& .MuiSelect-icon': {
-      color: 'rgb(148 163 184)',
-    },
-  },
-};
-
-function CampaignSection({
-  icon: Icon,
-  title,
-  meta,
-  children,
-}: {
-  icon: React.ComponentType<{ className?: string; size?: number }>;
-  title: string;
-  meta?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <motion.section
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-      className="rounded-2xl border border-slate-200/80 dark:border-slate-700/70 bg-white/90 dark:bg-slate-900/70 shadow-sm shadow-slate-200/50 dark:shadow-black/10 overflow-hidden"
-    >
-      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-100 dark:border-slate-800/80 bg-slate-50/70 dark:bg-white/[0.025]">
-        <div className="flex items-center gap-3 min-w-0">
-          <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400">
-            <Icon size={16} />
-          </span>
-          <h4 className="text-sm font-display font-bold text-slate-950 dark:text-slate-50 truncate">{title}</h4>
-        </div>
-        {meta && <div className="shrink-0">{meta}</div>}
-      </div>
-      <div className="p-4 space-y-4">
-        {children}
-      </div>
-    </motion.section>
-  );
-}
-
-function CampaignPill({ children, tone = 'slate' }: { children: React.ReactNode; tone?: 'slate' | 'red' | 'emerald' | 'amber' | 'blue' }) {
-  const tones = {
-    slate: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300',
-    red: 'bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-300',
-    emerald: 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
-    amber: 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300',
-    blue: 'bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300',
-  };
-  return (
-    <span className={cn('inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold', tones[tone])}>
-      {children}
-    </span>
   );
 }
 
@@ -2250,67 +2169,49 @@ function CampaignsTab({ businessId }: { businessId: string }) {
           clients={existingClients}
         />
       )}
-      <Dialog
+      <ModernDialog
         open={showNew}
         onClose={() => setShowNew(false)}
-        maxWidth="md"
-        fullWidth
-        PaperProps={{ sx: campaignDialogPaperSx }}
-        BackdropProps={{ sx: { backdropFilter: 'blur(10px)', backgroundColor: 'rgba(2, 6, 23, 0.72)' } }}
-      >
-        <DialogTitle sx={{ p: 0 }}>
-          <div className="relative overflow-hidden bg-white dark:bg-slate-950 border-b border-slate-200/80 dark:border-slate-800">
-            <div className="h-1 bg-red-600" />
-            <div className="px-6 py-5">
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex items-start gap-4 min-w-0">
-                  <div className="hidden sm:flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400">
-                    <Megaphone size={22} />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <h3 className="font-display text-2xl font-bold text-slate-950 dark:text-slate-50">
-                        {t('crm.dialog.newCampaign', 'Nova Campanha')}
-                      </h3>
-                      {formViaBaileys && <CampaignPill tone="amber">WhatsApp Web</CampaignPill>}
-                    </div>
-                    <div className="mt-2 flex items-center gap-2 flex-wrap">
-                      <CampaignPill tone="red"><Send size={12} />{channelLabel}</CampaignPill>
-                      <CampaignPill tone="blue"><Users size={12} />{audienceLabel}</CampaignPill>
-                      <CampaignPill tone={activeRecipients.length > 0 ? 'emerald' : 'slate'}>
-                        {activeRecipients.length} destinatário{activeRecipients.length === 1 ? '' : 's'}
-                      </CampaignPill>
-                    </div>
-                  </div>
-                </div>
-                <IconButton
-                  onClick={() => setShowNew(false)}
-                  size="small"
-                  sx={{
-                    color: 'rgb(100 116 139)',
-                    border: '1px solid rgba(148,163,184,0.22)',
-                    borderRadius: '12px',
-                    '&:hover': { bgcolor: 'rgba(148,163,184,0.10)' },
-                  }}
-                  aria-label="Fechar"
-                >
-                  <X size={16} />
-                </IconButton>
-              </div>
-            </div>
-          </div>
-        </DialogTitle>
-        <DialogContent sx={campaignDialogContentSx}>
-          <motion.div
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-            className="px-4 sm:px-6 py-5 space-y-5"
+        icon={Megaphone}
+        title={t('crm.dialog.newCampaign', 'Nova Campanha')}
+        badges={formViaBaileys ? <ModernPill tone="amber">WhatsApp Web</ModernPill> : undefined}
+        subtitle={
+          <>
+            <ModernPill tone="red"><Send size={12} />{channelLabel}</ModernPill>
+            <ModernPill tone="blue"><Users size={12} />{audienceLabel}</ModernPill>
+            <ModernPill tone={activeRecipients.length > 0 ? 'emerald' : 'slate'}>
+              {activeRecipients.length} destinatário{activeRecipients.length === 1 ? '' : 's'}
+            </ModernPill>
+          </>
+        }
+        footer={
+          <ModernDialogActions
+            status={
+              <>
+                <ModernPill tone={activeRecipients.length > 0 ? 'emerald' : 'slate'}>
+                  {activeRecipients.length} destinatário{activeRecipients.length === 1 ? '' : 's'}
+                </ModernPill>
+                <span className="truncate">{audienceLabel} · {channelLabel}</span>
+              </>
+            }
           >
-          <CampaignSection
+            <ModernCancelButton onClick={() => setShowNew(false)}>
+              {t('crm.action.cancel', 'Cancelar')}
+            </ModernCancelButton>
+            <ModernPrimaryButton
+              onClick={handleCreate}
+              disabled={createDisabled}
+              startIcon={!saving ? <Send size={16} /> : undefined}
+            >
+              {saving ? t('crm.action.creating', 'Criando...') : t('crm.action.create', 'Criar')}
+            </ModernPrimaryButton>
+          </ModernDialogActions>
+        }
+      >
+          <ModernSection
             icon={Settings2}
             title="Configuração"
-            meta={<CampaignPill tone="slate">1</CampaignPill>}
+            meta={<ModernPill tone="slate">1</ModernPill>}
           >
             <div className="grid grid-cols-1 md:grid-cols-[1.4fr_1fr] gap-3">
               <TextField label={t('crm.form.name', 'Nome')} value={formName} onChange={(e) => setFormName(e.target.value)} fullWidth size="small" />
@@ -2443,12 +2344,12 @@ function CampaignsTab({ businessId }: { businessId: string }) {
               </p>
             </div>
           )}
-          </CampaignSection>
+          </ModernSection>
 
-          <CampaignSection
+          <ModernSection
             icon={Users}
             title="Audiência"
-            meta={<CampaignPill tone={activeRecipients.length > 0 ? 'emerald' : 'slate'}>{activeRecipients.length} prontos</CampaignPill>}
+            meta={<ModernPill tone={activeRecipients.length > 0 ? 'emerald' : 'slate'}>{activeRecipients.length} prontos</ModernPill>}
           >
           <FormControl fullWidth size="small">
             <InputLabel>{t('crm.form.audience', 'Audiência')}</InputLabel>
@@ -2748,13 +2649,13 @@ function CampaignsTab({ businessId }: { businessId: string }) {
           {/* Limite de envio — agora toda audiência é materializada em recipients[]
               antes de criar a campanha, seja lista direta ou clientes filtrados. */}
           {activeRecipients.length > 0 && (
-            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+            <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-950/35 p-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0 flex-1">
-                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-0.5">
+                  <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-0.5">
                     Limite de envio
                   </p>
-                  <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
                     {(() => {
                       const limit = typeof formRecipientLimit === 'number' && formRecipientLimit > 0
                         ? Math.min(formRecipientLimit, activeRecipients.length)
@@ -2765,10 +2666,9 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                     })()}
                   </p>
                 </div>
-                <input
+                <TextField
                   type="number"
-                  min={1}
-                  max={activeRecipients.length}
+                  size="small"
                   value={formRecipientLimit}
                   onChange={(e) => {
                     const v = e.target.value;
@@ -2779,25 +2679,29 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                     }
                   }}
                   placeholder="todos"
-                  className="w-24 px-2.5 py-1.5 text-xs text-center bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-lg text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400"
+                  inputProps={{ min: 1, max: activeRecipients.length, style: { textAlign: 'center' } }}
+                  sx={{ width: 110 }}
                 />
               </div>
               {formChannel === 'whatsapp' && formViaBaileys && (
-                <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-2 leading-relaxed">
-                  ⚠️ Baileys recomenda no máximo <strong>200 envios/dia</strong> para reduzir risco de banimento.
-                </p>
+                <div className="mt-2.5 flex items-start gap-2 px-2.5 py-1.5 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200/70 dark:border-amber-500/20">
+                  <AlertTriangle size={12} className="text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
+                  <p className="text-[10px] text-amber-700 dark:text-amber-400 leading-relaxed">
+                    Baileys recomenda no máximo <strong>200 envios/dia</strong> para reduzir risco de banimento.
+                  </p>
+                </div>
               )}
             </div>
           )}
-          </CampaignSection>
+          </ModernSection>
 
           {/* Velocidade de envio (throttle anti-spam) — sempre visível.
               Operador pode pré-configurar antes de colar a lista. Estimativa
               de tempo aparece só quando há recipientes (count > 0). */}
-          <CampaignSection
+          <ModernSection
             icon={SlidersHorizontal}
             title="Entrega"
-            meta={<CampaignPill tone="slate">anti-spam</CampaignPill>}
+            meta={<ModernPill tone="slate">anti-spam</ModernPill>}
           >
           <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-950/35 p-3 space-y-3">
               <div className="flex items-center justify-between">
@@ -2863,19 +2767,18 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                     onChangeMs={(ms) => setFormThrottle(t => ({ ...t, delayMaxMs: ms }))}
                   />
                   <div className="col-span-2">
-                    <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 block">
-                      Tamanho do lote <span className="font-normal normal-case">(0 = sem batching)</span>
-                    </label>
-                    <input
+                    <TextField
+                      label="Tamanho do lote"
                       type="number"
-                      min={0}
-                      max={1000}
+                      size="small"
+                      fullWidth
                       value={formThrottle.batchSize ?? 0}
                       onChange={(e) => {
                         const n = parseInt(e.target.value, 10);
                         setFormThrottle(t => ({ ...t, batchSize: Number.isFinite(n) && n >= 0 ? n : 0 }));
                       }}
-                      className="w-full px-2.5 py-1.5 text-xs bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-lg text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400"
+                      inputProps={{ min: 0, max: 1000 }}
+                      helperText="0 = sem batching"
                     />
                   </div>
                   {(formThrottle.batchSize ?? 0) > 0 && (
@@ -2908,12 +2811,12 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                 />
               )}
             </div>
-          </CampaignSection>
+          </ModernSection>
 
-          <CampaignSection
+          <ModernSection
             icon={MessageSquare}
             title="Mensagem"
-            meta={<CampaignPill tone={formMsgType === 'template' ? 'blue' : 'slate'}>{formChannel === 'email' || formViaBaileys ? 'Texto' : formMsgType === 'template' ? 'Template' : 'Texto'}</CampaignPill>}
+            meta={<ModernPill tone={formMsgType === 'template' ? 'blue' : 'slate'}>{formChannel === 'email' || formViaBaileys ? 'Texto' : formMsgType === 'template' ? 'Template' : 'Texto'}</ModernPill>}
           >
 
           {/* Tipo de mensagem aparece só para canais Meta sem Baileys.
@@ -2957,49 +2860,104 @@ function CampaignsTab({ businessId }: { businessId: string }) {
           )}
           {/* Agendamento opcional — se preenchido, broadcast começa em status='scheduled'
               e é disparado automaticamente quando o cron processar (a cada 1min). */}
-          <TextField
-            label="Agendar para (opcional)"
-            type="datetime-local"
-            value={formScheduledAt}
-            onChange={(e) => setFormScheduledAt(e.target.value)}
-            InputLabelProps={{ shrink: true }}
-            helperText={formScheduledAt
-              ? `Disparo automático no horário marcado (fuso: ${Intl.DateTimeFormat().resolvedOptions().timeZone})`
-              : 'Deixe vazio para disparar manualmente'}
-            fullWidth
-            size="small"
-          />
+          <div className="space-y-2">
+            <TextField
+              label="Agendar para (opcional)"
+              type="datetime-local"
+              value={formScheduledAt}
+              onChange={(e) => setFormScheduledAt(e.target.value)}
+              InputLabelProps={{ shrink: true }}
+              helperText={formScheduledAt ? undefined : 'Deixe vazio para disparar manualmente'}
+              fullWidth
+              size="small"
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <Calendar size={16} className={cn(
+                      formScheduledAt ? 'text-emerald-500' : 'text-slate-400'
+                    )} />
+                  </InputAdornment>
+                ),
+                endAdornment: formScheduledAt ? (
+                  <InputAdornment position="end">
+                    <IconButton
+                      size="small"
+                      onClick={() => setFormScheduledAt('')}
+                      sx={{ color: 'rgb(148 163 184)', '&:hover': { color: 'rgb(220 38 38)' } }}
+                      title="Limpar agendamento"
+                    >
+                      <X size={14} />
+                    </IconButton>
+                  </InputAdornment>
+                ) : undefined,
+              }}
+            />
+            {formScheduledAt && (() => {
+              const date = new Date(formScheduledAt);
+              if (Number.isNaN(date.getTime())) return null;
+              const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+              const formatted = new Intl.DateTimeFormat('pt-BR', {
+                weekday: 'short', day: '2-digit', month: 'short',
+                hour: '2-digit', minute: '2-digit',
+              }).format(date);
+              return (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200/70 dark:border-emerald-500/20">
+                  <Clock size={13} className="text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
+                  <p className="text-[11px] text-emerald-700 dark:text-emerald-300 leading-relaxed">
+                    Disparo automático em <strong className="font-bold capitalize">{formatted}</strong>
+                    <span className="text-emerald-600/70 dark:text-emerald-400/70 ml-1">· {tz}</span>
+                  </p>
+                </div>
+              );
+            })()}
+          </div>
 
           {/* Vínculo com oferta (Fase 4B do módulo Clientes) — opcional, só
               aparece quando o business tem ofertas cadastradas. Permite atribuir
               ROI e identificar qual campanha trouxe quais clientes. */}
           {campaignOffers.length > 0 && (
-            <TextField
-              label="Vincular oferta (opcional)"
-              select
-              value={formOfferId}
-              onChange={(e) => setFormOfferId(e.target.value)}
-              SelectProps={{ native: true }}
-              InputLabelProps={{ shrink: true }}
-              helperText="Quando set, a campanha fica vinculada à oferta — útil pra atribuição e relatórios futuros."
-              fullWidth
-              size="small"
-            >
-              <option value="">— Sem oferta vinculada —</option>
-              {campaignOffers.map(o => (
-                <option key={o.id} value={o.id}>
-                  {o.name}{!o.isActive ? ' (arquivada)' : ''}
-                </option>
-              ))}
-            </TextField>
+            <FormControl fullWidth size="small">
+              <InputLabel>Vincular oferta (opcional)</InputLabel>
+              <Select
+                value={formOfferId}
+                label="Vincular oferta (opcional)"
+                onChange={(e) => setFormOfferId(e.target.value)}
+                renderValue={(selected) => {
+                  if (!selected) return <span className="text-slate-400">— Sem oferta vinculada —</span>;
+                  const offer = campaignOffers.find(o => o.id === selected);
+                  if (!offer) return selected;
+                  return (
+                    <span className="inline-flex items-center gap-1.5">
+                      <Tag size={13} className="text-red-500" />
+                      {offer.name}{!offer.isActive && <span className="text-[10px] text-slate-400">· arquivada</span>}
+                    </span>
+                  );
+                }}
+                displayEmpty
+              >
+                <MenuItem value=""><span className="text-slate-400">— Sem oferta vinculada —</span></MenuItem>
+                {campaignOffers.map(o => (
+                  <MenuItem key={o.id} value={o.id}>
+                    <div className="flex items-center gap-2">
+                      <Tag size={13} className="text-red-500" />
+                      <span>{o.name}</span>
+                      {!o.isActive && <ModernPill tone="slate">arquivada</ModernPill>}
+                    </div>
+                  </MenuItem>
+                ))}
+              </Select>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 px-0.5">
+                Quando set, a campanha fica vinculada à oferta — útil pra atribuição e relatórios futuros.
+              </p>
+            </FormControl>
           )}
-          </CampaignSection>
+          </ModernSection>
 
           {/* 5.12 LGPD — base legal do envio (obrigatório) */}
-          <CampaignSection
+          <ModernSection
             icon={Shield}
             title="Compliance"
-            meta={<CampaignPill tone={formConsentBasis && formConsentAck ? 'emerald' : 'amber'}>LGPD</CampaignPill>}
+            meta={<ModernPill tone={formConsentBasis && formConsentAck ? 'emerald' : 'amber'}>LGPD</ModernPill>}
           >
           <div className="rounded-xl border-2 border-amber-200 dark:border-amber-500/30 bg-amber-50/50 dark:bg-amber-500/5 p-3 space-y-3">
             <div className="flex items-start gap-2">
@@ -3034,70 +2992,47 @@ function CampaignsTab({ businessId }: { businessId: string }) {
               size="small"
               inputProps={{ maxLength: 200 }}
               helperText="Texto livre — descreva onde os contatos consentiram receber comunicações."
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <LinkIcon size={14} className="text-amber-500" />
+                  </InputAdornment>
+                ),
+              }}
             />
-            <label className="flex items-start gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={formConsentAck}
-                onChange={(e) => setFormConsentAck(e.target.checked)}
-                className="w-4 h-4 mt-0.5 rounded accent-amber-600 flex-shrink-0"
-              />
-              <span className="text-[11px] text-amber-900 dark:text-amber-200 leading-relaxed">
-                Confirmo que possuo base legal para enviar esta campanha aos
-                recipientes selecionados, conforme LGPD art. 7º.
-              </span>
-            </label>
-          </div>
-          </CampaignSection>
-          </motion.div>
-        </DialogContent>
-        <DialogActions sx={{ p: 0, bgcolor: 'transparent' }}>
-          <div className="w-full border-t border-slate-200/80 dark:border-slate-800 bg-white/95 dark:bg-slate-950/95 px-4 sm:px-6 py-4">
-            <div className="flex items-center justify-between gap-3">
-              <div className="hidden sm:flex items-center gap-2 min-w-0 text-xs text-slate-500 dark:text-slate-400">
-                <CampaignPill tone={activeRecipients.length > 0 ? 'emerald' : 'slate'}>
-                  {activeRecipients.length} destinatário{activeRecipients.length === 1 ? '' : 's'}
-                </CampaignPill>
-                <span className="truncate">{audienceLabel} · {channelLabel}</span>
+            <button
+              type="button"
+              onClick={() => setFormConsentAck(!formConsentAck)}
+              className={cn(
+                'w-full flex items-start gap-3 p-3 rounded-xl border-2 text-left transition-all',
+                formConsentAck
+                  ? 'border-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 dark:border-emerald-500/40'
+                  : 'border-amber-300/70 dark:border-amber-500/30 bg-white/60 dark:bg-slate-950/30 hover:border-amber-400 dark:hover:border-amber-500/50'
+              )}
+            >
+              <div className={cn(
+                'flex-shrink-0 mt-0.5 w-5 h-5 rounded-md flex items-center justify-center transition-all',
+                formConsentAck
+                  ? 'bg-emerald-500 text-white shadow-sm shadow-emerald-500/30'
+                  : 'bg-white dark:bg-slate-800 border-2 border-amber-300 dark:border-amber-500/40'
+              )}>
+                {formConsentAck && <Check size={13} strokeWidth={3} />}
               </div>
-              <div className="flex items-center justify-end gap-2 w-full sm:w-auto">
-                <Button
-                  onClick={() => setShowNew(false)}
-                  sx={{
-                    borderRadius: '14px',
-                    px: 2.25,
-                    color: 'rgb(220 38 38)',
-                    '&:hover': { bgcolor: 'rgba(220,38,38,0.08)' },
-                  }}
-                >
-                  {t('crm.action.cancel', 'Cancelar')}
-                </Button>
-                <Button
-                  onClick={handleCreate}
-                  variant="contained"
-                  disabled={createDisabled}
-                  startIcon={!saving ? <Send size={16} /> : undefined}
-                  sx={{
-                    borderRadius: '14px',
-                    px: 2.75,
-                    minHeight: 44,
-                    bgcolor: '#DC2626',
-                    boxShadow: '0 14px 30px rgba(220,38,38,0.28)',
-                    '&:hover': { bgcolor: '#B91C1C', boxShadow: '0 16px 34px rgba(185,28,28,0.32)' },
-                    '&.Mui-disabled': {
-                      bgcolor: 'rgba(100,116,139,0.22)',
-                      color: 'rgba(148,163,184,0.70)',
-                      boxShadow: 'none',
-                    },
-                  }}
-                >
-                  {saving ? t('crm.action.creating', 'Criando...') : t('crm.action.create', 'Criar')}
-                </Button>
+              <div className="min-w-0 flex-1">
+                <p className={cn(
+                  'text-[11px] leading-relaxed transition-colors',
+                  formConsentAck
+                    ? 'text-emerald-900 dark:text-emerald-200 font-medium'
+                    : 'text-amber-900 dark:text-amber-200'
+                )}>
+                  Confirmo que possuo base legal para enviar esta campanha aos
+                  recipientes selecionados, conforme <strong>LGPD art. 7º</strong>.
+                </p>
               </div>
-            </div>
+            </button>
           </div>
-        </DialogActions>
-      </Dialog>
+          </ModernSection>
+      </ModernDialog>
     </div>
   );
 }

@@ -1480,16 +1480,27 @@ async function saveInboundMessage(params: InboundMessageParams) {
     //   1. Match exato (mesmo channelConnectionId)
     //   2. Conversa legada sem channelConnectionId (será backfillada)
     //   3. Nada → cria nova thread (ignora candidates de OUTRO canal)
+    //
+    // Cross-transport guard: pra `whatsapp`, NUNCA matchar conversa cujo
+    // `connectedVia === 'baileys'` — webhook Cloud só pode reivindicar threads
+    // Cloud (embedded_signup) ou legadas sem tag de transporte. Sem esse
+    // guard, mensagem inbound do Cloud caía em conversa Baileys do mesmo
+    // contato e os dois canais se misturavam na UI.
+    const isCrossTransportBaileys = (d: FirebaseFirestore.QueryDocumentSnapshot): boolean => {
+      if (params.channel !== 'whatsapp') return false;
+      return d.data().connectedVia === 'baileys';
+    };
     const pickBestCandidate = (
       docs: FirebaseFirestore.QueryDocumentSnapshot[],
     ): FirebaseFirestore.QueryDocumentSnapshot | null => {
+      const eligible = docs.filter(d => !isCrossTransportBaileys(d));
       if (!channelConnectionId) {
         // Sem connectionId resolvido (tenant não-migrado): mantém comportamento
-        // legado — primeira candidate é o match.
-        return docs[0] || null;
+        // legado — primeira candidate é o match (mas só entre as elegíveis).
+        return eligible[0] || null;
       }
       let legacy: FirebaseFirestore.QueryDocumentSnapshot | null = null;
-      for (const d of docs) {
+      for (const d of eligible) {
         const docConnId = d.data().channelConnectionId as string | undefined;
         if (docConnId === channelConnectionId) return d;
         if (!docConnId && !legacy) legacy = d;
@@ -1574,6 +1585,9 @@ async function saveInboundMessage(params: InboundMessageParams) {
           .limit(100) // limite conservador — usuário típico tem <100 conversas Cloud
           .get()).docs;
         candidateDocs = allConvs.filter(d => {
+          // Cross-transport guard: nunca matchar Baileys via fuzzy fallback
+          // do webhook Cloud — preserva isolamento entre transportes.
+          if (isCrossTransportBaileys(d)) return false;
           const ext = (d.data().contactExternalId as string | undefined)?.replace(/\D/g, '') || '';
           if (!ext || ext.length < 10) return false;
           const docLast8 = ext.slice(-8);

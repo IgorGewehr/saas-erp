@@ -699,11 +699,18 @@ async function handleInboundMessage(
     //   1. Match exato (mesmo channelConnectionId)
     //   2. Conversa legada sem channelConnectionId (será backfillada)
     //   3. Nada → cria nova thread (ignora candidates de OUTRO canal)
+    //
+    // Cross-transport guard: NUNCA matchar conversa cujo `connectedVia ===
+    // 'embedded_signup'` (Cloud). Sessão Baileys só pode reivindicar threads
+    // Baileys ou legadas sem tag. Sem esse guard, msg inbound de Baileys
+    // caía na conv Cloud do mesmo contato — UI mostrava bolhas Web e Oficial
+    // misturadas no mesmo histórico.
     const pickBestCandidate = (
       docs: FirebaseFirestore.QueryDocumentSnapshot[],
     ): FirebaseFirestore.QueryDocumentSnapshot | null => {
+      const eligible = docs.filter(d => d.data().connectedVia !== 'embedded_signup');
       let legacy: FirebaseFirestore.QueryDocumentSnapshot | null = null;
-      for (const d of docs) {
+      for (const d of eligible) {
         const docConnId = d.data().channelConnectionId as string | undefined;
         if (docConnId === connectionId) return d; // match exato — melhor opção
         if (!docConnId && !legacy) legacy = d;     // legacy sem conn — fallback
