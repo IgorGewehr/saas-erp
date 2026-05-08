@@ -14,13 +14,13 @@
  * editor desmonta e libera o canvas.
  */
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Plus, Search, FileSpreadsheet, ArrowLeft, Trash2,
   Lock, Users as UsersIcon, Globe, AlertCircle,
-  Loader2,
+  Loader2, Upload,
 } from 'lucide-react';
 import {
   collection, query, where, onSnapshot, addDoc, updateDoc, doc,
@@ -32,6 +32,7 @@ import { cn } from '@/lib/utils';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import type { Spreadsheet, SpreadsheetVisibility } from '@/lib/types';
 import { toast } from 'react-toastify';
+import { importCsvToWorkbook, suggestSheetNameFromFile } from './csv-import';
 
 // Editor é lazy + ssr:false (Univer usa canvas/window).
 const SpreadsheetEditor = dynamic(() => import('./SpreadsheetEditor'), {
@@ -100,6 +101,8 @@ export default function SpreadsheetsModule() {
   const [openId, setOpenId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<Spreadsheet | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isAdmin = !!user && ROLE_HIERARCHY[user.role] >= ROLE_HIERARCHY['admin'];
 
@@ -185,6 +188,60 @@ export default function SpreadsheetsModule() {
     }
   }, [user, business?.id]);
 
+  // ─── Importar CSV ───────────────────────────────────────────────────────────
+  // Pipeline: File → IWorkbookData → addDoc(spreadsheets, { snapshot }) → abre
+  // editor. Nome sugerido = nome do arquivo. Visibility default = 'private'
+  // (user pode mudar depois). Não passa por modal pra reduzir fricção — se o
+  // user errou o arquivo, é só apagar a planilha e refazer.
+  const handleImportCsv = useCallback(async (file: File) => {
+    if (!user || !business?.id) return;
+    setIsImporting(true);
+    try {
+      const sheetName = suggestSheetNameFromFile(file.name);
+      const result = await importCsvToWorkbook(file, sheetName);
+      if (!result.ok) {
+        toast.error(result.error.message);
+        return;
+      }
+      const { workbook, rowCount, colCount, truncated } = result.data;
+      const now = new Date().toISOString();
+      const ref = await addDoc(collection(db, 'spreadsheets'), {
+        businessId: business.id,
+        source: 'standalone',
+        name: sheetName,
+        ownerId: user.uid,
+        ownerName: user.name,
+        visibility: 'private' as SpreadsheetVisibility,
+        version: 1,
+        // sanitize defensivo — buildWorkbookFromRows não emite undefined, mas
+        // alinha com handleSaveSnapshot pra evitar regressão se o shape mudar.
+        snapshot: sanitizeForFirestore(workbook),
+        createdAt: now,
+        updatedAt: now,
+      });
+      const summary = `${rowCount} linha${rowCount === 1 ? '' : 's'} × ${colCount} coluna${colCount === 1 ? '' : 's'}`;
+      if (truncated) {
+        toast.info(`Planilha importada (truncada em 5000 linhas) — ${summary}`);
+      } else {
+        toast.success(`Planilha importada — ${summary}`);
+      }
+      setOpenId(ref.id);
+    } catch (err) {
+      console.error('[Spreadsheets] import csv error:', err);
+      toast.error('Erro ao importar planilha');
+    } finally {
+      setIsImporting(false);
+    }
+  }, [user, business?.id]);
+
+  const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // Reset value pra permitir reimportar o mesmo arquivo (browser não dispara
+    // change de novo se o path é igual).
+    e.target.value = '';
+    if (file) void handleImportCsv(file);
+  }, [handleImportCsv]);
+
   const handleSaveSnapshot = useCallback(async (id: string, snapshot: Record<string, unknown>) => {
     try {
       // Optimistic concurrency: incrementa version. Em race, last-writer-wins.
@@ -253,13 +310,34 @@ export default function SpreadsheetsModule() {
             {visible.length} planilhas {business?.razaoSocial ? `em ${business.razaoSocial}` : ''}
           </p>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="inline-flex items-center gap-2 px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded-xl transition-colors shadow-sm"
-        >
-          <Plus className="w-4 h-4" />
-          Nova planilha
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isImporting}
+            className="inline-flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isImporting ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Upload className="w-4 h-4" />
+            )}
+            {isImporting ? 'Importando...' : 'Importar CSV'}
+          </button>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="inline-flex items-center gap-2 px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded-xl transition-colors shadow-sm"
+          >
+            <Plus className="w-4 h-4" />
+            Nova planilha
+          </button>
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".csv,text/csv"
+          onChange={handleFileChange}
+          className="hidden"
+        />
       </motion.div>
 
       {/* Search */}

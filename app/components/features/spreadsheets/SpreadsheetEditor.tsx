@@ -179,8 +179,12 @@ export default function SpreadsheetEditor({
 
   // ─── Aplicar readOnly via API ──────────────────────────────────────────────
   // Univer expõe um modo "permission" — mas API exata varia entre versões.
-  // Por enquanto deixamos só o estado visual disabled via CSS.
+  // Tentar bloquear via `pointer-events: none` no container quebra a
+  // navegação inteira (scroll/abas/seleção), então read-only é só visual
+  // (banner "somente leitura" no callsite + edits efêmeros, snapshot remonta
+  // a cada onSnapshot do Firestore).
   // (TODO Fase 3: investigar `setEditable` ou similar quando upgrade da API.)
+  void readOnly;
 
   return (
     <div className="relative w-full h-full bg-white dark:bg-gray-900">
@@ -195,10 +199,14 @@ export default function SpreadsheetEditor({
           <p className="text-xs text-gray-500 dark:text-gray-400 max-w-md text-center">{error}</p>
         </div>
       )}
+      {/* readOnly: NÃO usar `pointer-events: none` no container — isso mata
+          scroll, seleção de célula, troca de aba (Start/Formulas/Data) e
+          todo o resto da UI. O indicador "somente leitura" no header já
+          comunica o estado ao user; edits ficam efêmeros porque `onChange`
+          não é passado e o snapshot remonta via key= do callsite. */}
       <div
         ref={containerRef}
         className="w-full h-full"
-        style={{ pointerEvents: readOnly ? 'none' : 'auto', opacity: readOnly ? 0.85 : 1 }}
       />
     </div>
   );

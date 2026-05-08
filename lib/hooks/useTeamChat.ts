@@ -523,7 +523,11 @@ export function useTeamChatMessages(businessId: string | null, chatId: string | 
       setMessages(list);
       setLoading(false);
     }, err => {
-      console.warn('[useTeamChatMessages] error:', err);
+      // Listener morto — typical: composite index faltando, ou rules
+      // rejeitando o list. Quando isso acontece, novas mensagens NÃO chegam
+      // mais via onSnapshot (sintoma user: msg some até reabrir o chat).
+      // Logamos como error pra ficar visível no console e facilitar diagnose.
+      console.error('[useTeamChatMessages] subscription error — new messages will not appear until remount:', err);
       setLoading(false);
     });
     return () => unsub();
