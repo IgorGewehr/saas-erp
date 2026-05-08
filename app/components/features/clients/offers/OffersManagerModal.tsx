@@ -158,7 +158,17 @@ export function OffersManagerModal({
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['offers', businessId] });
+      // Invalida via predicate pra cobrir TODAS as queryKeys que dependem
+      // do recurso `offers/{businessId}` — o dropdown de aquisição no
+      // ClientForm usa chave separada (`['offers-acquisition-select', ...]`)
+      // que não casa com prefix matching de array. Sem isso, criar oferta
+      // nova aqui não aparecia no dropdown até reload.
+      queryClient.invalidateQueries({
+        predicate: (q) => {
+          const k = q.queryKey;
+          return Array.isArray(k) && typeof k[0] === 'string' && k[0].startsWith('offers') && k[1] === businessId;
+        },
+      });
       setShowForm(false);
       setEditing(null);
       setForm(emptyOfferForm);
@@ -177,7 +187,17 @@ export function OffersManagerModal({
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['offers', businessId] });
+      // Invalida via predicate pra cobrir TODAS as queryKeys que dependem
+      // do recurso `offers/{businessId}` — o dropdown de aquisição no
+      // ClientForm usa chave separada (`['offers-acquisition-select', ...]`)
+      // que não casa com prefix matching de array. Sem isso, criar oferta
+      // nova aqui não aparecia no dropdown até reload.
+      queryClient.invalidateQueries({
+        predicate: (q) => {
+          const k = q.queryKey;
+          return Array.isArray(k) && typeof k[0] === 'string' && k[0].startsWith('offers') && k[1] === businessId;
+        },
+      });
     },
   });
 
@@ -189,7 +209,17 @@ export function OffersManagerModal({
       await deleteDoc(doc(db, 'offers', offer.id));
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['offers', businessId] });
+      // Invalida via predicate pra cobrir TODAS as queryKeys que dependem
+      // do recurso `offers/{businessId}` — o dropdown de aquisição no
+      // ClientForm usa chave separada (`['offers-acquisition-select', ...]`)
+      // que não casa com prefix matching de array. Sem isso, criar oferta
+      // nova aqui não aparecia no dropdown até reload.
+      queryClient.invalidateQueries({
+        predicate: (q) => {
+          const k = q.queryKey;
+          return Array.isArray(k) && typeof k[0] === 'string' && k[0].startsWith('offers') && k[1] === businessId;
+        },
+      });
       toast.success('Oferta excluída');
     },
   });
