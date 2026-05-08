@@ -226,14 +226,23 @@ function AvatarStack({
           key={member.id}
           className={cn(
             px,
-            'rounded-full flex items-center justify-center font-bold',
+            'relative rounded-full flex items-center justify-center font-bold overflow-hidden',
             'bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-700 dark:to-gray-600 text-gray-600 dark:text-gray-300',
             'border-2 border-white dark:border-gray-900 shadow-sm ring-1 ring-black/5 dark:ring-white/5',
             i > 0 && overlap
           )}
           title={member.name}
         >
-          {getInitials(member.name)}
+          {member.photoURL ? (
+            <img
+              src={member.photoURL}
+              alt={member.name}
+              className="absolute inset-0 w-full h-full object-cover"
+              referrerPolicy="no-referrer"
+            />
+          ) : (
+            getInitials(member.name)
+          )}
         </div>
       ))}
       {remaining > 0 && (
@@ -285,10 +294,14 @@ function DueDateBadge({ date }: { date: string }) {
   today.setHours(0, 0, 0, 0);
   const diff = Math.ceil((d.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
 
-  let colorClass = 'text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800/50 border-gray-200 dark:border-gray-700';
-  if (diff < 0) colorClass = 'text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/20';
-  else if (diff === 0) colorClass = 'text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-500/10 border-orange-200 dark:border-orange-500/20';
-  else if (diff <= 2) colorClass = 'text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20';
+  let colorClass: string;
+  if (diff < 0) colorClass = 'text-red-700 dark:text-red-300 bg-red-100 dark:bg-red-500/20 border-red-300 dark:border-red-500/40';
+  else if (diff === 0) colorClass = 'text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/20';
+  else if (diff <= 1) colorClass = 'text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-500/10 border-orange-200 dark:border-orange-500/20';
+  else if (diff <= 3) colorClass = 'text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20';
+  else if (diff <= 7) colorClass = 'text-yellow-700 dark:text-yellow-400 bg-yellow-50 dark:bg-yellow-500/10 border-yellow-200 dark:border-yellow-500/20';
+  else if (diff <= 14) colorClass = 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/20';
+  else colorClass = 'text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800/50 border-gray-200 dark:border-gray-700';
 
   const formatted = d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' });
 
