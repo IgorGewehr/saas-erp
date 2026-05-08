@@ -1906,6 +1906,16 @@ async function updateMessageStatus(params: {
 }) {
   console.log('[Meta Webhook] Status update:', params);
 
+  // ── 1. Update conversationMessage (best-effort) ─────────────────────────
+  // Antes esse bloco tinha `return` em 2 caminhos (msgSnap empty + status
+  // regression) que pulavam os updates de broadcastMessages/birthdayCampaign-
+  // Logs abaixo. Resultado: broadcasts agendados onde o upsert de conversa
+  // sofresse race com o webhook (ou broadcasts cuja conversa ficou stale)
+  // nunca recebiam delivered/read em broadcastMessages — stats agregadas
+  // ficavam congeladas em "0 entregue, 0 lida" indefinidamente.
+  //
+  // Agora o bloco é if/else interno; broadcasts/birthday updates SEMPRE rodam
+  // com suas próprias guardas (existence + regression).
   try {
     const msgSnap = await adminDb.collection('conversationMessages')
       .where('externalMessageId', '==', params.messageId)
@@ -1914,82 +1924,74 @@ async function updateMessageStatus(params: {
       .get();
 
     if (msgSnap.empty) {
-      // Not an error — could be a status update for a message we didn't send through our system
-      console.log('[Meta Webhook] No message found for externalMessageId:', params.messageId);
-      return;
-    }
+      // Not an error — could be a status update for a message we didn't send
+      // through our system, OR mensagem só de broadcastMessages sem conversa
+      // (race com upsertConversationFromBroadcast).
+      console.log('[Meta Webhook] No conversationMessage found for externalMessageId:', params.messageId);
+    } else {
+      const msgDoc = msgSnap.docs[0];
+      const currentData = msgDoc.data();
 
-    const msgDoc = msgSnap.docs[0];
-    const currentData = msgDoc.data();
+      // Status regression guard — don't go backwards (except 'failed' always applies)
+      const currentOrder = STATUS_ORDER[currentData.status] ?? -1;
+      const newOrder = STATUS_ORDER[params.status] ?? -1;
+      const shouldUpdate = params.status === 'failed' || newOrder > currentOrder;
 
-    // Status regression guard — don't go backwards (except 'failed' which always applies)
-    const currentStatus = currentData.status;
-    const currentOrder = STATUS_ORDER[currentStatus] ?? -1;
-    const newOrder = STATUS_ORDER[params.status] ?? -1;
+      if (shouldUpdate) {
+        const updateData: Record<string, string | number> = { status: params.status };
 
-    if (params.status !== 'failed' && newOrder <= currentOrder) {
-      return; // Skip — current status is already at or beyond new status
-    }
-
-    const updateData: Record<string, string | number> = {
-      status: params.status,
-    };
-
-    // Add timestamp fields for specific statuses
-    if (params.status === 'delivered') {
-      updateData.deliveredAt = params.timestamp;
-    }
-    if (params.status === 'read') {
-      updateData.readAt = params.timestamp;
-      // Also set deliveredAt if not already set (read implies delivered)
-      if (!currentData.deliveredAt) {
-        updateData.deliveredAt = params.timestamp;
-      }
-    }
-
-    // Save error details when status is 'failed'
-    if (params.status === 'failed' && params.errors?.length) {
-      const firstError = params.errors[0];
-      updateData.failedReason = firstError.title;
-      updateData.failedCode = firstError.code;
-      console.error('[Meta Webhook] Message delivery failed:', {
-        messageId: params.messageId,
-        channel: params.channel,
-        businessId: params.businessId,
-        errors: params.errors,
-      });
-    }
-
-    await adminDb.doc(`conversationMessages/${msgDoc.id}`).update(updateData);
-
-    console.log('[Meta Webhook] Updated message status:', msgDoc.id, '->', params.status);
-
-    // If the message was read, also update the conversation timestamp
-    if (params.status === 'read') {
-      if (currentData.conversationId) {
-        try {
-          await adminDb.doc(`conversations/${currentData.conversationId}`).update({
-            updatedAt: new Date().toISOString(),
+        if (params.status === 'delivered') {
+          updateData.deliveredAt = params.timestamp;
+        }
+        if (params.status === 'read') {
+          updateData.readAt = params.timestamp;
+          if (!currentData.deliveredAt) {
+            updateData.deliveredAt = params.timestamp;
+          }
+        }
+        if (params.status === 'failed' && params.errors?.length) {
+          const firstError = params.errors[0];
+          updateData.failedReason = firstError.title;
+          updateData.failedCode = firstError.code;
+          console.error('[Meta Webhook] Message delivery failed:', {
+            messageId: params.messageId,
+            channel: params.channel,
+            businessId: params.businessId,
+            errors: params.errors,
           });
-        } catch {
-          // Non-critical
+        }
+
+        await adminDb.doc(`conversationMessages/${msgDoc.id}`).update(updateData);
+        console.log('[Meta Webhook] Updated conversationMessage status:', msgDoc.id, '->', params.status);
+
+        // If read, also bump conversation timestamp
+        if (params.status === 'read' && currentData.conversationId) {
+          try {
+            await adminDb.doc(`conversations/${currentData.conversationId}`).update({
+              updatedAt: new Date().toISOString(),
+            });
+          } catch {
+            // Non-critical
+          }
         }
       }
     }
   } catch (err) {
-    console.error('[Meta Webhook] Error updating message status:', err);
+    console.error('[Meta Webhook] Error updating conversationMessage status:', err);
+    // Não retorna — broadcastMessages/birthdayCampaignLogs ainda devem tentar.
   }
 
-  // Espelhamento em broadcastMessages — Fase 1 do roadmap de broadcasts.
+  // ── 2. Sempre tenta broadcastMessages ───────────────────────────────────
   // Mensagens enviadas via /api/broadcasts/send criam doc em broadcastMessages
-  // (não em conversationMessages), então tentamos atualizar lá também.
+  // independentemente de conversationMessages. Tem guards próprios (existence
+  // + regression) — chamada é segura mesmo quando conversationMessages falhou.
   await updateBroadcastMessageStatus(params).catch(err =>
     console.error('[Meta Webhook] Error updating broadcastMessage status:', err)
   );
 
-  // Espelhamento em birthdayCampaignLogs — campanhas recorrentes de aniversário
-  // (PR-C). Logs são por (campaignId, clientId, year); webhook atualiza status
-  // e incrementa stats agregadas na campanha pai.
+  // ── 3. Sempre tenta birthdayCampaignLogs ────────────────────────────────
+  // Campanhas recorrentes de aniversário. Mesmo padrão — guards próprios,
+  // independente de conversationMessages.
   await updateBirthdayCampaignLogStatus(params).catch(err =>
     console.error('[Meta Webhook] Error updating birthdayCampaignLog status:', err)
   );
