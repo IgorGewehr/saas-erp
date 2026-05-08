@@ -59,7 +59,12 @@ export const ACTIVITY_COLORS: Record<CRMActivityType, string> = {
 
 export const ALL_SOURCES: LeadSource[] = ['site', 'indicacao', 'whatsapp', 'instagram', 'facebook', 'google_ads', 'linkedin', 'evento', 'email', 'telefone', 'outro'];
 export const ALL_STATUSES: LeadStatus[] = ['novo', 'contatado', 'qualificado', 'proposta', 'negociacao', 'ganho', 'perdido'];
-export const ALL_ACTIVITY_TYPES: CRMActivityType[] = ['ligacao', 'email', 'reuniao', 'whatsapp', 'tarefa', 'nota', 'proposta'];
+/** Tipos disponíveis pra criação de atividade na UI. 'tarefa' foi removido
+ *  intencionalmente — tarefas com prazo + múltiplos responsáveis vivem no
+ *  módulo Kanban (botão "Criar tarefa no Kanban" no detalhe do contato).
+ *  Activities CRM ficam só pro log de INTERAÇÕES com o contato.
+ *  O tipo CRMActivityType ainda inclui 'tarefa' pra leitura de docs antigos. */
+export const ALL_ACTIVITY_TYPES: CRMActivityType[] = ['ligacao', 'email', 'reuniao', 'whatsapp', 'nota', 'proposta'];
 
 // ── Pipeline data-driven ───────────────────────────────────────────────────────
 

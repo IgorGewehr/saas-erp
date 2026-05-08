@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Chip } from '@mui/material';
 import {
   X, Edit3, Mail, Phone, Clock, MessageCircle, MessageSquare,
-  Calendar, CalendarPlus, Trash2, Activity, CheckCircle2, FileText,
+  Calendar, CalendarPlus, Trash2, Activity, CheckCircle2, CheckSquare, FileText,
   Brain, TrendingUp, TrendingDown, AlertTriangle, Heart,
   DollarSign, Target, Shield, Zap, Star, BarChart3,
   ThumbsUp, ThumbsDown, Timer, UserCheck, Ban, ArrowRight,
@@ -108,7 +108,7 @@ function InsightChip({ text, variant = 'neutral' }: { text: string; variant?: 'p
 
 // ── Main Panel ─────────────────────────────────────────────────────────────
 
-export function LeadDetailPanel({ contact, activities, stages, onClose, onEdit, onDelete, onTagsChange, onSchedule, onOpenConversations }: {
+export function LeadDetailPanel({ contact, activities, stages, onClose, onEdit, onDelete, onTagsChange, onSchedule, onOpenConversations, onCreateKanbanTask }: {
   contact: CRMContact;
   activities: CRMActivity[];
   stages?: CRMStageConfig[];
@@ -118,6 +118,9 @@ export function LeadDetailPanel({ contact, activities, stages, onClose, onEdit, 
   onTagsChange: (tags: string[]) => void;
   onSchedule: () => void;
   onOpenConversations: () => void;
+  /** Abre modal pra criar uma tarefa no Kanban vinculada a este contato.
+   *  Substitui Activities tipo 'tarefa' (deprecated). */
+  onCreateKanbanTask?: () => void;
 }) {
   const { t } = useTranslation();
   const contactActivities = useMemo(
@@ -482,9 +485,15 @@ export function LeadDetailPanel({ contact, activities, stages, onClose, onEdit, 
               className="flex items-center gap-2 px-3 py-2.5 bg-white dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-xl text-xs font-semibold text-gray-700 dark:text-gray-300 hover:border-emerald-300 dark:hover:border-emerald-500/40 hover:text-emerald-600 dark:hover:text-emerald-400 transition-all">
               <MessageSquare size={14} /> {t('crm.detail.message', 'Mensagem')}
             </motion.button>
-            <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={onSchedule}
-              className="flex items-center gap-2 px-3 py-2.5 bg-white dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-xl text-xs font-semibold text-gray-700 dark:text-gray-300 hover:border-blue-300 dark:hover:border-blue-500/40 hover:text-blue-600 dark:hover:text-blue-400 transition-all">
-              <Calendar size={14} /> {t('crm.detail.consultation', 'Consulta')}
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={onCreateKanbanTask}
+              disabled={!onCreateKanbanTask}
+              className="flex items-center gap-2 px-3 py-2.5 bg-white dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-xl text-xs font-semibold text-gray-700 dark:text-gray-300 hover:border-blue-300 dark:hover:border-blue-500/40 hover:text-blue-600 dark:hover:text-blue-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Criar uma tarefa no Kanban vinculada a este contato"
+            >
+              <CheckSquare size={14} /> {t('crm.detail.kanbanTask', 'Tarefa')}
             </motion.button>
             <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={onDelete}
               className="flex items-center gap-2 px-3 py-2.5 bg-white dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-xl text-xs font-semibold text-gray-700 dark:text-gray-300 hover:border-red-300 dark:hover:border-red-500/40 hover:text-red-600 dark:hover:text-red-400 transition-all">

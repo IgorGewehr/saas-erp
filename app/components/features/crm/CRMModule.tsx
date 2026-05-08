@@ -63,6 +63,7 @@ import EmailBodyEditor from './EmailBodyEditor';
 import { KanbanBoard } from './KanbanBoard';
 import { LeadTableView } from './LeadTableView';
 import { LeadDetailPanel } from './LeadDetailPanel';
+import CreateKanbanTaskDialog from './CreateKanbanTaskDialog';
 import { ScheduleActionDialog } from './ScheduleActionDialog';
 import AutomacoesTab from './AutomacoesTab';
 import FormulariosTab from './FormulariosTab';
@@ -348,12 +349,16 @@ function ActivityFormDialog({ open, onClose, onSave, activity, contacts, deals, 
   open: boolean; onClose: () => void; onSave: (data: Partial<CRMActivity>) => Promise<void>; activity: CRMActivity | null; contacts: CRMContact[]; deals: CRMDeal[]; members: User[];
 }) {
   const { t } = useTranslation();
-  const [type, setType] = useState<CRMActivityType>('tarefa'); const [title, setTitle] = useState(''); const [description, setDescription] = useState('');
+  // Default 'ligacao' — antes era 'tarefa', mas tarefas migraram pro Kanban
+  // (Activities = log de INTERAÇÕES; Kanban = workflow com prazo). Quando
+  // editing uma activity legacy do tipo 'tarefa', o select preserva o valor
+  // mesmo sem aparecer em ALL_ACTIVITY_TYPES (MUI não filtra value desconhecido).
+  const [type, setType] = useState<CRMActivityType>('ligacao'); const [title, setTitle] = useState(''); const [description, setDescription] = useState('');
   const [contactId, setContactId] = useState(''); const [dealId, setDealId] = useState(''); const [scheduledAt, setScheduledAt] = useState('');
   const [assignedTo, setAssignedTo] = useState(''); const [duration, setDuration] = useState(''); const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (open) { setType(activity?.type ?? 'tarefa'); setTitle(activity?.title ?? ''); setDescription(activity?.description ?? ''); setContactId(activity?.contactId ?? ''); setDealId(activity?.dealId ?? ''); setScheduledAt(activity?.scheduledAt ? activity.scheduledAt.slice(0, 16) : ''); setAssignedTo(activity?.assignedTo ?? ''); setDuration(activity?.duration ? String(activity.duration) : ''); }
+    if (open) { setType(activity?.type ?? 'ligacao'); setTitle(activity?.title ?? ''); setDescription(activity?.description ?? ''); setContactId(activity?.contactId ?? ''); setDealId(activity?.dealId ?? ''); setScheduledAt(activity?.scheduledAt ? activity.scheduledAt.slice(0, 16) : ''); setAssignedTo(activity?.assignedTo ?? ''); setDuration(activity?.duration ? String(activity.duration) : ''); }
   }, [open, activity]);
 
   const handleSubmit = async () => {
@@ -3684,6 +3689,10 @@ export default function CRMModule() {
   // Dialog states
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<CRMContact | null>(null);
+  // Modal pra criar tarefa Kanban a partir do detalhe do contato. Substitui
+  // o caso de uso "atividade tipo tarefa" — Activities CRM ficam só pra
+  // log de interações; tarefas com prazo+responsáveis vivem no Kanban.
+  const [kanbanTaskContact, setKanbanTaskContact] = useState<CRMContact | null>(null);
   const [deleteContactConfirm, setDeleteContactConfirm] = useState<CRMContact | null>(null);
   const [dealDialogOpen, setDealDialogOpen] = useState(false);
   const [editingDeal, setEditingDeal] = useState<CRMDeal | null>(null);
@@ -4121,7 +4130,8 @@ export default function CRMModule() {
               onDelete={() => { setDeleteContactConfirm(selectedContact); setDetailOpen(false); }}
               onTagsChange={(tags) => handleTagsChange(selectedContact.id, tags)}
               onSchedule={() => { setScheduleContact(selectedContact); setScheduleDialogOpen(true); }}
-              onOpenConversations={() => { setDetailOpen(false); setActivePage('Conversas'); }} />
+              onOpenConversations={() => { setDetailOpen(false); setActivePage('Conversas'); }}
+              onCreateKanbanTask={() => setKanbanTaskContact(selectedContact)} />
           </>
         )}
       </AnimatePresence>
@@ -4136,6 +4146,16 @@ export default function CRMModule() {
 
       {/* Form Dialogs */}
       <ContactFormDialog open={contactDialogOpen} onClose={() => { setContactDialogOpen(false); setEditingContact(null); }} onSave={handleSaveContact} contact={editingContact} members={members} stages={stages} />
+      {kanbanTaskContact && business?.id && user && (
+        <CreateKanbanTaskDialog
+          open={!!kanbanTaskContact}
+          onClose={() => setKanbanTaskContact(null)}
+          contact={kanbanTaskContact}
+          businessId={business.id}
+          user={{ uid: user.uid, name: user.name }}
+          onCreated={() => { setKanbanTaskContact(null); setActivePage('Kanban'); }}
+        />
+      )}
       <DealFormDialog open={dealDialogOpen} onClose={() => { setDealDialogOpen(false); setEditingDeal(null); }} onSave={handleSaveDeal} deal={editingDeal} contacts={contacts} members={members} />
       <ActivityFormDialog open={activityDialogOpen} onClose={() => { setActivityDialogOpen(false); setEditingActivity(null); }} onSave={handleSaveActivity} activity={editingActivity} contacts={contacts} deals={deals} members={members} />
 

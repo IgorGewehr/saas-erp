@@ -1731,6 +1731,15 @@ export interface KanbanCard {
   attachmentsCount: number;
   coverColor?: string;
   order: number;
+  /** Quando o card foi criado a partir de um contato CRM (botão "Criar
+   *  tarefa no Kanban" do detalhe do cliente), referencia o contato pra
+   *  o painel mostrar tarefas pendentes desse cliente. Opcional —
+   *  cards genéricos do Kanban não precisam estar vinculados. */
+  relatedContactId?: string;
+  /** Snapshot do nome do contato no momento da criação (display rápido,
+   *  evita lookup extra no list view). Atualizado em sync se o contato
+   *  for renomeado é fora do escopo MVP. */
+  relatedContactName?: string;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -1780,6 +1789,13 @@ export interface KanbanAutomation {
 // ---- CRM ----
 export type LeadStatus = 'novo' | 'contatado' | 'qualificado' | 'proposta' | 'negociacao' | 'ganho' | 'perdido';
 export type LeadSource = 'site' | 'indicacao' | 'whatsapp' | 'instagram' | 'facebook' | 'google_ads' | 'linkedin' | 'evento' | 'email' | 'telefone' | 'outro';
+/** Tipo de atividade CRM = INTERAÇÃO com o contato.
+ *  - 'ligacao' | 'email' | 'reuniao' | 'whatsapp' | 'proposta': comunicação realizada
+ *  - 'nota': observação livre vinculada ao contato
+ *  - 'tarefa' (DEPRECATED): use o módulo Kanban pra tarefas com prazo +
+ *    múltiplos responsáveis. Mantido aqui pra retrocompatibilidade com
+ *    docs antigos (`isCompleted`/`scheduledAt` continuam respeitados em
+ *    leitura), mas a UI não oferece mais como opção de criação. */
 export type CRMActivityType = 'ligacao' | 'email' | 'reuniao' | 'whatsapp' | 'tarefa' | 'nota' | 'proposta';
 export type IntegrationStatus = 'connected' | 'disconnected' | 'error' | 'pending';
 export type IntegrationCategory = 'messaging' | 'social' | 'payment' | 'email' | 'analytics' | 'automation' | 'calendar';
