@@ -81,11 +81,18 @@ services:
   # Cron interno — dispara endpoints scheduled do saas-erp.
   # Self-contained (não depende de cron-job.org externo). Roda sempre.
   #   - process-scheduled (broadcasts):       a cada 1 minuto
-  #   - agent/scheduled/run (agente IA):      a cada 1 hora
-  #   - birthday-campaigns/run (aniversário): a cada 1 hora
+  #   - agent/scheduled/run (agente IA):      a cada 1 hora (HH:00)
+  #   - birthday-campaigns/run (aniversário): a cada 1 hora (HH:00)
   # Todos autenticam com Authorization: Bearer ${CRON_SECRET}
   # Usa o nome do serviço Docker (`app:3000`) na rede interna — não vai
   # pelo Cloudflare/internet (mais rápido e não consome quota tunnel).
+  #
+  # Wall-clock alignment (importante): o loop dorme até o próximo minuto cheio
+  # do relógio (date +%S), em vez de `sleep 60` puro. Antes contávamos TICK %
+  # 60 desde o start do container — se subisse às 11:30, tasks "horárias"
+  # rodavam às 11:30, 12:30... NUNCA às HH:00. Campanha agendada pra meio-dia
+  # nunca casava com `currentHour === 12` no runner. Agora roda no topo da
+  # hora real.
   cron:
     image: alpine:3.19
     container_name: servicepro-cron
@@ -98,35 +105,32 @@ services:
     command: |
       sh -c '
         apk add --no-cache curl > /dev/null 2>&1
-        echo "[cron] iniciado — process-scheduled a cada 1min, agent + birthday a cada 1h"
-        TICK=0
-        while true; do
-          # broadcasts: a cada 1 minuto
-          curl -fsS -m 30 -o /dev/null \
+        echo "[cron] iniciado — process-scheduled a cada 1min, agent + birthday a cada 1h (HH:00)"
+
+        call_endpoint() {
+          # $$1=path, $$2=timeout
+          curl -fsS -m "$$2" -o /dev/null \
             -H "Authorization: Bearer $$CRON_SECRET" \
-            http://app:3000/api/broadcasts/process-scheduled \
-            || echo "[cron] process-scheduled falhou em $$(date -Iseconds)"
+            "http://app:3000$$1" \
+            || echo "[cron] $$1 falhou em $$(date -Iseconds)"
+        }
 
-          # tarefas horárias: rodam quando TICK é múltiplo de 60 (1x por hora).
-          # Disparam em sequência pra evitar pico simultâneo na app.
-          if [ $$((TICK % 60)) -eq 0 ]; then
-            # agente IA
-            curl -fsS -m 60 -o /dev/null \
-              -H "Authorization: Bearer $$CRON_SECRET" \
-              http://app:3000/api/agent/scheduled/run \
-              || echo "[cron] agent/scheduled/run falhou em $$(date -Iseconds)"
+        while true; do
+          # Dorme até o próximo minuto cheio (00 segundos do relógio).
+          # date +%S retorna 00-59; subtraímos pra calcular o gap.
+          # Se já estamos exatamente em :00 (raro), pula o sleep.
+          SECS_LEFT=$$((60 - $$(date +%S)))
+          [ "$$SECS_LEFT" -lt 60 ] && [ "$$SECS_LEFT" -gt 0 ] && sleep "$$SECS_LEFT"
 
-            # campanhas de aniversário (varre clientes elegíveis e dispara
-            # mensagens conforme sendAtHour de cada campanha; idempotente
-            # via birthdayCampaignLogs/{campaignId_clientId_year})
-            curl -fsS -m 120 -o /dev/null \
-              -H "Authorization: Bearer $$CRON_SECRET" \
-              http://app:3000/api/birthday-campaigns/run \
-              || echo "[cron] birthday-campaigns/run falhou em $$(date -Iseconds)"
+          # broadcasts: a cada minuto
+          call_endpoint "/api/broadcasts/process-scheduled" 30
+
+          # tarefas horárias: só dispara quando minuto == 00.
+          # Sequencial pra evitar pico simultâneo na app.
+          if [ "$$(date +%M)" = "00" ]; then
+            call_endpoint "/api/agent/scheduled/run" 60
+            call_endpoint "/api/birthday-campaigns/run" 120
           fi
-
-          TICK=$$((TICK + 1))
-          sleep 60
         done
       '
     networks:
