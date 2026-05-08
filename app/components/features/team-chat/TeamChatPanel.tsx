@@ -784,11 +784,25 @@ function ChatView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId]);
 
+  // Auto-scroll: dep no ID da última mensagem (não em messages.length).
+  // Quando o chat passa do limit(50), o array sempre tem 50 itens — chega
+  // msg nova, a mais antiga sai, length continua 50 e o efeito NÃO disparava.
+  // Usar lastId garante fire em todo append, independente do tamanho. RAF
+  // dupla cobre layout/imagens que crescem após o paint inicial.
+  const lastMessageId = messages[messages.length - 1]?.id;
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [messages.length]);
+    const r1 = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+      const r2 = requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight;
+      });
+      return () => cancelAnimationFrame(r2);
+    });
+    return () => cancelAnimationFrame(r1);
+  }, [lastMessageId]);
 
   // Mentions filtradas: members que batem no prefixo, exceto o próprio user.
   const mentionMatches = useMemo(() => {
