@@ -4036,9 +4036,11 @@ export default function CRMModule() {
       </div>
 
       {/* ═══════════════════════════════════════════════════════════
-          TAG FILTER BAR — collapsible
+          TAG FILTER BAR — collapsible. Só faz sentido na aba Pipeline
+          (filterTags é consumido só pela KanbanBoard/lista). State
+          showTagFilter persiste — bar reaparece quando volta pra kanban.
           ═══════════════════════════════════════════════════════════ */}
-      <AnimatePresence>{showTagFilter && (
+      <AnimatePresence>{showTagFilter && activeTab === 'kanban' && (
         <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden shrink-0 px-5 sm:px-6 lg:px-8">
           <div className="flex items-center gap-2.5 flex-wrap py-3 mt-2">
             <span className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mr-1">Tags:</span>
