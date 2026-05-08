@@ -26,10 +26,12 @@ import {
   detectAndNotifyMissedRun,
   markSuccessfulRun,
 } from '@/lib/services/scheduledFallback';
+import { upsertConversationFromCampaign } from '@/lib/services/conversationFromCampaign';
 import type {
   BirthdayCampaign,
   BroadcastTemplateParam,
   Client,
+  ChannelConnection,
 } from '@/lib/types';
 
 const META_GRAPH = 'https://graph.facebook.com/v21.0';
@@ -170,6 +172,38 @@ function renderBaileysMessage(template: string, client: Client): string {
 }
 
 /**
+ * Resolve cada `BroadcastTemplateParam` num valor literal pra renderizar
+ * o body do template Cloud — espelha a função do broadcasts/send/route.ts
+ * mas adaptada pra `Client` (em vez do shape `recipient` do broadcast).
+ */
+function resolveTemplateValuesForClient(
+  params: BroadcastTemplateParam[] | undefined,
+  client: Client,
+): string[] {
+  if (!params?.length) return [];
+  return params.map(p => {
+    if (p.kind === 'literal') return p.value;
+    if (p.kind === 'field') {
+      if (p.field === 'name') return client.name || '';
+      if (p.field === 'phoneNumber') return client.phone || client.whatsapp || '';
+      if (p.field === 'email') return client.email || '';
+    }
+    return '';
+  });
+}
+
+/**
+ * Substitui `{{1}}`, `{{2}}`, ... no body do template pelos valores
+ * resolvidos. Index 1-based (padrão Meta). Sem match → mantém literal.
+ */
+function renderTemplateBody(body: string, values: string[]): string {
+  return body.replace(/\{\{(\d+)\}\}/g, (match, idxStr) => {
+    const idx = parseInt(idxStr, 10) - 1;
+    return idx >= 0 && idx < values.length ? values[idx] : match;
+  });
+}
+
+/**
  * Resolve `BroadcastTemplateParam[]` em `components[]` do Meta — espelho
  * da função em /api/broadcasts/send/route.ts. Duplicado conscientemente
  * pra manter o runner desacoplado da rota de broadcast pontual.
@@ -289,6 +323,31 @@ async function incrementCampaignStats(
 }
 
 /**
+ * Resolve metadados de ownership do canal usado pela campanha. Necessário
+ * pra denormalizar `channelOwnerType`/`channelOwnerId` na conversa criada
+ * — rules de privacidade dependem desses campos pra controle de visibilidade
+ * por usuário/setor. Sem isso, conversas geradas via cron ficam invisíveis
+ * pra membros não-admin do business.
+ */
+async function resolveChannelMeta(connectionId?: string): Promise<{
+  channelOwnerType: 'business' | 'user';
+  channelOwnerId?: string;
+}> {
+  if (!connectionId) return { channelOwnerType: 'business' };
+  try {
+    const connSnap = await adminDb.collection('channelConnections').doc(connectionId).get();
+    if (!connSnap.exists) return { channelOwnerType: 'business' };
+    const conn = connSnap.data() as ChannelConnection;
+    if (conn.ownerType === 'user' && conn.ownerId) {
+      return { channelOwnerType: 'user', channelOwnerId: conn.ownerId };
+    }
+    return { channelOwnerType: 'business' };
+  } catch {
+    return { channelOwnerType: 'business' };
+  }
+}
+
+/**
  * Resolve credenciais Cloud do business pra envio direto. Reusa a config
  * `channels.whatsappCloud` (com fallback legado a `channels.whatsapp`).
  */
@@ -364,6 +423,10 @@ async function executeCampaign(
     }
   }
 
+  // Resolve owner metadata uma vez — usado pra denormalizar nas conversas
+  // criadas a partir dos envios (rules de privacidade dependem disso).
+  const channelMeta = await resolveChannelMeta(campaign.channelConnectionId);
+
   for (const client of matches) {
     const phone = resolveRecipientPhone(client);
     if (!phone) {
@@ -399,19 +462,30 @@ async function executeCampaign(
     // Envia
     try {
       let externalMessageId = '';
+      // Conteúdo renderizado pra exibir na aba Conversas. Calculado antes
+      // do envio (Baileys: texto cru já com placeholders resolvidos; Cloud:
+      // body do template renderizado com os params do cliente).
+      let renderedContent = '';
 
       if (campaign.viaBaileys) {
-        const content = renderBaileysMessage(campaign.messageContent || '', client);
+        renderedContent = renderBaileysMessage(campaign.messageContent || '', client);
         const sent = await sendBaileysBroadcastMessage(
           campaign.businessId,
           phone,
-          content,
+          renderedContent,
           campaign.channelConnectionId,
         );
         externalMessageId = sent.externalMessageId;
       } else {
         // Cloud: template
         if (!campaign.templateName) throw new Error('Cloud campaign missing templateName');
+        // Renderiza o body cru (com {{N}}) substituindo os params resolvidos
+        // pro cliente. Fallback pro nome do template se body cru não foi
+        // persistido (campanhas antigas criadas antes do campo templateBody).
+        const values = resolveTemplateValuesForClient(campaign.templateParams, client);
+        renderedContent = campaign.templateBody
+          ? renderTemplateBody(campaign.templateBody, values)
+          : `[Template: ${campaign.templateName}]`;
         const response = await fetch(`${META_GRAPH}/${cloudCreds!.phoneNumberId}/messages`, {
           method: 'POST',
           headers: {
@@ -441,6 +515,28 @@ async function executeCampaign(
       await markLogSent(logId, externalMessageId);
       await incrementCampaignStats(campaign.id, 'totalSent', matches.length);
       result.sent++;
+
+      // Espelha a conversa pra que a mensagem apareça na aba Conversas do
+      // operador — mesma correção aplicada em broadcasts pontuais (commit
+      // 6f949d3). Best-effort: falha aqui não interrompe próximos envios.
+      await upsertConversationFromCampaign({
+        adminDb,
+        businessId: campaign.businessId,
+        channel: 'whatsapp',
+        recipientId: phone,
+        contactName: client.name,
+        content: renderedContent,
+        externalMessageId: externalMessageId || undefined,
+        source: {
+          kind: 'birthday',
+          birthdayCampaignId: campaign.id,
+          birthdayCampaignLogId: logId,
+        },
+        connectedVia: campaign.viaBaileys ? 'baileys' : 'embedded_signup',
+        channelConnectionId: campaign.channelConnectionId,
+        channelOwnerType: channelMeta.channelOwnerType,
+        channelOwnerId: channelMeta.channelOwnerId,
+      });
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`[BirthdayRunner] send failed for ${client.name} (${campaign.id}):`, errMsg);
