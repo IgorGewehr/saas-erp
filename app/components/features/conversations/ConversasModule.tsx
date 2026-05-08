@@ -71,6 +71,7 @@ import {
   ArrowRightLeft,
   Flag,
   Slash,
+  Star,
   ChevronUp,
   Loader2,
   Save,
@@ -1791,6 +1792,9 @@ interface ComposerProps {
   isInternalNote?: boolean;
   onToggleInternalNote?: () => void;
   onSnippetClick?: () => void;
+  /** Click insere uma frase com o link público de avaliação no composer.
+   *  Pai monta a URL com `business.slug`. Botão só renderiza se prop existe. */
+  onInsertReviewLink?: () => void;
   /**
    * Setado quando o canal da conversa pertence a OUTRO operador (canal pessoal
    * de Igor, e estou logado como Maria/admin). A mensagem que eu enviar vai
@@ -1814,6 +1818,7 @@ const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Compose
   isInternalNote,
   onToggleInternalNote,
   onSnippetClick,
+  onInsertReviewLink,
   crossOperatorWarning,
 }, ref) {
   const { t } = useTranslation();
@@ -2053,6 +2058,17 @@ const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Compose
               title={t('conversations.quickReplies', 'Respostas rápidas')}
             >
               <Slash className="w-4 h-4" />
+            </motion.button>
+          )}
+          {onInsertReviewLink && (
+            <motion.button
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.9 }}
+              onClick={onInsertReviewLink}
+              className="w-8 h-8 rounded-xl flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-amber-500 dark:hover:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-500/10 transition-colors"
+              title={t('conversations.insertReviewLink', 'Inserir link de avaliação')}
+            >
+              <Star className="w-4 h-4" />
             </motion.button>
           )}
           <input
@@ -5487,32 +5503,85 @@ export default function ConversasModule() {
     setBatchSelectedIds(new Set());
   }, []);
 
+  // Texto único da pesquisa CSAT — mantido como const pra alinhar single-resolve
+  // e batch-resolve. Mudanças aqui refletem nos dois pontos.
+  const CSAT_MESSAGE = '⭐ Como foi seu atendimento? Responda com um número de 1 a 5.\n1 = Péssimo  2 = Ruim  3 = Regular  4 = Bom  5 = Excelente';
+
+  // Envia a pesquisa CSAT pra UMA conversa. Antes só criava o doc em
+  // conversationMessages com status 'sending' e nunca chamava o backend —
+  // mensagem ficava parada na UI sem chegar no contato (Meta/Baileys).
+  // Agora replica o pipeline do handleSend: 1) cria doc, 2) update conv,
+  // 3) POST /api/conversations/send (entrega real). Erros viram warn no
+  // console e marcam status:'failed' sem toast — CSAT é background, não
+  // queremos spammar 50 toasts num batch resolve grande.
+  const sendCsatSurvey = useCallback(async (conv: Conversation) => {
+    if (!business?.id) return;
+    const now = new Date().toISOString();
+    try {
+      const msgRef = await addDoc(collection(db, 'conversationMessages'), {
+        conversationId: conv.id,
+        businessId: business.id,
+        channel: conv.channel,
+        ...(conv.connectedVia ? { connectedVia: conv.connectedVia } : {}),
+        direction: 'outbound' as const,
+        content: CSAT_MESSAGE,
+        status: 'sending' as const,
+        senderName: 'Sistema',
+        isCsat: true,
+        sentAt: now,
+      });
+      await updateDoc(doc(db, 'conversations', conv.id), {
+        lastMessage: CSAT_MESSAGE,
+        lastMessageAt: now,
+        lastMessageDirection: 'outbound',
+        csatSentAt: now,
+        updatedAt: now,
+      });
+      try {
+        const auth = getAuth();
+        const token = await auth.currentUser?.getIdToken();
+        const res = await fetch('/api/conversations/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({
+            businessId: business.id,
+            conversationId: conv.id,
+            messageDocId: msgRef.id,
+            channel: conv.channel,
+            recipientId: conv.contactExternalId,
+            content: CSAT_MESSAGE,
+          }),
+        });
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({}));
+          console.warn('[CSAT] send API error:', errBody);
+          await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(() => {});
+        }
+      } catch (err) {
+        console.warn('[CSAT] send network error:', err);
+        await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(() => {});
+      }
+    } catch (err) {
+      console.error('[CSAT] failed to create survey message:', err);
+    }
+  }, [business?.id]);
+
   const handleBatchStatus = useCallback(async (status: ConversationStatus) => {
     if (!business?.id || batchSelectedIds.size === 0) return;
     const now = new Date().toISOString();
     const batch = writeBatch(db);
     for (const id of batchSelectedIds) batch.update(doc(db, 'conversations', id), { status, updatedAt: now });
     await batch.commit();
-    // Send CSAT survey to each resolved conversation if enabled
+    // Send CSAT survey to each resolved conversation if enabled.
+    // Disparos paralelos via Promise.all — N conversas em batch resolve não
+    // devem virar N requests sequenciais.
     if (status === 'resolved' && business.settings?.csatEnabled) {
       const toSurvey = conversations.filter(c => batchSelectedIds.has(c.id) && !c.csatSentAt);
-      const csatMsg = '⭐ Como foi seu atendimento? Responda com um número de 1 a 5.\n1 = Péssimo  2 = Ruim  3 = Regular  4 = Bom  5 = Excelente';
-      for (const conv of toSurvey) {
-        await addDoc(collection(db, 'conversationMessages'), {
-          conversationId: conv.id, businessId: business.id, channel: conv.channel,
-          // Herda o transporte da conversation pra preservar histórico fiel
-          ...(conv.connectedVia ? { connectedVia: conv.connectedVia } : {}),
-          direction: 'outbound', content: csatMsg,
-          status: 'sending', senderName: 'Sistema', isCsat: true, sentAt: now,
-        });
-        await updateDoc(doc(db, 'conversations', conv.id), {
-          lastMessage: csatMsg, lastMessageAt: now, lastMessageDirection: 'outbound', csatSentAt: now, updatedAt: now,
-        });
-      }
+      await Promise.all(toSurvey.map(c => sendCsatSurvey(c)));
     }
     toast.success(`${batchSelectedIds.size} conversa(s) atualizada(s)`);
     exitBatchMode();
-  }, [business?.id, business?.settings?.csatEnabled, batchSelectedIds, conversations, exitBatchMode]);
+  }, [business?.id, business?.settings?.csatEnabled, batchSelectedIds, conversations, exitBatchMode, sendCsatSurvey]);
 
   const handleBatchMarkRead = useCallback(async () => {
     if (!business?.id || batchSelectedIds.size === 0) return;
@@ -6439,26 +6508,19 @@ export default function ConversasModule() {
     try {
       await updateDoc(doc(db, 'conversations', conversationId), { status, updatedAt: now });
 
-      // Send CSAT survey when resolving, if enabled and not already sent
+      // Send CSAT survey when resolving, if enabled and not already sent.
+      // Delegado pro helper que faz o POST /api/conversations/send (entrega
+      // real via Meta/Baileys). Antes só criava o doc e a msg ficava parada.
       if (status === 'resolved' && business?.settings?.csatEnabled) {
         const conv = conversations.find(c => c.id === conversationId);
         if (conv && !conv.csatSentAt) {
-          const csatMsg = '⭐ Como foi seu atendimento? Responda com um número de 1 a 5.\n1 = Péssimo  2 = Ruim  3 = Regular  4 = Bom  5 = Excelente';
-          await addDoc(collection(db, 'conversationMessages'), {
-            conversationId, businessId: business.id, channel: conv.channel,
-            ...(conv.connectedVia ? { connectedVia: conv.connectedVia } : {}),
-            direction: 'outbound', content: csatMsg,
-            status: 'sending', senderName: 'Sistema', isCsat: true, sentAt: now,
-          });
-          await updateDoc(doc(db, 'conversations', conversationId), {
-            lastMessage: csatMsg, lastMessageAt: now, lastMessageDirection: 'outbound', csatSentAt: now, updatedAt: now,
-          });
+          await sendCsatSurvey(conv);
         }
       }
     } catch (err) {
       console.error('Error updating conversation status:', err);
     }
-  }, [business?.id, business?.settings?.csatEnabled, conversations]);
+  }, [business?.settings?.csatEnabled, conversations, sendCsatSurvey]);
 
   // ── Send message ───────────────────────────────────────────────────────────
 
@@ -6607,6 +6669,25 @@ export default function ConversasModule() {
     setSnippetCreateMode(false);
     setSnippetDraftContent('');
   }, []);
+
+  // Insere o link público de avaliação no composer. Pré-condição: business
+  // tem `slug` configurado (Settings → Empresa). Sem slug, link cairia em
+  // 404 — toast pede pro admin configurar antes. Texto padrão pode ser
+  // editado pelo user antes de enviar.
+  const handleInsertReviewLink = useCallback(() => {
+    if (!business?.slug) {
+      toast.error('Configure o slug da empresa em Configurações → Empresa antes de usar o link de avaliação.');
+      return;
+    }
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const url = `${origin}/review/${business.slug}`;
+    const suggested = `⭐ Adoraríamos saber sua opinião sobre nosso atendimento. Avalie aqui: ${url}`;
+    const current = composerRef.current?.getText() ?? '';
+    // Se já tem texto, anexa numa nova linha. Se vazio, só insere o sugerido.
+    const next = current.trim() ? `${current}\n\n${suggested}` : suggested;
+    composerRef.current?.setText(next);
+    composerRef.current?.focus();
+  }, [business?.slug]);
 
   const closeSnippetsPopup = useCallback(() => {
     setShowSnippets(false);
@@ -7714,6 +7795,7 @@ export default function ConversasModule() {
                       isInternalNote={isInternalNote}
                       onToggleInternalNote={() => setIsInternalNote(prev => !prev)}
                       onSnippetClick={() => setShowSnippets(true)}
+                      onInsertReviewLink={handleInsertReviewLink}
                       crossOperatorWarning={crossOpWarning}
                     />
                   );
