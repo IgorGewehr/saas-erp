@@ -458,11 +458,14 @@ function MessageStatusIcon({
 interface ConversationItemProps {
   conversation: Conversation;
   isSelected: boolean;
-  onClick: () => void;
+  /** Recebe a conversa como argumento pra que o callback do parent possa ser
+   *  estável (useCallback sem depender de cada `conv`). Crítico pra memo da
+   *  lista — sem isso, props mudam por render e React.memo não retém. */
+  onClick: (conv: Conversation) => void;
   slaInfo?: SLAInfo | null;
   batchMode?: boolean;
   isBatchSelected?: boolean;
-  onBatchToggle?: () => void;
+  onBatchToggle?: (id: string) => void;
   /** Phase 2: label da channelConnection que recebeu a conversa. Vazio se
    *  é canal-empresa primary (não polui a UI quando todo mundo usa o mesmo). */
   connectionLabel?: string;
@@ -471,11 +474,12 @@ interface ConversationItemProps {
   isMineConnection?: boolean;
   /** Long-press na conversa entra direto em batch mode + seleciona — estilo
    *  WhatsApp/Telegram. Disparo em 500ms se o pointer ainda estiver sobre o
-   *  item. Cancelado por up/leave/cancel/scroll antes do timeout. */
-  onLongPress?: () => void;
+   *  item. Cancelado por up/leave/cancel/scroll antes do timeout.
+   *  Recebe a conversa como argumento pelo mesmo motivo do onClick. */
+  onLongPress?: (conv: Conversation) => void;
 }
 
-function ConversationItem({ conversation, isSelected, onClick, slaInfo, batchMode, isBatchSelected, onBatchToggle, connectionLabel, isMineConnection, onLongPress }: ConversationItemProps) {
+function ConversationItemBase({ conversation, isSelected, onClick, slaInfo, batchMode, isBatchSelected, onBatchToggle, connectionLabel, isMineConnection, onLongPress }: ConversationItemProps) {
   const { t } = useTranslation();
   const cfg = getConvConfig(conversation);
   const displayName = conversation.customContactName ?? conversation.contactName;
@@ -509,11 +513,11 @@ function ConversationItem({ conversation, isSelected, onClick, slaInfo, batchMod
     pointerStartRef.current = { x: e.clientX, y: e.clientY };
     longPressTimerRef.current = setTimeout(() => {
       longPressFiredRef.current = true;
-      onLongPress();
+      onLongPress(conversation);
       longPressTimerRef.current = null;
       pointerStartRef.current = null;
     }, 500);
-  }, [onLongPress, cancelLongPress]);
+  }, [onLongPress, cancelLongPress, conversation]);
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
     if (!longPressTimerRef.current || !pointerStartRef.current) return;
     const dx = e.clientX - pointerStartRef.current.x;
@@ -527,8 +531,8 @@ function ConversationItem({ conversation, isSelected, onClick, slaInfo, batchMod
       longPressFiredRef.current = false;
       return;
     }
-    onClick();
-  }, [onClick]);
+    onClick(conversation);
+  }, [onClick, conversation]);
 
   return (
     <motion.div
@@ -545,7 +549,7 @@ function ConversationItem({ conversation, isSelected, onClick, slaInfo, batchMod
       onContextMenu={(e) => e.preventDefault()}
       role="button"
       tabIndex={0}
-      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(conversation); } }}
       whileHover={{ x: 2 }}
       transition={{ type: 'spring', stiffness: 400, damping: 25 }}
       className={cn(
@@ -561,8 +565,8 @@ function ConversationItem({ conversation, isSelected, onClick, slaInfo, batchMod
           role="checkbox"
           aria-checked={isBatchSelected}
           tabIndex={0}
-          onClick={e => { e.stopPropagation(); onBatchToggle?.(); }}
-          onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onBatchToggle?.(); } }}
+          onClick={e => { e.stopPropagation(); onBatchToggle?.(conversation.id); }}
+          onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onBatchToggle?.(conversation.id); } }}
           className="flex-shrink-0 mt-0.5 text-gray-400 hover:text-red-500 transition-colors cursor-pointer"
         >
           {isBatchSelected
@@ -675,6 +679,28 @@ function ConversationItem({ conversation, isSelected, onClick, slaInfo, batchMod
     </motion.div>
   );
 }
+
+// Memoização da lista de conversas — sem isso, clicar em uma conversa força
+// re-render dos 499 items (selectedConversation muda, lista inteira refaz o
+// map). Comparator shallow nos primitivos + value-compare no slaInfo (objeto
+// que getSLAInfo cria novo a cada call mesmo com mesmos inputs).
+const slaInfoEquals = (a: SLAInfo | null | undefined, b: SLAInfo | null | undefined) => {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.status === b.status && a.remainingMs === b.remainingMs && a.totalMs === b.totalMs;
+};
+const ConversationItem = memo(ConversationItemBase, (prev, next) => (
+  prev.conversation === next.conversation
+  && prev.isSelected === next.isSelected
+  && prev.batchMode === next.batchMode
+  && prev.isBatchSelected === next.isBatchSelected
+  && prev.connectionLabel === next.connectionLabel
+  && prev.isMineConnection === next.isMineConnection
+  && prev.onClick === next.onClick
+  && prev.onBatchToggle === next.onBatchToggle
+  && prev.onLongPress === next.onLongPress
+  && slaInfoEquals(prev.slaInfo, next.slaInfo)
+));
 
 // ─── Settings Dialog ─────────────────────────────────────────────────────────
 
@@ -6434,6 +6460,31 @@ export default function ConversasModule() {
     [markAsRead],
   );
 
+  // Handlers estáveis pros ConversationItem (lista grande memoizada). Sem
+  // estabilizar, clicar em uma conversa força os 499 itens a re-renderizarem
+  // porque cada onClick/onLongPress/onBatchToggle era closure nova por render.
+  //
+  // batchModeRef permite ler o valor atual sem incluí-lo nas deps das
+  // callbacks — se batchMode entrasse como dep, mudar de batch quebraria
+  // todas as referências e perderia o ganho de memo.
+  const batchModeRef = useRef(batchMode);
+  useEffect(() => { batchModeRef.current = batchMode; }, [batchMode]);
+  const handleItemClick = useCallback((conv: Conversation) => {
+    if (batchModeRef.current) toggleBatchSelect(conv.id);
+    else handleSelectConversation(conv);
+  }, [toggleBatchSelect, handleSelectConversation]);
+  const handleItemBatchToggle = useCallback((id: string) => {
+    toggleBatchSelect(id);
+  }, [toggleBatchSelect]);
+  const handleItemLongPress = useCallback((conv: Conversation) => {
+    // Dentro do batch o tap normal já marca/desmarca — long-press fica off
+    // pra não confundir gesto. Sem o early-return, ele dispararia setBatchMode
+    // (no-op) e remarcaria o item.
+    if (batchModeRef.current) return;
+    setBatchMode(true);
+    toggleBatchSelect(conv.id);
+  }, [toggleBatchSelect]);
+
   // ── Typing indicator (Task 4) ─────────────────────────────────────────────
 
   // Snapshot via ref evita recriar o debounce a cada render. Antes a dep era
@@ -7634,20 +7685,21 @@ export default function ConversasModule() {
                       initial={{ opacity: 0, x: -10 }}
                       animate={{ opacity: 1, x: 0 }}
                       exit={{ opacity: 0, x: -10 }}
-                      transition={{ delay: index * 0.03, duration: 0.2 }}
+                      // Cap no stagger: com 499 itens, delay × index original (0.03)
+                      // = 15s de animação total. Cap em 300ms preserva o efeito
+                      // visual nos primeiros itens (~10) sem travar a thread por
+                      // segundos. Lista "Todas" agora aparece em ~0.5s no total.
+                      transition={{ delay: Math.min(index * 0.03, 0.3), duration: 0.2 }}
                     >
                       <ConversationItem
                         conversation={conv}
                         isSelected={selectedConversation?.id === conv.id}
-                        onClick={() => { if (batchMode) toggleBatchSelect(conv.id); else handleSelectConversation(conv); }}
-                        // Long-press entra em batch mode e já marca o item — estilo
-                        // WhatsApp/Telegram. Só atua fora do batch mode (dentro, o
-                        // tap normal já marca/desmarca, então long-press fica off).
-                        onLongPress={batchMode ? undefined : () => { setBatchMode(true); toggleBatchSelect(conv.id); }}
+                        onClick={handleItemClick}
+                        onLongPress={handleItemLongPress}
                         slaInfo={getSLAInfo(conv, slaConfig)}
                         batchMode={batchMode}
                         isBatchSelected={batchSelectedIds.has(conv.id)}
-                        onBatchToggle={() => toggleBatchSelect(conv.id)}
+                        onBatchToggle={handleItemBatchToggle}
                         connectionLabel={(() => {
                           if (!conv.channelConnectionId) return undefined;
                           const conn = connectionsById.get(conv.channelConnectionId);
