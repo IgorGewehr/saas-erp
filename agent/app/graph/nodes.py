@@ -51,6 +51,53 @@ except Exception:  # pragma: no cover — LangSmith is optional
 
 log = get_logger("nodes")
 
+
+# ─── Contact name heuristics ────────────────────────────────────────────────
+#
+# Used to decide whether the saved contact name can be used as a personal first
+# name in greetings. Names that look like businesses ("Salão Estilos", "Pizzaria
+# do João") or system placeholders ("Cliente WhatsApp 5547...") must NOT be
+# addressed as if they were a person — that breaks the warm-receptionist tone.
+
+_BUSINESS_NAME_MARKERS: frozenset[str] = frozenset({
+    "salão", "salao", "loja", "empresa", "comércio", "comercio",
+    "restaurante", "padaria", "mercado", "farmácia", "farmacia",
+    "oficina", "consultório", "consultorio", "clínica", "clinica",
+    "studio", "estúdio", "estudio", "escola", "academia",
+    "pousada", "hotel", "shop", "distribuidora", "depósito", "deposito",
+    "bar", "pub", "cafeteria", "café", "cafe",
+    "pizzaria", "lanchonete", "hamburgueria", "sorveteria", "açougue", "acougue",
+    "barbearia", "esmalteria", "petshop",
+    "centro", "instituto", "cliente", "whatsapp", "contato",
+    "ltda", "mei", "eireli", "epp", "s.a", "s/a",
+})
+
+
+def _first_name_if_human(name: str | None) -> str | None:
+    """Return the capitalized first name if `name` looks like a person's name.
+
+    Returns None for business names ("Salão Estilos"), placeholder fallbacks
+    ("Cliente WhatsApp"), names with business symbols (&, @, /), or unparseable
+    input. Errs on the side of NOT using a name when in doubt — better to say
+    "Oi, tudo bem?" than "Oi Salão, tudo bem?".
+    """
+    if not name or not isinstance(name, str):
+        return None
+    cleaned = name.strip()
+    if len(cleaned) < 2:
+        return None
+    if any(ch in cleaned for ch in ("@", "&", "/", "|")):
+        return None
+    parts = [p.strip(".,;:") for p in cleaned.split() if p]
+    if not parts:
+        return None
+    if any(p.lower() in _BUSINESS_NAME_MARKERS for p in parts):
+        return None
+    first = parts[0]
+    if len(first) < 2 or first.isdigit():
+        return None
+    return first.capitalize()
+
 # Token cost lookup (USD per 1M tokens) — used for audit log / budget tracking only.
 # Kept in sync with https://openai.com/api/pricing/
 # Tiers: nano (router) < mini (planner) < full (fallback)
@@ -245,10 +292,24 @@ async def planner_node(state: AgentState) -> dict[str, Any]:
     system = prompts.planner_system_for(use_case, business_ctx)
     # Inject contact & channel context so the LLM can plan address/phone flows
     contact = state.get("contact") or {}
+    contact_name = contact.get("name") or "?"
+    first_name = _first_name_if_human(contact_name)
+    if first_name:
+        greeting_hint = (
+            f"\nPrimeiro nome do cliente para saudações: '{first_name}'. "
+            f"Quando o cliente cumprimentar, retribua com o nome: \"Oi {first_name}, tudo bem?\". "
+            "Não force o nome em toda mensagem — só em saudações e momentos cordiais."
+        )
+    else:
+        greeting_hint = (
+            "\nNão há nome humano confiável no cadastro (pode ser empresa/estabelecimento ou placeholder). "
+            "Ao retribuir saudações, NÃO use o nome do contato como nome próprio — diga apenas \"Oi, tudo bem?\"."
+        )
     system += (
-        f"\n\nDADOS DO CONTATO: nome='{contact.get('name','?')}', "
+        f"\n\nDADOS DO CONTATO: nome='{contact_name}', "
         f"telefone='{contact.get('phone','?')}', canal='{contact.get('channel','?')}', "
         f"conversation_id='{state.get('conversation_id','?')}'."
+        f"{greeting_hint}"
         "\nAo criar pedidos use canal e conversation_id acima como channel e conversationId."
     )
 

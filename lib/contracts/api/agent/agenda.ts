@@ -143,13 +143,18 @@ export const BookParamsSchema = z.object({
 });
 
 export const BookDataSchema = z.object({
-  id: DocIdSchema,
-  status: z.enum(['created', 'exists']),
+  // id ausente quando status='conflict' — nada foi criado nesse caso.
+  id: DocIdSchema.optional(),
+  status: z.enum(['created', 'exists', 'conflict']),
   date: DateYmdSchema,
   startTime: TimeHmSchema,
   endTime: TimeHmSchema,
   serviceName: z.string(),
   professionalName: z.string().optional(),
+  // Quando status='conflict': resposta acionável para o agente —
+  // motivo do conflito + 1-3 slots livres próximos do horário pedido.
+  conflictReason: z.string().optional(),
+  alternatives: z.array(AvailabilitySlotSchema).optional(),
 });
 
 // ---------- list_by_client ----------
