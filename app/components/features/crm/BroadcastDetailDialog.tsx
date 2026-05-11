@@ -93,10 +93,21 @@ function BroadcastLiveProgress({ broadcast, sentCount, pendingCount }: {
   // Tempo restante estimado da pausa (média entre min/max do throttle). Usado
   // só pra UI — se o backend acordar antes/depois, o componente re-rendera
   // com o updatedAt novo e a pausa "desaparece".
+  //
+  // `pauseExceededAvg`: quando idleMs já ultrapassou a média, mostrar "<1s"
+  // até o infinito induz a achar que travou (regressão do próprio feature).
+  // Flag separa: mostramos "deve retomar a qualquer momento" em vez de
+  // contador zerado. A heurística externa de looksStuck (`stuckThresholdMinutes`)
+  // continua sendo a fonte de verdade pra alarme real de travamento.
   let batchPauseRemainingMs = 0;
+  let pauseExceededAvg = false;
   if (isBatchPausing && throttle?.batchPauseMinMs && throttle?.batchPauseMaxMs) {
     const avgBatchPause = (throttle.batchPauseMinMs + throttle.batchPauseMaxMs) / 2;
-    batchPauseRemainingMs = Math.max(0, avgBatchPause - idleMs);
+    batchPauseRemainingMs = avgBatchPause - idleMs;
+    if (batchPauseRemainingMs <= 0) {
+      pauseExceededAvg = true;
+      batchPauseRemainingMs = 0;
+    }
   }
 
   // ETA total — mesma fórmula da estimativa-na-criação, só que aplicada aos
@@ -121,7 +132,9 @@ function BroadcastLiveProgress({ broadcast, sentCount, pendingCount }: {
       {isBatchPausing ? (
         <span className="text-[10.5px] font-medium text-amber-600 dark:text-amber-400 inline-flex items-center gap-1">
           <Pause className="w-2.5 h-2.5" />
-          Pausa entre lotes (anti-spam) — retoma em ~{formatDurationShort(batchPauseRemainingMs)}
+          Pausa entre lotes (anti-spam) — {pauseExceededAvg
+            ? 'retoma a qualquer momento'
+            : `retoma em ~${formatDurationShort(batchPauseRemainingMs)}`}
         </span>
       ) : etaText ? (
         <span className="text-[10.5px] opacity-80 inline-flex items-center gap-1">
@@ -264,13 +277,18 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
       (snap) => {
         const docs = snap.docs.map(d => ({ ...(d.data() as BroadcastMessage), id: d.id }));
         setMessages(docs);
-        setLoading(false);
         // Se snapshot voltou vazio mas o broadcast.stats indica que deveria haver
         // mensagens (sent/failed > 0), tenta API. Pode acontecer se index ainda
-        // não está deployado e snapshot dá empty silenciosamente.
+        // não está deployado e snapshot dá empty silenciosamente. Mantém
+        // loading=true durante o fetch API pra não destravar os botões
+        // destrutivos (Pausar/Resetar) no intervalo entre snapshot e API
+        // — sem isso, `looksStuck` ligava sobre `messages=[]` e operador
+        // afobado clicava em Resetar durante uma campanha legítima.
         const expected = (broadcast.stats?.sent || 0) + (broadcast.stats?.failed || 0);
         if (docs.length === 0 && expected > 0) {
-          fetchViaApi();
+          fetchViaApi(); // chama setLoading(false) no .finally
+        } else {
+          setLoading(false);
         }
       },
       (err) => {
