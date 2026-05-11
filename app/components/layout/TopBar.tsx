@@ -37,6 +37,7 @@ import {
 } from 'lucide-react';
 import { useNotificationPrefs } from '@/lib/utils/notification-prefs';
 import { getDesktopPermission, requestDesktopPermission } from '@/lib/utils/notification-alerts';
+import { useAppContext } from '@/app/app/AppContext';
 import type { UserStatus } from '@/lib/types';
 import type { MenuPage } from './Sidebar';
 import { CachedImage } from '@/app/components/ui/CachedImage';
@@ -106,6 +107,7 @@ function ThemeToggle() {
 export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) {
   const { t } = useTranslation();
   const { user, business, signOut, updateUserProfile } = useAuth();
+  const { setPendingOpenConversationId } = useAppContext();
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [isStatusOpen, setIsStatusOpen]     = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
@@ -141,8 +143,9 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
   const userUid = user?.uid;
   const isAdmin = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['admin'];
   const [unreadCount, setUnreadCount] = useState(0);
+  const [unreadConvIds, setUnreadConvIds] = useState<string[]>([]);
   useEffect(() => {
-    if (!businessId || !userUid) { setUnreadCount(0); return; }
+    if (!businessId || !userUid) { setUnreadCount(0); setUnreadConvIds([]); return; }
     // Mirror da query do ConversasModule pra que o badge conte só conversas
     // que o user CONSEGUE ver na lista — sem isso, bagde mostrava unread
     // de canais Baileys pessoais alheios (que o user nem visualiza) e de
@@ -167,13 +170,19 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
     const unsub = onSnapshot(
       q,
       (snap) => {
-        const total = snap.docs.reduce((sum, d) => {
+        let total = 0;
+        const ids: string[] = [];
+        for (const d of snap.docs) {
           const data = d.data() as { unreadCount?: number; isDeleted?: boolean };
-          if (data.isDeleted) return sum;
+          if (data.isDeleted) continue;
           const n = data.unreadCount || 0;
-          return n > 0 ? sum + n : sum;
-        }, 0);
+          if (n > 0) {
+            total += n;
+            ids.push(d.id);
+          }
+        }
         setUnreadCount(total);
+        setUnreadConvIds(ids);
       },
       (err) => console.warn('[TopBar] unread count snapshot error:', err),
     );
@@ -263,6 +272,15 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
     batch.delete(doc(db, 'notifications', id));
     await batch.commit();
   }, []);
+
+  const handleClearUnreadConvs = useCallback(async () => {
+    if (unreadConvIds.length === 0) return;
+    const batch = writeBatch(db);
+    for (const id of unreadConvIds) {
+      batch.update(doc(db, 'conversations', id), { unreadCount: 0 });
+    }
+    await batch.commit();
+  }, [unreadConvIds]);
 
   // Close notif dropdown on outside click
   useEffect(() => {
@@ -483,20 +501,39 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
 
                   {/* Unread conversations shortcut */}
                   {unreadCount > 0 && (
-                    <button
-                      onClick={() => { onNavigate?.('Conversas'); setIsNotifOpen(false); }}
-                      className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors border-b border-gray-100 dark:border-gray-700/50"
-                    >
-                      <div className="w-8 h-8 rounded-lg flex items-center justify-center text-blue-500 bg-blue-50 dark:bg-blue-500/10 shrink-0">
-                        <MessageSquare className="w-4 h-4" />
-                      </div>
-                      <div className="flex-1 text-left">
-                        <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                          {unreadCount} {unreadCount === 1 ? t('topbar.notif.unreadMsg', 'mensagem não lida') : t('topbar.notif.unreadMsgs', 'mensagens não lidas')}
-                        </p>
-                      </div>
-                      <ChevronDown className="w-3.5 h-3.5 text-gray-400 -rotate-90" />
-                    </button>
+                    <div className="w-full flex items-center gap-2 px-4 py-3 hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors border-b border-gray-100 dark:border-gray-700/50 group/unread">
+                      <button
+                        onClick={() => {
+                          // Abre a primeira conversa não-lida direto — se houver
+                          // só uma, é exatamente ela; se houver várias, o user
+                          // já está em Conversas e pode pular pras outras.
+                          if (unreadConvIds[0]) setPendingOpenConversationId(unreadConvIds[0]);
+                          onNavigate?.('Conversas');
+                          setIsNotifOpen(false);
+                        }}
+                        className="flex-1 flex items-center gap-3 text-left min-w-0"
+                      >
+                        <div className="w-8 h-8 rounded-lg flex items-center justify-center text-blue-500 bg-blue-50 dark:bg-blue-500/10 shrink-0">
+                          <MessageSquare className="w-4 h-4" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+                            {unreadCount} {unreadCount === 1 ? t('topbar.notif.unreadMsg', 'mensagem não lida') : t('topbar.notif.unreadMsgs', 'mensagens não lidas')}
+                          </p>
+                        </div>
+                      </button>
+                      <button
+                        onClick={handleClearUnreadConvs}
+                        title={t('topbar.notif.dismissUnread', 'Marcar todas as conversas como lidas')}
+                        className={cn(
+                          'w-7 h-7 flex items-center justify-center rounded-md shrink-0 transition-colors',
+                          'text-gray-500 hover:text-blue-600 hover:bg-blue-50',
+                          'dark:text-gray-400 dark:hover:text-blue-400 dark:hover:bg-blue-500/15',
+                        )}
+                      >
+                        <CheckCheck className="w-4 h-4" />
+                      </button>
+                    </div>
                   )}
 
                   {/* Notification list */}
@@ -516,9 +553,14 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
                           <div
                             key={n.id}
                             onClick={() => {
+                              // Abre conversa específica quando a notif carregar
+                              // relatedId — ConversasModule consome via AppContext.
+                              if (n.relatedId && n.type === 'conversation_assigned') {
+                                setPendingOpenConversationId(n.relatedId);
+                              }
                               if (n.link) onNavigate?.(n.link as MenuPage);
                               setIsNotifOpen(false);
-                              handleDeleteNotif(n.id);
+                              if (!n.isRead) handleMarkRead(n.id);
                             }}
                             className={cn(
                               'group relative w-full flex items-start gap-3 px-4 py-3 cursor-pointer transition-colors',
@@ -543,28 +585,30 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
                                 {timeAgo(n.createdAt)}
                               </p>
                             </div>
-                            <div className="shrink-0 flex items-start pt-1.5 gap-0.5">
+                            <div className="shrink-0 flex items-start pt-0.5 gap-1">
                               {!n.isRead && (
                                 <button
                                   onClick={e => { e.stopPropagation(); handleMarkRead(n.id); }}
                                   title={t('topbar.notif.markRead', 'Marcar como lida')}
                                   className={cn(
-                                    'w-6 h-6 flex items-center justify-center rounded-md transition-all',
-                                    'text-blue-500 opacity-60 hover:opacity-100 hover:bg-blue-100 dark:hover:bg-blue-500/20'
+                                    'w-8 h-8 flex items-center justify-center rounded-lg transition-colors',
+                                    'text-blue-600 bg-blue-50 hover:bg-blue-100',
+                                    'dark:text-blue-400 dark:bg-blue-500/15 dark:hover:bg-blue-500/25',
                                   )}
                                 >
-                                  <Check className="w-3.5 h-3.5" />
+                                  <Check className="w-4 h-4" />
                                 </button>
                               )}
                               <button
                                 onClick={e => { e.stopPropagation(); handleDeleteNotif(n.id); }}
                                 title={t('topbar.notif.delete', 'Excluir notificação')}
                                 className={cn(
-                                  'w-6 h-6 flex items-center justify-center rounded-md transition-all',
-                                  'text-gray-400 opacity-60 hover:opacity-100 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/20'
+                                  'w-8 h-8 flex items-center justify-center rounded-lg transition-colors',
+                                  'text-gray-500 bg-gray-100 hover:text-red-600 hover:bg-red-50',
+                                  'dark:text-gray-400 dark:bg-white/[0.06] dark:hover:text-red-400 dark:hover:bg-red-500/15',
                                 )}
                               >
-                                <Trash2 className="w-3.5 h-3.5" />
+                                <Trash2 className="w-4 h-4" />
                               </button>
                             </div>
                           </div>

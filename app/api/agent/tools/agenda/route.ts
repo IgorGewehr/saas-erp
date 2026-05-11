@@ -20,6 +20,20 @@ function intervalsOverlap(aStart: string, aEnd: string, bStart: string, bEnd: st
   return aStart < bEnd && bStart < aEnd;
 }
 
+function timeToMinutes(hhmm: string): number {
+  const [h, m] = hhmm.split(':').map(Number);
+  return h * 60 + m;
+}
+
+// Sinaliza conflito de horário dentro da transação de booking. Captura fora
+// da transação para responder com alternativas em vez de 500.
+class ConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConflictError';
+  }
+}
+
 export async function POST(req: NextRequest) {
   let ctx;
   try {
@@ -286,7 +300,29 @@ async function checkAvailability(
   }
 
   slots.sort((a, b) => a.startTime.localeCompare(b.startTime));
-  return { date, slots: slots.slice(0, 20) };
+  const out = slots.slice(0, 20);
+
+  // Observability: se um cliente ligar reclamando que reservamos slot ocupado,
+  // o log abaixo permite reconstruir o estado consultado nesse instante.
+  // Mantém o output enxuto: contagem + IDs/horários dos appts considerados.
+  console.info('[agent/tools/agenda] check_availability', JSON.stringify({
+    businessId,
+    date,
+    professionalId: professionalId ?? null,
+    serviceId: serviceId ?? null,
+    durationMinutes,
+    apptsLoaded: appts.length,
+    apptsSummary: appts.map(a => ({
+      startTime: a.startTime,
+      endTime: a.endTime,
+      professionalId: a.professionalId ?? null,
+      status: a.status,
+    })),
+    professionalsConsidered: professionals.map(p => p.id),
+    slotsEmitted: out.length,
+  }));
+
+  return { date, slots: out };
 }
 
 interface BookParams {
@@ -404,7 +440,10 @@ async function bookAppointment(businessId: string, p: BookParams) {
       .filter(a => intervalsOverlap(p.startTime, endTime, a.startTime, a.endTime));
 
     if (conflicts.length > 0) {
-      throw new Error(`Horário ${p.startTime} em ${p.date} já está ocupado para este profissional`);
+      // Signal the conflict so we can build a structured response with
+      // alternatives *outside* the transaction (transactions can't issue
+      // unrelated reads cleanly). The marker is recognized below.
+      throw new ConflictError(`Horário ${p.startTime} em ${p.date} já está ocupado para este profissional`);
     }
 
     // Write
@@ -434,7 +473,35 @@ async function bookAppointment(businessId: string, p: BookParams) {
     if (p.conversationId !== undefined) docData.conversationId = p.conversationId;
 
     tx.create(newRef, docData);
-    return { id: newRef.id, status: 'created', date: p.date, startTime: p.startTime, endTime, serviceName };
+    return { id: newRef.id, status: 'created' as const, date: p.date, startTime: p.startTime, endTime, serviceName };
+  }).catch(async (err: unknown) => {
+    if (!(err instanceof ConflictError)) throw err;
+
+    // Carrega slots livres do mesmo dia/profissional e ranqueia pelos
+    // mais próximos do horário pedido. Limita a 3 alternativas — agente
+    // só vai propor uma por vez.
+    const requestedMin = timeToMinutes(p.startTime);
+    let alternatives: AvailabilitySlot[] = [];
+    try {
+      const avail = await checkAvailability(businessId, p.date, p.professionalId, p.durationMinutes, p.serviceId);
+      alternatives = avail.slots
+        .slice()
+        .sort((a, b) => Math.abs(timeToMinutes(a.startTime) - requestedMin) - Math.abs(timeToMinutes(b.startTime) - requestedMin))
+        .slice(0, 3);
+    } catch (alternativeErr) {
+      console.warn('[agent/tools/agenda] book: failed to load alternatives', alternativeErr);
+    }
+
+    return {
+      status: 'conflict' as const,
+      date: p.date,
+      startTime: p.startTime,
+      endTime,
+      serviceName,
+      professionalName: p.professionalName,
+      conflictReason: err.message,
+      alternatives,
+    };
   });
 
   return result;
