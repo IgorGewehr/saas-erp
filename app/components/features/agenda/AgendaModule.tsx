@@ -358,17 +358,24 @@ function AppointmentBlock({ appointment, onClick, compact = false, clientsMap }:
   const color = STATUS_COLORS[appointment.status];
   const bgColor = STATUS_BG_COLORS[appointment.status];
   const height = getAppointmentHeight(appointment.duration);
-  const isShort = compact || height < 48;
+
+  // Tiered layout based on real height — compact only affects font sizing
+  const isTiny = height < 36;          // 30min slot
+  const showService = height >= 50 && !!appointment.serviceName;
+  const showTimeRange = height >= 60;
+  const showProfessional = height >= 84 && !!appointment.professionalName;
+  const showPrice = height >= 110 && appointment.price > 0;
 
   return (
     <Tooltip
       title={
         <div className="text-xs space-y-1 p-1">
           <div className="font-semibold">{displayName}</div>
-          <div>{appointment.serviceName}</div>
+          {appointment.serviceName && <div>{appointment.serviceName}</div>}
           <div>{appointment.startTime} - {appointment.endTime}</div>
+          {appointment.professionalName && <div>{appointment.professionalName}</div>}
           <div>{getStatusLabel(appointment.status)}</div>
-          <div>{formatCurrency(appointment.price)}</div>
+          {appointment.price > 0 && <div>{formatCurrency(appointment.price)}</div>}
         </div>
       }
       arrow
@@ -396,37 +403,52 @@ function AppointmentBlock({ appointment, onClick, compact = false, clientsMap }:
           borderLeftColor: color,
         }}
       >
-        <div className={cn('px-2 h-full flex flex-col justify-center', isShort ? 'py-0.5' : 'py-1.5')}>
-          <div className="flex items-center gap-1">
+        <div className={cn(
+          'px-2 h-full flex flex-col min-w-0',
+          isTiny ? 'py-0.5 justify-center' : 'py-1.5 justify-start gap-0.5',
+        )}>
+          <div className="flex items-start gap-1 min-w-0">
             <div
               className={cn(
-                'font-semibold truncate leading-tight flex-1',
-                compact ? 'text-[10px]' : 'text-[11px]',
+                'font-semibold truncate leading-tight flex-1 min-w-0',
+                compact ? 'text-[12px]' : 'text-[13px]',
               )}
               style={{ color }}
             >
-              {compact ? displayName.split(' ')[0] : displayName}
+              {displayName}
             </div>
-            {appointment.reminderSentAt && !isShort && (
-              <Bell className="w-2.5 h-2.5 flex-shrink-0 opacity-70" style={{ color }} />
+            {appointment.reminderSentAt && !isTiny && (
+              <Bell className="w-2.5 h-2.5 flex-shrink-0 opacity-70 mt-[3px]" style={{ color }} />
             )}
           </div>
-          {!isShort && (
-            <>
-              <div className="text-[10px] text-gray-600 dark:text-gray-400 truncate leading-tight mt-0.5">
-                {appointment.serviceName}
-              </div>
-              <div className="text-[10px] text-gray-500 dark:text-gray-400 leading-tight mt-0.5">
-                {appointment.startTime} - {appointment.endTime}
-              </div>
-            </>
-          )}
-          {isShort && (
+
+          {isTiny ? (
             <div className="text-[10px] text-gray-500 dark:text-gray-400 truncate leading-tight">
-              {compact
-                ? `${appointment.startTime}${appointment.serviceName ? ` ${appointment.serviceName.split(' ')[0]}` : ''}`
-                : appointment.startTime}
+              {appointment.startTime}
+              {appointment.serviceName ? ` · ${appointment.serviceName}` : ''}
             </div>
+          ) : (
+            <>
+              {showService && (
+                <div className="text-[10px] text-gray-600 dark:text-gray-400 truncate leading-tight">
+                  {appointment.serviceName}
+                </div>
+              )}
+              <div className="text-[10px] text-gray-500 dark:text-gray-400 leading-tight truncate">
+                {showTimeRange ? `${appointment.startTime} – ${appointment.endTime}` : appointment.startTime}
+              </div>
+              {showProfessional && (
+                <div className="text-[10px] text-gray-500 dark:text-gray-400 truncate leading-tight flex items-center gap-1">
+                  <span className="opacity-70">·</span>
+                  {appointment.professionalName}
+                </div>
+              )}
+              {showPrice && (
+                <div className="text-[10px] font-medium truncate leading-tight mt-auto" style={{ color }}>
+                  {formatCurrency(appointment.price)}
+                </div>
+              )}
+            </>
           )}
         </div>
       </motion.div>
