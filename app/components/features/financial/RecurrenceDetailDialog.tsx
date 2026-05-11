@@ -32,6 +32,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDate } from '@/lib/utils/format';
+import { maskMoney, unmaskMoney } from '@/lib/utils/masks';
 import { useCurrencyFormat } from './CurrencyContext';
 import type { Transaction, TransactionRecurrenceEntry } from '@/lib/types';
 
@@ -275,7 +276,7 @@ export default function RecurrenceDetailDialog({
     finally { setEnding(false); }
   };
   const doAdjust = async () => {
-    const v = parseFloat(adjustValue);
+    const v = adjustMode === 'fixed' ? unmaskMoney(adjustValue) : parseFloat(adjustValue);
     if (!Number.isFinite(v) || v <= 0) return;
     setAdjustSaving(true);
     try { await onAdjustValue(tx.id, adjustMode, v); setAdjustValue(''); }
@@ -692,19 +693,28 @@ export default function RecurrenceDetailDialog({
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-semibold text-gray-500 dark:text-gray-400">{adjustMode === 'pct' ? '+' : 'R$'}</span>
                   <input
-                    type="number"
+                    type={adjustMode === 'pct' ? 'number' : 'text'}
+                    inputMode="numeric"
                     value={adjustValue}
-                    onChange={e => setAdjustValue(e.target.value)}
-                    placeholder={adjustMode === 'pct' ? 'Ex: 5 (= +5%)' : `Novo valor (atual: ${tx.amount.toFixed(2)})`}
+                    onChange={e => setAdjustValue(adjustMode === 'fixed' ? maskMoney(e.target.value) : e.target.value)}
+                    placeholder={adjustMode === 'pct' ? 'Ex: 5 (= +5%)' : `Novo valor (atual: ${maskMoney(tx.amount)})`}
                     className="flex-1 text-xs px-2.5 py-1.5 rounded-lg border border-violet-200 dark:border-violet-500/30 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 focus:outline-none focus:border-violet-400"
                   />
-                  {adjustValue && parseFloat(adjustValue) > 0 && (
-                    <span className="text-[11px] text-gray-500 dark:text-gray-400 shrink-0 tabular-nums">
-                      → {formatCurrency(adjustMode === 'pct' ? tx.amount * (1 + parseFloat(adjustValue) / 100) : parseFloat(adjustValue))}
-                    </span>
-                  )}
+                  {(() => {
+                    const num = adjustMode === 'fixed' ? unmaskMoney(adjustValue) : parseFloat(adjustValue);
+                    if (!adjustValue || !Number.isFinite(num) || num <= 0) return null;
+                    return (
+                      <span className="text-[11px] text-gray-500 dark:text-gray-400 shrink-0 tabular-nums">
+                        → {formatCurrency(adjustMode === 'pct' ? tx.amount * (1 + num / 100) : num)}
+                      </span>
+                    );
+                  })()}
                   <button
-                    disabled={adjustSaving || !adjustValue || parseFloat(adjustValue) <= 0}
+                    disabled={(() => {
+                      if (adjustSaving || !adjustValue) return true;
+                      const num = adjustMode === 'fixed' ? unmaskMoney(adjustValue) : parseFloat(adjustValue);
+                      return !Number.isFinite(num) || num <= 0;
+                    })()}
                     onClick={doAdjust}
                     className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold disabled:opacity-40 transition-colors shrink-0"
                   >

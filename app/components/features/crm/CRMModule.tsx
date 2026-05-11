@@ -24,6 +24,7 @@ import { cn } from '@/lib/utils';
 import { formatCurrency, formatDate, formatDateTime, getInitials } from '@/lib/utils/format';
 import { isActiveClient } from '@/lib/utils/clientFilters';
 import { validateCPF, validateCNPJ } from '@/lib/utils/validators';
+import { maskCpf, maskCnpj, maskMoney, unmaskMoney } from '@/lib/utils/masks';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -280,7 +281,7 @@ function ContactFormDialog({ open, onClose, onSave, contact, members, stages }: 
         </div>
         <div className="grid grid-cols-2 gap-3">
           <TextField label="WhatsApp" value={whatsapp} onChange={(e) => setWhatsapp(applyPhoneMask(e.target.value))} fullWidth size="small" />
-          <TextField label={tipo === 'pj' ? 'CNPJ' : 'CPF'} value={cpfCnpj} onChange={(e) => setCpfCnpj(e.target.value)} fullWidth size="small" />
+          <TextField label={tipo === 'pj' ? 'CNPJ' : 'CPF'} value={cpfCnpj} onChange={(e) => setCpfCnpj(tipo === 'pj' ? maskCnpj(e.target.value) : maskCpf(e.target.value))} fullWidth size="small" placeholder={tipo === 'pj' ? '00.000.000/0000-00' : '000.000.000-00'} />
         </div>
         {tipo === 'pj' ? (
           <div className="grid grid-cols-2 gap-3">
@@ -383,7 +384,7 @@ function DealFormDialog({ open, onClose, onSave, deal, contacts, members }: {
 
       <ModernSection icon={DollarSign} title="Valor & Etapa">
         <div className="grid grid-cols-2 gap-3">
-          <TextField label={t('crm.form.value', 'Valor (R$)')} value={valueStr} onChange={(e) => setValueStr(e.target.value)} fullWidth size="small" placeholder="0,00" />
+          <TextField label={t('crm.form.value', 'Valor (R$)')} value={valueStr} onChange={(e) => setValueStr(maskMoney(e.target.value))} fullWidth size="small" placeholder="0,00" />
           <FormControl size="small" fullWidth><InputLabel>{t('crm.form.stage', 'Etapa')}</InputLabel><Select value={stage} onChange={(e) => handleStageChange(e.target.value)} label={t('crm.form.stage', 'Etapa')}>{PIPELINE_STAGES.map((s) => (<MenuItem key={s.id} value={s.id}><div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: s.color }} />{t('crm.stage.' + s.id, s.name)}</div></MenuItem>))}</Select></FormControl>
         </div>
         <div className="grid grid-cols-2 gap-3 items-start">

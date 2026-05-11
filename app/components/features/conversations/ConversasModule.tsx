@@ -8,6 +8,7 @@ import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
 import { setActiveConversation } from '@/lib/utils/active-conversation';
 import { isActiveClient } from '@/lib/utils/clientFilters';
+import { maskPhone } from '@/lib/utils/masks';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
 import { getInitials } from '@/lib/utils/format';
@@ -3242,7 +3243,7 @@ function NewConversationDialog({
                 )}
                 <div className="grid grid-cols-2 gap-2">
                   <input placeholder="Nome (opcional)" value={nameInput} onChange={e => setNameInput(e.target.value)} className={inputCls} />
-                  <input placeholder="(11) 99999-9999" value={phoneInput} onChange={e => setPhoneInput(e.target.value)} className={inputCls} />
+                  <input placeholder="(11) 99999-9999" value={phoneInput} onChange={e => setPhoneInput(maskPhone(e.target.value))} className={inputCls} inputMode="numeric" />
                 </div>
                 {selectedClient && (
                   <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1.5 flex items-center gap-1">

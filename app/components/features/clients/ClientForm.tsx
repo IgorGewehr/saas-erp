@@ -19,6 +19,7 @@ import {
 } from '@mui/material';
 import { User, Building2, Tag, X, Phone, MapPin, FileText, Briefcase, Calendar, Mail, Hash } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { maskCpf, maskCnpj, maskPhone, maskCep } from '@/lib/utils/masks';
 import type { LeadSource, LeadStatus } from '@/lib/types';
 import { STATUS_CONFIG, SOURCE_LABELS, TIPO_LABELS } from './shared/constants';
 import { ModernSection, ModernPill } from '@/app/components/ui/dialog';
@@ -230,7 +231,7 @@ export function ClientForm({
           <TextField
             label={form.tipo === 'pj' ? 'CNPJ' : 'CPF'}
             value={form.cpfCnpj}
-            onChange={e => set('cpfCnpj', e.target.value)}
+            onChange={e => set('cpfCnpj', form.tipo === 'pj' ? maskCnpj(e.target.value) : maskCpf(e.target.value))}
             fullWidth size="small"
             placeholder={form.tipo === 'pj' ? '00.000.000/0000-00' : '000.000.000-00'}
             InputProps={{
@@ -253,7 +254,7 @@ export function ClientForm({
           <TextField
             label="Telefone"
             value={form.phone}
-            onChange={e => set('phone', e.target.value)}
+            onChange={e => set('phone', maskPhone(e.target.value))}
             fullWidth size="small"
             placeholder="(00) 00000-0000"
             InputProps={{
@@ -263,7 +264,7 @@ export function ClientForm({
           <TextField
             label="WhatsApp"
             value={form.whatsapp}
-            onChange={e => set('whatsapp', e.target.value)}
+            onChange={e => set('whatsapp', maskPhone(e.target.value))}
             fullWidth size="small"
             placeholder="(00) 00000-0000"
             InputProps={{
@@ -388,9 +389,10 @@ export function ClientForm({
           <TextField
             label="CEP"
             value={form.cep}
-            onChange={e => set('cep', e.target.value)}
+            onChange={e => set('cep', maskCep(e.target.value))}
             onBlur={searchCep}
             fullWidth size="small"
+            placeholder="00000-000"
             InputProps={{
               endAdornment: cepLoading ? (
                 <InputAdornment position="end">

@@ -70,6 +70,7 @@ import Alert from '@mui/material/Alert';
 import { cn } from '@/lib/utils';
 import { formatCurrency, getStatusColor, getStatusLabel } from '@/lib/utils/format';
 import { isActiveClient } from '@/lib/utils/clientFilters';
+import { maskMoney, unmaskMoney } from '@/lib/utils/masks';
 import type { Appointment, AppointmentStatus, Service, CRMContact, User } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import { maybeCreateCommission, maybeCancelCommission } from '@/lib/services/commission';
@@ -873,11 +874,10 @@ function ServiceManagementDialog({
                     {t('agenda.price', 'Preço (R$)')} *
                   </label>
                   <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    value={formData.price || ''}
-                    onChange={(e) => setFormData((p) => ({ ...p, price: Number(e.target.value) }))}
+                    type="text"
+                    inputMode="numeric"
+                    value={formData.price ? maskMoney(formData.price) : ''}
+                    onChange={(e) => setFormData((p) => ({ ...p, price: unmaskMoney(e.target.value) }))}
                     placeholder="0,00"
                     className={cn(
                       'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
@@ -1584,12 +1584,11 @@ function AppointmentFormDialog({
                 {t('agenda.value', 'Valor (R$)')}
               </label>
               <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={formData.price || ''}
+                type="text"
+                inputMode="numeric"
+                value={formData.price ? maskMoney(formData.price) : ''}
                 onChange={(e) =>
-                  setFormData((prev) => ({ ...prev, price: Number(e.target.value) }))
+                  setFormData((prev) => ({ ...prev, price: unmaskMoney(e.target.value) }))
                 }
                 placeholder="0,00"
                 className={cn(
