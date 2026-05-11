@@ -544,9 +544,13 @@ function ConversationItemBase({ conversation, isSelected, onClick, slaInfo, batc
       // Scroll/drag mata o timer (acima da tolerância) — evita seleção acidental
       // durante swipe da lista. Jitter pequeno do dedo é absorvido.
       onPointerMove={handlePointerMove}
-      // Long-press em mobile dispara contextmenu por padrão (callout do iOS,
-      // menu do Android). Preveníamos pra que o nosso fluxo cuide da gesture.
-      onContextMenu={(e) => e.preventDefault()}
+      // Long-press em mobile dispara contextmenu nativo (callout iOS, menu
+      // Android) durante o hold. Só prevenimos quando o nosso timer está armado
+      // ou disparou — em desktop right-click instantâneo (sem pointerdown→hold)
+      // o menu nativo continua funcionando (operador pode inspecionar/copiar).
+      onContextMenu={(e) => {
+        if (longPressTimerRef.current || longPressFiredRef.current) e.preventDefault();
+      }}
       role="button"
       tabIndex={0}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(conversation); } }}
@@ -682,15 +686,40 @@ function ConversationItemBase({ conversation, isSelected, onClick, slaInfo, batc
 
 // Memoização da lista de conversas — sem isso, clicar em uma conversa força
 // re-render dos 499 items (selectedConversation muda, lista inteira refaz o
-// map). Comparator shallow nos primitivos + value-compare no slaInfo (objeto
-// que getSLAInfo cria novo a cada call mesmo com mesmos inputs).
+// map). Comparator value-compare nos campos que afetam a UI: comparação
+// referencial em `conversation` falha porque cada onSnapshot do Firestore
+// reescreve o array com objetos novos. Idem slaInfo: getSLAInfo chama
+// Date.now() internamente, então remainingMs muda a cada render por jitter
+// de relógio mesmo sem mudança real — tolerância de 30s evita invalidações
+// inúteis (UI mostra granularidade ~minuto).
 const slaInfoEquals = (a: SLAInfo | null | undefined, b: SLAInfo | null | undefined) => {
   if (a === b) return true;
   if (!a || !b) return false;
-  return a.status === b.status && a.remainingMs === b.remainingMs && a.totalMs === b.totalMs;
+  if (a.status !== b.status || a.totalMs !== b.totalMs) return false;
+  return Math.abs(a.remainingMs - b.remainingMs) < 30_000;
+};
+const conversationVisuallyEquals = (a: Conversation, b: Conversation) => {
+  if (a === b) return true;
+  // updatedAt é nosso single source of truth pra "mudou algo no doc". Defesa
+  // em profundidade abaixo cobre writes que pulam updatedAt (raro mas existe).
+  if (a.id !== b.id) return false;
+  if (a.updatedAt !== b.updatedAt) return false;
+  return (
+    a.lastMessage === b.lastMessage
+    && a.lastMessageAt === b.lastMessageAt
+    && a.lastMessageDirection === b.lastMessageDirection
+    && a.unreadCount === b.unreadCount
+    && a.status === b.status
+    && a.priority === b.priority
+    && a.contactName === b.contactName
+    && a.customContactName === b.customContactName
+    && a.contactAvatarUrl === b.contactAvatarUrl
+    && a.assignedToSectorId === b.assignedToSectorId
+    && a.snoozedUntil === b.snoozedUntil
+  );
 };
 const ConversationItem = memo(ConversationItemBase, (prev, next) => (
-  prev.conversation === next.conversation
+  conversationVisuallyEquals(prev.conversation, next.conversation)
   && prev.isSelected === next.isSelected
   && prev.batchMode === next.batchMode
   && prev.isBatchSelected === next.isBatchSelected
@@ -889,8 +918,17 @@ function CampaignOriginBadge({ conversationId, businessId }: { conversationId: s
   });
 
   // Step 2: resolve o doc da campanha (Broadcast ou BirthdayCampaign).
+  // queryKey discriminada por tipo+id pra que cache seja compartilhado entre
+  // conversas da mesma campanha (mesma key = mesmo cache), mas não compartilhe
+  // entre conversas sem campanha (cada uma teria `[undefined, undefined]`
+  // colidindo na mesma entry — benigno mas confunde devtools).
+  const campaignQueryKey: readonly unknown[] = campaignRef?.broadcastId
+    ? ['campaign-info', 'broadcast', campaignRef.broadcastId]
+    : campaignRef?.birthdayCampaignId
+      ? ['campaign-info', 'birthday', campaignRef.birthdayCampaignId]
+      : ['campaign-info', 'none'];
   const { data: campaign } = useQuery({
-    queryKey: ['campaign-info', campaignRef?.broadcastId, campaignRef?.birthdayCampaignId],
+    queryKey: campaignQueryKey,
     queryFn: async () => {
       if (campaignRef?.broadcastId) {
         const snap = await getDoc(doc(db, 'broadcasts', campaignRef.broadcastId));
@@ -919,7 +957,7 @@ function CampaignOriginBadge({ conversationId, businessId }: { conversationId: s
 
   // Step 3: resolve a oferta vinculada (só pra broadcasts com offerId).
   const { data: offer } = useQuery({
-    queryKey: ['campaign-offer-info', campaign?.offerId],
+    queryKey: campaign?.offerId ? ['campaign-offer-info', campaign.offerId] : ['campaign-offer-info', 'none'],
     queryFn: async () => {
       if (!campaign?.offerId) return null;
       const snap = await getDoc(doc(db, 'offers', campaign.offerId));
@@ -7739,13 +7777,14 @@ export default function ConversasModule() {
                     <motion.div
                       key={conv.id}
                       initial={{ opacity: 0, x: -10 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: -10 }}
-                      // Cap no stagger: com 499 itens, delay × index original (0.03)
-                      // = 15s de animação total. Cap em 300ms preserva o efeito
-                      // visual nos primeiros itens (~10) sem travar a thread por
-                      // segundos. Lista "Todas" agora aparece em ~0.5s no total.
-                      transition={{ delay: Math.min(index * 0.03, 0.3), duration: 0.2 }}
+                      // Cap no stagger só na ENTRADA: com 499 itens, delay × index
+                      // original (0.03) = 15s de animação. Cap em 300ms preserva
+                      // o efeito nos primeiros ~10 sem travar a thread por segundos.
+                      // Exit sem delay — quando o item sai (filtro mudou, conversa
+                      // deletada), some imediatamente em vez de esperar a posição
+                      // dele no stagger original.
+                      animate={{ opacity: 1, x: 0, transition: { delay: Math.min(index * 0.03, 0.3), duration: 0.2 } }}
+                      exit={{ opacity: 0, x: -10, transition: { duration: 0.15 } }}
                     >
                       <ConversationItem
                         conversation={conv}
