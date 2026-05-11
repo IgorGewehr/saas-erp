@@ -17,8 +17,9 @@
 
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Edit2, X, Tag, Building2, User, Phone, Mail, MapPin, Calendar, Gift, Settings } from 'lucide-react';
+import { Edit2, X, Tag, Building2, User, Phone, Mail, MapPin, Calendar, Gift, Settings, Merge } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
+import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
@@ -33,6 +34,7 @@ import { ClientTimeline } from './ClientTimeline';
 import { ChannelsTab } from './ChannelsTab';
 import { CampaignsTab } from './CampaignsTab';
 import { PointsAdjustModal } from './PointsAdjustModal';
+import { ManualMergeModal } from './ManualMergeModal';
 
 export function ClientDetailPanel({
   client,
@@ -41,6 +43,7 @@ export function ClientDetailPanel({
   loyaltyConfig: loyaltyCfg,
   products = [],
   offers = [],
+  allClients = [],
 }: {
   client: Client;
   onClose: () => void;
@@ -51,11 +54,15 @@ export function ClientDetailPanel({
   /** Lookup id→nome de oferta (Fase 4B) — preferido sobre product/label
    *  quando acquisitionOfferId está set no cliente. */
   offers?: Array<{ id: string; name: string }>;
+  /** Lista completa de clientes do tenant — usada pelo ManualMergeModal pra
+   *  permitir busca/seleção do segundo registro a mesclar. */
+  allClients?: Client[];
 }) {
   const { business, user } = useAuth();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<'perfil' | 'canais' | 'campanhas' | 'timeline'>('perfil');
   const [showPointsAdjust, setShowPointsAdjust] = useState(false);
+  const [showManualMerge, setShowManualMerge] = useState(false);
   const [localPoints, setLocalPoints] = useState<number | null>(null);
 
   // Reset local points state whenever the selected client changes
@@ -96,10 +103,17 @@ export function ClientDetailPanel({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={onEdit} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 dark:text-gray-400 transition-colors">
+          <button
+            onClick={() => setShowManualMerge(true)}
+            className="p-1.5 rounded-lg hover:bg-amber-50 dark:hover:bg-amber-500/10 text-gray-500 dark:text-gray-400 hover:text-amber-600 dark:hover:text-amber-400 transition-colors"
+            title="Vincular duplicata"
+          >
+            <Merge className="w-4 h-4" />
+          </button>
+          <button onClick={onEdit} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 dark:text-gray-400 transition-colors" title="Editar">
             <Edit2 className="w-4 h-4" />
           </button>
-          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 dark:text-gray-400 transition-colors">
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 dark:text-gray-400 transition-colors" title="Fechar">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -403,6 +417,29 @@ export function ClientDetailPanel({
               setLocalPoints(newBalance);
               queryClient.invalidateQueries({ queryKey: ['loyalty-history', client.id] });
               queryClient.invalidateQueries({ queryKey: ['clients', business?.id] });
+            }}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Manual merge modal — vincular duplicata via search.
+          Quando o cliente atualmente aberto vira o secondary (foi desativado),
+          fechamos o painel — ele não deve mais ser visualizável como ativo. */}
+      <AnimatePresence>
+        {showManualMerge && business?.id && (
+          <ManualMergeModal
+            currentClient={client}
+            allClients={allClients}
+            businessId={business.id}
+            onClose={() => setShowManualMerge(false)}
+            onDone={(mergedSecondaryId) => {
+              setShowManualMerge(false);
+              queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
+              toast.success('Duplicata vinculada');
+              if (mergedSecondaryId === client.id) {
+                // Cliente aberto era o secondary → foi desativado. Fecha o painel.
+                onClose();
+              }
             }}
           />
         )}
