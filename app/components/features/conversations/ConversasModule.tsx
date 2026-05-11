@@ -469,17 +469,80 @@ interface ConversationItemProps {
   /** Phase 2: true se a conexão é pessoal do operador atual ('user' + ownerId=self).
    *  Usado pra estilizar o badge diferentemente. */
   isMineConnection?: boolean;
+  /** Long-press na conversa entra direto em batch mode + seleciona — estilo
+   *  WhatsApp/Telegram. Disparo em 500ms se o pointer ainda estiver sobre o
+   *  item. Cancelado por up/leave/cancel/scroll antes do timeout. */
+  onLongPress?: () => void;
 }
 
-function ConversationItem({ conversation, isSelected, onClick, slaInfo, batchMode, isBatchSelected, onBatchToggle, connectionLabel, isMineConnection }: ConversationItemProps) {
+function ConversationItem({ conversation, isSelected, onClick, slaInfo, batchMode, isBatchSelected, onBatchToggle, connectionLabel, isMineConnection, onLongPress }: ConversationItemProps) {
   const { t } = useTranslation();
   const cfg = getConvConfig(conversation);
   const displayName = conversation.customContactName ?? conversation.contactName;
   const initials = getInitials(displayName);
 
+  // Long-press detection — válida tanto pra touch quanto mouse via PointerEvent.
+  // Timer arma no pointerdown; up/leave/cancel cancelam. Se dispara, marca
+  // longPressFiredRef pra suprimir o click subsequente (senão onClick rodaria
+  // logo após o longpress e desmarcaria a seleção que ele acabou de fazer).
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressFiredRef = useRef(false);
+  // Posição inicial do toque pra distinguir long-press de scroll: pequenos
+  // tremores do dedo (até ~10px) NÃO cancelam; movimento maior é gesto de
+  // scroll/drag e cancela. Sem tolerância, o jitter natural do touch em
+  // mobile cancelava o timer antes dos 500ms.
+  const pointerStartRef = useRef<{ x: number; y: number } | null>(null);
+  const MOVE_TOLERANCE_PX = 10;
+  const cancelLongPress = useCallback(() => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    pointerStartRef.current = null;
+  }, []);
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    // Só botão primário (esquerdo/touch); ignora middle/right click.
+    if (e.button !== undefined && e.button !== 0) return;
+    longPressFiredRef.current = false;
+    cancelLongPress();
+    if (!onLongPress) return;
+    pointerStartRef.current = { x: e.clientX, y: e.clientY };
+    longPressTimerRef.current = setTimeout(() => {
+      longPressFiredRef.current = true;
+      onLongPress();
+      longPressTimerRef.current = null;
+      pointerStartRef.current = null;
+    }, 500);
+  }, [onLongPress, cancelLongPress]);
+  const handlePointerMove = useCallback((e: React.PointerEvent) => {
+    if (!longPressTimerRef.current || !pointerStartRef.current) return;
+    const dx = e.clientX - pointerStartRef.current.x;
+    const dy = e.clientY - pointerStartRef.current.y;
+    if (dx * dx + dy * dy > MOVE_TOLERANCE_PX * MOVE_TOLERANCE_PX) cancelLongPress();
+  }, [cancelLongPress]);
+  const handleClick = useCallback(() => {
+    // Suprime o click logo após long-press dispararar — sem isso, o pointerup
+    // sintetizava um click que desmarcaria a conversa que acabou de selecionar.
+    if (longPressFiredRef.current) {
+      longPressFiredRef.current = false;
+      return;
+    }
+    onClick();
+  }, [onClick]);
+
   return (
     <motion.div
-      onClick={onClick}
+      onClick={handleClick}
+      onPointerDown={handlePointerDown}
+      onPointerUp={cancelLongPress}
+      onPointerLeave={cancelLongPress}
+      onPointerCancel={cancelLongPress}
+      // Scroll/drag mata o timer (acima da tolerância) — evita seleção acidental
+      // durante swipe da lista. Jitter pequeno do dedo é absorvido.
+      onPointerMove={handlePointerMove}
+      // Long-press em mobile dispara contextmenu por padrão (callout do iOS,
+      // menu do Android). Preveníamos pra que o nosso fluxo cuide da gesture.
+      onContextMenu={(e) => e.preventDefault()}
       role="button"
       tabIndex={0}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
@@ -7577,6 +7640,10 @@ export default function ConversasModule() {
                         conversation={conv}
                         isSelected={selectedConversation?.id === conv.id}
                         onClick={() => { if (batchMode) toggleBatchSelect(conv.id); else handleSelectConversation(conv); }}
+                        // Long-press entra em batch mode e já marca o item — estilo
+                        // WhatsApp/Telegram. Só atua fora do batch mode (dentro, o
+                        // tap normal já marca/desmarca, então long-press fica off).
+                        onLongPress={batchMode ? undefined : () => { setBatchMode(true); toggleBatchSelect(conv.id); }}
                         slaInfo={getSLAInfo(conv, slaConfig)}
                         batchMode={batchMode}
                         isBatchSelected={batchSelectedIds.has(conv.id)}
