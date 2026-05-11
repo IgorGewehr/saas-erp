@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useImperativeHandle, forwardRef, memo } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'react-toastify';
@@ -69,6 +69,7 @@ import {
   StickyNote,
   Hash,
   Tag,
+  Megaphone,
   Layers,
   ArrowRightLeft,
   Flag,
@@ -107,7 +108,7 @@ import {
   BellOff,
   Mail,
 } from 'lucide-react';
-import { getDocs } from 'firebase/firestore';
+import { getDocs, getDoc } from 'firebase/firestore';
 import type {
   Conversation,
   ConversationMessage,
@@ -763,6 +764,106 @@ function IntegrationSettingsDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
+// ─── Campaign Origin Badge ───────────────────────────────────────────────────
+// Resolve a campanha que originou a conversa (broadcast pontual OU campanha
+// de aniversário) e renderiza tag no header. Atribui o lead/contato à fonte
+// de marketing, mesmo quando ele ainda não virou um Client formal.
+//
+// Lookup: 1ª msg outbound flagada com isFromCampaign=true em conversationMessages.
+// Filtro `isFromCampaign` é client-side (sobre limit 20 das mais antigas) pra
+// não exigir novo índice composto — o índice existente (businessId, conversationId,
+// sentAt asc) cobre. Em campanhas tipicamente isFromCampaign está nas 1-3
+// primeiras msgs; limit 20 dá folga absurda.
+function CampaignOriginBadge({ conversationId, businessId }: { conversationId: string; businessId: string }) {
+  // Step 1: descobre se a conversa tem msg de campanha (e se sim, qual).
+  const { data: campaignRef } = useQuery({
+    queryKey: ['conv-campaign-origin', businessId, conversationId],
+    queryFn: async () => {
+      if (!businessId || !conversationId) return null;
+      const snap = await getDocs(query(
+        collection(db, 'conversationMessages'),
+        where('businessId', '==', businessId),
+        where('conversationId', '==', conversationId),
+        orderBy('sentAt', 'asc'),
+        limit(20),
+      ));
+      const firstCampaign = snap.docs.find(d => d.data().isFromCampaign === true);
+      if (!firstCampaign) return null;
+      const d = firstCampaign.data();
+      return {
+        broadcastId: (d.broadcastId as string | undefined) || undefined,
+        birthdayCampaignId: (d.birthdayCampaignId as string | undefined) || undefined,
+      };
+    },
+    enabled: !!businessId && !!conversationId,
+    staleTime: 10 * 60 * 1000, // 10min — origem nunca muda após criada
+  });
+
+  // Step 2: resolve o doc da campanha (Broadcast ou BirthdayCampaign).
+  const { data: campaign } = useQuery({
+    queryKey: ['campaign-info', campaignRef?.broadcastId, campaignRef?.birthdayCampaignId],
+    queryFn: async () => {
+      if (campaignRef?.broadcastId) {
+        const snap = await getDoc(doc(db, 'broadcasts', campaignRef.broadcastId));
+        if (!snap.exists()) return null;
+        const d = snap.data();
+        return {
+          name: (d.name as string) || 'Campanha',
+          offerId: (d.offerId as string | undefined) || undefined,
+          kind: 'broadcast' as const,
+        };
+      }
+      if (campaignRef?.birthdayCampaignId) {
+        const snap = await getDoc(doc(db, 'birthdayCampaigns', campaignRef.birthdayCampaignId));
+        if (!snap.exists()) return null;
+        return {
+          name: (snap.data().name as string) || 'Aniversário',
+          offerId: undefined as string | undefined,
+          kind: 'birthday' as const,
+        };
+      }
+      return null;
+    },
+    enabled: !!(campaignRef?.broadcastId || campaignRef?.birthdayCampaignId),
+    staleTime: 10 * 60 * 1000,
+  });
+
+  // Step 3: resolve a oferta vinculada (só pra broadcasts com offerId).
+  const { data: offer } = useQuery({
+    queryKey: ['campaign-offer-info', campaign?.offerId],
+    queryFn: async () => {
+      if (!campaign?.offerId) return null;
+      const snap = await getDoc(doc(db, 'offers', campaign.offerId));
+      return snap.exists() ? { name: (snap.data().name as string) || 'Oferta' } : null;
+    },
+    enabled: !!campaign?.offerId,
+    staleTime: 10 * 60 * 1000,
+  });
+
+  if (!campaign) return null;
+
+  return (
+    <>
+      <span
+        title={`Conversa originada da campanha: ${campaign.name}`}
+        className="hidden sm:inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0 bg-fuchsia-100 dark:bg-fuchsia-500/15 text-fuchsia-700 dark:text-fuchsia-400"
+      >
+        <Megaphone className="w-2.5 h-2.5" />
+        <span className="max-w-[14ch] truncate">{campaign.name}</span>
+      </span>
+      {offer && (
+        <span
+          title={`Oferta vinculada: ${offer.name}`}
+          className="hidden sm:inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0 bg-rose-100 dark:bg-rose-500/15 text-rose-700 dark:text-rose-400"
+        >
+          <Tag className="w-2.5 h-2.5" />
+          <span className="max-w-[14ch] truncate">{offer.name}</span>
+        </span>
+      )}
+    </>
+  );
+}
+
 // ─── Thread Header ────────────────────────────────────────────────────────────
 
 function ThreadHeader({
@@ -1019,6 +1120,11 @@ function ThreadHeader({
                 </span>
               </button>
             )}
+            {/* Tag de atribuição: campanha que originou a conversa.
+                Renderiza só quando a conversa veio de broadcast/campanha
+                de aniversário. Útil pra atribuir leads que ainda não viraram
+                clientes formais — info que só existia no detalhe do cliente. */}
+            <CampaignOriginBadge conversationId={conversation.id} businessId={conversation.businessId} />
           </div>
           <div className="flex items-center gap-1.5 mt-0.5">
             <StatusDot status={conversation.status} />
