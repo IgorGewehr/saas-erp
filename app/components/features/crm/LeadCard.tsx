@@ -54,9 +54,15 @@ export function LeadCard({ contact, isSelected, isDragging, onClick, onDragStart
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate leading-tight">{contact.name}</p>
-          {contact.company && (
-            <p className="text-xs text-gray-400 dark:text-gray-500 truncate mt-0.5">{contact.company}</p>
-          )}
+          {/* Subtítulo: pra PJ mostra nomeFantasia (Razão Social fica no título);
+              pra PF mostra empresa onde a pessoa trabalha. Fallback null em ambos
+              os casos se o campo não existir. */}
+          {(() => {
+            const subtitle = contact.tipo === 'pj' ? contact.nomeFantasia : contact.company;
+            return subtitle ? (
+              <p className="text-xs text-gray-400 dark:text-gray-500 truncate mt-0.5">{subtitle}</p>
+            ) : null;
+          })()}
         </div>
         <Tooltip title={SOURCE_LABELS[contact.source]} arrow>
           <span className="shrink-0 mt-0.5"><SourceIcon source={contact.source} /></span>

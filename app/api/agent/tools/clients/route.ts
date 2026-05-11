@@ -66,6 +66,13 @@ async function createClient(businessId: string, params: Record<string, unknown>)
   // Source is typed as a channel for auto-link (whatsapp/facebook/instagram) or a generic acquisition source
   const source = (params.source as Client['source']) || 'whatsapp';
   const channel = params.channel as 'whatsapp' | 'facebook' | 'instagram' | undefined;
+  const cpfCnpj = (params.cpfCnpj as string | undefined)?.trim() || undefined;
+  // tipo: aceita param explícito; senão detecta pelos dígitos do cpfCnpj
+  // (14 → PJ, 11 → PF); fallback PF mantém comportamento antigo pra leads
+  // criados sem CPF/CNPJ (caso típico de conversa WhatsApp).
+  const tipoParam = params.tipo as 'pf' | 'pj' | undefined;
+  const cpfCnpjDigits = cpfCnpj ? cpfCnpj.replace(/\D/g, '') : '';
+  const tipo: 'pf' | 'pj' = tipoParam ?? (cpfCnpjDigits.length === 14 ? 'pj' : 'pf');
 
   // Dedupe check
   if (phone) {
@@ -86,10 +93,11 @@ async function createClient(businessId: string, params: Record<string, unknown>)
   const doc: Partial<Client> = {
     businessId,
     name,
-    tipo: 'pf',
+    tipo,
     phone: phone || undefined,
     whatsapp: whatsapp || undefined,
     email: (params.email as string | undefined) || undefined,
+    cpfCnpj,
     source,
     status: 'novo',
     score: 0,

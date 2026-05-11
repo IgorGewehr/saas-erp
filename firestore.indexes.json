@@ -11,6 +11,15 @@
       ]
     },
     {
+      "collectionGroup": "crmAuditLog",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "contactId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "teamChats",
       "queryScope": "COLLECTION",
       "fields": [

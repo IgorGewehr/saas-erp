@@ -69,6 +69,7 @@ import Snackbar from '@mui/material/Snackbar';
 import Alert from '@mui/material/Alert';
 import { cn } from '@/lib/utils';
 import { formatCurrency, getStatusColor, getStatusLabel } from '@/lib/utils/format';
+import { isActiveClient } from '@/lib/utils/clientFilters';
 import type { Appointment, AppointmentStatus, Service, CRMContact, User } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import { maybeCreateCommission, maybeCancelCommission } from '@/lib/services/commission';
@@ -2171,7 +2172,7 @@ export default function AgendaModule() {
       const snap = await getDocs(q);
       return snap.docs
         .map((d) => ({ ...d.data(), id: d.id } as CRMContact))
-        .filter(c => (c as { isActive?: boolean }).isActive !== false)
+        .filter(isActiveClient)
         .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
     },
     enabled: !!business?.id,

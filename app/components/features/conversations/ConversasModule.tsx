@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
 import { setActiveConversation } from '@/lib/utils/active-conversation';
+import { isActiveClient } from '@/lib/utils/clientFilters';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
 import { getInitials } from '@/lib/utils/format';
@@ -2942,12 +2943,16 @@ function NewConversationDialog({
 
     setSending(true);
     try {
-      // Check for existing conversation with same number on whatsapp
+      // Baileys e Meta são transportes distintos (abas/badges separados na UI).
+      // Quando a janela 24h da Meta fecha, user precisa abrir conversa nova via
+      // Baileys pro mesmo contato — então o duplicate check filtra pelo transporte.
+      const targetConnectedVia = channelMode === 'baileys' ? 'baileys' : 'embedded_signup';
       const dupQ = query(
         collection(db, 'conversations'),
         where('businessId', '==', business.id),
         where('channel', '==', 'whatsapp'),
         where('contactExternalId', '==', phoneE164),
+        where('connectedVia', '==', targetConnectedVia),
       );
       const dupSnap = await getDocs(dupQ);
       if (!dupSnap.empty) {
@@ -4772,7 +4777,7 @@ export default function ConversasModule() {
     const unsub = onSnapshot(
       q,
       (snap) => {
-        setClientsList(snap.docs.map(d => ({ ...(d.data() as Client), id: d.id })));
+        setClientsList(snap.docs.map(d => ({ ...(d.data() as Client), id: d.id })).filter(isActiveClient));
         setClientsLoadError(null);
       },
       (err) => {

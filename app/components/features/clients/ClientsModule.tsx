@@ -17,6 +17,7 @@ import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
 import { validateCPF, validateCNPJ } from '@/lib/utils/validators';
+import { isActiveClient } from '@/lib/utils/clientFilters';
 import { cn } from '@/lib/utils';
 import type { Client, LeadStatus, LoyaltyConfig, LoyaltyTier } from '@/lib/types';
 import { DEFAULT_LOYALTY_TIERS } from '@/lib/types';
@@ -73,7 +74,7 @@ import { OffersManagerModal } from './offers/OffersManagerModal';
 // ─── Merge duplicates ────────────────────────────────────────────────────────
 
 function detectDuplicates(clients: Client[]): [Client, Client][] {
-  const active = clients.filter(c => c.isActive !== false && !c.mergedInto);
+  const active = clients.filter(isActiveClient);
   const pairs: [Client, Client][] = [];
   const seen = new Set<string>();
 
@@ -1162,11 +1163,10 @@ export default function ClientsModule() {
 
   // ─── Filtered & sorted list ──────────────────────────────────────────────────
   const filtered = useMemo(() => {
-    // Drop malformed entries, already-merged records, e soft-deleted (deletedAt)
+    // Drop malformed entries + soft-deleted/merged (isActiveClient cobre essas
+    // checagens; só falta o sanity check de name não-vazio).
     let list = clients.filter(c =>
-      c && typeof c.name === 'string' && c.name.length > 0
-      && !c.mergedInto
-      && !(c as { deletedAt?: string }).deletedAt
+      c && typeof c.name === 'string' && c.name.length > 0 && isActiveClient(c),
     );
     const term = search.trim().toLowerCase();
     if (term) {

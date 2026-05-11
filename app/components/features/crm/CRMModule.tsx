@@ -22,12 +22,14 @@ import {
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatDate, formatDateTime, getInitials } from '@/lib/utils/format';
+import { isActiveClient } from '@/lib/utils/clientFilters';
+import { validateCPF, validateCNPJ } from '@/lib/utils/validators';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
 import { db } from '@/lib/config/firebase';
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot, increment, writeBatch, limit as firestoreLimit } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot, increment, writeBatch, limit as firestoreLimit, deleteField } from 'firebase/firestore';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   CRMContact, CRMDeal, CRMPipelineStage, CRMStageConfig, CRMPipelineConfig, CRMActivity, CRMActivityType,
@@ -154,12 +156,16 @@ function ContactFormDialog({ open, onClose, onSave, contact, members, stages }: 
   open: boolean; onClose: () => void; onSave: (data: Partial<CRMContact>) => Promise<void>; contact: CRMContact | null; members: User[]; stages: CRMStageConfig[];
 }) {
   const { t } = useTranslation();
+  const [tipo, setTipo] = useState<'pf' | 'pj'>('pf');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [whatsapp, setWhatsapp] = useState('');
   const [company, setCompany] = useState('');
   const [role, setRole] = useState('');
+  const [cpfCnpj, setCpfCnpj] = useState('');
+  const [nomeFantasia, setNomeFantasia] = useState('');
+  const [inscricaoEstadual, setInscricaoEstadual] = useState('');
   const [source, setSource] = useState<LeadSource>('outro');
   const [status, setStatus] = useState<LeadStatus>('novo');
   const [score, setScore] = useState(0);
@@ -174,10 +180,14 @@ function ContactFormDialog({ open, onClose, onSave, contact, members, stages }: 
 
   useEffect(() => {
     if (open) {
+      setTipo(contact?.tipo ?? 'pf');
       setName(contact?.name ?? ''); setEmail(contact?.email ?? '');
       setPhone(contact?.phone ? applyPhoneMask(contact.phone) : '');
       setWhatsapp(contact?.whatsapp ? applyPhoneMask(contact.whatsapp) : '');
       setCompany(contact?.company ?? ''); setRole(contact?.role ?? '');
+      setCpfCnpj(contact?.cpfCnpj ?? '');
+      setNomeFantasia(contact?.nomeFantasia ?? '');
+      setInscricaoEstadual(contact?.inscricaoEstadual ?? '');
       setSource(contact?.source ?? 'outro'); setStatus(contact?.status ?? 'novo');
       setScore(contact?.score ?? 0); setAssignedTo(contact?.assignedTo ?? '');
       setTags(contact?.tags?.join(', ') ?? ''); setNotes(contact?.notes ?? '');
@@ -190,13 +200,31 @@ function ContactFormDialog({ open, onClose, onSave, contact, members, stages }: 
 
   const handleSubmit = async () => {
     if (!name.trim()) return;
+    // Validação CPF/CNPJ se preenchido — espelha ClientsModule.tsx:1012-1014.
+    // Permite vazio (campo opcional pra leads); só rejeita se foi digitado e inválido.
+    const cpfCnpjRaw = cpfCnpj.trim();
+    if (cpfCnpjRaw) {
+      const isValid = tipo === 'pj' ? validateCNPJ(cpfCnpjRaw) : validateCPF(cpfCnpjRaw);
+      if (!isValid) {
+        toast.error(`${tipo === 'pj' ? 'CNPJ' : 'CPF'} inválido — confira os dígitos`);
+        return;
+      }
+    }
     setSaving(true);
     try {
       const member = members.find((m) => m.id === assignedTo);
       const tagsList = tags.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean);
       await onSave({
+        tipo,
         name: name.trim(), email: email.trim() || undefined, phone: stripPhoneMask(phone) || undefined,
-        whatsapp: stripPhoneMask(whatsapp) || undefined, company: company.trim() || undefined, role: role.trim() || undefined,
+        whatsapp: stripPhoneMask(whatsapp) || undefined, role: role.trim() || undefined,
+        cpfCnpj: cpfCnpjRaw || undefined,
+        // PF-only: `company` é "empresa onde a pessoa trabalha" — não faz sentido
+        // pra PJ (o contato JÁ é a empresa). Limpa no save pra evitar lixo.
+        company: tipo === 'pf' ? (company.trim() || undefined) : undefined,
+        // PJ-only: só persiste se tipo === 'pj' pra não poluir docs PF
+        nomeFantasia: tipo === 'pj' ? (nomeFantasia.trim() || undefined) : undefined,
+        inscricaoEstadual: tipo === 'pj' ? (inscricaoEstadual.trim() || undefined) : undefined,
         source, status, score, assignedTo: assignedTo || undefined, assignedToName: member?.name || undefined,
         tags: tagsList.length > 0 ? tagsList : undefined, notes: notes.trim() || undefined,
         preferredChannel: (preferredChannel as CRMContact['preferredChannel']) || undefined,
@@ -223,16 +251,48 @@ function ContactFormDialog({ open, onClose, onSave, contact, members, stages }: 
       }
     >
       <ModernSection icon={UserPlus} title="Identificação">
-        <TextField label={t('crm.form.nameReq', 'Nome *')} value={name} onChange={(e) => setName(e.target.value)} fullWidth size="small" />
+        {/* Toggle PF/PJ — controla quais campos aparecem (CPF vs CNPJ, nome
+            fantasia, IE). Default 'pf' pra manter compatibilidade com o fluxo
+            antigo de criação rápida de contato. */}
+        <div className="flex items-center gap-2 p-1 bg-gray-100 dark:bg-white/[0.04] rounded-xl w-fit">
+          <button type="button" onClick={() => setTipo('pf')}
+            className={cn('px-4 py-1.5 rounded-lg text-xs font-semibold transition-all',
+              tipo === 'pf'
+                ? 'bg-white dark:bg-white/[0.12] text-gray-900 dark:text-white shadow-sm'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300')}>
+            Pessoa Física
+          </button>
+          <button type="button" onClick={() => setTipo('pj')}
+            className={cn('px-4 py-1.5 rounded-lg text-xs font-semibold transition-all',
+              tipo === 'pj'
+                ? 'bg-white dark:bg-white/[0.12] text-gray-900 dark:text-white shadow-sm'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300')}>
+            Pessoa Jurídica
+          </button>
+        </div>
+        <TextField label={tipo === 'pj' ? 'Razão Social *' : 'Nome *'} value={name} onChange={(e) => setName(e.target.value)} fullWidth size="small" />
+        {tipo === 'pj' && (
+          <TextField label="Nome Fantasia" value={nomeFantasia} onChange={(e) => setNomeFantasia(e.target.value)} fullWidth size="small" />
+        )}
         <div className="grid grid-cols-2 gap-3">
           <TextField label={t('crm.form.email', 'E-mail')} value={email} onChange={(e) => setEmail(e.target.value)} fullWidth size="small" type="email" />
           <TextField label={t('crm.form.phone', 'Telefone')} value={phone} onChange={(e) => setPhone(applyPhoneMask(e.target.value))} fullWidth size="small" />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <TextField label="WhatsApp" value={whatsapp} onChange={(e) => setWhatsapp(applyPhoneMask(e.target.value))} fullWidth size="small" />
-          <TextField label={t('crm.form.company', 'Empresa')} value={company} onChange={(e) => setCompany(e.target.value)} fullWidth size="small" />
+          <TextField label={tipo === 'pj' ? 'CNPJ' : 'CPF'} value={cpfCnpj} onChange={(e) => setCpfCnpj(e.target.value)} fullWidth size="small" />
         </div>
-        <TextField label={t('crm.form.role', 'Cargo')} value={role} onChange={(e) => setRole(e.target.value)} fullWidth size="small" />
+        {tipo === 'pj' ? (
+          <div className="grid grid-cols-2 gap-3">
+            <TextField label="Inscrição Estadual" value={inscricaoEstadual} onChange={(e) => setInscricaoEstadual(e.target.value)} fullWidth size="small" />
+            <TextField label={t('crm.form.role', 'Setor / Atuação')} value={role} onChange={(e) => setRole(e.target.value)} fullWidth size="small" />
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3">
+            <TextField label={t('crm.form.company', 'Empresa')} value={company} onChange={(e) => setCompany(e.target.value)} fullWidth size="small" />
+            <TextField label={t('crm.form.role', 'Cargo')} value={role} onChange={(e) => setRole(e.target.value)} fullWidth size="small" />
+          </div>
+        )}
       </ModernSection>
 
       <ModernSection icon={Tag} title="Classificação">
@@ -1509,7 +1569,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       if (!businessId) return [];
       const q = query(collection(db, 'clients'), where('businessId', '==', businessId));
       const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...(d.data() as Client), id: d.id }));
+      return snap.docs.map(d => ({ ...(d.data() as Client), id: d.id })).filter(isActiveClient);
     },
     enabled: !!businessId,
     staleTime: 30 * 1000, // 30s — clientes recém-criados aparecem rápido pro auto-link
@@ -3352,7 +3412,7 @@ function CRMImportModal({ onClose, businessId, onImported }: { onClose: () => vo
       let batchCount = 0;
 
       for (const row of rawData) {
-        const contact: Record<string, unknown> = { businessId, tipo: 'pf', createdAt: now, updatedAt: now, score: 0, status: 'novo' as LeadStatus, source: 'outro' as LeadSource };
+        const contact: Record<string, unknown> = { businessId, createdAt: now, updatedAt: now, score: 0, status: 'novo' as LeadStatus, source: 'outro' as LeadSource };
         for (const [header, fieldKey] of Object.entries(mapping)) {
           if (!fieldKey) continue;
           const raw = (row[header] ?? '').trim();
@@ -3364,6 +3424,11 @@ function CRMImportModal({ onClose, businessId, onImported }: { onClose: () => vo
           else contact[fieldKey] = raw;
         }
         if (!contact.name) continue;
+        // Detecta tipo automaticamente pelos dígitos do cpfCnpj: 14 → PJ, 11 → PF.
+        // Fallback PF mantém comportamento antigo (linha 3404 hardcodava 'pf').
+        // Operador pode corrigir manualmente depois pelo dialog de edição.
+        const digits = String(contact.cpfCnpj ?? '').replace(/\D/g, '');
+        contact.tipo = digits.length === 14 ? 'pj' : 'pf';
         batch.set(doc(collection(db, 'clients')), contact);
         count++;
         batchCount++;
@@ -3548,6 +3613,7 @@ export default function CRMModule() {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterTags, setFilterTags] = useState<string[]>([]);
   const [filterSource, setFilterSource] = useState<LeadSource | 'all'>('all');
+  const [filterTipo, setFilterTipo] = useState<'pf' | 'pj' | 'all'>('all');
   const [showTagFilter, setShowTagFilter] = useState(false);
   const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false);
   const [scheduleContact, setScheduleContact] = useState<CRMContact | null>(null);
@@ -3591,7 +3657,7 @@ export default function CRMModule() {
       const list = snap.docs.map((d) => {
         const data = d.data();
         return { ...data, id: d.id, status: (data.status ?? 'novo') as CRMContact['status'], source: (data.source ?? 'outro') as CRMContact['source'], score: data.score ?? 0 } as CRMContact;
-      }).filter((c) => c.tipo !== 'pj');
+      }).filter(isActiveClient);
       setContacts(sortByCreatedAtDesc(list));
       setLc(false);
     }, (err) => { console.error('[CRM] contacts snapshot error:', err); setLc(false); });
@@ -3657,37 +3723,54 @@ export default function CRMModule() {
   const handleSaveContact = useCallback(async (data: Partial<CRMContact>) => {
     if (!business?.id || !user) return;
     const now = new Date().toISOString();
-    // Firestore rejects undefined values — strip them
-    const clean: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(data)) { if (v !== undefined) clean[k] = v; }
     try {
       if (editingContact) {
-        await updateDoc(doc(db, 'clients', editingContact.id), { ...clean, updatedAt: now });
+        // Update: undefined → deleteField() pra limpar campos apagados pelo
+        // operador. Sem isso, trocar tipo PJ→PF deixava nomeFantasia/IE
+        // órfãos no doc (campos invisíveis na UI mas presentes no Firestore).
+        // Mesmo padrão de ClientsModule.tsx:1074-1077.
+        const updatePayload = Object.fromEntries(
+          Object.entries(data).map(([k, v]) => [k, v === undefined ? deleteField() : v]),
+        );
+        await updateDoc(doc(db, 'clients', editingContact.id), { ...updatePayload, updatedAt: now });
         toast.success(t('crm.toast.contactUpdated', 'Contato atualizado!'));
         void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'contact_updated', contactId: editingContact.id, details: `Dados editados` });
       } else {
-        const ref = await addDoc(collection(db, 'clients'), { ...clean, businessId: business.id, tipo: 'pf', score: data.score ?? 0, status: data.status ?? 'novo', source: data.source ?? 'outro', createdAt: now, updatedAt: now });
+        // Create: filtra undefined pra não gravar chaves vazias no doc novo.
+        const createPayload = Object.fromEntries(
+          Object.entries(data).filter(([, v]) => v !== undefined),
+        );
+        // tipo vem do form (default 'pf' no dialog). Antes era hardcoded — agora
+        // CRM suporta PJ no funil, então o form decide.
+        const ref = await addDoc(collection(db, 'clients'), { ...createPayload, businessId: business.id, tipo: (data.tipo ?? 'pf'), score: data.score ?? 0, status: data.status ?? 'novo', source: data.source ?? 'outro', createdAt: now, updatedAt: now });
         toast.success(t('crm.toast.contactCreated', 'Contato criado!'));
         void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'contact_created', contactId: ref.id, details: data.name });
       }
       queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
       setContactDialogOpen(false); setEditingContact(null);
     } catch (err) { console.error('[CRM] Error saving contact:', err); toast.error(t('crm.toast.errorSaveContact', 'Erro ao salvar contato')); }
-  }, [business?.id, user, editingContact, queryClient]);
+  }, [business?.id, user, editingContact, queryClient, t]);
 
   const handleDeleteContact = useCallback(async () => {
     if (!deleteContactConfirm || !business?.id || !user) return;
     try {
-      // Cascade via state local (deals/activities já carregados via onSnapshot
-      // single-field). Antes usava getDocs com (businessId, contactId) que
-      // exigia composite index — desnecessário, podemos filtrar in-memory.
+      // Deals/Activities são CRM-internos e não têm referências em outros módulos —
+      // hard delete OK pra eles. Mas o contato em `clients` é referenciado por
+      // conversations, sales, transactions, appointments, kanbanCards. Hard delete
+      // deixava órfãos; agora soft delete espelhando ClientsModule (linha ~1113).
       const dealsToDelete = deals.filter(d => d.contactId === deleteContactConfirm.id);
       for (const d of dealsToDelete) await deleteDoc(doc(db, 'crmDeals', d.id));
       const activitiesToDelete = activities.filter(a => a.contactId === deleteContactConfirm.id);
       for (const a of activitiesToDelete) await deleteDoc(doc(db, 'crmActivities', a.id));
-      // Delete the contact itself
       void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'contact_deleted', contactId: deleteContactConfirm.id, details: deleteContactConfirm.name });
-      await deleteDoc(doc(db, 'clients', deleteContactConfirm.id));
+      const now = new Date().toISOString();
+      await updateDoc(doc(db, 'clients', deleteContactConfirm.id), {
+        isActive: false,
+        deletedAt: now,
+        deletedBy: user.uid,
+        deletedByName: user.name || '',
+        updatedAt: now,
+      });
       toast.success(t('crm.toast.contactDeleted', 'Contato excluído'));
       queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
       queryClient.invalidateQueries({ queryKey: ['crmDeals', business.id] });
@@ -3825,6 +3908,14 @@ export default function CRMModule() {
                     displayEmpty sx={{ borderRadius: '12px', fontSize: '0.875rem', height: 42, bgcolor: isDark ? 'rgba(255,255,255,0.04)' : '#F9FAFB' }}>
                     <MenuItem value="all"><span className="text-gray-400">{t('crm.filter.source', 'Origem')}</span></MenuItem>
                     {ALL_SOURCES.map((s) => <MenuItem key={s} value={s}>{t('crm.source.' + s, SOURCE_LABELS[s])}</MenuItem>)}
+                  </Select>
+                </FormControl>
+                <FormControl size="small" sx={{ minWidth: 100 }} className="hidden sm:block">
+                  <Select value={filterTipo} onChange={(e) => setFilterTipo(e.target.value as typeof filterTipo)}
+                    displayEmpty sx={{ borderRadius: '12px', fontSize: '0.875rem', height: 42, bgcolor: isDark ? 'rgba(255,255,255,0.04)' : '#F9FAFB' }}>
+                    <MenuItem value="all"><span className="text-gray-400">Tipo</span></MenuItem>
+                    <MenuItem value="pf">Pessoa Física</MenuItem>
+                    <MenuItem value="pj">Pessoa Jurídica</MenuItem>
                   </Select>
                 </FormControl>
               </>
@@ -3976,7 +4067,7 @@ export default function CRMModule() {
                 selectedContactId={selectedContact?.id || null}
                 onStatusChange={handleStatusChange}
                 onNewContact={() => { setEditingContact(null); setContactDialogOpen(true); }}
-                searchQuery={searchQuery} filterTags={filterTags} filterSource={filterSource} />
+                searchQuery={searchQuery} filterTags={filterTags} filterSource={filterSource} filterTipo={filterTipo} />
             )}
 
             {activeTab === 'kanban' && pipelineView === 'table' && (
@@ -3986,6 +4077,7 @@ export default function CRMModule() {
                 searchQuery={searchQuery}
                 filterTags={filterTags}
                 filterSource={filterSource}
+                filterTipo={filterTipo}
                 onSelectContact={(c) => { setSelectedContact(c); setDetailOpen(true); }}
                 selectedContactId={selectedContact?.id || null}
               />

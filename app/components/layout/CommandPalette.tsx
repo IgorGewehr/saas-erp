@@ -10,6 +10,7 @@ import {
   ArrowRight, Loader2, Contact, Tag,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { isActiveClient } from '@/lib/utils/clientFilters';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useTabContext } from '@/app/components/layout/TabContext';
 import { collection, query, where, getDocs, limit } from 'firebase/firestore';
@@ -158,6 +159,8 @@ async function searchFirestore(term: string, businessId: string): Promise<Firest
   for (const d of clientSnap.docs) {
     if (results.filter(r=>r.type==='client').length >= 5) break;
     const v = d.data();
+    // Pula soft-deleted/merged — não devem aparecer no command palette de busca rápida.
+    if (!isActiveClient(v)) continue;
     if (normalize(v.name||'').includes(norm) || normalize(v.cpfCnpj||'').includes(norm) || (v.phone||'').includes(term)) {
       results.push({ id: d.id, type: 'client', label: v.name, sublabel: v.cpfCnpj || v.phone, page: 'Clientes' });
     }

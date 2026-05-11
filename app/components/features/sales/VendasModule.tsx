@@ -17,6 +17,7 @@ import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useMutation } from '@tanstack/react-query';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
+import { isActiveClient } from '@/lib/utils/clientFilters';
 import type {
   Order, OrderStatus, OrderType, OrderItem, Client, Product,
   Payment, PaymentMethod,
@@ -594,6 +595,7 @@ export default function VendasModule() {
     const unsub = onSnapshot(q, (snap) => {
       const list = snap.docs
         .map(d => ({ ...d.data(), id: d.id } as Client))
+        .filter(isActiveClient)
         .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
       setClients(list);
     }, (err) => console.error('[Vendas] clients snapshot error:', err));

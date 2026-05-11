@@ -106,6 +106,7 @@ import { toast } from 'react-toastify';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
+import { isActiveClient } from '@/lib/utils/clientFilters';
 import {
   ModernDialog, ModernDialogActions, ModernCancelButton, ModernPrimaryButton,
   ModernSection, ModernPill,
@@ -551,7 +552,7 @@ function FinancialModuleBody() {
         where('businessId', '==', business.id)
       );
       const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as CRMContact));
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as CRMContact)).filter(isActiveClient);
     },
     enabled: !!business?.id && isEnterprise,
     staleTime: 5 * 60 * 1000,

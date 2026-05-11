@@ -8,6 +8,7 @@ import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { cn } from '@/lib/utils';
 import { formatCurrency } from '@/lib/utils/format';
+import { isActiveClient } from '@/lib/utils/clientFilters';
 import {
   BarChart3,
   Calendar,
@@ -914,7 +915,7 @@ export default function ReportsModule() {
     queryFn: async () => {
       if (!businessId) return [];
       const q = query(collection(db, 'clients'), where('businessId', '==', businessId), orderBy('createdAt', 'desc'));
-      return (await getDocs(q)).docs.map(d => ({ ...d.data(), id: d.id } as Client));
+      return (await getDocs(q)).docs.map(d => ({ ...d.data(), id: d.id } as Client)).filter(isActiveClient);
     },
     enabled: !!businessId,
     staleTime: 5 * 60 * 1000,
