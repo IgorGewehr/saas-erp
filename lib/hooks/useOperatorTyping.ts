@@ -95,13 +95,25 @@ export function useOperatorTyping(conversationId: string | undefined, businessId
   }, []);
 
   // Filtra: apenas docs recentes E que não sejam do próprio user atual.
+  // Bail-out se o resultado é equivalente ao anterior — sem isso, o setState
+  // dispara render do parent a cada tick (1Hz) mesmo quando nada mudou. Em
+  // ConversasModule (componente grande), 1 re-render/s desnecessário causa
+  // jank perceptível em lista grande de mensagens.
   useEffect(() => {
     const cutoff = Date.now() - TYPING_TTL_MS;
     const others = rawTypersRef.current
       .filter(t => t.updatedAtMs > cutoff)
       .filter(t => t.userId !== user?.uid)
       .map(t => ({ userId: t.userId, userName: t.userName }));
-    setTypingOthers(others);
+    setTypingOthers(prev => {
+      if (prev.length !== others.length) return others;
+      for (let i = 0; i < prev.length; i++) {
+        if (prev[i].userId !== others[i].userId || prev[i].userName !== others[i].userName) {
+          return others;
+        }
+      }
+      return prev; // identical — preserva referência, React skipa re-render
+    });
   }, [tick, user?.uid]);
 
   // ── Heartbeat outbound: escreve no SEU próprio doc ───────────────────────

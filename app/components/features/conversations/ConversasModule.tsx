@@ -6649,12 +6649,23 @@ export default function ConversasModule() {
   // canal, ver "Fulano está digitando..." evita resposta duplicada.
   const { typingOthers, sendHeartbeat: sendOperatorTypingHeartbeat, stopTyping: stopOperatorTyping }
     = useOperatorTyping(selectedConversation?.id, business?.id);
-  // onTyping do Composer dispara AMBOS — debounced externamente (3s) e
-  // heartbeat interno (cooldown 3s próprio).
+
+  // Cross-operator gate pro heartbeat: quando admin/colega abre conversa de
+  // canal pessoal de OUTRO operador, o Composer fica em modo read-only mas o
+  // hook ainda dispararia typing — o operador dono veria "Admin digitando…"
+  // sem que ninguém esteja respondendo de fato. Suprime o heartbeat nesse caso.
+  const isViewingCrossOperator = useMemo(() => {
+    if (!selectedConversation?.channelConnectionId) return false;
+    const conn = connectionsById.get(selectedConversation.channelConnectionId);
+    return !!(conn && conn.ownerType === 'user' && conn.ownerId && conn.ownerId !== user?.uid);
+  }, [selectedConversation?.channelConnectionId, connectionsById, user?.uid]);
+
+  // onTyping do Composer dispara o heartbeat externo (cliente via Meta) e,
+  // se NÃO está em modo cross-operator, também o interno (entre operadores).
   const handleComposerTyping = useCallback(() => {
     sendTypingIndicator();
-    sendOperatorTypingHeartbeat();
-  }, [sendTypingIndicator, sendOperatorTypingHeartbeat]);
+    if (!isViewingCrossOperator) sendOperatorTypingHeartbeat();
+  }, [sendTypingIndicator, sendOperatorTypingHeartbeat, isViewingCrossOperator]);
 
   // ── File attachment handling (Task 1) ──────────────────────────────────────
 

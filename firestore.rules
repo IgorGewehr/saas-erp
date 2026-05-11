@@ -630,6 +630,18 @@ service cloud.firestore {
                     && isAdmin();
     }
 
+    // Helper compartilhado entre subcollections de conversation (typing,
+    // conversationMessages). As mensagens herdam o isolamento da parent: o
+    // usuário só pode ler/escrever em conversas que ele já tem permissão de
+    // ver. Custo: 1 get() de parent por avaliação (cacheado por request).
+    // Declarada AQUI (antes do primeiro uso) porque Firestore rules NÃO
+    // hoist-eia funções dentro do mesmo match block.
+    function parentConversationAccessible(conversationId) {
+      let convData = get(/databases/$(database)/documents/conversations/$(conversationId)).data;
+      return convData.businessId == userBusinessId()
+          && canAccessConversationData(convData);
+    }
+
     // ============================================
     // CONVERSATION TYPING SUBCOLLECTION (intra-operador)
     // ============================================
@@ -637,12 +649,15 @@ service cloud.firestore {
     // o mesmo canal. Cada operador escreve no SEU próprio doc (id=uid), evitando
     // race entre múltiplos digitando ao mesmo tempo.
     //   - read:   qualquer operator+ do mesmo business que enxerga a conversation
-    //             pode ver todos os typers (não há info sensível — só nome).
-    //   - create/update/delete: só o próprio user (auth.uid === doc id) pode
-    //             tocar no PRÓPRIO doc. Operador A não pode forjar "B digitando".
+    //             pode ver todos os typers. isOwnBusiness() NÃO é usado aqui
+    //             pra evitar que docs órfãos sem businessId quebrem o listener
+    //             inteiro — parentConversationAccessible já garante o tenant.
+    //   - create/update: só o próprio user (auth.uid === doc id) pode tocar
+    //                    no PRÓPRIO doc. Operador A não pode forjar "B digitando".
+    //   - delete: idem + checa parent pra que uid X não consiga apagar typing
+    //             X em conversa de OUTRO business.
     match /conversations/{conversationId}/typing/{userId} {
       allow read: if isAuthenticated()
-                  && isOwnBusiness()
                   && isOperator()
                   && parentConversationAccessible(conversationId);
 
@@ -653,21 +668,13 @@ service cloud.firestore {
                             && parentConversationAccessible(conversationId);
 
       allow delete: if isAuthenticated()
-                    && request.auth.uid == userId;
+                    && request.auth.uid == userId
+                    && parentConversationAccessible(conversationId);
     }
 
     // ============================================
     // CONVERSATION MESSAGES COLLECTION
     // ============================================
-    // As mensagens herdam o isolamento da parent conversation: o usuário só
-    // pode ler/escrever mensagens de conversas que ele já tem permissão de
-    // ver. Custo: 1 get() de parent por mensagem avaliada (cacheado por
-    // request — irrelevante pra read único, mensurável em listagens grandes).
-    function parentConversationAccessible(conversationId) {
-      let convData = get(/databases/$(database)/documents/conversations/$(conversationId)).data;
-      return convData.businessId == userBusinessId()
-          && canAccessConversationData(convData);
-    }
 
     match /conversationMessages/{messageId} {
       allow read: if isAuthenticated()
