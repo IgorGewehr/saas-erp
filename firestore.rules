@@ -1490,6 +1490,16 @@ service cloud.firestore {
     }
 
     // ============================================
+    // PROJECTS — vínculo opcional para transações
+    // ============================================
+    match /projects/{projectId} {
+      allow read: if isAuthenticated() && isOwnBusiness() && isOperator();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isManager();
+      allow update: if isAuthenticated() && isOwnBusiness() && isManager() && incomingBelongsToBusiness();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isManager();
+    }
+
+    // ============================================
     // CATCH-ALL: Deny everything else
     // ============================================
     match /{document=**} {

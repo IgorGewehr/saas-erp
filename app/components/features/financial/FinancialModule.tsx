@@ -48,7 +48,6 @@ import {
   EyeOff,
   Layers,
   MessageSquare,
-  Target,
   Users,
   Crown,
   FileSpreadsheet,
@@ -77,6 +76,8 @@ import {
   Percent,
   Check,
   LayoutList,
+  Briefcase,
+  Tag,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -118,15 +119,10 @@ import RecurrenceDetailDialog from './RecurrenceDetailDialog';
 import {
   exportTransactionsCSV,
   exportTransactionsPDF,
-  exportDRECSV,
-  exportDREPDF,
   exportCashFlowCSV,
-  exportDRESectorCSV,
   exportCommissionsCSV,
   exportRecurrencesCSV,
-  type DREData,
   type CashFlowRow,
-  type SectorDRERow,
   type CommissionRow,
 } from '@/lib/utils/financial-export';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
@@ -143,12 +139,11 @@ import type {
   ConversationChannel,
   CRMContact,
   TransactionAttachment,
-  Budget,
-  DasRecord,
-  DasStatus,
-  SimplesAnexo,
+  Project,
+  ProjectStatus,
   FinancialNotificationSettings,
 } from '@/lib/types';
+import ProjetosTab from './ProjetosTab';
 
 // ==========================================
 // CONSTANTS
@@ -164,7 +159,7 @@ const PRESET_COLORS = [
   '#820AD1', '#FF7A00', '#1A1A2E', '#14532D', '#7C2D12',
 ];
 
-type FinancialTab = 'visao-geral' | 'lancamentos' | 'recorrentes' | 'contas' | 'fluxo' | 'dre' | 'orcamento' | 'das' | 'comissoes' | 'conciliacao' | 'auditoria';
+type FinancialTab = 'visao-geral' | 'lancamentos' | 'recorrentes' | 'contas' | 'projetos' | 'comissoes' | 'conciliacao' | 'auditoria';
 
 const inputSx = { '& .MuiOutlinedInput-root': { borderRadius: '12px' } };
 
@@ -272,15 +267,13 @@ function FinancialModuleBody() {
   const queryClient = useQueryClient();
   const [showSpreadsheetView, setShowSpreadsheetView] = useState(false);
 
+  const projectsEnabled = !!business?.settings?.projectsEnabled;
   const TABS: { key: FinancialTab; label: string; icon: React.ReactNode }[] = [
     { key: 'visao-geral', label: t('financial.tabs.overview', 'Visão Geral'), icon: <BarChart3 size={16} /> },
     { key: 'lancamentos', label: t('financial.tabs.transactions', 'Transações'), icon: <ArrowRightLeft size={16} /> },
     { key: 'recorrentes', label: 'Recorrentes', icon: <Repeat size={16} /> },
-    { key: 'fluxo',      label: t('financial.tabs.cashflow',  'Fluxo de Caixa'), icon: <TrendingUp size={16} /> },
-    { key: 'dre',        label: 'DRE', icon: <FileSpreadsheet size={16} /> },
-    { key: 'orcamento',  label: 'Orçamento', icon: <Target size={16} /> },
-    { key: 'das',        label: 'DAS / Simples', icon: <Receipt size={16} /> },
     { key: 'contas',     label: t('financial.tabs.accounts',  'Contas Bancárias'), icon: <Landmark size={16} /> },
+    ...(projectsEnabled ? [{ key: 'projetos' as FinancialTab, label: 'Projetos', icon: <Briefcase size={16} /> }] : []),
     { key: 'comissoes',  label: 'Comissões', icon: <Users size={16} /> },
     { key: 'conciliacao', label: t('financial.tabs.reconciliation', 'Conciliação'), icon: <Scale size={16} /> },
     { key: 'auditoria',  label: t('financial.tabs.audit',     'Auditoria'), icon: <History size={16} /> },
@@ -396,6 +389,8 @@ function FinancialModuleBody() {
 
   // Sector form (enterprise)
   const [formSectorId, setFormSectorId] = useState('');
+  // Project linkage (optional)
+  const [formProjectId, setFormProjectId] = useState('');
   const [formInstallments, setFormInstallments] = useState(1);
   const [formInstallmentInterval, setFormInstallmentInterval] = useState<'monthly' | 'weekly'>('monthly');
   const [formRecurrence, setFormRecurrence] = useState(false);
@@ -422,6 +417,7 @@ function FinancialModuleBody() {
   const [txPaymentMethod, setTxPaymentMethod] = useState('');
   const [txSectorId, setTxSectorId] = useState('');
   const [txClientName, setTxClientName] = useState('');
+  const [txProjectId, setTxProjectId] = useState('');
 
   const deferredTxSearch = useDeferredValue(txSearch);
   const deferredTxClientName = useDeferredValue(txClientName);
@@ -451,6 +447,7 @@ function FinancialModuleBody() {
       if (isStr(f.paymentMethod))setTxPaymentMethod(f.paymentMethod);
       if (isStr(f.sectorId))     setTxSectorId(f.sectorId);
       if (isStr(f.clientName))   setTxClientName(f.clientName);
+      if (isStr(f.projectId))    setTxProjectId(f.projectId);
     } catch { /* ignore malformed JSON */ }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -459,15 +456,15 @@ function FinancialModuleBody() {
     localStorage.setItem('financial_tx_filters', JSON.stringify({
       dateFrom: txDateFrom, dateTo: txDateTo, category: txCategory,
       bankAccount: txBankAccount, paymentMethod: txPaymentMethod,
-      sectorId: txSectorId, clientName: txClientName,
+      sectorId: txSectorId, clientName: txClientName, projectId: txProjectId,
     }));
     toast.success('Filtro salvo como favorito');
-  }, [txDateFrom, txDateTo, txCategory, txBankAccount, txPaymentMethod, txSectorId, txClientName]);
+  }, [txDateFrom, txDateTo, txCategory, txBankAccount, txPaymentMethod, txSectorId, txClientName, txProjectId]);
 
   const clearTxFilters = useCallback(() => {
     setTxSearch('');
     setTxDateFrom(''); setTxDateTo(''); setTxCategory('');
-    setTxBankAccount(''); setTxPaymentMethod(''); setTxSectorId(''); setTxClientName('');
+    setTxBankAccount(''); setTxPaymentMethod(''); setTxSectorId(''); setTxClientName(''); setTxProjectId('');
     localStorage.removeItem('financial_tx_filters');
   }, []);
 
@@ -526,6 +523,34 @@ function FinancialModuleBody() {
     enabled: !!business?.id,
     staleTime: 2 * 60 * 1000,
   });
+
+  // Projects — só ativos no listener; CRUD na ProjetosTab
+  const [projects, setProjects] = useState<Project[]>([]);
+  useEffect(() => {
+    if (!business?.id) { setProjects([]); return; }
+    const q = query(
+      collection(db, 'projects'),
+      where('businessId', '==', business.id),
+      orderBy('createdAt', 'desc'),
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      setProjects(snap.docs.map(d => ({ ...d.data(), id: d.id } as Project)));
+    });
+    return () => unsub();
+  }, [business?.id]);
+
+  const handleToggleProjects = useCallback(async (enabled: boolean) => {
+    if (!business?.id) return;
+    try {
+      await updateDoc(doc(db, 'businesses', business.id), {
+        'settings.projectsEnabled': enabled,
+        updatedAt: new Date().toISOString(),
+      });
+      toast.success(enabled ? 'Projetos ativados — aba criada' : 'Projetos desativados');
+    } catch {
+      toast.error('Não foi possível alterar o estado de Projetos');
+    }
+  }, [business?.id]);
 
   // ---- Enterprise Queries ----
   const { data: broadcasts = [] } = useTanstackQuery({
@@ -629,6 +654,7 @@ function FinancialModuleBody() {
     if (txBankAccount)    filtered = filtered.filter(t => t.bankAccountId === txBankAccount);
     if (txPaymentMethod)  filtered = filtered.filter(t => t.paymentMethod === txPaymentMethod);
     if (txSectorId)       filtered = filtered.filter(t => t.sectorId === txSectorId);
+    if (txProjectId)      filtered = filtered.filter(t => t.projectId === txProjectId);
     if (deferredTxClientName) {
       const cq = deferredTxClientName.toLowerCase();
       filtered = filtered.filter(t => (t.clientName || '').toLowerCase().includes(cq));
@@ -642,7 +668,7 @@ function FinancialModuleBody() {
       return 0;
     });
     return filtered;
-  }, [transactions, txFilterTab, deferredTxSearch, txDateFrom, txDateTo, txCategory, txBankAccount, txPaymentMethod, txSectorId, deferredTxClientName, txSortField, txSortDir]);
+  }, [transactions, txFilterTab, deferredTxSearch, txDateFrom, txDateTo, txCategory, txBankAccount, txPaymentMethod, txSectorId, txProjectId, deferredTxClientName, txSortField, txSortDir]);
 
   // Monthly data for charts — 2 months back + current + 3 months forward
   const monthlyData = useMemo(() => {
@@ -949,6 +975,7 @@ function FinancialModuleBody() {
     setFormBankAccount('');
     setFormStatus('pendente');
     setFormSectorId('');
+    setFormProjectId('');
     setFormInstallments(1);
     setFormInstallmentInterval('monthly');
     setFormRecurrence(false);
@@ -999,6 +1026,7 @@ function FinancialModuleBody() {
     setFormBankAccount(tx.bankAccountId || '');
     setFormStatus(tx.status);
     setFormSectorId(tx.sectorId || '');
+    setFormProjectId(tx.projectId || '');
     setFormRecurrence(!!tx.recurrence?.isActive);
     setFormRecurrenceFrequency(tx.recurrence?.frequency || 'monthly');
     setFormRecurrenceEndDate(tx.recurrence?.endDate || '');
@@ -1074,6 +1102,8 @@ function FinancialModuleBody() {
         clientName: formClientName || null,
         bankAccountId: formBankAccount || null,
         sectorId: formSectorId || null,
+        projectId: formProjectId || null,
+        projectName: formProjectId ? (projects.find(p => p.id === formProjectId)?.name ?? null) : null,
         attachments: finalAttachments,
         updatedByName: user.name,
         updatedBy: user.uid,
@@ -1210,7 +1240,7 @@ function FinancialModuleBody() {
     } finally {
       setIsSaving(false);
     }
-  }, [business?.id, user, formType, formDescription, formCategory, formAmount, formDueDate, formPaymentDate, formPaymentMethod, formNotes, formClientName, formBankAccount, formStatus, formSectorId, formInstallments, formInstallmentInterval, formRecurrence, formRecurrenceFrequency, formRecurrenceEndDate, formRecurrenceDay, formRecurrenceSecondDay, formRecurrenceLabel, formRecurrenceHolidayAdjust, formRecurrenceLateFeePct, formRecurrenceInterestPct, formAttachments, formFilesToUpload, formAttachmentsToDelete, editingTransaction, queryClient, t]);
+  }, [business?.id, user, formType, formDescription, formCategory, formAmount, formDueDate, formPaymentDate, formPaymentMethod, formNotes, formClientName, formBankAccount, formStatus, formSectorId, formProjectId, projects, formInstallments, formInstallmentInterval, formRecurrence, formRecurrenceFrequency, formRecurrenceEndDate, formRecurrenceDay, formRecurrenceSecondDay, formRecurrenceLabel, formRecurrenceHolidayAdjust, formRecurrenceLateFeePct, formRecurrenceInterestPct, formAttachments, formFilesToUpload, formAttachmentsToDelete, editingTransaction, queryClient, t]);
 
   const handleDeleteTransaction = useCallback(async (id: string) => {
     if (!business?.id || !user) return;
@@ -1545,8 +1575,9 @@ function FinancialModuleBody() {
                 crmContacts={crmContacts}
                 onGoToRecurrences={() => setActiveTab('recorrentes')}
                 onMarkPaid={handleMarkAsPaid}
-                onGoToDAS={() => setActiveTab('das')}
                 businessId={business?.id || ''}
+                projectsEnabled={projectsEnabled}
+                onToggleProjects={handleToggleProjects}
               />
             )}
 
@@ -1554,6 +1585,8 @@ function FinancialModuleBody() {
               <TransactionsContent
                 transactions={filteredTransactions}
                 allTransactions={transactions}
+                bankAccounts={bankAccounts}
+                projects={projects}
                 filterTab={txFilterTab}
                 onFilterChange={setTxFilterTab}
                 search={txSearch}
@@ -1584,11 +1617,12 @@ function FinancialModuleBody() {
                 paymentMethod={txPaymentMethod} onPaymentMethodChange={setTxPaymentMethod}
                 sectorId={txSectorId}   onSectorIdChange={setTxSectorId}
                 clientName={txClientName} onClientNameChange={setTxClientName}
+                projectId={txProjectId} onProjectIdChange={setTxProjectId}
                 availableCategories={txAvailableCategories}
-                bankAccounts={bankAccounts}
                 onSaveFilters={saveTxFilters}
                 onClearFilters={clearTxFilters}
                 onOpenSpreadsheet={() => setShowSpreadsheetView(true)}
+                businessName={business?.razaoSocial ?? ''}
               />
             )}
 
@@ -1620,12 +1654,14 @@ function FinancialModuleBody() {
               />
             )}
 
-            {activeTab === 'fluxo' && (
-              <CashFlowProjection transactions={transactions} bankAccounts={bankAccounts} businessName={business?.razaoSocial ?? ''} />
-            )}
-
-            {activeTab === 'dre' && (
-              <DREContent transactions={transactions} businessName={business?.razaoSocial || business?.nomeFantasia || 'Empresa'} />
+            {activeTab === 'projetos' && projectsEnabled && (
+              <ProjetosTab
+                businessId={business?.id || ''}
+                userId={user?.uid || ''}
+                userName={user?.name || user?.email || ''}
+                projects={projects}
+                transactions={transactions}
+              />
             )}
 
             {activeTab === 'auditoria' && (
@@ -1638,20 +1674,6 @@ function FinancialModuleBody() {
                 onMarkPaid={handleMarkAsPaid}
                 showBalances={showBalances}
                 businessName={business?.razaoSocial ?? ''}
-              />
-            )}
-
-            {activeTab === 'orcamento' && (
-              <BudgetContent
-                transactions={transactions}
-                businessId={business?.id || ''}
-              />
-            )}
-
-            {activeTab === 'das' && (
-              <DASContent
-                transactions={transactions}
-                businessId={business?.id || ''}
               />
             )}
 
@@ -1837,6 +1859,23 @@ function FinancialModuleBody() {
                       <div className="flex items-center gap-2">
                         <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: s.color }} />
                         {s.name}
+                      </div>
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            )}
+
+            {projects.filter(p => p.status !== 'encerrado').length > 0 && (
+              <FormControl fullWidth size="small">
+                <InputLabel>Projeto (opcional)</InputLabel>
+                <Select value={formProjectId} onChange={(e) => setFormProjectId(e.target.value)} label="Projeto (opcional)" sx={{ borderRadius: '12px' }}>
+                  <MenuItem value=""><em>Nenhum</em></MenuItem>
+                  {projects.filter(p => p.status !== 'encerrado').map((p) => (
+                    <MenuItem key={p.id} value={p.id}>
+                      <div className="flex items-center gap-2">
+                        <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: p.color }} />
+                        {p.name}
                       </div>
                     </MenuItem>
                   ))}
@@ -2485,6 +2524,51 @@ function FinancialModuleBody() {
 
 type DashboardPeriod = '30d' | '3m' | '6m' | '12m' | 'month';
 
+function ProjectsToggleCard({ enabled, onToggle }: { enabled: boolean; onToggle: (v: boolean) => Promise<void> | void }) {
+  const [busy, setBusy] = useState(false);
+  const handleClick = async () => {
+    if (busy) return;
+    setBusy(true);
+    try { await onToggle(!enabled); } finally { setBusy(false); }
+  };
+  return (
+    <div className={cn(
+      'rounded-2xl border p-4 flex items-center gap-4',
+      enabled
+        ? 'bg-gradient-to-br from-violet-50 to-fuchsia-50 dark:from-violet-500/10 dark:to-fuchsia-500/10 border-violet-200 dark:border-violet-500/30'
+        : 'bg-white dark:bg-gray-900 border-slate-200 dark:border-gray-800'
+    )}>
+      <div className={cn(
+        'w-10 h-10 rounded-xl flex items-center justify-center shrink-0',
+        enabled ? 'bg-violet-600 text-white' : 'bg-slate-100 dark:bg-gray-800 text-slate-500 dark:text-gray-400'
+      )}>
+        <Briefcase size={18} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-semibold text-slate-900 dark:text-gray-100">Projetos</p>
+        <p className="text-xs text-slate-500 dark:text-gray-400 mt-0.5">
+          {enabled
+            ? 'Ative para registrar receitas e despesas por SaaS / produto e comparar performance.'
+            : 'Software house com múltiplos SaaS? Ative para separar caixa por projeto.'}
+        </p>
+      </div>
+      <button
+        onClick={handleClick}
+        disabled={busy}
+        className={cn(
+          'shrink-0 px-4 py-2 rounded-xl text-xs font-semibold transition-all',
+          enabled
+            ? 'bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 text-slate-700 dark:text-gray-300 hover:bg-slate-50'
+            : 'bg-violet-600 hover:bg-violet-700 text-white shadow-sm',
+          busy && 'opacity-50 cursor-wait',
+        )}
+      >
+        {busy ? '...' : (enabled ? 'Desativar' : 'Ativar')}
+      </button>
+    </div>
+  );
+}
+
 function OverviewContent({
   metrics,
   showBalances,
@@ -2500,8 +2584,9 @@ function OverviewContent({
   crmContacts,
   onGoToRecurrences,
   onMarkPaid,
-  onGoToDAS,
   businessId: overviewBusinessId,
+  projectsEnabled,
+  onToggleProjects,
 }: {
   metrics: { receitas: number; despesas: number; lucro: number; aReceber: number; aPagar: number; totalContas: number };
   showBalances: boolean;
@@ -2517,8 +2602,9 @@ function OverviewContent({
   crmContacts: CRMContact[];
   onGoToRecurrences?: () => void;
   onMarkPaid: (id: string) => void;
-  onGoToDAS: () => void;
   businessId: string;
+  projectsEnabled: boolean;
+  onToggleProjects: (enabled: boolean) => Promise<void> | void;
 }) {
   const formatCurrency = useCurrencyFormat();
   const { t } = useTranslation();
@@ -2749,8 +2835,8 @@ function OverviewContent({
         </div>
       )}
 
-      {/* DAS Widget */}
-      <DASWidget businessId={overviewBusinessId} onGoToDAS={onGoToDAS} />
+      {/* Toggle: Projetos */}
+      <ProjectsToggleCard enabled={projectsEnabled} onToggle={onToggleProjects} />
 
       {/* Period selector */}
       <div className="flex items-center gap-2 flex-wrap">
@@ -3506,7 +3592,7 @@ function EnterpriseFinancialCards({
           <div className="px-6 py-4 border-b border-slate-100 dark:border-gray-800">
             <div className="flex items-center gap-2">
               <div className="w-8 h-8 rounded-lg bg-emerald-50 dark:bg-emerald-500/10 flex items-center justify-center">
-                <Target size={16} className="text-emerald-600 dark:text-emerald-400" />
+                <TrendingUp size={16} className="text-emerald-600 dark:text-emerald-400" />
               </div>
               <div>
                 <h3 className="text-sm font-display font-bold text-slate-900 dark:text-gray-100">{t('financial.enterprise.campaignROI', 'ROI de Campanhas')}</h3>
@@ -3609,352 +3695,6 @@ function EnterpriseFinancialCards({
 // TAB: TRANSACOES
 // ==========================================
 
-// ==========================================
-// CASH FLOW PROJECTION (30/60/90 day)
-// ==========================================
-
-function CashFlowProjection({
-  transactions,
-  bankAccounts,
-  businessName,
-}: {
-  transactions: Transaction[];
-  bankAccounts: BankAccount[];
-  businessName: string;
-}) {
-  const formatCurrency = useCurrencyFormat();
-  const { isDark } = useTheme();
-  const [viewMode, setViewMode]   = useState<'daily' | 'weekly'>('weekly');
-  const [horizon,  setHorizon]    = useState<30 | 60 | 90>(30);
-  const [scenario, setScenario]   = useState<'otimista' | 'conservador'>('otimista');
-
-  // Starting balance from active bank accounts
-  const startingBalance = useMemo(
-    () => bankAccounts.filter(a => a.isActive).reduce((s, a) => s + a.balance, 0),
-    [bankAccounts],
-  );
-
-  // ── Helper: advance a date by one recurrence period ─────────────────────────
-  function advanceRecurrence(dateStr: string, frequency: string, dayOfMonth?: number, secondDayOfMonth?: number, holidayAdjust?: 'none' | 'before' | 'after'): string {
-    const d = new Date(dateStr + 'T00:00:00');
-    const day = dayOfMonth ? Math.min(dayOfMonth, 28) : undefined;
-    switch (frequency) {
-      case 'weekly':     d.setDate(d.getDate() + 7); break;
-      case 'biweekly':   d.setDate(d.getDate() + 14); break;
-      case 'monthly':    d.setMonth(d.getMonth() + 1);    if (day) d.setDate(day); break;
-      case 'quarterly':  d.setMonth(d.getMonth() + 3);    if (day) d.setDate(day); break;
-      case 'semiannual': d.setMonth(d.getMonth() + 6);    if (day) d.setDate(day); break;
-      case 'yearly':     d.setFullYear(d.getFullYear() + 1); if (day) d.setDate(day); break;
-      case 'biweekly_fixed': {
-        const d1 = day ?? 1;
-        const d2 = secondDayOfMonth ? Math.min(secondDayOfMonth, 28) : 15;
-        const first = Math.min(d1, d2);
-        const second = Math.max(d1, d2);
-        const cur = d.getDate();
-        if (cur < first)       { d.setDate(first); }
-        else if (cur < second) { d.setDate(second); }
-        else                   { d.setMonth(d.getMonth() + 1); d.setDate(first); }
-        break;
-      }
-    }
-    return adjustForBusinessDay(d.toISOString().slice(0, 10), holidayAdjust);
-  }
-
-  // ── 13-week rolling projection ───────────────────────────────────────────────
-  const weeklyProjection = useMemo(() => {
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    const todayStr  = today.toISOString().slice(0, 10);
-    const maxDate   = new Date(today); maxDate.setDate(today.getDate() + 91);
-    const maxDateStr = maxDate.toISOString().slice(0, 10);
-
-    // Build 13 weekly buckets
-    const weeks = Array.from({ length: 13 }, (_, i) => {
-      const start = new Date(today); start.setDate(today.getDate() + i * 7);
-      const end   = new Date(today); end.setDate(today.getDate() + i * 7 + 6);
-      const label = `S${i + 1} (${start.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })})`;
-      return {
-        name: label,
-        startStr: start.toISOString().slice(0, 10),
-        endStr:   end.toISOString().slice(0, 10),
-        receitas: 0, despesas: 0,
-      };
-    });
-
-    const weekOf = (dateStr: string): number => {
-      const ms = new Date(dateStr + 'T00:00:00').getTime() - today.getTime();
-      return Math.floor(ms / (7 * 86400000));
-    };
-
-    // 1. Regular pending/overdue transactions
-    for (const tx of transactions) {
-      if (tx.status === 'cancelado' || tx.status === 'pago') continue;
-      if (scenario === 'conservador' && tx.status === 'atrasado') continue;
-      const dateStr = tx.dueDate;
-      if (!dateStr || dateStr < todayStr || dateStr > maxDateStr) continue;
-      const w = weekOf(dateStr);
-      if (w >= 0 && w < 13) {
-        if (tx.type === 'receita') weeks[w].receitas += tx.amount;
-        else weeks[w].despesas += tx.amount;
-      }
-    }
-
-    // 2. Recurring transactions — project forward within horizon
-    for (const tx of transactions.filter(t => t.recurrence?.isActive && t.recurrence.nextDueDate)) {
-      const freq = tx.recurrence!.frequency;
-      const dom  = tx.recurrence!.dayOfMonth;
-      let next = tx.recurrence!.nextDueDate!;
-      let guard = 0;
-      while (next <= maxDateStr && guard++ < 52) {
-        if (next >= todayStr) {
-          const w = weekOf(next);
-          if (w >= 0 && w < 13) {
-            if (tx.type === 'receita') weeks[w].receitas += tx.amount;
-            else weeks[w].despesas += tx.amount;
-          }
-        }
-        next = advanceRecurrence(next, freq, dom, tx.recurrence!.secondDayOfMonth, tx.recurrence!.holidayAdjust);
-      }
-    }
-
-    // 3. Compute running balance starting from bank accounts
-    let running = startingBalance;
-    const data = weeks.map(w => {
-      running += w.receitas - w.despesas;
-      return {
-        name:     w.name,
-        date:     w.startStr,
-        receitas: w.receitas,
-        despesas: w.despesas,
-        saldo:    w.receitas - w.despesas,
-        acumulado: running,
-      };
-    });
-
-    return {
-      data,
-      totals: {
-        receitas: data.reduce((s, d) => s + d.receitas, 0),
-        despesas: data.reduce((s, d) => s + d.despesas, 0),
-        finalBalance: running,
-      },
-    };
-  }, [transactions, startingBalance, scenario]);
-
-  // ── Daily projection ───────────────────────────────────────────────────────
-  // Mesma estratégia de duas etapas do weeklyProjection:
-  //   1. Transações individuais pendentes/atrasadas com dueDate dentro do horizonte
-  //   2. Recorrências ativas — projeta as próximas ocorrências dentro do horizonte
-  // Antes só fazia a etapa 1 — recorrências ficavam invisíveis no Diário a menos
-  // que o `nextDueDate` atual estivesse no intervalo, e mesmo assim só a 1ª
-  // ocorrência aparecia. Com horizonte de 90d e despesas mensais, deveriam
-  // aparecer 2-3 ocorrências por recorrência.
-  const dailyProjection = useMemo(() => {
-    const today    = new Date(); today.setHours(0, 0, 0, 0);
-    const todayStr = today.toISOString().slice(0, 10);
-    const cutoff   = new Date(today); cutoff.setDate(today.getDate() + horizon);
-    const cutoffStr = cutoff.toISOString().slice(0, 10);
-
-    const byDate = new Map<string, { receitas: number; despesas: number }>();
-    const addToBucket = (dateStr: string, type: 'receita' | 'despesa', amount: number) => {
-      const bucket = byDate.get(dateStr) || { receitas: 0, despesas: 0 };
-      if (type === 'receita') bucket.receitas += amount;
-      else bucket.despesas += amount;
-      byDate.set(dateStr, bucket);
-    };
-
-    // 1. Transações individuais (NÃO-recorrentes) pendentes/atrasadas dentro
-    //    do horizonte. Recorrências vão pra etapa 2 — sem isso há ambiguidade
-    //    porque tx.dueDate de uma recorrência pode estar dessincronizado com
-    //    tx.recurrence.nextDueDate (após um pagamento, o dueDate fica no
-    //    passado e o nextDueDate avança), causando ocorrências invisíveis ou
-    //    duplicadas.
-    for (const tx of transactions) {
-      if (tx.status === 'cancelado' || tx.status === 'pago') continue;
-      if (tx.recurrence?.isActive) continue; // recorrências vão pra etapa 2
-      const dateStr = tx.dueDate || tx.paymentDate;
-      if (!dateStr || dateStr < todayStr || dateStr > cutoffStr) continue;
-      addToBucket(dateStr, tx.type, tx.amount);
-    }
-
-    // 2. Recorrências ativas — projeta TODAS as ocorrências dentro do horizonte
-    //    a partir de `nextDueDate` (próxima a vencer). Guard de 100 iterações
-    //    cobre semanal por 90d (~13 ocorrências) com folga sem risco de loop
-    //    infinito por bug em advanceRecurrence.
-    for (const tx of transactions.filter(t => t.recurrence?.isActive && t.recurrence.nextDueDate)) {
-      const freq = tx.recurrence!.frequency;
-      const dom  = tx.recurrence!.dayOfMonth;
-      let next = tx.recurrence!.nextDueDate!;
-      let guard = 0;
-      while (next <= cutoffStr && guard++ < 100) {
-        if (next >= todayStr) {
-          addToBucket(next, tx.type, tx.amount);
-        }
-        next = advanceRecurrence(next, freq, dom, tx.recurrence!.secondDayOfMonth, tx.recurrence!.holidayAdjust);
-      }
-    }
-
-    let running = startingBalance;
-    const data = Array.from(byDate.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([date, b]) => {
-        running += b.receitas - b.despesas;
-        return { date, receitas: b.receitas, despesas: b.despesas, saldo: b.receitas - b.despesas, acumulado: running };
-      });
-
-    return {
-      data,
-      totals: {
-        receitas: data.reduce((s, d) => s + d.receitas, 0),
-        despesas: data.reduce((s, d) => s + d.despesas, 0),
-        finalBalance: running,
-      },
-    };
-  }, [transactions, horizon, startingBalance]);
-
-  const active = viewMode === 'weekly' ? weeklyProjection : dailyProjection;
-  const positiveEnd = active.totals.finalBalance >= 0;
-
-  return (
-    <div className="space-y-5">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
-          <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">Projeção de Fluxo de Caixa</h3>
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            {viewMode === 'weekly' ? `Rolling 13 semanas · ${scenario === 'otimista' ? 'inclui atrasados' : 'exclui atrasados'}` : `Próximos ${horizon} dias`}
-          </p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          {/* View mode toggle */}
-          <div className="flex items-center gap-1 p-1 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl">
-            {([['daily', 'Diário'], ['weekly', '13 Semanas']] as const).map(([mode, label]) => (
-              <button key={mode} onClick={() => setViewMode(mode)}
-                className={cn('px-3 py-1.5 rounded-lg text-xs font-medium transition-all',
-                  viewMode === mode ? 'bg-red-600 text-white shadow-sm' : 'text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800'
-                )}
-              >{label}</button>
-            ))}
-          </div>
-          {viewMode === 'daily' ? (
-            <div className="inline-flex bg-gray-100 dark:bg-gray-800/60 rounded-xl p-0.5">
-              {([30, 60, 90] as const).map(h => (
-                <button key={h} onClick={() => setHorizon(h)}
-                  className={cn('px-3 py-1.5 rounded-lg text-xs font-bold transition-colors',
-                    horizon === h ? 'bg-white dark:bg-gray-900 shadow-sm text-gray-900 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400'
-                  )}
-                >{h}d</button>
-              ))}
-            </div>
-          ) : (
-            <div className="flex items-center gap-1 p-1 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl">
-              {([['otimista', 'Otimista'], ['conservador', 'Conservador']] as const).map(([s, label]) => (
-                <button key={s} onClick={() => setScenario(s)}
-                  className={cn('px-3 py-1.5 rounded-lg text-xs font-medium transition-all',
-                    scenario === s ? (s === 'otimista' ? 'bg-emerald-600 text-white shadow-sm' : 'bg-amber-500 text-white shadow-sm') : 'text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800'
-                  )}
-                >{label}</button>
-              ))}
-            </div>
-          )}
-          <button
-            onClick={() => exportCashFlowCSV(
-              active.data.map(d => ({ date: d.date, receitas: d.receitas, despesas: d.despesas, saldo: d.saldo, acumulado: d.acumulado })),
-              viewMode === 'weekly' ? 13 : horizon,
-              businessName,
-              viewMode === 'weekly' ? 'semanas' : 'dias',
-            )}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
-          >
-            <Download size={13} /> CSV
-          </button>
-        </div>
-      </div>
-
-      {/* KPI cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {[
-          { label: 'Saldo Inicial', value: startingBalance, color: 'text-slate-700 dark:text-gray-200', bg: 'bg-white dark:bg-gray-900 border-slate-100 dark:border-gray-800' },
-          { label: 'Entradas Previstas', value: active.totals.receitas, color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/20' },
-          { label: 'Saídas Previstas', value: active.totals.despesas, color: 'text-red-600 dark:text-red-400', bg: 'bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/20' },
-          { label: 'Saldo Final Projetado', value: active.totals.finalBalance, color: positiveEnd ? 'text-blue-600 dark:text-blue-400' : 'text-orange-600 dark:text-orange-400', bg: positiveEnd ? 'bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-500/20' : 'bg-orange-50 dark:bg-orange-500/10 border-orange-200 dark:border-orange-500/20' },
-        ].map(k => (
-          <div key={k.label} className={`rounded-xl p-4 border ${k.bg}`}>
-            <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 dark:text-gray-500 mb-1">{k.label}</p>
-            <p className={`text-lg font-bold font-display ${k.color}`}>{formatCurrency(k.value)}</p>
-          </div>
-        ))}
-      </div>
-
-      {/* Negative balance warning */}
-      {!positiveEnd && (
-        <div className="flex items-center gap-3 px-4 py-3 bg-orange-50 dark:bg-orange-500/10 border border-orange-200 dark:border-orange-500/20 rounded-2xl">
-          <AlertTriangle size={16} className="text-orange-600 dark:text-orange-400 shrink-0" />
-          <p className="text-sm text-orange-800 dark:text-orange-200">
-            Projeção indica saldo negativo de <strong>{formatCurrency(Math.abs(active.totals.finalBalance))}</strong> ao final do período.
-          </p>
-        </div>
-      )}
-
-      {/* Chart */}
-      {active.data.length === 0 ? (
-        <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl p-12 text-center">
-          <TrendingUp className="w-10 h-10 text-gray-300 dark:text-gray-700 mx-auto mb-3" />
-          <p className="text-sm font-semibold text-gray-700 dark:text-gray-300">Nenhum lançamento previsto neste horizonte</p>
-          <p className="text-xs text-gray-500 mt-1">Transações pendentes com data de vencimento futura aparecem aqui</p>
-        </div>
-      ) : (
-        <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl p-5">
-          <ResponsiveContainer width="100%" height={320}>
-            <ComposedChart data={active.data} margin={{ top: 4, right: 16, left: 8, bottom: 4 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#1E293B' : '#F1F5F9'} vertical={false} />
-              <XAxis dataKey={viewMode === 'weekly' ? 'name' : 'date'} tick={{ fontSize: 10, fill: '#94A3B8' }} axisLine={false} tickLine={false} interval={viewMode === 'weekly' ? 1 : 'preserveStartEnd'} />
-              <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94A3B8', fontSize: 11 }} tickFormatter={v => `R$${(v / 1000).toFixed(0)}k`} width={56} />
-              <RechartsTooltip
-                formatter={(v: number, name: string) => [formatCurrency(v), name]}
-                contentStyle={{ background: isDark ? '#1e293b' : '#fff', border: isDark ? '1px solid #374151' : '1px solid #E2E8F0', borderRadius: 10, fontSize: 12 }}
-              />
-              <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
-              <Bar dataKey="receitas" fill="#10B981" name="Entradas" radius={[4, 4, 0, 0]} barSize={viewMode === 'weekly' ? 14 : 8} />
-              <Bar dataKey="despesas" fill="#EF4444" name="Saídas" radius={[4, 4, 0, 0]} barSize={viewMode === 'weekly' ? 14 : 8} />
-              <Line type="monotone" dataKey="acumulado" stroke="#3B82F6" name="Saldo projetado" strokeWidth={2.5} dot={{ r: 3, fill: '#3B82F6', strokeWidth: 2, stroke: '#fff' }} />
-            </ComposedChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {/* Weekly table (13 semanas mode only) */}
-      {viewMode === 'weekly' && active.data.length > 0 && (
-        <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl overflow-hidden shadow-sm">
-          <div className="px-5 py-3 border-b border-slate-100 dark:border-gray-800">
-            <span className="text-sm font-semibold text-slate-800 dark:text-gray-200">Detalhamento Semanal</span>
-          </div>
-          <div className="divide-y divide-slate-50 dark:divide-gray-800">
-            <div className="grid grid-cols-5 px-5 py-2 text-[10px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wide">
-              <div className="col-span-2">Semana</div>
-              <div className="text-right">Entradas</div>
-              <div className="text-right">Saídas</div>
-              <div className="text-right">Saldo Acum.</div>
-            </div>
-            {active.data.map((row, i) => (
-              <div key={i} className={cn('grid grid-cols-5 px-5 py-2.5 text-sm hover:bg-slate-50 dark:hover:bg-gray-800/40 transition-colors', row.acumulado < 0 && 'bg-red-50/30 dark:bg-red-500/5')}>
-                <div className="col-span-2 text-slate-700 dark:text-gray-300 font-medium">{('name' in row ? row.name : ('date' in row ? row.date : '')) as string}</div>
-                <div className="text-right text-emerald-600 dark:text-emerald-400 tabular-nums">{row.receitas > 0 ? `+${formatCurrency(row.receitas)}` : '—'}</div>
-                <div className="text-right text-red-600 dark:text-red-400 tabular-nums">{row.despesas > 0 ? `-${formatCurrency(row.despesas)}` : '—'}</div>
-                <div className={cn('text-right font-semibold tabular-nums', row.acumulado >= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-orange-600 dark:text-orange-400')}>
-                  {formatCurrency(row.acumulado)}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ==========================================
-// AUDIT LOG VIEW
-// ==========================================
 
 function AuditLogView({ businessId }: { businessId?: string }) {
   const formatCurrency = useCurrencyFormat();
@@ -4052,986 +3792,7 @@ function AuditLogView({ businessId }: { businessId?: string }) {
   );
 }
 
-// ==========================================
-// TAB: DAS / SIMPLES NACIONAL (3.3)
-// ==========================================
 
-// Tabelas Simples Nacional 2024 (Resolução CGSN nº 140/2018 atualizada)
-const SIMPLES_TABELAS: Record<SimplesAnexo, { limite: number; aliquota: number; deducao: number; faixa: string }[]> = {
-  I:   [ // Comércio
-    { faixa: '1ª', limite: 180000,   aliquota: 4.00,  deducao: 0 },
-    { faixa: '2ª', limite: 360000,   aliquota: 7.30,  deducao: 5940 },
-    { faixa: '3ª', limite: 720000,   aliquota: 9.50,  deducao: 13860 },
-    { faixa: '4ª', limite: 1800000,  aliquota: 10.70, deducao: 22500 },
-    { faixa: '5ª', limite: 3600000,  aliquota: 14.30, deducao: 87300 },
-    { faixa: '6ª', limite: 4800000,  aliquota: 19.00, deducao: 378000 },
-  ],
-  II:  [ // Indústria
-    { faixa: '1ª', limite: 180000,   aliquota: 4.50,  deducao: 0 },
-    { faixa: '2ª', limite: 360000,   aliquota: 7.80,  deducao: 5940 },
-    { faixa: '3ª', limite: 720000,   aliquota: 10.00, deducao: 13860 },
-    { faixa: '4ª', limite: 1800000,  aliquota: 11.20, deducao: 22500 },
-    { faixa: '5ª', limite: 3600000,  aliquota: 14.70, deducao: 85500 },
-    { faixa: '6ª', limite: 4800000,  aliquota: 30.00, deducao: 720000 },
-  ],
-  III: [ // Serviços (tecnologia, comunicação, corretagem)
-    { faixa: '1ª', limite: 180000,   aliquota: 6.00,  deducao: 0 },
-    { faixa: '2ª', limite: 360000,   aliquota: 11.20, deducao: 9360 },
-    { faixa: '3ª', limite: 720000,   aliquota: 13.50, deducao: 17640 },
-    { faixa: '4ª', limite: 1800000,  aliquota: 16.00, deducao: 35640 },
-    { faixa: '5ª', limite: 3600000,  aliquota: 21.00, deducao: 125640 },
-    { faixa: '6ª', limite: 4800000,  aliquota: 33.00, deducao: 648000 },
-  ],
-  IV:  [ // Serviços (construção, limpeza, vigilância, advocacia)
-    { faixa: '1ª', limite: 180000,   aliquota: 4.50,  deducao: 0 },
-    { faixa: '2ª', limite: 360000,   aliquota: 9.00,  deducao: 8100 },
-    { faixa: '3ª', limite: 720000,   aliquota: 10.20, deducao: 12420 },
-    { faixa: '4ª', limite: 1800000,  aliquota: 14.00, deducao: 39780 },
-    { faixa: '5ª', limite: 3600000,  aliquota: 22.00, deducao: 183780 },
-    { faixa: '6ª', limite: 4800000,  aliquota: 33.00, deducao: 828000 },
-  ],
-  V:   [ // Serviços (fator R — TI, medicina, engenharia, arquitetura)
-    { faixa: '1ª', limite: 180000,   aliquota: 15.50, deducao: 0 },
-    { faixa: '2ª', limite: 360000,   aliquota: 18.00, deducao: 4500 },
-    { faixa: '3ª', limite: 720000,   aliquota: 19.50, deducao: 9900 },
-    { faixa: '4ª', limite: 1800000,  aliquota: 20.50, deducao: 17100 },
-    { faixa: '5ª', limite: 3600000,  aliquota: 23.00, deducao: 62100 },
-    { faixa: '6ª', limite: 4800000,  aliquota: 30.50, deducao: 540000 },
-  ],
-};
-
-const ANEXO_LABELS: Record<SimplesAnexo, string> = {
-  I:   'Anexo I — Comércio',
-  II:  'Anexo II — Indústria',
-  III: 'Anexo III — Serviços (tecnologia, comunicação)',
-  IV:  'Anexo IV — Serviços (construção, limpeza, advocacia)',
-  V:   'Anexo V — Serviços com fator R (TI, medicina, engenharia)',
-};
-
-function calcDAS(rbt12: number, receitaBruta: number, anexo: SimplesAnexo): { faixa: string; aliquotaNominal: number; aliquotaEfetiva: number; valorDas: number; deducao: number } {
-  if (rbt12 <= 0 || receitaBruta <= 0) return { faixa: '—', aliquotaNominal: 0, aliquotaEfetiva: 0, valorDas: 0, deducao: 0 };
-  const tabela = SIMPLES_TABELAS[anexo];
-  const row = tabela.find(r => rbt12 <= r.limite) ?? tabela[tabela.length - 1];
-  const aliquotaEfetiva = ((rbt12 * (row.aliquota / 100)) - row.deducao) / rbt12;
-  return {
-    faixa: row.faixa,
-    aliquotaNominal: row.aliquota,
-    aliquotaEfetiva: aliquotaEfetiva * 100,
-    valorDas: receitaBruta * aliquotaEfetiva,
-    deducao: row.deducao,
-  };
-}
-
-function dasVencimento(competencia: string): string {
-  const year = parseInt(competencia.slice(0, 4));
-  const month = parseInt(competencia.slice(4, 6));
-  const nextMonth = month === 12 ? 1 : month + 1;
-  const nextYear  = month === 12 ? year + 1 : year;
-  return `${nextYear}-${String(nextMonth).padStart(2, '0')}-20`;
-}
-
-function competenciaLabel(c: string): string {
-  const months = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
-  return `${months[parseInt(c.slice(4, 6)) - 1]}/${c.slice(0, 4)}`;
-}
-
-function DASContent({ transactions, businessId }: { transactions: Transaction[]; businessId: string }) {
-  const formatCurrency = useCurrencyFormat();
-  const { user } = useAuth();
-  const { isDark } = useTheme();
-  const queryClient = useQueryClient();
-  const dasFileRef = useRef<HTMLInputElement>(null);
-
-  const now = new Date();
-  const currentComp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
-
-  const [selComp,    setSelComp]    = useState(currentComp);
-  const [anexo,      setAnexo]      = useState<SimplesAnexo>('III');
-  const [manualRec,  setManualRec]  = useState('');
-  const [manualRbt,  setManualRbt]  = useState('');
-  const [isSaving,   setIsSaving]   = useState(false);
-  const [uploadingId,setUploadingId]= useState<string | null>(null);
-  const [showTabela, setShowTabela] = useState(false);
-
-  // Auto-calc receita bruta from paid transactions in selected competência
-  const autoReceita = useMemo(() => {
-    const prefix = `${selComp.slice(0, 4)}-${selComp.slice(4, 6)}`;
-    return transactions
-      .filter(t => t.type === 'receita' && t.status === 'pago' && (t.paymentDate || t.dueDate || '').startsWith(prefix))
-      .reduce((s, t) => s + t.amount, 0);
-  }, [transactions, selComp]);
-
-  // Auto-calc RBT12 = paid receitas in last 12 months
-  const autoRbt12 = useMemo(() => {
-    const compYear  = parseInt(selComp.slice(0, 4));
-    const compMonth = parseInt(selComp.slice(4, 6));
-    const cutoffDate = new Date(compYear, compMonth - 12, 1);
-    const cutoffStr  = cutoffDate.toISOString().slice(0, 7);
-    const endStr     = `${selComp.slice(0, 4)}-${selComp.slice(4, 6)}`;
-    return transactions
-      .filter(t => {
-        if (t.type !== 'receita' || t.status !== 'pago') return false;
-        const d = (t.paymentDate || t.dueDate || '').slice(0, 7);
-        return d >= cutoffStr && d <= endStr;
-      })
-      .reduce((s, t) => s + t.amount, 0);
-  }, [transactions, selComp]);
-
-  const receitaBruta = parseFloat(manualRec) || autoReceita;
-  const rbt12        = parseFloat(manualRbt) || autoRbt12;
-  const calc         = useMemo(() => calcDAS(rbt12, receitaBruta, anexo), [rbt12, receitaBruta, anexo]);
-
-  // Firestore: dasRecords
-  const { data: dasRecords = [] } = useTanstackQuery<DasRecord[]>({
-    queryKey: ['dasRecords', businessId],
-    queryFn: async () => {
-      if (!businessId) return [];
-      const q = query(
-        collection(db, 'dasRecords'),
-        where('businessId', '==', businessId),
-        orderBy('competencia', 'desc'),
-      );
-      const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as DasRecord));
-    },
-    enabled: !!businessId,
-    staleTime: 60 * 1000,
-  });
-
-  const currentRecord = dasRecords.find(r => r.competencia === selComp);
-
-  const handleSaveDAS = async () => {
-    if (!businessId || !user || calc.valorDas <= 0) return;
-    setIsSaving(true);
-    try {
-      const nowStr = new Date().toISOString();
-      const data: Omit<DasRecord, 'id'> = {
-        businessId,
-        competencia: selComp,
-        receitaBruta,
-        rbt12,
-        anexo,
-        aliquotaEfetiva: calc.aliquotaEfetiva,
-        valorDas: calc.valorDas,
-        vencimento: dasVencimento(selComp),
-        status: 'pendente',
-        createdAt: currentRecord?.createdAt ?? nowStr,
-        updatedAt: nowStr,
-      };
-      if (currentRecord) {
-        await updateDoc(doc(db, 'dasRecords', currentRecord.id), { ...data });
-      } else {
-        await addDoc(collection(db, 'dasRecords'), data);
-      }
-      queryClient.invalidateQueries({ queryKey: ['dasRecords', businessId] });
-      toast.success('DAS gerado com sucesso');
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const handleMarkPago = async (record: DasRecord) => {
-    if (!businessId) return;
-    await updateDoc(doc(db, 'dasRecords', record.id), {
-      status: 'pago',
-      pagoEm: new Date().toISOString().slice(0, 10),
-      updatedAt: new Date().toISOString(),
-    });
-    queryClient.invalidateQueries({ queryKey: ['dasRecords', businessId] });
-    toast.success('DAS marcado como pago');
-  };
-
-  const handleUploadRecibo = async (record: DasRecord, file: File) => {
-    if (!businessId) return;
-    if (file.size > 10 * 1024 * 1024) { toast.error('Arquivo muito grande. Máximo 10MB.'); return; }
-    setUploadingId(record.id);
-    try {
-      const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-      const path = `businesses/${businessId}/das/${record.competencia}_${safeName}`;
-      const storageRef = ref(storage, path);
-      await uploadBytes(storageRef, file);
-      const url = await getDownloadURL(storageRef);
-      await updateDoc(doc(db, 'dasRecords', record.id), {
-        recibo: url, reciboPath: path, updatedAt: new Date().toISOString(),
-      });
-      queryClient.invalidateQueries({ queryKey: ['dasRecords', businessId] });
-      toast.success('Comprovante enviado');
-    } finally {
-      setUploadingId(null);
-    }
-  };
-
-  // Available competências (current month + last 23)
-  const competencias = useMemo(() => {
-    const list: string[] = [];
-    for (let i = 0; i < 24; i++) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      list.push(`${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}`);
-    }
-    return list;
-  }, []);
-
-  const todayStr = now.toISOString().slice(0, 10);
-  const statusColor: Record<DasStatus, string> = {
-    pendente: 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-500/20',
-    pago:     'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-500/20',
-    atrasado: 'bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-400 border-red-200 dark:border-red-500/20',
-  };
-
-  return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
-          <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">DAS — Simples Nacional</h3>
-          <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">Calcule, registre e acompanhe o pagamento mensal do DAS</p>
-        </div>
-        <button onClick={() => setShowTabela(v => !v)}
-          className={cn('flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border transition-colors',
-            showTabela ? 'border-violet-400 bg-violet-50 dark:bg-violet-500/10 text-violet-700 dark:text-violet-400' : 'border-slate-200 dark:border-gray-700 text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800'
-          )}
-        >
-          <FileSpreadsheet size={13} />
-          {showTabela ? 'Ocultar' : 'Ver'} Tabela de Alíquotas
-        </button>
-      </div>
-
-      {/* Alíquota table */}
-      <AnimatePresence>
-        {showTabela && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
-            <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl overflow-hidden shadow-sm">
-              <div className="px-5 py-3 border-b border-slate-100 dark:border-gray-800">
-                <span className="text-sm font-semibold text-slate-800 dark:text-gray-200">Tabela Simples Nacional 2024 — {ANEXO_LABELS[anexo]}</span>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-slate-50 dark:bg-gray-800/60">
-                    <tr>
-                      {['Faixa', 'RBT12 até', 'Alíquota Nominal', 'Parcela a Deduzir'].map(h => (
-                        <th key={h} className="px-4 py-2.5 text-left text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wide">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-50 dark:divide-gray-800">
-                    {SIMPLES_TABELAS[anexo].map((row, i) => {
-                      const isActive = rbt12 > 0 && rbt12 <= row.limite && (i === 0 || rbt12 > SIMPLES_TABELAS[anexo][i - 1].limite);
-                      return (
-                        <tr key={i} className={cn(isActive && 'bg-violet-50/50 dark:bg-violet-500/5')}>
-                          <td className="px-4 py-2.5 text-slate-700 dark:text-gray-300 font-medium">
-                            {row.faixa} {isActive && <span className="ml-1 text-[10px] text-violet-600 dark:text-violet-400 font-bold">← atual</span>}
-                          </td>
-                          <td className="px-4 py-2.5 text-slate-600 dark:text-gray-400 tabular-nums">{formatCurrency(row.limite)}</td>
-                          <td className="px-4 py-2.5 font-semibold text-slate-800 dark:text-gray-200">{row.aliquota.toFixed(2).replace('.', ',')}%</td>
-                          <td className="px-4 py-2.5 text-slate-600 dark:text-gray-400 tabular-nums">{row.deducao > 0 ? formatCurrency(row.deducao) : '—'}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Calculator */}
-      <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-5 shadow-sm space-y-4">
-        <p className="text-sm font-semibold text-slate-800 dark:text-gray-200">Calcular DAS</p>
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          {/* Competência */}
-          <div>
-            <label className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1 block">Competência</label>
-            <select value={selComp} onChange={e => setSelComp(e.target.value)}
-              className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-red-500/20"
-            >
-              {competencias.map(c => <option key={c} value={c}>{competenciaLabel(c)}</option>)}
-            </select>
-          </div>
-          {/* Anexo */}
-          <div>
-            <label className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1 block">Anexo / Atividade</label>
-            <select value={anexo} onChange={e => setAnexo(e.target.value as SimplesAnexo)}
-              className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-red-500/20"
-            >
-              {(Object.keys(ANEXO_LABELS) as SimplesAnexo[]).map(a => <option key={a} value={a}>{ANEXO_LABELS[a]}</option>)}
-            </select>
-          </div>
-          {/* Vencimento preview */}
-          <div className="flex flex-col justify-end">
-            <label className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1 block">Vencimento</label>
-            <div className="px-3 py-2 text-sm rounded-xl border border-slate-100 dark:border-gray-800 bg-slate-50 dark:bg-gray-800 text-slate-700 dark:text-gray-300 font-medium">
-              {formatDate(dasVencimento(selComp))}
-            </div>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div>
-            <label className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1 block">
-              Receita Bruta do Mês
-              {autoReceita > 0 && <span className="ml-1 text-emerald-600 dark:text-emerald-400">(calculada: {formatCurrency(autoReceita)})</span>}
-            </label>
-            <input type="number" min="0" step="0.01" value={manualRec} onChange={e => setManualRec(e.target.value)}
-              placeholder={autoReceita > 0 ? `${autoReceita.toFixed(2)} (auto)` : 'Ex: 15000,00'}
-              className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-red-500/20"
-            />
-          </div>
-          <div>
-            <label className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1 block">
-              RBT12 (últimos 12 meses)
-              {autoRbt12 > 0 && <span className="ml-1 text-emerald-600 dark:text-emerald-400">(calculado: {formatCurrency(autoRbt12)})</span>}
-            </label>
-            <input type="number" min="0" step="0.01" value={manualRbt} onChange={e => setManualRbt(e.target.value)}
-              placeholder={autoRbt12 > 0 ? `${autoRbt12.toFixed(2)} (auto)` : 'Ex: 180000,00'}
-              className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-red-500/20"
-            />
-          </div>
-        </div>
-
-        {/* Result */}
-        {calc.valorDas > 0 && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 bg-slate-50 dark:bg-gray-800/50 rounded-xl border border-slate-100 dark:border-gray-700">
-            {[
-              { label: 'Faixa', value: `${calc.faixa} faixa` },
-              { label: 'Alíquota Nominal', value: `${calc.aliquotaNominal.toFixed(2).replace('.', ',')}%` },
-              { label: 'Alíquota Efetiva', value: `${calc.aliquotaEfetiva.toFixed(4).replace('.', ',')}%` },
-              { label: 'Valor DAS', value: formatCurrency(calc.valorDas) },
-            ].map(k => (
-              <div key={k.label}>
-                <p className="text-[10px] text-slate-400 dark:text-gray-500 uppercase tracking-wide mb-0.5">{k.label}</p>
-                <p className={cn('text-sm font-bold', k.label === 'Valor DAS' ? 'text-red-600 dark:text-red-400 text-base' : 'text-slate-800 dark:text-gray-200')}>{k.value}</p>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div className="flex items-center gap-3">
-          <Button onClick={handleSaveDAS} disabled={isSaving || calc.valorDas <= 0} variant="contained"
-            sx={{ backgroundColor: '#DC2626', '&:hover': { backgroundColor: '#B91C1C' }, '&.Mui-disabled': { backgroundColor: '#FCA5A5', color: '#fff' }, textTransform: 'none', fontWeight: 700, borderRadius: '12px' }}
-          >
-            {isSaving ? 'Salvando...' : currentRecord ? 'Atualizar DAS' : 'Gerar DAS'}
-          </Button>
-          {calc.valorDas <= 0 && <p className="text-xs text-slate-400 dark:text-gray-500">Preencha RBT12 e Receita Bruta para calcular</p>}
-        </div>
-      </div>
-
-      {/* History */}
-      <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl overflow-hidden shadow-sm">
-        <div className="px-5 py-3 border-b border-slate-100 dark:border-gray-800">
-          <span className="text-sm font-semibold text-slate-800 dark:text-gray-200">Histórico de DAS</span>
-        </div>
-
-        {dasRecords.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
-            <Receipt size={40} strokeWidth={1.5} />
-            <p className="mt-3 text-sm font-medium">Nenhum DAS registrado ainda</p>
-            <p className="text-xs mt-1">Use a calculadora acima para gerar o primeiro DAS</p>
-          </div>
-        ) : (
-          <div className="divide-y divide-slate-50 dark:divide-gray-800">
-            {dasRecords.map(record => {
-              const daysToVenc = Math.round((new Date(record.vencimento + 'T00:00:00').getTime() - new Date(todayStr + 'T00:00:00').getTime()) / 86400000);
-              const isAlert = record.status === 'pendente' && daysToVenc >= 0 && daysToVenc <= 5;
-              const isLate  = record.status !== 'pago' && record.vencimento < todayStr;
-              const effectiveStatus: DasStatus = isLate ? 'atrasado' : record.status;
-              return (
-                <div key={record.id} className={cn('px-5 py-4 hover:bg-slate-50 dark:hover:bg-gray-800/40 transition-colors', isAlert && 'bg-amber-50/40 dark:bg-amber-500/5')}>
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-sm font-bold text-slate-800 dark:text-gray-200">{competenciaLabel(record.competencia)}</span>
-                        <span className={cn('text-[10px] font-semibold px-2 py-0.5 rounded-full border', statusColor[effectiveStatus])}>
-                          {effectiveStatus === 'pago' ? 'Pago' : effectiveStatus === 'atrasado' ? 'Atrasado' : 'Pendente'}
-                        </span>
-                        {isAlert && <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400">⚠ vence em {daysToVenc}d</span>}
-                      </div>
-                      <div className="flex items-center gap-4 mt-1 text-xs text-slate-500 dark:text-gray-400">
-                        <span>Venc: {formatDate(record.vencimento)}</span>
-                        <span>{ANEXO_LABELS[record.anexo].split('—')[0].trim()}</span>
-                        <span>Alíq efetiva: {record.aliquotaEfetiva.toFixed(2).replace('.', ',')}%</span>
-                        {record.pagoEm && <span>Pago em {formatDate(record.pagoEm)}</span>}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3 shrink-0">
-                      <span className="text-base font-bold text-red-600 dark:text-red-400 tabular-nums">{formatCurrency(record.valorDas)}</span>
-                      <div className="flex items-center gap-1">
-                        {record.status !== 'pago' && (
-                          <Tooltip title="Marcar como pago">
-                            <IconButton size="small" onClick={() => handleMarkPago(record)} sx={{ color: '#10B981', '&:hover': { backgroundColor: '#D1FAE5' } }}>
-                              <CheckCircle2 size={15} />
-                            </IconButton>
-                          </Tooltip>
-                        )}
-                        {record.recibo ? (
-                          <Tooltip title="Ver comprovante">
-                            <IconButton size="small" href={record.recibo} target="_blank" component="a" sx={{ color: '#6366F1' }}>
-                              <Paperclip size={15} />
-                            </IconButton>
-                          </Tooltip>
-                        ) : (
-                          <Tooltip title="Anexar comprovante">
-                            <IconButton size="small" onClick={() => { setUploadingId(record.id); dasFileRef.current?.click(); }} disabled={uploadingId === record.id} sx={{ color: '#94A3B8' }}>
-                              {uploadingId === record.id ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
-                            </IconButton>
-                          </Tooltip>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Hidden file input for receipt */}
-      <input ref={dasFileRef} type="file" accept="image/*,.pdf" className="hidden"
-        onChange={async e => {
-          const file = e.target.files?.[0];
-          const record = dasRecords.find(r => r.id === uploadingId);
-          if (file && record) await handleUploadRecibo(record, file);
-          if (dasFileRef.current) dasFileRef.current.value = '';
-        }}
-      />
-    </div>
-  );
-}
-
-// Widget for OverviewContent dashboard
-function DASWidget({ businessId, onGoToDAS }: { businessId: string; onGoToDAS: () => void }) {
-  const formatCurrency = useCurrencyFormat();
-  const [record, setRecord] = useState<DasRecord | null | undefined>(undefined);
-
-  useEffect(() => {
-    if (!businessId) return;
-    const now = new Date();
-    const comp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
-    getDocs(query(
-      collection(db, 'dasRecords'),
-      where('businessId', '==', businessId),
-      where('competencia', '==', comp),
-    )).then(snap => {
-      setRecord(snap.empty ? null : { ...snap.docs[0].data(), id: snap.docs[0].id } as DasRecord);
-    }).catch(() => setRecord(null));
-  }, [businessId]);
-
-  if (record === undefined) return null;
-
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const now = new Date();
-  const comp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
-  const venc = dasVencimento(comp);
-  const daysToVenc = Math.round((new Date(venc + 'T00:00:00').getTime() - new Date(todayStr + 'T00:00:00').getTime()) / 86400000);
-  const isAlert = daysToVenc >= 0 && daysToVenc <= 5;
-
-  if (!record) {
-    return (
-      <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
-        className="flex items-center justify-between px-5 py-4 bg-slate-50 dark:bg-gray-800/50 border border-slate-200 dark:border-gray-700 rounded-2xl"
-      >
-        <div className="flex items-center gap-3">
-          <Receipt size={18} className="text-slate-400 dark:text-gray-500" />
-          <div>
-            <p className="text-sm font-semibold text-slate-700 dark:text-gray-300">DAS {competenciaLabel(comp)}</p>
-            <p className="text-xs text-slate-400 dark:text-gray-500">Vence {formatDate(venc)} · Não gerado</p>
-          </div>
-        </div>
-        <button onClick={onGoToDAS} className="text-xs font-semibold text-red-600 dark:text-red-400 hover:underline">Calcular →</button>
-      </motion.div>
-    );
-  }
-
-  const isPago = record.status === 'pago';
-  return (
-    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
-      className={cn('flex items-center justify-between px-5 py-4 rounded-2xl border',
-        isPago ? 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/20' :
-        isAlert ? 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20' :
-        'bg-slate-50 dark:bg-gray-800/50 border-slate-200 dark:border-gray-700'
-      )}
-    >
-      <div className="flex items-center gap-3">
-        <Receipt size={18} className={isPago ? 'text-emerald-500' : isAlert ? 'text-amber-500' : 'text-slate-400 dark:text-gray-500'} />
-        <div>
-          <p className="text-sm font-semibold text-slate-800 dark:text-gray-200">
-            DAS {competenciaLabel(comp)} — {formatCurrency(record.valorDas)}
-          </p>
-          <p className="text-xs text-slate-500 dark:text-gray-400">
-            {isPago ? `Pago em ${formatDate(record.pagoEm)}` : isAlert ? `⚠ Vence em ${daysToVenc} dia${daysToVenc !== 1 ? 's' : ''}` : `Vence ${formatDate(venc)}`}
-          </p>
-        </div>
-      </div>
-      <button onClick={onGoToDAS} className="text-xs font-semibold text-red-600 dark:text-red-400 hover:underline">
-        {isPago ? 'Ver' : 'Gerenciar'} →
-      </button>
-    </motion.div>
-  );
-}
-
-// ==========================================
-// TAB: ORÇAMENTO (Budget vs Realizado — 3.1)
-// ==========================================
-
-function BudgetContent({
-  transactions,
-  businessId,
-}: {
-  transactions: Transaction[];
-  businessId: string;
-}) {
-  const formatCurrency = useCurrencyFormat();
-  const { user, business } = useAuth();
-  const queryClient = useQueryClient();
-  const { isDark } = useTheme();
-
-  const now = new Date();
-  const [selYear,  setSelYear]  = useState(now.getFullYear());
-  const [selMonth, setSelMonth] = useState(now.getMonth() + 1);
-  const [showForm, setShowForm] = useState(false);
-  const [formCat,  setFormCat]  = useState('');
-  const [formType, setFormType] = useState<'receita' | 'despesa'>('despesa');
-  const [formAmt,  setFormAmt]  = useState('');
-  const [editId,   setEditId]   = useState<string | null>(null);
-  const [isSaving, setIsSaving] = useState(false);
-  const [isCopying, setIsCopying] = useState(false);
-
-  // ── Queries ──────────────────────────────────────────────────────────────────
-  const { data: budgets = [], refetch } = useTanstackQuery<Budget[]>({
-    queryKey: ['budgets', businessId, selYear, selMonth],
-    queryFn: async () => {
-      if (!businessId) return [];
-      const q = query(
-        collection(db, 'budgets'),
-        where('businessId', '==', businessId),
-        where('year', '==', selYear),
-        where('month', '==', selMonth),
-      );
-      const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as Budget));
-    },
-    enabled: !!businessId,
-    staleTime: 60 * 1000,
-  });
-
-  // ── Realizado: paid transactions for the selected month ───────────────────
-  const realized = useMemo(() => {
-    const prefix = `${selYear}-${String(selMonth).padStart(2, '0')}`;
-    const map = new Map<string, { receita: number; despesa: number }>();
-    transactions
-      .filter(t => t.status === 'pago' && (t.paymentDate || t.dueDate || '').startsWith(prefix))
-      .forEach(t => {
-        const cat = t.category || 'Outros';
-        const entry = map.get(cat) ?? { receita: 0, despesa: 0 };
-        if (t.type === 'receita') entry.receita += t.amount;
-        else entry.despesa += t.amount;
-        map.set(cat, entry);
-      });
-    return map;
-  }, [transactions, selYear, selMonth]);
-
-  // ── Merged rows: union of budgeted and realized categories ────────────────
-  const rows = useMemo(() => {
-    const categories = new Set<string>([
-      ...budgets.map(b => b.category),
-      ...Array.from(realized.keys()),
-    ]);
-    return Array.from(categories).sort().map(cat => {
-      const bRec  = budgets.find(b => b.category === cat && b.type === 'receita');
-      const bDesp = budgets.find(b => b.category === cat && b.type === 'despesa');
-      const real  = realized.get(cat) ?? { receita: 0, despesa: 0 };
-      return {
-        category: cat,
-        budgetedReceita:  bRec?.amount  ?? 0,
-        budgetedDespesa:  bDesp?.amount ?? 0,
-        realizedReceita:  real.receita,
-        realizedDespesa:  real.despesa,
-        budgetRecId:  bRec?.id,
-        budgetDespId: bDesp?.id,
-      };
-    });
-  }, [budgets, realized]);
-
-  // Alerts: categories reaching ≥ 80% of their budget
-  const alerts = useMemo(() =>
-    rows.filter(r => {
-      const despPct = r.budgetedDespesa > 0 ? (r.realizedDespesa / r.budgetedDespesa) * 100 : 0;
-      const recPct  = r.budgetedReceita > 0 ? (r.realizedReceita  / r.budgetedReceita)  * 100 : 0;
-      return despPct >= 80 || recPct >= 80;
-    }),
-  [rows]);
-
-  // Chart data
-  const chartData = useMemo(() =>
-    rows
-      .filter(r => r.budgetedDespesa > 0 || r.budgetedReceita > 0)
-      .map(r => ({
-        name: r.category.length > 12 ? r.category.slice(0, 11) + '…' : r.category,
-        'Orçado (D)':    r.budgetedDespesa,
-        'Realizado (D)': r.realizedDespesa,
-        'Orçado (R)':    r.budgetedReceita,
-        'Realizado (R)': r.realizedReceita,
-      })),
-  [rows]);
-
-  // ── Handlers ─────────────────────────────────────────────────────────────────
-  const openAdd = (cat = '', type: 'receita' | 'despesa' = 'despesa', id: string | null = null, amt = '') => {
-    setFormCat(cat); setFormType(type); setFormAmt(amt); setEditId(id); setShowForm(true);
-  };
-
-  const handleSave = async () => {
-    if (!businessId || !formCat.trim() || !formAmt || parseFloat(formAmt) <= 0) return;
-    if (!user) return;
-    setIsSaving(true);
-    try {
-      const now = new Date().toISOString();
-      const data = {
-        businessId,
-        year: selYear,
-        month: selMonth,
-        category: formCat.trim(),
-        type: formType,
-        amount: parseFloat(formAmt),
-        updatedAt: now,
-      };
-      if (editId) {
-        await updateDoc(doc(db, 'budgets', editId), data);
-      } else {
-        await addDoc(collection(db, 'budgets'), { ...data, createdAt: now });
-      }
-      queryClient.invalidateQueries({ queryKey: ['budgets', businessId, selYear, selMonth] });
-      setShowForm(false);
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const handleDelete = async (id: string) => {
-    await deleteDoc(doc(db, 'budgets', id));
-    queryClient.invalidateQueries({ queryKey: ['budgets', businessId, selYear, selMonth] });
-  };
-
-  const handleCopyPrevMonth = async () => {
-    if (!businessId || !user) return;
-    setIsCopying(true);
-    try {
-      const prevMonth = selMonth === 1 ? 12 : selMonth - 1;
-      const prevYear  = selMonth === 1 ? selYear - 1 : selYear;
-      const q = query(
-        collection(db, 'budgets'),
-        where('businessId', '==', businessId),
-        where('year', '==', prevYear),
-        where('month', '==', prevMonth),
-      );
-      const snap = await getDocs(q);
-      if (snap.empty) { toast.info('Sem orçamento no mês anterior para copiar.'); return; }
-      const batch = writeBatch(db);
-      const nowStr = new Date().toISOString();
-      snap.docs.forEach(d => {
-        const { year: _y, month: _m, ...rest } = d.data();
-        const ref = doc(collection(db, 'budgets'));
-        batch.set(ref, { ...rest, year: selYear, month: selMonth, createdAt: nowStr, updatedAt: nowStr });
-      });
-      await batch.commit();
-      queryClient.invalidateQueries({ queryKey: ['budgets', businessId, selYear, selMonth] });
-      toast.success(`${snap.size} meta(s) copiadas do mês anterior.`);
-    } finally {
-      setIsCopying(false);
-    }
-  };
-
-  const monthNames = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
-  const availableCategories = useMemo(() => {
-    const cats = new Set<string>([...budgets.map(b => b.category), ...Array.from(realized.keys())]);
-    transactions.forEach(t => { if (t.category) cats.add(t.category); });
-    return Array.from(cats).sort();
-  }, [budgets, realized, transactions]);
-
-  const totalBudgetedDesp  = rows.reduce((s, r) => s + r.budgetedDespesa, 0);
-  const totalRealizedDesp  = rows.reduce((s, r) => s + r.realizedDespesa, 0);
-  const totalBudgetedRec   = rows.reduce((s, r) => s + r.budgetedReceita, 0);
-  const totalRealizedRec   = rows.reduce((s, r) => s + r.realizedReceita, 0);
-
-  return (
-    <div className="space-y-5">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
-          <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">Orçamento vs Realizado</h3>
-          <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">Compare metas com resultados por categoria</p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          {/* Month selector */}
-          <select value={selMonth} onChange={e => setSelMonth(Number(e.target.value))}
-            className="px-3 py-1.5 rounded-xl text-xs font-medium bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 text-slate-700 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-red-500"
-          >
-            {monthNames.map((m, i) => <option key={i+1} value={i+1}>{m}</option>)}
-          </select>
-          <select value={selYear} onChange={e => setSelYear(Number(e.target.value))}
-            className="px-3 py-1.5 rounded-xl text-xs font-medium bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 text-slate-700 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-red-500"
-          >
-            {[0,1,2].map(d => { const y = now.getFullYear() - d; return <option key={y} value={y}>{y}</option>; })}
-          </select>
-          <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
-            onClick={handleCopyPrevMonth} disabled={isCopying}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800 disabled:opacity-50 transition-all"
-          >
-            {isCopying ? <Loader2 size={13} className="animate-spin" /> : <ChevronsRight size={13} />}
-            Copiar mês anterior
-          </motion.button>
-          <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
-            onClick={() => openAdd()}
-            className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-xs font-semibold bg-red-600 hover:bg-red-700 text-white transition-all"
-          >
-            <Plus size={13} />
-            Nova meta
-          </motion.button>
-        </div>
-      </div>
-
-      {/* Alert banner */}
-      {alerts.length > 0 && (
-        <div className="flex items-start gap-3 px-4 py-3 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 rounded-2xl">
-          <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
-          <div>
-            <p className="text-sm font-semibold text-amber-900 dark:text-amber-100">
-              {alerts.length} categoria{alerts.length > 1 ? 's' : ''} atingiu 80% do orçamento
-            </p>
-            <p className="text-xs text-amber-700 dark:text-amber-400 mt-0.5">
-              {alerts.map(a => a.category).join(' · ')}
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* KPI summary */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {[
-          { label: 'Orçado Despesas',    value: totalBudgetedDesp,  color: 'text-slate-700 dark:text-gray-200' },
-          { label: 'Realizado Despesas', value: totalRealizedDesp,  color: totalRealizedDesp > totalBudgetedDesp && totalBudgetedDesp > 0 ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400' },
-          { label: 'Orçado Receitas',    value: totalBudgetedRec,   color: 'text-slate-700 dark:text-gray-200' },
-          { label: 'Realizado Receitas', value: totalRealizedRec,   color: totalRealizedRec >= totalBudgetedRec && totalBudgetedRec > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400' },
-        ].map(k => (
-          <div key={k.label} className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-4 shadow-sm">
-            <p className="text-xs text-slate-400 dark:text-gray-500 mb-1">{k.label}</p>
-            <p className={`text-lg font-bold font-display ${k.color}`}>{formatCurrency(k.value)}</p>
-          </div>
-        ))}
-      </div>
-
-      {/* Bar chart */}
-      {chartData.length > 0 && (
-        <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-5 shadow-sm">
-          <p className="text-sm font-semibold text-slate-800 dark:text-gray-200 mb-4">Orçado vs Realizado por Categoria</p>
-          <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={chartData} margin={{ top: 4, right: 8, left: 8, bottom: 4 }} barCategoryGap="25%">
-              <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#1E293B' : '#F1F5F9'} vertical={false} />
-              <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#94A3B8', fontSize: 11 }} />
-              <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94A3B8', fontSize: 11 }} tickFormatter={v => `R$${(v/1000).toFixed(0)}k`} width={52} />
-              <RechartsTooltip formatter={(v: number) => formatCurrency(v)} contentStyle={{ background: isDark ? '#1e293b' : '#fff', border: isDark ? '1px solid #374151' : '1px solid #E2E8F0', borderRadius: 10, fontSize: 12 }} />
-              <Legend wrapperStyle={{ fontSize: 11 }} />
-              <Bar dataKey="Orçado (D)"    fill="#fca5a5" radius={[3,3,0,0]} />
-              <Bar dataKey="Realizado (D)" fill="#ef4444" radius={[3,3,0,0]} />
-              <Bar dataKey="Orçado (R)"    fill="#6ee7b7" radius={[3,3,0,0]} />
-              <Bar dataKey="Realizado (R)" fill="#10b981" radius={[3,3,0,0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {/* Budget vs Realized table */}
-      <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl overflow-hidden shadow-sm">
-        <div className="px-5 py-3 border-b border-slate-100 dark:border-gray-800 flex items-center justify-between">
-          <span className="text-sm font-semibold text-slate-800 dark:text-gray-200">Metas por Categoria — {monthNames[selMonth - 1]} {selYear}</span>
-          <span className="text-xs text-slate-400 dark:text-gray-500">{rows.length} categoria{rows.length !== 1 ? 's' : ''}</span>
-        </div>
-
-        {rows.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
-            <Target size={40} strokeWidth={1.5} />
-            <p className="mt-3 text-sm font-medium">Nenhuma meta definida para este mês</p>
-            <p className="text-xs mt-1">Clique em "Nova meta" ou copie o mês anterior</p>
-          </div>
-        ) : (
-          <div className="divide-y divide-slate-50 dark:divide-gray-800">
-            {/* Column headers */}
-            <div className="grid grid-cols-12 px-5 py-2 text-[10px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wide">
-              <div className="col-span-3">Categoria</div>
-              <div className="col-span-2 text-right">Orçado</div>
-              <div className="col-span-2 text-right">Realizado</div>
-              <div className="col-span-2 text-right">Variação</div>
-              <div className="col-span-2">Progresso</div>
-              <div className="col-span-1" />
-            </div>
-            {rows.map(r => {
-              const showDesp = r.budgetedDespesa > 0 || r.realizedDespesa > 0;
-              const showRec  = r.budgetedReceita > 0 || r.realizedReceita > 0;
-              return (
-                <div key={r.category}>
-                  {showDesp && (() => {
-                    const pct     = r.budgetedDespesa > 0 ? Math.min(100, (r.realizedDespesa / r.budgetedDespesa) * 100) : 0;
-                    const varAmt  = r.realizedDespesa - r.budgetedDespesa;
-                    const isOver  = varAmt > 0 && r.budgetedDespesa > 0;
-                    const barCls  = pct >= 100 ? 'bg-red-500' : pct >= 80 ? 'bg-amber-400' : 'bg-emerald-500';
-                    return (
-                      <div className="grid grid-cols-12 items-center px-5 py-3 hover:bg-slate-50 dark:hover:bg-gray-800/40 transition-colors">
-                        <div className="col-span-3">
-                          <p className="text-sm font-medium text-slate-800 dark:text-gray-200 truncate">{r.category}</p>
-                          <span className="text-[10px] text-red-500 font-medium">Despesa</span>
-                        </div>
-                        <div className="col-span-2 text-right text-sm text-slate-600 dark:text-gray-400 tabular-nums">
-                          {r.budgetedDespesa > 0 ? formatCurrency(r.budgetedDespesa) : '—'}
-                        </div>
-                        <div className="col-span-2 text-right text-sm font-semibold text-slate-800 dark:text-gray-200 tabular-nums">
-                          {formatCurrency(r.realizedDespesa)}
-                        </div>
-                        <div className={`col-span-2 text-right text-sm font-semibold tabular-nums ${r.budgetedDespesa === 0 ? 'text-slate-400' : isOver ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
-                          {r.budgetedDespesa > 0 ? `${isOver ? '+' : ''}${formatCurrency(varAmt)}` : '—'}
-                        </div>
-                        <div className="col-span-2 pr-3">
-                          {r.budgetedDespesa > 0 ? (
-                            <div>
-                              <div className="h-1.5 rounded-full bg-slate-100 dark:bg-gray-800 overflow-hidden mb-0.5">
-                                <div className={`h-full rounded-full transition-all ${barCls}`} style={{ width: `${pct}%` }} />
-                              </div>
-                              <span className="text-[10px] text-slate-400">{pct.toFixed(0)}%</span>
-                            </div>
-                          ) : <span className="text-[10px] text-slate-300 dark:text-gray-600">sem meta</span>}
-                        </div>
-                        <div className="col-span-1 flex items-center justify-end gap-0.5">
-                          <Tooltip title="Editar meta">
-                            <IconButton size="small" onClick={() => openAdd(r.category, 'despesa', r.budgetDespId ?? null, r.budgetedDespesa.toString())} sx={{ color: '#94A3B8' }}>
-                              <Edit3 size={13} />
-                            </IconButton>
-                          </Tooltip>
-                          {r.budgetDespId && (
-                            <Tooltip title="Remover meta">
-                              <IconButton size="small" onClick={() => handleDelete(r.budgetDespId!)} sx={{ color: '#94A3B8', '&:hover': { color: '#EF4444' } }}>
-                                <Trash2 size={13} />
-                              </IconButton>
-                            </Tooltip>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })()}
-                  {showRec && (() => {
-                    const pct    = r.budgetedReceita > 0 ? Math.min(100, (r.realizedReceita / r.budgetedReceita) * 100) : 0;
-                    const varAmt = r.realizedReceita - r.budgetedReceita;
-                    const isUnder = varAmt < 0 && r.budgetedReceita > 0;
-                    const barCls  = pct >= 100 ? 'bg-emerald-500' : pct >= 80 ? 'bg-blue-400' : 'bg-amber-400';
-                    return (
-                      <div className="grid grid-cols-12 items-center px-5 py-3 hover:bg-slate-50 dark:hover:bg-gray-800/40 transition-colors bg-emerald-50/20 dark:bg-emerald-500/[0.03]">
-                        <div className="col-span-3">
-                          <p className="text-sm font-medium text-slate-800 dark:text-gray-200 truncate">{r.category}</p>
-                          <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">Receita</span>
-                        </div>
-                        <div className="col-span-2 text-right text-sm text-slate-600 dark:text-gray-400 tabular-nums">
-                          {r.budgetedReceita > 0 ? formatCurrency(r.budgetedReceita) : '—'}
-                        </div>
-                        <div className="col-span-2 text-right text-sm font-semibold text-slate-800 dark:text-gray-200 tabular-nums">
-                          {formatCurrency(r.realizedReceita)}
-                        </div>
-                        <div className={`col-span-2 text-right text-sm font-semibold tabular-nums ${r.budgetedReceita === 0 ? 'text-slate-400' : isUnder ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
-                          {r.budgetedReceita > 0 ? `${varAmt >= 0 ? '+' : ''}${formatCurrency(varAmt)}` : '—'}
-                        </div>
-                        <div className="col-span-2 pr-3">
-                          {r.budgetedReceita > 0 ? (
-                            <div>
-                              <div className="h-1.5 rounded-full bg-slate-100 dark:bg-gray-800 overflow-hidden mb-0.5">
-                                <div className={`h-full rounded-full transition-all ${barCls}`} style={{ width: `${pct}%` }} />
-                              </div>
-                              <span className="text-[10px] text-slate-400">{pct.toFixed(0)}%</span>
-                            </div>
-                          ) : <span className="text-[10px] text-slate-300 dark:text-gray-600">sem meta</span>}
-                        </div>
-                        <div className="col-span-1 flex items-center justify-end gap-0.5">
-                          <Tooltip title="Editar meta">
-                            <IconButton size="small" onClick={() => openAdd(r.category, 'receita', r.budgetRecId ?? null, r.budgetedReceita.toString())} sx={{ color: '#94A3B8' }}>
-                              <Edit3 size={13} />
-                            </IconButton>
-                          </Tooltip>
-                          {r.budgetRecId && (
-                            <Tooltip title="Remover meta">
-                              <IconButton size="small" onClick={() => handleDelete(r.budgetRecId!)} sx={{ color: '#94A3B8', '&:hover': { color: '#EF4444' } }}>
-                                <Trash2 size={13} />
-                              </IconButton>
-                            </Tooltip>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })()}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Add/Edit budget dialog */}
-      <Dialog open={showForm} onClose={() => setShowForm(false)} maxWidth="xs" fullWidth
-        PaperProps={{ sx: { borderRadius: '20px', backgroundColor: isDark ? '#111827' : undefined } }}
-      >
-        <DialogTitle sx={{ fontFamily: '"Plus Jakarta Sans", sans-serif', fontWeight: 700, fontSize: '1rem', color: isDark ? '#F1F5F9' : undefined }}>
-          {editId ? 'Editar Meta' : 'Nova Meta de Orçamento'}
-        </DialogTitle>
-        <DialogContent sx={{ pt: 1 }}>
-          <div className="space-y-3 pt-1">
-            <div>
-              <label className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1 block">Tipo</label>
-              <div className="flex gap-2">
-                {(['despesa', 'receita'] as const).map(t => (
-                  <button key={t} onClick={() => setFormType(t)}
-                    className={cn('flex-1 py-2 rounded-xl text-sm font-semibold border transition-all',
-                      formType === t
-                        ? t === 'despesa' ? 'bg-red-600 text-white border-red-600' : 'bg-emerald-600 text-white border-emerald-600'
-                        : 'border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800'
-                    )}
-                  >{t === 'despesa' ? 'Despesa' : 'Receita'}</button>
-                ))}
-              </div>
-            </div>
-            <div>
-              <label className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1 block">Categoria</label>
-              <input
-                list="budget-cats"
-                value={formCat}
-                onChange={e => setFormCat(e.target.value)}
-                placeholder="Ex: Marketing, Aluguel, Serviços..."
-                className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-red-500/20"
-              />
-              <datalist id="budget-cats">
-                {availableCategories.map(c => <option key={c} value={c} />)}
-              </datalist>
-            </div>
-            <div>
-              <label className="text-xs font-medium text-slate-500 dark:text-gray-400 mb-1 block">Valor da Meta (R$)</label>
-              <input
-                type="number" min="0" step="0.01"
-                value={formAmt}
-                onChange={e => setFormAmt(e.target.value)}
-                placeholder="0,00"
-                className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-red-500/20"
-              />
-            </div>
-          </div>
-        </DialogContent>
-        <Divider />
-        <DialogActions sx={{ px: 3, py: 2 }}>
-          <Button onClick={() => setShowForm(false)} sx={{ color: '#64748B', textTransform: 'none', fontWeight: 600, borderRadius: '12px' }}>Cancelar</Button>
-          <Button onClick={handleSave} disabled={isSaving || !formCat.trim() || !formAmt || parseFloat(formAmt) <= 0} variant="contained"
-            sx={{ backgroundColor: '#DC2626', '&:hover': { backgroundColor: '#B91C1C' }, '&.Mui-disabled': { backgroundColor: '#FCA5A5', color: '#fff' }, textTransform: 'none', fontWeight: 700, borderRadius: '12px' }}
-          >
-            {isSaving ? 'Salvando...' : editId ? 'Salvar' : 'Criar Meta'}
-          </Button>
-        </DialogActions>
-      </Dialog>
-    </div>
-  );
-}
 
 // ==========================================
 // INSTALLMENT GROUP DIALOG
@@ -5231,6 +3992,8 @@ function InstallmentGroupDialog({
   );
 }
 
+type TxViewMode = 'lista' | 'semanal' | 'projecao';
+
 function TransactionsContent({
   transactions, allTransactions, filterTab, onFilterChange,
   search, onSearchChange, sortField, sortDir, onSort,
@@ -5240,9 +4003,11 @@ function TransactionsContent({
   category, onCategoryChange, bankAccount, onBankAccountChange,
   paymentMethod, onPaymentMethodChange, sectorId, onSectorIdChange,
   clientName, onClientNameChange,
-  availableCategories, bankAccounts,
+  projectId, onProjectIdChange,
+  availableCategories, bankAccounts, projects,
   onSaveFilters, onClearFilters,
   onOpenSpreadsheet,
+  businessName,
 }: {
   transactions: Transaction[];
   allTransactions: Transaction[];
@@ -5268,16 +4033,169 @@ function TransactionsContent({
   paymentMethod: string; onPaymentMethodChange: (v: string) => void;
   sectorId: string; onSectorIdChange: (v: string) => void;
   clientName: string; onClientNameChange: (v: string) => void;
+  projectId: string; onProjectIdChange: (v: string) => void;
   availableCategories: string[];
-  bankAccounts: import('@/lib/types').BankAccount[];
+  bankAccounts: BankAccount[];
+  projects: Project[];
   onSaveFilters: () => void;
   onClearFilters: () => void;
   onOpenSpreadsheet?: () => void;
+  businessName: string;
 }) {
   const formatCurrency = useCurrencyFormat();
   const { t } = useTranslation();
+  const { isDark } = useTheme();
   const { sectors } = useAuth();
   const [showFilters, setShowFilters] = useState(false);
+  const [viewMode, setViewMode] = useState<TxViewMode>('lista');
+  const [projectionHorizon, setProjectionHorizon] = useState<30 | 60 | 90>(30);
+  const [projectionScenario, setProjectionScenario] = useState<'otimista' | 'conservador'>('otimista');
+
+  const projectsById = useMemo(() => {
+    const m = new Map<string, Project>();
+    projects.forEach(p => m.set(p.id, p));
+    return m;
+  }, [projects]);
+
+  // ── Projeção/semanal: usa allTransactions (sem o filtro tabular) para refletir
+  //    o caixa real da empresa, não só o subset filtrado.
+  const startingBalance = useMemo(
+    () => bankAccounts.filter(a => a.isActive).reduce((s, a) => s + a.balance, 0),
+    [bankAccounts],
+  );
+
+  function advanceRecurrence(dateStr: string, frequency: string, dayOfMonth?: number, secondDayOfMonth?: number, holidayAdjust?: 'none' | 'before' | 'after'): string {
+    const d = new Date(dateStr + 'T00:00:00');
+    const day = dayOfMonth ? Math.min(dayOfMonth, 28) : undefined;
+    switch (frequency) {
+      case 'weekly':     d.setDate(d.getDate() + 7); break;
+      case 'biweekly':   d.setDate(d.getDate() + 14); break;
+      case 'monthly':    d.setMonth(d.getMonth() + 1);    if (day) d.setDate(day); break;
+      case 'quarterly':  d.setMonth(d.getMonth() + 3);    if (day) d.setDate(day); break;
+      case 'semiannual': d.setMonth(d.getMonth() + 6);    if (day) d.setDate(day); break;
+      case 'yearly':     d.setFullYear(d.getFullYear() + 1); if (day) d.setDate(day); break;
+      case 'biweekly_fixed': {
+        const d1 = day ?? 1;
+        const d2 = secondDayOfMonth ? Math.min(secondDayOfMonth, 28) : 15;
+        const first = Math.min(d1, d2);
+        const second = Math.max(d1, d2);
+        const cur = d.getDate();
+        if (cur < first)       { d.setDate(first); }
+        else if (cur < second) { d.setDate(second); }
+        else                   { d.setMonth(d.getMonth() + 1); d.setDate(first); }
+        break;
+      }
+    }
+    return adjustForBusinessDay(d.toISOString().slice(0, 10), holidayAdjust);
+  }
+
+  const weeklyProjection = useMemo(() => {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const todayStr  = today.toISOString().slice(0, 10);
+    const maxDate   = new Date(today); maxDate.setDate(today.getDate() + 91);
+    const maxDateStr = maxDate.toISOString().slice(0, 10);
+
+    const weeks = Array.from({ length: 13 }, (_, i) => {
+      const start = new Date(today); start.setDate(today.getDate() + i * 7);
+      const end   = new Date(today); end.setDate(today.getDate() + i * 7 + 6);
+      const label = `S${i + 1} (${start.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })})`;
+      return { name: label, startStr: start.toISOString().slice(0, 10), endStr: end.toISOString().slice(0, 10), receitas: 0, despesas: 0 };
+    });
+    const weekOf = (dateStr: string): number => {
+      const ms = new Date(dateStr + 'T00:00:00').getTime() - today.getTime();
+      return Math.floor(ms / (7 * 86400000));
+    };
+
+    for (const tx of allTransactions) {
+      if (tx.status === 'cancelado' || tx.status === 'pago') continue;
+      if (projectionScenario === 'conservador' && tx.status === 'atrasado') continue;
+      if (tx.recurrence?.isActive) continue;
+      const dateStr = tx.dueDate;
+      if (!dateStr || dateStr < todayStr || dateStr > maxDateStr) continue;
+      const w = weekOf(dateStr);
+      if (w >= 0 && w < 13) {
+        if (tx.type === 'receita') weeks[w].receitas += tx.amount;
+        else weeks[w].despesas += tx.amount;
+      }
+    }
+    for (const tx of allTransactions.filter(t => t.recurrence?.isActive && t.recurrence.nextDueDate)) {
+      const freq = tx.recurrence!.frequency;
+      const dom  = tx.recurrence!.dayOfMonth;
+      let next = tx.recurrence!.nextDueDate!;
+      let guard = 0;
+      while (next <= maxDateStr && guard++ < 52) {
+        if (next >= todayStr) {
+          const w = weekOf(next);
+          if (w >= 0 && w < 13) {
+            if (tx.type === 'receita') weeks[w].receitas += tx.amount;
+            else weeks[w].despesas += tx.amount;
+          }
+        }
+        next = advanceRecurrence(next, freq, dom, tx.recurrence!.secondDayOfMonth, tx.recurrence!.holidayAdjust);
+      }
+    }
+    let running = startingBalance;
+    const data = weeks.map(w => {
+      running += w.receitas - w.despesas;
+      return { name: w.name, date: w.startStr, receitas: w.receitas, despesas: w.despesas, saldo: w.receitas - w.despesas, acumulado: running };
+    });
+    return {
+      data,
+      totals: {
+        receitas: data.reduce((s, d) => s + d.receitas, 0),
+        despesas: data.reduce((s, d) => s + d.despesas, 0),
+        finalBalance: running,
+      },
+    };
+  }, [allTransactions, startingBalance, projectionScenario]);
+
+  const dailyProjection = useMemo(() => {
+    const today    = new Date(); today.setHours(0, 0, 0, 0);
+    const todayStr = today.toISOString().slice(0, 10);
+    const cutoff   = new Date(today); cutoff.setDate(today.getDate() + projectionHorizon);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+    const byDate = new Map<string, { receitas: number; despesas: number }>();
+    const addToBucket = (dateStr: string, type: 'receita' | 'despesa', amount: number) => {
+      const bucket = byDate.get(dateStr) || { receitas: 0, despesas: 0 };
+      if (type === 'receita') bucket.receitas += amount;
+      else bucket.despesas += amount;
+      byDate.set(dateStr, bucket);
+    };
+
+    for (const tx of allTransactions) {
+      if (tx.status === 'cancelado' || tx.status === 'pago') continue;
+      if (tx.recurrence?.isActive) continue;
+      const dateStr = tx.dueDate || tx.paymentDate;
+      if (!dateStr || dateStr < todayStr || dateStr > cutoffStr) continue;
+      addToBucket(dateStr, tx.type, tx.amount);
+    }
+    for (const tx of allTransactions.filter(t => t.recurrence?.isActive && t.recurrence.nextDueDate)) {
+      const freq = tx.recurrence!.frequency;
+      const dom  = tx.recurrence!.dayOfMonth;
+      let next = tx.recurrence!.nextDueDate!;
+      let guard = 0;
+      while (next <= cutoffStr && guard++ < 100) {
+        if (next >= todayStr) addToBucket(next, tx.type, tx.amount);
+        next = advanceRecurrence(next, freq, dom, tx.recurrence!.secondDayOfMonth, tx.recurrence!.holidayAdjust);
+      }
+    }
+    let running = startingBalance;
+    const data = Array.from(byDate.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, b]) => {
+        running += b.receitas - b.despesas;
+        return { date, receitas: b.receitas, despesas: b.despesas, saldo: b.receitas - b.despesas, acumulado: running };
+      });
+    return {
+      data,
+      totals: {
+        receitas: data.reduce((s, d) => s + d.receitas, 0),
+        despesas: data.reduce((s, d) => s + d.despesas, 0),
+        finalBalance: running,
+      },
+    };
+  }, [allTransactions, projectionHorizon, startingBalance]);
 
   const filterTabs = [
     { key: 'todas', label: t('financial.txFilter.all', 'Todas'), count: allTransactions.length },
@@ -5287,7 +4205,7 @@ function TransactionsContent({
     { key: 'atrasadas', label: t('financial.txFilter.overdue', 'Atrasadas'), count: allTransactions.filter((tx) => tx.status === 'atrasado').length },
   ];
 
-  const activeFilterCount = [dateFrom, dateTo, category, bankAccount, paymentMethod, sectorId, clientName].filter(Boolean).length;
+  const activeFilterCount = [dateFrom, dateTo, category, bankAccount, paymentMethod, sectorId, clientName, projectId].filter(Boolean).length;
 
   const inputCls = 'w-full px-3 py-1.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-slate-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400 transition-all';
   const labelCls = 'block text-[10px] font-semibold uppercase tracking-wide text-slate-400 dark:text-gray-500 mb-1';
@@ -5297,15 +4215,59 @@ function TransactionsContent({
       {/* Header */}
       <div className="px-6 pt-6 pb-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
-          <h3 className="text-base font-display font-bold text-slate-900 dark:text-gray-100">{t('financial.txList.title', 'Transações')}</h3>
-          <div className="flex items-center gap-2">
-            <div className="relative w-full sm:w-64">
-              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-gray-500" />
-              <input type="text" placeholder={t('financial.txList.searchPlaceholder', 'Buscar transação...')} value={search} onChange={(e) => onSearchChange(e.target.value)}
-                className="w-full pl-9 pr-4 py-2 bg-slate-50 dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-xl text-sm text-slate-900 dark:text-gray-100 placeholder:text-slate-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 transition-all"
-              />
+          <div className="flex items-center gap-3 flex-wrap">
+            <h3 className="text-base font-display font-bold text-slate-900 dark:text-gray-100">{t('financial.txList.title', 'Transações')}</h3>
+            {/* View mode toggle */}
+            <div className="flex items-center gap-0.5 p-0.5 bg-slate-100 dark:bg-gray-800 rounded-xl">
+              {([
+                ['lista', 'Lista', LayoutList],
+                ['semanal', 'Semanal', CalendarDays],
+                ['projecao', 'Projeção', TrendingUp],
+              ] as const).map(([mode, label, Icon]) => (
+                <button
+                  key={mode}
+                  onClick={() => setViewMode(mode)}
+                  className={cn('flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all',
+                    viewMode === mode ? 'bg-white dark:bg-gray-900 text-slate-900 dark:text-gray-100 shadow-sm' : 'text-slate-500 dark:text-gray-400 hover:text-slate-700 dark:hover:text-gray-200'
+                  )}
+                >
+                  <Icon size={13} /> {label}
+                </button>
+              ))}
             </div>
-            {onOpenSpreadsheet && (
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {viewMode === 'lista' && (
+              <div className="relative w-full sm:w-64">
+                <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-gray-500" />
+                <input type="text" placeholder={t('financial.txList.searchPlaceholder', 'Buscar transação...')} value={search} onChange={(e) => onSearchChange(e.target.value)}
+                  className="w-full pl-9 pr-4 py-2 bg-slate-50 dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-xl text-sm text-slate-900 dark:text-gray-100 placeholder:text-slate-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 transition-all"
+                />
+              </div>
+            )}
+            {viewMode === 'projecao' && (
+              <div className="inline-flex bg-gray-100 dark:bg-gray-800/60 rounded-xl p-0.5">
+                {([30, 60, 90] as const).map(h => (
+                  <button key={h} onClick={() => setProjectionHorizon(h)}
+                    className={cn('px-3 py-1.5 rounded-lg text-xs font-bold transition-colors',
+                      projectionHorizon === h ? 'bg-white dark:bg-gray-900 shadow-sm text-gray-900 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400'
+                    )}
+                  >{h}d</button>
+                ))}
+              </div>
+            )}
+            {viewMode === 'semanal' && (
+              <div className="flex items-center gap-1 p-1 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl">
+                {([['otimista', 'Otimista'], ['conservador', 'Conservador']] as const).map(([s, label]) => (
+                  <button key={s} onClick={() => setProjectionScenario(s)}
+                    className={cn('px-3 py-1.5 rounded-lg text-xs font-medium transition-all',
+                      projectionScenario === s ? (s === 'otimista' ? 'bg-emerald-600 text-white shadow-sm' : 'bg-amber-500 text-white shadow-sm') : 'text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800'
+                    )}
+                  >{label}</button>
+                ))}
+              </div>
+            )}
+            {viewMode === 'lista' && onOpenSpreadsheet && (
               <button
                 onClick={onOpenSpreadsheet}
                 title="Abrir transações como planilha"
@@ -5315,35 +4277,50 @@ function TransactionsContent({
               </button>
             )}
             <button
-              onClick={() => exportTransactionsCSV(transactions)}
+              onClick={() => {
+                if (viewMode === 'lista') {
+                  exportTransactionsCSV(transactions);
+                } else {
+                  const active = viewMode === 'semanal' ? weeklyProjection : dailyProjection;
+                  exportCashFlowCSV(
+                    active.data.map(d => ({ date: ('date' in d ? d.date : ''), receitas: d.receitas, despesas: d.despesas, saldo: d.saldo, acumulado: d.acumulado })),
+                    viewMode === 'semanal' ? 13 : projectionHorizon,
+                    businessName,
+                    viewMode === 'semanal' ? 'semanas' : 'dias',
+                  );
+                }
+              }}
               title={t('financial.export.csvTooltip', 'Exportar CSV')}
               className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
             >
               <Download size={13} /> CSV
             </button>
-            <button
-              onClick={() => exportTransactionsPDF(transactions, '', t('financial.export.allPeriods', 'Todos os períodos'))}
-              title={t('financial.export.pdfTooltip', 'Exportar PDF')}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
-            >
-              <Download size={13} /> PDF
-            </button>
-            {/* Advanced filters toggle */}
-            <button
-              onClick={() => setShowFilters(v => !v)}
-              className={cn(
-                'flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border transition-colors',
-                showFilters || activeFilterCount > 0
-                  ? 'border-red-400 bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400'
-                  : 'border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-white/[0.04]'
-              )}
-            >
-              <Filter size={13} />
-              Filtros
-              {activeFilterCount > 0 && (
-                <span className="flex items-center justify-center w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-bold">{activeFilterCount}</span>
-              )}
-            </button>
+            {viewMode === 'lista' && (
+              <button
+                onClick={() => exportTransactionsPDF(transactions, '', t('financial.export.allPeriods', 'Todos os períodos'))}
+                title={t('financial.export.pdfTooltip', 'Exportar PDF')}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-colors"
+              >
+                <Download size={13} /> PDF
+              </button>
+            )}
+            {viewMode === 'lista' && (
+              <button
+                onClick={() => setShowFilters(v => !v)}
+                className={cn(
+                  'flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border transition-colors',
+                  showFilters || activeFilterCount > 0
+                    ? 'border-red-400 bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400'
+                    : 'border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-white/[0.04]'
+                )}
+              >
+                <Filter size={13} />
+                Filtros
+                {activeFilterCount > 0 && (
+                  <span className="flex items-center justify-center w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-bold">{activeFilterCount}</span>
+                )}
+              </button>
+            )}
           </div>
         </div>
 
@@ -5422,6 +4399,17 @@ function TransactionsContent({
                     />
                   </div>
 
+                  {/* Project */}
+                  {projects.length > 0 && (
+                    <div>
+                      <label className={labelCls}>Projeto</label>
+                      <select value={projectId} onChange={e => onProjectIdChange(e.target.value)} className={inputCls}>
+                        <option value="">Todos</option>
+                        {projects.filter(p => p.status !== 'encerrado').map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                    </div>
+                  )}
+
                   {/* Actions */}
                   <div className="flex items-end gap-2">
                     <button
@@ -5464,7 +4452,119 @@ function TransactionsContent({
       </div>
       <Divider />
 
-      {/* Table */}
+      {/* ===== VIEW: PROJEÇÃO (gráfico diário) ===== */}
+      {viewMode === 'projecao' && (
+        <div className="p-6 space-y-5">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {[
+              { label: 'Saldo Inicial', value: startingBalance, color: 'text-slate-700 dark:text-gray-200', bg: 'bg-white dark:bg-gray-900 border-slate-100 dark:border-gray-800' },
+              { label: 'Entradas Previstas', value: dailyProjection.totals.receitas, color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/20' },
+              { label: 'Saídas Previstas', value: dailyProjection.totals.despesas, color: 'text-red-600 dark:text-red-400', bg: 'bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/20' },
+              { label: 'Saldo Final Projetado', value: dailyProjection.totals.finalBalance, color: dailyProjection.totals.finalBalance >= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-orange-600 dark:text-orange-400', bg: dailyProjection.totals.finalBalance >= 0 ? 'bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-500/20' : 'bg-orange-50 dark:bg-orange-500/10 border-orange-200 dark:border-orange-500/20' },
+            ].map(k => (
+              <div key={k.label} className={`rounded-xl p-4 border ${k.bg}`}>
+                <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 dark:text-gray-500 mb-1">{k.label}</p>
+                <p className={`text-lg font-bold font-display ${k.color}`}>{formatCurrency(k.value)}</p>
+              </div>
+            ))}
+          </div>
+          {dailyProjection.totals.finalBalance < 0 && (
+            <div className="flex items-center gap-3 px-4 py-3 bg-orange-50 dark:bg-orange-500/10 border border-orange-200 dark:border-orange-500/20 rounded-2xl">
+              <AlertTriangle size={16} className="text-orange-600 dark:text-orange-400 shrink-0" />
+              <p className="text-sm text-orange-800 dark:text-orange-200">
+                Projeção indica saldo negativo de <strong>{formatCurrency(Math.abs(dailyProjection.totals.finalBalance))}</strong> nos próximos {projectionHorizon} dias.
+              </p>
+            </div>
+          )}
+          {dailyProjection.data.length === 0 ? (
+            <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl p-12 text-center">
+              <TrendingUp className="w-10 h-10 text-gray-300 dark:text-gray-700 mx-auto mb-3" />
+              <p className="text-sm font-semibold text-gray-700 dark:text-gray-300">Nenhum lançamento previsto neste horizonte</p>
+              <p className="text-xs text-gray-500 mt-1">Transações pendentes com data de vencimento futura aparecem aqui</p>
+            </div>
+          ) : (
+            <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl p-5">
+              <ResponsiveContainer width="100%" height={320}>
+                <ComposedChart data={dailyProjection.data} margin={{ top: 4, right: 16, left: 8, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#1E293B' : '#F1F5F9'} vertical={false} />
+                  <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#94A3B8' }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+                  <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94A3B8', fontSize: 11 }} tickFormatter={v => `R$${(v / 1000).toFixed(0)}k`} width={56} />
+                  <RechartsTooltip
+                    formatter={(v: number, name: string) => [formatCurrency(v), name]}
+                    contentStyle={{ background: isDark ? '#1e293b' : '#fff', border: isDark ? '1px solid #374151' : '1px solid #E2E8F0', borderRadius: 10, fontSize: 12 }}
+                  />
+                  <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
+                  <Bar dataKey="receitas" fill="#10B981" name="Entradas" radius={[4, 4, 0, 0]} barSize={8} />
+                  <Bar dataKey="despesas" fill="#EF4444" name="Saídas" radius={[4, 4, 0, 0]} barSize={8} />
+                  <Line type="monotone" dataKey="acumulado" stroke="#3B82F6" name="Saldo projetado" strokeWidth={2.5} dot={{ r: 3, fill: '#3B82F6', strokeWidth: 2, stroke: '#fff' }} />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ===== VIEW: SEMANAL (13 semanas) ===== */}
+      {viewMode === 'semanal' && (
+        <div className="p-6 space-y-5">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {[
+              { label: 'Saldo Inicial', value: startingBalance, color: 'text-slate-700 dark:text-gray-200', bg: 'bg-white dark:bg-gray-900 border-slate-100 dark:border-gray-800' },
+              { label: 'Entradas Previstas', value: weeklyProjection.totals.receitas, color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/20' },
+              { label: 'Saídas Previstas', value: weeklyProjection.totals.despesas, color: 'text-red-600 dark:text-red-400', bg: 'bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/20' },
+              { label: 'Saldo Final em 13 sem.', value: weeklyProjection.totals.finalBalance, color: weeklyProjection.totals.finalBalance >= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-orange-600 dark:text-orange-400', bg: weeklyProjection.totals.finalBalance >= 0 ? 'bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-500/20' : 'bg-orange-50 dark:bg-orange-500/10 border-orange-200 dark:border-orange-500/20' },
+            ].map(k => (
+              <div key={k.label} className={`rounded-xl p-4 border ${k.bg}`}>
+                <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 dark:text-gray-500 mb-1">{k.label}</p>
+                <p className={`text-lg font-bold font-display ${k.color}`}>{formatCurrency(k.value)}</p>
+              </div>
+            ))}
+          </div>
+          <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl p-5">
+            <ResponsiveContainer width="100%" height={300}>
+              <ComposedChart data={weeklyProjection.data} margin={{ top: 4, right: 16, left: 8, bottom: 4 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#1E293B' : '#F1F5F9'} vertical={false} />
+                <XAxis dataKey="name" tick={{ fontSize: 10, fill: '#94A3B8' }} axisLine={false} tickLine={false} interval={1} />
+                <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94A3B8', fontSize: 11 }} tickFormatter={v => `R$${(v / 1000).toFixed(0)}k`} width={56} />
+                <RechartsTooltip
+                  formatter={(v: number, name: string) => [formatCurrency(v), name]}
+                  contentStyle={{ background: isDark ? '#1e293b' : '#fff', border: isDark ? '1px solid #374151' : '1px solid #E2E8F0', borderRadius: 10, fontSize: 12 }}
+                />
+                <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
+                <Bar dataKey="receitas" fill="#10B981" name="Entradas" radius={[4, 4, 0, 0]} barSize={14} />
+                <Bar dataKey="despesas" fill="#EF4444" name="Saídas" radius={[4, 4, 0, 0]} barSize={14} />
+                <Line type="monotone" dataKey="acumulado" stroke="#3B82F6" name="Saldo projetado" strokeWidth={2.5} dot={{ r: 3, fill: '#3B82F6', strokeWidth: 2, stroke: '#fff' }} />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl overflow-hidden shadow-sm">
+            <div className="px-5 py-3 border-b border-slate-100 dark:border-gray-800">
+              <span className="text-sm font-semibold text-slate-800 dark:text-gray-200">Detalhamento Semanal</span>
+            </div>
+            <div className="divide-y divide-slate-50 dark:divide-gray-800">
+              <div className="grid grid-cols-5 px-5 py-2 text-[10px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wide">
+                <div className="col-span-2">Semana</div>
+                <div className="text-right">Entradas</div>
+                <div className="text-right">Saídas</div>
+                <div className="text-right">Saldo Acum.</div>
+              </div>
+              {weeklyProjection.data.map((row, i) => (
+                <div key={i} className={cn('grid grid-cols-5 px-5 py-2.5 text-sm hover:bg-slate-50 dark:hover:bg-gray-800/40 transition-colors', row.acumulado < 0 && 'bg-red-50/30 dark:bg-red-500/5')}>
+                  <div className="col-span-2 text-slate-700 dark:text-gray-300 font-medium">{row.name}</div>
+                  <div className="text-right text-emerald-600 dark:text-emerald-400 tabular-nums">{row.receitas > 0 ? `+${formatCurrency(row.receitas)}` : '—'}</div>
+                  <div className="text-right text-red-600 dark:text-red-400 tabular-nums">{row.despesas > 0 ? `-${formatCurrency(row.despesas)}` : '—'}</div>
+                  <div className={cn('text-right font-semibold tabular-nums', row.acumulado >= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-orange-600 dark:text-orange-400')}>
+                    {formatCurrency(row.acumulado)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== VIEW: LISTA (tabela) ===== */}
+      {viewMode === 'lista' && (
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead>
@@ -5494,6 +4594,7 @@ function TransactionsContent({
               {transactions.map((tx, i) => {
                 const sc = getStatusChipColor(tx.status);
                 const locked = getIsLocked(tx);
+                const proj = tx.projectId ? projectsById.get(tx.projectId) : undefined;
                 return (
                   <motion.tr key={tx.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ delay: i * 0.015 }}
                     className="hover:bg-slate-50/50 dark:hover:bg-white/[0.02] transition-colors group"
@@ -5502,6 +4603,21 @@ function TransactionsContent({
                     <td className="px-5 py-3">
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <p className="text-sm font-medium text-slate-800 dark:text-gray-200 truncate max-w-[200px]">{tx.description}</p>
+                        {proj && (
+                          <Tooltip title={`Projeto: ${proj.name}`}>
+                            <span
+                              className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md border shrink-0"
+                              style={{ color: proj.color, borderColor: `${proj.color}40`, backgroundColor: `${proj.color}15` }}
+                            >
+                              <Tag size={9} /> {proj.name}
+                            </span>
+                          </Tooltip>
+                        )}
+                        {!proj && tx.projectName && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md border border-slate-200 dark:border-gray-700 text-slate-500 dark:text-gray-400 shrink-0">
+                            <Tag size={9} /> {tx.projectName}
+                          </span>
+                        )}
                         {tx.installmentGroupId && (
                           <Tooltip title="Ver grupo de parcelas">
                             <button
@@ -5576,8 +4692,9 @@ function TransactionsContent({
           </tbody>
         </table>
       </div>
+      )}
 
-      {transactions.length === 0 && (
+      {viewMode === 'lista' && transactions.length === 0 && (
         <div className="flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
           <Receipt size={36} strokeWidth={1.5} />
           <p className="mt-3 text-sm">
@@ -5591,9 +4708,11 @@ function TransactionsContent({
         </div>
       )}
 
-      <div className="px-6 py-3 border-t border-slate-100 dark:border-gray-800 text-sm text-slate-400 dark:text-gray-500">
-        {t('financial.txList.count', '{{count}} transação(ões)', { count: transactions.length })}
-      </div>
+      {viewMode === 'lista' && (
+        <div className="px-6 py-3 border-t border-slate-100 dark:border-gray-800 text-sm text-slate-400 dark:text-gray-500">
+          {t('financial.txList.count', '{{count}} transação(ões)', { count: transactions.length })}
+        </div>
+      )}
     </div>
   );
 }
@@ -5985,588 +5104,6 @@ function CommissionsContent({
   );
 }
 
-// ==========================================
-// TAB: DRE
-// ==========================================
-
-type DrePeriod = 'mensal' | 'trimestral' | 'anual';
-
-interface DreSection {
-  label: string;
-  value: number;
-  isTotal?: boolean;
-  isSubtotal?: boolean;
-  indent?: boolean;
-  positive?: boolean; // for coloring: green if positive result
-  items?: { label: string; value: number }[];
-}
-
-// Cost categories (direct costs of services/products)
-const CPV_CATEGORIES = new Set(['Infraestrutura', 'Software', 'Energia', 'Aluguel']);
-// Deductions (taxes)
-const DEDUCAO_CATEGORIES = new Set(['Impostos']);
-// Financial results
-const FINANCEIRO_RECEITA_CATEGORIES = new Set(['Juros']);
-
-function DREContent({ transactions, businessName }: { transactions: Transaction[]; businessName: string }) {
-  const formatCurrency = useCurrencyFormat();
-  const { sectors } = useAuth();
-  const [period, setPeriod] = useState<DrePeriod>('mensal');
-  const [selectedMonth, setSelectedMonth] = useState(() => {
-    const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-  });
-  const [selectedYear, setSelectedYear] = useState(() => String(new Date().getFullYear()));
-  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
-  const [viewMode, setViewMode] = useState<'consolidado' | 'por-setor'>('consolidado');
-
-  // Filter transactions by period
-  const periodTransactions = useMemo(() => {
-    const paid = transactions.filter(t => t.status === 'pago' && t.paymentDate);
-    if (period === 'mensal') {
-      return paid.filter(t => t.paymentDate!.startsWith(selectedMonth));
-    }
-    if (period === 'trimestral') {
-      const [y, m] = selectedMonth.split('-').map(Number);
-      const months: string[] = [];
-      for (let i = 0; i < 3; i++) {
-        const date = new Date(y, m - 1 - i, 1);
-        months.push(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
-      }
-      return paid.filter(t => months.some(mo => t.paymentDate!.startsWith(mo)));
-    }
-    // anual
-    return paid.filter(t => t.paymentDate!.startsWith(selectedYear));
-  }, [transactions, period, selectedMonth, selectedYear]);
-
-  // DRE computation
-  const dre = useMemo(() => {
-    const receitas = periodTransactions.filter(t => t.type === 'receita');
-    const despesas = periodTransactions.filter(t => t.type === 'despesa');
-
-    // 1. Receita Bruta breakdown by category
-    const receitaByCategory = new Map<string, number>();
-    let receitaBruta = 0;
-    for (const t of receitas) {
-      if (FINANCEIRO_RECEITA_CATEGORIES.has(t.category || '')) continue; // juros handled separately
-      const cat = t.category || 'Outros';
-      receitaByCategory.set(cat, (receitaByCategory.get(cat) || 0) + t.amount);
-      receitaBruta += t.amount;
-    }
-
-    // 2. Deduções (taxes)
-    const deducaoByCategory = new Map<string, number>();
-    let totalDeducoes = 0;
-    for (const t of despesas) {
-      if (DEDUCAO_CATEGORIES.has(t.category || '')) {
-        const cat = t.category || 'Impostos';
-        deducaoByCategory.set(cat, (deducaoByCategory.get(cat) || 0) + t.amount);
-        totalDeducoes += t.amount;
-      }
-    }
-
-    const receitaLiquida = receitaBruta - totalDeducoes;
-
-    // 3. CPV/CSV (Custo das Mercadorias/Serviços Vendidos)
-    const cpvByCategory = new Map<string, number>();
-    let totalCPV = 0;
-    for (const t of despesas) {
-      if (CPV_CATEGORIES.has(t.category || '')) {
-        const cat = t.category || 'Outros';
-        cpvByCategory.set(cat, (cpvByCategory.get(cat) || 0) + t.amount);
-        totalCPV += t.amount;
-      }
-    }
-
-    const lucroBruto = receitaLiquida - totalCPV;
-
-    // 4. Despesas Operacionais (everything that's not CPV, not Impostos, not Juros)
-    const opexByCategory = new Map<string, number>();
-    let totalOpex = 0;
-    for (const t of despesas) {
-      const cat = t.category || 'Outros';
-      if (DEDUCAO_CATEGORIES.has(cat) || CPV_CATEGORIES.has(cat)) continue;
-      opexByCategory.set(cat, (opexByCategory.get(cat) || 0) + t.amount);
-      totalOpex += t.amount;
-    }
-
-    const resultadoOperacional = lucroBruto - totalOpex;
-
-    // 5. Resultado Financeiro
-    const receitaFinanceira = receitas.filter(t => FINANCEIRO_RECEITA_CATEGORIES.has(t.category || '')).reduce((s, t) => s + t.amount, 0);
-    const despesaFinanceira = despesas.filter(t => FINANCEIRO_RECEITA_CATEGORIES.has(t.category || '')).reduce((s, t) => s + t.amount, 0);
-    const resultadoFinanceiro = receitaFinanceira - despesaFinanceira;
-
-    const resultadoLiquido = resultadoOperacional + resultadoFinanceiro;
-    const margemBruta = receitaBruta > 0 ? (lucroBruto / receitaBruta) * 100 : 0;
-    const margemLiquida = receitaBruta > 0 ? (resultadoLiquido / receitaBruta) * 100 : 0;
-
-    return {
-      receitaBruta,
-      receitaByCategory,
-      totalDeducoes,
-      deducaoByCategory,
-      receitaLiquida,
-      totalCPV,
-      cpvByCategory,
-      lucroBruto,
-      totalOpex,
-      opexByCategory,
-      resultadoOperacional,
-      receitaFinanceira,
-      despesaFinanceira,
-      resultadoFinanceiro,
-      resultadoLiquido,
-      margemBruta,
-      margemLiquida,
-    };
-  }, [periodTransactions]);
-
-  // Sector DRE computation
-  const sectorDRE = useMemo((): SectorDRERow[] => {
-    const sectorMap = new Map<string, { receitas: number; despesas: number }>();
-
-    // "Sem setor" bucket for unassigned transactions
-    sectorMap.set('__none__', { receitas: 0, despesas: 0 });
-
-    for (const t of periodTransactions) {
-      const key = t.sectorId || '__none__';
-      if (!sectorMap.has(key)) sectorMap.set(key, { receitas: 0, despesas: 0 });
-      const bucket = sectorMap.get(key)!;
-      if (t.type === 'receita') bucket.receitas += t.amount;
-      else bucket.despesas += t.amount;
-    }
-
-    const rows: SectorDRERow[] = [];
-    for (const [key, { receitas, despesas }] of sectorMap.entries()) {
-      if (receitas === 0 && despesas === 0) continue;
-      const sector = sectors.find(s => s.id === key);
-      const sectorName = key === '__none__' ? 'Sem Setor' : (sector?.name ?? key);
-      const resultado = receitas - despesas;
-      const margem = receitas > 0 ? (resultado / receitas) * 100 : 0;
-      rows.push({ sectorName, receitas, despesas, resultado, margem });
-    }
-    return rows.sort((a, b) => b.receitas - a.receitas);
-  }, [periodTransactions, sectors]);
-
-  const toggleSection = (key: string) => {
-    setExpandedSections(prev => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
-  };
-
-  // Available months from transactions
-  const availableMonths = useMemo(() => {
-    const months = new Set<string>();
-    const now = new Date();
-    for (let i = 0; i < 24; i++) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      months.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
-    }
-    return Array.from(months).sort((a, b) => b.localeCompare(a));
-  }, []);
-
-  const availableYears = useMemo(() => {
-    const years = new Set<string>();
-    for (let y = new Date().getFullYear(); y >= new Date().getFullYear() - 5; y--) years.add(String(y));
-    return Array.from(years).sort((a, b) => b.localeCompare(a));
-  }, []);
-
-  const periodLabel = useMemo(() => {
-    if (period === 'anual') return `Ano ${selectedYear}`;
-    const [y, m] = selectedMonth.split('-').map(Number);
-    const monthName = new Date(y, m - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
-    if (period === 'mensal') return monthName.charAt(0).toUpperCase() + monthName.slice(1);
-    const endDate = new Date(y, m - 1, 1);
-    const startDate = new Date(y, m - 3, 1);
-    return `${startDate.toLocaleDateString('pt-BR', { month: 'short' })} – ${endDate.toLocaleDateString('pt-BR', { month: 'short', year: 'numeric' })}`;
-  }, [period, selectedMonth, selectedYear]);
-
-  const handleExportPDF = async () => {
-    const { default: jsPDF } = await import('jspdf');
-    const { default: autoTable } = await import('jspdf-autotable');
-    const doc = new jsPDF({ orientation: 'portrait', format: 'a4' });
-
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(16);
-    doc.text('Demonstrativo de Resultado do Exercício', 14, 20);
-    doc.setFontSize(11);
-    doc.setFont('helvetica', 'normal');
-    doc.text(businessName, 14, 28);
-    doc.text(`Período: ${periodLabel}`, 14, 34);
-    doc.text(`Emitido em: ${new Date().toLocaleDateString('pt-BR')}`, 14, 40);
-
-    const rows: (string | number)[][] = [];
-    const addRow = (label: string, value: number, bold = false) => rows.push([label, formatCurrency(value)]);
-
-    addRow('RECEITA BRUTA', dre.receitaBruta, true);
-    Array.from(dre.receitaByCategory.entries()).forEach(([k, v]) => addRow(`  ${k}`, v));
-    addRow('(-) DEDUÇÕES', -dre.totalDeducoes, true);
-    Array.from(dre.deducaoByCategory.entries()).forEach(([k, v]) => addRow(`  ${k}`, -v));
-    addRow('(=) RECEITA LÍQUIDA', dre.receitaLiquida, true);
-    addRow('(-) CUSTO DOS SERVIÇOS (CPV)', -dre.totalCPV, true);
-    Array.from(dre.cpvByCategory.entries()).forEach(([k, v]) => addRow(`  ${k}`, -v));
-    addRow('(=) LUCRO BRUTO', dre.lucroBruto, true);
-    addRow('(-) DESPESAS OPERACIONAIS', -dre.totalOpex, true);
-    Array.from(dre.opexByCategory.entries()).forEach(([k, v]) => addRow(`  ${k}`, -v));
-    addRow('(=) RESULTADO OPERACIONAL (EBIT)', dre.resultadoOperacional, true);
-    if (dre.receitaFinanceira > 0 || dre.despesaFinanceira > 0) {
-      addRow('(+/-) RESULTADO FINANCEIRO', dre.resultadoFinanceiro, true);
-    }
-    addRow('(=) RESULTADO LÍQUIDO', dre.resultadoLiquido, true);
-
-    autoTable(doc, {
-      head: [['Descrição', 'Valor']],
-      body: rows,
-      startY: 48,
-      styles: { fontSize: 10, font: 'helvetica' },
-      headStyles: { fillColor: [220, 38, 38], textColor: 255 },
-      columnStyles: { 1: { halign: 'right' } },
-    });
-
-    doc.save(`DRE_${businessName.replace(/\s+/g, '_')}_${periodLabel.replace(/\s+/g, '_')}.pdf`);
-  };
-
-  const fmt = (v: number) => formatCurrency(Math.abs(v));
-  const isNeg = (v: number) => v < 0;
-
-  interface DreRowProps {
-    label: string;
-    value: number;
-    sign?: '+' | '-' | '=';
-    isHeader?: boolean;
-    isResult?: boolean;
-    indent?: boolean;
-    expandKey?: string;
-    items?: Map<string, number>;
-    valueSign?: -1 | 1; // multiply value by this for display purposes
-  }
-
-  function DreRow({ label, value, sign, isHeader, isResult, indent, expandKey, items, valueSign = 1 }: DreRowProps) {
-    const displayValue = value * valueSign;
-    const hasItems = items && items.size > 0;
-    const isExpanded = expandKey ? expandedSections.has(expandKey) : false;
-    const colorClass = isResult
-      ? displayValue >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'
-      : 'text-slate-700 dark:text-gray-300';
-
-    return (
-      <>
-        <div
-          className={cn(
-            'flex items-center justify-between py-2.5 px-4 border-b border-slate-100 dark:border-gray-800 transition-colors',
-            isHeader && 'bg-slate-50 dark:bg-gray-800/60 font-semibold',
-            isResult && 'bg-slate-100 dark:bg-gray-800 font-bold',
-            indent && 'pl-8',
-            hasItems && 'cursor-pointer hover:bg-slate-50 dark:hover:bg-gray-800/40',
-          )}
-          onClick={hasItems && expandKey ? () => toggleSection(expandKey) : undefined}
-        >
-          <div className="flex items-center gap-2">
-            {sign && (
-              <span className="text-xs font-mono w-4 text-slate-400 dark:text-gray-500 select-none">{sign}</span>
-            )}
-            <span className={cn('text-sm', isHeader ? 'text-slate-800 dark:text-gray-200' : isResult ? colorClass : 'text-slate-600 dark:text-gray-400', indent && 'text-[13px]')}>
-              {label}
-            </span>
-            {hasItems && (
-              <ChevronRight size={14} className={cn('text-slate-400 dark:text-gray-500 transition-transform', isExpanded && 'rotate-90')} />
-            )}
-          </div>
-          <span className={cn('text-sm font-mono tabular-nums', colorClass, isResult && 'text-base')}>
-            {fmt(displayValue)}
-          </span>
-        </div>
-        {hasItems && isExpanded && (
-          <div className="bg-slate-50/50 dark:bg-gray-900/30">
-            {Array.from(items!.entries()).sort(([, a], [, b]) => b - a).map(([cat, val]) => (
-              <div key={cat} className="flex items-center justify-between py-1.5 px-4 pl-12 border-b border-slate-100/70 dark:border-gray-800/50">
-                <span className="text-[12px] text-slate-500 dark:text-gray-500">{cat}</span>
-                <span className="text-[12px] font-mono tabular-nums text-slate-500 dark:text-gray-500">{fmt(val)}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </>
-    );
-  }
-
-  return (
-    <div className="space-y-5">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
-          <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 font-display">
-            Demonstrativo de Resultado do Exercício
-          </h3>
-          <p className="text-sm text-slate-500 dark:text-gray-400 mt-0.5">{periodLabel}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          {/* Period type selector */}
-          <div className="flex items-center gap-1 p-1 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl">
-            {(['mensal', 'trimestral', 'anual'] as DrePeriod[]).map(p => (
-              <button
-                key={p}
-                onClick={() => setPeriod(p)}
-                className={cn(
-                  'px-3 py-1.5 rounded-lg text-xs font-medium transition-all',
-                  period === p ? 'bg-red-600 text-white shadow-sm' : 'text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800'
-                )}
-              >
-                {p.charAt(0).toUpperCase() + p.slice(1)}
-              </button>
-            ))}
-          </div>
-          {/* Period value selector */}
-          {period === 'anual' ? (
-            <select
-              value={selectedYear}
-              onChange={e => setSelectedYear(e.target.value)}
-              className="px-3 py-1.5 rounded-xl text-xs font-medium bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 text-slate-700 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-red-500"
-            >
-              {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
-            </select>
-          ) : (
-            <select
-              value={selectedMonth}
-              onChange={e => setSelectedMonth(e.target.value)}
-              className="px-3 py-1.5 rounded-xl text-xs font-medium bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 text-slate-700 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-red-500"
-            >
-              {availableMonths.map(m => {
-                const [y, mo] = m.split('-').map(Number);
-                const label = new Date(y, mo - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
-                return <option key={m} value={m}>{label.charAt(0).toUpperCase() + label.slice(1)}</option>;
-              })}
-            </select>
-          )}
-          {/* View mode toggle */}
-          <div className="flex items-center gap-1 p-1 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl">
-            {(['consolidado', 'por-setor'] as const).map(mode => (
-              <button
-                key={mode}
-                onClick={() => setViewMode(mode)}
-                className={cn(
-                  'px-3 py-1.5 rounded-lg text-xs font-medium transition-all whitespace-nowrap',
-                  viewMode === mode ? 'bg-red-600 text-white shadow-sm' : 'text-slate-500 dark:text-gray-400 hover:bg-slate-50 dark:hover:bg-gray-800'
-                )}
-              >
-                {mode === 'consolidado' ? 'Consolidado' : 'Por Setor'}
-              </button>
-            ))}
-          </div>
-          <motion.button
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            onClick={() => viewMode === 'por-setor'
-              ? exportDRESectorCSV(sectorDRE, periodLabel, businessName)
-              : exportDRECSV(dre as DREData, periodLabel, businessName)
-            }
-            className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl text-sm font-medium text-slate-700 dark:text-gray-300 hover:bg-slate-50 dark:hover:bg-gray-800 transition-all shadow-sm"
-          >
-            <Download size={15} />
-            CSV
-          </motion.button>
-          {viewMode === 'consolidado' && (
-            <motion.button
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={handleExportPDF}
-              className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl text-sm font-medium text-slate-700 dark:text-gray-300 hover:bg-slate-50 dark:hover:bg-gray-800 transition-all shadow-sm"
-            >
-              <Download size={15} />
-              PDF
-            </motion.button>
-          )}
-        </div>
-      </div>
-
-      {/* KPI Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {[
-          { label: 'Receita Bruta', value: dre.receitaBruta, color: 'emerald' },
-          { label: 'Lucro Bruto', value: dre.lucroBruto, color: dre.lucroBruto >= 0 ? 'emerald' : 'red' },
-          { label: 'Margem Bruta', value: null, pct: dre.margemBruta, color: dre.margemBruta >= 0 ? 'emerald' : 'red' },
-          { label: 'Resultado Líquido', value: dre.resultadoLiquido, color: dre.resultadoLiquido >= 0 ? 'emerald' : 'red' },
-        ].map(({ label, value, pct, color }) => (
-          <div key={label} className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-4 shadow-sm">
-            <p className="text-xs text-slate-500 dark:text-gray-400 mb-1">{label}</p>
-            <p className={cn('text-lg font-bold font-display', color === 'emerald' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
-              {pct !== undefined ? `${pct.toFixed(1)}%` : formatCurrency(value!)}
-            </p>
-          </div>
-        ))}
-      </div>
-
-      {/* Consolidated DRE Table */}
-      <AnimatePresence mode="wait">
-        {viewMode === 'consolidado' ? (
-          <motion.div key="consolidado" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.2 }}>
-            <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl overflow-hidden shadow-sm">
-              <div className="px-4 py-3 border-b border-slate-100 dark:border-gray-800 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <FileSpreadsheet size={16} className="text-red-500" />
-                  <span className="text-sm font-semibold text-slate-800 dark:text-gray-200">Estrutura do DRE</span>
-                </div>
-                <button
-                  onClick={() => {
-                    const allKeys = ['receita', 'deducao', 'cpv', 'opex'];
-                    const allExpanded = allKeys.every(k => expandedSections.has(k));
-                    setExpandedSections(allExpanded ? new Set() : new Set(allKeys));
-                  }}
-                  className="text-xs text-red-500 hover:text-red-600 font-medium"
-                >
-                  {['receita', 'deducao', 'cpv', 'opex'].every(k => expandedSections.has(k)) ? 'Recolher tudo' : 'Expandir tudo'}
-                </button>
-              </div>
-
-              <div className="divide-y-0">
-                <DreRow label="RECEITA BRUTA" value={dre.receitaBruta} isHeader expandKey="receita" items={dre.receitaByCategory} />
-                <DreRow label="Deduções da Receita" value={-dre.totalDeducoes} sign="-" expandKey="deducao" items={dre.deducaoByCategory} />
-                <DreRow label="RECEITA LÍQUIDA" value={dre.receitaLiquida} sign="=" isResult />
-
-                <div className="h-px bg-slate-200 dark:bg-gray-700 my-0.5" />
-
-                <DreRow label="Custo dos Serviços/Produtos (CPV)" value={-dre.totalCPV} sign="-" expandKey="cpv" items={dre.cpvByCategory} />
-                <DreRow label="LUCRO BRUTO" value={dre.lucroBruto} sign="=" isResult />
-
-                <div className="h-px bg-slate-200 dark:bg-gray-700 my-0.5" />
-
-                <DreRow label="Despesas Operacionais" value={-dre.totalOpex} sign="-" expandKey="opex" items={dre.opexByCategory} />
-                <DreRow label="RESULTADO OPERACIONAL (EBIT)" value={dre.resultadoOperacional} sign="=" isResult />
-
-                {(dre.receitaFinanceira > 0 || dre.despesaFinanceira > 0) && (
-                  <>
-                    <div className="h-px bg-slate-200 dark:bg-gray-700 my-0.5" />
-                    {dre.receitaFinanceira > 0 && (
-                      <DreRow label="Receita Financeira (Juros)" value={dre.receitaFinanceira} sign="+" />
-                    )}
-                    {dre.despesaFinanceira > 0 && (
-                      <DreRow label="Despesa Financeira (Juros)" value={-dre.despesaFinanceira} sign="-" />
-                    )}
-                    <DreRow label="Resultado Financeiro" value={dre.resultadoFinanceiro} sign="=" isResult />
-                  </>
-                )}
-
-                <div className="h-1 bg-red-600/10 dark:bg-red-500/10 my-0.5" />
-
-                <div className={cn(
-                  'flex items-center justify-between py-4 px-4',
-                  dre.resultadoLiquido >= 0 ? 'bg-emerald-50 dark:bg-emerald-900/20' : 'bg-red-50 dark:bg-red-900/20'
-                )}>
-                  <div>
-                    <p className="text-xs text-slate-500 dark:text-gray-400 font-medium mb-0.5">RESULTADO LÍQUIDO</p>
-                    <p className={cn('text-2xl font-bold font-display', dre.resultadoLiquido >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
-                      {formatCurrency(dre.resultadoLiquido)}
-                    </p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-xs text-slate-500 dark:text-gray-400 mb-0.5">Margem Líquida</p>
-                    <p className={cn('text-lg font-bold font-display', dre.margemLiquida >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
-                      {dre.margemLiquida.toFixed(1)}%
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Empty state (consolidated) */}
-            {periodTransactions.length === 0 && (
-              <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500 mt-4">
-                <FileSpreadsheet size={40} strokeWidth={1.5} />
-                <p className="mt-3 text-sm font-medium">Nenhum lançamento pago neste período</p>
-                <p className="text-xs mt-1">Apenas transações com status "pago" entram no DRE</p>
-              </div>
-            )}
-          </motion.div>
-        ) : (
-          <motion.div key="por-setor" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.2 }} className="space-y-4">
-            {/* Sector comparison bar chart */}
-            {sectorDRE.length > 0 ? (
-              <>
-                <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-4 shadow-sm">
-                  <div className="flex items-center gap-2 mb-4">
-                    <BarChart3 size={16} className="text-red-500" />
-                    <span className="text-sm font-semibold text-slate-800 dark:text-gray-200">Resultado por Departamento</span>
-                  </div>
-                  <ResponsiveContainer width="100%" height={260}>
-                    <BarChart data={sectorDRE} margin={{ top: 4, right: 4, left: 4, bottom: 4 }} barCategoryGap="30%">
-                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(100,116,139,0.12)" />
-                      <XAxis dataKey="sectorName" tick={{ fontSize: 12, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-                      <YAxis tickFormatter={(v) => `R$${(v / 1000).toFixed(0)}k`} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} width={60} />
-                      <RechartsTooltip
-                        formatter={(value: number, name: string) => [
-                          formatCurrency(value),
-                          name === 'receitas' ? 'Receitas' : name === 'despesas' ? 'Despesas' : 'Resultado',
-                        ]}
-                        contentStyle={{ background: 'var(--tooltip-bg, #1e293b)', border: 'none', borderRadius: 10, color: '#e2e8f0', fontSize: 13 }}
-                      />
-                      <Legend formatter={(v) => v === 'receitas' ? 'Receitas' : v === 'despesas' ? 'Despesas' : 'Resultado'} wrapperStyle={{ fontSize: 12 }} />
-                      <Bar dataKey="receitas" fill="#10b981" radius={[4, 4, 0, 0]} name="receitas" />
-                      <Bar dataKey="despesas" fill="#ef4444" radius={[4, 4, 0, 0]} name="despesas" />
-                      <Bar dataKey="resultado" fill="#3b82f6" radius={[4, 4, 0, 0]} name="resultado">
-                        {sectorDRE.map((entry, index) => (
-                          <Cell key={index} fill={entry.resultado >= 0 ? '#3b82f6' : '#f97316'} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-
-                {/* Sector cards */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {sectorDRE.map(s => {
-                    const sector = sectors.find(sec => sec.name === s.sectorName);
-                    const isPositive = s.resultado >= 0;
-                    return (
-                      <div key={s.sectorName} className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl p-4 shadow-sm">
-                        <div className="flex items-center gap-2 mb-3">
-                          {sector?.color && (
-                            <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: sector.color }} />
-                          )}
-                          <span className="text-sm font-semibold text-slate-800 dark:text-gray-200 truncate">{s.sectorName}</span>
-                        </div>
-                        <div className="grid grid-cols-3 gap-2">
-                          <div>
-                            <p className="text-[10px] text-slate-400 dark:text-gray-500 mb-0.5">Receitas</p>
-                            <p className="text-sm font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">{formatCurrency(s.receitas)}</p>
-                          </div>
-                          <div>
-                            <p className="text-[10px] text-slate-400 dark:text-gray-500 mb-0.5">Despesas</p>
-                            <p className="text-sm font-bold text-red-600 dark:text-red-400 tabular-nums">{formatCurrency(s.despesas)}</p>
-                          </div>
-                          <div>
-                            <p className="text-[10px] text-slate-400 dark:text-gray-500 mb-0.5">Resultado</p>
-                            <p className={cn('text-sm font-bold tabular-nums', isPositive ? 'text-blue-600 dark:text-blue-400' : 'text-orange-500 dark:text-orange-400')}>
-                              {isPositive ? '+' : ''}{formatCurrency(s.resultado)}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="mt-2.5 pt-2.5 border-t border-slate-100 dark:border-gray-800 flex items-center justify-between">
-                          <span className="text-[11px] text-slate-400 dark:text-gray-500">Margem</span>
-                          <span className={cn('text-[11px] font-bold', isPositive ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
-                            {s.margem.toFixed(1)}%
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </>
-            ) : (
-              <div className="bg-white dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-2xl flex flex-col items-center justify-center py-16 text-slate-400 dark:text-gray-500">
-                <FileSpreadsheet size={40} strokeWidth={1.5} />
-                <p className="mt-3 text-sm font-medium">Nenhum lançamento com setor neste período</p>
-                <p className="text-xs mt-1">Associe transações a setores para ver esta visão</p>
-              </div>
-            )}
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-}
 
 // ==========================================
 // TAB: CONTAS BANCARIAS

@@ -438,6 +438,8 @@ export interface BusinessSettings {
   routingRules?: RoutingRule[];
   /** Configuração do servidor de notificações externo (broadcasts de email, SMS, etc.) */
   notificationServer?: NotificationServerConfig;
+  /** Ativa a aba de Projetos no módulo financeiro */
+  projectsEnabled?: boolean;
 }
 
 /**
@@ -965,6 +967,9 @@ export interface Transaction {
   contactId?: string;
   campaignId?: string;
   sectorId?: string;
+  /** Vínculo opcional com um projeto (ex: SaaS específico em software house) */
+  projectId?: string;
+  projectName?: string;
   appointmentId?: string; // Link back to the originating appointment (for commission transactions)
   /** Parcelamento: grupo compartilhado entre todas as parcelas */
   installmentGroupId?: string;
@@ -985,6 +990,23 @@ export interface Transaction {
   /** Idempotência de notificações — preenchido pelo cron ao enviar alerta */
   dueSoonNotifiedAt?: string;
   overdueNotifiedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ---- Projects (vínculo opcional para transações; ex: software house com N SaaS) ----
+export type ProjectStatus = 'ativo' | 'pausado' | 'encerrado';
+
+export interface Project {
+  id: string;
+  businessId: string;
+  name: string;
+  description?: string;
+  /** Cor em hex para badge na tabela de transações */
+  color: string;
+  status: ProjectStatus;
+  createdBy?: string;
+  createdByName?: string;
   createdAt: string;
   updatedAt: string;
 }
