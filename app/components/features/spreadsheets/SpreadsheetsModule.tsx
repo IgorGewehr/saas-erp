@@ -76,15 +76,19 @@ const VISIBILITY_CFG: Record<SpreadsheetVisibility, { label: string; icon: React
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Decide se o user tem acesso a uma planilha com base no padrão de
- *  visibilidade. Replica lógica do Kanban pra consistência. */
+ *  visibilidade.
+ *
+ *  IMPORTANTE: 'private' é privado de verdade — NEM ADMIN/FOUNDER bypassa.
+ *  Quem marcou Privada espera privacidade total; bypass de admin quebrava
+ *  essa expectativa e vazava planilhas pessoais pro topo da hierarquia.
+ *  Pra 'sectors' admin ainda bypassa (moderação cross-setor faz sentido). */
 function canUserAccess(s: Spreadsheet, userId: string, userRole: string, userSectorIds: string[]): boolean {
-  // Admin/founder veem tudo (mesmo private de outros).
-  if (ROLE_HIERARCHY[userRole as keyof typeof ROLE_HIERARCHY] >= ROLE_HIERARCHY['admin']) return true;
-  // Owner sempre vê o que criou.
+  // Owner sempre vê o que criou (independente de role).
   if (s.ownerId === userId) return true;
   if (s.visibility === 'all') return true;
   if (s.visibility === 'private') return false;
   if (s.visibility === 'sectors') {
+    if (ROLE_HIERARCHY[userRole as keyof typeof ROLE_HIERARCHY] >= ROLE_HIERARCHY['admin']) return true;
     return (s.sectorIds || []).some(sid => userSectorIds.includes(sid));
   }
   return false;
@@ -102,6 +106,15 @@ export default function SpreadsheetsModule() {
   const [showCreate, setShowCreate] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<Spreadsheet | null>(null);
   const [isImporting, setIsImporting] = useState(false);
+  // Estado intermediário do import — depois do parse, antes da gravação.
+  // Guarda o workbook parsado pra reusar quando o user confirma no modal.
+  const [pendingImport, setPendingImport] = useState<{
+    workbook: Record<string, unknown>;
+    rowCount: number;
+    colCount: number;
+    truncated: boolean;
+    suggestedName: string;
+  } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isAdmin = !!user && ROLE_HIERARCHY[user.role] >= ROLE_HIERARCHY['admin'];
@@ -189,10 +202,13 @@ export default function SpreadsheetsModule() {
   }, [user, business?.id]);
 
   // ─── Importar CSV ───────────────────────────────────────────────────────────
-  // Pipeline: File → IWorkbookData → addDoc(spreadsheets, { snapshot }) → abre
-  // editor. Nome sugerido = nome do arquivo. Visibility default = 'private'
-  // (user pode mudar depois). Não passa por modal pra reduzir fricção — se o
-  // user errou o arquivo, é só apagar a planilha e refazer.
+  // Pipeline em 2 passos:
+  //   1. parse (handleImportCsv) → faz o parse local e abre o modal de
+  //      confirmação com summary + escolha de nome/visibilidade
+  //   2. confirm (confirmImportCsv) → grava no Firestore com a visibilidade
+  //      escolhida e abre o editor
+  // Sem o modal, importação caía direto em 'private' silencioso (bug
+  // reportado: user importava CSV e ficava só visível pra ele).
   const handleImportCsv = useCallback(async (file: File) => {
     if (!user || !business?.id) return;
     setIsImporting(true);
@@ -204,35 +220,57 @@ export default function SpreadsheetsModule() {
         return;
       }
       const { workbook, rowCount, colCount, truncated } = result.data;
+      // Não grava ainda — abre modal pra user confirmar nome + visibilidade.
+      setPendingImport({
+        workbook: workbook as unknown as Record<string, unknown>,
+        rowCount,
+        colCount,
+        truncated,
+        suggestedName: sheetName,
+      });
+    } catch (err) {
+      console.error('[Spreadsheets] import csv parse error:', err);
+      toast.error('Erro ao ler planilha');
+    } finally {
+      setIsImporting(false);
+    }
+  }, [user, business?.id]);
+
+  const confirmImportCsv = useCallback(async (name: string, visibility: SpreadsheetVisibility) => {
+    if (!user || !business?.id || !pendingImport) return;
+    setIsImporting(true);
+    try {
       const now = new Date().toISOString();
       const ref = await addDoc(collection(db, 'spreadsheets'), {
         businessId: business.id,
         source: 'standalone',
-        name: sheetName,
+        name: name.trim() || pendingImport.suggestedName,
         ownerId: user.uid,
         ownerName: user.name,
-        visibility: 'private' as SpreadsheetVisibility,
+        visibility,
         version: 1,
         // sanitize defensivo — buildWorkbookFromRows não emite undefined, mas
         // alinha com handleSaveSnapshot pra evitar regressão se o shape mudar.
-        snapshot: sanitizeForFirestore(workbook),
+        snapshot: sanitizeForFirestore(pendingImport.workbook),
         createdAt: now,
         updatedAt: now,
       });
+      const { rowCount, colCount, truncated } = pendingImport;
       const summary = `${rowCount} linha${rowCount === 1 ? '' : 's'} × ${colCount} coluna${colCount === 1 ? '' : 's'}`;
       if (truncated) {
         toast.info(`Planilha importada (truncada em 5000 linhas) — ${summary}`);
       } else {
         toast.success(`Planilha importada — ${summary}`);
       }
+      setPendingImport(null);
       setOpenId(ref.id);
     } catch (err) {
-      console.error('[Spreadsheets] import csv error:', err);
+      console.error('[Spreadsheets] import csv save error:', err);
       toast.error('Erro ao importar planilha');
     } finally {
       setIsImporting(false);
     }
-  }, [user, business?.id]);
+  }, [user, business?.id, pendingImport]);
 
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -403,6 +441,18 @@ export default function SpreadsheetsModule() {
         )}
       </AnimatePresence>
 
+      {/* Modal: confirmar import de CSV (pede nome + visibilidade ANTES de gravar) */}
+      <AnimatePresence>
+        {pendingImport && (
+          <ImportCsvModal
+            pending={pendingImport}
+            onCancel={() => setPendingImport(null)}
+            onConfirm={confirmImportCsv}
+            saving={isImporting}
+          />
+        )}
+      </AnimatePresence>
+
       {/* Modal: confirmar exclusão */}
       <AnimatePresence>
         {deleteConfirm && (
@@ -568,6 +618,37 @@ function SpreadsheetCard({ spreadsheet, onOpen, onDelete, canDelete }: {
   );
 }
 
+/** Picker de 3 botões (Privada / Por setor / Toda equipe). Usado tanto no
+ *  CreateModal quanto no ImportCsvModal — extraído pra evitar duplicação. */
+function VisibilityPicker({ value, onChange }: {
+  value: SpreadsheetVisibility;
+  onChange: (v: SpreadsheetVisibility) => void;
+}) {
+  return (
+    <div className="grid grid-cols-3 gap-2">
+      {(Object.keys(VISIBILITY_CFG) as SpreadsheetVisibility[]).map(v => {
+        const cfg = VISIBILITY_CFG[v];
+        return (
+          <button
+            key={v}
+            type="button"
+            onClick={() => onChange(v)}
+            className={cn(
+              'flex flex-col items-center gap-1 px-2 py-3 rounded-xl border text-xs transition-colors',
+              value === v
+                ? 'border-red-400 bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-400'
+                : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-white/[0.04]',
+            )}
+          >
+            <cfg.icon className="w-4 h-4" />
+            {cfg.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function CreateModal({ onCancel, onCreate }: {
   onCancel: () => void;
   onCreate: (name: string, visibility: SpreadsheetVisibility) => void;
@@ -603,27 +684,7 @@ function CreateModal({ onCancel, onCreate }: {
         </label>
         <label className="block mb-6">
           <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2 block">Visibilidade</span>
-          <div className="grid grid-cols-3 gap-2">
-            {(Object.keys(VISIBILITY_CFG) as SpreadsheetVisibility[]).map(v => {
-              const cfg = VISIBILITY_CFG[v];
-              return (
-                <button
-                  key={v}
-                  type="button"
-                  onClick={() => setVisibility(v)}
-                  className={cn(
-                    'flex flex-col items-center gap-1 px-2 py-3 rounded-xl border text-xs transition-colors',
-                    visibility === v
-                      ? 'border-red-400 bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-400'
-                      : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-white/[0.04]',
-                  )}
-                >
-                  <cfg.icon className="w-4 h-4" />
-                  {cfg.label}
-                </button>
-              );
-            })}
-          </div>
+          <VisibilityPicker value={visibility} onChange={setVisibility} />
         </label>
         <div className="flex gap-2 justify-end">
           <button
@@ -638,6 +699,74 @@ function CreateModal({ onCancel, onCreate }: {
             className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Criar
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+/** Modal pra confirmar import de CSV. Renderiza DEPOIS do parse — assim
+ *  exibe summary (linhas × colunas) e o user já marca a visibilidade antes
+ *  da gravação. Nome vem pré-preenchido com sugestão do filename, editável. */
+function ImportCsvModal({ pending, onCancel, onConfirm, saving }: {
+  pending: { suggestedName: string; rowCount: number; colCount: number; truncated: boolean };
+  onCancel: () => void;
+  onConfirm: (name: string, visibility: SpreadsheetVisibility) => void;
+  saving: boolean;
+}) {
+  const [name, setName] = useState(pending.suggestedName);
+  const [visibility, setVisibility] = useState<SpreadsheetVisibility>('private');
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      onClick={saving ? undefined : onCancel}
+    >
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-md p-6"
+        onClick={e => e.stopPropagation()}
+      >
+        <h2 className="text-lg font-bold text-gray-900 dark:text-white mb-1">Importar planilha</h2>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+          {pending.rowCount.toLocaleString('pt-BR')} linha{pending.rowCount === 1 ? '' : 's'} × {pending.colCount} coluna{pending.colCount === 1 ? '' : 's'}
+          {pending.truncated && ' (truncada em 5000 linhas)'}
+        </p>
+        <label className="block mb-4">
+          <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Nome</span>
+          <input
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder="Nome da planilha"
+            autoFocus
+            className="mt-1 w-full px-3 py-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
+          />
+        </label>
+        <label className="block mb-6">
+          <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2 block">Visibilidade</span>
+          <VisibilityPicker value={visibility} onChange={setVisibility} />
+        </label>
+        <div className="flex gap-2 justify-end">
+          <button
+            onClick={onCancel}
+            disabled={saving}
+            className="px-4 py-2 rounded-xl text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.06] disabled:opacity-50"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={() => onConfirm(name, visibility)}
+            disabled={!name.trim() || saving}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+            {saving ? 'Importando...' : 'Importar'}
           </button>
         </div>
       </motion.div>
