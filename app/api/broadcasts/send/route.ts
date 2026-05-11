@@ -836,6 +836,47 @@ export async function POST(req: NextRequest) {
     const results: { contactId?: string; recipientId: string; status: string; externalMessageId?: string; error?: string }[] = [];
     const updatePromises: Promise<unknown>[] = [];
 
+    // ── Flush incremental de stats.sent/stats.failed no broadcast doc ──────────
+    // Antes, esses contadores só eram incrementados UMA VEZ no final da sessão
+    // (linha do final transaction abaixo). Como o card de campanha no CRM faz
+    // onSnapshot no broadcast doc, ele ficava em 0% até a sessão completar —
+    // mesmo com 11/237 já enviadas o gráfico mostrava 0/237. Solução: flush
+    // a cada N msgs OU T ms (o que vier primeiro), preservando o limite soft
+    // de ~1 write/s/doc do Firestore mesmo em campanhas Cloud rápidas.
+    // stats.delivered/read continuam via webhook (tempo real já funcionava).
+    const STATS_FLUSH_EVERY_N = 5;
+    const STATS_FLUSH_INTERVAL_MS = 2_000;
+    const { FieldValue: FV } = await import('firebase-admin/firestore');
+    let pendingSentDelta = 0;
+    let pendingFailedDelta = 0;
+    let lastStatsFlushAt = Date.now();
+
+    const doStatsFlush = (force: boolean) => {
+      if (pendingSentDelta === 0 && pendingFailedDelta === 0) return;
+      if (!force) {
+        const sumDelta = pendingSentDelta + pendingFailedDelta;
+        if (sumDelta < STATS_FLUSH_EVERY_N && Date.now() - lastStatsFlushAt < STATS_FLUSH_INTERVAL_MS) return;
+      }
+      const sentDelta = pendingSentDelta;
+      const failedDelta = pendingFailedDelta;
+      pendingSentDelta = 0;
+      pendingFailedDelta = 0;
+      lastStatsFlushAt = Date.now();
+      const update: Record<string, unknown> = { updatedAt: new Date().toISOString() };
+      if (sentDelta > 0) update['stats.sent'] = FV.increment(sentDelta);
+      if (failedDelta > 0) update['stats.failed'] = FV.increment(failedDelta);
+      // Fire-and-forget — erro restaura deltas pra próxima tentativa.
+      // Promise coletada em updatePromises pra await no final garantir
+      // consistência antes do status update terminal.
+      updatePromises.push(
+        broadcastRef.update(update).catch((err) => {
+          console.warn('[Broadcast] stats flush failed (restoring deltas):', err);
+          pendingSentDelta += sentDelta;
+          pendingFailedDelta += failedDelta;
+        }),
+      );
+    };
+
     // ── Pause check com cache TTL ──────────────────────────────────────────
     // Lê o status do broadcast com cache local de 3s — combina dois objetivos:
     //  (a) [5.9] check a cada iteração (depois do sleep) em vez de 1-em-10,
@@ -900,6 +941,7 @@ export async function POST(req: NextRequest) {
             status: 'sent',
             externalMessageId,
           });
+          pendingSentDelta++;
           updatePromises.push(
             adminDb.collection('broadcastMessages').doc(messageDocId).update({
               status: 'sent',
@@ -932,6 +974,7 @@ export async function POST(req: NextRequest) {
             status: 'failed',
             error: errMessage,
           });
+          pendingFailedDelta++;
           updatePromises.push(
             adminDb.collection('broadcastMessages').doc(messageDocId).update({
               status: 'failed',
@@ -939,6 +982,7 @@ export async function POST(req: NextRequest) {
             })
           );
         }
+        doStatsFlush(false);
         // Throttle: usa o configurado (com aleatoriedade), mas força mínimo
         // de 2s pra Baileys mesmo se o operador configurou menor — protege
         // o número contra banimento por envio uniformemente rápido.
@@ -1100,6 +1144,7 @@ export async function POST(req: NextRequest) {
             status: 'sent',
             externalMessageId: messageId,
           });
+          pendingSentDelta++;
           // Coleta promise — flush ao final garante consistência
           updatePromises.push(
             adminDb.collection('broadcastMessages').doc(messageDocId).update({
@@ -1155,6 +1200,7 @@ export async function POST(req: NextRequest) {
             status: 'failed',
             error: errMessage,
           });
+          pendingFailedDelta++;
           updatePromises.push(
             adminDb.collection('broadcastMessages').doc(messageDocId).update({
               status: 'failed',
@@ -1170,6 +1216,7 @@ export async function POST(req: NextRequest) {
           status: 'failed',
           error: errMessage,
         });
+        pendingFailedDelta++;
         updatePromises.push(
           adminDb.collection('broadcastMessages').doc(messageDocId).update({
             status: 'failed',
@@ -1177,6 +1224,7 @@ export async function POST(req: NextRequest) {
           })
         );
       }
+      doStatsFlush(false);
 
       // Throttle entre msgs: delay aleatório se throttle configurado, senão
       // delayMs fixo (sendRate legado).
@@ -1195,6 +1243,10 @@ export async function POST(req: NextRequest) {
         await sleep(batchPause);
       }
     }
+
+    // Flush final dos deltas residuais de stats (caso o último batch não tenha
+    // atingido threshold). Força incondicional pra zerar pendingSent/FailedDelta.
+    doStatsFlush(true);
 
     // Garante que todos os updates do loop completaram antes de gravar stats agregadas.
     // Promise.allSettled — não aborta em update individual falho, só registra.
@@ -1225,12 +1277,9 @@ export async function POST(req: NextRequest) {
       // que só atualizamos status se ainda está 'sending'; caso contrário,
       // só atualiza stats sem mexer em status terminal já gravado.
       //
-      // Stats agora são CUMULATIVOS via FieldValue.increment (antes overwrite).
-      // Sem isso, dispatch parcial #2 zerava o stats.sent do parcial #1 — o
-      // contador no broadcast list mostrava só o último run, e a soma das
-      // sessões nunca batia com a realidade de broadcastMessages.
-      const broadcastRef = adminDb.collection('broadcasts').doc(broadcastId);
-      const { FieldValue } = await import('firebase-admin/firestore');
+      // stats.sent/failed JÁ foram incrementados msg-a-msg via doStatsFlush
+      // (acima do loop). Aqui só atualizamos status terminal + sessions —
+      // não tocar nos contadores pra evitar dupla contagem.
       await adminDb.runTransaction(async (tx) => {
         const snap = await tx.get(broadcastRef);
         if (!snap.exists) return;
@@ -1240,14 +1289,12 @@ export async function POST(req: NextRequest) {
         // sobrescreve aqui — manter o tamanho original da campanha mesmo
         // após retomadas parciais (que processam só os pendentes).
         const update: Record<string, unknown> = {
-          'stats.sent': FieldValue.increment(sent),
-          'stats.failed': FieldValue.increment(failed),
           // Append metadata da sessão recém-executada. dispatchedByName
           // tem fallback inteligente: nome do operador (UI), uid bruto, ou
           // "Sistema (agendado)" pra cron de scheduled broadcasts. Sem
           // isso, a auditoria de sessões disparadas por cron mostrava só
           // "—" / undefined.
-          sessions: FieldValue.arrayUnion({
+          sessions: FV.arrayUnion({
             index: resolvedSessionIndex,
             dispatchedAt: new Date().toISOString(),
             recipientCount: recipientsToProcess.length,
