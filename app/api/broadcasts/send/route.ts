@@ -365,6 +365,11 @@ async function upsertConversationFromBroadcast(params: {
         contactExternalId: params.recipientId,
         ...(phoneFormatted ? { contactPhone: phoneFormatted } : {}),
         ...(params.contactId ? { crmContactId: params.contactId } : {}),
+        // Atribuição de marketing — alimenta o filtro "Origem da campanha" na
+        // sidebar de Conversas. Setado SÓ na criação (branch `else` de
+        // matched); se a mesma conv recebe campanhas posteriores, preserva
+        // a origem inicial. Conversas pré-feature precisam do lookup auxiliar.
+        originBroadcastId: params.broadcastId,
         status: 'open',
         lastMessage: params.content.slice(0, 200),
         lastMessageAt: now,

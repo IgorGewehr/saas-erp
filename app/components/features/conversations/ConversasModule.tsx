@@ -2466,21 +2466,36 @@ interface AdvancedFilters {
   label: string;
   slaStatus: '' | 'warning' | 'breached';
   unreadOnly: boolean;
+  /** Filtro por campanha origem. Valor é o ID do broadcast ou birthdayCampaign
+   *  (com prefixo discriminador): "broadcast:{id}" ou "birthday:{id}". Vazio = sem filtro. */
+  campaignOrigin: string;
 }
 
-const EMPTY_ADV_FILTERS: AdvancedFilters = { assignedTo: '', priority: '', label: '', slaStatus: '', unreadOnly: false };
+const EMPTY_ADV_FILTERS: AdvancedFilters = {
+  assignedTo: '', priority: '', label: '', slaStatus: '', unreadOnly: false, campaignOrigin: '',
+};
 
 function countActiveFilters(f: AdvancedFilters): number {
-  return [f.assignedTo, f.priority, f.label, f.slaStatus, f.unreadOnly].filter(Boolean).length;
+  return [f.assignedTo, f.priority, f.label, f.slaStatus, f.unreadOnly, f.campaignOrigin].filter(Boolean).length;
 }
 
-function AdvancedFilterPanel({ filters, onChange, members, allLabels, slaEnabled, onSaveView }: {
+/** Opção de campanha pro dropdown — pre-aggregated pelo container.
+ *  `value` segue o formato "broadcast:{id}" / "birthday:{id}" pra que o
+ *  applier saiba contra qual coleção o lookup retroativo precisa rodar. */
+interface CampaignFilterOption {
+  value: string;
+  label: string;
+}
+
+function AdvancedFilterPanel({ filters, onChange, members, allLabels, slaEnabled, onSaveView, campaignOptions }: {
   filters: AdvancedFilters;
   onChange: (f: AdvancedFilters) => void;
   members: User[];
   allLabels: string[];
   slaEnabled: boolean;
   onSaveView: () => void;
+  /** Lista pré-agregada de broadcasts + birthday campaigns do business. */
+  campaignOptions: CampaignFilterOption[];
 }) {
   const set = <K extends keyof AdvancedFilters>(key: K, val: AdvancedFilters[K]) =>
     onChange({ ...filters, [key]: val });
@@ -2534,6 +2549,24 @@ function AdvancedFilterPanel({ filters, onChange, members, allLabels, slaEnabled
             </div>
           )}
         </div>
+
+        {/* Origem da campanha — só renderiza quando o business tem broadcasts/
+            campanhas cadastrados. Vazio em tenants novos não polui a UI. */}
+        {campaignOptions.length > 0 && (
+          <div>
+            <p className="text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1">Origem da campanha</p>
+            <select
+              value={filters.campaignOrigin}
+              onChange={e => set('campaignOrigin', e.target.value)}
+              className={selClass}
+            >
+              <option value="">Todas</option>
+              {campaignOptions.map(c => (
+                <option key={c.value} value={c.value}>{c.label}</option>
+              ))}
+            </select>
+          </div>
+        )}
 
         <div className="flex items-center justify-between">
           {/* Unread only */}
@@ -5324,6 +5357,79 @@ export default function ConversasModule() {
   const [channelConnections, setChannelConnections] = useState<import('@/lib/types').ChannelConnection[]>([]);
   const [advFilters, setAdvFilters] = useState<AdvancedFilters>(EMPTY_ADV_FILTERS);
   const [showAdvFilters, setShowAdvFilters] = useState(false);
+
+  // ── Filtro por campanha origem ─────────────────────────────────────────────
+  // Lista de opções do dropdown — broadcasts + birthdayCampaigns do business.
+  // Cache de 5min porque a lista não muda com frequência. Erros não-fatais
+  // (rules/index) caem em opções vazias → dropdown não renderiza (gate em
+  // campaignOptions.length > 0). Operador continua usando o sistema normal.
+  const { data: campaignFilterOptions = [] } = useQuery<CampaignFilterOption[]>({
+    queryKey: ['campaign-filter-options', business?.id],
+    queryFn: async () => {
+      if (!business?.id) return [];
+      try {
+        const [bSnap, birthSnap] = await Promise.all([
+          getDocs(query(
+            collection(db, 'broadcasts'),
+            where('businessId', '==', business.id),
+            orderBy('createdAt', 'desc'),
+            limit(50),
+          )),
+          getDocs(query(
+            collection(db, 'birthdayCampaigns'),
+            where('businessId', '==', business.id),
+            limit(50),
+          )),
+        ]);
+        const broadcasts = bSnap.docs.map(d => ({
+          value: `broadcast:${d.id}`,
+          label: (d.data().name as string) || 'Campanha sem nome',
+        }));
+        const birthdays = birthSnap.docs.map(d => ({
+          value: `birthday:${d.id}`,
+          label: `🎂 ${(d.data().name as string) || 'Aniversário'}`,
+        }));
+        return [...broadcasts, ...birthdays];
+      } catch (err) {
+        console.warn('[ConversasModule] campaign options fetch failed:', err);
+        return [];
+      }
+    },
+    enabled: !!business?.id,
+    staleTime: 5 * 60_000,
+  });
+
+  // Lookup retroativo — quando a conversa foi criada ANTES da feature de
+  // denormalizar originBroadcastId, o filtro direto não encontra. Aqui buscamos
+  // os conversationId distintos em conversationMessages que tocaram a campanha
+  // selecionada, gerando um Set client-side pra cruzar com a lista de conversas.
+  // Limit 5000 cobre campanhas grandes; cache 60s porque retro-data é estável.
+  const [campaignKind, campaignId] = useMemo(() => {
+    if (!advFilters.campaignOrigin) return [null, null] as const;
+    const [k, id] = advFilters.campaignOrigin.split(':');
+    return [k as 'broadcast' | 'birthday' | null, id ?? null] as const;
+  }, [advFilters.campaignOrigin]);
+  const { data: retroCampaignConvIds } = useQuery<Set<string>>({
+    queryKey: ['filter-campaign-conv-ids', business?.id, campaignKind, campaignId],
+    queryFn: async () => {
+      if (!business?.id || !campaignKind || !campaignId) return new Set<string>();
+      const field = campaignKind === 'broadcast' ? 'broadcastId' : 'birthdayCampaignId';
+      try {
+        const snap = await getDocs(query(
+          collection(db, 'conversationMessages'),
+          where('businessId', '==', business.id),
+          where(field, '==', campaignId),
+          limit(5000),
+        ));
+        return new Set(snap.docs.map(d => (d.data().conversationId as string) || ''));
+      } catch (err) {
+        console.warn('[ConversasModule] retro campaign lookup failed:', err);
+        return new Set<string>();
+      }
+    },
+    enabled: !!business?.id && !!campaignKind && !!campaignId,
+    staleTime: 60_000,
+  });
   const [savedViews, setSavedViews] = useState<ConversationView[]>([]);
   const [batchMode, setBatchMode] = useState(false);
   const [batchSelectedIds, setBatchSelectedIds] = useState<Set<string>>(new Set());
@@ -5720,6 +5826,7 @@ export default function ConversasModule() {
       label: advFilters.label || undefined,
       slaStatus: advFilters.slaStatus || undefined,
       unreadOnly: advFilters.unreadOnly || undefined,
+      campaignOrigin: advFilters.campaignOrigin || undefined,
     };
     // Edição: sobrescreve nome/emoji/filtros do doc existente. Filtros
     // refletem o snapshot atual da UI — comportamento ergonômico esperado
@@ -5768,6 +5875,7 @@ export default function ConversasModule() {
         label: view.filters.label ?? '',
         slaStatus: (view.filters.slaStatus as AdvancedFilters['slaStatus']) ?? '',
         unreadOnly: view.filters.unreadOnly ?? false,
+        campaignOrigin: view.filters.campaignOrigin ?? '',
       });
     }
     setEditingView(view);
@@ -5814,6 +5922,7 @@ export default function ConversasModule() {
       label: view.filters.label ?? '',
       slaStatus: (view.filters.slaStatus as AdvancedFilters['slaStatus']) ?? '',
       unreadOnly: view.filters.unreadOnly ?? false,
+      campaignOrigin: view.filters.campaignOrigin ?? '',
     });
   };
 
@@ -7266,9 +7375,17 @@ export default function ConversasModule() {
       const matchesLabel = !advFilters.label || c.labels?.includes(advFilters.label) || c.tags?.includes(advFilters.label);
       const matchesUnread = !advFilters.unreadOnly || (c.unreadCount ?? 0) > 0;
       const matchesSLAStatus = !advFilters.slaStatus || getSLAInfo(c, slaConfig)?.status === advFilters.slaStatus;
-      return matchesChannel && matchesView && matchesSector && matchesScope && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus;
+      // Origem da campanha: combina dois caminhos. Forward = campo denormalizado
+      // no doc Conversation (criado a partir do deploy). Retro = id presente
+      // no Set retroCampaignConvIds carregado de conversationMessages (cobre
+      // conversas pré-feature). Se nenhum dos dois bate, conversa não passa.
+      const matchesCampaign = !campaignKind || !campaignId
+        || (campaignKind === 'broadcast' && c.originBroadcastId === campaignId)
+        || (campaignKind === 'birthday' && c.originBirthdayCampaignId === campaignId)
+        || (retroCampaignConvIds?.has(c.id) ?? false);
+      return matchesChannel && matchesView && matchesSector && matchesScope && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus && matchesCampaign;
     });
-  }, [getVisibleConversations, conversations, activeChannel, activeView, activeSectorFilter, activeChannelScope, myConnectionIds, connectionsById, searchQuery, advFilters, slaConfig, user?.uid]);
+  }, [getVisibleConversations, conversations, activeChannel, activeView, activeSectorFilter, activeChannelScope, myConnectionIds, connectionsById, searchQuery, advFilters, slaConfig, user?.uid, campaignKind, campaignId, retroCampaignConvIds]);
 
   // Re-sort client-side. 'recent' não toca a ordem (Firestore já desc por
   // lastMessageAt). 'oldest' inverte. 'priority' ranqueia urgent>high>med>low,
@@ -7710,6 +7827,7 @@ export default function ConversasModule() {
                 allLabels={allLabels}
                 slaEnabled={slaConfig.enabled}
                 onSaveView={() => setShowSaveViewModal(true)}
+                campaignOptions={campaignFilterOptions}
               />
             )}
           </AnimatePresence>

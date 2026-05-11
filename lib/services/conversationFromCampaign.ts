@@ -144,6 +144,13 @@ export async function upsertConversationFromCampaign(params: UpsertParams): Prom
     } else {
       const isWhatsApp = params.channel === 'whatsapp';
       const phoneFormatted = isWhatsApp ? formatBrPhoneForDisplay(params.recipientId) : undefined;
+      // Origem de marketing — alimenta o filtro "Origem da campanha" em
+      // Conversas. Setado SÓ na criação (este else de matched); se a mesma
+      // conv recebe campanhas posteriores, preserva a atribuição inicial.
+      // Conversas pré-feature precisam do lookup auxiliar via conversationMessages.
+      const originFields: Record<string, unknown> = params.source.kind === 'broadcast'
+        ? { originBroadcastId: params.source.broadcastId }
+        : { originBirthdayCampaignId: params.source.birthdayCampaignId };
       const newConvData: Record<string, unknown> = {
         businessId: params.businessId,
         channel: params.channel,
@@ -155,6 +162,7 @@ export async function upsertConversationFromCampaign(params: UpsertParams): Prom
         contactExternalId: params.recipientId,
         ...(phoneFormatted ? { contactPhone: phoneFormatted } : {}),
         ...(params.contactId ? { crmContactId: params.contactId } : {}),
+        ...originFields,
         status: 'open',
         lastMessage: params.content.slice(0, 200),
         lastMessageAt: now,

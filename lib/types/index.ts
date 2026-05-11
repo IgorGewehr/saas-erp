@@ -2138,6 +2138,16 @@ export interface Conversation {
   lastMessageAt: string;
   lastMessageDirection: MessageDirection;
   unreadCount: number;
+  /** ID do broadcast que ORIGINOU esta conversa (denormalizado pra filtro
+   *  por campanha em Conversas sem precisar varrer conversationMessages).
+   *  Setado SÓ na criação — não sobrescrito em campanhas posteriores que
+   *  caem na mesma conv pra preservar a atribuição original. Pra
+   *  retroatividade em conversas pré-feature, há lookup auxiliar em
+   *  conversationMessages quando o filtro é aplicado. */
+  originBroadcastId?: string;
+  /** ID da BirthdayCampaign que originou — paralelo ao originBroadcastId mas
+   *  pra campanhas recorrentes de aniversário (coleção separada). */
+  originBirthdayCampaignId?: string;
   assignedTo?: string;
   assignedToName?: string;
   sectorIds?: string[];
@@ -2220,6 +2230,8 @@ export interface ConversationView {
     label?: string;
     slaStatus?: string;
     unreadOnly?: boolean;
+    /** Filtro por origem de campanha — "broadcast:{id}" ou "birthday:{id}". */
+    campaignOrigin?: string;
   };
   createdBy: string;
   createdByName: string;
