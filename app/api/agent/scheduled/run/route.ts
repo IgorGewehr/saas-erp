@@ -330,8 +330,12 @@ async function sendToContact(business: Business & { id: string }, appt: Appointm
   const phoneDigits = (appt.clientPhone || '').replace(/\D/g, '');
   if (!phoneDigits) throw new Error('no phone');
 
+  // Lembretes automáticos (pré/follow-up de appointment) vão por WhatsApp —
+  // filtra channel pra não cair em conv FB/IG. Cliente pode ter conv Meta E
+  // Baileys: pega a com atividade mais recente, que reflete o canal ativo.
   const convSnap = await adminDb.collection('conversations')
     .where('businessId', '==', business.id)
+    .where('channel', '==', 'whatsapp')
     .where('contactExternalId', '==', phoneDigits)
     .orderBy('lastMessageAt', 'desc')
     .limit(1)
@@ -626,12 +630,16 @@ async function processCRMAutomations(): Promise<number> {
                 break;
               }
               case 'send_whatsapp': {
-                // Find conversation for this client
+                // Find conversation for this client. Filtra channel pra isolar
+                // de FB/IG. Meta vs Baileys: pega a conv com atividade mais
+                // recente — assume que o canal ativo é onde cliente está hoje.
                 const phone = ((client.phone as string) || '').replace(/\D/g, '');
                 if (!phone) break;
                 const convSnap = await adminDb.collection('conversations')
                   .where('businessId', '==', businessId)
+                  .where('channel', '==', 'whatsapp')
                   .where('contactExternalId', '==', phone)
+                  .orderBy('lastMessageAt', 'desc')
                   .limit(1)
                   .get();
                 if (convSnap.empty) break;

@@ -3572,7 +3572,7 @@ export default function CRMModule() {
   ], [t]);
   const { isDark } = useTheme();
   const { user, business } = useAuth();
-  const { setActivePage } = useAppContext();
+  const { setActivePage, setPendingOpenConversationId, setPendingNewConversation } = useAppContext();
   const queryClient = useQueryClient();
 
   const isAdmin = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
@@ -4164,7 +4164,63 @@ export default function CRMModule() {
               onDelete={() => { setDeleteContactConfirm(selectedContact); setDetailOpen(false); }}
               onTagsChange={(tags) => handleTagsChange(selectedContact.id, tags)}
               onSchedule={() => { setScheduleContact(selectedContact); setScheduleDialogOpen(true); }}
-              onOpenConversations={() => { setDetailOpen(false); setActivePage('Conversas'); }}
+              onOpenConversations={async () => {
+                // Captura o contato/biz no fechamento da callback pra que troca
+                // de seleção durante o await não vaze (closure stale).
+                const contact = selectedContact;
+                const biz = business;
+                setDetailOpen(false);
+                if (!biz?.id || !contact) { setActivePage('Conversas'); return; }
+                try {
+                  // Busca conv do contato. Filtra channel client-side em vez
+                  // de no where pra evitar exigir índice composto novo
+                  // (businessId+channel+crmContactId). Limit 20 é folga absurda
+                  // (contato típico tem 1-2 convs).
+                  const snap = await getDocs(query(
+                    collection(db, 'conversations'),
+                    where('businessId', '==', biz.id),
+                    where('crmContactId', '==', contact.id),
+                    firestoreLimit(20),
+                  ));
+                  const waDocs = snap.docs
+                    .filter(d => d.data().channel === 'whatsapp')
+                    .sort((a, b) => {
+                      const ta = (a.data().lastMessageAt as string | undefined) ?? '';
+                      const tb = (b.data().lastMessageAt as string | undefined) ?? '';
+                      return tb.localeCompare(ta);
+                    });
+                  if (waDocs.length > 0) {
+                    setPendingOpenConversationId(waDocs[0].id);
+                    setActivePage('Conversas');
+                    return;
+                  }
+                  // Sem conv prévia → pré-preenche NewConversationDialog. Modo
+                  // padrão: Baileys (sem janela 24h) se disponível, senão Cloud.
+                  // User ainda pode trocar no diálogo.
+                  const ch = biz.channels as (NonNullable<typeof biz>['channels'] & {
+                    whatsappCloud?: { isConnected?: boolean; accessToken?: string };
+                    whatsappBaileys?: { isConnected?: boolean };
+                    whatsapp?: { isConnected?: boolean; connectedVia?: string; accessToken?: string };
+                  }) | undefined;
+                  const cloudOk = !!(ch?.whatsappCloud?.isConnected && ch.whatsappCloud.accessToken)
+                    || (!ch?.whatsappCloud && !!ch?.whatsapp?.isConnected && ch.whatsapp.connectedVia !== 'baileys' && !!ch.whatsapp.accessToken);
+                  const baileysOk = !!ch?.whatsappBaileys?.isConnected
+                    || (!ch?.whatsappBaileys && !!ch?.whatsapp?.isConnected && ch.whatsapp.connectedVia === 'baileys');
+                  if (!cloudOk && !baileysOk) {
+                    toast.error('Nenhum canal WhatsApp configurado. Conecte em Configurações.');
+                    return;
+                  }
+                  setPendingNewConversation({
+                    clientId: contact.id,
+                    channel: 'whatsapp',
+                    whatsappMode: baileysOk ? 'baileys' : 'cloud',
+                  });
+                  setActivePage('Conversas');
+                } catch (err) {
+                  console.error('[CRM] open conversation lookup failed:', err);
+                  setActivePage('Conversas');
+                }
+              }}
               onCreateKanbanTask={() => setKanbanTaskContact(selectedContact)}
               onLogActivity={() => { setEditingActivity(null); setActivityDialogOpen(true); }} />
           </>

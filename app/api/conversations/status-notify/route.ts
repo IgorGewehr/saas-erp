@@ -111,10 +111,15 @@ export async function POST(req: NextRequest) {
 
   if (!message) return NextResponse.json({ ok: true, data: { skipped: 'no message' } });
 
-  // Resolve conversation — for appointments or orders without convId, find one by phone
+  // Resolve conversation — for appointments or orders without convId, find one by phone.
+  // Filtra explicitamente channel=whatsapp pra não pegar conv FB/IG do mesmo contato.
+  // Como o lembrete automático não sabe se cliente prefere Meta ou Baileys, pega a
+  // conversa com atividade mais recente (lastMessageAt desc) — assume que o canal
+  // ativo é o que o cliente espera receber a próxima mensagem.
   if (!conversationId && recipientId) {
     const convSnap = await adminDb.collection('conversations')
       .where('businessId', '==', body.businessId)
+      .where('channel', '==', 'whatsapp')
       .where('contactExternalId', '==', recipientId.replace(/\D/g, ''))
       .orderBy('lastMessageAt', 'desc')
       .limit(1)
