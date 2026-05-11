@@ -1,41 +1,26 @@
 /**
  * Helpers de normalização de telefone brasileiro.
  *
- * Contexto: WhatsApp armazena números BR de duas formas — com ou sem o
- * "9" inicial obrigatório de celular (introduzido pela ANATEL em 2014).
- * Mesmo número físico pode aparecer como:
- *   - 5554996785446  (13 dígitos: 55 + DDD 54 + 9 + 9678-5446)
- *   - 555496785446   (12 dígitos: 55 + DDD 54 + 9678-5446, sem o 9 extra)
+ * SDD: este arquivo agora é um WRAPPER fino sobre
+ * `lib/contracts/_runtime/phone-br.ts` (fonte da verdade).
+ * Mantemos `getAlternativeBrazilianPhone` exportada para não quebrar os callers
+ * existentes — eles serão migrados gradualmente para `brPhoneCandidates`/`brPhonesMatch`.
  *
- * Diferentes APIs (Meta Cloud, Baileys, contatos importados) podem usar
- * formatos diferentes. Esses helpers permitem busca cruzada nos canais.
+ * Reexporta também as funções novas pra facilitar a migração.
  */
+
+import { alternativeBrPhone } from '@/contracts/_runtime/phone-br';
 
 /**
  * Retorna o formato alternativo do telefone BR (com ou sem o 9 inicial).
- * Retorna `null` se não for BR ou não for um celular reconhecível.
+ * Aceita apenas dígitos (sem `+`, sem espaços).
  *
- * Aceita só dígitos (sem `+`, sem espaços). Faça `.replace(/\D/g, '')` antes.
- *
- * Exemplos:
- *   getAlternativeBrazilianPhone('5554996785446') → '555496785446'
- *   getAlternativeBrazilianPhone('555496785446')  → '5554996785446'
- *   getAlternativeBrazilianPhone('5511999998888') → '551199998888' (mas inválido — fixo BR não tem isso)
- *   getAlternativeBrazilianPhone('15551234567')   → null (US, sem 55)
+ * @deprecated Use `brPhoneCandidates(phone)` de `@/contracts/_runtime/phone-br`
+ *             — retorna todas as variações em um array, mais robusto.
  */
 export function getAlternativeBrazilianPhone(phone: string): string | null {
-  if (!phone || !phone.startsWith('55')) return null;
-  const withoutCountry = phone.substring(2);
-  if (withoutCountry.length < 10) return null;
-  const ddd = withoutCountry.substring(0, 2);
-  const number = withoutCountry.substring(2);
-  // 8 dígitos: número antigo, gera versão com 9 inicial (celular)
-  if (number.length === 8) {
-    return `55${ddd}9${number}`;
-  }
-  // 9 dígitos começando com 9: celular novo, gera versão sem o 9
-  if (number.length === 9 && number.startsWith('9')) {
-    return `55${ddd}${number.substring(1)}`;
-  }
-  return null;
+  if (!phone) return null;
+  return alternativeBrPhone(phone);
 }
+
+export { brPhoneCandidates, brPhonesMatch, canonicalizeBr } from '@/contracts/_runtime/phone-br';

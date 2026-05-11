@@ -3,19 +3,10 @@ import { createHash } from 'node:crypto';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
 import type { Appointment, AppointmentStatus, Service, User, WorkSchedule } from '@/lib/types';
+import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
+import type { AgendaToolAction } from '@/contracts/api/agent/agenda';
 
-type Action =
-  | 'list_services'
-  | 'list_professionals'
-  | 'check_availability'
-  | 'get_next_available'
-  | 'book'
-  | 'list_by_client'
-  | 'list_upcoming'
-  | 'list_today'
-  | 'get'
-  | 'update'
-  | 'cancel';
+type Action = AgendaToolAction;
 
 function addMinutes(hhmm: string, minutes: number): string {
   const [h, m] = hhmm.split(':').map(Number);
@@ -39,56 +30,92 @@ export async function POST(req: NextRequest) {
     throw err;
   }
 
-  const body = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
+  const rawBody = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
   const { businessId } = ctx;
 
+  // SDD: validar request com Zod (Fase 1 piloto). Em caso de shape inválido,
+  // ContractError -> 400 com error envelope estruturado.
+  let action: Action;
+  let params: Record<string, unknown>;
   try {
-    switch (body.action) {
-      case 'list_services':
-        return NextResponse.json({ ok: true, data: await listServices(businessId) });
-      case 'list_professionals':
-        return NextResponse.json({ ok: true, data: await listProfessionals(businessId, body.params.serviceId as string | undefined) });
-      case 'get_next_available':
-        return NextResponse.json({ ok: true, data: await getNextAvailable(
-          businessId,
-          body.params.serviceId as string | undefined,
-          body.params.professionalId as string | undefined,
-          (body.params.durationMinutes as number) || 60,
-          (body.params.daysAhead as number) || 7,
-          body.params.fromDate as string | undefined,
-        ) });
-      case 'check_availability':
-        return NextResponse.json({ ok: true, data: await checkAvailability(
-          businessId,
-          body.params.date as string,
-          body.params.professionalId as string | undefined,
-          (body.params.durationMinutes as number) || 60,
-          body.params.serviceId as string | undefined,
-        ) });
-      case 'book':
-        return NextResponse.json({ ok: true, data: await bookAppointment(businessId, body.params as unknown as BookParams) });
-      case 'list_by_client':
-        return NextResponse.json({ ok: true, data: await listByClient(businessId, (body.params.clientId || body.params.phone) as string, (body.params.limit as number) || 10) });
-      case 'list_today':
-        return NextResponse.json({ ok: true, data: await listToday(businessId) });
-      case 'list_upcoming':
-        return NextResponse.json({ ok: true, data: await listUpcoming(
-          businessId,
-          (body.params.limit as number) || 20,
-          (body.params.daysAhead as number) || 7,
-          body.params.professionalId as string | undefined,
-        ) });
-      case 'get':
-        return NextResponse.json({ ok: true, data: await getAppointment(businessId, body.params.id as string) });
-      case 'update':
-        return NextResponse.json({ ok: true, data: await updateAppointment(businessId, body.params.id as string, body.params.patch as Partial<Appointment>) });
-      case 'cancel':
-        return NextResponse.json({ ok: true, data: await cancelAppointment(businessId, body.params.id as string) });
-      default:
-        return NextResponse.json({ ok: false, error: `Unknown action: ${body.action}` }, { status: 400 });
-    }
+    const parsed = parseToolRequest('agenda', rawBody);
+    action = parsed.action as Action;
+    params = parsed.params as Record<string, unknown>;
   } catch (err) {
-    console.error('[agent/tools/agenda]', body.action, err);
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: 400 });
+    }
+    throw err;
+  }
+
+  try {
+    let data: unknown;
+    switch (action) {
+      case 'list_services':
+        data = await listServices(businessId);
+        break;
+      case 'list_professionals':
+        data = await listProfessionals(businessId, params.serviceId as string | undefined);
+        break;
+      case 'get_next_available':
+        data = await getNextAvailable(
+          businessId,
+          params.serviceId as string | undefined,
+          params.professionalId as string | undefined,
+          (params.durationMinutes as number) || 60,
+          (params.daysAhead as number) || 7,
+          params.fromDate as string | undefined,
+        );
+        break;
+      case 'check_availability':
+        data = await checkAvailability(
+          businessId,
+          params.date as string,
+          params.professionalId as string | undefined,
+          (params.durationMinutes as number) || 60,
+          params.serviceId as string | undefined,
+        );
+        break;
+      case 'book':
+        data = await bookAppointment(businessId, params as unknown as BookParams);
+        break;
+      case 'list_by_client':
+        data = await listByClient(businessId, (params.clientId || params.phone) as string, (params.limit as number) || 10);
+        break;
+      case 'list_today':
+        data = await listToday(businessId);
+        break;
+      case 'list_upcoming':
+        data = await listUpcoming(
+          businessId,
+          (params.limit as number) || 20,
+          (params.daysAhead as number) || 7,
+          params.professionalId as string | undefined,
+        );
+        break;
+      case 'get':
+        data = await getAppointment(businessId, params.id as string);
+        break;
+      case 'update':
+        data = await updateAppointment(businessId, params.id as string, params.patch as Partial<Appointment>);
+        break;
+      case 'cancel':
+        data = await cancelAppointment(businessId, params.id as string);
+        break;
+      default: {
+        const exhaustiveCheck: never = action;
+        return NextResponse.json({ ok: false, error: `Unknown action: ${exhaustiveCheck}` }, { status: 400 });
+      }
+    }
+
+    // SDD: valida shape do response em dev (lança); em prod loga e segue.
+    const validated = validateToolResponse('agenda', action, data);
+    return NextResponse.json({ ok: true, data: validated });
+  } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: err.code === 'INTERNAL' ? 500 : 400 });
+    }
+    console.error('[agent/tools/agenda]', action, err);
     return NextResponse.json(
       { ok: false, error: err instanceof Error ? err.message : 'Internal error' },
       { status: 500 },

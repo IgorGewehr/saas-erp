@@ -2,6 +2,8 @@ import { NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
 import { deductStockAdmin, loadProductIndex } from '@/lib/services/stock-admin';
+import { CreateSaleBodySchema } from '@/contracts/api/v1/sales';
+import { withIdempotency, IdempotencyConflictError } from '@/contracts/_runtime/idempotency';
 
 // =============================================================================
 // GET /api/v1/sales — List sales for the authenticated business
@@ -92,208 +94,172 @@ export async function GET(req: NextRequest) {
 
 // =============================================================================
 // POST /api/v1/sales — Create a new sale
+// SDD: validação Zod completa via CreateSaleBodySchema.
+//      Idempotência via X-Idempotency-Key (header opcional).
 // =============================================================================
 export async function POST(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:sales']);
   if (isApiKeyError(auth)) return auth;
 
+  // ── Validate body com Zod ────────────────────────────────────────────────
+  const rawBody = await req.json().catch(() => null);
+  if (rawBody == null || typeof rawBody !== 'object') {
+    return apiError('Invalid request body — expected JSON object', 400);
+  }
+  const parsed = CreateSaleBodySchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return apiError(`Validation failed: ${JSON.stringify(parsed.error.flatten())}`, 400);
+  }
+  const body = parsed.data;
+
+  // ── Cross-field invariante: sum(payments) ≈ expected total ───────────────
+  // (Zod já valida shapes; isso é regra de negócio que cruza items↔payments)
+  const expectedItemsTotal = body.items.reduce(
+    (sum, it) => sum + (it.total ?? it.quantity * it.unitPrice - it.discount),
+    0,
+  );
+  const subtotalExpected = Math.round(expectedItemsTotal * 100) / 100;
+  const totalExpected = Math.round(Math.max(subtotalExpected - body.discount + (body.tip ?? 0), 0) * 100) / 100;
+  if (body.status === 'finalizada') {
+    const paymentSum = Math.round(body.payments.reduce((sum, p) => sum + p.amount, 0) * 100) / 100;
+    if (Math.abs(paymentSum - totalExpected) > 0.011) {
+      return apiError(`Sum of payments (${paymentSum.toFixed(2)}) ≠ expected total (${totalExpected.toFixed(2)})`, 400);
+    }
+  }
+
+  // ── Idempotency key (opcional) ───────────────────────────────────────────
+  const idempotencyKey = req.headers.get('x-idempotency-key');
+
   try {
-    const body = await req.json().catch(() => null);
-    if (!body || typeof body !== 'object') {
-      return apiError('Invalid request body — expected JSON object', 400);
-    }
-
-    const { items, payments } = body;
-
-    // ── Validate items ────────────────────────────────────────────────────────
-    if (!Array.isArray(items) || items.length === 0) {
-      return apiError('Field "items" is required and must be a non-empty array', 400);
-    }
-
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-      if (!item.description || typeof item.description !== 'string') {
-        return apiError(`items[${i}].description is required and must be a string`, 400);
-      }
-      if (typeof item.quantity !== 'number' || item.quantity <= 0) {
-        return apiError(`items[${i}].quantity is required and must be a positive number`, 400);
-      }
-      if (typeof item.unitPrice !== 'number' || item.unitPrice < 0) {
-        return apiError(`items[${i}].unitPrice is required and must be a non-negative number`, 400);
-      }
-      if (typeof item.total !== 'number' || item.total < 0) {
-        return apiError(`items[${i}].total is required and must be a non-negative number`, 400);
-      }
-    }
-
-    // ── Validate payments ─────────────────────────────────────────────────────
-    if (!Array.isArray(payments) || payments.length === 0) {
-      return apiError('Field "payments" is required and must be a non-empty array', 400);
-    }
-
-    const validMethods = ['dinheiro', 'pix', 'credito', 'debito', 'boleto', 'outros'];
-    for (let i = 0; i < payments.length; i++) {
-      const p = payments[i];
-      if (!p.method || !validMethods.includes(p.method)) {
-        return apiError(
-          `payments[${i}].method is required. Allowed: ${validMethods.join(', ')}`,
-          400,
-        );
-      }
-      if (typeof p.amount !== 'number' || p.amount <= 0) {
-        return apiError(`payments[${i}].amount is required and must be a positive number`, 400);
-      }
-    }
-
-    // ── Validate payments cover the total ───────────────────────────────────
-    const expectedTotal = items.reduce((sum: number, it: any) => sum + (it.quantity * it.unitPrice - (it.discount || 0)), 0);
-    const paymentSum = payments.reduce((sum: number, p: any) => sum + p.amount, 0);
-    if (Math.abs(paymentSum - expectedTotal) > 0.01) {
-      return apiError(`Sum of payments (${paymentSum.toFixed(2)}) does not match total (${expectedTotal.toFixed(2)})`, 400);
-    }
-
-    // ── Validate optional status ──────────────────────────────────────────────
-    const status = body.status || 'finalizada';
-    if (!['aberta', 'finalizada', 'cancelada'].includes(status)) {
-      return apiError('Field "status" must be "aberta", "finalizada", or "cancelada"', 400);
-    }
-
-    // ── Build sale items with IDs ─────────────────────────────────────────────
-    const saleItems = items.map((item: any, idx: number) => ({
-      id: `item_${idx}`,
-      description: item.description.trim(),
-      quantity: item.quantity,
-      unitPrice: item.unitPrice,
-      discount: item.discount ?? 0,
-      total: item.total,
-      ...(item.productId && { productId: item.productId }),
-      ...(item.serviceId && { serviceId: item.serviceId }),
-    }));
-
-    // ── Calculate totals ──────────────────────────────────────────────────────
-    const subtotal = saleItems.reduce((sum: number, item: any) => sum + item.total, 0);
-    const discount = typeof body.discount === 'number' && body.discount >= 0 ? body.discount : 0;
-    const total = Math.max(subtotal - discount, 0);
-
-    // Round to 2 decimal places
-    const roundedSubtotal = Math.round(subtotal * 100) / 100;
-    const roundedTotal = Math.round(total * 100) / 100;
-
-    const now = new Date().toISOString();
-
-    const saleData: Record<string, any> = {
-      businessId: auth.businessId,
-      items: saleItems,
-      payments: payments.map((p: any) => ({
-        method: p.method,
-        amount: p.amount,
-        ...(p.installments && { installments: p.installments }),
-        ...(p.cardBrand && { cardBrand: p.cardBrand }),
-      })),
-      subtotal: roundedSubtotal,
-      discount,
-      total: roundedTotal,
-      status,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    // ── Optional fields ───────────────────────────────────────────────────────
-    if (body.clientId) saleData.clientId = body.clientId;
-    if (body.clientName) saleData.clientName = body.clientName;
-    if (body.notes) saleData.notes = body.notes;
-    if (body.operatorId) saleData.operatorId = body.operatorId;
-    if (body.operatorName) saleData.operatorName = body.operatorName;
-    if (body.channelType) saleData.channelType = body.channelType;
-    if (body.conversationId) saleData.conversationId = body.conversationId;
-    if (body.sectorId) saleData.sectorId = body.sectorId;
-
-    // ── Load products + check stock before creating anything ─────────────────
-    const productLines = saleItems
-      .filter((item: any) => !!item.productId)
-      .map((item: any) => ({ productId: item.productId as string, quantity: item.quantity as number }));
-
-    const productIndex = await loadProductIndex(
+    const result = await withIdempotency(
       adminDb,
-      productLines.map(l => l.productId),
-      auth.businessId,
+      { businessId: auth.businessId, key: idempotencyKey, endpoint: 'POST /api/v1/sales' },
+      async () => {
+        // ── Build sale items com totals consistentes ───────────────────────
+        const saleItems = body.items.map((item, idx) => ({
+          id: `item_${idx}`,
+          description: item.description.trim(),
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          discount: item.discount,
+          total: Math.round((item.total ?? item.quantity * item.unitPrice - item.discount) * 100) / 100,
+          ...(item.productId && { productId: item.productId }),
+          ...(item.serviceId && { serviceId: item.serviceId }),
+        }));
+
+        const roundedSubtotal = subtotalExpected;
+        const roundedTotal = totalExpected;
+        const now = new Date().toISOString();
+
+        const saleData: Record<string, any> = {
+          businessId: auth.businessId,
+          items: saleItems,
+          payments: body.payments.map((p) => ({
+            method: p.method,
+            amount: p.amount,
+            ...(p.installments && { installments: p.installments }),
+            ...(p.cardBrand && { cardBrand: p.cardBrand }),
+          })),
+          subtotal: roundedSubtotal,
+          discount: body.discount,
+          ...(body.tip !== undefined && { tip: body.tip }),
+          total: roundedTotal,
+          status: body.status,
+          createdAt: now,
+          updatedAt: now,
+          operatorId: 'api',
+          operatorName: `API (${auth.businessId.slice(0, 8)})`,
+        };
+
+        if (body.clientId) saleData.clientId = body.clientId;
+        if (body.clientName) saleData.clientName = body.clientName;
+        if (body.notes) saleData.notes = body.notes;
+        if (body.channelType) saleData.channelType = body.channelType;
+        if (body.conversationId) saleData.conversationId = body.conversationId;
+        if (body.sectorId) saleData.sectorId = body.sectorId;
+
+        const productLines = saleItems
+          .filter((item) => !!item.productId)
+          .map((item) => ({ productId: item.productId as string, quantity: item.quantity }));
+
+        const productIndex = await loadProductIndex(
+          adminDb,
+          productLines.map((l) => l.productId),
+          auth.businessId,
+        );
+
+        const saleRef = await adminDb.collection('sales').add(saleData);
+        const saleId = saleRef.id;
+
+        if (productLines.length > 0) {
+          try {
+            await deductStockAdmin(adminDb, productLines, {
+              businessId: auth.businessId,
+              operatorId: 'api',
+              operatorName: 'API',
+              sourceId: saleId,
+              reason: `Venda #${saleId.substring(0, 6)}`,
+              productIndex,
+            });
+          } catch (stockErr) {
+            console.error('[API] sale stock deduction failed:', stockErr);
+            throw new Error('Sale created but stock deduction failed');
+          }
+        }
+
+        if (body.clientId) {
+          const clientRef = adminDb.collection('clients').doc(body.clientId);
+          const clientSnap = await clientRef.get();
+          if (clientSnap.exists && clientSnap.data()?.businessId === auth.businessId) {
+            const clientData = clientSnap.data()!;
+            await clientRef.update({
+              totalSpent: (clientData.totalSpent || 0) + roundedTotal,
+              visitCount: (clientData.visitCount || 0) + 1,
+              lastVisit: now,
+              updatedAt: now,
+            });
+          }
+        }
+
+        const transactionData: Record<string, any> = {
+          businessId: auth.businessId,
+          type: 'receita',
+          category: 'Vendas',
+          description: `Venda ${body.clientName ? `- ${body.clientName}` : ''}`.trim(),
+          amount: roundedTotal,
+          dueDate: now.split('T')[0],
+          paymentDate: now.split('T')[0],
+          status: 'pago',
+          saleId,
+          paymentMethod: body.payments[0]?.method || 'dinheiro',
+          createdAt: now,
+          updatedAt: now,
+        };
+        if (body.clientId) transactionData.clientId = body.clientId;
+        if (body.clientName) transactionData.clientName = body.clientName;
+        if (body.channelType) transactionData.channelType = body.channelType;
+        if (body.conversationId) transactionData.conversationId = body.conversationId;
+        if (body.sectorId) transactionData.sectorId = body.sectorId;
+
+        const txRef = await adminDb.collection('transactions').add(transactionData);
+
+        return {
+          id: saleId,
+          ...saleData,
+          _linked: { transactionId: txRef.id },
+        };
+      },
     );
 
-    // ── Create the sale document ──────────────────────────────────────────────
-    const saleRef = await adminDb.collection('sales').add(saleData);
-    const saleId = saleRef.id;
-
-    // ── Deduct stock atomically (batch + BOM expansion) ───────────────────────
-    if (productLines.length > 0) {
-      try {
-        await deductStockAdmin(adminDb, productLines, {
-          businessId: auth.businessId,
-          operatorId: body.operatorId || 'api',
-          operatorName: body.operatorName || 'API',
-          sourceId: saleId,
-          reason: `Venda #${saleId.substring(0, 6)}`,
-          productIndex,
-        });
-      } catch (stockErr) {
-        console.error('[API] sale stock deduction failed:', stockErr);
-        // Sale remains created; stock movement skipped. Surface the error so
-        // the caller can reconcile rather than silently diverging.
-        return apiError('Sale created but stock deduction failed', 500);
-      }
-    }
-
-    // ── Update client stats if clientId provided ──────────────────────────────
-    if (body.clientId) {
-      const clientRef = adminDb.collection('clients').doc(body.clientId);
-      const clientSnap = await clientRef.get();
-
-      if (clientSnap.exists && clientSnap.data()?.businessId === auth.businessId) {
-        const clientData = clientSnap.data()!;
-        await clientRef.update({
-          totalSpent: (clientData.totalSpent || 0) + roundedTotal,
-          visitCount: (clientData.visitCount || 0) + 1,
-          lastVisit: now,
-          updatedAt: now,
-        });
-      }
-    }
-
-    // ── Create linked financial transaction ───────────────────────────────────
-    const transactionData: Record<string, any> = {
-      businessId: auth.businessId,
-      type: 'receita',
-      category: 'Vendas',
-      description: `Venda ${body.clientName ? `- ${body.clientName}` : ''}`.trim(),
-      amount: roundedTotal,
-      dueDate: now.split('T')[0],
-      paymentDate: now.split('T')[0],
-      status: 'pago',
-      saleId,
-      paymentMethod: payments[0]?.method || 'dinheiro',
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    if (body.clientId) transactionData.clientId = body.clientId;
-    if (body.clientName) transactionData.clientName = body.clientName;
-    if (body.channelType) transactionData.channelType = body.channelType;
-    if (body.conversationId) transactionData.conversationId = body.conversationId;
-    if (body.sectorId) transactionData.sectorId = body.sectorId;
-
-    const txRef = await adminDb.collection('transactions').add(transactionData);
-
     return apiSuccess(
-      {
-        id: saleId,
-        ...saleData,
-        _linked: {
-          transactionId: txRef.id,
-        },
-      },
+      { ...result.result, ...(result.replayed ? { _idempotent: true } : {}) },
       201,
     );
   } catch (err) {
+    if (err instanceof IdempotencyConflictError) {
+      return apiError(`Idempotency key in progress — retry in a moment`, 409);
+    }
     console.error('[API] POST /api/v1/sales error:', err);
-    return apiError('Failed to create sale', 500);
+    return apiError(err instanceof Error ? err.message : 'Failed to create sale', 500);
   }
 }

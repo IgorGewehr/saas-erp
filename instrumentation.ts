@@ -16,6 +16,16 @@ export async function register() {
   // Só roda no runtime Node.js (não no Edge runtime ou durante build)
   if (process.env.NEXT_RUNTIME !== 'nodejs') return;
 
+  // SDD: registra os handlers de domain events ANTES de qualquer dispatch.
+  // Idempotente — chamadas extras são no-ops.
+  try {
+    const { ensureDomainEventHandlers } = await import('@/contracts/_runtime/handlers');
+    ensureDomainEventHandlers();
+    console.log('[Instrumentation] Domain event handlers registrados.');
+  } catch (err) {
+    console.error('[Instrumentation] Falha ao registrar domain event handlers:', err);
+  }
+
   // Aguarda 3s para o servidor estar completamente inicializado antes de
   // tentar restaurar sessões (evita race com module initialization)
   await new Promise(r => setTimeout(r, 3000));

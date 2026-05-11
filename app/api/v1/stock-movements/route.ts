@@ -1,6 +1,8 @@
 import { NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
+import { CreateStockMovementBodySchema } from '@/contracts/api/v1/stock-movements';
+import { withIdempotency, IdempotencyConflictError } from '@/contracts/_runtime/idempotency';
 
 // ─── GET /api/v1/stock-movements ────────────────────────────────────────────
 export async function GET(req: NextRequest) {
@@ -47,110 +49,95 @@ export async function GET(req: NextRequest) {
 }
 
 // ─── POST /api/v1/stock-movements ──────────────────────────────────────────
+// SDD: validação via CreateStockMovementBodySchema + idempotency-key.
+//
+// NOTA semântica histórica: nesta route, type='ajuste' interpreta `quantity`
+// como NOVO VALOR ABSOLUTO de currentStock (não signed delta). Mantemos pra
+// não quebrar callers existentes. Stock movement persistido reflete:
+//   - entrada/saida: quantity é a magnitude da movimentação
+//   - ajuste: previousStock e newStock contam a história — `quantity` é o
+//             novo valor absoluto (não o delta).
 export async function POST(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:products']);
   if (isApiKeyError(auth)) return auth;
 
+  const raw = await req.json().catch(() => null);
+  if (!raw || typeof raw !== 'object') {
+    return apiError('Invalid request body — expected JSON object', 400);
+  }
+  const parsed = CreateStockMovementBodySchema.safeParse(raw);
+  if (!parsed.success) {
+    return apiError(`Validation failed: ${JSON.stringify(parsed.error.flatten())}`, 400);
+  }
+  const body = parsed.data;
+  const operatorId = (raw as { operatorId?: string }).operatorId ?? 'api';
+  const operatorName = (raw as { operatorName?: string }).operatorName ?? 'API';
+
+  const idempotencyKey = req.headers.get('x-idempotency-key');
+
   try {
-    const body = await req.json();
-    const { productId, type, quantity, reason, operatorId, operatorName } = body;
-
-    // Validate required fields
-    if (!productId || typeof productId !== 'string') {
-      return apiError('Field "productId" is required and must be a string', 400);
-    }
-    if (!type || !['entrada', 'saida', 'ajuste'].includes(type)) {
-      return apiError('Field "type" is required and must be "entrada", "saida", or "ajuste"', 400);
-    }
-    if (quantity === undefined || quantity === null || typeof quantity !== 'number' || quantity < 0) {
-      return apiError('Field "quantity" is required and must be a non-negative number', 400);
-    }
-    if (!reason || typeof reason !== 'string') {
-      return apiError('Field "reason" is required and must be a string', 400);
-    }
-
-    // Fetch the product and verify ownership
-    const productRef = adminDb.collection('products').doc(productId);
-    const productSnap = await productRef.get();
-
-    if (!productSnap.exists) {
-      return apiError('Product not found', 404);
-    }
-
-    const productData = productSnap.data()!;
-
-    if (productData.businessId !== auth.businessId) {
-      return apiError('Product not found', 404);
-    }
-
-    const previousStock: number = productData.currentStock ?? 0;
-    let newStock: number;
-
-    switch (type) {
-      case 'entrada':
-        newStock = previousStock + quantity;
-        break;
-      case 'saida':
-        if (quantity > previousStock) {
-          return apiError(
-            `Insufficient stock. Current: ${previousStock}, requested: ${quantity}`,
-            400,
-            { currentStock: previousStock, requested: quantity },
-          );
+    const result = await withIdempotency(
+      adminDb,
+      { businessId: auth.businessId, key: idempotencyKey, endpoint: 'POST /api/v1/stock-movements' },
+      async () => {
+        const productRef = adminDb.collection('products').doc(body.productId);
+        const productSnap = await productRef.get();
+        if (!productSnap.exists || productSnap.data()?.businessId !== auth.businessId) {
+          throw new Error('Product not found');
         }
-        newStock = previousStock - quantity;
-        break;
-      case 'ajuste':
-        newStock = quantity;
-        break;
-      default:
-        return apiError('Invalid movement type', 400);
-    }
-
-    const now = new Date().toISOString();
-
-    const movementData: Record<string, any> = {
-      businessId: auth.businessId,
-      productId,
-      productName: productData.name || '',
-      type,
-      quantity,
-      previousStock,
-      newStock,
-      reason: reason.trim(),
-      operatorId: operatorId ?? '',
-      operatorName: operatorName ?? '',
-      createdAt: now,
-    };
-
-    // Use a batch to atomically create movement + update product stock
-    const batch = adminDb.batch();
-
-    const movementRef = adminDb.collection('stockMovements').doc();
-    batch.set(movementRef, movementData);
-
-    batch.update(productRef, {
-      currentStock: newStock,
-      updatedAt: now,
-    });
-
-    await batch.commit();
-
-    return apiSuccess(
-      {
-        id: movementRef.id,
-        ...movementData,
-        product: {
-          id: productId,
-          name: productData.name,
+        const productData = productSnap.data()!;
+        const previousStock: number = productData.currentStock ?? 0;
+        let newStock: number;
+        switch (body.type) {
+          case 'entrada':
+            newStock = previousStock + body.quantity;
+            break;
+          case 'saida':
+            if (body.quantity > previousStock) {
+              throw new Error(`Insufficient stock. Current: ${previousStock}, requested: ${body.quantity}`);
+            }
+            newStock = previousStock - body.quantity;
+            break;
+          case 'ajuste':
+            // semântica histórica: quantity é o novo valor absoluto
+            newStock = body.quantity;
+            break;
+        }
+        const now = new Date().toISOString();
+        const movementData: Record<string, any> = {
+          businessId: auth.businessId,
+          productId: body.productId,
+          productName: productData.name || '',
+          type: body.type,
+          quantity: body.quantity,
           previousStock,
-          currentStock: newStock,
-        },
+          newStock,
+          reason: body.reason.trim(),
+          operatorId,
+          operatorName,
+          createdAt: now,
+        };
+        const batch = adminDb.batch();
+        const movementRef = adminDb.collection('stockMovements').doc();
+        batch.set(movementRef, movementData);
+        batch.update(productRef, { currentStock: newStock, updatedAt: now });
+        await batch.commit();
+        return {
+          id: movementRef.id,
+          ...movementData,
+          product: { id: body.productId, name: productData.name, previousStock, currentStock: newStock },
+        };
       },
+    );
+    return apiSuccess(
+      { ...result.result, ...(result.replayed ? { _idempotent: true } : {}) },
       201,
     );
-  } catch (error: any) {
-    console.error('[API v1/stock-movements POST]', error);
-    return apiError(error.message || 'Failed to create stock movement', 500);
+  } catch (err) {
+    if (err instanceof IdempotencyConflictError) {
+      return apiError('Idempotency key in progress — retry in a moment', 409);
+    }
+    console.error('[API v1/stock-movements POST]', err);
+    return apiError(err instanceof Error ? err.message : 'Failed to create stock movement', 500);
   }
 }

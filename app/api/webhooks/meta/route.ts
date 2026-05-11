@@ -22,6 +22,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { isOptOutKeyword } from '@/lib/utils/optOutKeywords';
 import { getAlternativeBrazilianPhone } from '@/lib/utils/phoneAlternatives';
 import { uploadServerMedia } from '@/lib/services/storage/adminUpload';
+import { markWebhookSeen } from '@/contracts/_runtime/webhookIdempotency';
 
 // Storage uploads são feitos via uploadServerMedia (admin SDK) — antes
 // inicializávamos o client SDK aqui mas server-side não tem auth do Firebase,
@@ -1449,19 +1450,21 @@ async function saveInboundMessage(params: InboundMessageParams) {
     return;
   }
 
-  // 2. Check for duplicate message (before touching conversation)
+  // 2. Idempotência atômica via markWebhookSeen (SDD: substitui query+race-window
+  //    pela criação atômica de um doc em `webhookSeen/{businessId}_{wamid}`).
+  //    Se outro pod já marcou esse wamid, retornamos seen=true e pulamos.
   try {
-    const dupSnap = await adminDb.collection('conversationMessages')
-      .where('externalMessageId', '==', params.messageId)
-      .where('businessId', '==', businessId)
-      .limit(1)
-      .get();
-    if (!dupSnap.empty) {
-      console.log('[Meta Webhook] Duplicate message skipped:', params.messageId);
+    const { seen } = await markWebhookSeen(adminDb, {
+      businessId,
+      externalMessageId: params.messageId,
+      source: 'meta_webhook',
+    });
+    if (seen) {
+      console.log('[Meta Webhook] Duplicate message skipped (markWebhookSeen):', params.messageId);
       return;
     }
   } catch (dupErr) {
-    console.error('[Meta Webhook] Error checking for duplicate:', dupErr);
+    console.error('[Meta Webhook] markWebhookSeen failed:', dupErr);
     // Continue processing — better to risk a duplicate than to lose a message
   }
 

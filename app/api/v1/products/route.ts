@@ -1,6 +1,11 @@
 import { NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
+import {
+  CreateProductBodySchema,
+  UpdateProductBodySchema,
+} from '@/contracts/api/v1/products';
+import { withIdempotency, IdempotencyConflictError } from '@/contracts/_runtime/idempotency';
 
 // ─── GET /api/v1/products ───────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
@@ -77,101 +82,85 @@ export async function GET(req: NextRequest) {
 }
 
 // ─── POST /api/v1/products ──────────────────────────────────────────────────
+// SDD: validação via CreateProductBodySchema. Idempotência via X-Idempotency-Key.
 export async function POST(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:products']);
   if (isApiKeyError(auth)) return auth;
 
+  const raw = await req.json().catch(() => null);
+  if (!raw || typeof raw !== 'object') {
+    return apiError('Invalid request body — expected JSON object', 400);
+  }
+  const parsed = CreateProductBodySchema.safeParse(raw);
+  if (!parsed.success) {
+    return apiError(`Validation failed: ${JSON.stringify(parsed.error.flatten())}`, 400);
+  }
+  const body = parsed.data;
+
+  const idempotencyKey = req.headers.get('x-idempotency-key');
+
   try {
-    const body = await req.json();
-    const { name, salePrice } = body;
-
-    if (!name || typeof name !== 'string') {
-      return apiError('Field "name" is required and must be a string', 400);
+    const result = await withIdempotency(
+      adminDb,
+      { businessId: auth.businessId, key: idempotencyKey, endpoint: 'POST /api/v1/products' },
+      async () => {
+        const now = new Date().toISOString();
+        const productData: Record<string, any> = {
+          businessId: auth.businessId,
+          ...body,
+          name: body.name.trim(),
+          createdAt: now,
+          updatedAt: now,
+        };
+        const docRef = await adminDb.collection('products').add(productData);
+        return { id: docRef.id, ...productData };
+      },
+    );
+    return apiSuccess(
+      { ...result.result, ...(result.replayed ? { _idempotent: true } : {}) },
+      201,
+    );
+  } catch (err) {
+    if (err instanceof IdempotencyConflictError) {
+      return apiError('Idempotency key in progress — retry in a moment', 409);
     }
-    if (salePrice === undefined || salePrice === null || typeof salePrice !== 'number') {
-      return apiError('Field "salePrice" is required and must be a number', 400);
-    }
-
-    const now = new Date().toISOString();
-
-    const productData: Record<string, any> = {
-      businessId: auth.businessId,
-      name: name.trim(),
-      salePrice,
-      description: body.description ?? '',
-      sku: body.sku ?? '',
-      barcode: body.barcode ?? '',
-      category: body.category ?? '',
-      unit: body.unit ?? 'UN',
-      costPrice: body.costPrice ?? 0,
-      currentStock: body.currentStock ?? 0,
-      minStock: body.minStock ?? 0,
-      isActive: body.isActive ?? true,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    // Optional fields — only include if provided
-    if (body.maxStock !== undefined) productData.maxStock = body.maxStock;
-    if (body.ncm !== undefined) productData.ncm = body.ncm;
-    if (body.cfop !== undefined) productData.cfop = body.cfop;
-    if (body.cest !== undefined) productData.cest = body.cest;
-    if (body.icmsOrigem !== undefined) productData.icmsOrigem = body.icmsOrigem;
-    if (body.gtin !== undefined) productData.gtin = body.gtin;
-    if (body.gtinTrib !== undefined) productData.gtinTrib = body.gtinTrib;
-    if (body.unidadeTrib !== undefined) productData.unidadeTrib = body.unidadeTrib;
-    if (body.fiscalTax !== undefined) productData.fiscalTax = body.fiscalTax;
-    if (body.imageUrl !== undefined) productData.imageUrl = body.imageUrl;
-
-    const docRef = await adminDb.collection('products').add(productData);
-
-    return apiSuccess({ id: docRef.id, ...productData }, 201);
-  } catch (error: any) {
-    console.error('[API v1/products POST]', error);
-    return apiError(error.message || 'Failed to create product', 500);
+    console.error('[API v1/products POST]', err);
+    return apiError(err instanceof Error ? err.message : 'Failed to create product', 500);
   }
 }
 
 // ─── PUT /api/v1/products ───────────────────────────────────────────────────
+// SDD: validação via UpdateProductBodySchema (todas as keys opcionais).
 export async function PUT(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:products']);
   if (isApiKeyError(auth)) return auth;
 
+  const raw = await req.json().catch(() => null);
+  if (!raw || typeof raw !== 'object') {
+    return apiError('Invalid request body — expected JSON object', 400);
+  }
+  const { id, ...patch } = raw as { id?: string; [k: string]: unknown };
+  if (!id || typeof id !== 'string') {
+    return apiError('Field "id" is required and must be a string', 400);
+  }
+  const parsed = UpdateProductBodySchema.safeParse(patch);
+  if (!parsed.success) {
+    return apiError(`Validation failed: ${JSON.stringify(parsed.error.flatten())}`, 400);
+  }
+
   try {
-    const body = await req.json();
-    const { id, ...updates } = body;
-
-    if (!id || typeof id !== 'string') {
-      return apiError('Field "id" is required and must be a string', 400);
-    }
-
-    // Verify the product exists and belongs to this business
     const docRef = adminDb.collection('products').doc(id);
     const docSnap = await docRef.get();
-
-    if (!docSnap.exists) {
+    if (!docSnap.exists || docSnap.data()?.businessId !== auth.businessId) {
       return apiError('Product not found', 404);
     }
-
-    if (docSnap.data()?.businessId !== auth.businessId) {
-      return apiError('Product not found', 404);
-    }
-
-    // Prevent overwriting system fields
-    delete updates.businessId;
-    delete updates.createdAt;
-    delete updates.id;
-
-    updates.updatedAt = new Date().toISOString();
-
-    await docRef.update(updates);
-
+    const updateData = { ...parsed.data, updatedAt: new Date().toISOString() };
+    await docRef.update(updateData);
     const updated = await docRef.get();
-
     return apiSuccess({ id: updated.id, ...updated.data() });
-  } catch (error: any) {
-    console.error('[API v1/products PUT]', error);
-    return apiError(error.message || 'Failed to update product', 500);
+  } catch (err) {
+    console.error('[API v1/products PUT]', err);
+    return apiError(err instanceof Error ? err.message : 'Failed to update product', 500);
   }
 }
 

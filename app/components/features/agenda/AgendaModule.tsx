@@ -79,6 +79,40 @@ import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
+// SDD Fase 4: dispatch de domain event quando appointment vira concluido.
+// Fire-and-forget — não bloqueia o save. Auditoria fica em domainEvents/{id}.
+// Métricas/commission/loyalty ainda fluem via chamadas inline (handler em
+// modo auditoria — ver lib/contracts/_runtime/handlers/appointmentCompleted.ts).
+async function emitAppointmentCompletedEvent(args: {
+  appointmentId: string;
+  clientId?: string;
+  professionalId?: string;
+  serviceId?: string;
+  amount: number;
+}): Promise<void> {
+  try {
+    const { getAuth } = await import('firebase/auth');
+    const token = await getAuth().currentUser?.getIdToken();
+    if (!token) return;
+    await fetch('/api/events/dispatch', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        type: 'appointment.completed',
+        occurredAt: new Date().toISOString(),
+        appointmentId: args.appointmentId,
+        clientId: args.clientId,
+        professionalId: args.professionalId,
+        serviceId: args.serviceId,
+        amount: args.amount,
+      }),
+    });
+  } catch (err) {
+    // Fire-and-forget: log mas não derruba o save
+    console.warn('[Agenda] emit appointment.completed falhou:', err);
+  }
+}
+
 // ==========================================
 // CONSTANTS
 // ==========================================
@@ -2403,6 +2437,17 @@ export default function AgendaModule() {
             .catch(err => console.warn('[Agenda] commission cancel on edit failed:', err));
         }
 
+        // SDD Fase 4: emit domain event quando vira concluido (auditoria)
+        if (!wasDone && isDone) {
+          void emitAppointmentCompletedEvent({
+            appointmentId: editingAppointment.id,
+            clientId: data.clientId,
+            professionalId: data.professionalId,
+            serviceId: data.serviceId,
+            amount: data.price || 0,
+          });
+        }
+
         setSnackbar({ open: true, message: t('agenda.appointmentUpdated', 'Agendamento atualizado com sucesso!'), severity: 'success' });
       } else {
         payload.businessId = business.id;
@@ -2458,6 +2503,16 @@ export default function AgendaModule() {
           });
         } else {
           const newDocRef = await addDoc(collection(db, 'appointments'), payload);
+          // SDD Fase 4: emit domain event se criado já concluido (auditoria)
+          if (data.status === 'concluido') {
+            void emitAppointmentCompletedEvent({
+              appointmentId: newDocRef.id,
+              clientId: data.clientId,
+              professionalId: data.professionalId,
+              serviceId: data.serviceId,
+              amount: data.price || 0,
+            });
+          }
           if (data.status === 'concluido' && data.clientId) {
             await syncClientMetrics({
               clientId: data.clientId,

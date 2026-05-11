@@ -17,6 +17,12 @@ import {
   type WriteBatch,
 } from 'firebase/firestore';
 import type { Product, StockMovement } from '@/lib/types';
+import {
+  expandBomLines as _expandBomLines,
+  checkBomAvailability as _checkBomAvailability,
+  type BomLine,
+  type BomProductLite,
+} from '@/contracts/_runtime/bom';
 
 export interface StockDeductionLine {
   productId: string;
@@ -44,33 +50,26 @@ export interface StockAdjustment {
 }
 
 /**
- * Expand a list of sale/order lines into the actual per-SKU adjustments
- * that need to hit the DB. Composite products are expanded recursively
- * (one-level — we don't support nested compositions).
+ * Expand sale/order lines into per-SKU quantities. Composite products
+ * (with `components[]`) are fanned out by 1 level.
  *
- * Returns the list grouped by productId (sums quantities when the same
- * component appears in multiple parents).
+ * SDD: delegates to `lib/contracts/_runtime/bom.ts` — keep the helper there
+ * as fonte da verdade, no duplication. Unknown productIds are skipped
+ * (caller decides on strict mode) — matches legacy behavior.
  */
 export function expandComponents(
   lines: StockDeductionLine[],
   productIndex: Map<string, Product>,
 ): StockDeductionLine[] {
+  // Filter out unknown productIds first (legacy lenient behavior)
+  const filtered = lines.filter((l) => productIndex.has(l.productId));
+  if (filtered.length === 0) return [];
+  // Adapt Map<string, Product> → Map<string, BomProductLite>: same shape, types compatible.
+  const expanded = _expandBomLines(filtered as BomLine[], productIndex as unknown as Map<string, BomProductLite>);
+  // Aggregate duplicates (same productId across multiple parents)
   const bucket = new Map<string, number>();
-  for (const line of lines) {
-    const product = productIndex.get(line.productId);
-    if (!product) {
-      // Unknown product — skip silently (caller decides on strict mode)
-      continue;
-    }
-    if (product.components && product.components.length > 0) {
-      // Composite: fan out into components, multiplied by qty sold
-      for (const comp of product.components) {
-        const qty = comp.quantity * line.quantity;
-        bucket.set(comp.productId, (bucket.get(comp.productId) || 0) + qty);
-      }
-    } else {
-      bucket.set(product.id, (bucket.get(product.id) || 0) + line.quantity);
-    }
+  for (const e of expanded) {
+    bucket.set(e.productId, (bucket.get(e.productId) || 0) + e.quantity);
   }
   return Array.from(bucket.entries()).map(([productId, quantity]) => ({ productId, quantity }));
 }
@@ -279,24 +278,25 @@ export async function addStock(
 /**
  * Non-destructive check: does stock on-hand cover the requested sale?
  * Returns the list of insufficient lines (empty = OK).
+ *
+ * SDD: delegates a `lib/contracts/_runtime/bom.ts`. Wrapper preserva o
+ * shape antigo da resposta (`requested` em vez de `required`) pra não
+ * quebrar callers existentes.
  */
 export function checkStockAvailability(
   lines: StockDeductionLine[],
   productIndex: Map<string, Product>,
 ): Array<{ productId: string; productName: string; requested: number; available: number }> {
-  const expanded = expandComponents(lines, productIndex);
-  const short: Array<{ productId: string; productName: string; requested: number; available: number }> = [];
-  for (const line of expanded) {
-    const product = productIndex.get(line.productId);
-    if (!product) continue;
-    if ((product.currentStock || 0) < line.quantity) {
-      short.push({
-        productId: product.id,
-        productName: product.name,
-        requested: line.quantity,
-        available: product.currentStock || 0,
-      });
-    }
-  }
-  return short;
+  const filtered = lines.filter((l) => productIndex.has(l.productId));
+  if (filtered.length === 0) return [];
+  const result = _checkBomAvailability(
+    filtered as BomLine[],
+    productIndex as unknown as Map<string, BomProductLite>,
+  );
+  return result.shortages.map((s) => ({
+    productId: s.productId,
+    productName: s.productName,
+    requested: s.required,
+    available: s.available,
+  }));
 }

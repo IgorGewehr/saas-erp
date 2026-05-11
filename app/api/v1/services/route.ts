@@ -2,6 +2,8 @@ import { NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
 import type { Query } from 'firebase-admin/firestore';
+import { CreateServiceBodySchema, UpdateServiceBodySchema } from '@/contracts/api/v1/services';
+import { withIdempotency, IdempotencyConflictError } from '@/contracts/_runtime/idempotency';
 
 // ---------------------------------------------------------------------------
 // GET /api/v1/services — List services for the authenticated business
@@ -66,121 +68,96 @@ export async function GET(req: NextRequest) {
 
 // ---------------------------------------------------------------------------
 // POST /api/v1/services — Create a new service
+// SDD: validação via CreateServiceBodySchema + idempotency-key.
 // ---------------------------------------------------------------------------
 export async function POST(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:services']);
   if (isApiKeyError(auth)) return auth;
 
+  const raw = await req.json().catch(() => null);
+  if (!raw || typeof raw !== 'object') {
+    return apiError('Invalid request body — expected JSON object', 400);
+  }
+  const parsed = CreateServiceBodySchema.safeParse(raw);
+  if (!parsed.success) {
+    return apiError(`Validation failed: ${JSON.stringify(parsed.error.flatten())}`, 400);
+  }
+  const body = parsed.data;
+  const idempotencyKey = req.headers.get('x-idempotency-key');
+
   try {
-    const body = await req.json();
-
-    // Validate required fields
-    const { name, duration, price } = body;
-
-    if (!name || typeof name !== 'string' || name.trim().length === 0) {
-      return apiError('Field "name" is required and must be a non-empty string', 400);
-    }
-    if (duration == null || typeof duration !== 'number' || duration <= 0) {
-      return apiError('Field "duration" is required and must be a positive number (minutes)', 400);
-    }
-    if (price == null || typeof price !== 'number' || price < 0) {
-      return apiError('Field "price" is required and must be a non-negative number', 400);
-    }
-
-    const now = new Date().toISOString();
-
-    const serviceData: Record<string, unknown> = {
-      businessId: auth.businessId,
-      name: name.trim(),
-      duration,
-      price,
-      description: body.description?.trim() || '',
-      category: body.category?.trim() || '',
-      color: body.color?.trim() || '#3B82F6',
-      isActive: body.isActive !== undefined ? Boolean(body.isActive) : true,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    // Optional owner fields
-    if (body.userId) serviceData.userId = body.userId;
-    if (body.userName) serviceData.userName = body.userName;
-
-    const docRef = await adminDb.collection('services').add(serviceData);
-
-    return apiSuccess({ id: docRef.id, ...serviceData }, 201);
+    const result = await withIdempotency(
+      adminDb,
+      { businessId: auth.businessId, key: idempotencyKey, endpoint: 'POST /api/v1/services' },
+      async () => {
+        const now = new Date().toISOString();
+        const serviceData: Record<string, unknown> = {
+          businessId: auth.businessId,
+          ...body,
+          name: body.name.trim(),
+          description: body.description?.trim() || '',
+          category: body.category?.trim() || '',
+          createdAt: now,
+          updatedAt: now,
+        };
+        const docRef = await adminDb.collection('services').add(serviceData);
+        return { id: docRef.id, ...serviceData };
+      },
+    );
+    return apiSuccess(
+      { ...result.result, ...(result.replayed ? { _idempotent: true } : {}) },
+      201,
+    );
   } catch (err) {
+    if (err instanceof IdempotencyConflictError) {
+      return apiError('Idempotency key in progress — retry in a moment', 409);
+    }
     console.error('[API] POST /api/v1/services error:', err);
-    return apiError('Failed to create service', 500);
+    return apiError(err instanceof Error ? err.message : 'Failed to create service', 500);
   }
 }
 
 // ---------------------------------------------------------------------------
 // PUT /api/v1/services — Update an existing service
+// SDD: validação via UpdateServiceBodySchema (todas keys opcionais).
 // ---------------------------------------------------------------------------
 export async function PUT(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:services']);
   if (isApiKeyError(auth)) return auth;
 
+  const raw = await req.json().catch(() => null);
+  if (!raw || typeof raw !== 'object') {
+    return apiError('Invalid request body — expected JSON object', 400);
+  }
+  const { id, ...patch } = raw as { id?: string; [k: string]: unknown };
+  if (!id || typeof id !== 'string') {
+    return apiError('Field "id" is required', 400);
+  }
+  const parsed = UpdateServiceBodySchema.safeParse(patch);
+  if (!parsed.success) {
+    return apiError(`Validation failed: ${JSON.stringify(parsed.error.flatten())}`, 400);
+  }
+
   try {
-    const body = await req.json();
-    const { id, ...fields } = body;
-
-    if (!id || typeof id !== 'string') {
-      return apiError('Field "id" is required', 400);
-    }
-
-    // Verify service exists and belongs to this business
     const docRef = adminDb.collection('services').doc(id);
     const docSnap = await docRef.get();
-
-    if (!docSnap.exists) {
+    if (!docSnap.exists || docSnap.data()?.businessId !== auth.businessId) {
       return apiError('Service not found', 404);
     }
-
-    if (docSnap.data()?.businessId !== auth.businessId) {
-      return apiError('Service not found', 404);
-    }
-
-    // Build update payload — only allow known fields
-    const allowedFields = ['name', 'description', 'duration', 'price', 'category', 'color', 'isActive', 'userId', 'userName'];
-    const updateData: Record<string, unknown> = { updatedAt: new Date().toISOString() };
-
-    for (const field of allowedFields) {
-      if (fields[field] !== undefined) {
-        if (field === 'name') {
-          if (typeof fields.name !== 'string' || fields.name.trim().length === 0) {
-            return apiError('"name" must be a non-empty string', 400);
-          }
-          updateData.name = fields.name.trim();
-        } else if (field === 'duration') {
-          if (typeof fields.duration !== 'number' || fields.duration <= 0) {
-            return apiError('"duration" must be a positive number', 400);
-          }
-          updateData.duration = fields.duration;
-        } else if (field === 'price') {
-          if (typeof fields.price !== 'number' || fields.price < 0) {
-            return apiError('"price" must be a non-negative number', 400);
-          }
-          updateData.price = fields.price;
-        } else if (field === 'isActive') {
-          updateData.isActive = Boolean(fields.isActive);
-        } else if (field === 'userId' || field === 'userName') {
-          updateData[field] = typeof fields[field] === 'string' ? fields[field].trim() : fields[field];
-        } else if (field === 'description' || field === 'category' || field === 'color') {
-          updateData[field] = typeof fields[field] === 'string' ? fields[field].trim() : fields[field];
-        }
-      }
-    }
-
+    const updateData: Record<string, unknown> = {
+      ...parsed.data,
+      updatedAt: new Date().toISOString(),
+    };
+    // Trim string fields que vêm validados como string
+    if (typeof updateData.name === 'string') updateData.name = (updateData.name as string).trim();
+    if (typeof updateData.description === 'string') updateData.description = (updateData.description as string).trim();
+    if (typeof updateData.category === 'string') updateData.category = (updateData.category as string).trim();
     await docRef.update(updateData);
-
     const updated = await docRef.get();
-
     return apiSuccess({ id: updated.id, ...updated.data() });
   } catch (err) {
     console.error('[API] PUT /api/v1/services error:', err);
-    return apiError('Failed to update service', 500);
+    return apiError(err instanceof Error ? err.message : 'Failed to update service', 500);
   }
 }
 

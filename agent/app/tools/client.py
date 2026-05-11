@@ -218,12 +218,29 @@ def _split_action(tool_name: str) -> tuple[str, str]:
 
 
 async def call_tool(business_id: str, tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
-    """Call a tool by name — returns the `data` field on success, raises ToolError."""
+    """Call a tool by name — returns the `data` field on success, raises ToolError.
+
+    SDD Fase 1: after receiving `data`, validate against the registered Pydantic
+    model (see `agent/app/tools/contracts/`). Validation failure becomes a
+    structured ToolError so the planner LLM sees a clean signal instead of
+    crashing downstream on malformed data.
+    """
     if tool_name not in TOOL_ENDPOINTS:
         raise ToolError(f"Unknown tool: {tool_name}")
     path = TOOL_ENDPOINTS[tool_name]
     _, action = _split_action(tool_name)
-    return await _post(business_id, path, {"action": action, "params": params})
+    data = await _post(business_id, path, {"action": action, "params": params})
+
+    # Response validation — opt-in per tool (registry returns None for unported tools)
+    try:
+        from .contracts import validate_response_data  # local import: avoid cycle
+
+        return validate_response_data(tool_name, data)
+    except ToolError:
+        raise
+    except Exception as exc:  # pydantic.ValidationError or anything unexpected
+        log.error("tools.response_validation_failed", tool=tool_name, error=str(exc), data_preview=str(data)[:500])
+        raise ToolError(f"Response shape inválida em {tool_name}: {exc}") from exc
 
 
 # ─── Outbound messaging (agent -> contact) ───────────────────────────────────

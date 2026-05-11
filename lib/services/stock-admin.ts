@@ -11,6 +11,12 @@
 
 import type { Firestore } from 'firebase-admin/firestore';
 import type { Product, StockMovement } from '@/lib/types';
+import {
+  expandBomLines as _expandBomLines,
+  checkBomAvailability as _checkBomAvailability,
+  type BomLine,
+  type BomProductLite,
+} from '@/contracts/_runtime/bom';
 
 export interface StockDeductionLine {
   productId: string;
@@ -38,52 +44,47 @@ export interface StockAdjustmentAdmin {
 }
 
 /**
- * Fan out composite products (with `components[]`) into per-SKU quantities.
- * Same semantics as the client-side expandComponents in stock.ts — keep the
- * two in sync. One level of recursion only.
+ * Fan out composite products into per-SKU quantities.
+ *
+ * SDD: delegates a `lib/contracts/_runtime/bom.ts`. Antes existia uma cópia
+ * desta função em stock.ts e outra aqui — agora ambas chamam o mesmo helper
+ * (fecha gap G4 do SDD audit).
  */
 export function expandComponents(
   lines: StockDeductionLine[],
   productIndex: Map<string, Product>,
 ): StockDeductionLine[] {
+  const filtered = lines.filter((l) => productIndex.has(l.productId));
+  if (filtered.length === 0) return [];
+  const expanded = _expandBomLines(filtered as BomLine[], productIndex as unknown as Map<string, BomProductLite>);
   const bucket = new Map<string, number>();
-  for (const line of lines) {
-    const product = productIndex.get(line.productId);
-    if (!product) continue;
-    if (product.components && product.components.length > 0) {
-      for (const comp of product.components) {
-        const qty = comp.quantity * line.quantity;
-        bucket.set(comp.productId, (bucket.get(comp.productId) || 0) + qty);
-      }
-    } else {
-      bucket.set(product.id, (bucket.get(product.id) || 0) + line.quantity);
-    }
+  for (const e of expanded) {
+    bucket.set(e.productId, (bucket.get(e.productId) || 0) + e.quantity);
   }
   return Array.from(bucket.entries()).map(([productId, quantity]) => ({ productId, quantity }));
 }
 
 /**
- * Non-destructive availability check. Returns lines that can't be satisfied.
+ * Non-destructive availability check. Returns lines que não podem ser
+ * atendidas. SDD: wrapper sobre `checkBomAvailability` mantendo o shape
+ * antigo (`requested` em vez de `required`).
  */
 export function checkStockAvailability(
   lines: StockDeductionLine[],
   productIndex: Map<string, Product>,
 ): Array<{ productId: string; productName: string; requested: number; available: number }> {
-  const expanded = expandComponents(lines, productIndex);
-  const short: Array<{ productId: string; productName: string; requested: number; available: number }> = [];
-  for (const line of expanded) {
-    const product = productIndex.get(line.productId);
-    if (!product) continue;
-    if ((product.currentStock || 0) < line.quantity) {
-      short.push({
-        productId: product.id,
-        productName: product.name,
-        requested: line.quantity,
-        available: product.currentStock || 0,
-      });
-    }
-  }
-  return short;
+  const filtered = lines.filter((l) => productIndex.has(l.productId));
+  if (filtered.length === 0) return [];
+  const result = _checkBomAvailability(
+    filtered as BomLine[],
+    productIndex as unknown as Map<string, BomProductLite>,
+  );
+  return result.shortages.map((s) => ({
+    productId: s.productId,
+    productName: s.productName,
+    requested: s.required,
+    available: s.available,
+  }));
 }
 
 /**
