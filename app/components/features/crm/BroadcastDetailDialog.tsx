@@ -14,8 +14,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { motion, AnimatePresence } from 'framer-motion';
+import { AnimatePresence, motion } from 'framer-motion';
 import { collection, doc, query, where, orderBy, onSnapshot, limit as firestoreLimit, getDoc } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 import { db } from '@/lib/config/firebase';
@@ -23,9 +22,29 @@ import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
 import { X, RefreshCw, Loader2, AlertTriangle, Check, CheckCheck, Clock, Send, Shield, RotateCcw, Trash2, Pause, Layers, Megaphone } from 'lucide-react';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import type { Broadcast, BroadcastMessage, BroadcastMessageStatus } from '@/lib/types';
+import type { Broadcast, BroadcastMessage, BroadcastMessageStatus, BroadcastStatus } from '@/lib/types';
 import { CONSENT_BASIS_LABELS } from '@/lib/types';
 import BroadcastMetricsPanel from './BroadcastMetricsPanel';
+import { ModernDialog, ModernPill, type ModernPillTone } from '@/app/components/ui/dialog';
+
+/** Mapa status → tom da pill no header. Mantém o vocabulário visual coerente
+ *  entre criação e detalhe da campanha (mesma paleta). */
+const STATUS_TONE: Record<BroadcastStatus, ModernPillTone> = {
+  draft: 'slate',
+  scheduled: 'blue',
+  sending: 'blue',
+  paused: 'amber',
+  sent: 'emerald',
+  failed: 'red',
+};
+const STATUS_LABEL: Record<BroadcastStatus, string> = {
+  draft: 'Rascunho',
+  scheduled: 'Agendada',
+  sending: 'Enviando',
+  paused: 'Pausada',
+  sent: 'Enviada',
+  failed: 'Falhou',
+};
 
 /** Formata duração em ms pra string curta (~1h 30min, ~5min 20s, ~45s, <1s). */
 function formatDurationShort(ms: number): string {
@@ -444,7 +463,13 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
     // 2x folga absorve variabilidade de rede/Firestore. Mínimo 2min pra não regredir o detector.
     return Math.max(2, Math.ceil((expectedMs * 2) / 60_000));
   })();
-  const looksStuck = isStuckSending && (
+  // `loading` neutraliza o falso positivo "nenhuma mensagem foi registrada":
+  // enquanto o onSnapshot ainda não retornou, messages.length é trivialmente 0
+  // — operador via "Campanha parece travada" + botões Resetar/Pausar e clicava
+  // afobado, destruindo campanha em andamento. Espera o load estabilizar antes
+  // de soar o alarme. O critério (b), de "tempo excedeu budget do throttle",
+  // não depende de messages.length então continua valendo durante loading.
+  const looksStuck = isStuckSending && !loading && (
     (messages.length === 0 && stuckMinutes >= 2) ||
     stuckMinutes >= stuckThresholdMinutes
   );
@@ -733,47 +758,52 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
   // (will-change-transform em app/page.tsx quebra position:fixed, fazia
   // o modal aparecer cortado/deslocado conforme o scroll da página).
   if (typeof document === 'undefined') return null;
-  return createPortal(
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
-      onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }}
-        className="w-full max-w-3xl max-h-[calc(100vh-2rem)] bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden flex flex-col">
-        {/* Header — usa recipients.length como fonte primária (broadcastMessages
-            podem ter sido apagadas em reset, mas recipients persiste). */}
-        <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <h3 className="font-bold text-base text-gray-900 dark:text-gray-100 truncate">{broadcast.name}</h3>
-            <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
-              <span className="capitalize">{broadcast.channel}</span> · {(broadcast.recipients?.length ?? messages.length)} recipientes · status: <span className="font-semibold">{broadcast.status}</span>
-            </p>
-            {offerName && (
-              <p className="text-[11px] text-blue-600 dark:text-blue-400 mt-0.5 inline-flex items-center gap-1">
-                <Megaphone className="w-3 h-3" />
-                Oferta: <span className="font-medium">{offerName}</span>
-              </p>
-            )}
-          </div>
-          <div className="flex items-center gap-1 flex-shrink-0">
-            <button
-              onClick={handleDelete}
-              disabled={deleting || broadcast.status === 'sending'}
-              title={broadcast.status === 'sending' ? 'Resete antes de apagar' : 'Apagar campanha'}
-              className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            >
-              {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
-            </button>
-            <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400">
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-
-        {/* Body scrollável único — antes só a lista de mensagens scrollava
-            (flex-1 overflow-y-auto interno), o que cortava as seções de
-            toolbars/sessões em viewport pequeno. Agora todo o conteúdo
-            entre header e fim modela como uma área única scrollável. */}
-        <div className="flex-1 overflow-y-auto min-h-0">
+  // Header padronizado via ModernDialog — mesmo padrão visual do dialog de
+  // criação de campanha (NewCampaign no CRMModule). recipients.length é a
+  // fonte primária do count: broadcastMessages podem ter sido apagadas em
+  // reset, mas recipients persiste.
+  const recipientCount = broadcast.recipients?.length ?? messages.length;
+  return (
+    <ModernDialog
+      open
+      onClose={onClose}
+      icon={Megaphone}
+      title={broadcast.name}
+      badges={
+        <>
+          <ModernPill tone={STATUS_TONE[broadcast.status] ?? 'slate'}>
+            {STATUS_LABEL[broadcast.status] ?? broadcast.status}
+          </ModernPill>
+          {/* Lixeira inline ao lado do status — bloqueada durante envio
+              (force reset antes pra evitar deletar com sessão em flight). */}
+          <button
+            type="button"
+            onClick={handleDelete}
+            disabled={deleting || broadcast.status === 'sending'}
+            title={broadcast.status === 'sending' ? 'Resete antes de apagar' : 'Apagar campanha'}
+            className="inline-flex items-center justify-center w-7 h-7 rounded-lg text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          >
+            {deleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+          </button>
+        </>
+      }
+      subtitle={
+        <>
+          <ModernPill tone="slate"><Send size={11} />{broadcast.channel}</ModernPill>
+          <ModernPill tone="blue">{recipientCount} destinatário{recipientCount === 1 ? '' : 's'}</ModernPill>
+          {offerName && (
+            <ModernPill tone="emerald"><Megaphone size={11} />Oferta: {offerName}</ModernPill>
+          )}
+        </>
+      }
+      maxWidth="md"
+      contentPadding="tight"
+    >
+      {/* Body scrollável único — antes só a lista de mensagens scrollava
+          (flex-1 overflow-y-auto interno), o que cortava as seções de
+          toolbars/sessões em viewport pequeno. Agora todo o conteúdo
+          entre header e fim modela como uma área única scrollável. */}
+      <div className="-mx-4 sm:-mx-6 -my-4 flex flex-col">
 
         {/* 5.12 — Auditoria LGPD */}
         {broadcast.consentBasis && (
@@ -953,11 +983,15 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
                 </>
               )}
             </span>
-            <div className="flex items-center gap-1.5">
+            {/* Botões Pausar/Resetar escondidos enquanto a UI está carregando
+                as mensagens da campanha — usuário afobado pode clicar achando
+                que travou e destruir a campanha em andamento. Aparecem só
+                quando a listagem já estabilizou (loading=false). */}
+            <div className={cn('flex items-center gap-1.5', loading && 'invisible')}>
               <button
                 type="button"
                 onClick={handlePause}
-                disabled={pausing}
+                disabled={pausing || loading}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-amber-600 hover:bg-amber-700 text-white disabled:opacity-50 transition-colors"
               >
                 {pausing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Pause className="w-3 h-3" />}
@@ -967,7 +1001,7 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
                 <button
                   type="button"
                   onClick={handleReset}
-                  disabled={resetting}
+                  disabled={resetting || loading}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-orange-600 hover:bg-orange-700 text-white disabled:opacity-50 transition-colors"
                 >
                   {resetting ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
@@ -1233,10 +1267,8 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
           </div>
         )}
 
-        </div>
-        {/* /body scrollável */}
-      </motion.div>
-    </motion.div>,
-    document.body,
+      </div>
+      {/* /body scrollável */}
+    </ModernDialog>
   );
 }
