@@ -1904,8 +1904,12 @@ function ViewAppointmentDialog({
             )}
           </div>
 
-          {/* Action Buttons */}
-          <div className="flex flex-wrap gap-2 mt-6 pt-4 border-t border-gray-100 dark:border-gray-800">
+          {/* Action Buttons — separados em 2 grupos:
+              "ações sobre cliente" (Conversa, Editar) à esquerda, "ações de
+              status" (Confirmar, Iniciar, Cancelar, Concluir, Não Compareceu)
+              à direita. Divider só aparece quando há ações de status visíveis,
+              caso contrário ficaria flutuando no fim do bloco. */}
+          <div className="flex flex-wrap items-center gap-2 mt-6 pt-4 border-t border-gray-100 dark:border-gray-800">
             {/* Conversa — abre conv WA existente do cliente ou inicia uma nova.
                 Fora do guard canEdit pois mandar mensagem não altera o
                 appointment; mesmo um viewer pode/deve poder contatar o cliente. */}
@@ -1931,6 +1935,12 @@ function ViewAppointmentDialog({
                 <Edit3 className="w-3.5 h-3.5" />
                 {t('agenda.edit', 'Editar')}
               </button>
+            )}
+
+            {/* Divider entre grupos — só renderiza se houver botão de status
+                à direita (status pré-conclusão + permissão de edição). */}
+            {canEdit && (appointment.status === 'agendado' || appointment.status === 'confirmado' || appointment.status === 'em_andamento') && (
+              <div className="hidden sm:block w-px h-6 bg-gray-200 dark:bg-gray-700 mx-1" aria-hidden="true" />
             )}
 
             {canEdit && appointment.status === 'agendado' && (
@@ -2980,6 +2990,14 @@ export default function AgendaModule() {
   const handleOpenConversation = useCallback(async () => {
     if (!selectedAppointment || !business?.id) return;
     const appt = selectedAppointment;
+    // Defensivo: appointment legado/corrompido sem clientId vincula a
+    // ninguém. Sem isso, query bate em where('crmContactId','=='') (0
+    // resultados) e cai pro NewConversation com clientId vazio, deixando
+    // o dialog destino confuso. Falha cedo com toast claro.
+    if (!appt.clientId) {
+      toast.error('Agendamento sem cliente vinculado — edite o agendamento e selecione um cliente.');
+      return;
+    }
     setShowViewDialog(false);
     setSelectedAppointment(null);
 
