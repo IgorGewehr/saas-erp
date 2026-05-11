@@ -27,6 +27,93 @@ import type { Broadcast, BroadcastMessage, BroadcastMessageStatus } from '@/lib/
 import { CONSENT_BASIS_LABELS } from '@/lib/types';
 import BroadcastMetricsPanel from './BroadcastMetricsPanel';
 
+/** Formata duração em ms pra string curta (~1h 30min, ~5min 20s, ~45s, <1s). */
+function formatDurationShort(ms: number): string {
+  if (ms < 1000) return '<1s';
+  const totalSec = Math.round(ms / 1000);
+  const min = Math.floor(totalSec / 60);
+  const hr = Math.floor(min / 60);
+  if (hr >= 1) return `${hr}h ${min % 60}min`;
+  if (min >= 1) return `${min}min ${totalSec % 60}s`;
+  return `${totalSec}s`;
+}
+
+/**
+ * Tickando a cada 1s, mostra:
+ *  - ETA pra terminar o envio (mesma fórmula do ThrottleEstimate na criação,
+ *    mas aplicada aos pendentes em tempo real).
+ *  - Quando o backend está dormindo entre lotes (sleep(batchPauseMs)), o doc
+ *    broadcast fica sem write por minutos. Se idleMs > delayMax*3 e o
+ *    throttle tem batchSize configurado, marca como pausa entre lotes —
+ *    sinaliza explicitamente pro operador que não é travamento.
+ */
+function BroadcastLiveProgress({ broadcast, sentCount, pendingCount }: {
+  broadcast: Broadcast;
+  sentCount: number;
+  pendingCount: number;
+}) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const throttle = broadcast.throttle;
+  const updatedAt = broadcast.updatedAt;
+  const idleMs = updatedAt ? nowMs - new Date(updatedAt).getTime() : 0;
+
+  // Pausa entre lotes — heurística baseada em idle do doc. Só faz sentido quando
+  // o throttle define batchSize (modos "Humano"/"Conservador"); modo "Rápido"
+  // não pausa entre lotes. Threshold = 3× delayMax + 5s pra dar folga ao jitter.
+  const maxNormalIdleMs = throttle ? throttle.delayMaxMs * 3 + 5_000 : 30_000;
+  const isBatchPausing = pendingCount > 0
+    && !!updatedAt
+    && idleMs > maxNormalIdleMs
+    && !!throttle?.batchSize;
+
+  // Tempo restante estimado da pausa (média entre min/max do throttle). Usado
+  // só pra UI — se o backend acordar antes/depois, o componente re-rendera
+  // com o updatedAt novo e a pausa "desaparece".
+  let batchPauseRemainingMs = 0;
+  if (isBatchPausing && throttle?.batchPauseMinMs && throttle?.batchPauseMaxMs) {
+    const avgBatchPause = (throttle.batchPauseMinMs + throttle.batchPauseMaxMs) / 2;
+    batchPauseRemainingMs = Math.max(0, avgBatchPause - idleMs);
+  }
+
+  // ETA total — mesma fórmula da estimativa-na-criação, só que aplicada aos
+  // pendentes em vez do total. Se a campanha está em batch pause, soma o
+  // restante da pausa atual também.
+  let etaText: string | null = null;
+  if (throttle && pendingCount > 0) {
+    const avgDelay = (throttle.delayMinMs + throttle.delayMaxMs) / 2;
+    let totalMs = avgDelay * pendingCount;
+    if (throttle.batchSize && throttle.batchSize > 0 && throttle.batchPauseMinMs && throttle.batchPauseMaxMs) {
+      const futureBatches = Math.floor(pendingCount / throttle.batchSize);
+      const avgBatchPause = (throttle.batchPauseMinMs + throttle.batchPauseMaxMs) / 2;
+      totalMs += futureBatches * avgBatchPause;
+    }
+    if (isBatchPausing) totalMs += batchPauseRemainingMs;
+    etaText = formatDurationShort(totalMs);
+  }
+
+  return (
+    <span className="inline-flex flex-col gap-0.5">
+      <span>Em processamento — {sentCount} enviadas / {pendingCount} pendentes</span>
+      {isBatchPausing ? (
+        <span className="text-[10.5px] font-medium text-amber-600 dark:text-amber-400 inline-flex items-center gap-1">
+          <Pause className="w-2.5 h-2.5" />
+          Pausa entre lotes (anti-spam) — retoma em ~{formatDurationShort(batchPauseRemainingMs)}
+        </span>
+      ) : etaText ? (
+        <span className="text-[10.5px] opacity-80 inline-flex items-center gap-1">
+          <Clock className="w-2.5 h-2.5" />
+          Falta ~{etaText} para terminar o envio
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 const STATUS_CFG: Record<BroadcastMessageStatus, { label: string; color: string; icon: React.ReactNode }> = {
   pending:   { label: 'Pendente',  color: 'text-gray-500 bg-gray-100 dark:bg-white/[0.06]',                      icon: <Clock className="w-3 h-3" /> },
   sent:      { label: 'Enviada',   color: 'text-blue-600 bg-blue-50 dark:bg-blue-500/10 dark:text-blue-400',     icon: <Check className="w-3 h-3" /> },
@@ -858,7 +945,11 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
               ) : (
                 <>
                   <Loader2 className="w-3 h-3 inline mr-1 -mt-0.5 animate-spin" />
-                  Em processamento — {counts.sent ?? 0} enviadas / {pendingCount} pendentes
+                  <BroadcastLiveProgress
+                    broadcast={broadcast}
+                    sentCount={counts.sent ?? 0}
+                    pendingCount={pendingCount}
+                  />
                 </>
               )}
             </span>
