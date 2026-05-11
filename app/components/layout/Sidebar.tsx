@@ -209,43 +209,29 @@ function MenuItem({
           )}
         />
 
-        <AnimatePresence initial={false}>
-          {!isCollapsed && (
-            <motion.span
-              key="label"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.14, ease: 'easeOut' }}
-              className={cn(
-                'relative z-10 text-[15px] font-medium truncate leading-none flex-1 text-left',
-                isActive ? 'text-white' : ''
-              )}
-            >
-              {item.label}
-            </motion.span>
-          )}
-        </AnimatePresence>
+        {!isCollapsed && (
+          <span
+            className={cn(
+              'relative z-10 text-[15px] font-medium truncate leading-none flex-1 text-left',
+              isActive ? 'text-white' : ''
+            )}
+          >
+            {item.label}
+          </span>
+        )}
 
-        <AnimatePresence initial={false}>
-          {!isCollapsed && item.comingSoon && (
-            <motion.span
-              key="badge"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.14, ease: 'easeOut' }}
-              className={cn(
-                'relative z-10 text-[10px] font-semibold px-1.5 py-0.5 rounded-md',
-                isActive
-                  ? 'bg-white/20 text-white'
-                  : 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-200/80 dark:border-amber-500/20'
-              )}
-            >
-              Beta
-            </motion.span>
-          )}
-        </AnimatePresence>
+        {!isCollapsed && item.comingSoon && (
+          <span
+            className={cn(
+              'relative z-10 text-[10px] font-semibold px-1.5 py-0.5 rounded-md',
+              isActive
+                ? 'bg-white/20 text-white'
+                : 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-200/80 dark:border-amber-500/20'
+            )}
+          >
+            Beta
+          </span>
+        )}
 
         <AnimatePresence initial={false}>
           {(item.badgeCount ?? 0) > 0 && (
@@ -294,20 +280,11 @@ function SectionHeader({
       'flex items-center',
       isCollapsed ? 'mx-3 my-2' : 'gap-1.5 px-2 pt-1 pb-2'
     )}>
-      <AnimatePresence initial={false}>
-        {!isCollapsed && (
-          <motion.span
-            key="title"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.14 }}
-            className="text-[11px] font-bold tracking-[0.1em] text-red-500 dark:text-red-400 uppercase select-none whitespace-nowrap"
-          >
-            {title}
-          </motion.span>
-        )}
-      </AnimatePresence>
+      {!isCollapsed && (
+        <span className="text-[11px] font-bold tracking-[0.1em] text-red-500 dark:text-red-400 uppercase select-none whitespace-nowrap">
+          {title}
+        </span>
+      )}
       <div
         className="flex-1 h-px"
         style={{
@@ -565,6 +542,7 @@ function SidebarContent({
         'transition-[width] duration-300 ease-in-out',
         collapsed ? 'w-[64px]' : 'w-[264px]'
       )}
+      style={{ contain: 'layout', willChange: 'width' }}
     >
       {/* ── Header ── */}
       {collapsed ? (
@@ -582,15 +560,10 @@ function SidebarContent({
         <div className="flex items-center justify-between h-[60px] px-4 border-b border-gray-100 dark:border-gray-800/80 flex-shrink-0">
           <div className="flex items-center gap-2.5 min-w-0">
             <img src="/icon.png" alt="Aevo" className="w-8 h-8 rounded-xl object-contain flex-shrink-0" />
-            <motion.div
-              initial={{ opacity: 0, x: -6 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.18 }}
-              className="min-w-0"
-            >
+            <div className="min-w-0">
               <p className="text-[14px] font-bold text-gray-900 dark:text-gray-100 font-display tracking-tight leading-tight">Aevo</p>
               <p className="text-[10.5px] text-gray-400 dark:text-gray-500 font-medium leading-tight">{t('sidebar.smartManagement')}</p>
-            </motion.div>
+            </div>
           </div>
 
           <div className="flex items-center gap-1">
@@ -677,20 +650,11 @@ function SidebarContent({
           title={collapsed ? t('sidebar.logout') : undefined}
         >
           <LogOut className="w-[17px] h-[17px] group-hover:translate-x-0.5 transition-transform duration-150 flex-shrink-0" />
-          <AnimatePresence initial={false}>
-            {!collapsed && (
-              <motion.span
-                key="sair"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.14 }}
-                className="text-[15px] font-medium"
-              >
-                {t('sidebar.logout')}
-              </motion.span>
-            )}
-          </AnimatePresence>
+          {!collapsed && (
+            <span className="text-[15px] font-medium">
+              {t('sidebar.logout')}
+            </span>
+          )}
         </button>
       </div>
     </div>
