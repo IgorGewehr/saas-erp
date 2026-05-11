@@ -11,6 +11,7 @@ import { isActiveClient } from '@/lib/utils/clientFilters';
 import { maskPhone } from '@/lib/utils/masks';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
+import { useOperatorTyping } from '@/lib/hooks/useOperatorTyping';
 import { getInitials } from '@/lib/utils/format';
 import {
   collection,
@@ -1923,7 +1924,7 @@ function MessageBubble({
           </div>
         )}
 
-        {/* Time + status + transport badge */}
+        {/* Time + status + transport badge + autor (operador) */}
         <div
           className={cn(
             'flex items-center gap-1.5 mt-1 px-1',
@@ -1939,6 +1940,24 @@ function MessageBubble({
               nunca saíram pelo canal — então não mostramos badge nelas. */}
           {message.channel === 'whatsapp' && !message.isInternal && message.connectedVia && (
             <TransportBadge connectedVia={message.connectedVia} />
+          )}
+          {/* Autor da mensagem outbound — quando vários operadores compartilham
+              o mesmo canal (WA/FB/IG), pequena etiqueta identifica quem do time
+              respondeu. Esconde nomes "automáticos" (Sistema/Campanha/IA) que
+              não correspondem a um operador humano específico. Cliente final
+              nunca vê isso — é só visualização interna do Aevo. */}
+          {isOut && message.senderName
+            && message.senderName !== 'Sistema'
+            && message.senderName !== 'Campanha'
+            && message.senderName !== 'IA'
+            && !message.isInternal && (
+            <span
+              title={`Enviada por ${message.senderName}`}
+              className="text-[10px] font-medium text-gray-500 dark:text-gray-400 inline-flex items-center gap-0.5 max-w-[14ch] truncate"
+            >
+              <UserIcon className="w-2.5 h-2.5" />
+              {message.senderName.split(' ')[0]}
+            </span>
           )}
         </div>
 
@@ -6624,6 +6643,19 @@ export default function ConversasModule() {
     return () => { sendTypingIndicator.cancel(); };
   }, [sendTypingIndicator]);
 
+  // ── Typing indicator entre operadores (intra-time) ─────────────────────────
+  // Diferente de sendTypingIndicator acima, que vai pro CLIENTE final via Meta:
+  // este aqui é só pra UI interna — quando 2+ operadores compartilham o mesmo
+  // canal, ver "Fulano está digitando..." evita resposta duplicada.
+  const { typingOthers, sendHeartbeat: sendOperatorTypingHeartbeat, stopTyping: stopOperatorTyping }
+    = useOperatorTyping(selectedConversation?.id, business?.id);
+  // onTyping do Composer dispara AMBOS — debounced externamente (3s) e
+  // heartbeat interno (cooldown 3s próprio).
+  const handleComposerTyping = useCallback(() => {
+    sendTypingIndicator();
+    sendOperatorTypingHeartbeat();
+  }, [sendTypingIndicator, sendOperatorTypingHeartbeat]);
+
   // ── File attachment handling (Task 1) ──────────────────────────────────────
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -6872,6 +6904,9 @@ export default function ConversasModule() {
     composerRef.current?.setText('');
     setAttachment(null);
     setIsSending(true);
+    // Apaga o "Fulano digitando..." pros outros operadores assim que envia —
+    // sem isso, o indicador continuava visível até o TTL de 5s expirar.
+    stopOperatorTyping();
 
     // If there is a media attachment, send it (errors are handled + toasted inside sendMediaMessage).
     // Propaga `isInternalNote` — anexo de nota interna NUNCA vai pelo Meta API.
@@ -8099,6 +8134,28 @@ export default function ConversasModule() {
                   )}
                 </AnimatePresence>
 
+                {/* Typing indicator entre operadores — quando outro membro do
+                    time está digitando nessa mesma conversa. Aparece acima do
+                    Composer, no canto esquerdo, em estilo discreto. Múltiplos
+                    operadores: "Gustavo e Maria estão digitando..." */}
+                {typingOthers.length > 0 && (
+                  <div className="px-4 py-1.5 text-[11px] text-gray-500 dark:text-gray-400 inline-flex items-center gap-1.5 border-t border-gray-100 dark:border-white/[0.04]">
+                    <span className="inline-flex gap-0.5">
+                      <span className="w-1 h-1 rounded-full bg-emerald-500 animate-pulse" />
+                      <span className="w-1 h-1 rounded-full bg-emerald-500 animate-pulse" style={{ animationDelay: '150ms' }} />
+                      <span className="w-1 h-1 rounded-full bg-emerald-500 animate-pulse" style={{ animationDelay: '300ms' }} />
+                    </span>
+                    <span>
+                      {typingOthers.length === 1
+                        ? <><strong className="font-semibold">{typingOthers[0].userName.split(' ')[0]}</strong> está digitando…</>
+                        : typingOthers.length === 2
+                          ? <><strong className="font-semibold">{typingOthers[0].userName.split(' ')[0]}</strong> e <strong className="font-semibold">{typingOthers[1].userName.split(' ')[0]}</strong> estão digitando…</>
+                          : <><strong className="font-semibold">{typingOthers[0].userName.split(' ')[0]}</strong> e mais {typingOthers.length - 1} estão digitando…</>
+                      }
+                    </span>
+                  </div>
+                )}
+
                 {/* Composer */}
                 {(() => {
                   // Cross-operator detection: a conversa está vinculada a uma
@@ -8121,7 +8178,7 @@ export default function ConversasModule() {
                       ref={composerRef}
                       onSend={handleSend}
                       onSlashWhenEmpty={handleSlashWhenEmpty}
-                      onTyping={sendTypingIndicator}
+                      onTyping={handleComposerTyping}
                       channel={selectedConversation.channel}
                       connectedVia={selectedConversation.connectedVia}
                       isSending={isSending}

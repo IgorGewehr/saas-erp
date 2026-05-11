@@ -631,6 +631,32 @@ service cloud.firestore {
     }
 
     // ============================================
+    // CONVERSATION TYPING SUBCOLLECTION (intra-operador)
+    // ============================================
+    // Indicador "Fulano está digitando..." entre operadores que compartilham
+    // o mesmo canal. Cada operador escreve no SEU próprio doc (id=uid), evitando
+    // race entre múltiplos digitando ao mesmo tempo.
+    //   - read:   qualquer operator+ do mesmo business que enxerga a conversation
+    //             pode ver todos os typers (não há info sensível — só nome).
+    //   - create/update/delete: só o próprio user (auth.uid === doc id) pode
+    //             tocar no PRÓPRIO doc. Operador A não pode forjar "B digitando".
+    match /conversations/{conversationId}/typing/{userId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isOperator()
+                  && parentConversationAccessible(conversationId);
+
+      allow create, update: if isAuthenticated()
+                            && isOperator()
+                            && request.auth.uid == userId
+                            && request.resource.data.businessId == userBusinessId()
+                            && parentConversationAccessible(conversationId);
+
+      allow delete: if isAuthenticated()
+                    && request.auth.uid == userId;
+    }
+
+    // ============================================
     // CONVERSATION MESSAGES COLLECTION
     // ============================================
     // As mensagens herdam o isolamento da parent conversation: o usuário só

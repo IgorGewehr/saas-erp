@@ -2245,6 +2245,10 @@ export interface ConversationMessage {
   content: string;
   status: MessageStatus;
   externalMessageId?: string; // Meta API message ID (wamid, mid)
+  /** UID do operador que enviou — populado em sends manuais (não em campanhas
+   *  nem em mensagens inbound). Permite atribuição visual na bolha quando
+   *  múltiplos operadores compartilham o mesmo canal. */
+  senderId?: string;
   senderName?: string;
   senderAvatarUrl?: string;
   mediaUrl?: string;
