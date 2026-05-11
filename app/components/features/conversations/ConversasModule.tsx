@@ -5409,7 +5409,7 @@ export default function ConversasModule() {
     const [k, id] = advFilters.campaignOrigin.split(':');
     return [k as 'broadcast' | 'birthday' | null, id ?? null] as const;
   }, [advFilters.campaignOrigin]);
-  const { data: retroCampaignConvIds } = useQuery<Set<string>>({
+  const { data: retroCampaignConvIds, isLoading: retroLookupLoading } = useQuery<Set<string>>({
     queryKey: ['filter-campaign-conv-ids', business?.id, campaignKind, campaignId],
     queryFn: async () => {
       if (!business?.id || !campaignKind || !campaignId) return new Set<string>();
@@ -5916,13 +5916,23 @@ export default function ConversasModule() {
       );
     }
     setActiveSectorFilter(view.filters.sectorId ?? 'all');
+    // campaignOrigin "fantasma": view aponta pra broadcast/campanha que foi
+    // deletada — o dropdown não tem a opção, mas o filter ficaria ativo
+    // silenciosamente, zerando a lista sem feedback. Valida contra options
+    // carregadas e descarta se não bate. Em caso de options ainda carregando
+    // (vazias por loading), respeita o filter — a próxima troca de view
+    // resolve corretamente.
+    const persistedCampaign = view.filters.campaignOrigin ?? '';
+    const validCampaign = !persistedCampaign
+      || campaignFilterOptions.length === 0
+      || campaignFilterOptions.some(o => o.value === persistedCampaign);
     setAdvFilters({
       assignedTo: view.filters.assignedTo ?? '',
       priority: view.filters.priority ?? '',
       label: view.filters.label ?? '',
       slaStatus: (view.filters.slaStatus as AdvancedFilters['slaStatus']) ?? '',
       unreadOnly: view.filters.unreadOnly ?? false,
-      campaignOrigin: view.filters.campaignOrigin ?? '',
+      campaignOrigin: validCampaign ? persistedCampaign : '',
     });
   };
 
@@ -7376,16 +7386,20 @@ export default function ConversasModule() {
       const matchesUnread = !advFilters.unreadOnly || (c.unreadCount ?? 0) > 0;
       const matchesSLAStatus = !advFilters.slaStatus || getSLAInfo(c, slaConfig)?.status === advFilters.slaStatus;
       // Origem da campanha: combina dois caminhos. Forward = campo denormalizado
-      // no doc Conversation (criado a partir do deploy). Retro = id presente
-      // no Set retroCampaignConvIds carregado de conversationMessages (cobre
-      // conversas pré-feature). Se nenhum dos dois bate, conversa não passa.
+      // no doc Conversation (criado a partir do deploy + backfill no matched).
+      // Retro = id presente no Set retroCampaignConvIds carregado de
+      // conversationMessages (cobre conversas pré-feature sem nenhum write
+      // posterior). Se nenhum dos dois bate, conversa não passa.
+      //
+      // Durante o LOADING do retro, faz fallback pro forward apenas — sem isso,
+      // a lista piscava "0 conversas" por 200-800ms antes de encher.
       const matchesCampaign = !campaignKind || !campaignId
         || (campaignKind === 'broadcast' && c.originBroadcastId === campaignId)
         || (campaignKind === 'birthday' && c.originBirthdayCampaignId === campaignId)
-        || (retroCampaignConvIds?.has(c.id) ?? false);
+        || (!retroLookupLoading && (retroCampaignConvIds?.has(c.id) ?? false));
       return matchesChannel && matchesView && matchesSector && matchesScope && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus && matchesCampaign;
     });
-  }, [getVisibleConversations, conversations, activeChannel, activeView, activeSectorFilter, activeChannelScope, myConnectionIds, connectionsById, searchQuery, advFilters, slaConfig, user?.uid, campaignKind, campaignId, retroCampaignConvIds]);
+  }, [getVisibleConversations, conversations, activeChannel, activeView, activeSectorFilter, activeChannelScope, myConnectionIds, connectionsById, searchQuery, advFilters, slaConfig, user?.uid, campaignKind, campaignId, retroCampaignConvIds, retroLookupLoading]);
 
   // Re-sort client-side. 'recent' não toca a ordem (Firestore já desc por
   // lastMessageAt). 'oldest' inverte. 'priority' ranqueia urgent>high>med>low,

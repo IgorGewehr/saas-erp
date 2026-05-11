@@ -342,12 +342,19 @@ async function upsertConversationFromBroadcast(params: {
     let conversationId: string;
     if (matched) {
       conversationId = matched.id;
-      // Atualiza preview da conversa com a msg outbound
+      // Backfill da atribuição "first-touch": se a conv já existia (cliente
+      // mandou msg antes da campanha) ela nunca teve `originBroadcastId`
+      // setado. Sem isso, conv ficaria órfã pra sempre do filtro forward,
+      // dependendo só do retro lookup (que tem custo + risco em rules de
+      // canais pessoais). Backfill seta SÓ se ainda não existe — preserva
+      // a regra "primeira atribuição vence" pra convs que tiveram origem.
+      const existingOrigin = matched.data().originBroadcastId as string | undefined;
       await matched.ref.update({
         lastMessage: params.content.slice(0, 200),
         lastMessageAt: now,
         lastMessageDirection: 'outbound',
         updatedAt: now,
+        ...(existingOrigin ? {} : { originBroadcastId: params.broadcastId }),
       });
     } else {
       // Cria conversa nova. Para WhatsApp, popula contactPhone com formatação

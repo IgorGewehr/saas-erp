@@ -135,11 +135,24 @@ export async function upsertConversationFromCampaign(params: UpsertParams): Prom
     let conversationId: string;
     if (matched) {
       conversationId = matched.id;
+      // Backfill da atribuição "first-touch": conversas pré-existentes (cliente
+      // já tinha mandado msg antes da campanha) nunca tiveram origem setada.
+      // Sem isso, ficariam invisíveis ao filtro forward — só retro acharia
+      // (custo + risco em rules). Seta apenas se o campo correspondente ao
+      // tipo da source ainda não existe, preservando "primeira atribuição vence".
+      const existingData = matched.data();
+      const originPatch: Record<string, unknown> = {};
+      if (params.source.kind === 'broadcast' && !existingData.originBroadcastId) {
+        originPatch.originBroadcastId = params.source.broadcastId;
+      } else if (params.source.kind === 'birthday' && !existingData.originBirthdayCampaignId) {
+        originPatch.originBirthdayCampaignId = params.source.birthdayCampaignId;
+      }
       await matched.ref.update({
         lastMessage: params.content.slice(0, 200),
         lastMessageAt: now,
         lastMessageDirection: 'outbound',
         updatedAt: now,
+        ...originPatch,
       });
     } else {
       const isWhatsApp = params.channel === 'whatsapp';
