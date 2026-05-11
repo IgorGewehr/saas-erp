@@ -159,6 +159,7 @@ function AppLayoutContent({ children }: { children: React.ReactNode }) {
   // One-shot: ConversasModule limpa após processar pra evitar re-trigger em re-renders.
   const [pendingOpenConversationId, setPendingOpenConversationId] = useState<string | null>(null);
   const [pendingNewConversation, setPendingNewConversation] = useState<PendingNewConversation | null>(null);
+  const [pendingOpenClientId, setPendingOpenClientId] = useState<string | null>(null);
 
   if (!isAuthReady || isLoading || !firebaseUser) return <LoadingSkeleton />;
 
@@ -171,6 +172,8 @@ function AppLayoutContent({ children }: { children: React.ReactNode }) {
       setPendingOpenConversationId,
       pendingNewConversation,
       setPendingNewConversation,
+      pendingOpenClientId,
+      setPendingOpenClientId,
     }}>
       <AIAgentProvider>
       <AmbientBackground />

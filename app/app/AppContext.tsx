@@ -30,6 +30,13 @@ interface AppContextType {
    */
   pendingNewConversation: PendingNewConversation | null;
   setPendingNewConversation: (v: PendingNewConversation | null) => void;
+  /**
+   * Quando setado, ClientsModule abre o painel de detalhe do cliente
+   * automaticamente. Usado pelo "Vincular cliente" do header da conversa
+   * (clicar no card do cliente vinculado pula pro detalhe). Limpa após consumir.
+   */
+  pendingOpenClientId: string | null;
+  setPendingOpenClientId: (id: string | null) => void;
 }
 
 export const AppContext = createContext<AppContextType>({
@@ -40,6 +47,8 @@ export const AppContext = createContext<AppContextType>({
   setPendingOpenConversationId: () => {},
   pendingNewConversation: null,
   setPendingNewConversation: () => {},
+  pendingOpenClientId: null,
+  setPendingOpenClientId: () => {},
 });
 
 export const useAppContext = () => useContext(AppContext);

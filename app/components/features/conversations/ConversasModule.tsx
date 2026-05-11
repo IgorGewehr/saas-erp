@@ -4301,6 +4301,7 @@ function LinkContactDrawer({
   const [creating, setCreating] = useState(false);
   const [linkingId, setLinkingId] = useState<string | null>(null);
   const queryClient = useQueryClient();
+  const { setActivePage, setPendingOpenClientId } = useAppContext();
 
   const linkedClient = useMemo(
     () => conversation.crmContactId ? clients.find(c => c.id === conversation.crmContactId) : undefined,
@@ -4471,26 +4472,40 @@ function LinkContactDrawer({
               Cliente vinculado
             </p>
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl overflow-hidden flex-shrink-0">
-                {linkedClient.avatarUrl ? (
-                  <img src={linkedClient.avatarUrl} alt={linkedClient.name} className="w-full h-full object-cover" />
-                ) : (
-                  <div className="w-full h-full bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center text-white font-bold text-sm">
-                    {(linkedClient.name?.[0] || '?').toUpperCase()}
-                  </div>
-                )}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-bold text-gray-900 dark:text-gray-100 truncate">{linkedClient.name}</p>
-                <p className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
-                  {linkedClient.phone || linkedClient.whatsapp || linkedClient.email || 'Sem contato'}
-                </p>
-              </div>
+              {/* Área do avatar+info clicável — leva pro detalhe do cliente em
+                  Clientes (via pendingOpenClientId). Botão "Desvincular" fica
+                  fora do clickable pra evitar gestos ambíguos. */}
+              <button
+                type="button"
+                onClick={() => {
+                  setPendingOpenClientId(linkedClient.id);
+                  setActivePage('Clientes');
+                  onClose();
+                }}
+                title={`Ver detalhes de ${linkedClient.name}`}
+                className="flex items-center gap-3 flex-1 min-w-0 rounded-lg -m-1 p-1 text-left hover:bg-emerald-100/60 dark:hover:bg-emerald-500/15 transition-colors"
+              >
+                <div className="w-10 h-10 rounded-xl overflow-hidden flex-shrink-0">
+                  {linkedClient.avatarUrl ? (
+                    <img src={linkedClient.avatarUrl} alt={linkedClient.name} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center text-white font-bold text-sm">
+                      {(linkedClient.name?.[0] || '?').toUpperCase()}
+                    </div>
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-bold text-gray-900 dark:text-gray-100 truncate">{linkedClient.name}</p>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                    {linkedClient.phone || linkedClient.whatsapp || linkedClient.email || 'Sem contato'}
+                  </p>
+                </div>
+              </button>
               <button
                 type="button"
                 onClick={() => link(null)}
                 disabled={linkingId === '__unlink'}
-                className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:text-red-500 hover:border-red-300 disabled:opacity-50"
+                className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:text-red-500 hover:border-red-300 disabled:opacity-50 flex-shrink-0"
               >
                 {linkingId === '__unlink' ? '...' : 'Desvincular'}
               </button>

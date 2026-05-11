@@ -14,6 +14,7 @@ import {
 import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, limit as firestoreLimit, writeBatch, deleteField, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
+import { useAppContext } from '@/app/app/AppContext';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
 import { validateCPF, validateCNPJ } from '@/lib/utils/validators';
@@ -893,6 +894,24 @@ export default function ClientsModule() {
       sessionStorage.removeItem('aevo:preselectClientId');
     } catch { /* ok */ }
   }, [clients, selectedClient]);
+
+  // ─── Pré-seleção via AppContext (pendingOpenClientId) ───────────────────────
+  // Padrão moderno (mesmo de pendingOpenConversationId em Conversas). Setado
+  // pelo Conversas quando operador clica no card "Cliente vinculado" do panel
+  // de Vincular cliente — pula direto pro detalhe sem o operador ter que buscar
+  // de novo. Timeout 5s evita pendurar se a lista ainda não carregou.
+  const { pendingOpenClientId, setPendingOpenClientId } = useAppContext();
+  useEffect(() => {
+    if (!pendingOpenClientId) return;
+    const target = clients.find(c => c.id === pendingOpenClientId);
+    if (target) {
+      setSelectedClient(target);
+      setPendingOpenClientId(null);
+      return;
+    }
+    const t = setTimeout(() => setPendingOpenClientId(null), 5000);
+    return () => clearTimeout(t);
+  }, [pendingOpenClientId, clients, setPendingOpenClientId]);
 
   // ─── Mutations ──────────────────────────────────────────────────────────────
   const { mutate: saveClient, isPending: isSaving } = useMutation({
