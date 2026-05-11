@@ -2230,6 +2230,15 @@ export interface ConversationMessage {
   /** Nome do arquivo original para documentos. Renderizado no card; preserva
    *  o filename real ao invés de virar caption duplicada na bolha de texto. */
   fileName?: string;
+  /** Contatos compartilhados pelo cliente (vCard via WhatsApp). Array porque
+   *  o emissor pode enviar vários contatos numa única mensagem. Quando
+   *  presente, a UI renderiza card visual em vez do placeholder [Contato]
+   *  e o lastMessage da conversa fica "📇 Nome do contato". */
+  sharedContacts?: Array<{
+    name: string;
+    phones?: string[];
+    emails?: string[];
+  }>;
   isInternal?: boolean;
   mentionedUserIds?: string[];
   sentAt: string;

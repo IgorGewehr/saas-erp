@@ -426,6 +426,9 @@ interface ExtractedContent {
   /** Apenas documentos: nome de arquivo declarado pelo emissor.
    *  Vai pro doc Firestore como `fileName` pra renderizar no card. */
   fileName?: string;
+  /** Mensagens tipo 'contacts' (vCard): array de contatos compartilhados pelo
+   *  cliente. UI renderiza card visual em vez do preview "[Contato]". */
+  sharedContacts?: Array<{ name: string; phones?: string[]; emails?: string[] }>;
 }
 
 interface InboundMessageParams {
@@ -444,6 +447,8 @@ interface InboundMessageParams {
   mediaMimeType?: string;
   /** Documentos: nome de arquivo do emissor — gravado em `fileName`. */
   fileName?: string;
+  /** Mensagens 'contacts' (vCard): contatos compartilhados pelo cliente. */
+  sharedContacts?: Array<{ name: string; phones?: string[]; emails?: string[] }>;
   replyToMessageId?: string;
   timestamp: string;
 }
@@ -651,6 +656,7 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
           mediaUrl: firebaseMediaUrl,
           mediaMimeType: extracted.mediaMimeType,
           fileName: extracted.fileName,
+          sharedContacts: extracted.sharedContacts,
           replyToMessageId: msg.context?.id,
           timestamp: new Date(parseInt(msg.timestamp) * 1000).toISOString(),
         });
@@ -1874,6 +1880,7 @@ async function saveInboundMessage(params: InboundMessageParams) {
     if (params.mediaUrl) msgDoc.mediaUrl = params.mediaUrl;
     if (params.mediaMimeType) msgDoc.mediaMimeType = params.mediaMimeType;
     if (params.fileName) msgDoc.fileName = params.fileName;
+    if (params.sharedContacts?.length) msgDoc.sharedContacts = params.sharedContacts;
     if (params.replyToMessageId) msgDoc.replyToMessageId = params.replyToMessageId;
     if (params.senderAvatarUrl) msgDoc.senderAvatarUrl = params.senderAvatarUrl;
     const msgRef = await adminDb.collection('conversationMessages').add(msgDoc);
@@ -2149,8 +2156,25 @@ function extractMessageContent(msg: MetaWhatsAppMessage): ExtractedContent {
       return { content: '', mediaId: msg.sticker?.id };
     case 'location':
       return { content: `[Localizacao: ${msg.location?.latitude}, ${msg.location?.longitude}]` };
-    case 'contacts':
-      return { content: '[Contato]' };
+    case 'contacts': {
+      // Meta envia contacts[] com { name: { formatted_name }, phones: [{ phone }] }.
+      // Parseia pra estrutura própria + gera preview "📇 Nome (e N outros)".
+      const rawContacts = msg.contacts || [];
+      const sharedContacts = rawContacts.map(c => {
+        const name = c.name?.formatted_name?.trim() || 'Contato';
+        const phones = (c.phones || [])
+          .map(p => p.phone?.trim())
+          .filter((p): p is string => !!p);
+        return phones.length > 0 ? { name, phones } : { name };
+      });
+      const first = sharedContacts[0];
+      const preview = !first
+        ? '📇 Contato'
+        : sharedContacts.length === 1
+          ? `📇 ${first.name}`
+          : `📇 ${first.name} (e ${sharedContacts.length - 1} outro${sharedContacts.length > 2 ? 's' : ''})`;
+      return { content: preview, sharedContacts };
+    }
     case 'reaction':
       return { content: msg.reaction?.emoji ?? '[Reacao]' };
     case 'button':

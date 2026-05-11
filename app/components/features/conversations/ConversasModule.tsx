@@ -1691,6 +1691,53 @@ function MediaAttachment({
   return null;
 }
 
+// ─── Shared Contacts Card ─────────────────────────────────────────────────────
+// Renderiza contatos compartilhados (vCard via WA) como card visual com nome,
+// telefones (botão "Copiar") e emails. Substitui a bolha "[Contato]" do
+// fallback. Suporta múltiplos contatos numa única mensagem.
+function SharedContactsCard({ contacts }: { contacts: NonNullable<ConversationMessage['sharedContacts']> }) {
+  if (!contacts || contacts.length === 0) return null;
+  return (
+    <div className="mb-1.5 space-y-1.5 max-w-[300px]">
+      {contacts.map((c, idx) => (
+        <div
+          key={`${c.name}-${idx}`}
+          className="flex items-start gap-3 px-3 py-2.5 rounded-xl bg-black/5 dark:bg-white/5"
+        >
+          <div className="w-9 h-9 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center text-white font-bold text-sm flex-shrink-0">
+            {(c.name?.[0] || '?').toUpperCase()}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate" title={c.name}>{c.name}</p>
+            {c.phones?.map((phone, i) => (
+              <button
+                key={`p-${i}`}
+                type="button"
+                onClick={() => { navigator.clipboard?.writeText(phone).then(() => toast.success('Telefone copiado')).catch(() => {}); }}
+                title="Copiar telefone"
+                className="block text-[11px] text-gray-600 dark:text-gray-400 hover:text-emerald-600 dark:hover:text-emerald-400 truncate text-left"
+              >
+                {phone}
+              </button>
+            ))}
+            {c.emails?.map((email, i) => (
+              <button
+                key={`e-${i}`}
+                type="button"
+                onClick={() => { navigator.clipboard?.writeText(email).then(() => toast.success('E-mail copiado')).catch(() => {}); }}
+                title="Copiar e-mail"
+                className="block text-[11px] text-gray-600 dark:text-gray-400 hover:text-emerald-600 dark:hover:text-emerald-400 truncate text-left"
+              >
+                {email}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ─── Transport Badge ──────────────────────────────────────────────────────────
 
 /**
@@ -1795,16 +1842,25 @@ function MessageBubble({
           <MediaAttachment mediaUrl={message.mediaUrl} mediaType={message.mediaType} fileName={message.fileName} />
         )}
 
+        {/* Shared contacts (vCard) — card visual com nome + telefones + emails. */}
+        {message.sharedContacts && message.sharedContacts.length > 0 && (
+          <SharedContactsCard contacts={message.sharedContacts} />
+        )}
+
         {/* Text content — esconde bolha de texto que duplicaria o card de mídia:
             (1) placeholders genéricos "[Documento]"/"[Imagem]" gravados no
             inbound quando não há caption real;
             (2) filename como content (legado pré-fix gravava file.name aqui)
-            ou content == fileName (UI nova com fileName explícito). */}
+            ou content == fileName (UI nova com fileName explícito);
+            (3) preview "📇 Nome..." quando há sharedContacts — o card já mostra
+            o nome, evitamos duplicar texto na bolha. */}
         {message.content
           && !(message.mediaType
             && /^\[(Imagem|Audio|Áudio|Video|Vídeo|Sticker|Documento|Midia|Mídia)\]$/i.test(message.content))
           && !(message.mediaType === 'document'
             && (message.content === message.fileName || looksLikeFilename(message.content)))
+          && !(message.sharedContacts && message.sharedContacts.length > 0
+            && (message.content.startsWith('📇') || message.content === '[Contato]'))
           && (
           <div
             className={cn(

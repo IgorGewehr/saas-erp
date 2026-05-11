@@ -260,6 +260,54 @@ function getMediaLabel(type: string | null): string {
   }
 }
 
+/** Extrai contatos vCard de mensagens Baileys (contactMessage ou
+ *  contactsArrayMessage). Parser simples por linha — WhatsApp emite vCard
+ *  3.0 estruturado com FN/TEL/EMAIL; ignora detalhes (params, charset, etc).
+ *  Retorna [] quando a mensagem não tem contatos. */
+interface ParsedSharedContact { name: string; phones?: string[]; emails?: string[] }
+function parseVCard(vcard: string, fallbackName?: string): ParsedSharedContact {
+  const phones: string[] = [];
+  const emails: string[] = [];
+  let name = fallbackName?.trim() || 'Contato';
+  for (const rawLine of vcard.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const colon = line.indexOf(':');
+    if (colon < 0) continue;
+    const key = line.slice(0, colon).toUpperCase();
+    const value = line.slice(colon + 1).trim();
+    if (!value) continue;
+    if (key === 'FN' || key.startsWith('FN;')) name = value || name;
+    else if (key === 'TEL' || key.startsWith('TEL;')) phones.push(value);
+    else if (key === 'EMAIL' || key.startsWith('EMAIL;')) emails.push(value);
+  }
+  return phones.length || emails.length
+    ? { name, phones: phones.length ? phones : undefined, emails: emails.length ? emails : undefined }
+    : { name };
+}
+function extractSharedContacts(msg: proto.IMessage | null | undefined): ParsedSharedContact[] {
+  if (!msg) return [];
+  // 1 contato compartilhado: contactMessage = { displayName, vcard }
+  if (msg.contactMessage?.vcard) {
+    return [parseVCard(msg.contactMessage.vcard, msg.contactMessage.displayName ?? undefined)];
+  }
+  // Vários contatos: contactsArrayMessage = { displayName, contacts: [{ vcard, displayName }] }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const arr = (msg as any).contactsArrayMessage?.contacts as Array<{ vcard?: string; displayName?: string }> | undefined;
+  if (arr?.length) {
+    return arr
+      .map(c => (c.vcard ? parseVCard(c.vcard, c.displayName) : null))
+      .filter((c): c is ParsedSharedContact => !!c);
+  }
+  return [];
+}
+function getSharedContactsPreview(contacts: ParsedSharedContact[]): string {
+  if (!contacts.length) return '';
+  const first = contacts[0];
+  if (contacts.length === 1) return `📇 ${first.name}`;
+  return `📇 ${first.name} (e ${contacts.length - 1} outro${contacts.length > 2 ? 's' : ''})`;
+}
+
 // ─── Firestore: update connection status ─────────────────────────────────────
 
 /**
@@ -657,9 +705,14 @@ async function handleInboundMessage(
   const text = extractMessageText(msgContent);
   const mediaType = extractMediaType(msgContent);
   const inboundFileName = mediaType === 'document' ? extractInboundFileName(msgContent) : null;
-  if (!text && !mediaType) return false;
+  const sharedContacts = extractSharedContacts(msgContent);
+  if (!text && !mediaType && sharedContacts.length === 0) return false;
 
-  const displayText = text || getMediaLabel(mediaType);
+  // Preview que vira `lastMessage` na conversa + content na bolha. Contatos
+  // ganham um preview "📇 Nome (e N outros)" — sem isso, lastMessage ficava
+  // vazia ou genérica "[Mídia]" pra mensagens só-de-contato.
+  const displayText = text
+    || (sharedContacts.length > 0 ? getSharedContactsPreview(sharedContacts) : getMediaLabel(mediaType));
   const now = new Date().toISOString();
 
   // Deduplicate
@@ -956,6 +1009,7 @@ async function handleInboundMessage(
       mediaType: mediaType ?? null,
       mediaUrl,
       ...(inboundFileName ? { fileName: inboundFileName } : {}),
+      ...(sharedContacts.length > 0 ? { sharedContacts } : {}),
       sentAt: timestamp,
       createdAt: now,
     });
