@@ -107,6 +107,8 @@ import { toast } from 'react-toastify';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
+import { isActiveClient } from '@/lib/utils/clientFilters';
+import { maskMoney, unmaskMoney } from '@/lib/utils/masks';
 import {
   ModernDialog, ModernDialogActions, ModernCancelButton, ModernPrimaryButton,
   ModernSection, ModernPill,
@@ -576,7 +578,7 @@ function FinancialModuleBody() {
         where('businessId', '==', business.id)
       );
       const snap = await getDocs(q);
-      return snap.docs.map(d => ({ ...d.data(), id: d.id } as CRMContact));
+      return snap.docs.map(d => ({ ...d.data(), id: d.id } as CRMContact)).filter(isActiveClient);
     },
     enabled: !!business?.id && isEnterprise,
     staleTime: 5 * 60 * 1000,
@@ -1015,7 +1017,7 @@ function FinancialModuleBody() {
     setFormType(tx.type);
     setFormDescription(tx.description);
     setFormCategory(tx.category ?? '');
-    setFormAmount(tx.amount.toString());
+    setFormAmount(maskMoney(tx.amount));
     setFormDueDate(tx.dueDate ?? '');
     setFormPaymentDate(tx.paymentDate || '');
     setFormPaymentMethod(tx.paymentMethod || '');
@@ -1045,8 +1047,8 @@ function FinancialModuleBody() {
       toast.error(t('financial.toast.businessNotLoaded', 'Dados da empresa não carregados. Recarregue a página.'));
       return;
     }
-    const amount = parseFloat(formAmount);
-    if (!formDescription || isNaN(amount) || amount <= 0) return;
+    const amount = unmaskMoney(formAmount);
+    if (!formDescription || amount <= 0) return;
 
     setIsSaving(true);
     try {
@@ -1291,7 +1293,7 @@ function FinancialModuleBody() {
     setBankAccountType(account.accountType);
     setBankAgency(account.agency || '');
     setBankAccountNumber(account.accountNumber || '');
-    setBankBalance(account.balance.toString());
+    setBankBalance(maskMoney(account.balance));
     setBankColor(account.color);
     setBankIsMain(account.isMain);
     setShowBankForm(true);
@@ -1299,8 +1301,8 @@ function FinancialModuleBody() {
 
   const handleSaveBankAccount = useCallback(async () => {
     if (!business?.id) return;
-    const balance = parseFloat(bankBalance);
-    if (!bankName || !bankBankName || isNaN(balance)) return;
+    const balance = unmaskMoney(bankBalance);
+    if (!bankName || !bankBankName) return;
 
     setIsSaving(true);
     try {
@@ -1711,7 +1713,7 @@ function FinancialModuleBody() {
                   handleSaveTransaction('all');
                 }
               }}
-              disabled={!formDescription || !formAmount || parseFloat(formAmount) <= 0 || isSaving}
+              disabled={!formDescription || !formAmount || unmaskMoney(formAmount) <= 0 || isSaving}
               startIcon={!isSaving ? (formType === 'receita' ? <ArrowUpRight size={15} /> : <ArrowDownRight size={15} />) : undefined}
             >
               {isSaving ? t('financial.form.saving', 'Salvando...') : editingTransaction ? t('financial.form.save', 'Salvar') : t('financial.form.createTransaction', 'Criar Transação')}
@@ -1772,9 +1774,10 @@ function FinancialModuleBody() {
               <div className="flex items-center gap-2">
                 <span className={cn('text-xl font-bold leading-none', formType === 'receita' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>R$</span>
                 <input
-                  type="number"
+                  type="text"
+                  inputMode="numeric"
                   value={formAmount}
-                  onChange={e => setFormAmount(e.target.value)}
+                  onChange={e => setFormAmount(maskMoney(e.target.value))}
                   placeholder="0,00"
                   className="flex-1 bg-transparent text-2xl font-bold outline-none text-gray-900 dark:text-gray-100 placeholder-gray-200 dark:placeholder-gray-700 min-w-0"
                 />
@@ -1890,7 +1893,7 @@ function FinancialModuleBody() {
                   onChange={(e) => setFormInstallments(Math.max(1, Math.min(36, Number(e.target.value) || 1)))}
                   inputProps={{ min: 1, max: 36 }}
                   size="small"
-                  helperText={formInstallments > 1 ? `${formInstallments}× de ${formAmount ? formatCurrency(parseFloat(formAmount) / formInstallments) : '—'}` : 'À vista'}
+                  helperText={formInstallments > 1 ? `${formInstallments}× de ${formAmount ? formatCurrency(unmaskMoney(formAmount) / formInstallments) : '—'}` : 'À vista'}
                   sx={inputSx}
                 />
                 {formInstallments > 1 && (
@@ -2410,7 +2413,9 @@ function FinancialModuleBody() {
                   {ACCOUNT_TYPES.map((at) => (<MenuItem key={at.value} value={at.value}>{at.label}</MenuItem>))}
                 </Select>
               </FormControl>
-              <TextField label={t('financial.bankForm.initialBalance', 'Saldo Inicial')} value={bankBalance} onChange={(e) => setBankBalance(e.target.value)} type="number" fullWidth required size="small"
+              <TextField label={t('financial.bankForm.initialBalance', 'Saldo Inicial')} value={bankBalance} onChange={(e) => setBankBalance(maskMoney(e.target.value))} fullWidth required size="small"
+                placeholder="0,00"
+                inputProps={{ inputMode: 'numeric' }}
                 InputProps={{ startAdornment: <InputAdornment position="start"><span className="text-sm text-slate-400">R$</span></InputAdornment> }}
                 sx={inputSx}
               />
@@ -5719,7 +5724,7 @@ function RecurringContent({
                         const daysDue = Math.max(0, Math.round((new Date(todayStr + 'T00:00:00').getTime() - new Date(tx.recurrence!.nextDueDate! + 'T00:00:00').getTime()) / 86400000));
                         const multa = tx.amount * (tx.recurrence!.lateFeePct ?? 0) / 100;
                         const juros = tx.amount * (tx.recurrence!.interestPctMonth ?? 0) / 100 * daysDue / 30;
-                        setLateConfirmedAmount((tx.amount + multa + juros).toFixed(2));
+                        setLateConfirmedAmount(maskMoney(tx.amount + multa + juros));
                       } else {
                         handlePay(tx);
                       }
@@ -5816,25 +5821,36 @@ function RecurringContent({
                       <div className="flex items-center gap-1 flex-1">
                         <span className="text-xs font-semibold text-slate-500 dark:text-gray-400">{adjustMode === 'pct' ? '+' : 'R$'}</span>
                         <input
-                          type="number"
+                          type={adjustMode === 'pct' ? 'number' : 'text'}
+                          inputMode="numeric"
                           value={adjustValue}
-                          onChange={e => setAdjustValue(e.target.value)}
-                          placeholder={adjustMode === 'pct' ? 'Ex: 5 (= +5%)' : `Ex: ${tx.amount.toFixed(2)}`}
+                          onChange={e => setAdjustValue(adjustMode === 'fixed' ? maskMoney(e.target.value) : e.target.value)}
+                          placeholder={adjustMode === 'pct' ? 'Ex: 5 (= +5%)' : `Ex: ${maskMoney(tx.amount)}`}
                           className="flex-1 text-xs px-2.5 py-1.5 rounded-lg border border-violet-200 dark:border-violet-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 focus:outline-none focus:border-violet-400 dark:focus:border-violet-500"
                         />
                       </div>
-                      {adjustValue && (adjustMode === 'pct' ? parseFloat(adjustValue) !== 0 : parseFloat(adjustValue) > 0) && (
-                        <span className="text-[11px] text-slate-500 dark:text-gray-400 shrink-0">
-                          → {formatCurrency(adjustMode === 'pct' ? tx.amount * (1 + parseFloat(adjustValue) / 100) : parseFloat(adjustValue))}
-                        </span>
-                      )}
+                      {(() => {
+                        const num = adjustMode === 'fixed' ? unmaskMoney(adjustValue) : parseFloat(adjustValue);
+                        const isShown = adjustValue && (adjustMode === 'pct' ? num !== 0 && !isNaN(num) : num > 0);
+                        if (!isShown) return null;
+                        return (
+                          <span className="text-[11px] text-slate-500 dark:text-gray-400 shrink-0">
+                            → {formatCurrency(adjustMode === 'pct' ? tx.amount * (1 + num / 100) : num)}
+                          </span>
+                        );
+                      })()}
                     </div>
                     <div className="flex gap-1.5">
                       <button
-                        disabled={adjustSaving || !adjustValue || parseFloat(adjustValue) <= 0}
+                        disabled={(() => {
+                          if (adjustSaving || !adjustValue) return true;
+                          const num = adjustMode === 'fixed' ? unmaskMoney(adjustValue) : parseFloat(adjustValue);
+                          return isNaN(num) || num <= 0;
+                        })()}
                         onClick={async () => {
                           setAdjustSaving(true);
-                          try { await onAdjustValue(tx.id, adjustMode, parseFloat(adjustValue)); setAdjustingId(null); setAdjustValue(''); }
+                          const num = adjustMode === 'fixed' ? unmaskMoney(adjustValue) : parseFloat(adjustValue);
+                          try { await onAdjustValue(tx.id, adjustMode, num); setAdjustingId(null); setAdjustValue(''); }
                           finally { setAdjustSaving(false); }
                         }}
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 text-white text-xs font-semibold hover:bg-violet-700 transition-colors disabled:opacity-40"
@@ -5911,7 +5927,7 @@ function RecurringContent({
                     })()}
                     <div className="flex items-center gap-2">
                       <span className="text-xs text-slate-500 dark:text-gray-400 shrink-0">Valor a quitar</span>
-                      <input type="number" value={lateConfirmedAmount} onChange={e => setLateConfirmedAmount(e.target.value)} step="0.01" min="0"
+                      <input type="text" inputMode="numeric" value={lateConfirmedAmount} onChange={e => setLateConfirmedAmount(maskMoney(e.target.value))} placeholder="0,00"
                         className="flex-1 text-xs px-2.5 py-1.5 rounded-lg border border-amber-200 dark:border-amber-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 focus:outline-none focus:border-amber-400"
                       />
                     </div>
@@ -5919,7 +5935,7 @@ function RecurringContent({
                       <button disabled={payingId === tx.id}
                         onClick={async () => {
                           setPayingId(tx.id);
-                          try { await onMarkPaid(tx.id, parseFloat(lateConfirmedAmount)); setLatePayingId(null); }
+                          try { await onMarkPaid(tx.id, unmaskMoney(lateConfirmedAmount)); setLatePayingId(null); }
                           finally { setPayingId(null); }
                         }}
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600 text-white text-xs font-semibold hover:bg-amber-700 transition-colors disabled:opacity-40"
@@ -6150,7 +6166,7 @@ function RecurringContent({
                             setLatePayingId(tx.id);
                             const multa = tx.amount * (tx.recurrence!.lateFeePct ?? 0) / 100;
                             const juros = tx.amount * (tx.recurrence!.interestPctMonth ?? 0) / 100 * daysDue / 30;
-                            setLateConfirmedAmount((tx.amount + multa + juros).toFixed(2));
+                            setLateConfirmedAmount(maskMoney(tx.amount + multa + juros));
                           } else {
                             setPayingId(tx.id);
                             onMarkPaid(tx.id).finally(() => setPayingId(null));

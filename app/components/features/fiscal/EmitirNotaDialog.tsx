@@ -36,6 +36,7 @@ import NcmSelector from './NcmSelector';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatCPFCNPJ } from '@/lib/utils/format';
 import { maskCpfCnpj, maskPhone, maskCep, unmaskDigits } from '@/lib/utils/fiscal-masks';
+import { isActiveClient } from '@/lib/utils/clientFilters';
 import { useTranslation } from 'react-i18next';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -228,7 +229,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
       try {
         const q = query(collection(db, 'clients'), where('businessId', '==', business.id));
         const snapshot = await getDocs(q);
-        setClients(snapshot.docs.map(d => ({ ...d.data(), id: d.id }) as CRMContact));
+        setClients(snapshot.docs.map(d => ({ ...d.data(), id: d.id }) as CRMContact).filter(isActiveClient));
       } catch { /* silent */ }
     };
     loadClients();

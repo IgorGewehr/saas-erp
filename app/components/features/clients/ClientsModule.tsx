@@ -17,6 +17,7 @@ import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
 import { validateCPF, validateCNPJ } from '@/lib/utils/validators';
+import { isActiveClient } from '@/lib/utils/clientFilters';
 import { cn } from '@/lib/utils';
 import type { Client, LeadStatus, LoyaltyConfig, LoyaltyTier } from '@/lib/types';
 import { DEFAULT_LOYALTY_TIERS } from '@/lib/types';
@@ -40,6 +41,7 @@ const SpreadsheetView = dynamicImport(() => import('@/app/components/features/sp
 import { STATUS_CONFIG, SOURCE_LABELS, TIPO_LABELS } from './shared/constants';
 import { CHURN_CFG, getChurnLevel, type ChurnRiskLevel } from './shared/health';
 import { findDuplicate, digits, normEmail } from './shared/duplicates';
+import { mergeClients } from './shared/mergeClients';
 import { HealthBadge } from './shared/HealthBadge';
 import { TierBadge } from './shared/loyalty';
 import { OffersManagerModal } from './offers/OffersManagerModal';
@@ -73,7 +75,7 @@ import { OffersManagerModal } from './offers/OffersManagerModal';
 // ─── Merge duplicates ────────────────────────────────────────────────────────
 
 function detectDuplicates(clients: Client[]): [Client, Client][] {
-  const active = clients.filter(c => c.isActive !== false && !c.mergedInto);
+  const active = clients.filter(isActiveClient);
   const pairs: [Client, Client][] = [];
   const seen = new Set<string>();
 
@@ -104,68 +106,6 @@ function detectDuplicates(clients: Client[]): [Client, Client][] {
   }
 
   return pairs;
-}
-
-async function reassociateRelatedDocs(oldId: string, newId: string, businessId: string) {
-  // Cobrir TODAS as coleções que apontam pra Client. Sem isso, merge deixa
-  // crmDeals/crmActivities/kanbanCards/loyaltyHistory órfãos apontando pro
-  // doc desativado. Conversations.contactName também é denormalizado e fica
-  // stale (atualização separada após o merge — ver nameToPropagate abaixo).
-  const targets = [
-    { col: 'conversations',  field: 'crmContactId' },
-    { col: 'appointments',   field: 'clientId' },
-    { col: 'sales',          field: 'clientId' },
-    { col: 'transactions',   field: 'clientId' },
-    { col: 'transactions',   field: 'contactId' },
-    { col: 'crmDeals',       field: 'contactId' },
-    { col: 'crmActivities',  field: 'contactId' },
-    { col: 'kanbanCards',    field: 'contactId' },
-    { col: 'loyaltyHistory', field: 'clientId' },
-  ];
-  for (const { col, field } of targets) {
-    try {
-      const snap = await getDocs(query(
-        collection(db, col),
-        where('businessId', '==', businessId),
-        where(field, '==', oldId),
-      ));
-      if (snap.empty) continue;
-      // Chunk em batches de 400 (limite Firestore é 500, deixa folga)
-      const docs = snap.docs;
-      for (let i = 0; i < docs.length; i += 400) {
-        const slice = docs.slice(i, i + 400);
-        const batch = writeBatch(db);
-        slice.forEach(d => batch.update(d.ref, { [field]: newId, updatedAt: new Date().toISOString() }));
-        await batch.commit();
-      }
-    } catch (err) {
-      console.warn(`[Clients merge] reassociate ${col}.${field} failed:`, err);
-    }
-  }
-}
-
-/**
- * Atualiza Conversation.contactName em todas as conversas reassociadas pro
- * client primário (campos denormalizados ficavam stale após merge).
- */
-async function propagateContactNameToConversations(clientId: string, newName: string, businessId: string) {
-  try {
-    const snap = await getDocs(query(
-      collection(db, 'conversations'),
-      where('businessId', '==', businessId),
-      where('crmContactId', '==', clientId),
-    ));
-    if (snap.empty) return;
-    const docs = snap.docs;
-    for (let i = 0; i < docs.length; i += 400) {
-      const slice = docs.slice(i, i + 400);
-      const batch = writeBatch(db);
-      slice.forEach(d => batch.update(d.ref, { contactName: newName, updatedAt: new Date().toISOString() }));
-      await batch.commit();
-    }
-  } catch (err) {
-    console.warn('[Clients merge] propagate contactName failed:', err);
-  }
 }
 
 function MergeModal({
@@ -205,55 +145,7 @@ function MergeModal({
 
     setMerging(key);
     try {
-      const now = new Date().toISOString();
-      const updates: Record<string, unknown> = { updatedAt: now };
-
-      if (fill) {
-        if (!primary.email      && secondary.email)      updates.email      = secondary.email;
-        if (!primary.phone      && secondary.phone)      updates.phone      = secondary.phone;
-        if (!primary.whatsapp   && secondary.whatsapp)   updates.whatsapp   = secondary.whatsapp;
-        if (!primary.company    && secondary.company)    updates.company    = secondary.company;
-        if (!primary.cpfCnpj    && secondary.cpfCnpj)    updates.cpfCnpj    = secondary.cpfCnpj;
-        if (!primary.notes      && secondary.notes)      updates.notes      = secondary.notes;
-        if (!primary.endereco   && secondary.endereco)   updates.endereco   = secondary.endereco;
-
-        const allTags = [...new Set([...(primary.tags ?? []), ...(secondary.tags ?? [])])];
-        if (allTags.length) updates.tags = allTags;
-
-        if ((secondary.totalSpent ?? 0) > 0)
-          updates.totalSpent = (primary.totalSpent ?? 0) + (secondary.totalSpent ?? 0);
-        if ((secondary.visitCount ?? 0) > 0)
-          updates.visitCount = (primary.visitCount ?? 0) + (secondary.visitCount ?? 0);
-        if ((secondary.loyaltyPoints ?? 0) > 0)
-          updates.loyaltyPoints = (primary.loyaltyPoints ?? 0) + (secondary.loyaltyPoints ?? 0);
-
-        // Merge channel identities: secondary fills gaps in primary (primary takes precedence)
-        const mergedIdentities = {
-          ...(secondary.channelIdentities ?? {}),
-          ...(primary.channelIdentities ?? {}),
-        };
-        if (Object.keys(mergedIdentities).length) updates.channelIdentities = mergedIdentities;
-      }
-
-      const batch = writeBatch(db);
-      batch.update(doc(db, 'clients', primary.id), updates);
-      batch.update(doc(db, 'clients', secondary.id), {
-        isActive: false,
-        mergedInto: primary.id,
-        mergedAt: now,
-        updatedAt: now,
-      });
-      await batch.commit();
-
-      // Await reassociation so conversations/sales/appointments point to the primary
-      // before the dialog closes. Each collection has its own try-catch — won't throw.
-      await reassociateRelatedDocs(secondary.id, primary.id, businessId);
-      // Propaga nome do primary nas conversas reassociadas (denorm fica stale)
-      const finalName = (primary.name || '').trim();
-      if (finalName) {
-        await propagateContactNameToConversations(primary.id, finalName, businessId);
-      }
-
+      await mergeClients({ primary, secondary, businessId, fillEmpty: fill });
       setMerged(prev => new Set([...prev, key]));
       onDone();
     } catch (err) {
@@ -264,9 +156,10 @@ function MergeModal({
   };
 
   // Mesclagem em lote: roda handleMerge sequencialmente em todos os pairs
-  // ativos. Sequencial (não paralelo) porque writeBatch + reassociateRelatedDocs
-  // mexem em coleções compartilhadas — paralelizar arrisca race em conv/sales/etc.
-  // Cada par usa o primary atualmente selecionado (ou default = primeiro do par).
+  // ativos. Sequencial (não paralelo) porque mergeClients() faz writeBatch +
+  // reassociações em coleções compartilhadas — paralelizar arrisca race em
+  // conv/sales/etc. Cada par usa o primary atualmente selecionado (ou default
+  // = primeiro do par).
   const handleMergeAll = async () => {
     setConfirmMergeAll(false);
     const pairsToProcess = [...activePairs];
@@ -1162,11 +1055,10 @@ export default function ClientsModule() {
 
   // ─── Filtered & sorted list ──────────────────────────────────────────────────
   const filtered = useMemo(() => {
-    // Drop malformed entries, already-merged records, e soft-deleted (deletedAt)
+    // Drop malformed entries + soft-deleted/merged (isActiveClient cobre essas
+    // checagens; só falta o sanity check de name não-vazio).
     let list = clients.filter(c =>
-      c && typeof c.name === 'string' && c.name.length > 0
-      && !c.mergedInto
-      && !(c as { deletedAt?: string }).deletedAt
+      c && typeof c.name === 'string' && c.name.length > 0 && isActiveClient(c),
     );
     const term = search.trim().toLowerCase();
     if (term) {
@@ -2098,6 +1990,7 @@ export default function ClientsModule() {
                 loyaltyConfig={loyaltyConfig}
                 products={productsForAcquisition}
                 offers={offersForAcquisition}
+                allClients={clients}
               />
             </motion.div>
           )}

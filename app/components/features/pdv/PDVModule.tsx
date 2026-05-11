@@ -53,6 +53,7 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatDate, formatDateTime, generateId } from '@/lib/utils/format';
+import { isActiveClient } from '@/lib/utils/clientFilters';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -309,7 +310,7 @@ export default function PDVModule() {
           if (!data.name && data.nome) data.name = data.nome;
           return { ...data, id: d.id } as CRMContact;
         })
-        .filter(c => (c as { isActive?: boolean }).isActive !== false)
+        .filter(isActiveClient)
         .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
       setClients(list);
       setLoadingClients(false);

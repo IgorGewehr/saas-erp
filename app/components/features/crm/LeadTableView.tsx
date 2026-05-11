@@ -33,6 +33,7 @@ export function LeadTableView({
   searchQuery,
   filterTags,
   filterSource,
+  filterTipo,
   onSelectContact,
   selectedContactId,
 }: {
@@ -41,6 +42,7 @@ export function LeadTableView({
   searchQuery: string;
   filterTags: string[];
   filterSource: LeadSource | 'all';
+  filterTipo: 'pf' | 'pj' | 'all';
   onSelectContact: (c: CRMContact) => void;
   selectedContactId: string | null;
 }) {
@@ -67,9 +69,14 @@ export function LeadTableView({
       );
     }
     if (filterSource !== 'all') result = result.filter(c => c.source === filterSource);
+    if (filterTipo !== 'all') {
+      // Contatos legados sem campo `tipo` são tratados como PF (default histórico
+      // pré-Fase 4 — quando o CRM criava sempre com tipo='pf' hardcoded).
+      result = result.filter(c => (c.tipo ?? 'pf') === filterTipo);
+    }
     if (filterTags.length > 0) result = result.filter(c => filterTags.every(t => c.tags?.includes(t)));
     return result;
-  }, [contacts, searchQuery, filterSource, filterTags]);
+  }, [contacts, searchQuery, filterSource, filterTipo, filterTags]);
 
   const sorted = useMemo(() => [...filtered].sort((a, b) => {
     let cmp = 0;

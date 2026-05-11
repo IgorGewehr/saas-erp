@@ -9,7 +9,7 @@ import { getWonStageId } from './shared';
 import { LeadCard } from './LeadCard';
 import type { CRMContact, CRMStageConfig, LeadStatus, LeadSource } from '@/lib/types';
 
-export function KanbanBoard({ contacts, stages, onSelectContact, selectedContactId, onStatusChange, onNewContact, searchQuery, filterTags, filterSource }: {
+export function KanbanBoard({ contacts, stages, onSelectContact, selectedContactId, onStatusChange, onNewContact, searchQuery, filterTags, filterSource, filterTipo }: {
   contacts: CRMContact[];
   stages: CRMStageConfig[];
   onSelectContact: (c: CRMContact) => void;
@@ -19,6 +19,7 @@ export function KanbanBoard({ contacts, stages, onSelectContact, selectedContact
   searchQuery: string;
   filterTags: string[];
   filterSource: LeadSource | 'all';
+  filterTipo: 'pf' | 'pj' | 'all';
 }) {
   const { t } = useTranslation();
   const draggingRef = useRef<CRMContact | null>(null);
@@ -36,11 +37,16 @@ export function KanbanBoard({ contacts, stages, onSelectContact, selectedContact
       );
     }
     if (filterSource !== 'all') result = result.filter((c) => c.source === filterSource);
+    if (filterTipo !== 'all') {
+      // Contatos legados sem campo `tipo` são tratados como PF (default histórico
+      // pré-Fase 4 — quando o CRM criava sempre com tipo='pf' hardcoded).
+      result = result.filter((c) => (c.tipo ?? 'pf') === filterTipo);
+    }
     if (filterTags.length > 0) {
       result = result.filter((c) => filterTags.every((tag) => c.tags?.includes(tag)));
     }
     return result;
-  }, [contacts, searchQuery, filterSource, filterTags]);
+  }, [contacts, searchQuery, filterSource, filterTipo, filterTags]);
 
   const handleDragStart = (e: React.DragEvent, contact: CRMContact) => {
     draggingRef.current = contact;

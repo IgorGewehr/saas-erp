@@ -29,6 +29,7 @@ import {
 } from 'firebase/firestore';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
+import { isActiveClient } from '@/lib/utils/clientFilters';
 import { db } from '@/lib/config/firebase';
 import { formatDate } from '@/lib/utils/format';
 import type { Offer, ConversationChannel } from '@/lib/types';
@@ -108,7 +109,10 @@ export function OffersManagerModal({
       const clients = new Map<string, number>();
       const broadcasts = new Map<string, number>();
       clientSnap.docs.forEach(d => {
-        const offerId = d.data().acquisitionOfferId as string | undefined;
+        const data = d.data();
+        // Não conta soft-deleted/merged — stats devem refletir contatos vivos.
+        if (!isActiveClient(data)) return;
+        const offerId = data.acquisitionOfferId as string | undefined;
         if (!offerId) return;
         clients.set(offerId, (clients.get(offerId) ?? 0) + 1);
       });

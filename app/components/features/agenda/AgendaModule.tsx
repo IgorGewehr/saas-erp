@@ -57,6 +57,7 @@ import {
   ToggleRight,
   AlertTriangle,
   Bell,
+  MessageCircle,
 } from 'lucide-react';
 import Dialog from '@mui/material/Dialog';
 import DialogTitle from '@mui/material/DialogTitle';
@@ -69,15 +70,19 @@ import Snackbar from '@mui/material/Snackbar';
 import Alert from '@mui/material/Alert';
 import { cn } from '@/lib/utils';
 import { formatCurrency, getStatusColor, getStatusLabel } from '@/lib/utils/format';
+import { isActiveClient } from '@/lib/utils/clientFilters';
+import { maskMoney, unmaskMoney } from '@/lib/utils/masks';
 import type { Appointment, AppointmentStatus, Service, CRMContact, User } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import { maybeCreateCommission, maybeCancelCommission } from '@/lib/services/commission';
 import { calculateEarnedPoints, addLoyaltyPoints } from '@/lib/services/loyalty';
 import { syncToGoogleCalendar } from '@/lib/services/calendarSync';
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot, increment, writeBatch } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot, increment, writeBatch, limit as firestoreLimit } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
+import { useAppContext } from '@/app/app/AppContext';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'react-toastify';
 
 // SDD Fase 4: dispatch de domain event quando appointment vira concluido.
 // Fire-and-forget — não bloqueia o save. Auditoria fica em domainEvents/{id}.
@@ -872,11 +877,10 @@ function ServiceManagementDialog({
                     {t('agenda.price', 'Preço (R$)')} *
                   </label>
                   <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    value={formData.price || ''}
-                    onChange={(e) => setFormData((p) => ({ ...p, price: Number(e.target.value) }))}
+                    type="text"
+                    inputMode="numeric"
+                    value={formData.price ? maskMoney(formData.price) : ''}
+                    onChange={(e) => setFormData((p) => ({ ...p, price: unmaskMoney(e.target.value) }))}
                     placeholder="0,00"
                     className={cn(
                       'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
@@ -1583,12 +1587,11 @@ function AppointmentFormDialog({
                 {t('agenda.value', 'Valor (R$)')}
               </label>
               <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={formData.price || ''}
+                type="text"
+                inputMode="numeric"
+                value={formData.price ? maskMoney(formData.price) : ''}
                 onChange={(e) =>
-                  setFormData((prev) => ({ ...prev, price: Number(e.target.value) }))
+                  setFormData((prev) => ({ ...prev, price: unmaskMoney(e.target.value) }))
                 }
                 placeholder="0,00"
                 className={cn(
@@ -1737,6 +1740,7 @@ interface ViewAppointmentDialogProps {
   canEdit: boolean;
   onEdit: () => void;
   onStatusChange: (status: AppointmentStatus) => void;
+  onOpenConversation: () => void;
   statusChanging: boolean;
 }
 
@@ -1747,6 +1751,7 @@ function ViewAppointmentDialog({
   canEdit,
   onEdit,
   onStatusChange,
+  onOpenConversation,
   statusChanging,
 }: ViewAppointmentDialogProps) {
   const { t, i18n } = useTranslation();
@@ -1899,8 +1904,26 @@ function ViewAppointmentDialog({
             )}
           </div>
 
-          {/* Action Buttons */}
-          <div className="flex flex-wrap gap-2 mt-6 pt-4 border-t border-gray-100 dark:border-gray-800">
+          {/* Action Buttons — separados em 2 grupos:
+              "ações sobre cliente" (Conversa, Editar) à esquerda, "ações de
+              status" (Confirmar, Iniciar, Cancelar, Concluir, Não Compareceu)
+              à direita. Divider só aparece quando há ações de status visíveis,
+              caso contrário ficaria flutuando no fim do bloco. */}
+          <div className="flex flex-wrap items-center gap-2 mt-6 pt-4 border-t border-gray-100 dark:border-gray-800">
+            {/* Conversa — abre conv WA existente do cliente ou inicia uma nova.
+                Fora do guard canEdit pois mandar mensagem não altera o
+                appointment; mesmo um viewer pode/deve poder contatar o cliente. */}
+            <button
+              onClick={onOpenConversation}
+              className={cn(
+                'flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold',
+                'text-white bg-emerald-600 hover:bg-emerald-700 transition-colors',
+                'shadow-sm shadow-emerald-500/20',
+              )}
+            >
+              <MessageCircle className="w-3.5 h-3.5" />
+              {t('agenda.openConversation', 'Conversa')}
+            </button>
             {canEdit && (
               <button
                 onClick={onEdit}
@@ -1912,6 +1935,12 @@ function ViewAppointmentDialog({
                 <Edit3 className="w-3.5 h-3.5" />
                 {t('agenda.edit', 'Editar')}
               </button>
+            )}
+
+            {/* Divider entre grupos — só renderiza se houver botão de status
+                à direita (status pré-conclusão + permissão de edição). */}
+            {canEdit && (appointment.status === 'agendado' || appointment.status === 'confirmado' || appointment.status === 'em_andamento') && (
+              <div className="hidden sm:block w-px h-6 bg-gray-200 dark:bg-gray-700 mx-1" aria-hidden="true" />
             )}
 
             {canEdit && appointment.status === 'agendado' && (
@@ -2052,6 +2081,7 @@ export default function AgendaModule() {
   const { t, i18n } = useTranslation();
   const dateLocale = i18n.language === 'en-US' ? enUS : ptBR;
   const { user, business } = useAuth();
+  const { setActivePage, setPendingOpenConversationId, setPendingNewConversation } = useAppContext();
   const queryClient = useQueryClient();
 
   const isAdmin = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['admin'];
@@ -2171,7 +2201,7 @@ export default function AgendaModule() {
       const snap = await getDocs(q);
       return snap.docs
         .map((d) => ({ ...d.data(), id: d.id } as CRMContact))
-        .filter(c => (c as { isActive?: boolean }).isActive !== false)
+        .filter(isActiveClient)
         .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
     },
     enabled: !!business?.id,
@@ -2953,6 +2983,70 @@ export default function AgendaModule() {
     setShowFormDialog(true);
   }, [selectedAppointment]);
 
+  // Abre a conversa do cliente do agendamento OU inicia uma nova via WhatsApp.
+  // Espelha o padrão usado em CRMModule.tsx (LeadDetailPanel.onOpenConversations)
+  // e ChannelsTab.handleCardClick — busca conv WA por crmContactId === clientId
+  // e cai pra NewConversationDialog se não houver conv prévia.
+  const handleOpenConversation = useCallback(async () => {
+    if (!selectedAppointment || !business?.id) return;
+    const appt = selectedAppointment;
+    // Defensivo: appointment legado/corrompido sem clientId vincula a
+    // ninguém. Sem isso, query bate em where('crmContactId','=='') (0
+    // resultados) e cai pro NewConversation com clientId vazio, deixando
+    // o dialog destino confuso. Falha cedo com toast claro.
+    if (!appt.clientId) {
+      toast.error('Agendamento sem cliente vinculado — edite o agendamento e selecione um cliente.');
+      return;
+    }
+    setShowViewDialog(false);
+    setSelectedAppointment(null);
+
+    try {
+      const snap = await getDocs(query(
+        collection(db, 'conversations'),
+        where('businessId', '==', business.id),
+        where('crmContactId', '==', appt.clientId),
+        firestoreLimit(20),
+      ));
+      const waDocs = snap.docs
+        .filter(d => d.data().channel === 'whatsapp')
+        .sort((a, b) => {
+          const ta = (a.data().lastMessageAt as string | undefined) ?? '';
+          const tb = (b.data().lastMessageAt as string | undefined) ?? '';
+          return tb.localeCompare(ta);
+        });
+      if (waDocs.length > 0) {
+        setPendingOpenConversationId(waDocs[0].id);
+        setActivePage('Conversas');
+        return;
+      }
+      // Sem conv prévia — abre NewConversationDialog pré-preenchido. Modo
+      // padrão: Baileys (sem janela 24h) se disponível, senão Cloud.
+      const ch = business.channels as (NonNullable<typeof business>['channels'] & {
+        whatsappCloud?: { isConnected?: boolean; accessToken?: string };
+        whatsappBaileys?: { isConnected?: boolean };
+        whatsapp?: { isConnected?: boolean; connectedVia?: string; accessToken?: string };
+      }) | undefined;
+      const cloudOk = !!(ch?.whatsappCloud?.isConnected && ch.whatsappCloud.accessToken)
+        || (!ch?.whatsappCloud && !!ch?.whatsapp?.isConnected && ch.whatsapp.connectedVia !== 'baileys' && !!ch.whatsapp.accessToken);
+      const baileysOk = !!ch?.whatsappBaileys?.isConnected
+        || (!ch?.whatsappBaileys && !!ch?.whatsapp?.isConnected && ch.whatsapp.connectedVia === 'baileys');
+      if (!cloudOk && !baileysOk) {
+        toast.error('Nenhum canal WhatsApp configurado. Conecte em Configurações.');
+        return;
+      }
+      setPendingNewConversation({
+        clientId: appt.clientId,
+        channel: 'whatsapp',
+        whatsappMode: baileysOk ? 'baileys' : 'cloud',
+      });
+      setActivePage('Conversas');
+    } catch (err) {
+      console.error('[Agenda] open conversation lookup failed:', err);
+      setActivePage('Conversas');
+    }
+  }, [selectedAppointment, business, setActivePage, setPendingOpenConversationId, setPendingNewConversation]);
+
   const handleSlotClick = useCallback((date: Date, time: string) => {
     handleNewAppointment(format(date, 'yyyy-MM-dd'), time);
   }, [handleNewAppointment]);
@@ -3565,6 +3659,7 @@ export default function AgendaModule() {
         canEdit={selectedAppointment ? canEditAppointment(selectedAppointment) : false}
         onEdit={handleEditAppointment}
         onStatusChange={handleStatusChange}
+        onOpenConversation={handleOpenConversation}
         statusChanging={statusChanging}
       />
 

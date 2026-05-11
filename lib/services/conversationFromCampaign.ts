@@ -62,23 +62,29 @@ export async function upsertConversationFromCampaign(params: UpsertParams): Prom
   try {
     const now = new Date().toISOString();
 
+    // Isolamento Meta vs Baileys: quando a campanha é WhatsApp, o transporte
+    // (connectedVia) é parte da identidade da conversa. Sem esse filtro, uma
+    // campanha disparada via Baileys pode escrever na conv Meta do mesmo
+    // contato (e vice-versa) — bolhas do canal errado aparecem no histórico
+    // e a thread se mistura. FB/IG são single-transport e ignoram.
+    if (params.channel === 'whatsapp' && !params.connectedVia) {
+      console.warn('[conversationFromCampaign] WhatsApp sem connectedVia — fallback sem isolamento de transporte. Caller deve passar connectedVia.');
+    }
+    const transportFilter = (params.channel === 'whatsapp' && params.connectedVia)
+      ? { connectedVia: params.connectedVia }
+      : null;
+
     // 1. Find — exact match
     const safeQuery = async (externalId: string): Promise<FirebaseFirestore.QueryDocumentSnapshot[]> => {
+      const base = adminDb.collection('conversations')
+        .where('businessId', '==', params.businessId)
+        .where('channel', '==', params.channel)
+        .where('contactExternalId', '==', externalId);
+      const filtered = transportFilter ? base.where('connectedVia', '==', transportFilter.connectedVia) : base;
       try {
-        return (await adminDb.collection('conversations')
-          .where('businessId', '==', params.businessId)
-          .where('channel', '==', params.channel)
-          .where('contactExternalId', '==', externalId)
-          .orderBy('lastMessageAt', 'desc')
-          .limit(5)
-          .get()).docs;
+        return (await filtered.orderBy('lastMessageAt', 'desc').limit(5).get()).docs;
       } catch {
-        return (await adminDb.collection('conversations')
-          .where('businessId', '==', params.businessId)
-          .where('channel', '==', params.channel)
-          .where('contactExternalId', '==', externalId)
-          .limit(5)
-          .get()).docs;
+        return (await filtered.limit(5).get()).docs;
       }
     };
 
@@ -102,11 +108,13 @@ export async function upsertConversationFromCampaign(params: UpsertParams): Prom
       if (digits.length >= 10) {
         const last8 = digits.slice(-8);
         const ddd = digits.length >= 11 ? digits.slice(-11, -9) : digits.slice(-10, -8);
-        const all = (await adminDb.collection('conversations')
+        const fuzzyBase = adminDb.collection('conversations')
           .where('businessId', '==', params.businessId)
-          .where('channel', '==', params.channel)
-          .limit(100)
-          .get()).docs;
+          .where('channel', '==', params.channel);
+        const fuzzy = transportFilter
+          ? fuzzyBase.where('connectedVia', '==', transportFilter.connectedVia)
+          : fuzzyBase;
+        const all = (await fuzzy.limit(100).get()).docs;
         candidates = all.filter(d => {
           const ext = (d.data().contactExternalId as string | undefined)?.replace(/\D/g, '') || '';
           if (ext.length < 10) return false;

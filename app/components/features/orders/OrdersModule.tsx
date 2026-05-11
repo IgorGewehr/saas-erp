@@ -19,6 +19,7 @@ import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { formatCurrency, formatDateTime } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
+import { isActiveClient } from '@/lib/utils/clientFilters';
 import { toast } from 'react-toastify';
 import { deductStock, checkStockAvailability } from '@/lib/services/stock';
 import type {
@@ -1068,6 +1069,7 @@ export default function OrdersModule() {
     const unsub = onSnapshot(q, (snap) => {
       const list = snap.docs
         .map(d => ({ ...d.data(), id: d.id } as Client))
+        .filter(isActiveClient)
         .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
       setClients(list);
     }, (err) => console.error('[Orders] clients snapshot error:', err));

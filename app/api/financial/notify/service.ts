@@ -181,16 +181,25 @@ export async function sendFinancialNotifications(
 
     if (settings.sendWhatsApp && isReceivable && tx.clientId) {
       try {
-        // Look up conversation for this client
+        // Look up conversation for this client. Conversation salva o vínculo
+        // como `crmContactId` (não `contactId` — esse era bug antigo: query
+        // nunca achava nada). Filtra channel=whatsapp pra não pegar FB/IG.
+        // Cobrança não sabe Meta vs Baileys; ordena client-side e pega a conv
+        // mais recente — reflete o canal onde o cliente está ativo.
         const convSnap = await adminDb.collection('conversations')
           .where('businessId', '==', business.id)
-          .where('contactId', '==', tx.clientId)
-          .orderBy('lastMessageAt', 'desc')
-          .limit(1)
+          .where('channel', '==', 'whatsapp')
+          .where('crmContactId', '==', tx.clientId)
+          .limit(20)
           .get();
 
         if (!convSnap.empty) {
-          const conv = convSnap.docs[0];
+          const sortedDocs = convSnap.docs.slice().sort((a, b) => {
+            const ta = (a.data().lastMessageAt as string | undefined) ?? '';
+            const tb = (b.data().lastMessageAt as string | undefined) ?? '';
+            return tb.localeCompare(ta);
+          });
+          const conv = sortedDocs[0];
           const convData = conv.data();
           const phone = (convData.contactExternalId || convData.recipientId || '').replace(/\D/g, '');
           if (phone) {
@@ -264,15 +273,21 @@ export async function sendFinancialNotifications(
 
       if (settings.sendWhatsApp) {
         try {
+          // Same isolamento de canal que due-soon — vide comentário acima.
           const convSnap = await adminDb.collection('conversations')
             .where('businessId', '==', business.id)
-            .where('contactId', '==', tx.clientId)
-            .orderBy('lastMessageAt', 'desc')
-            .limit(1)
+            .where('channel', '==', 'whatsapp')
+            .where('crmContactId', '==', tx.clientId)
+            .limit(20)
             .get();
 
           if (!convSnap.empty) {
-            const conv = convSnap.docs[0];
+            const sortedDocs = convSnap.docs.slice().sort((a, b) => {
+              const ta = (a.data().lastMessageAt as string | undefined) ?? '';
+              const tb = (b.data().lastMessageAt as string | undefined) ?? '';
+              return tb.localeCompare(ta);
+            });
+            const conv = sortedDocs[0];
             const convData = conv.data();
             const phone = (convData.contactExternalId || convData.recipientId || '').replace(/\D/g, '');
             if (phone) {

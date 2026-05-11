@@ -43,6 +43,11 @@ export const ClientsCreateParamsSchema = z.object({
   phone: PhoneSchema.optional(),
   whatsapp: PhoneSchema.optional(),
   email: z.string().email().optional(),
+  // PJ/PF: aceita explícito; o handler também detecta pelos dígitos do cpfCnpj
+  // (14 → PJ, 11 → PF) quando `tipo` não é fornecido. Pra leads sem documento
+  // — caso típico de criar contato direto de uma conversa WhatsApp — fica PF.
+  tipo: z.enum(['pf', 'pj']).optional(),
+  cpfCnpj: z.string().max(20).optional(),
   source: z.string().default('whatsapp'),
   channel: ChannelTypeSchema.optional(),
   externalId: z.string().optional(),
