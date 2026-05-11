@@ -2875,11 +2875,12 @@ function CampaignsTab({ businessId }: { businessId: string }) {
               ROI e identificar qual campanha trouxe quais clientes. */}
           {campaignOffers.length > 0 && (
             <FormControl fullWidth size="small">
-              <InputLabel>Vincular oferta (opcional)</InputLabel>
+              <InputLabel shrink>Vincular oferta (opcional)</InputLabel>
               <Select
                 value={formOfferId}
                 label="Vincular oferta (opcional)"
                 onChange={(e) => setFormOfferId(e.target.value)}
+                notched
                 renderValue={(selected) => {
                   if (!selected) return <span className="text-slate-400">— Sem oferta vinculada —</span>;
                   const offer = campaignOffers.find(o => o.id === selected);
