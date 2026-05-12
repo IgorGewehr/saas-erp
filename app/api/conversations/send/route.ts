@@ -589,7 +589,12 @@ export async function POST(req: NextRequest) {
     // novamente" sem entender o motivo. Best-effort, não-bloqueante.
     // `errorDetails` pode trazer code/error_subcode da Meta quando o erro
     // original veio serializado como JSON (caso comum em sendWhatsApp).
-    logPipelineFailure({
+    // AWAIT é crítico: em runtimes serverless (Vercel/Cloud Run), a function
+    // termina logo após o NextResponse.json — qualquer Promise pendente é
+    // cancelada e o write em webhookFailures NÃO ocorre. Sem await aqui,
+    // o log silenciosamente desaparecia (sintoma observado em produção:
+    // erro chega no operador via "Tentar novamente" mas nada no painel).
+    await logPipelineFailure({
       source: 'whatsapp-send',
       channel: (failureContext.channel as 'whatsapp' | 'facebook' | 'instagram' | undefined) ?? 'whatsapp',
       businessId: failureContext.businessId,
