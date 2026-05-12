@@ -55,12 +55,8 @@ export interface PipelineFailureInput {
 
 export async function logPipelineFailure(input: PipelineFailureInput): Promise<void> {
   const { source, channel, businessId, conversationId, severity, ...rest } = input;
-  // Verbose logs temporários pra diagnosticar por que entries não estão
-  // aparecendo no painel — facilita rastrear no docker logs se a função
-  // chega a ser chamada (ENTRY) e se o write completa (OK) ou falha (FAIL).
-  console.log(`[pipelineFailures] ENTRY source=${source} businessId=${businessId ?? '?'} recipientId=${(rest as { recipientId?: string }).recipientId ?? '?'} error="${String((rest as { error?: string }).error ?? '').slice(0, 100)}"`);
   try {
-    const ref = await adminDb.collection('webhookFailures').add({
+    await adminDb.collection('webhookFailures').add({
       source,
       channel: channel ?? 'whatsapp',
       severity: severity ?? 'error',
@@ -69,10 +65,11 @@ export async function logPipelineFailure(input: PipelineFailureInput): Promise<v
       ...rest,
       createdAt: new Date().toISOString(),
     });
-    console.log(`[pipelineFailures] OK docId=${ref.id} source=${source}`);
   } catch (logErr) {
-    // Registrar erro não pode causar um segundo erro. Best-effort only.
-    console.error('[pipelineFailures] FAIL write rejected:', logErr);
+    // Registrar erro não pode causar um segundo erro. console.error (não warn)
+    // pra que apareça com destaque em ferramentas de monitoramento e seja
+    // rastreável no docker logs se um write rejeitar no futuro.
+    console.error('[pipelineFailures] write rejected:', logErr);
   }
 }
 
