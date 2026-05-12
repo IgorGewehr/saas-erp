@@ -15,6 +15,7 @@ import {
 import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
 import { decryptToken } from '@/lib/utils/encryption';
 import type { Product } from '@/lib/types';
+import { EmitFiscalRequestSchema } from '@/lib/contracts/api/fiscal/emit';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -56,23 +57,30 @@ function stripEmpty<T>(obj: T): T {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { type, businessId, ...data } = body;
 
-    // 1. Validate required fields ------------------------------------------------
-
-    if (!type || !['nfe', 'nfce', 'nfse'].includes(type)) {
+    // 1. Validate payload shape via Zod (SDD R6: validação no boundary).
+    // Schema cobre type/businessId/items/recipient/tomador/etc. Erros de
+    // shape retornam 400 com detalhes acionáveis. Cross-field validações
+    // (descrição vazia + sem Product, IE faltando, etc.) ficam abaixo
+    // porque dependem de reads do Firestore.
+    const parsed = EmitFiscalRequestSchema.safeParse(body);
+    if (!parsed.success) {
       return NextResponse.json(
-        { error: 'Tipo de documento fiscal invalido. Use: nfe, nfce ou nfse.' },
+        {
+          error: 'Payload inválido para emissão fiscal.',
+          details: parsed.error.flatten(),
+        },
         { status: 400 },
       );
     }
-
-    if (!businessId || typeof businessId !== 'string') {
-      return NextResponse.json(
-        { error: 'businessId e obrigatorio.' },
-        { status: 400 },
-      );
-    }
+    const { type, businessId } = parsed.data;
+    // `data` é cast intencional: Zod já validou os campos por type via
+    // discriminated union, mas no fluxo legacy o handler acessa
+    // `data.recipient/tomador/payments/...` sem narrow por type. Validação
+    // de shape já garantiu que cada campo, quando presente, tem a forma
+    // certa. Tech-debt: refatorar pra narrow por type-branch quando o
+    // handler for quebrado em sub-handlers (1 por type).
+    const data = parsed.data as Record<string, any>;
 
     // Auth: admin+ only
     const auth = await verifyAuth(request, businessId);
