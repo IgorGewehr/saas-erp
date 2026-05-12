@@ -30,7 +30,7 @@ import { toast } from 'react-toastify';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import type { FiscalDocType, PaymentMethod, CRMContact, Product } from '@/lib/types';
+import type { FiscalDocType, PaymentMethod, CRMContact, Product, Service } from '@/lib/types';
 import { NfseServicoCombobox } from './NfseServicoCombobox';
 import NcmSelector from './NcmSelector';
 import { cn } from '@/lib/utils';
@@ -171,6 +171,9 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
   // Produtos do estoque pro picker dentro de cada item (NF-e/NFC-e). NFSe é
   // serviço — não puxa do estoque. Carregado uma vez por abertura do dialog.
   const [products, setProducts] = useState<Product[]>([]);
+  // Serviços cadastrados (coleção `services` — Agenda) pro picker da NFSe.
+  // Permite importar nome + descrição + valor sem digitar tudo manualmente.
+  const [services, setServices] = useState<Service[]>([]);
 
   // ── NFSe State ──
   const [nfseForm, setNfseForm] = useState<NFSeFormData>({
@@ -253,6 +256,22 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
       } catch { /* silent — picker simplesmente fica vazio */ }
     };
     loadProducts();
+  }, [open, business, type]);
+
+  // Load services (somente NFSe — único tipo que vende serviço). Mesmo padrão
+  // do products; filtra inativos e soft-deleted.
+  useEffect(() => {
+    if (!open || !business || type !== 'nfse') return;
+    const loadServices = async () => {
+      try {
+        const q = query(collection(db, 'services'), where('businessId', '==', business.id));
+        const snapshot = await getDocs(q);
+        setServices(snapshot.docs
+          .map(d => ({ ...d.data(), id: d.id }) as Service)
+          .filter(s => s.isActive !== false && !s.deletedAt));
+      } catch { /* silent */ }
+    };
+    loadServices();
   }, [open, business, type]);
 
   // ── NFSe Computed Values ──
@@ -745,6 +764,59 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
                   <FileCheck2 className="w-4 h-4 text-gray-400 dark:text-gray-500" />
                   {t('fiscal.emit.servicoPrestado', 'Serviço Prestado')}
                 </div>
+
+                {/* Picker de serviços cadastrados — atalho pra preencher
+                    discriminação + valor sem digitar. Só renderiza quando há
+                    serviços ativos no business (catálogo vazio = sem ruído). */}
+                {services.length > 0 && (
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">
+                      {t('fiscal.emit.importarServico', 'Importar serviço cadastrado')}
+                    </label>
+                    <Autocomplete
+                      size="small"
+                      options={services}
+                      getOptionLabel={(s) => s.name || ''}
+                      isOptionEqualToValue={(a, b) => a.id === b.id}
+                      onChange={(_e, service) => {
+                        if (!service) return;
+                        // Concatena name + description quando há ambos. Preserva
+                        // o que o operador já digitou em discriminacao? Não —
+                        // o intuito é substituir, igual ao ProductPicker no NF-e.
+                        // Se quiser editar, faz isso depois no textarea.
+                        const discriminacao = service.description
+                          ? `${service.name}\n${service.description}`
+                          : service.name;
+                        setNfseForm(prev => ({
+                          ...prev,
+                          discriminacao,
+                          valorServicos: service.price ?? prev.valorServicos,
+                        }));
+                      }}
+                      renderOption={(props, s) => (
+                        <li {...props} key={s.id}>
+                          <div className="flex flex-col text-xs">
+                            <span className="font-medium text-gray-900 dark:text-gray-100">{s.name}</span>
+                            <span className="text-[10px] text-gray-500 dark:text-gray-400">
+                              {formatCurrency(s.price ?? 0)} · {s.duration}min
+                              {s.category ? ` · ${s.category}` : ''}
+                            </span>
+                          </div>
+                        </li>
+                      )}
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          placeholder={t('fiscal.emit.importarServicoPlaceholder', 'Selecionar serviço cadastrado…')}
+                          size="small"
+                        />
+                      )}
+                      clearOnBlur
+                      blurOnSelect
+                      value={null}
+                    />
+                  </div>
+                )}
 
                 <div>
                   <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.emit.discriminacao', 'Discriminação do Serviço *')}</label>
