@@ -377,6 +377,15 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
       toast.error(t('fiscal.emit.errors.valorPositivo', 'Valor do serviço deve ser maior que zero'));
       return;
     }
+    // Código LC 116 é exigido pela maioria das prefeituras — sem ele, o
+    // backend envia "000000" e a SEFAZ municipal rejeita. Antes do picker
+    // de serviços (commit 905f173), operador precisava interagir com o
+    // NfseServicoCombobox e percebia o que faltava; agora a UI parece
+    // pronta após importar serviço (que só preenche descrição + valor).
+    if (!nfseForm.codigoTributacaoNacional.trim()) {
+      toast.error(t('fiscal.emit.errors.lc116Required', 'Código LC 116 é obrigatório. Selecione abaixo da discriminação.'));
+      return;
+    }
     // IM pode estar em fiscal.* (canônico) ou na raiz (UI Empresa). IBGE em
     // fiscal.* ou em endereco.codigoMunicipio (preenchido pelo lookup CEP).
     const hasIM = !!(business.fiscal?.inscricaoMunicipal || (business as { inscricaoMunicipal?: string }).inscricaoMunicipal);
@@ -1258,20 +1267,35 @@ function createEmptyNFCeItem(): NFCeItemForm {
 }
 
 /**
- * Aplica os dados de um Product no item da nota — preserva quantidade (operador
- * pode ter ajustado antes de importar) e id (referência estável do React). Os
- * outros campos são sobrescritos: descrição vira `name`, NCM/CFOP/unit/valor
- * vêm direto do cadastro. Campos vazios no Product caem em string vazia (não
- * em undefined) pra que o input continue controlled.
+ * Aplica os dados de um Product no item da nota. Propaga TODOS os campos
+ * fiscais relevantes (não só nome/preço) pra que a SEFAZ não rejeite por
+ * CEST/GTIN/origem ausentes em produtos que têm esses dados cadastrados.
+ *
+ * Decisões:
+ *  - Preserva `quantity` e `id` (estado React + ajuste manual do operador).
+ *  - `unitPrice`: substitui SÓ se Product tem preço > 0. Produto "brinde"
+ *    cadastrado com salePrice=0 NÃO zera o valor que o operador já digitou.
+ *  - `productId`: gravado pra rastreio + futuro enrichment server-side
+ *    (backend pode buscar fiscalTax overrides do Product na emissão).
+ *  - Campos vazios no Product caem em string vazia (input controlled).
  */
 function applyProductToItem(current: NFCeItemForm, product: Product): NFCeItemForm {
+  const hasUsefulPrice = typeof product.salePrice === 'number' && product.salePrice > 0;
   return {
     ...current,
     description: product.name || current.description,
     ncm: product.ncm || '',
     cfop: product.cfop || current.cfop,
     unit: product.unit || current.unit,
-    unitPrice: product.salePrice ?? current.unitPrice,
+    unitPrice: hasUsefulPrice ? product.salePrice : current.unitPrice,
+    // Campos fiscais cruciais pra SEFAZ — antes não eram propagados e
+    // produtos com ST/EAN cadastrados emitiam com perfil padrão do regime,
+    // levando a rejeições. Inclui productId pro server enriquecer
+    // fiscalTax overrides (CST/CSOSN/alíquotas) no emit path.
+    ...(product.cest ? { cest: product.cest } : {}),
+    ...(product.gtin ? { gtin: product.gtin } : {}),
+    ...(product.icmsOrigem ? { icmsOrigem: product.icmsOrigem } : {}),
+    productId: product.id,
   };
 }
 
