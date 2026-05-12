@@ -14,6 +14,7 @@ import {
 } from '@/lib/fiscal/number-sequence';
 import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
 import { decryptToken } from '@/lib/utils/encryption';
+import type { Product } from '@/lib/types';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -154,39 +155,116 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // 6.1 Enrichment: lê Products referenciados (via productId) e mescla campos
+    // fiscais avançados (unidadeTrib, gtinTrib, fiscalTax CST/CSOSN/alíquotas)
+    // antes do map. Sem isso, o cadastro do Product virava letra morta — operador
+    // configurava CST/origem por produto e a emissão usava só defaults do regime.
+    // Precedência: item.X (digitado/editado no form) > product.X > default.
+    // Best-effort: produto deletado/cross-tenant cai no fallback gracioso.
+    const productIdsRaw = Array.isArray(rawItems)
+      ? rawItems
+          .map((it: Record<string, unknown>) => (typeof it.productId === 'string' ? it.productId : null))
+          .filter((id): id is string => !!id)
+      : [];
+    const productIds = Array.from(new Set(productIdsRaw));
+    const productsMap = new Map<string, Product>();
+    if (productIds.length > 0) {
+      const productDocs = await Promise.all(
+        productIds.map(id => adminDb.collection('products').doc(id).get().catch(() => null)),
+      );
+      for (const doc of productDocs) {
+        if (!doc || !doc.exists) continue;
+        const productData = doc.data();
+        // Cross-tenant guard — operador A não consegue ler Product do business B
+        // mesmo se forjar productId no payload. Defesa em profundidade sobre
+        // o auth check da rota.
+        if (productData && productData.businessId === businessId) {
+          productsMap.set(doc.id, { ...productData, id: doc.id } as Product);
+        }
+      }
+    }
+
+    // Validação prévia: descrição é obrigatória pra SEFAZ (xProd). Antes do
+    // enrichment, item.description undefined era removido pelo stripEmpty e a
+    // SEFAZ rejeitava com erro genérico. Agora com fallback pro Product.name,
+    // o cenário "ambos vazios" precisa ser tratado explicitamente — 400
+    // cedo dá feedback acionável ao operador.
+    if (Array.isArray(rawItems)) {
+      for (let i = 0; i < rawItems.length; i++) {
+        const it = rawItems[i] as Record<string, unknown>;
+        const desc = (typeof it.description === 'string' ? it.description : '').trim();
+        const productName = typeof it.productId === 'string' ? productsMap.get(it.productId)?.name?.trim() : '';
+        if (!desc && !productName) {
+          return NextResponse.json(
+            { error: `Item ${i + 1}: descrição vazia. Preencha no item ou cadastre o produto com nome.` },
+            { status: 400 },
+          );
+        }
+      }
+    }
+
     const items = (Array.isArray(rawItems) ? rawItems : []).map((item: Record<string, unknown>, i: number) => {
+      // Resolve Product cadastrado (pode ser undefined — operador editou item
+      // sem importar do estoque, OU produto foi deletado entre import e emissão).
+      const product = typeof item.productId === 'string' ? productsMap.get(item.productId) : undefined;
+      const productFiscal = product?.fiscalTax;
+      // Helper: usa item.X se o operador preencheu (não-vazio); senão product.X;
+      // senão undefined (caller decide o default).
+      const pick = <T>(itemVal: T | undefined | null | '', productVal: T | undefined | null): T | undefined => {
+        if (itemVal !== undefined && itemVal !== null && itemVal !== '') return itemVal as T;
+        if (productVal !== undefined && productVal !== null) return productVal as T;
+        return undefined;
+      };
       const qty = Number(item.quantity) || 0;
       const price = Number(item.unitPrice) || 0;
       const vProd = +(qty * price).toFixed(2);
       const vDesc = +(Number(item.discount) || 0).toFixed(2);
       const baseCalc = +(vProd - vDesc).toFixed(2);
-      const ean = String(item.barcode || 'SEM GTIN');
-      const unitStr = String(item.unit || 'UN');
+      // ── Campos comerciais (com enrichment do Product quando item omite) ────
+      const ean = String(pick(item.barcode as string, product?.gtin) || 'SEM GTIN');
+      const unitStr = String(pick(item.unit as string, product?.unit) || 'UN');
+      const ncm = String(pick(item.ncm as string, product?.ncm) || '00000000').replace(/\D/g, '');
+      const cfop = String(pick(item.cfop as string | number, product?.cfop) || 5102);
+      const cest = pick(item.cest as string, product?.cest);
+      // ── Campos tributáveis: default = comercial; sobrescreve só quando o
+      // Product cadastra valor explícito diferente (caixa→unidade etc).
+      const unidadeTrib = product?.unidadeTrib?.trim() || unitStr;
+      const cEANTrib = product?.gtinTrib?.trim() || ean;
+      // ── Origem ICMS: pick respeita 0 (Nacional), por isso check de undefined
+      // explícito em vez do '||' que cairia em fallback. icmsDefaults é último.
+      const icmsOrigemResolved = item.icmsOrigem !== undefined && item.icmsOrigem !== null && item.icmsOrigem !== ''
+        ? item.icmsOrigem
+        : (product?.icmsOrigem ?? icmsDefaults.origem);
 
       // -- Tax blocks --
 
       // ICMS
       let icmsBlock: Record<string, unknown>;
       if (crt === '3') {
-        const aliq = Number(item.icmsAliquota ?? icmsDefaults.aliquota);
+        // Regime normal: CST + alíquota. Product.fiscalTax.icms vence sobre
+        // o default do regime, mas perde pra valor digitado manualmente no item.
+        const aliq = Number(pick(item.icmsAliquota as number, productFiscal?.icms?.rate) ?? icmsDefaults.aliquota);
+        const cst = pick(item.icmsSituacaoTributaria as string, productFiscal?.icms?.cst) || icmsDefaults.cst;
         icmsBlock = {
-          orig: String(Number(item.icmsOrigem ?? icmsDefaults.origem)),
-          cst: item.icmsSituacaoTributaria || icmsDefaults.cst,
+          orig: String(Number(icmsOrigemResolved)),
+          cst,
           modBC: '0',
           valorBC: baseCalc,
           aliquota: aliq,
           valor: +((baseCalc * aliq) / 100).toFixed(2),
         };
       } else {
+        // Simples Nacional: CSOSN. Mesma lógica de precedência.
+        const csosn = pick(item.icmsSituacaoTributaria as string, productFiscal?.icms?.csosn) || icmsDefaults.csosn;
         icmsBlock = {
-          orig: String(Number(item.icmsOrigem ?? icmsDefaults.origem)),
-          csosn: item.icmsSituacaoTributaria || icmsDefaults.csosn,
+          orig: String(Number(icmsOrigemResolved)),
+          csosn,
         };
       }
 
-      // PIS
-      const pisCST = item.pisSituacaoTributaria || pisCofsDefaults.pisCST;
-      const pisAliq = pisCofsDefaults.pisAliquota;
+      // PIS — Product override prevalece sobre default do regime, item digitado vence ambos.
+      const pisCST = pick(item.pisSituacaoTributaria as string, productFiscal?.pis?.cst) || pisCofsDefaults.pisCST;
+      const pisAliq = pick(item.pisAliquota as number, productFiscal?.pis?.rate) ?? pisCofsDefaults.pisAliquota;
       const pisBlock: Record<string, unknown> = {
         cst: pisCST,
         valorBC: pisAliq > 0 ? baseCalc : undefined,
@@ -194,9 +272,9 @@ export async function POST(request: NextRequest) {
         valor: pisAliq > 0 ? +((baseCalc * pisAliq) / 100).toFixed(2) : undefined,
       };
 
-      // COFINS
-      const cofinsCST = item.cofinsSituacaoTributaria || pisCofsDefaults.cofinsCST;
-      const cofinsAliq = pisCofsDefaults.cofinsAliquota;
+      // COFINS — idem PIS.
+      const cofinsCST = pick(item.cofinsSituacaoTributaria as string, productFiscal?.cofins?.cst) || pisCofsDefaults.cofinsCST;
+      const cofinsAliq = pick(item.cofinsAliquota as number, productFiscal?.cofins?.rate) ?? pisCofsDefaults.cofinsAliquota;
       const cofinsBlock: Record<string, unknown> = {
         cst: cofinsCST,
         valorBC: cofinsAliq > 0 ? baseCalc : undefined,
@@ -204,13 +282,14 @@ export async function POST(request: NextRequest) {
         valor: cofinsAliq > 0 ? +((baseCalc * cofinsAliq) / 100).toFixed(2) : undefined,
       };
 
-      // IPI (optional)
+      // IPI (optional) — só emite bloco quando há CST IPI definido (item ou Product).
       let ipiBlock: Record<string, unknown> | undefined;
-      if (item.ipiSituacaoTributaria) {
-        const ipiCST = String(item.ipiSituacaoTributaria);
-        const ipiEnq = String(item.ipiCodigoEnquadramento || '999');
+      const ipiCSTResolved = pick(item.ipiSituacaoTributaria as string, productFiscal?.ipi?.cst);
+      if (ipiCSTResolved) {
+        const ipiCST = String(ipiCSTResolved);
+        const ipiEnq = String(pick(item.ipiCodigoEnquadramento as string, productFiscal?.ipi?.cEnq) || '999');
         const ipiTaxable = ['00', '49', '50', '99'].includes(ipiCST);
-        const ipiAliq = ipiTaxable ? Number(item.ipiAliquota || 0) : 0;
+        const ipiAliq = ipiTaxable ? Number(pick(item.ipiAliquota as number, productFiscal?.ipi?.rate) ?? 0) : 0;
         ipiBlock = {
           cst: ipiCST,
           cEnq: ipiEnq,
@@ -220,22 +299,30 @@ export async function POST(request: NextRequest) {
         };
       }
 
+      // Descrição final do item — operador digitou ou veio do Product.name.
+      // Validação prévia (acima do map) já garante que pelo menos um existe.
+      const descricao = (item.description as string) || product?.name || '';
+
       // -- Build item in nested format (matches TensorRoot API) --
       return {
         numero: i + 1,
         produto: {
+          // `codigo` segue como antes (item.code ou índice sequencial). SKU
+          // do Product NÃO é injetado aqui — `cProd` no XML é livre e o
+          // operador pode preferir o número do item; enrichment é só pros
+          // campos fiscais.
           codigo: item.code || String(i + 1),
           cEAN: ean,
-          descricao: item.description,
-          ncm: String(item.ncm || '00000000').replace(/\D/g, ''),
-          ...(item.cest ? { cest: String(item.cest) } : {}),
-          cfop: String(item.cfop || 5102),
+          descricao,
+          ncm,
+          ...(cest ? { cest: String(cest) } : {}),
+          cfop,
           unidade: unitStr,
           quantidade: qty,
           valorUnitario: price,
           valorTotal: vProd,
-          cEANTrib: ean,
-          unidadeTrib: unitStr,
+          cEANTrib,
+          unidadeTrib,
           quantidadeTrib: qty,
           valorUnitarioTrib: price,
           valorDesconto: vDesc > 0 ? vDesc : undefined,
