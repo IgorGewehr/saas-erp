@@ -297,8 +297,10 @@ describe('getInitials', () => {
     expect(getInitials('maria santos')).toBe('MS');
   });
 
-  it('handles empty string', () => {
-    expect(getInitials('')).toBe('');
+  it('returns "?" for empty/null/undefined (fallback for avatars)', () => {
+    expect(getInitials('')).toBe('?');
+    expect(getInitials(null)).toBe('?');
+    expect(getInitials(undefined)).toBe('?');
   });
 });
 
