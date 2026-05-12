@@ -159,8 +159,16 @@ export async function POST(request: NextRequest) {
     // fiscais avançados (unidadeTrib, gtinTrib, fiscalTax CST/CSOSN/alíquotas)
     // antes do map. Sem isso, o cadastro do Product virava letra morta — operador
     // configurava CST/origem por produto e a emissão usava só defaults do regime.
-    // Precedência: item.X (digitado/editado no form) > product.X > default.
-    // Best-effort: produto deletado/cross-tenant cai no fallback gracioso.
+    //
+    // Convenção de precedência: item.X (digitado/editado no form) > product.X >
+    // default do regime. A UI ("Importar do estoque") popula o form com Product.X
+    // no clique de import; quando o operador NÃO importou, os campos fiscais do
+    // form ficam vazios e o pick() abaixo cai para o Product. Por isso a UI deve
+    // mandar campo vazio/ausente (não default literal) quando o operador não
+    // editou — senão o cadastro nunca sobrescreve.
+    //
+    // Best-effort: produto deletado/cross-tenant/falha de read cai no fallback
+    // gracioso. Falha de read é logada (warn) mas não bloqueia a emissão.
     const productIdsRaw = Array.isArray(rawItems)
       ? rawItems
           .map((it: Record<string, unknown>) => (typeof it.productId === 'string' ? it.productId : null))
@@ -170,14 +178,19 @@ export async function POST(request: NextRequest) {
     const productsMap = new Map<string, Product>();
     if (productIds.length > 0) {
       const productDocs = await Promise.all(
-        productIds.map(id => adminDb.collection('products').doc(id).get().catch(() => null)),
+        productIds.map(id =>
+          adminDb.collection('products').doc(id).get().catch(err => {
+            console.warn('[Fiscal Emit] product read failed; falling back to defaults', { productId: id, businessId, error: err?.message });
+            return null;
+          }),
+        ),
       );
       for (const doc of productDocs) {
         if (!doc || !doc.exists) continue;
         const productData = doc.data();
         // Cross-tenant guard — operador A não consegue ler Product do business B
         // mesmo se forjar productId no payload. Defesa em profundidade sobre
-        // o auth check da rota.
+        // o auth check da rota (adminDb bypassa Firestore rules).
         if (productData && productData.businessId === businessId) {
           productsMap.set(doc.id, { ...productData, id: doc.id } as Product);
         }
@@ -209,9 +222,13 @@ export async function POST(request: NextRequest) {
       const product = typeof item.productId === 'string' ? productsMap.get(item.productId) : undefined;
       const productFiscal = product?.fiscalTax;
       // Helper: usa item.X se o operador preencheu (não-vazio); senão product.X;
-      // senão undefined (caller decide o default).
+      // senão undefined (caller decide o default). Strings só-espaços são tratadas
+      // como vazias — caso contrário a SEFAZ rejeita com erro genérico (ex: NCM
+      // '   ' depois de stripEmpty vira string com espaços ao invés de cair no
+      // default '00000000').
       const pick = <T>(itemVal: T | undefined | null | '', productVal: T | undefined | null): T | undefined => {
-        if (itemVal !== undefined && itemVal !== null && itemVal !== '') return itemVal as T;
+        const isEmptyStr = typeof itemVal === 'string' && itemVal.trim() === '';
+        if (itemVal !== undefined && itemVal !== null && !isEmptyStr) return itemVal as T;
         if (productVal !== undefined && productVal !== null) return productVal as T;
         return undefined;
       };
