@@ -9,6 +9,7 @@ import { generateUnsubscribeToken } from '@/lib/utils/unsubscribeToken';
 import { getAlternativeBrazilianPhone } from '@/lib/utils/phoneAlternatives';
 import type { BroadcastTemplateParam, OptOutChannel } from '@/lib/types';
 import { cleanContactName } from '@/lib/utils/contactName';
+import { logPipelineFailure, classifySendErrorSeverity } from '@/lib/services/pipelineFailures';
 
 /** Compara strings em tempo constante — evita timing attack na CRON_SECRET. */
 function safeEqual(a: string, b: string): boolean {
@@ -993,6 +994,17 @@ export async function POST(req: NextRequest) {
               errorMessage: errMessage,
             })
           );
+          logPipelineFailure({
+            source: 'whatsapp-send',
+            channel: 'whatsapp',
+            businessId,
+            recipientId: recipient.recipientId,
+            broadcastId,
+            transport: 'baileys',
+            error: errMessage,
+            errorStack: err instanceof Error ? err.stack : undefined,
+            severity: classifySendErrorSeverity(errMessage),
+          });
         }
         doStatsFlush(false);
         // Throttle: usa o configurado (com aleatoriedade), mas força mínimo
@@ -1219,6 +1231,24 @@ export async function POST(req: NextRequest) {
               errorMessage: errMessage,
             })
           );
+          // Registra no painel de Logs — sem isso, erros tipo "Business
+          // eligibility payment issue" e "Message undeliverable" só ficavam
+          // visíveis no detalhe da campanha. Operador admin precisa ver tudo
+          // que está rolando no business pra agir (ex: regularizar pagamento).
+          logPipelineFailure({
+            source: 'whatsapp-send',
+            channel: channel as 'whatsapp' | 'facebook' | 'instagram',
+            businessId,
+            recipientId: recipient.recipientId,
+            broadcastId,
+            transport: 'cloud',
+            httpStatus: response?.status,
+            error: errMessage,
+            errorBody: typeof errData === 'object' ? JSON.stringify(errData).slice(0, 2000) : undefined,
+            metaErrorCode: errData?.error?.code,
+            metaErrorSubcode: errData?.error?.error_subcode,
+            severity: classifySendErrorSeverity(errMessage),
+          });
         }
       } catch (err) {
         const errMessage = err instanceof Error ? err.message : 'Send error';
@@ -1235,6 +1265,17 @@ export async function POST(req: NextRequest) {
             errorMessage: errMessage,
           })
         );
+        logPipelineFailure({
+          source: 'whatsapp-send',
+          channel: channel as 'whatsapp' | 'facebook' | 'instagram',
+          businessId,
+          recipientId: recipient.recipientId,
+          broadcastId,
+          transport: 'cloud',
+          error: errMessage,
+          errorStack: err instanceof Error ? err.stack : undefined,
+          severity: classifySendErrorSeverity(errMessage),
+        });
       }
       doStatsFlush(false);
 

@@ -3644,6 +3644,12 @@ interface WebhookFailureDoc {
   externalId?: string;
   content?: string;
   timestamp?: string;
+  // Falhas de envio outbound (source = 'whatsapp-send')
+  recipientId?: string;
+  broadcastId?: string;
+  transport?: 'cloud' | 'baileys';
+  metaErrorCode?: number;
+  metaErrorSubcode?: number;
 }
 
 const SOURCE_LABELS: Record<string, { label: string; icon: React.ElementType; tone: string }> = {
@@ -3655,6 +3661,9 @@ const SOURCE_LABELS: Record<string, { label: string; icon: React.ElementType; to
   'meta-media-download':       { label: 'Cloud · download mídia',    icon: Cloud,       tone: 'text-red-500' },
   'meta-audio-conversion':     { label: 'Cloud · conversão áudio',   icon: Headphones,  tone: 'text-amber-500' },
   'meta-media-pipeline':       { label: 'Cloud · pipeline de mídia', icon: Cloud,       tone: 'text-red-500' },
+  // Falhas de envio outbound (operador clicou "enviar" → Meta rejeitou, OU
+  // dispatch de campanha falhou). transport=cloud|baileys diferencia visualmente.
+  'whatsapp-send':             { label: 'WhatsApp · envio falhou',   icon: AlertTriangle, tone: 'text-red-500' },
 };
 
 function MediaTypeIcon({ type }: { type?: string }) {
@@ -3713,6 +3722,11 @@ function FailureRow({ failure, onCopy }: { failure: WebhookFailureDoc; onCopy: (
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs font-semibold text-gray-900 dark:text-white">{sourceLabel}</span>
+            {failure.transport && (
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-100 dark:bg-white/5 text-gray-600 dark:text-gray-400 uppercase">
+                {failure.transport === 'cloud' ? 'Oficial' : 'Web'}
+              </span>
+            )}
             {failure.mediaType && (
               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-gray-100 dark:bg-white/5 text-gray-600 dark:text-gray-400">
                 <MediaTypeIcon type={failure.mediaType} />
@@ -3725,6 +3739,11 @@ function FailureRow({ failure, onCopy }: { failure: WebhookFailureDoc; onCopy: (
             {failure.httpStatus && (
               <span className="text-[10px] font-mono px-1 rounded bg-red-100 dark:bg-red-500/15 text-red-600 dark:text-red-400">HTTP {failure.httpStatus}</span>
             )}
+            {failure.metaErrorCode !== undefined && (
+              <span className="text-[10px] font-mono px-1 rounded bg-red-100 dark:bg-red-500/15 text-red-600 dark:text-red-400" title="Código Meta API">
+                Meta {failure.metaErrorCode}{failure.metaErrorSubcode !== undefined ? `.${failure.metaErrorSubcode}` : ''}
+              </span>
+            )}
             <span className="text-[10px] text-gray-400 ml-auto">{formatRelative(failure.createdAt || failure.timestamp)}</span>
           </div>
           <p className={cn(
@@ -3733,10 +3752,12 @@ function FailureRow({ failure, onCopy }: { failure: WebhookFailureDoc; onCopy: (
           )}>
             {failure.error || failure.reason || 'Sem detalhes'}
           </p>
-          {(failure.declaredFileName || failure.bufferSize || failure.conversationId) && (
+          {(failure.declaredFileName || failure.bufferSize || failure.conversationId || failure.recipientId || failure.broadcastId) && (
             <div className="flex items-center gap-3 mt-1.5 text-[10px] text-gray-500 dark:text-gray-400 flex-wrap">
               {failure.declaredFileName && <span className="font-mono truncate max-w-[200px]" title={failure.declaredFileName}>📄 {failure.declaredFileName}</span>}
               {failure.bufferSize !== undefined && <span>📦 {(failure.bufferSize / 1024 / 1024).toFixed(2)}MB</span>}
+              {failure.recipientId && <span className="font-mono" title={failure.recipientId}>👤 {failure.recipientId}</span>}
+              {failure.broadcastId && <span className="font-mono">📢 …{failure.broadcastId.slice(-8)}</span>}
               {failure.conversationId && <span className="font-mono">conv: …{failure.conversationId.slice(-8)}</span>}
             </div>
           )}

@@ -18,6 +18,7 @@ import { decryptToken } from '@/lib/utils/encryption';
 import { checkRateLimit, checkBusinessRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { ensureBaileysSessionConnected } from '@/app/api/whatsapp/baileys-manager';
 import { uploadServerMedia } from '@/lib/services/storage/adminUpload';
+import { logPipelineFailure, classifySendErrorSeverity } from '@/lib/services/pipelineFailures';
 import type {
   ConversationChannel,
   ChannelCredentials,
@@ -154,11 +155,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Rate limit exceeded. Tente novamente em breve.' }, { status: 429 });
   }
 
+  // Contexto pré-declarado pra que o catch consiga registrar a falha em
+  // webhookFailures mesmo após body.parse / auth / dispatch falhar. Sem isso,
+  // `channel/businessId/recipientId` ficariam fora do escopo do catch.
+  let failureContext: { businessId?: string; conversationId?: string; recipientId?: string; channel?: string } = {};
+
   try {
     // Read the body as text first so we can (a) verify HMAC when agent-signed and (b) reuse it as JSON.
     const rawBody = await req.text();
     const body: SendRequestBody = JSON.parse(rawBody);
     const { businessId, conversationId, messageId, messageDocId, channel, recipientId, content, type, templateName, templateLanguage, templateParams, mediaUrl, mediaType, fileName, clientMessageId } = body;
+    failureContext = { businessId, conversationId, recipientId, channel };
 
     // Authentication: accept either a Firebase session (UI) or an HMAC-signed agent call.
     const agentSignature = req.headers.get('x-agent-signature');
@@ -577,6 +584,25 @@ export async function POST(req: NextRequest) {
     }
 
     console.error('[Send Message] Error:', message, errorDetails);
+    // Registra no painel de Logs — erros do send manual (operador clicou
+    // "enviar" e falhou) antes só caíam em console e o operador via "Tentar
+    // novamente" sem entender o motivo. Best-effort, não-bloqueante.
+    // `errorDetails` pode trazer code/error_subcode da Meta quando o erro
+    // original veio serializado como JSON (caso comum em sendWhatsApp).
+    logPipelineFailure({
+      source: 'whatsapp-send',
+      channel: (failureContext.channel as 'whatsapp' | 'facebook' | 'instagram' | undefined) ?? 'whatsapp',
+      businessId: failureContext.businessId,
+      conversationId: failureContext.conversationId,
+      recipientId: failureContext.recipientId,
+      transport: 'cloud',
+      error: message,
+      errorBody: Object.keys(errorDetails).length ? JSON.stringify(errorDetails).slice(0, 2000) : undefined,
+      metaErrorCode: (errorDetails as { code?: number }).code,
+      metaErrorSubcode: (errorDetails as { error_subcode?: number }).error_subcode,
+      httpStatus: statusCode,
+      severity: classifySendErrorSeverity(message),
+    });
     return NextResponse.json({ error: message, code: 'send_failed', ...errorDetails }, { status: statusCode });
   }
 }
