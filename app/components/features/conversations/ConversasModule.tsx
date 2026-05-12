@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useImperativeHandle, forwardRef, memo } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useImperativeHandle, forwardRef, memo, useDeferredValue } from 'react';
+import { Virtuoso } from 'react-virtuoso';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
@@ -5443,6 +5444,10 @@ export default function ConversasModule() {
   const [editingView, setEditingView] = useState<ConversationView | null>(null);
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  // Debounce do filtro pra não recomputar 856 items a cada keystroke.
+  // useDeferredValue dispara o re-render do filtro como low-priority — input
+  // permanece responsivo enquanto a lista atualiza no próximo idle.
+  const deferredSearchQuery = useDeferredValue(searchQuery);
   // messageInput removido: vive agora dentro do Composer (perf — antes
   // cada keystroke causava re-render do módulo inteiro). Pai lê/escreve
   // via composerRef.
@@ -7376,10 +7381,10 @@ export default function ConversasModule() {
         matchesScope = !conn || conn.ownerType === 'business';
       }
       const matchesSearch =
-        !searchQuery ||
-        (c.customContactName ?? c.contactName).toLowerCase().includes(searchQuery.toLowerCase()) ||
-        c.lastMessage.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (c.contactPhone && c.contactPhone.includes(searchQuery));
+        !deferredSearchQuery ||
+        (c.customContactName ?? c.contactName).toLowerCase().includes(deferredSearchQuery.toLowerCase()) ||
+        c.lastMessage.toLowerCase().includes(deferredSearchQuery.toLowerCase()) ||
+        (c.contactPhone && c.contactPhone.includes(deferredSearchQuery));
       const matchesAssigned = !advFilters.assignedTo || c.assignedTo === advFilters.assignedTo;
       const matchesPriority = !advFilters.priority || c.priority === advFilters.priority;
       const matchesLabel = !advFilters.label || c.labels?.includes(advFilters.label) || c.tags?.includes(advFilters.label);
@@ -7399,7 +7404,7 @@ export default function ConversasModule() {
         || (!retroLookupLoading && (retroCampaignConvIds?.has(c.id) ?? false));
       return matchesChannel && matchesView && matchesSector && matchesScope && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus && matchesCampaign;
     });
-  }, [getVisibleConversations, conversations, activeChannel, activeView, activeSectorFilter, activeChannelScope, myConnectionIds, connectionsById, searchQuery, advFilters, slaConfig, user?.uid, campaignKind, campaignId, retroCampaignConvIds, retroLookupLoading]);
+  }, [getVisibleConversations, conversations, activeChannel, activeView, activeSectorFilter, activeChannelScope, myConnectionIds, connectionsById, deferredSearchQuery, advFilters, slaConfig, user?.uid, campaignKind, campaignId, retroCampaignConvIds, retroLookupLoading]);
 
   // Re-sort client-side. 'recent' não toca a ordem (Firestore já desc por
   // lastMessageAt). 'oldest' inverte. 'priority' ranqueia urgent>high>med>low,
@@ -7891,103 +7896,94 @@ export default function ConversasModule() {
             </div>
           )}
 
-          {/* Conversation list */}
-          <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-white/10 relative">
+          {/* Conversation list — virtualizada com react-virtuoso.
+              Antes: .map() + motion.div por item → ~17k DOM nodes com 856
+              conversas + Framer Motion stagger por item travava o scroll.
+              Agora: só os itens visíveis (+ overscan) ficam montados. Sem
+              AnimatePresence em volta da lista e sem initial/animate por
+              item — entrada/saída via mudança de filtro é instantânea, o
+              que é o comportamento desejado em escala. */}
+          <div className="flex-1 relative min-h-0">
             {isLoadingConversations ? (
-              <ConversationListSkeleton />
-            ) : (
-              <AnimatePresence mode="popLayout">
-                {sortedConversations.length === 0 ? (
-                  <motion.div
-                    key="empty-list"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="flex flex-col items-center justify-center py-12 px-6 text-center"
-                  >
-                    <div className="w-12 h-12 rounded-2xl bg-gray-100 dark:bg-white/[0.04] flex items-center justify-center mb-3">
-                      <MessageSquare className="w-6 h-6 text-gray-300 dark:text-gray-600" />
-                    </div>
-                    {conversations.length === 0 ? (
-                      <>
-                        <p className="text-sm font-medium text-gray-500 dark:text-gray-400">
-                          {t('conversations.noConversationsYet', 'Nenhuma conversa ainda')}
-                        </p>
-                        <p className="text-xs text-gray-400 dark:text-gray-500 mt-1 leading-relaxed max-w-[220px]">
-                          {t('conversations.noConversationsYetDesc', 'Conecte seus canais em Configurações para começar a receber mensagens')}
-                        </p>
-                        <button
-                          onClick={() => setShowSettings(true)}
-                          className="mt-3 text-xs font-semibold px-4 py-2 rounded-xl bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors"
-                        >
-                          {t('conversations.configureChannels', 'Configurar canais')}
-                        </button>
-                      </>
-                    ) : (() => {
-                      // Empty state contextual por smart view ativa. Quando a
-                      // busca/canal/filtros avançados também estão filtrando,
-                      // a mensagem da view é menos exata — então só usa o
-                      // contextual quando NÃO há outros filtros ativos.
-                      const hasOtherFilters = !!searchQuery
-                        || activeChannel !== 'all'
-                        || activeSectorFilter !== 'all'
-                        || advFilters.assignedTo
-                        || advFilters.priority
-                        || advFilters.label
-                        || advFilters.slaStatus
-                        || advFilters.unreadOnly;
-                      const ctx = SMART_VIEW_EMPTY_STATE[activeView];
-                      const title = hasOtherFilters
-                        ? t('conversations.noConversationsFound', 'Nenhuma conversa encontrada')
-                        : ctx.title;
-                      const subtitle = hasOtherFilters
-                        ? t('conversations.noConversationsFoundDesc', 'Tente mudar o filtro ou a busca')
-                        : ctx.subtitle;
-                      return (
-                        <>
-                          <p className="text-sm font-medium text-gray-500 dark:text-gray-400">{title}</p>
-                          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1 max-w-[260px] leading-relaxed">{subtitle}</p>
-                        </>
-                      );
-                    })()}
-                  </motion.div>
-                ) : (
-                  sortedConversations.map((conv, index) => (
-                    <motion.div
-                      key={conv.id}
-                      initial={{ opacity: 0, x: -10 }}
-                      // Cap no stagger só na ENTRADA: com 499 itens, delay × index
-                      // original (0.03) = 15s de animação. Cap em 300ms preserva
-                      // o efeito nos primeiros ~10 sem travar a thread por segundos.
-                      // Exit sem delay — quando o item sai (filtro mudou, conversa
-                      // deletada), some imediatamente em vez de esperar a posição
-                      // dele no stagger original.
-                      animate={{ opacity: 1, x: 0, transition: { delay: Math.min(index * 0.03, 0.3), duration: 0.2 } }}
-                      exit={{ opacity: 0, x: -10, transition: { duration: 0.15 } }}
+              <div className="h-full overflow-y-auto scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-white/10">
+                <ConversationListSkeleton />
+              </div>
+            ) : sortedConversations.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 px-6 text-center">
+                <div className="w-12 h-12 rounded-2xl bg-gray-100 dark:bg-white/[0.04] flex items-center justify-center mb-3">
+                  <MessageSquare className="w-6 h-6 text-gray-300 dark:text-gray-600" />
+                </div>
+                {conversations.length === 0 ? (
+                  <>
+                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">
+                      {t('conversations.noConversationsYet', 'Nenhuma conversa ainda')}
+                    </p>
+                    <p className="text-xs text-gray-400 dark:text-gray-500 mt-1 leading-relaxed max-w-[220px]">
+                      {t('conversations.noConversationsYetDesc', 'Conecte seus canais em Configurações para começar a receber mensagens')}
+                    </p>
+                    <button
+                      onClick={() => setShowSettings(true)}
+                      className="mt-3 text-xs font-semibold px-4 py-2 rounded-xl bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors"
                     >
-                      <ConversationItem
-                        conversation={conv}
-                        isSelected={selectedConversation?.id === conv.id}
-                        onClick={handleItemClick}
-                        onLongPress={handleItemLongPress}
-                        slaInfo={getSLAInfo(conv, slaConfig)}
-                        batchMode={batchMode}
-                        isBatchSelected={batchSelectedIds.has(conv.id)}
-                        onBatchToggle={handleItemBatchToggle}
-                        connectionLabel={(() => {
-                          if (!conv.channelConnectionId) return undefined;
-                          const conn = connectionsById.get(conv.channelConnectionId);
-                          // Esconde label de business primary (default — não polui)
-                          if (!conn || (conn.ownerType === 'business' && conn.isPrimary)) return undefined;
-                          return conn.displayName;
-                        })()}
-                        isMineConnection={
-                          !!(conv.channelConnectionId && myConnectionIds.has(conv.channelConnectionId))
-                        }
-                      />
-                    </motion.div>
-                  ))
+                      {t('conversations.configureChannels', 'Configurar canais')}
+                    </button>
+                  </>
+                ) : (() => {
+                  // Empty state contextual por smart view ativa. Só usa o
+                  // contextual quando NÃO há outros filtros ativos — senão
+                  // a mensagem fica imprecisa.
+                  const hasOtherFilters = !!searchQuery
+                    || activeChannel !== 'all'
+                    || activeSectorFilter !== 'all'
+                    || advFilters.assignedTo
+                    || advFilters.priority
+                    || advFilters.label
+                    || advFilters.slaStatus
+                    || advFilters.unreadOnly;
+                  const ctx = SMART_VIEW_EMPTY_STATE[activeView];
+                  const title = hasOtherFilters
+                    ? t('conversations.noConversationsFound', 'Nenhuma conversa encontrada')
+                    : ctx.title;
+                  const subtitle = hasOtherFilters
+                    ? t('conversations.noConversationsFoundDesc', 'Tente mudar o filtro ou a busca')
+                    : ctx.subtitle;
+                  return (
+                    <>
+                      <p className="text-sm font-medium text-gray-500 dark:text-gray-400">{title}</p>
+                      <p className="text-xs text-gray-400 dark:text-gray-500 mt-1 max-w-[260px] leading-relaxed">{subtitle}</p>
+                    </>
+                  );
+                })()}
+              </div>
+            ) : (
+              <Virtuoso
+                data={sortedConversations}
+                style={{ height: '100%' }}
+                computeItemKey={(_index, conv) => conv.id}
+                overscan={{ main: 400, reverse: 400 }}
+                increaseViewportBy={{ top: 200, bottom: 200 }}
+                itemContent={(_index, conv) => (
+                  <ConversationItem
+                    conversation={conv}
+                    isSelected={selectedConversation?.id === conv.id}
+                    onClick={handleItemClick}
+                    onLongPress={handleItemLongPress}
+                    slaInfo={getSLAInfo(conv, slaConfig)}
+                    batchMode={batchMode}
+                    isBatchSelected={batchSelectedIds.has(conv.id)}
+                    onBatchToggle={handleItemBatchToggle}
+                    connectionLabel={(() => {
+                      if (!conv.channelConnectionId) return undefined;
+                      const conn = connectionsById.get(conv.channelConnectionId);
+                      if (!conn || (conn.ownerType === 'business' && conn.isPrimary)) return undefined;
+                      return conn.displayName;
+                    })()}
+                    isMineConnection={
+                      !!(conv.channelConnectionId && myConnectionIds.has(conv.channelConnectionId))
+                    }
+                  />
                 )}
-              </AnimatePresence>
+              />
             )}
 
             {/* Batch action bar */}
