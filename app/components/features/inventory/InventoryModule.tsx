@@ -121,6 +121,12 @@ interface ProductFormData {
   cest: string;
   icmsOrigem: string;
   gtin: string;
+  // Campos fiscais auxiliares — usados em casos específicos da NF-e:
+  // unidadeTrib quando a unidade tributável difere da comercial (ex: vendido
+  // em "caixa" mas tributado em "unidade"); gtinTrib similar (EAN do item
+  // tributável vs EAN da embalagem).
+  unidadeTrib: string;
+  gtinTrib: string;
   isActive: boolean;
   imageFile: File | null;
   imagePreview: string;
@@ -188,6 +194,8 @@ const EMPTY_PRODUCT_FORM: ProductFormData = {
   cest: '',
   icmsOrigem: '0',
   gtin: '',
+  unidadeTrib: '',
+  gtinTrib: '',
   isActive: true,
   imageFile: null,
   imagePreview: '',
@@ -1236,6 +1244,8 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
           cest: product.cest || '',
           icmsOrigem: product.icmsOrigem || '0',
           gtin: product.gtin || '',
+          unidadeTrib: product.unidadeTrib || '',
+          gtinTrib: product.gtinTrib || '',
           isActive: product.isActive,
           imageFile: null,
           imagePreview: '',
@@ -1590,6 +1600,29 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
                   <option value="6">6 - Estrangeira (import. direta, sem similar)</option>
                   <option value="7">7 - Estrangeira (adq. interno, sem similar)</option>
                 </TextField>
+              </div>
+              {/* Unidade e GTIN tributáveis — auxiliares, só preencher quando
+                  diferem dos comerciais (raro mas obrigatório nesses casos). */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                <TextField
+                  label={t('inventory.productForm.unidadeTrib', 'Unidade tributável')}
+                  value={form.unidadeTrib}
+                  onChange={(e) => updateField('unidadeTrib', e.target.value)}
+                  fullWidth
+                  size="small"
+                  placeholder="UN"
+                  helperText={t('inventory.productForm.unidadeTribHelper', 'Só preencher se diferente da unidade comercial')}
+                />
+                <TextField
+                  label={t('inventory.productForm.gtinTrib', 'GTIN tributável')}
+                  value={form.gtinTrib}
+                  onChange={(e) => updateField('gtinTrib', e.target.value)}
+                  fullWidth
+                  size="small"
+                  placeholder="7891234567890"
+                  helperText={t('inventory.productForm.gtinTribHelper', 'EAN do item tributável (se diferente do GTIN principal)')}
+                  slotProps={{ htmlInput: { maxLength: 14 } }}
+                />
               </div>
           </ModernSection>
 
@@ -2153,6 +2186,8 @@ export default function InventoryModule() {
         cest: data.cest.trim() || undefined,
         icmsOrigem: data.icmsOrigem || undefined,
         gtin: data.gtin.trim() || undefined,
+        unidadeTrib: data.unidadeTrib.trim() || undefined,
+        gtinTrib: data.gtinTrib.trim() || undefined,
         isActive: data.isActive,
         imageUrl: imageUrl || null,
         isDeliverable: data.isDeliverable,
@@ -2194,6 +2229,8 @@ export default function InventoryModule() {
         cest: data.cest.trim() || '',
         icmsOrigem: data.icmsOrigem || '0',
         gtin: data.gtin.trim() || '',
+        unidadeTrib: data.unidadeTrib.trim() || '',
+        gtinTrib: data.gtinTrib.trim() || '',
         isActive: data.isActive,
         imageUrl: '',
         isDeliverable: data.isDeliverable,

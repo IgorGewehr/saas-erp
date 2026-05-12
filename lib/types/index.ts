@@ -835,6 +835,23 @@ export interface Service {
   formTemplateId?: string; // Intake form auto-requested when this service is booked
   operatorIds?: string[];  // UIDs autorizados a executar o serviço (vazio = todos profissionais ativos)
   sectorId?: string;       // Setor responsável (visibility/atribuição)
+  // ── Campos fiscais (NFSe) — opcionais ─────────────────────────────────────
+  // Quando cadastrados, são auto-preenchidos no EmitirNotaDialog ao importar
+  // o serviço. Sem isso, operador precisava digitar tudo a cada emissão.
+  /** Código LC 116/2003 (4 dígitos hierárquicos, ex: "07.01"). Exigido pela
+   *  maioria das prefeituras — sem ele, NFSe é rejeitada. */
+  lc116Code?: string;
+  /** Código municipal de tributação. Cada cidade tem sua tabela própria;
+   *  em SP é o "Código Municipal SP" do form. Quando ausente, backend usa
+   *  apenas o LC 116. */
+  codigoMunicipal?: string;
+  /** Código NBS (Nomenclatura Brasileira de Serviços) — opcional, exigido
+   *  por algumas prefeituras específicas. 9 dígitos sem pontos. */
+  nbs?: string;
+  /** Alíquota ISS (%) — sobrescreve a alíquota padrão do business pra este
+   *  serviço específico. Útil quando categorias diferentes têm alíquotas
+   *  distintas (ex: estética 5% vs treinamento 2%). */
+  aliquotaISS?: number;
   deletedAt?: string;      // Soft-delete timestamp (ISO) — preenchido em vez de deleteDoc
   isActive: boolean;
   createdAt: string;

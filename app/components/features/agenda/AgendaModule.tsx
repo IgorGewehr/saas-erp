@@ -505,6 +505,11 @@ interface ServiceFormData {
   color: string;
   isActive: boolean;
   commissionRate?: number;
+  // Campos fiscais (NFSe) — opcionais, vão pro doc do Service
+  lc116Code?: string;
+  codigoMunicipal?: string;
+  nbs?: string;
+  aliquotaISS?: number;
 }
 
 interface ServiceManagementDialogProps {
@@ -546,6 +551,10 @@ function ServiceManagementDialog({
     color: '#3B82F6',
     isActive: true,
     commissionRate: undefined,
+    lc116Code: '',
+    codigoMunicipal: '',
+    nbs: '',
+    aliquotaISS: undefined,
   });
 
   const canEditService = useCallback((service: Service) => {
@@ -570,6 +579,10 @@ function ServiceManagementDialog({
       color: '#3B82F6',
       isActive: true,
       commissionRate: undefined,
+      lc116Code: '',
+      codigoMunicipal: '',
+      nbs: '',
+      aliquotaISS: undefined,
     });
     setEditingService(null);
   }, []);
@@ -585,6 +598,10 @@ function ServiceManagementDialog({
       color: service.color,
       isActive: service.isActive,
       commissionRate: service.commissionRate,
+      lc116Code: service.lc116Code || '',
+      codigoMunicipal: service.codigoMunicipal || '',
+      nbs: service.nbs || '',
+      aliquotaISS: service.aliquotaISS,
     });
     setView('form');
   }, []);
@@ -964,6 +981,95 @@ function ServiceManagementDialog({
                   ))}
                 </div>
               </div>
+
+              {/* Dados fiscais (NFSe) — colapsável, opcionais. Quando preenchidos,
+                  EmitirNotaDialog auto-completa LC 116/codMunicipal/NBS/alíquota
+                  ao importar este serviço, sem operador precisar redigitar. */}
+              <details className="group rounded-xl border border-gray-200 dark:border-gray-700 bg-white/50 dark:bg-gray-800/30">
+                <summary className="cursor-pointer list-none px-4 py-2.5 flex items-center justify-between text-xs font-semibold text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/[0.02] rounded-xl transition-colors">
+                  <span>{t('agenda.serviceFiscalSection', 'Dados fiscais (NFSe — opcional)')}</span>
+                  <ChevronRight className="w-3.5 h-3.5 text-gray-400 transition-transform group-open:rotate-90" />
+                </summary>
+                <div className="px-4 pb-4 pt-2 space-y-3 border-t border-gray-100 dark:border-gray-800">
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                    {t('agenda.serviceFiscalHint', 'Preenchidos aqui, os campos serão auto-completados ao emitir NFSe pra este serviço.')}
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wide">
+                        {t('agenda.serviceLc116', 'Código LC 116')}
+                      </label>
+                      <input
+                        type="text"
+                        value={formData.lc116Code ?? ''}
+                        onChange={(e) => setFormData((p) => ({ ...p, lc116Code: e.target.value }))}
+                        placeholder="Ex: 01.07"
+                        className={cn(
+                          'w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800',
+                          'text-xs text-gray-900 dark:text-gray-100 placeholder:text-gray-400',
+                          'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
+                        )}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wide">
+                        {t('agenda.serviceCodMunicipal', 'Código Municipal')}
+                      </label>
+                      <input
+                        type="text"
+                        value={formData.codigoMunicipal ?? ''}
+                        onChange={(e) => setFormData((p) => ({ ...p, codigoMunicipal: e.target.value }))}
+                        placeholder="Ex: 2919"
+                        className={cn(
+                          'w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800',
+                          'text-xs text-gray-900 dark:text-gray-100 placeholder:text-gray-400',
+                          'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
+                        )}
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wide">
+                        {t('agenda.serviceNbs', 'NBS (opcional)')}
+                      </label>
+                      <input
+                        type="text"
+                        value={formData.nbs ?? ''}
+                        onChange={(e) => setFormData((p) => ({ ...p, nbs: e.target.value }))}
+                        placeholder="Ex: 101010100"
+                        className={cn(
+                          'w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800',
+                          'text-xs text-gray-900 dark:text-gray-100 placeholder:text-gray-400',
+                          'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
+                        )}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wide">
+                        {t('agenda.serviceAliquotaIss', 'Alíquota ISS (%)')}
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max="100"
+                        value={formData.aliquotaISS ?? ''}
+                        onChange={(e) => setFormData((p) => ({
+                          ...p,
+                          aliquotaISS: e.target.value === '' ? undefined : Math.min(100, Math.max(0, Number(e.target.value))),
+                        }))}
+                        placeholder={t('agenda.servicePadraoEmpresa', 'Padrão da empresa')}
+                        className={cn(
+                          'w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800',
+                          'text-xs text-gray-900 dark:text-gray-100 placeholder:text-gray-400',
+                          'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
+                        )}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </details>
 
               {/* Active toggle */}
               <div className="flex items-center justify-between py-2">
@@ -2300,6 +2406,16 @@ export default function AgendaModule() {
   // SERVICE CRUD HANDLERS
   // ==========================================
 
+  // Mapeia campos fiscais opcionais → object pra mesclar nos writes. Strings
+  // vazias viram null (não-persistido); só vai pro Firestore o que o operador
+  // realmente preencheu. Evita lixo no doc + facilita verificar `??` no leitor.
+  const buildFiscalFields = useCallback((data: ServiceFormData) => ({
+    lc116Code: data.lc116Code?.trim() || null,
+    codigoMunicipal: data.codigoMunicipal?.trim() || null,
+    nbs: data.nbs?.trim() || null,
+    aliquotaISS: typeof data.aliquotaISS === 'number' && data.aliquotaISS >= 0 ? data.aliquotaISS : null,
+  }), []);
+
   const handleCreateService = useCallback(async (data: ServiceFormData) => {
     if (!business?.id || !user) return;
     await addDoc(collection(db, 'services'), {
@@ -2314,12 +2430,13 @@ export default function AgendaModule() {
       color: data.color,
       isActive: data.isActive,
       commissionRate: data.commissionRate ?? null,
+      ...buildFiscalFields(data),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
     queryClient.invalidateQueries({ queryKey: ['services', business.id] });
     setSnackbar({ open: true, message: t('agenda.serviceCreated', 'Serviço criado com sucesso!'), severity: 'success' });
-  }, [business?.id, user, queryClient, t]);
+  }, [business?.id, user, queryClient, t, buildFiscalFields]);
 
   const handleUpdateService = useCallback(async (id: string, data: ServiceFormData) => {
     if (!business?.id) return;
@@ -2332,11 +2449,12 @@ export default function AgendaModule() {
       color: data.color,
       isActive: data.isActive,
       commissionRate: data.commissionRate ?? null,
+      ...buildFiscalFields(data),
       updatedAt: new Date().toISOString(),
     });
     queryClient.invalidateQueries({ queryKey: ['services', business.id] });
     setSnackbar({ open: true, message: t('agenda.serviceUpdated', 'Serviço atualizado com sucesso!'), severity: 'success' });
-  }, [business?.id, queryClient, t]);
+  }, [business?.id, queryClient, t, buildFiscalFields]);
 
   const handleDeleteService = useCallback(async (id: string) => {
     if (!business?.id) return;

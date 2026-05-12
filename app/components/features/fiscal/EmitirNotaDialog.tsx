@@ -800,7 +800,16 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
                           ...prev,
                           discriminacao,
                           valorServicos: service.price ?? prev.valorServicos,
+                          // Campos fiscais cadastrados no Service — auto-preenche
+                          // pra que o operador não precise selecionar LC 116
+                          // manualmente toda vez que emitir nota deste serviço.
+                          // Fallback pro valor atual quando o cadastro não tem.
+                          codigoTributacaoNacional: service.lc116Code || prev.codigoTributacaoNacional,
+                          codigoTributacaoMunicipal: service.codigoMunicipal || prev.codigoTributacaoMunicipal,
+                          aliquotaISS: typeof service.aliquotaISS === 'number' ? service.aliquotaISS : prev.aliquotaISS,
                         }));
+                        // NBS vive num state separado (nfseNbs), não dentro de nfseForm.
+                        if (service.nbs) setNfseNbs(service.nbs);
                       }}
                       renderOption={(props, s) => (
                         <li {...props} key={s.id}>
