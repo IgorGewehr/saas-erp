@@ -30,11 +30,18 @@ interface CreateParams {
   commissionRate?: number;
   userId?: string;
   userName?: string;
+  // Campos fiscais opcionais — paridade com a UI de cadastro (Agenda → Gerenciar
+  // Serviços). Sem isso, agente IA criando serviço descartava silenciosamente.
+  lc116Code?: string;
+  codigoMunicipal?: string;
+  nbs?: string;
+  aliquotaISS?: number;
 }
 
 const WRITEABLE: (keyof Service)[] = [
   'name', 'description', 'duration', 'price', 'category', 'color',
   'commissionRate', 'isActive', 'userId', 'userName',
+  'lc116Code', 'codigoMunicipal', 'nbs', 'aliquotaISS',
 ];
 
 export async function POST(req: NextRequest) {
@@ -161,6 +168,12 @@ async function createService(businessId: string, p: CreateParams): Promise<Servi
     category: p.category,
     color: p.color || '#ef4444',
     commissionRate: typeof p.commissionRate === 'number' ? Math.max(0, Math.min(100, p.commissionRate)) : undefined,
+    // Campos fiscais opcionais — clamp aliquotaISS 0-100 (mesmo padrão de
+    // commissionRate). Strings vazias caem em undefined pra não poluir o doc.
+    lc116Code: p.lc116Code?.trim() || undefined,
+    codigoMunicipal: p.codigoMunicipal?.trim() || undefined,
+    nbs: p.nbs?.trim() || undefined,
+    aliquotaISS: typeof p.aliquotaISS === 'number' ? Math.max(0, Math.min(100, p.aliquotaISS)) : undefined,
     isActive: true,
     createdAt: now,
     updatedAt: now,
@@ -186,6 +199,9 @@ async function updateService(businessId: string, id: string, patch: Partial<Serv
   if (typeof clean.price === 'number') clean.price = round(clean.price as number);
   if (typeof clean.commissionRate === 'number') {
     clean.commissionRate = Math.max(0, Math.min(100, clean.commissionRate as number));
+  }
+  if (typeof clean.aliquotaISS === 'number') {
+    clean.aliquotaISS = Math.max(0, Math.min(100, clean.aliquotaISS as number));
   }
 
   clean.updatedAt = new Date().toISOString();
