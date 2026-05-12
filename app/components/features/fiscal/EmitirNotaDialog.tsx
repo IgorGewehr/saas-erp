@@ -30,7 +30,7 @@ import { toast } from 'react-toastify';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import type { FiscalDocType, PaymentMethod, CRMContact } from '@/lib/types';
+import type { FiscalDocType, PaymentMethod, CRMContact, Product } from '@/lib/types';
 import { NfseServicoCombobox } from './NfseServicoCombobox';
 import NcmSelector from './NcmSelector';
 import { cn } from '@/lib/utils';
@@ -168,6 +168,9 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
   const [isEmitting, setIsEmitting] = useState(false);
   const [isFetchingCep, setIsFetchingCep] = useState(false);
   const [clients, setClients] = useState<CRMContact[]>([]);
+  // Produtos do estoque pro picker dentro de cada item (NF-e/NFC-e). NFSe é
+  // serviço — não puxa do estoque. Carregado uma vez por abertura do dialog.
+  const [products, setProducts] = useState<Product[]>([]);
 
   // ── NFSe State ──
   const [nfseForm, setNfseForm] = useState<NFSeFormData>({
@@ -234,6 +237,23 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
     };
     loadClients();
   }, [open, business]);
+
+  // Load products from inventory (só pra NF-e e NFC-e — NFSe é serviço sem
+  // produto físico). Permite ao operador importar item pronto com NCM/CFOP/
+  // preço já preenchidos em vez de digitar tudo manualmente.
+  useEffect(() => {
+    if (!open || !business || type === 'nfse') return;
+    const loadProducts = async () => {
+      try {
+        const q = query(collection(db, 'products'), where('businessId', '==', business.id));
+        const snapshot = await getDocs(q);
+        setProducts(snapshot.docs
+          .map(d => ({ ...d.data(), id: d.id }) as Product)
+          .filter(p => p.isActive !== false));
+      } catch { /* silent — picker simplesmente fica vazio */ }
+    };
+    loadProducts();
+  }, [open, business, type]);
 
   // ── NFSe Computed Values ──
   const nfseBaseCalculo = useMemo(() => {
@@ -900,8 +920,10 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
               <ItemsSection
                 items={nfceItems}
                 onUpdate={(id, field, value) => setNfceItems(prev => prev.map(i => i.id === id ? { ...i, [field]: value } : i))}
+                onApplyProduct={(id, product) => setNfceItems(prev => prev.map(i => i.id === id ? applyProductToItem(i, product) : i))}
                 onAdd={() => setNfceItems(prev => [...prev, createEmptyNFCeItem()])}
                 onRemove={(id) => setNfceItems(prev => prev.filter(i => i.id !== id))}
+                products={products}
               />
 
               {/* Payment */}
@@ -1067,8 +1089,10 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
               <ItemsSection
                 items={nfeItems}
                 onUpdate={(id, field, value) => setNfeItems(prev => prev.map(i => i.id === id ? { ...i, [field]: value } : i))}
+                onApplyProduct={(id, product) => setNfeItems(prev => prev.map(i => i.id === id ? applyProductToItem(i, product) : i))}
                 onAdd={() => setNfeItems(prev => [...prev, createEmptyNFCeItem()])}
                 onRemove={(id) => setNfeItems(prev => prev.filter(i => i.id !== id))}
+                products={products}
               />
 
               {/* Payment */}
@@ -1161,16 +1185,42 @@ function createEmptyNFCeItem(): NFCeItemForm {
   };
 }
 
+/**
+ * Aplica os dados de um Product no item da nota — preserva quantidade (operador
+ * pode ter ajustado antes de importar) e id (referência estável do React). Os
+ * outros campos são sobrescritos: descrição vira `name`, NCM/CFOP/unit/valor
+ * vêm direto do cadastro. Campos vazios no Product caem em string vazia (não
+ * em undefined) pra que o input continue controlled.
+ */
+function applyProductToItem(current: NFCeItemForm, product: Product): NFCeItemForm {
+  return {
+    ...current,
+    description: product.name || current.description,
+    ncm: product.ncm || '',
+    cfop: product.cfop || current.cfop,
+    unit: product.unit || current.unit,
+    unitPrice: product.salePrice ?? current.unitPrice,
+  };
+}
+
 function ItemsSection({
   items,
   onUpdate,
+  onApplyProduct,
   onAdd,
   onRemove,
+  products,
 }: {
   items: NFCeItemForm[];
   onUpdate: (id: string, field: string, value: string | number) => void;
+  /** Atualiza múltiplos campos do item de uma vez (descrição, NCM, CFOP, valor)
+   *  ao importar um Product. Necessário porque `onUpdate` único campo causaria
+   *  4 re-renders em sequência e potenciais races em digitação simultânea. */
+  onApplyProduct: (id: string, product: Product) => void;
   onAdd: () => void;
   onRemove: (id: string) => void;
+  /** Catálogo do estoque pro picker. Vazio em NFSe (puramente serviço). */
+  products: Product[];
 }) {
   const { t } = useTranslation();
   const total = items.reduce((sum, i) => sum + i.quantity * i.unitPrice, 0);
@@ -1200,6 +1250,40 @@ function ItemsSection({
                 </button>
               )}
             </div>
+            {/* Picker do estoque — atalho pra preencher Descrição/NCM/CFOP/Valor
+                de uma vez. Só aparece quando há produtos cadastrados (catálogo
+                vazio = sem ruído visual). Operador pode ignorar e digitar manual. */}
+            {products.length > 0 && (
+              <Autocomplete
+                size="small"
+                options={products}
+                getOptionLabel={(p) => p.name || ''}
+                isOptionEqualToValue={(a, b) => a.id === b.id}
+                onChange={(_e, product) => { if (product) onApplyProduct(item.id, product); }}
+                renderOption={(props, p) => (
+                  <li {...props} key={p.id}>
+                    <div className="flex flex-col text-xs">
+                      <span className="font-medium text-gray-900 dark:text-gray-100">{p.name}</span>
+                      <span className="text-[10px] text-gray-500 dark:text-gray-400">
+                        {p.sku ? `SKU ${p.sku} · ` : ''}
+                        {p.ncm ? `NCM ${p.ncm} · ` : ''}
+                        {formatCurrency(p.salePrice ?? 0)}
+                      </span>
+                    </div>
+                  </li>
+                )}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    placeholder={t('fiscal.emit.importarEstoque', 'Importar do estoque (opcional)…')}
+                    size="small"
+                  />
+                )}
+                clearOnBlur
+                blurOnSelect
+                value={null}
+              />
+            )}
             <div className="grid grid-cols-12 gap-3">
               <div className="col-span-12 sm:col-span-5">
                 <input value={item.description} onChange={(e) => onUpdate(item.id, 'description', e.target.value)} placeholder={t('fiscal.emit.descricaoProduto', 'Descrição do produto/serviço')} className={inputClasses} />
