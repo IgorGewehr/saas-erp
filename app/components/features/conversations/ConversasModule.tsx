@@ -7493,6 +7493,19 @@ export default function ConversasModule() {
 
   // ── Filtered conversations ─────────────────────────────────────────────────
 
+  // Set de client IDs em estágios ATIVOS do pipeline (não-ganho/perdido).
+  // Pré-computado pra evitar O(n*m) — consumido por matchesSmartView('in_pipeline')
+  // tanto no filteredConversations abaixo quanto no countsByView mais adiante.
+  // DEVE ficar declarado antes de filteredConversations (use-before-init).
+  const clientIdsInPipeline = useMemo(() => {
+    const activeStageIds = new Set(pipelineStagesActive.map(s => s.id));
+    const out = new Set<string>();
+    for (const c of clientsList) {
+      if (activeStageIds.has(c.status)) out.add(c.id);
+    }
+    return out;
+  }, [clientsList, pipelineStagesActive]);
+
   // `now` é fixado dentro do useMemo pra que o cálculo seja determinístico
   // dentro de uma render — evita drift quando matchesSmartView é chamada
   // múltiplas vezes ('stale' e 'resolved_today' dependem do tempo). Re-render
@@ -7625,18 +7638,6 @@ export default function ConversasModule() {
   // canal ativo (chips de cima). Assim os badges das views refletem o que o
   // operador veria se clicasse, considerando o canal que ele já selecionou.
   // Note: getVisibleConversations já aplica isolamento de canal pessoal.
-  // Set de client IDs em estágios ATIVOS do pipeline (não-ganho/perdido).
-  // Pré-computado pra evitar O(n*m) — usado por matchesSmartView('in_pipeline').
-  // Recalcula quando clients ou pipelineStagesActive mudam.
-  const clientIdsInPipeline = useMemo(() => {
-    const activeStageIds = new Set(pipelineStagesActive.map(s => s.id));
-    const out = new Set<string>();
-    for (const c of clientsList) {
-      if (activeStageIds.has(c.status)) out.add(c.id);
-    }
-    return out;
-  }, [clientsList, pipelineStagesActive]);
-
   const countsByView = useMemo(() => {
     const now = Date.now();
     const currentUid = user?.uid ?? '';
