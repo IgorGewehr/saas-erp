@@ -1100,10 +1100,13 @@ function ThreadHeader({
     setShowSnoozeMenu(false);
   }, [conversation.id]);
 
-  // Quando overflow menu fecha (ex: click-outside), o submenu de soneca
-  // que estava aberto ficaria órfão. Sincronizar fechamentos.
+  // Quando overflow menu fecha (ex: click-outside), os submenus aninhados
+  // (soneca e pipeline) ficariam órfãos. Sincronizar fechamentos.
   useEffect(() => {
-    if (!showOverflowMenu) setShowSnoozeMenu(false);
+    if (!showOverflowMenu) {
+      setShowSnoozeMenu(false);
+      setShowPipelineMenu(false);
+    }
   }, [showOverflowMenu]);
 
   const startEditName = () => {
@@ -1527,11 +1530,17 @@ function ThreadHeader({
                     <AnimatePresence>
                       {showPipelineMenu && (
                         <motion.div
-                          initial={{ opacity: 0, x: -4 }}
+                          initial={{ opacity: 0, x: 4 }}
                           animate={{ opacity: 1, x: 0 }}
-                          exit={{ opacity: 0, x: -4 }}
+                          exit={{ opacity: 0, x: 4 }}
                           transition={{ duration: 0.12 }}
-                          className="absolute left-full top-0 ml-1 w-48 bg-white dark:bg-[#1a2030] border border-gray-200 dark:border-white/[0.08] rounded-xl shadow-lg overflow-hidden z-50 max-h-72 overflow-y-auto"
+                          // right-full posiciona à ESQUERDA do overflow menu.
+                          // Necessário porque o overflow menu pai já fica colado
+                          // no canto direito da viewport (botão dos 3 pontinhos
+                          // está no canto direito do header); usar left-full
+                          // empurraria pra fora da tela e o submenu ficaria
+                          // invisível. Mesmo padrão deveria valer pro Soneca.
+                          className="absolute right-full top-0 mr-1 w-48 bg-white dark:bg-[#1a2030] border border-gray-200 dark:border-white/[0.08] rounded-xl shadow-lg overflow-hidden z-50 max-h-72 overflow-y-auto"
                         >
                           {pipelineStages.map(stage => {
                             const isCurrent = linkedClientStage === stage.id;
@@ -1610,7 +1619,7 @@ function ThreadHeader({
                             animate={{ opacity: 1, x: 0 }}
                             exit={{ opacity: 0, x: -4 }}
                             transition={{ duration: 0.12 }}
-                            className="absolute left-full top-0 ml-1 w-44 bg-white dark:bg-[#1a2030] border border-gray-200 dark:border-white/[0.08] rounded-xl shadow-lg overflow-hidden z-50"
+                            className="absolute right-full top-0 mr-1 w-44 bg-white dark:bg-[#1a2030] border border-gray-200 dark:border-white/[0.08] rounded-xl shadow-lg overflow-hidden z-50"
                           >
                             {(() => {
                               // Quick-pick presets. Cálculo de "amanhã 9h" e
