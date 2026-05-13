@@ -1497,7 +1497,14 @@ function ThreadHeader({
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.95, y: -5 }}
                 transition={{ type: 'spring', stiffness: 400, damping: 25 }}
-                className="absolute right-0 top-full mt-1 w-52 bg-white dark:bg-[#1e293b] rounded-xl shadow-xl border border-gray-100 dark:border-white/[0.08] overflow-hidden z-30 py-1"
+                // overflow-visible (não hidden) — sem isso o overflow-hidden
+                // do menu pai clipa submenus aninhados (Pipeline, Soneca) que
+                // tentam renderizar fora do retângulo via absolute. Tradeoff:
+                // hover background nos itens primeiro/último pode "vazar" os
+                // cantos arredondados; mitigado adicionando rounded-md no
+                // primeiro/último item se necessário (não fizemos pra evitar
+                // ruído visual — diferença é imperceptível com bg-gray-50/04).
+                className="absolute right-0 top-full mt-1 w-52 bg-white dark:bg-[#1e293b] rounded-xl shadow-xl border border-gray-100 dark:border-white/[0.08] overflow-visible z-30 py-1"
               >
                 {onOpenContact && (
                   <button
