@@ -77,6 +77,7 @@ import { ROLE_HIERARCHY } from '@/lib/types';
 import { maybeCreateCommission, maybeCancelCommission } from '@/lib/services/commission';
 import { calculateEarnedPoints, addLoyaltyPoints } from '@/lib/services/loyalty';
 import { syncToGoogleCalendar } from '@/lib/services/calendarSync';
+import { checkAppointmentConflict } from '@/lib/services/appointmentConflicts';
 import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot, increment, writeBatch, limit as firestoreLimit } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -1746,38 +1747,23 @@ export default function AgendaModule() {
     return map;
   }, [filteredAppointments]);
 
-  // Conflict detection for professional scheduling
-  const checkConflicts = useCallback((professionalId: string, date: string, startTime: string, endTime: string, excludeId?: string) => {
-    if (!professionalId || !appointments) return { hasConflict: false, message: '' };
-
-    // Check 1: Working hours
-    const professional = members.find((m) => m.id === professionalId);
-    if (professional?.workingHours) {
-      const dayOfWeek = new Date(date + 'T12:00:00').getDay();
-      const daySchedule = professional.workingHours[dayOfWeek];
-      if (!daySchedule?.enabled) {
-        return { hasConflict: true, message: t('agenda.doesNotWorkThisDay', `${professional.name} não trabalha neste dia`, { name: professional.name }) };
-      }
-      if (startTime < daySchedule.start || endTime > daySchedule.end) {
-        return { hasConflict: true, message: t('agenda.outsideWorkingHours', `Fora do horário de trabalho (${daySchedule.start} - ${daySchedule.end})`, { start: daySchedule.start, end: daySchedule.end }) };
-      }
-    }
-
-    // Check 2: Overlapping appointments
-    const existing = appointments.filter((a) =>
-      a.professionalId === professionalId &&
-      a.date === date &&
-      a.status !== 'cancelado' &&
-      a.id !== excludeId &&
-      !(endTime <= a.startTime || startTime >= a.endTime)
-    );
-
-    if (existing.length > 0) {
-      return { hasConflict: true, message: t('agenda.conflictWith', `Conflito com ${existing[0].clientName} (${existing[0].startTime} - ${existing[0].endTime})`, { name: existing[0].clientName, start: existing[0].startTime, end: existing[0].endTime }) };
-    }
-
-    return { hasConflict: false, message: '' };
-  }, [appointments, members]);
+  // Conflict detection — delegado pra checkAppointmentConflict (função pura
+  // em lib/services/appointmentConflicts.ts). Mesma lógica usada também
+  // pelo ScheduleFromConversationDialog — evita drift entre os 2 fluxos.
+  const checkConflicts = useCallback(
+    (professionalId: string, date: string, startTime: string, endTime: string, excludeId?: string) =>
+      checkAppointmentConflict({
+        appointments: appointments ?? [],
+        members,
+        professionalId,
+        date,
+        startTime,
+        endTime,
+        excludeId,
+        t: (key, fallback) => t(key, fallback),
+      }),
+    [appointments, members, t],
+  );
 
   // ==========================================
   // SERVICE CRUD HANDLERS

@@ -17,21 +17,24 @@
  * se ele desistir do agendamento depois de escolher cliente).
  */
 
-import { useState, useMemo, useRef, useEffect } from 'react';
+import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Dialog, DialogTitle, DialogContent, DialogActions } from '@mui/material';
 import { X, Search, UserPlus, AlertCircle } from 'lucide-react';
 import { toast } from 'react-toastify';
+import { collection, query, where, getDocs } from 'firebase/firestore';
+import { db } from '@/lib/config/firebase';
 import { cn } from '@/lib/utils';
 import { getInitials } from '@/lib/utils/format';
-import type { Conversation, Client, Service, User } from '@/lib/types';
+import type { Appointment, Conversation, Client, Service, User } from '@/lib/types';
 import {
   AppointmentFormDialog,
   type AppointmentFormData,
 } from '@/app/components/features/agenda/AppointmentFormDialog';
-import { nextPracticalSlot } from '@/app/components/features/agenda/shared';
+import { nextPracticalSlot, addDurationToTime } from '@/app/components/features/agenda/shared';
 import { scheduleFromConversation } from '@/lib/services/scheduleFromConversation';
 import { sendConversationToPipeline } from '@/lib/services/conversationToPipeline';
+import { checkAppointmentConflict } from '@/lib/services/appointmentConflicts';
 
 interface Props {
   open: boolean;
@@ -68,6 +71,12 @@ export function ScheduleFromConversationDialog({
   const [clientSearch, setClientSearch] = useState('');
   const [creatingClient, setCreatingClient] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  // Appointments futuros do tenant — usados para checagem de conflito no
+  // form. Carregados via getDocs (snapshot único) ao entrar no step
+  // 'schedule', filtrando por businessId + date >= hoje pra limitar payload.
+  // onSnapshot seria overkill: appointments raramente mudam durante o ato
+  // de agendar; basta tirar uma foto.
+  const [dayAppointments, setDayAppointments] = useState<Appointment[]>([]);
 
   // Resolve estado inicial sempre que abre (ou conversa muda).
   useEffect(() => {
@@ -163,11 +172,26 @@ export function ScheduleFromConversationDialog({
   };
 
   /** Persiste o appointment via service. AppointmentFormDialog dispara
-   *  via onSave. */
+   *  via onSave. Bloqueia conflito antes do write — UI já avisa visualmente
+   *  mas o save handler é a última barreira (também evita race: appointment
+   *  pode ter sido criado por outro operador desde o último checkConflicts). */
   const handleSaveAppointment = async (formData: AppointmentFormData) => {
     if (!resolvedClient) {
       toast.error('Selecione um cliente antes de agendar.');
       return;
+    }
+    // Re-checa conflito no momento do save (snapshot pode ter mudado).
+    if (formData.professionalId) {
+      const conflict = checkConflicts(
+        formData.professionalId,
+        formData.date,
+        formData.startTime,
+        addDurationToTime(formData.startTime, formData.duration),
+      );
+      if (conflict.hasConflict) {
+        toast.error(`Não foi possível agendar: ${conflict.message}`);
+        return;
+      }
     }
     setSaving(true);
     try {
@@ -189,6 +213,52 @@ export function ScheduleFromConversationDialog({
       setSaving(false);
     }
   };
+
+  // Carrega appointments futuros (date >= hoje) ao entrar no step 'schedule'.
+  // getDocs (não onSnapshot) — uma foto basta pra checagem de conflito da
+  // operação atual. Limita por businessId + data pra payload pequeno.
+  useEffect(() => {
+    if (step !== 'schedule' || !open) return;
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth() + 1).padStart(2, '0');
+    const dd = String(today.getDate()).padStart(2, '0');
+    const todayISO = `${yyyy}-${mm}-${dd}`;
+    const q = query(
+      collection(db, 'appointments'),
+      where('businessId', '==', businessId),
+      where('date', '>=', todayISO),
+    );
+    getDocs(q)
+      .then(snap => {
+        const list = snap.docs.map(d => ({ ...(d.data() as Appointment), id: d.id }));
+        setDayAppointments(list);
+      })
+      .catch(err => {
+        // Fail-open: sem appointments carregados, checkConflicts retorna
+        // sempre "sem conflito". Pior caso é operador agendar conflito sem
+        // aviso — ainda assim, melhor que bloquear o agendamento.
+        console.warn('[ScheduleFromConversation] failed to load appointments for conflict check:', err);
+        setDayAppointments([]);
+      });
+  }, [step, open, businessId]);
+
+  /** Função passada ao AppointmentFormDialog. Delega à função pura
+   *  checkAppointmentConflict usando o snapshot de appointments carregado.
+   *  Estável via useCallback pra não re-renderizar o form a cada keystroke. */
+  const checkConflicts = useCallback(
+    (professionalId: string, date: string, startTime: string, endTime: string, excludeId?: string) =>
+      checkAppointmentConflict({
+        appointments: dayAppointments,
+        members,
+        professionalId,
+        date,
+        startTime,
+        endTime,
+        excludeId,
+      }),
+    [dayAppointments, members],
+  );
 
   // initialData pra AppointmentFormDialog. Próximo slot prático evita
   // operador ter que mexer em data/hora pra "agendar pra logo mais".
@@ -218,6 +288,7 @@ export function ScheduleFromConversationDialog({
         saving={saving}
         initialData={initialData}
         isEditing={false}
+        checkConflicts={checkConflicts}
       />
     );
   }
