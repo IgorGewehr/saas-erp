@@ -45,6 +45,21 @@ interface ScanHit {
   content: string;
 }
 
+export interface FormatOptions {
+  /**
+   * Classe Tailwind aplicada nos <a> de autolink. Permite que o caller
+   * passe cor adaptada ao fundo da bolha (outbound verde precisa de cor
+   * diferente da inbound branca/escura — contraste).
+   * Default: cor azul média que funciona razoavelmente em fundos claros.
+   */
+  linkClassName?: string;
+  /** Offset de key pra unicidade em chamadas recursivas (uso interno). */
+  baseKey?: number;
+}
+
+const DEFAULT_LINK_CLASS =
+  'underline underline-offset-2 break-all text-blue-600 dark:text-blue-300 hover:opacity-80';
+
 const URL_REGEX = /(https?:\/\/[^\s<>"'()]+[^\s<>"'.,;:!?()])|(\bwww\.[^\s<>"'()]+[^\s<>"'.,;:!?()])/i;
 
 function isWhitespace(c: string | undefined): boolean {
@@ -166,7 +181,7 @@ function normalizeUrl(raw: string): string {
   return /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
 }
 
-function renderHit(hit: ScanHit, key: number): React.ReactNode {
+function renderHit(hit: ScanHit, key: number, options: FormatOptions): React.ReactNode {
   switch (hit.type) {
     case 'pre':
       // <pre> preserva semântica HTML pra leitores de tela (landmark
@@ -192,7 +207,7 @@ function renderHit(hit: ScanHit, key: number): React.ReactNode {
           href={normalizeUrl(hit.content)}
           target="_blank"
           rel="noopener noreferrer"
-          className="underline underline-offset-2 break-all text-blue-600 dark:text-blue-300 hover:opacity-80"
+          className={options.linkClassName ?? DEFAULT_LINK_CLASS}
         >
           {hit.content}
         </a>
@@ -200,19 +215,19 @@ function renderHit(hit: ScanHit, key: number): React.ReactNode {
     case 'bold':
       return (
         <strong key={key} className="font-semibold">
-          {formatWhatsAppText(hit.content, key * 100)}
+          {formatWhatsAppText(hit.content, { ...options, baseKey: key * 100 })}
         </strong>
       );
     case 'italic':
       return (
         <em key={key}>
-          {formatWhatsAppText(hit.content, key * 100)}
+          {formatWhatsAppText(hit.content, { ...options, baseKey: key * 100 })}
         </em>
       );
     case 'strike':
       return (
         <s key={key}>
-          {formatWhatsAppText(hit.content, key * 100)}
+          {formatWhatsAppText(hit.content, { ...options, baseKey: key * 100 })}
         </s>
       );
   }
@@ -222,15 +237,16 @@ function renderHit(hit: ScanHit, key: number): React.ReactNode {
  * Retorna o texto formatado como árvore de ReactNode. Sempre seguro — não
  * usa dangerouslySetInnerHTML; conteúdo de usuário fica em text nodes.
  *
- * @param text mensagem crua, possivelmente com \n e markers WhatsApp.
- * @param baseKey offset de key pra garantir unicidade em chamadas recursivas
- *                (bold dentro de bold renderiza com keys distintas).
+ * @param text     mensagem crua, possivelmente com \n e markers WhatsApp.
+ * @param options  opcional. `linkClassName` customiza a cor do autolink
+ *                 (caller passa diferente em outbound vs inbound). `baseKey`
+ *                 é uso interno pra unicidade em recursão.
  */
-export function formatWhatsAppText(text: string, baseKey = 0): React.ReactNode {
+export function formatWhatsAppText(text: string, options: FormatOptions = {}): React.ReactNode {
   if (!text) return null;
   const nodes: React.ReactNode[] = [];
   let cursor = 0;
-  let keyCounter = baseKey;
+  let keyCounter = options.baseKey ?? 0;
 
   while (cursor < text.length) {
     const hit = nextHit(text, cursor);
@@ -241,7 +257,7 @@ export function formatWhatsAppText(text: string, baseKey = 0): React.ReactNode {
     if (hit.start > cursor) {
       nodes.push(text.slice(cursor, hit.start));
     }
-    nodes.push(renderHit(hit, ++keyCounter));
+    nodes.push(renderHit(hit, ++keyCounter, options));
     cursor = hit.end;
   }
 

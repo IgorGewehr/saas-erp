@@ -1926,7 +1926,14 @@ function MessageBubble({
                 )}
               </div>
             )}
-            {formatWhatsAppText(message.content)}
+            {formatWhatsAppText(message.content, {
+              // Outbound (bolha verde): branco + underline grosso pra contraste
+              // alto sobre o verde. Inbound (bolha branca/escura): azul clássico.
+              // Nota interna (âmbar): azul também — funciona sobre amber-50.
+              linkClassName: isOut && !message.isInternal
+                ? 'underline underline-offset-2 decoration-2 break-all text-white font-medium hover:opacity-80'
+                : 'underline underline-offset-2 break-all text-blue-700 dark:text-blue-300 hover:opacity-80',
+            })}
           </div>
         )}
 
