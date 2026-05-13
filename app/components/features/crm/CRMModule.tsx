@@ -3635,6 +3635,28 @@ export default function CRMModule() {
       return next;
     });
   }, []);
+  // Sair da tab Pipeline = sair do modo de seleção. Sem isso, o botão
+  // "Sair da seleção" some (só renderiza com activeTab === 'kanban'), mas
+  // o modo continua ativo — voltando, o operador clica num card achando
+  // que vai abrir o detalhe e em vez disso (des)marca silenciosamente.
+  useEffect(() => {
+    if (activeTab !== 'kanban' && selectionMode) {
+      setSelectionMode(false);
+      setSelectedIds(new Set());
+    }
+  }, [activeTab, selectionMode]);
+  // Escape sai do modo de seleção (operador rápido espera Esc cancelar).
+  useEffect(() => {
+    if (!selectionMode) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !bulkDeleteOpen) {
+        setSelectionMode(false);
+        setSelectedIds(new Set());
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectionMode, bulkDeleteOpen]);
 
   const [selectedContact, setSelectedContact] = useState<CRMContact | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -3782,15 +3804,17 @@ export default function CRMModule() {
   const handleDeleteContact = useCallback(async () => {
     if (!deleteContactConfirm || !business?.id || !user) return;
     try {
-      // Deals/Activities são CRM-internos e não têm referências em outros módulos —
-      // hard delete OK pra eles. Mas o contato em `clients` é referenciado por
-      // conversations, sales, transactions, appointments, kanbanCards. Hard delete
-      // deixava órfãos; agora soft delete espelhando ClientsModule (linha ~1113).
-      const dealsToDelete = deals.filter(d => d.contactId === deleteContactConfirm.id);
-      for (const d of dealsToDelete) await deleteDoc(doc(db, 'crmDeals', d.id));
-      const activitiesToDelete = activities.filter(a => a.contactId === deleteContactConfirm.id);
-      for (const a of activitiesToDelete) await deleteDoc(doc(db, 'crmActivities', a.id));
-      void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'contact_deleted', contactId: deleteContactConfirm.id, details: deleteContactConfirm.name });
+      // Ordem: soft-delete do client PRIMEIRO, depois hard-delete de
+      // deals/activities. Se falhar entre soft-delete e os hard-deletes, o
+      // contato já some das listas e deals/activities órfãos viram lixo
+      // cosmético — pior alternativa (inverter ordem) deixava deals órfãos
+      // com contato ativo, induzindo o operador a reeditá-lo sem perceber
+      // que perdeu histórico. Mesma ordem do bulk-delete (paridade).
+      //
+      // Soft-delete em clients porque o contato é referenciado por
+      // conversations, sales, transactions, appointments, kanbanCards —
+      // hard-delete deixaria órfãos. Deals/Activities são CRM-internos e
+      // não têm refs cross-módulo → hard-delete OK.
       const now = new Date().toISOString();
       await updateDoc(doc(db, 'clients', deleteContactConfirm.id), {
         isActive: false,
@@ -3799,6 +3823,11 @@ export default function CRMModule() {
         deletedByName: user.name || '',
         updatedAt: now,
       });
+      const dealsToDelete = deals.filter(d => d.contactId === deleteContactConfirm.id);
+      for (const d of dealsToDelete) await deleteDoc(doc(db, 'crmDeals', d.id));
+      const activitiesToDelete = activities.filter(a => a.contactId === deleteContactConfirm.id);
+      for (const a of activitiesToDelete) await deleteDoc(doc(db, 'crmActivities', a.id));
+      void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'contact_deleted', contactId: deleteContactConfirm.id, details: deleteContactConfirm.name });
       toast.success(t('crm.toast.contactDeleted', 'Contato excluído'));
       queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
       queryClient.invalidateQueries({ queryKey: ['crmDeals', business.id] });
@@ -3834,21 +3863,15 @@ export default function CRMModule() {
         return out;
       };
 
-      // 1) Deletar deals (hard)
-      for (const part of chunk(dealsToDelete, 500)) {
-        const batch = writeBatch(db);
-        for (const d of part) batch.delete(doc(db, 'crmDeals', d.id));
-        await batch.commit();
-      }
+      // Ordem deliberada: soft-delete do client PRIMEIRO. Se falhar entre o
+      // soft-delete e os hard-deletes de deals/activities (perda de conexão,
+      // permission denied), o contato já some das listas e deals/activities
+      // viram lixo cosmético — não atrapalham o operador nem geram confusão.
+      // A ordem inversa (deals → activities → clients) deixaria histórico
+      // órfão com contato ainda ativo, e o operador poderia reeditá-lo sem
+      // perceber a perda. Atomicidade real exigiria Cloud Function.
 
-      // 2) Deletar activities (hard)
-      for (const part of chunk(activitiesToDelete, 500)) {
-        const batch = writeBatch(db);
-        for (const a of part) batch.delete(doc(db, 'crmActivities', a.id));
-        await batch.commit();
-      }
-
-      // 3) Soft-delete dos clients (preserva refs em vendas/agendamentos/etc.)
+      // 1) Soft-delete dos clients (preserva refs em vendas/agendamentos/etc.)
       const meta = {
         isActive: false,
         deletedAt: now,
@@ -3859,6 +3882,20 @@ export default function CRMModule() {
       for (const part of chunk(ids, 500)) {
         const batch = writeBatch(db);
         for (const id of part) batch.update(doc(db, 'clients', id), meta);
+        await batch.commit();
+      }
+
+      // 2) Deletar deals relacionados (hard)
+      for (const part of chunk(dealsToDelete, 500)) {
+        const batch = writeBatch(db);
+        for (const d of part) batch.delete(doc(db, 'crmDeals', d.id));
+        await batch.commit();
+      }
+
+      // 3) Deletar activities relacionadas (hard)
+      for (const part of chunk(activitiesToDelete, 500)) {
+        const batch = writeBatch(db);
+        for (const a of part) batch.delete(doc(db, 'crmActivities', a.id));
         await batch.commit();
       }
 
@@ -3879,7 +3916,14 @@ export default function CRMModule() {
       queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
       queryClient.invalidateQueries({ queryKey: ['crmDeals', business.id] });
       queryClient.invalidateQueries({ queryKey: ['crmActivities', business.id] });
-      setSelectedIds(new Set());
+      // Limpa apenas os ids que de fato foram deletados — preserva qualquer
+      // marcação que o operador tenha feito durante a mutation (ex: mudou de
+      // ideia e clicou em mais cards enquanto o batch rodava).
+      setSelectedIds(prev => {
+        const next = new Set(prev);
+        for (const id of ids) next.delete(id);
+        return next;
+      });
       setBulkDeleteOpen(false);
       setSelectionMode(false);
       // Fecha painel de detalhe se o contato aberto foi deletado.
@@ -3889,7 +3933,7 @@ export default function CRMModule() {
       }
     } catch (err) {
       console.error('[CRM] Bulk delete failed:', err);
-      toast.error(`Erro ao excluir contatos: ${(err as Error).message}`);
+      toast.error(t('crm.toast.errorBulkDelete', 'Erro ao excluir contatos'));
     } finally {
       setIsBulkDeleting(false);
     }
@@ -4471,7 +4515,7 @@ export default function CRMModule() {
         title={`Excluir ${selectedIds.size} contato(s)?`}
         message={isBulkDeleting
           ? 'Excluindo... não feche a tela.'
-          : `Esta ação desativa ${selectedIds.size} contato(s) e remove os deals e atividades vinculados. Vendas, agendamentos e conversas históricas são preservados (soft-delete).`}
+          : `${selectedIds.size} contato(s) serão desativados (vendas, agendamentos e conversas históricas continuam acessíveis). Deals e atividades vinculados serão excluídos permanentemente.`}
         onClose={() => !isBulkDeleting && setBulkDeleteOpen(false)}
         onConfirm={handleBulkDeleteContacts}
       />

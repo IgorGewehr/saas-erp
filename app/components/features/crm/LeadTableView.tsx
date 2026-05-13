@@ -206,6 +206,9 @@ export function LeadTableView({
                 {selectionMode && (
                   <td className="px-3 py-2.5">
                     <div
+                      role="checkbox"
+                      aria-checked={!!selectedIds?.has(contact.id)}
+                      aria-label={`Selecionar ${contact.name}`}
                       className={cn(
                         'w-4 h-4 rounded-md border-2 flex items-center justify-center transition-colors',
                         selectedIds?.has(contact.id)

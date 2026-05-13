@@ -57,9 +57,13 @@ export function LeadCard({ contact, isSelected, isDragging, onClick, onDragStart
     >
       {/* Checkbox em modo seleção — canto superior direito, sobrepõe o
           SourceIcon. Click ainda vai pro onClick do card (parent decide se
-          marca/desmarca ou abre detail). */}
+          marca/desmarca ou abre detail). role/aria-checked deixa screen
+          readers anunciarem o estado. */}
       {selectionMode && (
         <div
+          role="checkbox"
+          aria-checked={!!isChecked}
+          aria-label={`Selecionar ${contact.name}`}
           className={cn(
             'absolute top-2 right-2 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-colors z-10',
             isChecked
