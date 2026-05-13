@@ -38,6 +38,8 @@ import { db, storage } from '@/lib/config/firebase';
 import { notifyUsers } from '@/lib/services/notifications';
 import { sendConversationToPipeline } from '@/lib/services/conversationToPipeline';
 import { getVisibleStages } from '@/app/components/features/crm/shared';
+import { useTheme } from '@/app/components/providers/ThemeProvider';
+import { pickReadableTextColor } from '@/lib/utils/color';
 import debounce from 'lodash.debounce';
 import {
   MessageSquare,
@@ -1081,6 +1083,7 @@ function ThreadHeader({
   linkedClientStageConfig?: import('@/lib/types').CRMStageConfig | null;
 }) {
   const { t } = useTranslation();
+  const { isDark } = useTheme();
   const cfg = getConvConfig(conversation);
   const displayName = conversation.customContactName ?? conversation.contactName;
   const initials = getInitials(displayName);
@@ -1286,21 +1289,27 @@ function ThreadHeader({
                 aparece quando o cliente está em algum estágio do funil.
                 hidden sm:inline-flex + flex-shrink-0 para casar com
                 CampaignOriginBadge (some em mobile, não comprime em
-                headers apertados). */}
-            {linkedClientStageConfig && (
-              <span
-                className="hidden sm:inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full border flex-shrink-0"
-                style={{
-                  backgroundColor: linkedClientStageConfig.color + '22',
-                  color: linkedClientStageConfig.color,
-                  borderColor: linkedClientStageConfig.color + '40',
-                }}
-                title={`Pipeline: ${linkedClientStageConfig.name}`}
-              >
-                <GitBranch className="w-2.5 h-2.5" />
-                <span className="max-w-[12ch] truncate">{linkedClientStageConfig.name}</span>
-              </span>
-            )}
+                headers apertados). Cor do texto passa por pickReadableTextColor
+                pra clarear stages escuros (Ganho/Perdido) em dark mode —
+                sem isso o texto sumia no fundo slate-900. */}
+            {linkedClientStageConfig && (() => {
+              const stageColor = linkedClientStageConfig.color;
+              const textColor = pickReadableTextColor(stageColor, isDark);
+              return (
+                <span
+                  className="hidden sm:inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full border flex-shrink-0"
+                  style={{
+                    backgroundColor: stageColor + '22',
+                    color: textColor,
+                    borderColor: stageColor + '40',
+                  }}
+                  title={`Pipeline: ${linkedClientStageConfig.name}`}
+                >
+                  <GitBranch className="w-2.5 h-2.5" />
+                  <span className="max-w-[12ch] truncate">{linkedClientStageConfig.name}</span>
+                </span>
+              );
+            })()}
           </div>
           <div className="flex items-center gap-1.5 mt-0.5">
             <StatusDot status={conversation.status} />
@@ -8183,6 +8192,16 @@ export default function ConversasModule() {
                     </button>
                   </>
                 ) : (() => {
+                  // Conflito específico: SmartView "in_pipeline" exclui
+                  // Ganho/Perdido, mas o dropdown "Fase do pipeline" inclui
+                  // todos os estágios. Operador que combina (smart view
+                  // in_pipeline + filtro fase=ganho) recebe lista vazia sem
+                  // explicação. Detectamos pra mostrar dica acionável.
+                  const conflictStage = activeView === 'in_pipeline'
+                    && advFilters.pipelineStage
+                    ? pipelineStagesAll.find(s => s.id === advFilters.pipelineStage && (s.isWon || s.isLost))
+                    : undefined;
+
                   // Empty state contextual por smart view ativa. Só usa o
                   // contextual quando NÃO há outros filtros ativos — senão
                   // a mensagem fica imprecisa.
@@ -8193,14 +8212,19 @@ export default function ConversasModule() {
                     || advFilters.priority
                     || advFilters.label
                     || advFilters.slaStatus
-                    || advFilters.unreadOnly;
+                    || advFilters.unreadOnly
+                    || advFilters.pipelineStage;
                   const ctx = SMART_VIEW_EMPTY_STATE[activeView];
-                  const title = hasOtherFilters
-                    ? t('conversations.noConversationsFound', 'Nenhuma conversa encontrada')
-                    : ctx.title;
-                  const subtitle = hasOtherFilters
-                    ? t('conversations.noConversationsFoundDesc', 'Tente mudar o filtro ou a busca')
-                    : ctx.subtitle;
+                  const title = conflictStage
+                    ? `O estágio "${conflictStage.name}" não está no pipeline ativo`
+                    : hasOtherFilters
+                      ? t('conversations.noConversationsFound', 'Nenhuma conversa encontrada')
+                      : ctx.title;
+                  const subtitle = conflictStage
+                    ? `O filtro "No pipeline" exclui Ganho/Perdido. Mude para "Todas" ou tire o filtro de fase.`
+                    : hasOtherFilters
+                      ? t('conversations.noConversationsFoundDesc', 'Tente mudar o filtro ou a busca')
+                      : ctx.subtitle;
                   return (
                     <>
                       <p className="text-sm font-medium text-gray-500 dark:text-gray-400">{title}</p>
