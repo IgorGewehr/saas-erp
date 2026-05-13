@@ -4845,12 +4845,18 @@ function LinkContactDrawer({
         }
       }
 
+      // quickCreate só "vincula" — o contato vira cliente mas NÃO entra no
+      // pipeline do CRM (inPipeline:false). Para virar lead, o operador clica
+      // em "Enviar para o pipeline" no menu da conversa (sendConversationToPipeline).
+      // Antes esse handler gravava status:'ganho' hardcoded, fazendo todo
+      // contato recém-vinculado cair direto na coluna "Ganho" do Kanban.
       const payload: Record<string, unknown> = {
         businessId,
         name: (conversation.customContactName ?? conversation.contactName) || 'Novo contato',
         tipo: 'pf',
         source: conversation.channel,
-        status: 'ganho',
+        status: 'novo',
+        inPipeline: false,
         score: 0,
         isActive: true,
         totalSpent: 0,

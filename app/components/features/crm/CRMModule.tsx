@@ -3696,12 +3696,23 @@ export default function CRMModule() {
   const [lc, setLc] = useState(true);
   const [ld, setLd] = useState(true);
   const [la, setLa] = useState(true);
+  // Subset elegível pro pipeline: clientes cujo `inPipeline` não é
+  // explicitamente `false`. Permite que clientes legados (sem o campo) e
+  // novos enviados ao funil apareçam, enquanto clientes criados como
+  // "contato vinculado" da conversa (inPipeline:false) ficam de fora —
+  // viram lead só quando o operador clica em "Enviar para o pipeline".
+  // Outras tabs do CRM (Campanhas, Segmentos, Métricas) continuam usando
+  // `contacts` cru, pois lidam com a base inteira de clientes do tenant.
+  const pipelineContacts = useMemo(
+    () => contacts.filter(c => c.inPipeline !== false),
+    [contacts],
+  );
   // Contatos visíveis no Pipeline (mesmos filtros aplicados nas duas views).
   // Usado pelo botão "Selecionar todos" da barra contextual — afeta só quem
   // está visível pelos filtros atuais, não TODOS os contatos do tenant.
   const pipelineFilteredContacts = useMemo(
-    () => filterPipelineContacts(contacts, { searchQuery, filterTags, filterSource, filterTipo }),
-    [contacts, searchQuery, filterTags, filterSource, filterTipo],
+    () => filterPipelineContacts(pipelineContacts, { searchQuery, filterTags, filterSource, filterTipo }),
+    [pipelineContacts, searchQuery, filterTags, filterSource, filterTipo],
   );
   // Helper local — sort por createdAt desc usado pra contacts/deals/activities.
   // Mantido client-side pra evitar composite indexes (clients/businessId+
@@ -4329,7 +4340,7 @@ export default function CRMModule() {
             className="flex-1 flex flex-col min-h-0 h-full">
 
             {activeTab === 'kanban' && pipelineView === 'kanban' && (
-              <KanbanBoard contacts={contacts}
+              <KanbanBoard contacts={pipelineContacts}
                 stages={stages}
                 onSelectContact={(c) => { setSelectedContact(c); setDetailOpen(true); }}
                 selectedContactId={selectedContact?.id || null}
@@ -4359,7 +4370,7 @@ export default function CRMModule() {
 
             {activeTab === 'kanban' && pipelineView === 'table' && (
               <LeadTableView
-                contacts={contacts}
+                contacts={pipelineContacts}
                 stages={stages}
                 searchQuery={searchQuery}
                 filterTags={filterTags}

@@ -1909,6 +1909,15 @@ export interface Client {
   // ── CRM / Pipeline ─────────────────────────────────
   source: LeadSource;
   status: LeadStatus;
+  /** Flag de visibilidade no pipeline do CRM (Kanban + lista).
+   *  - `true` (ou ausente, p/ backward-compat): aparece no pipeline
+   *  - `false`: cliente existe mas NÃO é tratado como lead — não aparece
+   *    no Kanban/lista do CRM. Caso típico: contato criado via "vincular"
+   *    de uma conversa, que só vira lead quando o operador clica
+   *    explicitamente em "Enviar para o pipeline".
+   *  KanbanBoard/LeadTableView filtram com `c.inPipeline !== false` pra
+   *  preservar clientes legados sem o campo (default = visível). */
+  inPipeline?: boolean;
   score: number;
   assignedTo?: string;
   assignedToName?: string;

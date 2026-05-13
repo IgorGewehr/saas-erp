@@ -85,13 +85,15 @@ export async function sendConversationToPipeline(
   // Caso 1: conversa já tem client linkado → updateDoc no status.
   if (conversation.crmContactId) {
     const linked = clients.find(c => c.id === conversation.crmContactId);
-    // No-op se já está no estágio destino — evita write desnecessário no
-    // Firestore e toast enganoso ("movido para X" quando nada mudou).
-    if (linked && linked.status === targetStage) {
+    // No-op apenas se já está no estágio destino E já é lead do pipeline.
+    // Sem o check de inPipeline, clientes "só vinculados" (inPipeline:false)
+    // com status default 'novo' não entrariam no funil ao mandar pra "Novo".
+    if (linked && linked.status === targetStage && linked.inPipeline !== false) {
       return { clientId: conversation.crmContactId, outcome: 'no-op' };
     }
     await updateDoc(doc(db, 'clients', conversation.crmContactId), {
       status: targetStage,
+      inPipeline: true,
       updatedAt: now,
     });
     return { clientId: conversation.crmContactId, outcome: 'updated' };
@@ -107,6 +109,7 @@ export async function sendConversationToPipeline(
     // nesse Client (auto-link procura por channelIdentities[canal]).
     const patch: Record<string, unknown> = {
       status: targetStage,
+      inPipeline: true,
       lastConversationId: conversation.id,
       lastConversationAt: now,
       updatedAt: now,
@@ -129,13 +132,15 @@ export async function sendConversationToPipeline(
   }
 
   // Caso 3: cria Client novo. Mesmo shape do LinkContactPanel.quickCreate,
-  // só que com status configurável (lá era hard-coded 'ganho').
+  // mas entra direto no pipeline (inPipeline:true) com o estágio escolhido,
+  // diferente do quickCreate que cria com inPipeline:false.
   const payload: Record<string, unknown> = {
     businessId,
     name: (conversation.customContactName ?? conversation.contactName) || 'Novo contato',
     tipo: 'pf',
     source: conversation.channel,
     status: targetStage,
+    inPipeline: true,
     score: 0,
     isActive: true,
     totalSpent: 0,
