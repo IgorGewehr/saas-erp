@@ -2,7 +2,7 @@
 
 import { useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
-import { ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react';
+import { ChevronUp, ChevronDown, ChevronsUpDown, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getInitials } from '@/lib/utils/format';
 import type { CRMContact, LeadSource, CRMStageConfig } from '@/lib/types';
@@ -36,6 +36,10 @@ export function LeadTableView({
   filterTipo,
   onSelectContact,
   selectedContactId,
+  selectionMode,
+  selectedIds,
+  onToggleSelectId,
+  onToggleSelectAll,
 }: {
   contacts: CRMContact[];
   stages: CRMStageConfig[];
@@ -45,6 +49,14 @@ export function LeadTableView({
   filterTipo: 'pf' | 'pj' | 'all';
   onSelectContact: (c: CRMContact) => void;
   selectedContactId: string | null;
+  /** Quando true, primeira coluna vira checkbox e click na linha alterna
+   *  seleção em vez de abrir o painel de detalhe. */
+  selectionMode?: boolean;
+  selectedIds?: Set<string>;
+  onToggleSelectId?: (id: string) => void;
+  /** Recebe a lista de ids filtrados (sortado) — caller decide
+   *  selecionar todos ou limpar. */
+  onToggleSelectAll?: (filteredIds: string[]) => void;
 }) {
   const [sortField, setSortField] = useState<SortField>('lastContact');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
@@ -122,6 +134,29 @@ export function LeadTableView({
       <table className="w-full text-sm border-collapse min-w-[720px]">
         <thead className="sticky top-0 z-10 bg-white dark:bg-[#0a0e17]">
           <tr className="border-b border-gray-100 dark:border-white/[0.06]">
+            {/* Checkbox column — só aparece em selectionMode. Click no header
+                = toggle "todos os filtrados". */}
+            {selectionMode && (
+              <th className="px-3 py-3 w-10">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleSelectAll?.(sorted.map(c => c.id));
+                  }}
+                  className={cn(
+                    'w-4 h-4 rounded-md border-2 flex items-center justify-center transition-colors',
+                    sorted.length > 0 && sorted.every(c => selectedIds?.has(c.id))
+                      ? 'bg-blue-500 border-blue-500 text-white'
+                      : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 hover:border-blue-400',
+                  )}
+                  aria-label="Selecionar todos"
+                >
+                  {sorted.length > 0 && sorted.every(c => selectedIds?.has(c.id)) && (
+                    <Check size={10} strokeWidth={3} />
+                  )}
+                </button>
+              </th>
+            )}
             {COLS.map(({ field, label }) => (
               <th
                 key={field}
@@ -151,14 +186,37 @@ export function LeadTableView({
                 initial={{ opacity: 0, y: 3 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: Math.min(i * 0.015, 0.3) }}
-                onClick={() => onSelectContact(contact)}
+                onClick={() =>
+                  selectionMode && onToggleSelectId
+                    ? onToggleSelectId(contact.id)
+                    : onSelectContact(contact)
+                }
                 className={cn(
                   'border-b border-gray-50 dark:border-white/[0.03] cursor-pointer transition-colors group',
-                  isSelected
-                    ? 'bg-red-50/60 dark:bg-red-500/[0.08]'
-                    : 'hover:bg-gray-50/80 dark:hover:bg-white/[0.025]',
+                  // Checked em selectionMode tem prioridade visual sobre o
+                  // isSelected (linha aberta no painel) — operador está em
+                  // tarefa diferente.
+                  selectionMode && selectedIds?.has(contact.id)
+                    ? 'bg-blue-50/70 dark:bg-blue-500/[0.08]'
+                    : isSelected
+                      ? 'bg-red-50/60 dark:bg-red-500/[0.08]'
+                      : 'hover:bg-gray-50/80 dark:hover:bg-white/[0.025]',
                 )}
               >
+                {selectionMode && (
+                  <td className="px-3 py-2.5">
+                    <div
+                      className={cn(
+                        'w-4 h-4 rounded-md border-2 flex items-center justify-center transition-colors',
+                        selectedIds?.has(contact.id)
+                          ? 'bg-blue-500 border-blue-500 text-white'
+                          : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900',
+                      )}
+                    >
+                      {selectedIds?.has(contact.id) && <Check size={10} strokeWidth={3} />}
+                    </div>
+                  </td>
+                )}
                 {/* Nome + company */}
                 <td className="px-3 py-2.5">
                   <div className="flex items-center gap-2.5">

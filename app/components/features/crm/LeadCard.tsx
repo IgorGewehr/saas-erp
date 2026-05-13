@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Clock, AlertTriangle, Zap } from 'lucide-react';
+import { Clock, AlertTriangle, Zap, Check } from 'lucide-react';
 import { Tooltip } from '@mui/material';
 import { cn } from '@/lib/utils';
 import { getInitials } from '@/lib/utils/format';
@@ -10,13 +10,18 @@ import { SourceIcon } from './SourceIcon';
 import { TagBadge } from './TagSystem';
 import type { CRMContact } from '@/lib/types';
 
-export function LeadCard({ contact, isSelected, isDragging, onClick, onDragStart, onDragEnd }: {
+export function LeadCard({ contact, isSelected, isDragging, onClick, onDragStart, onDragEnd, selectionMode, isChecked }: {
   contact: CRMContact;
   isSelected: boolean;
   isDragging?: boolean;
   onClick: () => void;
   onDragStart: (e: React.DragEvent) => void;
   onDragEnd?: () => void;
+  /** Quando true, card vira "modo seleção": checkbox visível, hover destacado,
+   *  drag-and-drop desabilitado (operador está marcando, não movendo). */
+  selectionMode?: boolean;
+  /** Estado do checkbox quando selectionMode = true. Parent gerencia. */
+  isChecked?: boolean;
 }) {
   const tags = contact.tags || [];
   const profileCfg = contact.profile ? PROFILE_CONFIG[contact.profile] : null;
@@ -28,20 +33,43 @@ export function LeadCard({ contact, isSelected, isDragging, onClick, onDragStart
 
   return (
     <div
-      draggable
+      // Drag desabilitado em selectionMode — operador está marcando, não
+      // movendo entre colunas. Evita clique acidental virar drag.
+      draggable={!selectionMode}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       onClick={onClick}
       className={cn(
-        'bg-white dark:bg-[#111827] border rounded-xl p-3.5 cursor-grab active:cursor-grabbing hover:shadow-lg hover:-translate-y-0.5 transition-all group',
+        'relative bg-white dark:bg-[#111827] border rounded-xl p-3.5 hover:shadow-lg hover:-translate-y-0.5 transition-all group',
+        selectionMode ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing',
         isDragging && 'opacity-40 scale-[0.97]',
-        isSelected
-          ? 'border-red-500/50 dark:border-red-500/40 shadow-red-500/10 shadow-md'
-          : hasHighChurn
-            ? 'border-orange-300/50 dark:border-orange-500/30 hover:border-orange-400 dark:hover:border-orange-400/50'
-            : 'border-gray-100 dark:border-gray-700/50 hover:border-gray-200 dark:hover:border-gray-600',
+        // Em modo seleção: borda azul quando marcado, neutra quando não.
+        // O isSelected (vermelho, card aberto no painel) cede prioridade pro
+        // checked porque o operador está numa tarefa diferente (delete em massa).
+        selectionMode && isChecked
+          ? 'border-blue-500/60 dark:border-blue-500/50 shadow-blue-500/10 shadow-md ring-1 ring-blue-500/20'
+          : isSelected
+            ? 'border-red-500/50 dark:border-red-500/40 shadow-red-500/10 shadow-md'
+            : hasHighChurn
+              ? 'border-orange-300/50 dark:border-orange-500/30 hover:border-orange-400 dark:hover:border-orange-400/50'
+              : 'border-gray-100 dark:border-gray-700/50 hover:border-gray-200 dark:hover:border-gray-600',
       )}
     >
+      {/* Checkbox em modo seleção — canto superior direito, sobrepõe o
+          SourceIcon. Click ainda vai pro onClick do card (parent decide se
+          marca/desmarca ou abre detail). */}
+      {selectionMode && (
+        <div
+          className={cn(
+            'absolute top-2 right-2 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-colors z-10',
+            isChecked
+              ? 'bg-blue-500 border-blue-500 text-white'
+              : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900',
+          )}
+        >
+          {isChecked && <Check size={12} strokeWidth={3} />}
+        </div>
+      )}
       {/* Profile & Name */}
       <div className="flex items-start gap-3 mb-2.5">
         <div className="relative">

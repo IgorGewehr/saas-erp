@@ -12,7 +12,7 @@ import {
   UserPlus, Briefcase, Tag, Hash, AlertTriangle, Heart, Shield, Zap, Brain,
   Sparkles, Filter, Crown, Settings2, GripVertical, Eye, EyeOff, ChevronUp, ChevronDown,
   Download, Upload, GitBranch, LayoutList, LayoutDashboard, Megaphone, Radio, SlidersHorizontal,
-  Check, Link as LinkIcon,
+  Check, Link as LinkIcon, CheckSquare,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -3612,6 +3612,30 @@ export default function CRMModule() {
     setPipelineView(v);
     localStorage.setItem('crm_pipeline_view', v);
   };
+
+  // ─── Bulk-select mode (Pipeline) ────────────────────────────────────────────
+  // Espelha o padrão do ClientsModule: toggle de seleção, Set de ids marcados,
+  // bulk-delete via writeBatch. Aplica-se às duas views (Kanban e Lista).
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const toggleSelectionMode = () => {
+    setSelectionMode(prev => {
+      // Saindo do modo → limpa seleção pra evitar "ressurreição" silenciosa
+      // se reabrir o modo depois.
+      if (prev) setSelectedIds(new Set());
+      return !prev;
+    });
+  };
+  const toggleSelectId = useCallback((id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
   const [selectedContact, setSelectedContact] = useState<CRMContact | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -3783,6 +3807,94 @@ export default function CRMModule() {
     } catch (err) { console.error('[CRM] Error deleting contact:', err); toast.error(t('crm.toast.errorDelete', 'Erro ao excluir')); }
   }, [deleteContactConfirm, business?.id, user, queryClient, t, deals, activities]);
 
+  // Exclusão em massa via writeBatch (limite Firestore: 500 ops por batch).
+  // Mesmo padrão de handleDeleteContact: soft-delete em clients (isActive=false),
+  // hard-delete em crmDeals/crmActivities relacionados (CRM-internos, sem
+  // referências cross-módulo). Quebra em chunks de 500 e processa
+  // sequencialmente — paralelizar arrisca race entre batches com deals do
+  // mesmo contato.
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const handleBulkDeleteContacts = useCallback(async () => {
+    if (!business?.id || !user || selectedIds.size === 0) return;
+    setIsBulkDeleting(true);
+    const ids = Array.from(selectedIds);
+    const now = new Date().toISOString();
+    try {
+      // Mapa de deals/activities → contactId pra processar em massa.
+      // CRMActivity.contactId é opcional (activities podem ser globais ou
+      // associadas só a um deal); filtramos as que apontam pra contatos
+      // selecionados.
+      const dealsToDelete = deals.filter(d => ids.includes(d.contactId));
+      const activitiesToDelete = activities.filter(a => a.contactId && ids.includes(a.contactId));
+
+      // Chunk em 500 ops por batch (limite Firestore).
+      const chunk = <T,>(arr: T[], size: number): T[][] => {
+        const out: T[][] = [];
+        for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+        return out;
+      };
+
+      // 1) Deletar deals (hard)
+      for (const part of chunk(dealsToDelete, 500)) {
+        const batch = writeBatch(db);
+        for (const d of part) batch.delete(doc(db, 'crmDeals', d.id));
+        await batch.commit();
+      }
+
+      // 2) Deletar activities (hard)
+      for (const part of chunk(activitiesToDelete, 500)) {
+        const batch = writeBatch(db);
+        for (const a of part) batch.delete(doc(db, 'crmActivities', a.id));
+        await batch.commit();
+      }
+
+      // 3) Soft-delete dos clients (preserva refs em vendas/agendamentos/etc.)
+      const meta = {
+        isActive: false,
+        deletedAt: now,
+        deletedBy: user.uid,
+        deletedByName: user.name || '',
+        updatedAt: now,
+      };
+      for (const part of chunk(ids, 500)) {
+        const batch = writeBatch(db);
+        for (const id of part) batch.update(doc(db, 'clients', id), meta);
+        await batch.commit();
+      }
+
+      // Audit log (não bloqueante — não interrompe se falhar).
+      const nameById = new Map(contacts.map(c => [c.id, c.name]));
+      for (const id of ids) {
+        void logAudit({
+          businessId: business.id,
+          userId: user.uid,
+          userName: user.name,
+          action: 'contact_deleted',
+          contactId: id,
+          details: nameById.get(id) ?? id,
+        });
+      }
+
+      toast.success(`${ids.length} contato(s) excluído(s)`);
+      queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
+      queryClient.invalidateQueries({ queryKey: ['crmDeals', business.id] });
+      queryClient.invalidateQueries({ queryKey: ['crmActivities', business.id] });
+      setSelectedIds(new Set());
+      setBulkDeleteOpen(false);
+      setSelectionMode(false);
+      // Fecha painel de detalhe se o contato aberto foi deletado.
+      if (selectedContact && ids.includes(selectedContact.id)) {
+        setSelectedContact(null);
+        setDetailOpen(false);
+      }
+    } catch (err) {
+      console.error('[CRM] Bulk delete failed:', err);
+      toast.error(`Erro ao excluir contatos: ${(err as Error).message}`);
+    } finally {
+      setIsBulkDeleting(false);
+    }
+  }, [business?.id, user, selectedIds, deals, activities, contacts, selectedContact, queryClient]);
+
   const handleSaveDeal = useCallback(async (data: Partial<CRMDeal>) => {
     if (!business?.id || !user) return; const now = new Date().toISOString();
     try {
@@ -3951,6 +4063,24 @@ export default function CRMModule() {
               </div>
             )}
 
+            {/* Toggle do modo de seleção — só no pipeline kanban (ambas views).
+                Padrão idêntico ao ClientsModule: estado on/off + barra
+                contextual aparece quando há itens marcados. */}
+            {activeTab === 'kanban' && (
+              <button
+                onClick={toggleSelectionMode}
+                className={cn(
+                  'inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors',
+                  selectionMode
+                    ? 'bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30 text-blue-700 dark:text-blue-300'
+                    : 'bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:border-gray-300 dark:hover:border-gray-600',
+                )}
+              >
+                <CheckSquare size={14} />
+                {selectionMode ? 'Sair da seleção' : 'Selecionar'}
+              </button>
+            )}
+
             {/* CSV Import/Export dropdown */}
             <div className="relative" ref={csvMenuRef}>
               <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
@@ -4053,6 +4183,47 @@ export default function CRMModule() {
       )}</AnimatePresence>
 
       {/* ═══════════════════════════════════════════════════════════
+          SELECTION BAR — contextual action bar quando há itens marcados.
+          Aparece abaixo da toolbar quando selectionMode + selectedIds.size > 0.
+          Mostra contador, "Selecionar todos os visíveis" e "Excluir N".
+          ═══════════════════════════════════════════════════════════ */}
+      <AnimatePresence>
+        {activeTab === 'kanban' && selectionMode && selectedIds.size > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            className="shrink-0 px-5 sm:px-6 lg:px-8 py-2"
+          >
+            <div className="flex items-center gap-3 px-4 py-2 rounded-xl bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30">
+              <span className="text-xs font-semibold text-blue-700 dark:text-blue-300">
+                {selectedIds.size} selecionado(s)
+              </span>
+              <button
+                onClick={() => {
+                  // Limpa toda seleção. Os ids visíveis dependem da view, mas
+                  // limpar é universal — operador toca de novo se quiser
+                  // refazer.
+                  setSelectedIds(new Set());
+                }}
+                className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+              >
+                Limpar
+              </button>
+              <div className="flex-1" />
+              <button
+                onClick={() => setBulkDeleteOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500 hover:bg-red-600 text-white text-xs font-semibold transition-colors"
+              >
+                <Trash2 size={13} />
+                Excluir {selectedIds.size}
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ═══════════════════════════════════════════════════════════
           CONTENT — full remaining height
           ═══════════════════════════════════════════════════════════ */}
       <div className="flex-1 flex flex-col min-h-0 overflow-hidden px-5 sm:px-6 lg:px-8 pt-4 pb-5">
@@ -4071,7 +4242,26 @@ export default function CRMModule() {
                 selectedContactId={selectedContact?.id || null}
                 onStatusChange={handleStatusChange}
                 onNewContact={() => { setEditingContact(null); setContactDialogOpen(true); }}
-                searchQuery={searchQuery} filterTags={filterTags} filterSource={filterSource} filterTipo={filterTipo} />
+                searchQuery={searchQuery} filterTags={filterTags} filterSource={filterSource} filterTipo={filterTipo}
+                selectionMode={selectionMode}
+                selectedIds={selectedIds}
+                onToggleSelectId={toggleSelectId}
+                onSelectAllInStage={(_stageId, ids) => {
+                  setSelectedIds(prev => {
+                    const allChecked = ids.every(id => prev.has(id));
+                    const next = new Set(prev);
+                    if (allChecked) {
+                      // Todos da coluna já marcados → desmarca esses.
+                      for (const id of ids) next.delete(id);
+                    } else {
+                      // Marca todos visíveis da coluna (preserva seleções
+                      // existentes de outras colunas).
+                      for (const id of ids) next.add(id);
+                    }
+                    return next;
+                  });
+                }}
+              />
             )}
 
             {activeTab === 'kanban' && pipelineView === 'table' && (
@@ -4084,6 +4274,15 @@ export default function CRMModule() {
                 filterTipo={filterTipo}
                 onSelectContact={(c) => { setSelectedContact(c); setDetailOpen(true); }}
                 selectedContactId={selectedContact?.id || null}
+                selectionMode={selectionMode}
+                selectedIds={selectedIds}
+                onToggleSelectId={toggleSelectId}
+                onToggleSelectAll={(filteredIds) => {
+                  setSelectedIds(prev => {
+                    const allChecked = filteredIds.length > 0 && filteredIds.every(id => prev.has(id));
+                    return allChecked ? new Set() : new Set(filteredIds);
+                  });
+                }}
               />
             )}
 
@@ -4267,6 +4466,15 @@ export default function CRMModule() {
       <DeleteConfirmDialog open={!!deleteContactConfirm} title="Excluir Contato" message={`Excluir "${deleteContactConfirm?.name}"?`} onClose={() => setDeleteContactConfirm(null)} onConfirm={handleDeleteContact} />
       <DeleteConfirmDialog open={!!deleteDealConfirm} title="Excluir Deal" message={`Excluir "${deleteDealConfirm?.title}"?`} onClose={() => setDeleteDealConfirm(null)} onConfirm={handleDeleteDeal} />
       <DeleteConfirmDialog open={!!deleteActivityConfirm} title="Excluir Atividade" message={`Excluir "${deleteActivityConfirm?.title}"?`} onClose={() => setDeleteActivityConfirm(null)} onConfirm={handleDeleteActivity} />
+      <DeleteConfirmDialog
+        open={bulkDeleteOpen}
+        title={`Excluir ${selectedIds.size} contato(s)?`}
+        message={isBulkDeleting
+          ? 'Excluindo... não feche a tela.'
+          : `Esta ação desativa ${selectedIds.size} contato(s) e remove os deals e atividades vinculados. Vendas, agendamentos e conversas históricas são preservados (soft-delete).`}
+        onClose={() => !isBulkDeleting && setBulkDeleteOpen(false)}
+        onConfirm={handleBulkDeleteContacts}
+      />
     </div>
   );
 }

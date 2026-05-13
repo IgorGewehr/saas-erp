@@ -9,7 +9,7 @@ import { getWonStageId } from './shared';
 import { LeadCard } from './LeadCard';
 import type { CRMContact, CRMStageConfig, LeadStatus, LeadSource } from '@/lib/types';
 
-export function KanbanBoard({ contacts, stages, onSelectContact, selectedContactId, onStatusChange, onNewContact, searchQuery, filterTags, filterSource, filterTipo }: {
+export function KanbanBoard({ contacts, stages, onSelectContact, selectedContactId, onStatusChange, onNewContact, searchQuery, filterTags, filterSource, filterTipo, selectionMode, selectedIds, onToggleSelectId, onSelectAllInStage }: {
   contacts: CRMContact[];
   stages: CRMStageConfig[];
   onSelectContact: (c: CRMContact) => void;
@@ -20,6 +20,14 @@ export function KanbanBoard({ contacts, stages, onSelectContact, selectedContact
   filterTags: string[];
   filterSource: LeadSource | 'all';
   filterTipo: 'pf' | 'pj' | 'all';
+  /** Quando true, cards mostram checkbox e clique alterna seleção em vez de
+   *  abrir o painel de detalhe. Drag-and-drop é desabilitado nessa fase. */
+  selectionMode?: boolean;
+  selectedIds?: Set<string>;
+  onToggleSelectId?: (id: string) => void;
+  /** Click no header da coluna em selectionMode → marca/desmarca todos os
+   *  cards visíveis daquele stage (respeita filtros aplicados). */
+  onSelectAllInStage?: (stageId: LeadStatus, ids: string[]) => void;
 }) {
   const { t } = useTranslation();
   const draggingRef = useRef<CRMContact | null>(null);
@@ -150,6 +158,16 @@ export function KanbanBoard({ contacts, stages, onSelectContact, selectedContact
                       {columnContacts.length}
                     </span>
                   </div>
+                  {/* Shortcut em selectionMode: seleciona/limpa todos os cards
+                      visíveis desse estágio. Útil pra "limpar coluna inteira". */}
+                  {selectionMode && columnContacts.length > 0 && onSelectAllInStage && (
+                    <button
+                      onClick={() => onSelectAllInStage(stage.id, columnContacts.map(c => c.id))}
+                      className="text-[10px] font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                    >
+                      {columnContacts.every(c => selectedIds?.has(c.id)) ? 'Limpar' : 'Tudo'}
+                    </button>
+                  )}
                 </div>
 
                 {/* Drop zone */}
@@ -171,7 +189,15 @@ export function KanbanBoard({ contacts, stages, onSelectContact, selectedContact
                       contact={contact}
                       isSelected={selectedContactId === contact.id}
                       isDragging={draggingId === contact.id}
-                      onClick={() => onSelectContact(contact)}
+                      selectionMode={selectionMode}
+                      isChecked={selectedIds?.has(contact.id) ?? false}
+                      // Em modo seleção, clique alterna o checkbox. Senão,
+                      // abre o painel de detalhe (comportamento original).
+                      onClick={() =>
+                        selectionMode && onToggleSelectId
+                          ? onToggleSelectId(contact.id)
+                          : onSelectContact(contact)
+                      }
                       onDragStart={(e) => handleDragStart(e, contact)}
                       onDragEnd={handleDragEnd}
                     />
