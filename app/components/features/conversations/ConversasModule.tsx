@@ -36,6 +36,8 @@ import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { getAuth } from 'firebase/auth';
 import { db, storage } from '@/lib/config/firebase';
 import { notifyUsers } from '@/lib/services/notifications';
+import { sendConversationToPipeline } from '@/lib/services/conversationToPipeline';
+import { getVisibleStages } from '@/app/components/features/crm/shared';
 import debounce from 'lodash.debounce';
 import {
   MessageSquare,
@@ -110,6 +112,7 @@ import {
   Moon,
   BellOff,
   Mail,
+  GitBranch,
 } from 'lucide-react';
 import { getDocs, getDoc } from 'firebase/firestore';
 import type {
@@ -1023,6 +1026,9 @@ function ThreadHeader({
   channelConnection,
   isMineConnection,
   onTransferChannel,
+  pipelineStages,
+  linkedClientStage,
+  onSendToPipeline,
 }: {
   conversation: Conversation;
   onBack: () => void;
@@ -1057,6 +1063,17 @@ function ThreadHeader({
   /** Phase 3.3: transferir conversa pra outro canal. Quando undefined,
    *  esconde a opção (ex: operador sem outros canais acessíveis). */
   onTransferChannel?: () => void;
+  /** Estágios do pipeline disponíveis para o submenu "Enviar para o pipeline".
+   *  Esperado: estágios visíveis e não-finais (sem isWon/isLost). Caller
+   *  passa lista já filtrada de `getVisibleStages` para o operador escolher
+   *  em qual coluna o lead entra. */
+  pipelineStages?: import('@/lib/types').CRMStageConfig[];
+  /** Estágio atual do client linkado (se houver). Quando bate com um stage
+   *  do pipeline, o submenu mostra check ao lado pra deixar claro onde está. */
+  linkedClientStage?: import('@/lib/types').LeadStatus;
+  /** Disparado quando operador escolhe estágio. Caller decide se cria
+   *  Client novo ou atualiza o existente. */
+  onSendToPipeline?: (stage: import('@/lib/types').LeadStatus) => void;
 }) {
   const { t } = useTranslation();
   const cfg = getConvConfig(conversation);
@@ -1065,6 +1082,7 @@ function ThreadHeader({
   const [showStatusMenu, setShowStatusMenu] = useState(false);
   const [showOverflowMenu, setShowOverflowMenu] = useState(false);
   const [showSnoozeMenu, setShowSnoozeMenu] = useState(false);
+  const [showPipelineMenu, setShowPipelineMenu] = useState(false);
   const [isEditingName, setIsEditingName] = useState(false);
   const [editNameValue, setEditNameValue] = useState('');
   const [savingName, setSavingName] = useState(false);
@@ -1486,6 +1504,63 @@ function ThreadHeader({
                     <UserIcon className="w-3.5 h-3.5 text-gray-400" />
                     Ver/editar contato
                   </button>
+                )}
+                {/* Submenu "Enviar para o pipeline": permite criar/promover
+                    o contato pra um estágio do CRM direto da conversa. Se já
+                    está num stage, o item mostra check ao lado. Caller decide
+                    se cria Client novo (sem crmContactId) ou atualiza o
+                    existente — handler unificado em sendConversationToPipeline. */}
+                {onSendToPipeline && pipelineStages && pipelineStages.length > 0 && (
+                  <div className="relative">
+                    <button
+                      onClick={() => setShowPipelineMenu(v => !v)}
+                      className="w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs text-gray-700 dark:text-gray-300"
+                    >
+                      <GitBranch className="w-3.5 h-3.5 text-gray-400" />
+                      <span className="flex-1">
+                        {linkedClientStage && pipelineStages.some(s => s.id === linkedClientStage)
+                          ? 'Mover no pipeline'
+                          : 'Enviar para o pipeline'}
+                      </span>
+                      <ChevronRight className="w-3 h-3 text-gray-400" />
+                    </button>
+                    <AnimatePresence>
+                      {showPipelineMenu && (
+                        <motion.div
+                          initial={{ opacity: 0, x: -4 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, x: -4 }}
+                          transition={{ duration: 0.12 }}
+                          className="absolute left-full top-0 ml-1 w-48 bg-white dark:bg-[#1a2030] border border-gray-200 dark:border-white/[0.08] rounded-xl shadow-lg overflow-hidden z-50 max-h-72 overflow-y-auto"
+                        >
+                          {pipelineStages.map(stage => {
+                            const isCurrent = linkedClientStage === stage.id;
+                            return (
+                              <button
+                                key={stage.id}
+                                onClick={() => {
+                                  onSendToPipeline(stage.id);
+                                  setShowPipelineMenu(false);
+                                  setShowOverflowMenu(false);
+                                }}
+                                disabled={isCurrent}
+                                className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs text-gray-700 dark:text-gray-300 disabled:opacity-50 disabled:cursor-default"
+                              >
+                                <span
+                                  className="w-2 h-2 rounded-full shrink-0"
+                                  style={{ backgroundColor: stage.color }}
+                                />
+                                <span className="flex-1">{stage.name}</span>
+                                {isCurrent && (
+                                  <Check className="w-3 h-3 text-emerald-500 shrink-0" />
+                                )}
+                              </button>
+                            );
+                          })}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
                 )}
                 {onMarkUnread && (
                   <button
@@ -4202,7 +4277,8 @@ export type SmartViewId =
   | 'unread'            // unreadCount > 0 (qualquer status, exceto soneca)
   | 'stale'             // open + último msg do cliente + >1h sem resposta
   | 'resolved_today'    // status='resolved' fechado hoje
-  | 'snoozed';          // soneca ativa (snoozedUntil > now)
+  | 'snoozed'           // soneca ativa (snoozedUntil > now)
+  | 'in_pipeline';      // conv vinculada a client em estágio ativo do CRM
 
 const STALE_THRESHOLD_MS = 60 * 60 * 1000; // 1h sem resposta vira "esquecida"
 
@@ -4222,6 +4298,11 @@ function matchesSmartView(
   view: SmartViewId,
   currentUserUid: string,
   now: number,
+  /** Set de client IDs que estão em estágios ATIVOS do pipeline (excluindo
+   *  isWon/isLost). Caller pré-computa a partir de clients + crmPipeline pra
+   *  evitar O(n*m) per render. Quando ausente, a view 'in_pipeline' fica
+   *  permanentemente vazia (defensivo). */
+  clientIdsInPipeline?: Set<string>,
 ): boolean {
   // Soneca ativa: aparece SÓ na view 'snoozed', some das outras. Operador
   // já disse "ignore por enquanto" — não polui o radar.
@@ -4265,6 +4346,10 @@ function matchesSmartView(
     case 'snoozed':
       // Já filtrado acima — aqui chega só se tiver soneca ativa.
       return isSnoozed(conv, now);
+    case 'in_pipeline':
+      // Conv linkada a um Client cujo status é estágio ATIVO do pipeline
+      // (não ganho/perdido). Set pré-computado pelo caller.
+      return !!conv.crmContactId && !!clientIdsInPipeline?.has(conv.crmContactId);
   }
 }
 
@@ -4295,6 +4380,7 @@ const SMART_VIEW_EMPTY_STATE: Record<SmartViewId, { title: string; subtitle: str
   stale:           { title: 'Sem conversas esquecidas',       subtitle: 'Nenhuma resposta pendente há mais de 1h.' },
   resolved_today:  { title: 'Nenhuma resolvida hoje',         subtitle: 'O fechamento de tickets ainda não começou hoje.' },
   snoozed:         { title: 'Sem conversas em soneca',        subtitle: 'Use "Soneca" no menu de uma conversa pra silenciá-la temporariamente.' },
+  in_pipeline:     { title: 'Nenhuma conversa no pipeline',   subtitle: 'Use "Enviar para o pipeline" no menu de uma conversa pra adicionar o lead ao CRM.' },
 };
 
 /**
@@ -4322,6 +4408,10 @@ const ACTION_VIEWS: SmartViewDef[] = [
   { id: 'stale',          label: 'Esquecidas (>1h)',    icon: <Clock size={13} /> },
   { id: 'snoozed',        label: 'Em soneca',           icon: <Moon size={13} /> },
   { id: 'resolved_today', label: 'Resolvidas hoje',     icon: <CheckCircle size={13} /> },
+  // Conversas cujo cliente está no pipeline do CRM (estágio ativo). Útil
+  // pra acompanhar leads que viraram oportunidade — espelha o filtro
+  // operacional que o vendedor precisa quando vai trabalhar a lista do dia.
+  { id: 'in_pipeline',    label: 'No pipeline',         icon: <GitBranch size={13} /> },
 ];
 
 function SmartViewsBar({
@@ -5217,6 +5307,38 @@ export default function ConversasModule() {
       console.error('[Conversations] Mark unread failed:', err);
     }
   }, [business?.id]);
+
+  // Estágios ativos do pipeline (visíveis e não-finais) — alimentam o submenu
+  // "Enviar para o pipeline" no ThreadHeader. Ganho/perdido ficam de fora
+  // porque representam saída do funil, não entrada.
+  const pipelineStagesActive = useMemo(
+    () => getVisibleStages(business?.settings?.crmPipeline).filter(s => !s.isWon && !s.isLost),
+    [business?.settings?.crmPipeline],
+  );
+
+  const handleSendToPipeline = useCallback(async (conv: Conversation, stage: import('@/lib/types').LeadStatus) => {
+    if (!business?.id) return;
+    try {
+      const result = await sendConversationToPipeline({
+        conversation: conv,
+        clients: clientsList,
+        businessId: business.id,
+        targetStage: stage,
+      });
+      const stageName = pipelineStagesActive.find(s => s.id === stage)?.name ?? stage;
+      const messageByOutcome = {
+        created: `Contato criado em "${stageName}" no pipeline.`,
+        linked: `Cliente existente encontrado e movido para "${stageName}".`,
+        updated: `Cliente movido para "${stageName}" no pipeline.`,
+      };
+      toast.success(messageByOutcome[result.outcome]);
+      // Sem invalidateQueries — clients usa onSnapshot em outro fluxo;
+      // a mudança propaga em real-time sem invalidação manual.
+    } catch (err) {
+      console.error('[Conversations] Send to pipeline failed:', err);
+      toast.error('Falha ao enviar conversa para o pipeline.');
+    }
+  }, [business?.id, clientsList, pipelineStagesActive]);
 
   const handleSnooze = useCallback(async (conv: Conversation, untilIso: string) => {
     if (!business?.id || !user) return;
@@ -7379,7 +7501,7 @@ export default function ConversasModule() {
       } else {
         matchesChannel = c.channel === activeChannel;
       }
-      const matchesView = matchesSmartView(c, activeView, currentUid, now);
+      const matchesView = matchesSmartView(c, activeView, currentUid, now, clientIdsInPipeline);
       const matchesSector = activeSectorFilter === 'all' || c.sectorIds?.includes(activeSectorFilter) || c.assignedToSectorId === activeSectorFilter;
       // Phase 2: filtro por escopo de canal
       let matchesScope = true;
@@ -7491,22 +7613,34 @@ export default function ConversasModule() {
   // canal ativo (chips de cima). Assim os badges das views refletem o que o
   // operador veria se clicasse, considerando o canal que ele já selecionou.
   // Note: getVisibleConversations já aplica isolamento de canal pessoal.
+  // Set de client IDs em estágios ATIVOS do pipeline (não-ganho/perdido).
+  // Pré-computado pra evitar O(n*m) — usado por matchesSmartView('in_pipeline').
+  // Recalcula quando clients ou pipelineStagesActive mudam.
+  const clientIdsInPipeline = useMemo(() => {
+    const activeStageIds = new Set(pipelineStagesActive.map(s => s.id));
+    const out = new Set<string>();
+    for (const c of clientsList) {
+      if (activeStageIds.has(c.status)) out.add(c.id);
+    }
+    return out;
+  }, [clientsList, pipelineStagesActive]);
+
   const countsByView = useMemo(() => {
     const now = Date.now();
     const currentUid = user?.uid ?? '';
     const out: Record<SmartViewId, number> = {
       all: 0, all_open: 0, waiting_client: 0, all_resolved: 0,
       awaiting_reply: 0, mine: 0, unassigned: 0, unread: 0, stale: 0,
-      resolved_today: 0, snoozed: 0,
+      resolved_today: 0, snoozed: 0, in_pipeline: 0,
     };
     for (const c of getVisibleConversations(conversations)) {
       if (!matchesActiveChannel(c)) continue;
       (Object.keys(out) as SmartViewId[]).forEach(v => {
-        if (matchesSmartView(c, v, currentUid, now)) out[v]++;
+        if (matchesSmartView(c, v, currentUid, now, clientIdsInPipeline)) out[v]++;
       });
     }
     return out;
-  }, [conversations, getVisibleConversations, user?.uid, activeChannel]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [conversations, getVisibleConversations, user?.uid, activeChannel, clientIdsInPipeline]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Tabs ────────────────────────────────────────────────────────────────────
   // Split automático WhatsApp Cloud × Baileys quando o business tem volume nos
@@ -8152,6 +8286,13 @@ export default function ConversasModule() {
                         : undefined;
                     })()
                   }
+                  pipelineStages={pipelineStagesActive}
+                  linkedClientStage={
+                    selectedConversation.crmContactId
+                      ? clientsList.find(c => c.id === selectedConversation.crmContactId)?.status
+                      : undefined
+                  }
+                  onSendToPipeline={(stage) => handleSendToPipeline(selectedConversation, stage)}
                 />
 
                 {/* Assignment history panel */}
