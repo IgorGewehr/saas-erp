@@ -82,7 +82,6 @@ import {
   Sparkles,
   Search,
   Bell,
-  PanelLeft,
   ScrollText,
   Headphones,
   Image as ImageIcon,
@@ -124,7 +123,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'setores' | 'enterprise' | 'canais' | 'meus-canais' | 'modo' | 'agente' | 'cofre' | 'interface' | 'logs';
+type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'setores' | 'enterprise' | 'canais' | 'meus-canais' | 'modo' | 'agente' | 'cofre' | 'logs';
 
 interface CertStatus {
   hasCertificate: boolean;
@@ -4933,6 +4932,13 @@ function ModoSistemaTab() {
           Mudar o modo não apaga dados — apenas ajusta a visibilidade dos módulos e do dashboard. Você pode trocar a qualquer momento sem perder nada.
         </p>
       </div>
+
+      {/* Sub-seção: personalização individual da sidebar. O modo acima define o
+          universo de módulos disponíveis (escolha business-wide); aqui o user
+          escolhe o que mostrar/ordenar dentro desse universo (escolha pessoal). */}
+      <div className="pt-4 mt-2 border-t border-gray-200 dark:border-gray-800">
+        <SidebarEditorTab />
+      </div>
     </motion.div>
   );
 }
@@ -7640,7 +7646,6 @@ export default function SettingsModule() {
   const allTabs = [
     { id: 'perfil'     as Tab, label: t('settings.tabs.perfil',   'Meu Perfil'), icon: UserCircle },
     { id: 'modo'       as Tab, label: t('settings.tabs.modo',     'Modo do Sistema'), icon: Zap   },
-    { id: 'interface'  as Tab, label: 'Interface',                               icon: PanelLeft  },
     { id: 'agente'     as Tab, label: t('settings.tabs.agente',   'Agente IA'), icon: Sparkles },
     { id: 'cofre'      as Tab, label: t('settings.tabs.cofre',    'Senhas'),     icon: Shield    },
     { id: 'empresa'    as Tab, label: t('settings.tabs.empresa',  'Empresa'),    icon: Building2  },
@@ -7764,7 +7769,6 @@ export default function SettingsModule() {
       <AnimatePresence mode="wait" initial={false}>
         {activeTab === 'perfil'     && <ProfileTab key="perfil" />}
         {activeTab === 'modo'       && <ModoSistemaTab key="modo" />}
-        {activeTab === 'interface'  && <SidebarEditorTab key="interface" />}
         {activeTab === 'agente'     && <AgenteTab key="agente" />}
         {activeTab === 'cofre'      && <VaultTab key="cofre" />}
         {activeTab === 'empresa'    && <EmpresaTab key="empresa" />}
