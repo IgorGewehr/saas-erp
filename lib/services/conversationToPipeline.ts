@@ -38,8 +38,9 @@ interface SendToPipelineParams {
 export interface SendToPipelineResult {
   clientId: string;
   /** 'created' = novo Client; 'updated' = Client existente teve status mudado;
-   *  'linked' = Client existente foi encontrado por telefone e linkado. */
-  outcome: 'created' | 'updated' | 'linked';
+   *  'linked' = Client existente foi encontrado por telefone e linkado;
+   *  'no-op' = Client já estava no estágio destino (nada mudou de fato). */
+  outcome: 'created' | 'updated' | 'linked' | 'no-op';
 }
 
 /** Extrai só dígitos — espelha o `digits()` de ConversasModule pra match. */
@@ -49,12 +50,20 @@ function digits(s: string | null | undefined): string {
 
 /** Procura cliente já cadastrado com mesmo telefone (últimos 8 dígitos +
  *  DDD batendo). Evita criar duplicata se o operador já cadastrou o cliente
- *  manualmente em outro fluxo. Replicado do LinkContactPanel.quickCreate. */
-function findClientByPhone(clients: Client[], phoneDigits: string): Client | null {
+ *  manualmente em outro fluxo. Replicado do LinkContactPanel.quickCreate.
+ *
+ *  Filtra por businessId como defesa em profundidade — o caller deveria
+ *  passar lista já filtrada, mas custa zero garantir aqui. */
+function findClientByPhone(
+  clients: Client[],
+  phoneDigits: string,
+  businessId: string,
+): Client | null {
   if (!phoneDigits) return null;
   const newLast8 = phoneDigits.slice(-8);
   const newDdd = phoneDigits.replace(/^55/, '').slice(0, 2);
   for (const c of clients) {
+    if (c.businessId !== businessId) continue;
     if (c.mergedInto || (c as { deletedAt?: string }).deletedAt) continue;
     for (const cand of [c.phone, c.whatsapp].filter(Boolean) as string[]) {
       const candDigits = digits(cand);
@@ -75,6 +84,12 @@ export async function sendConversationToPipeline(
 
   // Caso 1: conversa já tem client linkado → updateDoc no status.
   if (conversation.crmContactId) {
+    const linked = clients.find(c => c.id === conversation.crmContactId);
+    // No-op se já está no estágio destino — evita write desnecessário no
+    // Firestore e toast enganoso ("movido para X" quando nada mudou).
+    if (linked && linked.status === targetStage) {
+      return { clientId: conversation.crmContactId, outcome: 'no-op' };
+    }
     await updateDoc(doc(db, 'clients', conversation.crmContactId), {
       status: targetStage,
       updatedAt: now,
@@ -84,15 +99,28 @@ export async function sendConversationToPipeline(
 
   // Caso 2: sem link. Verifica se já existe Client com mesmo telefone.
   const phoneDigits = digits(conversation.contactPhone || conversation.contactExternalId);
-  const existing = phoneDigits ? findClientByPhone(clients, phoneDigits) : null;
+  const existing = phoneDigits ? findClientByPhone(clients, phoneDigits, businessId) : null;
   if (existing) {
-    // Atualiza status do existente E linka a conversa.
-    await updateDoc(doc(db, 'clients', existing.id), {
+    // Atualiza status do existente E linka a conversa. Também escreve
+    // channelIdentities + avatarUrl pra paridade com LinkContactPanel.link():
+    // sem channelIdentities, futuras mensagens inbound não auto-linkariam
+    // nesse Client (auto-link procura por channelIdentities[canal]).
+    const patch: Record<string, unknown> = {
       status: targetStage,
       lastConversationId: conversation.id,
       lastConversationAt: now,
       updatedAt: now,
-    });
+    };
+    if (phoneDigits) {
+      const key = conversation.channel === 'whatsapp' ? 'channelIdentities.whatsapp'
+        : conversation.channel === 'facebook' ? 'channelIdentities.facebook'
+        : 'channelIdentities.instagram';
+      patch[key] = phoneDigits;
+    }
+    if (conversation.contactAvatarUrl && !existing.avatarUrl) {
+      patch.avatarUrl = conversation.contactAvatarUrl;
+    }
+    await updateDoc(doc(db, 'clients', existing.id), patch);
     await updateDoc(doc(db, 'conversations', conversation.id), {
       crmContactId: existing.id,
       updatedAt: now,

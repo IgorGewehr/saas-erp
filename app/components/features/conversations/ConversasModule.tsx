@@ -5316,8 +5316,14 @@ export default function ConversasModule() {
     [business?.settings?.crmPipeline],
   );
 
+  // Guard de re-entrância: double-click rápido em "Enviar para pipeline" sem
+  // crmContactId criava 2 Clients porque o segundo click rodava antes do
+  // onSnapshot reconciliar `clientsList`. Ref ao invés de state pra não
+  // disparar re-render — o submenu não precisa visualizar o estado de envio.
+  const sendingToPipelineRef = useRef(false);
   const handleSendToPipeline = useCallback(async (conv: Conversation, stage: import('@/lib/types').LeadStatus) => {
-    if (!business?.id) return;
+    if (!business?.id || sendingToPipelineRef.current) return;
+    sendingToPipelineRef.current = true;
     try {
       const result = await sendConversationToPipeline({
         conversation: conv,
@@ -5328,8 +5334,12 @@ export default function ConversasModule() {
       const stageName = pipelineStagesActive.find(s => s.id === stage)?.name ?? stage;
       const messageByOutcome = {
         created: `Contato criado em "${stageName}" no pipeline.`,
-        linked: `Cliente existente encontrado e movido para "${stageName}".`,
+        // 'linked' é factual (linkamos um Client existente). Não dizemos
+        // "movido" porque o status do existing pode já ter sido o targetStage
+        // — escrita ainda acontece pra setar channelIdentities/avatar.
+        linked: `Cliente existente vinculado em "${stageName}".`,
         updated: `Cliente movido para "${stageName}" no pipeline.`,
+        'no-op': `Cliente já estava em "${stageName}".`,
       };
       toast.success(messageByOutcome[result.outcome]);
       // Sem invalidateQueries — clients usa onSnapshot em outro fluxo;
@@ -5337,6 +5347,8 @@ export default function ConversasModule() {
     } catch (err) {
       console.error('[Conversations] Send to pipeline failed:', err);
       toast.error('Falha ao enviar conversa para o pipeline.');
+    } finally {
+      sendingToPipelineRef.current = false;
     }
   }, [business?.id, clientsList, pipelineStagesActive]);
 
