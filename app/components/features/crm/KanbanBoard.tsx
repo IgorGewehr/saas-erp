@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Layers } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
-import { getWonStageId } from './shared';
+import { getWonStageId, filterPipelineContacts } from './shared';
 import { LeadCard } from './LeadCard';
 import type { CRMContact, CRMStageConfig, LeadStatus, LeadSource } from '@/lib/types';
 
@@ -34,27 +34,10 @@ export function KanbanBoard({ contacts, stages, onSelectContact, selectedContact
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverStatus, setDragOverStatus] = useState<LeadStatus | null>(null);
 
-  const filtered = useMemo(() => {
-    let result = [...contacts];
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      result = result.filter((c) =>
-        c.name.toLowerCase().includes(q) ||
-        (c.company && c.company.toLowerCase().includes(q)) ||
-        (c.email && c.email.toLowerCase().includes(q))
-      );
-    }
-    if (filterSource !== 'all') result = result.filter((c) => c.source === filterSource);
-    if (filterTipo !== 'all') {
-      // Contatos legados sem campo `tipo` são tratados como PF (default histórico
-      // pré-Fase 4 — quando o CRM criava sempre com tipo='pf' hardcoded).
-      result = result.filter((c) => (c.tipo ?? 'pf') === filterTipo);
-    }
-    if (filterTags.length > 0) {
-      result = result.filter((c) => filterTags.every((tag) => c.tags?.includes(tag)));
-    }
-    return result;
-  }, [contacts, searchQuery, filterSource, filterTipo, filterTags]);
+  const filtered = useMemo(
+    () => filterPipelineContacts(contacts, { searchQuery, filterTags, filterSource, filterTipo }),
+    [contacts, searchQuery, filterSource, filterTipo, filterTags],
+  );
 
   const handleDragStart = (e: React.DragEvent, contact: CRMContact) => {
     draggingRef.current = contact;

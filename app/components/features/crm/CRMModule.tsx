@@ -52,6 +52,7 @@ import {
   applyPhoneMask, stripPhoneMask, parseCurrencyInput, formatCurrencyInput,
   PROFILE_CONFIG, getScoreColor, getChurnLabel,
   DEFAULT_CRM_PIPELINE, getVisibleStages, getStageLabel, getWonStageId,
+  filterPipelineContacts,
   type CRMTab,
 } from './shared';
 import RecipientListInput from './RecipientListInput';
@@ -3645,6 +3646,8 @@ export default function CRMModule() {
       setSelectedIds(new Set());
     }
   }, [activeTab, selectionMode]);
+  // pipelineFilteredContacts vive abaixo, depois que searchQuery/filter*
+  // estiverem declarados.
   // Escape sai do modo de seleção (operador rápido espera Esc cancelar).
   useEffect(() => {
     if (!selectionMode) return;
@@ -3693,6 +3696,13 @@ export default function CRMModule() {
   const [lc, setLc] = useState(true);
   const [ld, setLd] = useState(true);
   const [la, setLa] = useState(true);
+  // Contatos visíveis no Pipeline (mesmos filtros aplicados nas duas views).
+  // Usado pelo botão "Selecionar todos" da barra contextual — afeta só quem
+  // está visível pelos filtros atuais, não TODOS os contatos do tenant.
+  const pipelineFilteredContacts = useMemo(
+    () => filterPipelineContacts(contacts, { searchQuery, filterTags, filterSource, filterTipo }),
+    [contacts, searchQuery, filterTags, filterSource, filterTipo],
+  );
   // Helper local — sort por createdAt desc usado pra contacts/deals/activities.
   // Mantido client-side pra evitar composite indexes (clients/businessId+
   // createdAt, crmDeals/businessId+createdAt, etc.).
@@ -4232,7 +4242,7 @@ export default function CRMModule() {
           Mostra contador, "Selecionar todos os visíveis" e "Excluir N".
           ═══════════════════════════════════════════════════════════ */}
       <AnimatePresence>
-        {activeTab === 'kanban' && selectionMode && selectedIds.size > 0 && (
+        {activeTab === 'kanban' && selectionMode && (
           <motion.div
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
@@ -4241,27 +4251,66 @@ export default function CRMModule() {
           >
             <div className="flex items-center gap-3 px-4 py-2 rounded-xl bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30">
               <span className="text-xs font-semibold text-blue-700 dark:text-blue-300">
-                {selectedIds.size} selecionado(s)
+                {selectedIds.size > 0
+                  ? `${selectedIds.size} de ${pipelineFilteredContacts.length} selecionado(s)`
+                  : `Nenhum dos ${pipelineFilteredContacts.length} contatos visíveis selecionado`}
               </span>
-              <button
-                onClick={() => {
-                  // Limpa toda seleção. Os ids visíveis dependem da view, mas
-                  // limpar é universal — operador toca de novo se quiser
-                  // refazer.
-                  setSelectedIds(new Set());
-                }}
-                className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
-              >
-                Limpar
-              </button>
+              {/* Selecionar todos os visíveis: respeita filtros aplicados
+                  (search, tags, origem, tipo). Se já estão TODOS marcados,
+                  o botão vira "Limpar" pra evitar 2 botões redundantes. */}
+              {(() => {
+                const allVisible = pipelineFilteredContacts.length > 0
+                  && pipelineFilteredContacts.every(c => selectedIds.has(c.id));
+                return (
+                  <button
+                    onClick={() => {
+                      if (allVisible) {
+                        // Todos os visíveis já marcados → limpa só esses
+                        // (preserva marcações que ficaram de filtros anteriores).
+                        setSelectedIds(prev => {
+                          const next = new Set(prev);
+                          for (const c of pipelineFilteredContacts) next.delete(c.id);
+                          return next;
+                        });
+                      } else {
+                        // Marca todos os visíveis (preserva marcações fora
+                        // do filtro atual — evita perda silenciosa se o
+                        // operador filtrar, selecionar tudo, mudar filtro e
+                        // selecionar tudo de novo).
+                        setSelectedIds(prev => {
+                          const next = new Set(prev);
+                          for (const c of pipelineFilteredContacts) next.add(c.id);
+                          return next;
+                        });
+                      }
+                    }}
+                    disabled={pipelineFilteredContacts.length === 0}
+                    className="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline disabled:opacity-40 disabled:no-underline"
+                  >
+                    {allVisible
+                      ? `Limpar ${pipelineFilteredContacts.length} visíveis`
+                      : `Selecionar todos os ${pipelineFilteredContacts.length} visíveis`}
+                  </button>
+                );
+              })()}
+              {selectedIds.size > 0 && (
+                <button
+                  onClick={() => setSelectedIds(new Set())}
+                  className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                >
+                  Limpar tudo
+                </button>
+              )}
               <div className="flex-1" />
-              <button
-                onClick={() => setBulkDeleteOpen(true)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500 hover:bg-red-600 text-white text-xs font-semibold transition-colors"
-              >
-                <Trash2 size={13} />
-                Excluir {selectedIds.size}
-              </button>
+              {selectedIds.size > 0 && (
+                <button
+                  onClick={() => setBulkDeleteOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500 hover:bg-red-600 text-white text-xs font-semibold transition-colors"
+                >
+                  <Trash2 size={13} />
+                  Excluir {selectedIds.size}
+                </button>
+              )}
             </div>
           </motion.div>
         )}

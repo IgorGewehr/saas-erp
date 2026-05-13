@@ -1,4 +1,4 @@
-import type { CRMPipelineStage, CRMStageConfig, CRMPipelineConfig, CRMActivityType, LeadStatus, LeadSource, BroadcastStatus, ContactProfile, ConversationTone, PriceSensitivity } from '@/lib/types';
+import type { CRMContact, CRMPipelineStage, CRMStageConfig, CRMPipelineConfig, CRMActivityType, LeadStatus, LeadSource, BroadcastStatus, ContactProfile, ConversationTone, PriceSensitivity } from '@/lib/types';
 import { formatDate } from '@/lib/utils/format';
 
 // Pipeline
@@ -98,6 +98,46 @@ export function getEffectivePipeline(config?: CRMPipelineConfig): CRMStageConfig
 /** Estágios visíveis (usados no Kanban) */
 export function getVisibleStages(config?: CRMPipelineConfig): CRMStageConfig[] {
   return getEffectivePipeline(config).filter(s => s.isVisible !== false);
+}
+
+/**
+ * Aplica os filtros do Pipeline (search, source, tipo, tags) a um array de
+ * contatos. Centraliza a lógica que vivia duplicada em KanbanBoard e
+ * LeadTableView — agora também usada pelo CRMModule pra calcular o conjunto
+ * de "todos os visíveis" do botão Selecionar Todos.
+ *
+ * Mantém o comportamento histórico:
+ *   - Contatos legados sem `tipo` são tratados como 'pf' (default pré-Fase 4).
+ *   - filterTags exige TODAS as tags (AND), não qualquer uma (OR).
+ */
+export function filterPipelineContacts(
+  contacts: CRMContact[],
+  filters: {
+    searchQuery: string;
+    filterTags: string[];
+    filterSource: LeadSource | 'all';
+    filterTipo: 'pf' | 'pj' | 'all';
+  },
+): CRMContact[] {
+  let result = contacts;
+  if (filters.searchQuery) {
+    const q = filters.searchQuery.toLowerCase();
+    result = result.filter(c =>
+      (c.name?.toLowerCase().includes(q)) ||
+      (c.company && c.company.toLowerCase().includes(q)) ||
+      (c.email && c.email.toLowerCase().includes(q)),
+    );
+  }
+  if (filters.filterSource !== 'all') {
+    result = result.filter(c => c.source === filters.filterSource);
+  }
+  if (filters.filterTipo !== 'all') {
+    result = result.filter(c => (c.tipo ?? 'pf') === filters.filterTipo);
+  }
+  if (filters.filterTags.length > 0) {
+    result = result.filter(c => filters.filterTags.every(t => c.tags?.includes(t)));
+  }
+  return result;
 }
 
 /** Label de exibição de um status, respeitando config customizada */
