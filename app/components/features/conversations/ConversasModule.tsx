@@ -1283,10 +1283,13 @@ function ThreadHeader({
             <CampaignOriginBadge conversationId={conversation.id} businessId={conversation.businessId} />
             {/* Badge da fase do pipeline do CRM. Mesmo padrão visual da
                 campanha — pill colorida com a cor do stage configurada. Só
-                aparece quando o cliente está em algum estágio do funil. */}
+                aparece quando o cliente está em algum estágio do funil.
+                hidden sm:inline-flex + flex-shrink-0 para casar com
+                CampaignOriginBadge (some em mobile, não comprime em
+                headers apertados). */}
             {linkedClientStageConfig && (
               <span
-                className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full border"
+                className="hidden sm:inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full border flex-shrink-0"
                 style={{
                   backgroundColor: linkedClientStageConfig.color + '22',
                   color: linkedClientStageConfig.color,
@@ -6159,7 +6162,7 @@ export default function ConversasModule() {
       slaStatus: (view.filters.slaStatus as AdvancedFilters['slaStatus']) ?? '',
       unreadOnly: view.filters.unreadOnly ?? false,
       campaignOrigin: validCampaign ? persistedCampaign : '',
-      pipelineStage: (view.filters as { pipelineStage?: string }).pipelineStage ?? '',
+      pipelineStage: view.filters.pipelineStage ?? '',
     });
   };
 
