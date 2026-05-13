@@ -14,6 +14,7 @@ import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
 import { useOperatorTyping } from '@/lib/hooks/useOperatorTyping';
 import { getInitials } from '@/lib/utils/format';
+import { formatWhatsAppText } from '@/lib/utils/whatsapp-format';
 import {
   collection,
   query,
@@ -1904,7 +1905,11 @@ function MessageBubble({
           && (
           <div
             className={cn(
-              'relative px-3.5 py-2.5 text-sm leading-relaxed shadow-sm',
+              // whitespace-pre-wrap preserva \n e espaços múltiplos da mensagem
+              // original — sem isso o WhatsApp mostra com quebras e o painel
+              // interno colapsa tudo em linha contínua. break-words evita
+              // overflow horizontal em URLs longas (Play/Apple Store).
+              'relative px-3.5 py-2.5 text-sm leading-relaxed shadow-sm whitespace-pre-wrap break-words',
               message.isInternal
                 ? 'bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-500/30 text-amber-900 dark:text-amber-100 rounded-2xl'
                 : isOut
@@ -1921,7 +1926,7 @@ function MessageBubble({
                 )}
               </div>
             )}
-            {message.content}
+            {formatWhatsAppText(message.content)}
           </div>
         )}
 
