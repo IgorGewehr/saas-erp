@@ -38,6 +38,7 @@ import { db, storage } from '@/lib/config/firebase';
 import { notifyUsers } from '@/lib/services/notifications';
 import { sendConversationToPipeline } from '@/lib/services/conversationToPipeline';
 import { getVisibleStages } from '@/app/components/features/crm/shared';
+import { ScheduleFromConversationDialog } from './ScheduleFromConversationDialog';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { pickReadableTextColor } from '@/lib/utils/color';
 import debounce from 'lodash.debounce';
@@ -115,6 +116,7 @@ import {
   BellOff,
   Mail,
   GitBranch,
+  Calendar,
 } from 'lucide-react';
 import { getDocs, getDoc } from 'firebase/firestore';
 import type {
@@ -1032,6 +1034,7 @@ function ThreadHeader({
   linkedClientStage,
   onSendToPipeline,
   linkedClientStageConfig,
+  onScheduleAppointment,
 }: {
   conversation: Conversation;
   onBack: () => void;
@@ -1081,6 +1084,9 @@ function ThreadHeader({
    *  pipelineStages que só tem ativos). Usado pra renderizar o badge
    *  contextual no header. null = sem cliente ou status desconhecido. */
   linkedClientStageConfig?: import('@/lib/types').CRMStageConfig | null;
+  /** Disparado quando operador clica "Agendar atendimento" no overflow menu.
+   *  Caller decide se abre dialog próprio ou redireciona pra Agenda. */
+  onScheduleAppointment?: () => void;
 }) {
   const { t } = useTranslation();
   const { isDark } = useTheme();
@@ -1611,6 +1617,15 @@ function ThreadHeader({
                       )}
                     </AnimatePresence>
                   </div>
+                )}
+                {onScheduleAppointment && (
+                  <button
+                    onClick={() => { onScheduleAppointment(); setShowOverflowMenu(false); }}
+                    className="w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs text-gray-700 dark:text-gray-300"
+                  >
+                    <Calendar className="w-3.5 h-3.5 text-gray-400" />
+                    Agendar atendimento
+                  </button>
                 )}
                 {onMarkUnread && (
                   <button
@@ -5295,6 +5310,16 @@ export default function ConversasModule() {
     const unsub = onSnapshot(q, snap => setMembers(snap.docs.map(d => ({ ...d.data(), id: d.id } as User))));
     return () => unsub();
   }, [business?.id]);
+  // Services do tenant — usados pelo ScheduleFromConversationDialog
+  // (operador "Agendar atendimento" direto da conversa). Lista é pequena
+  // (<50 services típico), onSnapshot custa pouco.
+  const [servicesList, setServicesList] = useState<import('@/lib/types').Service[]>([]);
+  useEffect(() => {
+    if (!business?.id) return;
+    const q = query(collection(db, 'services'), where('businessId', '==', business.id));
+    const unsub = onSnapshot(q, snap => setServicesList(snap.docs.map(d => ({ ...d.data(), id: d.id } as import('@/lib/types').Service))));
+    return () => unsub();
+  }, [business?.id]);
 
   // Tick every 30s to refresh SLA countdowns without re-fetching data
   const [slaTick, setSLATick] = useState(0);
@@ -5306,6 +5331,10 @@ export default function ConversasModule() {
   const notifiedBreachIdsRef = useRef<Set<string>>(new Set());
   const [agentDebugOpen, setAgentDebugOpen] = useState(false);
   const [linkContactOpen, setLinkContactOpen] = useState(false);
+  // "Agendar atendimento" disparado do overflow menu da conversa. Resolvido
+  // por ScheduleFromConversationDialog que decide se mostra a etapa de
+  // vinculação de cliente ou já vai pro AppointmentFormDialog.
+  const [scheduleOpen, setScheduleOpen] = useState(false);
   const [clientsList, setClientsList] = useState<Client[]>([]);
   const [clientsLoadError, setClientsLoadError] = useState<string | null>(null);
 
@@ -8432,6 +8461,7 @@ export default function ConversasModule() {
                     return pipelineStagesAll.find(s => s.id === status) ?? null;
                   })()}
                   onSendToPipeline={(stage) => handleSendToPipeline(selectedConversation, stage)}
+                  onScheduleAppointment={() => setScheduleOpen(true)}
                 />
 
                 {/* Assignment history panel */}
@@ -8946,6 +8976,20 @@ export default function ConversasModule() {
           </>
         )}
       </AnimatePresence>
+
+      {/* Schedule appointment from conversation */}
+      {selectedConversation && business?.id && user && (
+        <ScheduleFromConversationDialog
+          open={scheduleOpen}
+          conversation={selectedConversation}
+          clients={clientsList}
+          services={servicesList}
+          members={members}
+          businessId={business.id}
+          currentUser={{ id: user.id, name: user.name || user.email || 'Operador' }}
+          onClose={() => setScheduleOpen(false)}
+        />
+      )}
 
       {/* Agent Debug Drawer */}
       <AnimatePresence>
