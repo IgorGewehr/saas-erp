@@ -53,6 +53,7 @@ import {
   ClipboardCheck,
   UtensilsCrossed,
   KeyRound,
+  FileSpreadsheet,
   Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -66,7 +67,7 @@ const PROTECTED_ITEMS = new Set(['Dashboard', 'Configurações']);
 
 const DEFAULT_SECTIONS: SidebarSectionPref[] = [
   { key: 'principal', title: 'Principal', isCollapsed: false, items: ['Dashboard', 'Clientes', 'CRM', 'Agenda', 'Conversas', 'Notas', 'PDV'] },
-  { key: 'gestao',    title: 'Gestão',    isCollapsed: false, items: ['Pedidos', 'Cardápio', 'Vendas', 'Kanban', 'Financeiro', 'Relatórios', 'Estoque', 'Compras', 'Senhas'] },
+  { key: 'gestao',    title: 'Gestão',    isCollapsed: false, items: ['Pedidos', 'Cardápio', 'Vendas', 'Kanban', 'Financeiro', 'Relatórios', 'Estoque', 'Compras', 'Senhas', 'Planilhas'] },
   { key: 'fiscal',    title: 'Fiscal',    isCollapsed: false, items: ['NFSe', 'NFCe', 'NFe'] },
   { key: 'sistema',   title: 'Sistema',   isCollapsed: false, items: ['Configurações'] },
 ];
@@ -78,6 +79,7 @@ const ITEM_ICONS: Record<string, React.ElementType> = {
   Estoque: Package, NFSe: FileCheck2, NFCe: Receipt, NFe: FileText,
   Configurações: Settings, Kanban: Kanban, Relatórios: BarChart3,
   Pedidos: ClipboardCheck, Cardápio: UtensilsCrossed, Senhas: KeyRound,
+  Planilhas: FileSpreadsheet,
 };
 
 const ITEM_LABELS: Record<string, string> = {
@@ -87,6 +89,7 @@ const ITEM_LABELS: Record<string, string> = {
   Estoque: 'Estoque', NFSe: 'NFS-e', NFCe: 'NFC-e', NFe: 'NF-e',
   Configurações: 'Configurações', Kanban: 'Kanban', Relatórios: 'Relatórios',
   Pedidos: 'Pedidos', Cardápio: 'Cardápio', Senhas: 'Senhas',
+  Planilhas: 'Planilhas',
 };
 
 // ─── Access restrictions (mirrors Sidebar.tsx filterItems logic) ──────────────
