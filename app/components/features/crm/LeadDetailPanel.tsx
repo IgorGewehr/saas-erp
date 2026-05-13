@@ -500,8 +500,9 @@ export function LeadDetailPanel({ contact, activities, stages, onClose, onEdit, 
               <CheckSquare size={14} /> {t('crm.detail.kanbanTask', 'Tarefa')}
             </motion.button>
             <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={onDelete}
+              title="Remover do pipeline — o contato permanece em /clientes"
               className="flex items-center gap-2 px-3 py-2.5 bg-white dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-xl text-xs font-semibold text-gray-700 dark:text-gray-300 hover:border-red-300 dark:hover:border-red-500/40 hover:text-red-600 dark:hover:text-red-400 transition-all">
-              <Trash2 size={14} /> {t('crm.action.delete', 'Excluir')}
+              <Trash2 size={14} /> {t('crm.action.removeFromCrm', 'Remover do CRM')}
             </motion.button>
           </div>
         </div>
@@ -623,6 +624,7 @@ export function LeadDetailPanel({ contact, activities, stages, onClose, onEdit, 
                   contact_created: { label: 'Criado', color: 'text-emerald-500' },
                   contact_updated: { label: 'Editado', color: 'text-blue-500' },
                   contact_deleted: { label: 'Excluído', color: 'text-red-500' },
+                  contact_removed_from_crm: { label: 'Removido do CRM', color: 'text-orange-500' },
                   status_changed: { label: 'Status', color: 'text-violet-500' },
                   tags_changed: { label: 'Tags', color: 'text-amber-500' },
                   deal_created: { label: 'Deal criado', color: 'text-emerald-500' },

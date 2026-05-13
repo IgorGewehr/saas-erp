@@ -3830,44 +3830,35 @@ export default function CRMModule() {
   const handleDeleteContact = useCallback(async () => {
     if (!deleteContactConfirm || !business?.id || !user) return;
     try {
-      // Ordem: soft-delete do client PRIMEIRO, depois hard-delete de
-      // deals/activities. Se falhar entre soft-delete e os hard-deletes, o
-      // contato já some das listas e deals/activities órfãos viram lixo
-      // cosmético — pior alternativa (inverter ordem) deixava deals órfãos
-      // com contato ativo, induzindo o operador a reeditá-lo sem perceber
-      // que perdeu histórico. Mesma ordem do bulk-delete (paridade).
-      //
-      // Soft-delete em clients porque o contato é referenciado por
-      // conversations, sales, transactions, appointments, kanbanCards —
-      // hard-delete deixaria órfãos. Deals/Activities são CRM-internos e
-      // não têm refs cross-módulo → hard-delete OK.
+      // "Remover do CRM" — NÃO exclui o cliente. Só desliga a flag inPipeline
+      // (o doc continua em /clientes com todo o histórico). Deals e activities
+      // do CRM são hard-deletados porque são contexto exclusivo de negociação:
+      // se o operador removeu do pipeline, o "trabalho de CRM" feito pra esse
+      // contato perdeu propósito. Se importar de volta depois, começa do zero
+      // (decisão deliberada — alternativa seria preservar o histórico CRM).
       const now = new Date().toISOString();
       await updateDoc(doc(db, 'clients', deleteContactConfirm.id), {
-        isActive: false,
-        deletedAt: now,
-        deletedBy: user.uid,
-        deletedByName: user.name || '',
+        inPipeline: false,
         updatedAt: now,
       });
       const dealsToDelete = deals.filter(d => d.contactId === deleteContactConfirm.id);
       for (const d of dealsToDelete) await deleteDoc(doc(db, 'crmDeals', d.id));
       const activitiesToDelete = activities.filter(a => a.contactId === deleteContactConfirm.id);
       for (const a of activitiesToDelete) await deleteDoc(doc(db, 'crmActivities', a.id));
-      void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'contact_deleted', contactId: deleteContactConfirm.id, details: deleteContactConfirm.name });
-      toast.success(t('crm.toast.contactDeleted', 'Contato excluído'));
+      void logAudit({ businessId: business.id, userId: user.uid, userName: user.name, action: 'contact_removed_from_crm', contactId: deleteContactConfirm.id, details: deleteContactConfirm.name });
+      toast.success(t('crm.toast.contactRemovedFromCrm', 'Contato removido do CRM'));
       queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
       queryClient.invalidateQueries({ queryKey: ['crmDeals', business.id] });
       queryClient.invalidateQueries({ queryKey: ['crmActivities', business.id] });
       setDeleteContactConfirm(null);
-    } catch (err) { console.error('[CRM] Error deleting contact:', err); toast.error(t('crm.toast.errorDelete', 'Erro ao excluir')); }
+    } catch (err) { console.error('[CRM] Error removing contact from CRM:', err); toast.error(t('crm.toast.errorRemoveFromCrm', 'Erro ao remover do CRM')); }
   }, [deleteContactConfirm, business?.id, user, queryClient, t, deals, activities]);
 
-  // Exclusão em massa via writeBatch (limite Firestore: 500 ops por batch).
-  // Mesmo padrão de handleDeleteContact: soft-delete em clients (isActive=false),
-  // hard-delete em crmDeals/crmActivities relacionados (CRM-internos, sem
-  // referências cross-módulo). Quebra em chunks de 500 e processa
-  // sequencialmente — paralelizar arrisca race entre batches com deals do
-  // mesmo contato.
+  // Remoção em massa do CRM via writeBatch (limite Firestore: 500 ops por batch).
+  // Mesmo padrão de handleDeleteContact: desliga inPipeline em clients (mantém
+  // o doc em /clientes), hard-delete em crmDeals/crmActivities relacionados.
+  // Quebra em chunks de 500 e processa sequencialmente — paralelizar arrisca
+  // race entre batches com deals do mesmo contato.
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const handleBulkDeleteContacts = useCallback(async () => {
     if (!business?.id || !user || selectedIds.size === 0) return;
@@ -3889,20 +3880,15 @@ export default function CRMModule() {
         return out;
       };
 
-      // Ordem deliberada: soft-delete do client PRIMEIRO. Se falhar entre o
-      // soft-delete e os hard-deletes de deals/activities (perda de conexão,
-      // permission denied), o contato já some das listas e deals/activities
-      // viram lixo cosmético — não atrapalham o operador nem geram confusão.
-      // A ordem inversa (deals → activities → clients) deixaria histórico
-      // órfão com contato ainda ativo, e o operador poderia reeditá-lo sem
-      // perceber a perda. Atomicidade real exigiria Cloud Function.
+      // Ordem deliberada: desliga inPipeline PRIMEIRO. Se falhar entre essa
+      // atualização e os hard-deletes de deals/activities (perda de conexão,
+      // permission denied), o contato já some do CRM e deals/activities órfãos
+      // viram lixo cosmético interno do módulo — sem afetar /clientes que
+      // permanecem íntegros.
 
-      // 1) Soft-delete dos clients (preserva refs em vendas/agendamentos/etc.)
+      // 1) Desliga flag inPipeline (contato permanece em /clientes)
       const meta = {
-        isActive: false,
-        deletedAt: now,
-        deletedBy: user.uid,
-        deletedByName: user.name || '',
+        inPipeline: false,
         updatedAt: now,
       };
       for (const part of chunk(ids, 500)) {
@@ -3932,13 +3918,13 @@ export default function CRMModule() {
           businessId: business.id,
           userId: user.uid,
           userName: user.name,
-          action: 'contact_deleted',
+          action: 'contact_removed_from_crm',
           contactId: id,
           details: nameById.get(id) ?? id,
         });
       }
 
-      toast.success(`${ids.length} contato(s) excluído(s)`);
+      toast.success(`${ids.length} contato(s) removido(s) do CRM`);
       queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
       queryClient.invalidateQueries({ queryKey: ['crmDeals', business.id] });
       queryClient.invalidateQueries({ queryKey: ['crmActivities', business.id] });
@@ -3958,8 +3944,8 @@ export default function CRMModule() {
         setDetailOpen(false);
       }
     } catch (err) {
-      console.error('[CRM] Bulk delete failed:', err);
-      toast.error(t('crm.toast.errorBulkDelete', 'Erro ao excluir contatos'));
+      console.error('[CRM] Bulk remove from CRM failed:', err);
+      toast.error(t('crm.toast.errorBulkRemoveFromCrm', 'Erro ao remover contatos do CRM'));
     } finally {
       setIsBulkDeleting(false);
     }
@@ -4324,7 +4310,7 @@ export default function CRMModule() {
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500 hover:bg-red-600 text-white text-xs font-semibold transition-colors"
                 >
                   <Trash2 size={13} />
-                  Excluir {selectedIds.size}
+                  Remover {selectedIds.size} do CRM
                 </button>
               )}
             </div>
@@ -4589,15 +4575,21 @@ export default function CRMModule() {
       />
 
       {/* Delete Confirmations */}
-      <DeleteConfirmDialog open={!!deleteContactConfirm} title="Excluir Contato" message={`Excluir "${deleteContactConfirm?.name}"?`} onClose={() => setDeleteContactConfirm(null)} onConfirm={handleDeleteContact} />
+      <DeleteConfirmDialog
+        open={!!deleteContactConfirm}
+        title="Remover do CRM"
+        message={`Remover "${deleteContactConfirm?.name}" do pipeline? O contato continua em /clientes; deals e atividades do CRM serão excluídos.`}
+        onClose={() => setDeleteContactConfirm(null)}
+        onConfirm={handleDeleteContact}
+      />
       <DeleteConfirmDialog open={!!deleteDealConfirm} title="Excluir Deal" message={`Excluir "${deleteDealConfirm?.title}"?`} onClose={() => setDeleteDealConfirm(null)} onConfirm={handleDeleteDeal} />
       <DeleteConfirmDialog open={!!deleteActivityConfirm} title="Excluir Atividade" message={`Excluir "${deleteActivityConfirm?.title}"?`} onClose={() => setDeleteActivityConfirm(null)} onConfirm={handleDeleteActivity} />
       <DeleteConfirmDialog
         open={bulkDeleteOpen}
-        title={`Excluir ${selectedIds.size} contato(s)?`}
+        title={`Remover ${selectedIds.size} contato(s) do CRM?`}
         message={isBulkDeleting
-          ? 'Excluindo... não feche a tela.'
-          : `${selectedIds.size} contato(s) serão desativados (vendas, agendamentos e conversas históricas continuam acessíveis). Deals e atividades vinculados serão excluídos permanentemente.`}
+          ? 'Removendo... não feche a tela.'
+          : `${selectedIds.size} contato(s) sairão do pipeline e continuam em /clientes. Deals e atividades vinculados serão excluídos permanentemente.`}
         onClose={() => !isBulkDeleting && setBulkDeleteOpen(false)}
         onConfirm={handleBulkDeleteContacts}
       />

@@ -509,7 +509,7 @@ export interface CRMPipelineConfig {
 }
 
 export type CRMAuditAction =
-  | 'contact_created' | 'contact_updated' | 'contact_deleted'
+  | 'contact_created' | 'contact_updated' | 'contact_deleted' | 'contact_removed_from_crm'
   | 'status_changed' | 'tags_changed'
   | 'deal_created' | 'deal_updated' | 'deal_deleted';
 
