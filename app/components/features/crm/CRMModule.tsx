@@ -66,6 +66,7 @@ import TemplateSelector, { type TemplateSelection, isTemplateSelectionValid } fr
 import EmailBodyEditor from './EmailBodyEditor';
 import { KanbanBoard } from './KanbanBoard';
 import { LeadTableView } from './LeadTableView';
+import { ImportLeadModal } from './ImportLeadModal';
 import { LeadDetailPanel } from './LeadDetailPanel';
 import CreateKanbanTaskDialog from './CreateKanbanTaskDialog';
 import { ScheduleActionDialog } from './ScheduleActionDialog';
@@ -3778,6 +3779,10 @@ export default function CRMModule() {
   // Dialog states
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<CRMContact | null>(null);
+  // Modal de "Importar cliente" — substitui os botões de criação "Contato" e
+  // "Novo Deal" no header. Traz um Client existente (criado em /clientes ou
+  // via vínculo de conversa) pro pipeline setando inPipeline:true.
+  const [importLeadOpen, setImportLeadOpen] = useState(false);
   // Modal pra criar tarefa Kanban a partir do detalhe do contato. Substitui
   // o caso de uso "atividade tipo tarefa" — Activities CRM ficam só pra
   // log de interações; tarefas com prazo+responsáveis vivem no Kanban.
@@ -4171,15 +4176,15 @@ export default function CRMModule() {
               </AnimatePresence>
             </div>
 
+            {/* Botão único de entrada de leads no CRM: importa cliente existente
+                de /clientes pro pipeline (seta inPipeline:true + preenche campos
+                CRM-only). Substitui os botões "Contato" e "Novo Deal" antigos —
+                cadastro de cliente fica em /clientes; criação de deal continua
+                no LeadDetailPanel (botão "Logar deal") pra quem realmente usa. */}
             <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
-              onClick={() => { setEditingContact(null); setContactDialogOpen(true); }}
-              className="inline-flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-white/[0.06] border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl font-semibold text-sm hover:border-gray-300 dark:hover:border-gray-600 transition-colors">
-              <UserPlus size={16} /> Contato
-            </motion.button>
-            <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
-              onClick={() => { setEditingDeal(null); setDealDialogOpen(true); }}
+              onClick={() => setImportLeadOpen(true)}
               className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-red-600 to-red-500 text-white rounded-xl font-semibold text-sm shadow-sm shadow-red-500/20 dark:shadow-red-900/30">
-              <Plus size={17} /> Novo Deal
+              <UserPlus size={17} /> Importar cliente
             </motion.button>
           </div>
         </div>
@@ -4544,6 +4549,23 @@ export default function CRMModule() {
 
       {/* Form Dialogs */}
       <ContactFormDialog open={contactDialogOpen} onClose={() => { setContactDialogOpen(false); setEditingContact(null); }} onSave={handleSaveContact} contact={editingContact} members={members} stages={stages} />
+
+      <ImportLeadModal
+        open={importLeadOpen}
+        onClose={() => setImportLeadOpen(false)}
+        onDone={(importedId) => {
+          setImportLeadOpen(false);
+          // onSnapshot dos clients já re-emite com inPipeline:true → o card
+          // aparece automaticamente no Kanban. Toast só pra feedback explícito.
+          toast.success(t('crm.toast.imported', 'Cliente importado para o pipeline'));
+          // Abre o detalhe pra o operador continuar a interação imediatamente.
+          const fresh = contacts.find(c => c.id === importedId);
+          if (fresh) { setSelectedContact(fresh); setDetailOpen(true); }
+        }}
+        contacts={contacts}
+        members={members}
+        stages={stages}
+      />
       {kanbanTaskContact && business?.id && user && (
         <CreateKanbanTaskDialog
           open={!!kanbanTaskContact}
