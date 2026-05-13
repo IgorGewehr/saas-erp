@@ -16,8 +16,9 @@
  * Regras de markdown (paridade WhatsApp):
  *   - Marker abre apenas se char seguinte for non-whitespace.
  *   - Marker fecha apenas se char anterior for non-whitespace.
- *   - Sem aninhamento: `*_x_*` renderiza bold com `_x_` literal.
- *     (WhatsApp tem a mesma limitação na maioria das versões.)
+ *   - Aninhamento entre tipos diferentes funciona via recursão:
+ *     `*_x_*` renderiza como bold+italic. O MESMO tipo não aninha porque
+ *     findInlineMarker consome o par completo (`**x**` não vira bold-de-bold).
  *   - Code blocks ``` ... ``` são literais — nenhum marker interno é
  *     processado, e podem atravessar quebras de linha.
  *
@@ -69,7 +70,12 @@ function findInlineMarker(
     const charBefore = openIdx > 0 ? text[openIdx - 1] : undefined;
     const charAfter = text[openIdx + 1];
     // Abertura válida: char anterior é boundary E char seguinte é non-space.
-    const openValid = isWhitespace(charBefore) || /[.,;:!?(\[{]/.test(charBefore!) || openIdx === 0;
+    // charBefore === undefined cobre openIdx === 0 — short-circuit via
+    // isWhitespace (que trata undefined como whitespace).
+    const openValid =
+      charBefore === undefined ||
+      isWhitespace(charBefore) ||
+      /[.,;:!?(\[{]/.test(charBefore);
     if (!openValid || isWhitespace(charAfter) || charAfter === marker) {
       i = openIdx + 1;
       continue;
@@ -110,7 +116,7 @@ function findInlineCode(text: string, from: number): ScanHit | null {
     const open = text.indexOf('`', i);
     if (open === -1) return null;
     // Não confunde com triple backtick.
-    if (text.substr(open, 3) === '```') {
+    if (text.startsWith('```', open)) {
       i = open + 3;
       continue;
     }
@@ -163,13 +169,15 @@ function normalizeUrl(raw: string): string {
 function renderHit(hit: ScanHit, key: number): React.ReactNode {
   switch (hit.type) {
     case 'pre':
+      // <pre> preserva semântica HTML pra leitores de tela (landmark
+      // "preformatted text"). Tailwind reseta margin/font do <pre>.
       return (
-        <code
+        <pre
           key={key}
-          className="block my-1 px-2 py-1 rounded bg-black/10 dark:bg-white/10 font-mono text-[0.85em] whitespace-pre-wrap break-words"
+          className="my-1 px-2 py-1 rounded bg-black/10 dark:bg-white/10 font-mono text-[0.85em] whitespace-pre-wrap break-words"
         >
-          {hit.content}
-        </code>
+          <code>{hit.content}</code>
+        </pre>
       );
     case 'code':
       return (
