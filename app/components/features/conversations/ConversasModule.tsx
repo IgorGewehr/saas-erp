@@ -2123,34 +2123,39 @@ function MessageBubble({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       transition={{ type: 'spring', stiffness: 500, damping: 30 }}
       className={cn(
-        'group/msg flex relative',
+        'flex',
         isOut ? 'justify-end' : 'justify-start',
         isGrouped ? 'mt-0.5' : 'mt-3',
       )}
     >
-      {/* Botão "Responder" — só aparece no hover. Posicionado do lado oposto
-          à bolha (esquerda em outbound, direita em inbound) pra não obstruir
-          o conteúdo. group/msg permite que o hover do container ative. */}
-      {canReply && (
-        <button
-          onClick={() => onReply!(message)}
-          title={t('conversations.reply', 'Responder')}
-          aria-label={t('conversations.reply', 'Responder')}
-          className={cn(
-            'absolute top-1 opacity-0 group-hover/msg:opacity-100 transition-opacity z-10',
-            'w-7 h-7 rounded-full bg-white dark:bg-gray-800 shadow-md border border-gray-200 dark:border-gray-700',
-            'flex items-center justify-center text-gray-500 hover:text-red-500 dark:text-gray-400 dark:hover:text-red-400',
-            isOut ? 'right-full mr-2' : 'left-full ml-2',
-          )}
-        >
-          <Reply className="w-3.5 h-3.5" />
-        </button>
-      )}
       {/* Largura dual: percentual em telas estreitas (mobile bonito) + cap
           absoluto em telas largas (espelha WhatsApp Web — bolha não estica
           o texto até a metade do monitor em mensagens longas). 600px é
-          ~80 chars de texto, ponto de leitura confortável. */}
-      <div className={cn('max-w-[85%] sm:max-w-[min(75%,600px)] flex flex-col', isOut ? 'items-end' : 'items-start')}>
+          ~80 chars de texto, ponto de leitura confortável.
+          `group/msg` + `relative` ficam aqui (na bolha) pra que o botão
+          Responder absolute seja posicionado relativo à BOLHA, não ao
+          motion.div externo (que abrange a largura toda do chat — o botão
+          acabaria fora do viewport). */}
+      <div className={cn('group/msg relative max-w-[85%] sm:max-w-[min(75%,600px)] flex flex-col', isOut ? 'items-end' : 'items-start')}>
+        {/* Botão "Responder" — só aparece no hover da bolha. Posicionado FORA
+            da bolha (esquerda em outbound, direita em inbound) com offset
+            negativo. Em mobile pode encostar na borda, mas o container do
+            chat tem padding suficiente em desktop. */}
+        {canReply && (
+          <button
+            onClick={() => onReply!(message)}
+            title={t('conversations.reply', 'Responder')}
+            aria-label={t('conversations.reply', 'Responder')}
+            className={cn(
+              'absolute top-1.5 opacity-0 group-hover/msg:opacity-100 transition-opacity z-10',
+              'w-7 h-7 rounded-full bg-white dark:bg-gray-800 shadow-md border border-gray-200 dark:border-gray-700',
+              'flex items-center justify-center text-gray-500 hover:text-red-500 dark:text-gray-400 dark:hover:text-red-400',
+              isOut ? '-left-9' : '-right-9',
+            )}
+          >
+            <Reply className="w-3.5 h-3.5" />
+          </button>
+        )}
         {/* Media attachment */}
         {message.mediaUrl && message.mediaType && (
           <MediaAttachment mediaUrl={message.mediaUrl} mediaType={message.mediaType} fileName={message.fileName} />
