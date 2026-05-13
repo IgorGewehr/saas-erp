@@ -838,7 +838,14 @@ export default function ClientsModule() {
     const unsub = onSnapshot(
       q,
       (snap) => {
-        setClients(snap.docs.map(d => ({ ...d.data(), id: d.id } as Client)));
+        // Filtra soft-deleted/merged no carregamento. Sem isso, o KPI "Total"
+        // e o header "{n} clientes cadastrados" contavam docs que o operador
+        // já tinha excluído (via bulk-delete do CRM ou merge de duplicatas),
+        // gerando discrepância grande com /crm — que sempre filtra.
+        const docs = snap.docs
+          .map(d => ({ ...d.data(), id: d.id } as Client))
+          .filter(isActiveClient);
+        setClients(docs);
         setIsLoading(false);
       },
       (err) => {
@@ -1327,13 +1334,18 @@ export default function ClientsModule() {
   );
 
   // ─── KPIs ────────────────────────────────────────────────────────────────────
+  // `won` é o número de contatos no estágio final do pipeline (status='ganho').
+  // Antes chamava 'active', o que era enganoso — "Ativos" parecia sinônimo de
+  // "não-deletados" mas era na verdade o subset de status='ganho'. Soft-delete
+  // já é filtrado no carregamento (ver onSnapshot acima), então clients.length
+  // representa o total honesto de clientes vivos.
   const kpis = useMemo(() => {
-    const active = clients.filter(c => c.status === 'ganho').length;
+    const won = clients.filter(c => c.status === 'ganho').length;
     const pj = clients.filter(c => c.tipo === 'pj').length;
     const totalSpent = clients.reduce((s, c) => s + (c.totalSpent || 0), 0);
     const withSpent = clients.filter(c => (c.totalSpent || 0) > 0);
     const avgTicket = withSpent.length > 0 ? totalSpent / withSpent.length : 0;
-    return { total: clients.length, active, pj, totalSpent, avgTicket };
+    return { total: clients.length, won, pj, totalSpent, avgTicket };
   }, [clients]);
 
   // ─── Form helpers ────────────────────────────────────────────────────────────
@@ -1495,7 +1507,7 @@ export default function ClientsModule() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
         {[
           { label: 'Total', value: kpis.total, icon: Users, color: 'text-blue-500', bg: 'bg-blue-50 dark:bg-blue-500/10' },
-          { label: 'Ativos', value: kpis.active, icon: UserCheck, color: 'text-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
+          { label: 'Convertidos', value: kpis.won, icon: UserCheck, color: 'text-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
           { label: 'Receita total', value: formatCurrency(kpis.totalSpent), icon: TrendingUp, color: 'text-purple-500', bg: 'bg-purple-50 dark:bg-purple-500/10', isStr: true },
           { label: 'Ticket médio', value: formatCurrency(kpis.avgTicket), icon: ShoppingCart, color: 'text-amber-500', bg: 'bg-amber-50 dark:bg-amber-500/10', isStr: true },
         ].map((kpi, i) => (
