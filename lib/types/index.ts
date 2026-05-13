@@ -2336,6 +2336,13 @@ export interface ConversationMessage {
   }>;
   isInternal?: boolean;
   mentionedUserIds?: string[];
+  /** ID externo (wamid / mid / stanzaId Baileys) da mensagem sendo citada
+   *  quando esta é uma reply. Persistido tanto pra inbound (webhook captura
+   *  `context.id` da Meta / `contextInfo.stanzaId` do Baileys) quanto pra
+   *  outbound (operador clicou "Responder" — vai pro provider como
+   *  `context.message_id` ou `quoted`, e replicamos aqui pra renderizar
+   *  o quote na bolha sem depender de lookup externo). */
+  replyToMessageId?: string;
   sentAt: string;
   deliveredAt?: string;
   readAt?: string;

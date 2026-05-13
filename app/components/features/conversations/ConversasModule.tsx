@@ -111,6 +111,8 @@ import {
   Inbox,
   UserX,
   CornerDownLeft,
+  CornerUpLeft,
+  Reply,
   ArrowDownUp,
   Moon,
   BellOff,
@@ -1952,6 +1954,106 @@ function TransportBadge({ connectedVia }: { connectedVia: 'embedded_signup' | 'b
   );
 }
 
+// ─── Quoted Message Preview ──────────────────────────────────────────────────
+
+/**
+ * Card visual da mensagem citada — reutilizado dentro da bolha quando uma
+ * msg é reply, e dentro do Composer quando o operador está respondendo.
+ * Visual estilo WhatsApp: barra colorida lateral + remetente + snippet de
+ * 1-2 linhas. Quando `quoted` é `null` (referência aponta pra msg fora do
+ * histórico carregado), mostra placeholder discreto.
+ */
+function QuotedMessagePreview({
+  quoted,
+  variant,
+  onCancel,
+}: {
+  quoted: ConversationMessage | null;
+  /** 'on-bubble' → renderizado dentro da bolha (cor adapta ao fundo).
+   *  'composer' → standalone no Composer (com X pra cancelar reply). */
+  variant: 'on-bubble' | 'composer';
+  onCancel?: () => void;
+}) {
+  const { t } = useTranslation();
+  const isOnBubble = variant === 'on-bubble';
+  // Snippet inteligente: usa content texto; se for só mídia, usa fileName ou
+  // label genérico. WhatsApp faz parecido — ninguém quer ver "[Documento]"
+  // como preview, prefere "📄 contrato.pdf".
+  const snippet = (() => {
+    if (!quoted) return t('conversations.quotedUnavailable', 'Mensagem não disponível');
+    if (quoted.sharedContacts && quoted.sharedContacts.length > 0) {
+      return `📇 ${quoted.sharedContacts[0].name}`;
+    }
+    if (quoted.mediaType && quoted.fileName) {
+      const icon = quoted.mediaType === 'image' ? '🖼️'
+        : quoted.mediaType === 'video' ? '🎬'
+        : quoted.mediaType === 'audio' ? '🎵' : '📄';
+      return `${icon} ${quoted.fileName}`;
+    }
+    if (quoted.content?.trim()) return quoted.content.trim();
+    const labels: Record<string, string> = {
+      image: '🖼️ Imagem', video: '🎬 Vídeo', audio: '🎵 Áudio', document: '📄 Documento',
+    };
+    return labels[quoted.mediaType ?? ''] ?? t('conversations.quotedEmpty', 'Mensagem');
+  })();
+
+  const senderLabel = quoted
+    ? (quoted.direction === 'outbound'
+        ? (quoted.senderName || t('conversations.you', 'Você'))
+        : (quoted.senderName || t('conversations.contact', 'Contato')))
+    : t('conversations.quotedUnknown', 'Original');
+
+  return (
+    <div
+      className={cn(
+        'flex items-stretch gap-2 rounded-lg overflow-hidden text-left',
+        isOnBubble
+          ? 'mb-1.5 bg-black/10 dark:bg-black/25 max-w-full'
+          : 'bg-gray-100 dark:bg-white/[0.06] border border-gray-200/60 dark:border-white/[0.08] p-2',
+      )}
+    >
+      {/* Barra lateral colorida — verde-WhatsApp pra inbound, vermelha pra outbound (operador). */}
+      <div
+        className={cn(
+          'w-1 flex-shrink-0',
+          quoted?.direction === 'outbound'
+            ? 'bg-red-400 dark:bg-red-500'
+            : 'bg-emerald-500 dark:bg-emerald-400',
+        )}
+      />
+      <div className={cn('flex-1 min-w-0 py-1', isOnBubble ? 'pr-2' : '')}>
+        <p
+          className={cn(
+            'text-[11px] font-semibold truncate',
+            isOnBubble
+              ? 'opacity-90'
+              : 'text-gray-700 dark:text-gray-200',
+          )}
+        >
+          {senderLabel}
+        </p>
+        <p
+          className={cn(
+            'text-[11px] truncate',
+            isOnBubble ? 'opacity-75' : 'text-gray-500 dark:text-gray-400',
+          )}
+        >
+          {snippet}
+        </p>
+      </div>
+      {onCancel && (
+        <button
+          onClick={onCancel}
+          className="px-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors flex-shrink-0"
+          aria-label={t('conversations.cancelReply', 'Cancelar resposta')}
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ─── Message Bubble ───────────────────────────────────────────────────────────
 
 /**
@@ -1993,14 +2095,27 @@ function MessageBubble({
   isGrouped,
   channel,
   onRetry,
+  quotedMessage,
+  onReply,
 }: {
   message: ConversationMessage;
   isGrouped: boolean;
   channel: ConversationChannel;
   onRetry?: (msg: ConversationMessage) => void;
+  /** Mensagem original referenciada por `message.replyToMessageId`. Resolvido
+   *  pelo MessageList (lookup no Map). `null` quando o ID aponta pra fora
+   *  do histórico carregado — exibimos placeholder discreto. */
+  quotedMessage?: ConversationMessage | null;
+  /** Disparado pelo botão "Responder" do hover. Quando ausente, o botão não
+   *  aparece (msg falhada, msg sem externalMessageId, ou canal sem suporte). */
+  onReply?: (msg: ConversationMessage) => void;
 }) {
   const { t } = useTranslation();
   const isOut = message.direction === 'outbound';
+  // Reply só faz sentido pra msg com ID externo confirmado (pendente/failed
+  // não tem wamid/stanzaId — Cloud/Baileys rejeitariam o quoted). Notas
+  // internas também são out — operador não responde nota interna como reply.
+  const canReply = !!onReply && !!message.externalMessageId && !message.isInternal;
 
   return (
     <motion.div
@@ -2008,11 +2123,29 @@ function MessageBubble({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       transition={{ type: 'spring', stiffness: 500, damping: 30 }}
       className={cn(
-        'flex',
+        'group/msg flex relative',
         isOut ? 'justify-end' : 'justify-start',
         isGrouped ? 'mt-0.5' : 'mt-3',
       )}
     >
+      {/* Botão "Responder" — só aparece no hover. Posicionado do lado oposto
+          à bolha (esquerda em outbound, direita em inbound) pra não obstruir
+          o conteúdo. group/msg permite que o hover do container ative. */}
+      {canReply && (
+        <button
+          onClick={() => onReply!(message)}
+          title={t('conversations.reply', 'Responder')}
+          aria-label={t('conversations.reply', 'Responder')}
+          className={cn(
+            'absolute top-1 opacity-0 group-hover/msg:opacity-100 transition-opacity z-10',
+            'w-7 h-7 rounded-full bg-white dark:bg-gray-800 shadow-md border border-gray-200 dark:border-gray-700',
+            'flex items-center justify-center text-gray-500 hover:text-red-500 dark:text-gray-400 dark:hover:text-red-400',
+            isOut ? 'right-full mr-2' : 'left-full ml-2',
+          )}
+        >
+          <Reply className="w-3.5 h-3.5" />
+        </button>
+      )}
       {/* Largura dual: percentual em telas estreitas (mobile bonito) + cap
           absoluto em telas largas (espelha WhatsApp Web — bolha não estica
           o texto até a metade do monitor em mensagens longas). 600px é
@@ -2057,6 +2190,11 @@ function MessageBubble({
                   : 'bg-white dark:bg-[#1e293b] border border-gray-100 dark:border-gray-700/50 text-gray-800 dark:text-gray-100 rounded-2xl rounded-tl-sm',
             )}
           >
+            {/* Quote da msg respondida — render dentro do mesmo balão pra ficar
+                colado ao conteúdo (visual igual WhatsApp). */}
+            {message.replyToMessageId && (
+              <QuotedMessagePreview quoted={quotedMessage ?? null} variant="on-bubble" />
+            )}
             {message.isInternal && (
               <div className="flex items-center gap-1 mb-1">
                 <Lock className="w-3 h-3 text-amber-500" />
@@ -2136,6 +2274,7 @@ function MessageList({
   conversation,
   messagesEndRef,
   onRetry,
+  onReply,
   hasMoreMessages,
   loadingMoreMessages,
   onLoadMore,
@@ -2144,11 +2283,25 @@ function MessageList({
   conversation: Conversation;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
   onRetry?: (msg: ConversationMessage) => void;
+  /** Click no botão "Responder" da bolha. Pai persiste em state e injeta no Composer. */
+  onReply?: (msg: ConversationMessage) => void;
   hasMoreMessages?: boolean;
   loadingMoreMessages?: boolean;
   onLoadMore?: () => void;
 }) {
   const { t } = useTranslation();
+  // Lookup das mensagens já carregadas por externalMessageId — usado pela
+  // Bubble pra renderizar o quote sem precisar querystring nova. Mensagens
+  // sem externalMessageId (sending/failed) ficam fora; o getter retorna
+  // null e a bolha mostra "Mensagem não disponível".
+  const messagesByExtId = useMemo(() => {
+    const map = new Map<string, ConversationMessage>();
+    for (const m of messages) {
+      if (m.externalMessageId) map.set(m.externalMessageId, m);
+    }
+    return map;
+  }, [messages]);
+
   const items: Array<
     | { type: 'separator'; label: string }
     | { type: 'message'; msg: ConversationMessage; isGrouped: boolean }
@@ -2208,6 +2361,12 @@ function MessageList({
             isGrouped={item.isGrouped}
             channel={conversation.channel}
             onRetry={onRetry}
+            onReply={onReply}
+            quotedMessage={
+              item.msg.replyToMessageId
+                ? messagesByExtId.get(item.msg.replyToMessageId) ?? null
+                : undefined
+            }
           />
         );
       })}
@@ -2264,6 +2423,10 @@ interface ComposerProps {
    * sair do número do Igor — operador precisa ter ciência. Banner âmbar.
    */
   crossOperatorWarning?: { ownerName: string };
+  /** Mensagem sendo respondida — quando setado, Composer mostra preview no topo
+   *  com X pra cancelar. `null` = sem reply ativa. */
+  replyTo?: ConversationMessage | null;
+  onCancelReply?: () => void;
 }
 
 const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Composer({
@@ -2283,6 +2446,8 @@ const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Compose
   onSnippetClick,
   onInsertReviewLink,
   crossOperatorWarning,
+  replyTo,
+  onCancelReply,
 }, ref) {
   const { t } = useTranslation();
   const cfg = getConvConfig({ channel, connectedVia: connectedVia as 'baileys' | 'embedded_signup' | undefined });
@@ -2344,6 +2509,7 @@ const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Compose
   // Handler de Enter (send) e "/" (open snippets) — agora vive dentro do
   // Composer pra ter acesso direto ao text local. Antes o pai precisava
   // recriar handleKeyDown a cada mudança de messageInput (dep no useCallback).
+  // Esc fecha o reply ativo (UX coerente com WhatsApp Web).
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -2354,6 +2520,10 @@ const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Compose
     }
     if (e.key === '/' && textRef.current === '') {
       onSlashWhenEmpty?.();
+    }
+    if (e.key === 'Escape' && replyTo && onCancelReply) {
+      e.preventDefault();
+      onCancelReply();
     }
   };
 
@@ -2416,6 +2586,21 @@ const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Compose
         </div>
       ) : (
       <>
+      {/* Reply preview — quando o operador clicou "Responder" em alguma bolha.
+          Aparece acima do attachment (mesmo destaque visual do WhatsApp Web).
+          Esc também cancela (ver handleKeyDown). */}
+      <AnimatePresence>
+        {replyTo && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="mb-2 overflow-hidden"
+          >
+            <QuotedMessagePreview quoted={replyTo} variant="composer" onCancel={onCancelReply} />
+          </motion.div>
+        )}
+      </AnimatePresence>
       {/* Attachment preview */}
       <AnimatePresence>
         {attachment && (
@@ -5727,6 +5912,12 @@ export default function ConversasModule() {
   const [templatesError, setTemplatesError] = useState<string | null>(null);
   const [attachment, setAttachment] = useState<File | null>(null);
 
+  // Reply ativo — populado quando operador clica "Responder" em uma bolha.
+  // handleSend lê este state, injeta replyToMessageId/Content/FromMe no POST,
+  // e limpa após envio bem-sucedido. Conversation switch também limpa
+  // (ver effect de selectedConversation abaixo).
+  const [replyToMessage, setReplyToMessage] = useState<ConversationMessage | null>(null);
+
   // Internal notes mode
   const [isInternalNote, setIsInternalNote] = useState(false);
 
@@ -6540,6 +6731,8 @@ export default function ConversasModule() {
       userHasScrolledRef.current = false;
       lastScrollTopRef.current = 0;
     }
+    // Reply ativo é por-conversation — trocar de thread cancela.
+    setReplyToMessage(null);
   }, [selectedConversation?.id]);
 
   // Detecta scroll UPWARD (operador lendo histórico). Programmatic scrolls
@@ -7228,6 +7421,14 @@ export default function ConversasModule() {
       updateDoc(doc(db, 'conversationMessages', msg.id), { status: 'failed' })
         .catch(e => console.warn('[Conversations] Failed to mark message as failed:', e));
 
+    // Reply preserva no retry: lookup local da msg original pra remontar
+    // o context/quoted. Se a original já saiu do histórico carregado
+    // (paginação), o backend ignora `replyToMessageContent` vazio e o
+    // Baileys vai mostrar um quote "vazio" no celular — degradação aceitável.
+    const replyOriginal = msg.replyToMessageId
+      ? messages.find(m => m.externalMessageId === msg.replyToMessageId)
+      : null;
+
     // Re-send via API — mirrors handleSend error handling so a failed retry
     // surfaces the toast and flips the bubble back to 'failed' (re-exposes the
     // "Tentar novamente" affordance). Without this, HTTP 4xx leaves the message
@@ -7249,6 +7450,11 @@ export default function ConversasModule() {
           content: msg.content,
           messageDocId: msg.id,
           ...(msg.mediaUrl ? { type: 'media', mediaUrl: msg.mediaUrl, mediaType: msg.mediaType } : {}),
+          ...(msg.replyToMessageId ? {
+            replyToMessageId: msg.replyToMessageId,
+            replyToMessageContent: replyOriginal?.content ?? '',
+            replyToMessageFromMe: replyOriginal?.direction === 'outbound',
+          } : {}),
         }),
       });
       if (!res.ok) {
@@ -7270,7 +7476,7 @@ export default function ConversasModule() {
       toast.error(`Erro de conexão ao reenviar mensagem: ${m}`);
       await markFailed();
     }
-  }, [selectedConversation, business?.id]);
+  }, [selectedConversation, business?.id, messages]);
 
   // ── Update conversation status ─────────────────────────────────────────────
 
@@ -7305,8 +7511,12 @@ export default function ConversasModule() {
 
     const content = sourceText.trim();
     const currentAttachment = attachment;
+    // Snapshot do reply ativo antes de limpar — assim a mensagem que sair
+    // já carrega o quote mesmo que o usuário clique noutra coisa enquanto envia.
+    const currentReply = replyToMessage;
     composerRef.current?.setText('');
     setAttachment(null);
+    setReplyToMessage(null);
     setIsSending(true);
     // Apaga o "Fulano digitando..." pros outros operadores assim que envia —
     // sem isso, o indicador continuava visível até o TTL de 5s expirar.
@@ -7349,6 +7559,12 @@ export default function ConversasModule() {
           updatedAt: now,
         });
       } else {
+        // Reply contextual: o backend precisa do ID externo (wamid / mid /
+        // stanzaId), não do doc local. `currentReply.externalMessageId` é
+        // obrigatório pra mandar quoted (Bubble desabilita o botão Responder
+        // em msg sem ID externo, mas reforçamos aqui).
+        const replyExtId = currentReply?.externalMessageId || null;
+
         // 1. Save message to Firestore — capture doc ID
         const msgRef = await addDoc(collection(db, 'conversationMessages'), {
           conversationId: selectedConversation.id,
@@ -7361,6 +7577,7 @@ export default function ConversasModule() {
           content,
           status: 'sending' as const,
           senderName: user.name,
+          ...(replyExtId ? { replyToMessageId: replyExtId } : {}),
           sentAt: now,
         });
 
@@ -7390,6 +7607,13 @@ export default function ConversasModule() {
               channel: selectedConversation.channel,
               recipientId: selectedConversation.contactExternalId,
               content,
+              ...(replyExtId ? {
+                replyToMessageId: replyExtId,
+                // Baileys precisa do conteúdo+fromMe da msg original pra
+                // montar o `quoted` corretamente (Cloud/IG/Messenger ignoram).
+                replyToMessageContent: currentReply?.content ?? '',
+                replyToMessageFromMe: currentReply?.direction === 'outbound',
+              } : {}),
             }),
           });
           if (!res.ok) {
@@ -7432,7 +7656,7 @@ export default function ConversasModule() {
       composerRef.current?.focus();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [attachment, selectedConversation, business?.id, user, isSending, sendMediaMessage, isInternalNote]);
+  }, [attachment, selectedConversation, business?.id, user, isSending, sendMediaMessage, isInternalNote, replyToMessage]);
 
   // handleKeyDown removido daqui — Enter e "/" agora são tratados dentro do
   // próprio Composer, com acesso direto ao text local. Pai só recebe via
@@ -8518,6 +8742,10 @@ export default function ConversasModule() {
                       conversation={selectedConversation}
                       messagesEndRef={messagesEndRef}
                       onRetry={retryMessage}
+                      onReply={(msg) => {
+                        setReplyToMessage(msg);
+                        composerRef.current?.focus();
+                      }}
                       hasMoreMessages={hasMoreMessages}
                       loadingMoreMessages={loadingMoreMessages}
                       onLoadMore={loadMoreMessages}
@@ -8662,6 +8890,8 @@ export default function ConversasModule() {
                       onSnippetClick={() => setShowSnippets(true)}
                       onInsertReviewLink={handleInsertReviewLink}
                       crossOperatorWarning={crossOpWarning}
+                      replyTo={replyToMessage}
+                      onCancelReply={() => setReplyToMessage(null)}
                     />
                   );
                 })()}

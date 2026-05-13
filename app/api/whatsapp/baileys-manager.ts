@@ -250,6 +250,26 @@ function extractInboundFileName(msg: proto.IMessage | null | undefined): string 
   return msg.documentMessage?.fileName || null;
 }
 
+/** stanzaId da mensagem sendo citada — Baileys expõe via
+ *  `extendedTextMessage.contextInfo.stanzaId` (e equivalentes pra mídia).
+ *  Quando presente, é o ID externo da msg original (mesmo formato do `key.id`
+ *  com que gravamos `externalMessageId`), o que permite o UI fazer lookup
+ *  local sem chamada extra. */
+function extractInboundReplyTo(msg: proto.IMessage | null | undefined): string | null {
+  if (!msg) return null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const m = msg as any;
+  return (
+    m.extendedTextMessage?.contextInfo?.stanzaId ||
+    m.imageMessage?.contextInfo?.stanzaId ||
+    m.videoMessage?.contextInfo?.stanzaId ||
+    m.audioMessage?.contextInfo?.stanzaId ||
+    m.documentMessage?.contextInfo?.stanzaId ||
+    m.stickerMessage?.contextInfo?.stanzaId ||
+    null
+  );
+}
+
 function getMediaLabel(type: string | null): string {
   switch (type) {
     case 'image': return '[Imagem]';
@@ -706,6 +726,7 @@ async function handleInboundMessage(
   const mediaType = extractMediaType(msgContent);
   const inboundFileName = mediaType === 'document' ? extractInboundFileName(msgContent) : null;
   const sharedContacts = extractSharedContacts(msgContent);
+  const replyToMessageId = extractInboundReplyTo(msgContent);
   if (!text && !mediaType && sharedContacts.length === 0) return false;
 
   // Preview que vira `lastMessage` na conversa + content na bolha. Contatos
@@ -1010,6 +1031,7 @@ async function handleInboundMessage(
       mediaUrl,
       ...(inboundFileName ? { fileName: inboundFileName } : {}),
       ...(sharedContacts.length > 0 ? { sharedContacts } : {}),
+      ...(replyToMessageId ? { replyToMessageId } : {}),
       sentAt: timestamp,
       createdAt: now,
     });

@@ -46,6 +46,14 @@ interface SendRequestBody {
    *  document.filename; Baileys em fileName. Sem isso, o filename viraria
    *  caption duplicada na bolha — bug conhecido pré-fix. */
   fileName?: string;
+  /** Reply contextual: ID externo (wamid / mid / stanzaId) da mensagem sendo
+   *  citada. Cloud API recebe em `context.message_id`; Messenger/IG em
+   *  `message.reply_to.mid`; Baileys precisa também do conteúdo + fromMe da
+   *  msg original (campos abaixo) pra reconstruir o objeto `quoted` mínimo —
+   *  esses dois campos são ignorados pelos outros transportes. */
+  replyToMessageId?: string;
+  replyToMessageContent?: string;
+  replyToMessageFromMe?: boolean;
   clientMessageId?: string; // idempotency key — retries with same key are deduped
 }
 
@@ -164,7 +172,7 @@ export async function POST(req: NextRequest) {
     // Read the body as text first so we can (a) verify HMAC when agent-signed and (b) reuse it as JSON.
     const rawBody = await req.text();
     const body: SendRequestBody = JSON.parse(rawBody);
-    const { businessId, conversationId, messageId, messageDocId, channel, recipientId, content, type, templateName, templateLanguage, templateParams, mediaUrl, mediaType, fileName, clientMessageId } = body;
+    const { businessId, conversationId, messageId, messageDocId, channel, recipientId, content, type, templateName, templateLanguage, templateParams, mediaUrl, mediaType, fileName, replyToMessageId, replyToMessageContent, replyToMessageFromMe, clientMessageId } = body;
     failureContext = { businessId, conversationId, recipientId, channel };
 
     // Authentication: accept either a Firebase session (UI) or an HMAC-signed agent call.
@@ -508,6 +516,9 @@ export async function POST(req: NextRequest) {
           result = await sendWhatsAppBaileys(
             businessId, recipientId, content, conversationId, mediaOpts,
             resolvedConnectionId || undefined,
+            replyToMessageId
+              ? { id: replyToMessageId, content: replyToMessageContent ?? '', fromMe: !!replyToMessageFromMe }
+              : undefined,
           );
         } else {
           // Resolve config Cloud: novo campo whatsappCloud > legado whatsapp
@@ -523,16 +534,17 @@ export async function POST(req: NextRequest) {
             templateLanguage,
             templateParams,
             media: mediaOpts,
+            replyToMessageId,
           });
         }
         break;
       }
       case 'facebook':
-        result = await sendFacebookMessenger(channels, recipientId, content, mediaOpts);
+        result = await sendFacebookMessenger(channels, recipientId, content, mediaOpts, replyToMessageId);
         break;
       case 'instagram': {
         const igMediaOpts = await prepareMediaForInstagram(mediaOpts, businessId);
-        result = await sendInstagram(channels, recipientId, content, igMediaOpts);
+        result = await sendInstagram(channels, recipientId, content, igMediaOpts, replyToMessageId);
         break;
       }
       default:
@@ -549,10 +561,10 @@ export async function POST(req: NextRequest) {
     // (meta/route.ts and baileys-manager.ts) after they persist a contact-originated message.
     const docIdToUpdate = messageDocId || messageId;
     if (docIdToUpdate) {
-      await updateMessageAfterSend(docIdToUpdate, result.externalMessageId, businessId, resolvedConnectedVia);
+      await updateMessageAfterSend(docIdToUpdate, result.externalMessageId, businessId, resolvedConnectedVia, replyToMessageId);
     } else if (conversationId) {
       // Agent-originated send: no pre-existing doc — create one so it appears in the UI
-      await saveAgentMessage(businessId, conversationId, channel, content, result.externalMessageId, clientMessageId, resolvedConnectedVia);
+      await saveAgentMessage(businessId, conversationId, channel, content, result.externalMessageId, clientMessageId, resolvedConnectedVia, replyToMessageId);
     }
 
     return NextResponse.json({
@@ -621,6 +633,11 @@ async function sendWhatsAppBaileys(
   conversationId: string,
   mediaOpts?: MediaOptions,
   connectionId?: string,
+  /** Reply contextual: stanzaId da msg original + conteúdo bruto + fromMe.
+   *  Precisamos reconstruir um WAMessage mínimo pro Baileys montar o
+   *  `contextInfo` correto. O `content` original entra como `conversation`
+   *  (preview que aparece dentro do balão citado no celular do destinatário). */
+  reply?: { id: string; content: string; fromMe: boolean },
 ): Promise<{ externalMessageId: string }> {
   // Resolve qual sessão usar. Se connectionId fornecido (canal específico
   // da conversa via Phase 2), alvo direto. Senão, usa a primary business.
@@ -761,8 +778,19 @@ async function sendWhatsAppBaileys(
   }
 
   // ── Send message ──
+  // Reply: o Baileys aceita um WAMessage mínimo em `{ quoted }`. O `participant`
+  // só é exigido em grupos (suportamos só 1:1, então undefined).
+  const sendOpts = reply
+    ? {
+        quoted: {
+          key: { id: reply.id, fromMe: reply.fromMe, remoteJid: targetJid },
+          message: { conversation: reply.content || '' },
+        },
+      }
+    : undefined;
+
   try {
-    const sent = await session.sock.sendMessage(targetJid, messageContent);
+    const sent = await session.sock.sendMessage(targetJid, messageContent, sendOpts);
     const externalMessageId = sent?.key?.id || `baileys_${Date.now()}`;
 
     return { externalMessageId };
@@ -794,6 +822,10 @@ interface WhatsAppTemplateOptions {
   templateLanguage?: string;
   templateParams?: unknown[];
   media?: MediaOptions;
+  /** wamid da mensagem citada — vai pro Cloud em `context.message_id`.
+   *  Templates ignoram o context (a Meta retorna 400 se misturar); só
+   *  aplicamos em text/media. */
+  replyToMessageId?: string;
 }
 
 async function sendWhatsApp(
@@ -857,6 +889,13 @@ async function sendWhatsApp(
     };
   }
 
+  // Reply contextual — só vale fora de templates (Meta retorna 400 se mistura
+  // template com context). Mídia + context é OK. O wamid precisa pertencer
+  // ao mesmo phone_number_id do canal — Meta valida e devolve 131009 se não.
+  if (templateOptions?.replyToMessageId && templateOptions.type !== 'template') {
+    messageBody.context = { message_id: templateOptions.replyToMessageId };
+  }
+
   const response = await fetch(
     `${META_BASE_URL}/${whatsapp.phoneNumberId}/messages`,
     {
@@ -890,6 +929,7 @@ async function sendFacebookMessenger(
   recipientId: string,
   content: string,
   media?: MediaOptions,
+  replyToMessageId?: string,
 ): Promise<{ externalMessageId: string }> {
   const facebook = channels.facebook;
 
@@ -903,8 +943,8 @@ async function sendFacebookMessenger(
 
   const pageAccessToken = await decryptToken(facebook.pageAccessToken);
 
-  // Build message payload - media or text
-  const messagePayload = media
+  // Build message payload - media or text + optional reply_to
+  const messagePayload: Record<string, unknown> = media
     ? {
         attachment: {
           type: media.mediaType === 'document' ? 'file' : media.mediaType,
@@ -912,6 +952,7 @@ async function sendFacebookMessenger(
         },
       }
     : { text: content };
+  if (replyToMessageId) messagePayload.reply_to = { mid: replyToMessageId };
 
   const response = await fetch(
     `${META_BASE_URL}/me/messages`,
@@ -1028,6 +1069,7 @@ async function sendInstagram(
   recipientId: string,
   content: string,
   media?: MediaOptions,
+  replyToMessageId?: string,
 ): Promise<{ externalMessageId: string }> {
   const instagram = channels.instagram;
   const facebook = channels.facebook;
@@ -1051,8 +1093,8 @@ async function sendInstagram(
   const pageAccessToken = await decryptToken(facebook.pageAccessToken);
   const pageId = facebook.pageId;
 
-  // Build message payload - media or text
-  const messagePayload = media
+  // Build message payload - media or text + optional reply_to (IG aceita mid igual Messenger)
+  const messagePayload: Record<string, unknown> = media
     ? {
         attachment: {
           type: media.mediaType === 'document' ? 'file' : media.mediaType,
@@ -1060,6 +1102,7 @@ async function sendInstagram(
         },
       }
     : { text: content };
+  if (replyToMessageId) messagePayload.reply_to = { mid: replyToMessageId };
 
   // POST /{page-id}/messages with the IGSID (Instagram Scoped User ID) as recipient.
   // This uses pages_messaging permission (approved) and works for all Instagram DMs
@@ -1113,6 +1156,7 @@ async function saveAgentMessage(
   externalMessageId: string,
   clientMessageId?: string,
   connectedVia?: 'embedded_signup' | 'baileys',
+  replyToMessageId?: string,
 ) {
   try {
     const now = new Date().toISOString();
@@ -1131,6 +1175,7 @@ async function saveAgentMessage(
     // Marca o transporte (cloud vs baileys) — só aplicável a 'whatsapp'.
     if (connectedVia && channel === 'whatsapp') doc.connectedVia = connectedVia;
     if (clientMessageId) doc.clientMessageId = clientMessageId;
+    if (replyToMessageId) doc.replyToMessageId = replyToMessageId;
     await adminDb.collection('conversationMessages').add(doc);
     await adminDb.collection('conversations').doc(conversationId).update({
       lastMessage: content,
@@ -1148,6 +1193,7 @@ async function updateMessageAfterSend(
   externalMessageId: string,
   businessId: string,
   connectedVia?: 'embedded_signup' | 'baileys',
+  replyToMessageId?: string,
 ) {
   // Backfill de connectedVia: o doc otimista criado pelo client pode não
   // ter o campo (ainda não atualizamos todos os call-sites do client).
@@ -1158,6 +1204,10 @@ async function updateMessageAfterSend(
     externalMessageId,
   };
   if (connectedVia) baseUpdate.connectedVia = connectedVia;
+  // Backfill defensivo do reply — o client otimista já grava, mas em rotas
+  // sem doc pré-criado (agent direto) ou se ele esqueceu de incluir, o
+  // backend escreve aqui pra que a UI renderize o quote.
+  if (replyToMessageId) baseUpdate.replyToMessageId = replyToMessageId;
 
   try {
     // Try direct doc update first (if messageId is the Firestore document ID)
