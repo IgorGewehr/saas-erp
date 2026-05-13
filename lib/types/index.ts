@@ -2278,6 +2278,8 @@ export interface ConversationView {
     unreadOnly?: boolean;
     /** Filtro por origem de campanha — "broadcast:{id}" ou "birthday:{id}". */
     campaignOrigin?: string;
+    /** Filtro por estágio do pipeline do CRM (LeadStatus do Client vinculado). */
+    pipelineStage?: string;
   };
   createdBy: string;
   createdByName: string;

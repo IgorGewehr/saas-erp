@@ -1029,6 +1029,7 @@ function ThreadHeader({
   pipelineStages,
   linkedClientStage,
   onSendToPipeline,
+  linkedClientStageConfig,
 }: {
   conversation: Conversation;
   onBack: () => void;
@@ -1074,6 +1075,10 @@ function ThreadHeader({
   /** Disparado quando operador escolhe estágio. Caller decide se cria
    *  Client novo ou atualiza o existente. */
   onSendToPipeline?: (stage: import('@/lib/types').LeadStatus) => void;
+  /** Stage completo do cliente linkado (inclui ganho/perdido — diferente de
+   *  pipelineStages que só tem ativos). Usado pra renderizar o badge
+   *  contextual no header. null = sem cliente ou status desconhecido. */
+  linkedClientStageConfig?: import('@/lib/types').CRMStageConfig | null;
 }) {
   const { t } = useTranslation();
   const cfg = getConvConfig(conversation);
@@ -1276,6 +1281,23 @@ function ThreadHeader({
                 de aniversário. Útil pra atribuir leads que ainda não viraram
                 clientes formais — info que só existia no detalhe do cliente. */}
             <CampaignOriginBadge conversationId={conversation.id} businessId={conversation.businessId} />
+            {/* Badge da fase do pipeline do CRM. Mesmo padrão visual da
+                campanha — pill colorida com a cor do stage configurada. Só
+                aparece quando o cliente está em algum estágio do funil. */}
+            {linkedClientStageConfig && (
+              <span
+                className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full border"
+                style={{
+                  backgroundColor: linkedClientStageConfig.color + '22',
+                  color: linkedClientStageConfig.color,
+                  borderColor: linkedClientStageConfig.color + '40',
+                }}
+                title={`Pipeline: ${linkedClientStageConfig.name}`}
+              >
+                <GitBranch className="w-2.5 h-2.5" />
+                <span className="max-w-[12ch] truncate">{linkedClientStageConfig.name}</span>
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-1.5 mt-0.5">
             <StatusDot status={conversation.status} />
@@ -2573,14 +2595,18 @@ interface AdvancedFilters {
   /** Filtro por campanha origem. Valor é o ID do broadcast ou birthdayCampaign
    *  (com prefixo discriminador): "broadcast:{id}" ou "birthday:{id}". Vazio = sem filtro. */
   campaignOrigin: string;
+  /** Filtro por estágio do pipeline do CRM. Valor = LeadStatus do Client
+   *  vinculado (ex: 'novo', 'qualificado'). Vazio = sem filtro. Conversas
+   *  sem crmContactId nunca passam quando este filtro está ativo. */
+  pipelineStage: string;
 }
 
 const EMPTY_ADV_FILTERS: AdvancedFilters = {
-  assignedTo: '', priority: '', label: '', slaStatus: '', unreadOnly: false, campaignOrigin: '',
+  assignedTo: '', priority: '', label: '', slaStatus: '', unreadOnly: false, campaignOrigin: '', pipelineStage: '',
 };
 
 function countActiveFilters(f: AdvancedFilters): number {
-  return [f.assignedTo, f.priority, f.label, f.slaStatus, f.unreadOnly, f.campaignOrigin].filter(Boolean).length;
+  return [f.assignedTo, f.priority, f.label, f.slaStatus, f.unreadOnly, f.campaignOrigin, f.pipelineStage].filter(Boolean).length;
 }
 
 /** Opção de campanha pro dropdown — pre-aggregated pelo container.
@@ -2591,7 +2617,7 @@ interface CampaignFilterOption {
   label: string;
 }
 
-function AdvancedFilterPanel({ filters, onChange, members, allLabels, slaEnabled, onSaveView, campaignOptions }: {
+function AdvancedFilterPanel({ filters, onChange, members, allLabels, slaEnabled, onSaveView, campaignOptions, pipelineStages }: {
   filters: AdvancedFilters;
   onChange: (f: AdvancedFilters) => void;
   members: User[];
@@ -2600,6 +2626,10 @@ function AdvancedFilterPanel({ filters, onChange, members, allLabels, slaEnabled
   onSaveView: () => void;
   /** Lista pré-agregada de broadcasts + birthday campaigns do business. */
   campaignOptions: CampaignFilterOption[];
+  /** Estágios visíveis do pipeline do tenant (inclui ganho/perdido — operador
+   *  pode querer filtrar "conversas com cliente ganho"). Quando vazio, o
+   *  dropdown não aparece. */
+  pipelineStages: import('@/lib/types').CRMStageConfig[];
 }) {
   const set = <K extends keyof AdvancedFilters>(key: K, val: AdvancedFilters[K]) =>
     onChange({ ...filters, [key]: val });
@@ -2653,6 +2683,26 @@ function AdvancedFilterPanel({ filters, onChange, members, allLabels, slaEnabled
             </div>
           )}
         </div>
+
+        {/* Fase do pipeline — filtro por estágio específico do CRM do
+            cliente vinculado. Complementa o SmartView "No pipeline" (qualquer
+            estágio ativo) com escolha granular: "só os Qualificados", "só os
+            em Negociação", etc. */}
+        {pipelineStages.length > 0 && (
+          <div>
+            <p className="text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1">Fase do pipeline</p>
+            <select
+              value={filters.pipelineStage}
+              onChange={e => set('pipelineStage', e.target.value)}
+              className={selClass}
+            >
+              <option value="">Todas</option>
+              {pipelineStages.map(s => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {/* Origem da campanha — só renderiza quando o business tem broadcasts/
             campanhas cadastrados. Vazio em tenants novos não polui a UI. */}
@@ -5331,6 +5381,13 @@ export default function ConversasModule() {
     () => getVisibleStages(business?.settings?.crmPipeline).filter(s => !s.isWon && !s.isLost),
     [business?.settings?.crmPipeline],
   );
+  // Stages visíveis incluindo ganho/perdido — usados no dropdown de filtro
+  // avançado (operador pode querer "só ganhos" pra dar atenção a follow-up
+  // pós-venda) e no badge do header (mostrar status mesmo em estágio final).
+  const pipelineStagesAll = useMemo(
+    () => getVisibleStages(business?.settings?.crmPipeline),
+    [business?.settings?.crmPipeline],
+  );
 
   // Guard de re-entrância: double-click rápido em "Enviar para pipeline" sem
   // crmContactId criava 2 Clients porque o segundo click rodava antes do
@@ -5994,6 +6051,7 @@ export default function ConversasModule() {
       slaStatus: advFilters.slaStatus || undefined,
       unreadOnly: advFilters.unreadOnly || undefined,
       campaignOrigin: advFilters.campaignOrigin || undefined,
+      pipelineStage: advFilters.pipelineStage || undefined,
     };
     // Edição: sobrescreve nome/emoji/filtros do doc existente. Filtros
     // refletem o snapshot atual da UI — comportamento ergonômico esperado
@@ -6043,6 +6101,7 @@ export default function ConversasModule() {
         slaStatus: (view.filters.slaStatus as AdvancedFilters['slaStatus']) ?? '',
         unreadOnly: view.filters.unreadOnly ?? false,
         campaignOrigin: view.filters.campaignOrigin ?? '',
+        pipelineStage: view.filters.pipelineStage ?? '',
       });
     }
     setEditingView(view);
@@ -6100,6 +6159,7 @@ export default function ConversasModule() {
       slaStatus: (view.filters.slaStatus as AdvancedFilters['slaStatus']) ?? '',
       unreadOnly: view.filters.unreadOnly ?? false,
       campaignOrigin: validCampaign ? persistedCampaign : '',
+      pipelineStage: (view.filters as { pipelineStage?: string }).pipelineStage ?? '',
     });
   };
 
@@ -7521,6 +7581,16 @@ export default function ConversasModule() {
     }
     return out;
   }, [clientsList, pipelineStagesActive]);
+  // Map clientId → status. Usado pelo filtro avançado "Fase do pipeline" e
+  // pelo badge no ThreadHeader. Lookup O(1) — alternativa (clients.find) é
+  // O(n) por conversa, custo proibitivo em listas grandes.
+  const clientStageById = useMemo(() => {
+    const map = new Map<string, import('@/lib/types').LeadStatus>();
+    for (const c of clientsList) {
+      if (c.status) map.set(c.id, c.status);
+    }
+    return map;
+  }, [clientsList]);
 
   // `now` é fixado dentro do useMemo pra que o cálculo seja determinístico
   // dentro de uma render — evita drift quando matchesSmartView é chamada
@@ -7563,6 +7633,11 @@ export default function ConversasModule() {
       const matchesAssigned = !advFilters.assignedTo || c.assignedTo === advFilters.assignedTo;
       const matchesPriority = !advFilters.priority || c.priority === advFilters.priority;
       const matchesLabel = !advFilters.label || c.labels?.includes(advFilters.label) || c.tags?.includes(advFilters.label);
+      // Pipeline stage: precisa de Client vinculado E status batendo. Conversas
+      // sem crmContactId nunca passam — comportamento desejado (filtro só faz
+      // sentido pra leads já no funil).
+      const matchesPipelineStage = !advFilters.pipelineStage
+        || (!!c.crmContactId && clientStageById.get(c.crmContactId) === advFilters.pipelineStage);
       const matchesUnread = !advFilters.unreadOnly || (c.unreadCount ?? 0) > 0;
       const matchesSLAStatus = !advFilters.slaStatus || getSLAInfo(c, slaConfig)?.status === advFilters.slaStatus;
       // Origem da campanha: combina dois caminhos. Forward = campo denormalizado
@@ -7577,9 +7652,9 @@ export default function ConversasModule() {
         || (campaignKind === 'broadcast' && c.originBroadcastId === campaignId)
         || (campaignKind === 'birthday' && c.originBirthdayCampaignId === campaignId)
         || (!retroLookupLoading && (retroCampaignConvIds?.has(c.id) ?? false));
-      return matchesChannel && matchesView && matchesSector && matchesScope && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus && matchesCampaign;
+      return matchesChannel && matchesView && matchesSector && matchesScope && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus && matchesCampaign && matchesPipelineStage;
     });
-  }, [getVisibleConversations, conversations, activeChannel, activeView, activeSectorFilter, activeChannelScope, myConnectionIds, connectionsById, deferredSearchQuery, advFilters, slaConfig, user?.uid, campaignKind, campaignId, retroCampaignConvIds, retroLookupLoading]);
+  }, [getVisibleConversations, conversations, activeChannel, activeView, activeSectorFilter, activeChannelScope, myConnectionIds, connectionsById, deferredSearchQuery, advFilters, slaConfig, user?.uid, campaignKind, campaignId, retroCampaignConvIds, retroLookupLoading, clientStageById]);
 
   // Re-sort client-side. 'recent' não toca a ordem (Firestore já desc por
   // lastMessageAt). 'oldest' inverte. 'priority' ranqueia urgent>high>med>low,
@@ -8022,6 +8097,7 @@ export default function ConversasModule() {
                 slaEnabled={slaConfig.enabled}
                 onSaveView={() => setShowSaveViewModal(true)}
                 campaignOptions={campaignFilterOptions}
+                pipelineStages={pipelineStagesAll}
               />
             )}
           </AnimatePresence>
@@ -8318,9 +8394,16 @@ export default function ConversasModule() {
                   pipelineStages={pipelineStagesActive}
                   linkedClientStage={
                     selectedConversation.crmContactId
-                      ? clientsList.find(c => c.id === selectedConversation.crmContactId)?.status
+                      ? clientStageById.get(selectedConversation.crmContactId)
                       : undefined
                   }
+                  linkedClientStageConfig={(() => {
+                    const status = selectedConversation.crmContactId
+                      ? clientStageById.get(selectedConversation.crmContactId)
+                      : undefined;
+                    if (!status) return null;
+                    return pipelineStagesAll.find(s => s.id === status) ?? null;
+                  })()}
                   onSendToPipeline={(stage) => handleSendToPipeline(selectedConversation, stage)}
                 />
 
