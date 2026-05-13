@@ -1989,6 +1989,35 @@ export interface Client {
 export type CRMContact = Client;
 
 // ============================================================================
+// ClientDuplicateIgnore — pares de clientes marcados como "não-duplicata"
+// ============================================================================
+//
+// Quando o detector de duplicatas sinaliza um par e o operador clica "Ignorar
+// este par" no MergeModal, gravamos um doc aqui pra que o par não reapareça
+// em futuras sessões nem em outros dispositivos. Persistência cross-device
+// e cross-operator (todos do tenant veem o mesmo estado).
+//
+// Doc id = `${businessId}_${pairKey}` (determinístico, idempotente — clicar
+// "Ignorar" duas vezes seguidas não duplica registro). pairKey = ids do par
+// ordenados e joinados por `|`, o mesmo formato que MergeModal usa pra
+// indexar state local.
+
+export interface ClientDuplicateIgnore {
+  id: string;
+  businessId: string;
+  /** Chave estável do par: [clientIdA, clientIdB].sort().join('|'). */
+  pairKey: string;
+  clientIdA: string;
+  clientIdB: string;
+  /** UID do operador que ignorou — pra auditoria/desfazer. */
+  ignoredBy: string;
+  /** Nome do operador (audit field, evita lookup futuro). */
+  ignoredByName: string;
+  /** ISO timestamp do clique. */
+  ignoredAt: string;
+}
+
+// ============================================================================
 // Offers — Fase 4B do módulo Clientes
 // ============================================================================
 //

@@ -229,6 +229,29 @@ service cloud.firestore {
     }
 
     // ============================================
+    // CLIENT DUPLICATE IGNORES COLLECTION
+    // Pares de clientes que o operador marcou como "não-duplicata" no
+    // MergeModal. Sem isso, dismissed era state local e o par voltava ao
+    // reabrir. Operadores+ podem criar/deletar; doc é imutável após
+    // criação (sem allow update).
+    // ============================================
+    match /clientDuplicateIgnores/{ignoreId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isOperator();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isOperator();
+
+      // Sem allow update — registro é imutável; pra "desfazer", deleta.
+
+      allow delete: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isOperator();
+    }
+
+    // ============================================
     // ORDERS COLLECTION (B2B sales / vendas)
     // ============================================
     match /orders/{orderId} {

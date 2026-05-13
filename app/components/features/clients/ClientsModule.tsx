@@ -20,7 +20,13 @@ import { formatCurrency, formatDate } from '@/lib/utils/format';
 import { validateCPF, validateCNPJ } from '@/lib/utils/validators';
 import { isActiveClient } from '@/lib/utils/clientFilters';
 import { cn } from '@/lib/utils';
-import type { Client, LeadStatus, LoyaltyConfig, LoyaltyTier } from '@/lib/types';
+import type { Client, ClientDuplicateIgnore, LeadStatus, LoyaltyConfig, LoyaltyTier } from '@/lib/types';
+import {
+  subscribeClientDuplicateIgnores,
+  addClientDuplicateIgnore,
+  removeClientDuplicateIgnore,
+  pairKeyOf,
+} from '@/lib/services/clientDuplicateIgnores';
 import { DEFAULT_LOYALTY_TIERS } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import { toast } from 'react-toastify';
@@ -112,16 +118,27 @@ function detectDuplicates(clients: Client[]): [Client, Client][] {
 function MergeModal({
   clients,
   businessId,
+  ignores,
+  user,
   onClose,
   onDone,
 }: {
   clients: Client[];
   businessId: string;
+  /** Pares ignorados persistidos no Firestore (subscrição no parent). */
+  ignores: ClientDuplicateIgnore[];
+  /** Operador autenticado — pra audit field nos ignores. */
+  user: { id: string; name: string };
   onClose: () => void;
   onDone: () => void;
 }) {
   const pairs = useMemo(() => detectDuplicates(clients), [clients]);
-  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  // Map<pairKey, doc.id> pra remover pelo ID quando clicar "Desfazer".
+  const ignoresByKey = useMemo(() => {
+    const m = new Map<string, ClientDuplicateIgnore>();
+    for (const ig of ignores) m.set(ig.pairKey, ig);
+    return m;
+  }, [ignores]);
   const [primaryIds, setPrimaryIds] = useState<Record<string, string>>({});
   const [fillEmpty, setFillEmpty] = useState<Record<string, boolean>>({});
   const [merging, setMerging] = useState<string | null>(null);
@@ -129,13 +146,62 @@ function MergeModal({
   // Estado do batch "Mesclar tudo": progresso atual + total + flag de erro.
   const [batchMerging, setBatchMerging] = useState<{ done: number; total: number; failed: number } | null>(null);
   const [confirmMergeAll, setConfirmMergeAll] = useState(false);
+  // UI: mostra lista de pares ignorados (colapsada por default).
+  const [showIgnored, setShowIgnored] = useState(false);
+  // Optimistic: pares em flight (clicou Ignorar e ainda não voltou via
+  // onSnapshot). Some assim que Firestore confirma a inserção.
+  const [ignoringInFlight, setIgnoringInFlight] = useState<Set<string>>(new Set());
 
   const activePairs = pairs.filter(([a, b]) => {
-    const key = [a.id, b.id].sort().join('|');
-    return !dismissed.has(key) && !merged.has(key);
+    const key = pairKeyOf(a.id, b.id);
+    return !ignoresByKey.has(key) && !merged.has(key) && !ignoringInFlight.has(key);
   });
 
-  const pairKey = (a: Client, b: Client) => [a.id, b.id].sort().join('|');
+  // Resolve clients dos pairs ignorados pra exibir nome/email no painel
+  // "Desfazer". Se um dos clientes foi deletado (ex: mesclado em outro flow),
+  // exibe o ID cru como fallback — operador ainda consegue desfazer pelo doc.id.
+  const ignoredPairs = useMemo(() => {
+    const byId = new Map(clients.map(c => [c.id, c]));
+    return ignores.map(ig => ({
+      ignore: ig,
+      a: byId.get(ig.clientIdA) ?? null,
+      b: byId.get(ig.clientIdB) ?? null,
+    }));
+  }, [ignores, clients]);
+
+  const pairKey = (a: Client, b: Client) => pairKeyOf(a.id, b.id);
+
+  const handleIgnore = async (a: Client, b: Client) => {
+    const key = pairKey(a, b);
+    setIgnoringInFlight(prev => new Set([...prev, key]));
+    try {
+      await addClientDuplicateIgnore({
+        businessId,
+        clientIdA: a.id,
+        clientIdB: b.id,
+        user,
+      });
+    } catch (err) {
+      console.error('[Ignore pair] failed:', err);
+      toast.error('Não foi possível ignorar o par. Tente novamente.');
+    } finally {
+      // Mesmo em erro, libera do in-flight; onSnapshot atualiza o estado.
+      setIgnoringInFlight(prev => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  };
+
+  const handleUnignore = async (ignoreId: string) => {
+    try {
+      await removeClientDuplicateIgnore(ignoreId);
+    } catch (err) {
+      console.error('[Unignore pair] failed:', err);
+      toast.error('Não foi possível desfazer. Tente novamente.');
+    }
+  };
 
   const handleMerge = async (a: Client, b: Client) => {
     const key = pairKey(a, b);
@@ -345,11 +411,11 @@ function MergeModal({
                     {/* Actions */}
                     <div className="flex gap-2">
                       <button
-                        onClick={() => setDismissed(p => new Set([...p, key]))}
-                        disabled={!!batchMerging}
+                        onClick={() => handleIgnore(a, b)}
+                        disabled={!!batchMerging || ignoringInFlight.has(key)}
                         className="flex-1 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 text-xs font-medium text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors disabled:opacity-50"
                       >
-                        Ignorar este par
+                        {ignoringInFlight.has(key) ? 'Ignorando...' : 'Ignorar este par'}
                       </button>
                       <button
                         onClick={() => handleMerge(a, b)}
@@ -377,6 +443,47 @@ function MergeModal({
             </div>
           )}
         </div>
+
+        {/* Painel "Ignorados" — colapsável. Aparece só se há pares ignorados
+            no Firestore. Permite desfazer pra reverter um ignore acidental
+            (o par volta a aparecer na lista ativa). */}
+        {ignoredPairs.length > 0 && (
+          <div className="border-t border-gray-100 dark:border-gray-800 flex-shrink-0">
+            <button
+              onClick={() => setShowIgnored(v => !v)}
+              className="w-full px-6 py-2.5 flex items-center justify-between text-xs font-medium text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
+            >
+              <span>
+                {ignoredPairs.length} par{ignoredPairs.length > 1 ? 'es' : ''} ignorado{ignoredPairs.length > 1 ? 's' : ''}
+              </span>
+              <span className="text-[10px] text-gray-400">{showIgnored ? 'ocultar' : 'mostrar'}</span>
+            </button>
+            {showIgnored && (
+              <div className="max-h-48 overflow-y-auto px-6 pb-2 divide-y divide-gray-100 dark:divide-gray-800/50">
+                {ignoredPairs.map(({ ignore, a, b }) => (
+                  <div key={ignore.id} className="py-2 flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[11px] text-gray-700 dark:text-gray-300 truncate">
+                        {a?.name ?? `[deletado: ${ignore.clientIdA.slice(0, 8)}…]`}
+                        <span className="text-gray-400 mx-1.5">↔</span>
+                        {b?.name ?? `[deletado: ${ignore.clientIdB.slice(0, 8)}…]`}
+                      </p>
+                      <p className="text-[9px] text-gray-400 truncate">
+                        Por {ignore.ignoredByName} · {formatDate(ignore.ignoredAt)}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => handleUnignore(ignore.id)}
+                      className="flex-shrink-0 px-2 py-1 rounded-md text-[10px] font-medium text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-500/10 transition-colors"
+                    >
+                      Desfazer
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="px-6 py-3 border-t border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/30 flex-shrink-0">
           <p className="text-[10px] text-gray-400 text-center">
@@ -580,6 +687,20 @@ function LoyaltySettingsModal({
 export default function ClientsModule() {
   const { business, user } = useAuth();
   const queryClient = useQueryClient();
+
+  // Pares ignorados (persistidos em Firestore). Subscrito em tempo real
+  // pra que badge "Duplicatas N" no header e estado do MergeModal fiquem
+  // em sincronia entre dispositivos/operadores. Sem isso, ignorar um par
+  // num dispositivo continuava a aparecer em outro.
+  const [duplicateIgnores, setDuplicateIgnores] = useState<ClientDuplicateIgnore[]>([]);
+  useEffect(() => {
+    if (!business?.id) return;
+    return subscribeClientDuplicateIgnores(business.id, setDuplicateIgnores);
+  }, [business?.id]);
+  const ignoredPairKeys = useMemo(
+    () => new Set(duplicateIgnores.map(ig => ig.pairKey)),
+    [duplicateIgnores],
+  );
 
   const [clientsView, setClientsView] = useState<'list' | 'table'>(() => {
     if (typeof window === 'undefined') return 'list';
@@ -1197,7 +1318,13 @@ export default function ClientsModule() {
   }, [clients, search, filterTipo, filterStatus, filterTags, filterChurnRisk, filterBirthMonth, filterChannel, filterChannelHasConv, contactIdsByChannel, filterAcquisition, filterCampaign, campaignContactIds, sortField, sortDir]);
 
   // ─── Duplicate count (for badge) ─────────────────────────────────────────────
-  const dupeCount = useMemo(() => detectDuplicates(clients).length, [clients]);
+  // Conta só pairs ATIVOS — desconta os que o operador ignorou. Sem esse
+  // filtro, o badge "Duplicatas N" continuava mostrando o par mesmo depois
+  // de "Ignorar este par" porque o filtro vivia só no state local do modal.
+  const dupeCount = useMemo(
+    () => detectDuplicates(clients).filter(([a, b]) => !ignoredPairKeys.has(pairKeyOf(a.id, b.id))).length,
+    [clients, ignoredPairKeys],
+  );
 
   // ─── KPIs ────────────────────────────────────────────────────────────────────
   const kpis = useMemo(() => {
@@ -2083,6 +2210,8 @@ export default function ClientsModule() {
           <MergeModal
             clients={clients}
             businessId={business!.id}
+            ignores={duplicateIgnores}
+            user={{ id: user!.id, name: user!.name || user!.email || 'Operador' }}
             onClose={() => setShowMerge(false)}
             onDone={() => queryClient.invalidateQueries({ queryKey: ['clients', business?.id] })}
           />
