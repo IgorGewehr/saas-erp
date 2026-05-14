@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils';
 import { setActiveConversation } from '@/lib/utils/active-conversation';
 import { isActiveClient } from '@/lib/utils/clientFilters';
 import { createPortal } from 'react-dom';
+import { compressImage, formatFileSize } from '@/lib/utils/imageCompress';
 import { ClientDetailPanel } from '@/app/components/features/clients/detail/ClientDetailPanel';
 import { ClientEditDialog } from '@/app/components/features/clients/ClientEditDialog';
 import type { ClientFormData } from '@/app/components/features/clients/ClientForm';
@@ -117,6 +118,10 @@ import {
   CornerDownLeft,
   CornerUpLeft,
   Reply,
+  Mic,
+  Play,
+  Pause,
+  Trash,
   ArrowDownUp,
   Moon,
   BellOff,
@@ -2436,6 +2441,120 @@ interface ComposerProps {
    *  com X pra cancelar. `null` = sem reply ativa. */
   replyTo?: ConversationMessage | null;
   onCancelReply?: () => void;
+  /** Áudio gravado pelo Composer (via MediaRecorder do browser). Recebe um File
+   *  pronto pra upload — pai chama sendMediaMessage(file) normalmente, e o
+   *  backend converte pra M4A automaticamente quando o canal precisar. */
+  onSendAudio?: (file: File) => void;
+}
+
+/**
+ * Barra de gravação que substitui o input do Composer durante recording/preview.
+ * Visual minimalista (sem waveform — apenas ícones + timer) pra manter o footprint
+ * compatível com o resto do Composer. Estados visuais distintos:
+ *   • recording: ponto vermelho pulsando + timer crescente; warning visual nos
+ *     últimos 30s do limite.
+ *   • preview: player com play/pause + duração total + ações.
+ */
+function AudioRecorderBar({
+  state,
+  duration,
+  limit,
+  previewPlaying,
+  onStop,
+  onDiscard,
+  onTogglePlay,
+  onSend,
+  isSending,
+}: {
+  state: 'recording' | 'preview';
+  duration: number;
+  limit: number;
+  previewPlaying: boolean;
+  onStop: () => void;
+  onDiscard: () => void;
+  onTogglePlay: () => void;
+  onSend: () => void;
+  isSending: boolean;
+}) {
+  const mm = Math.floor(duration / 60).toString().padStart(2, '0');
+  const ss = (duration % 60).toString().padStart(2, '0');
+  // Warning visual aos últimos 30s — sinaliza pro operador que vai parar em breve
+  // sem cortar a gravação. 4:30 num limite de 5min é tempo suficiente pra encerrar.
+  const isNearLimit = state === 'recording' && duration >= limit - 30;
+
+  return (
+    <div className="flex items-center gap-3 bg-gray-100 dark:bg-white/[0.04] border border-transparent dark:border-white/[0.06] rounded-2xl px-4 py-2.5">
+      {/* Cancelar (descarta gravação) */}
+      <button
+        onClick={onDiscard}
+        disabled={isSending}
+        title="Cancelar gravação"
+        className="w-9 h-9 rounded-xl flex items-center justify-center text-gray-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 disabled:opacity-50 transition-colors flex-shrink-0"
+      >
+        <Trash className="w-4 h-4" />
+      </button>
+
+      {/* Status + timer */}
+      <div className="flex-1 flex items-center gap-2 min-w-0">
+        {state === 'recording' ? (
+          <>
+            <div className={cn(
+              'w-2.5 h-2.5 rounded-full flex-shrink-0',
+              isNearLimit ? 'bg-amber-500 animate-pulse' : 'bg-red-500 animate-pulse',
+            )} />
+            <span className={cn(
+              'text-sm font-medium tabular-nums',
+              isNearLimit ? 'text-amber-700 dark:text-amber-300' : 'text-gray-700 dark:text-gray-200',
+            )}>
+              {mm}:{ss}
+            </span>
+            <span className="text-xs text-gray-400 dark:text-gray-500 truncate">
+              {isNearLimit ? 'Limite em breve — encerre a mensagem' : 'Gravando...'}
+            </span>
+          </>
+        ) : (
+          <>
+            <button
+              onClick={onTogglePlay}
+              className="w-9 h-9 rounded-full flex items-center justify-center bg-white dark:bg-gray-800 shadow-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors flex-shrink-0"
+            >
+              {previewPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 translate-x-0.5" />}
+            </button>
+            <span className="text-sm font-medium tabular-nums text-gray-700 dark:text-gray-200">
+              {mm}:{ss}
+            </span>
+            <span className="text-xs text-gray-400 dark:text-gray-500 truncate">
+              Pré-visualize antes de enviar
+            </span>
+          </>
+        )}
+      </div>
+
+      {/* Ação principal */}
+      {state === 'recording' ? (
+        <motion.button
+          onClick={onStop}
+          whileTap={{ scale: 0.95 }}
+          disabled={isSending}
+          title="Parar gravação"
+          className="w-10 h-10 rounded-2xl flex items-center justify-center bg-gradient-to-br from-red-600 to-red-500 text-white shadow-sm shadow-red-500/30 disabled:opacity-50 flex-shrink-0"
+        >
+          <Square className="w-4 h-4" />
+        </motion.button>
+      ) : (
+        <motion.button
+          onClick={onSend}
+          whileHover={!isSending ? { scale: 1.05 } : undefined}
+          whileTap={!isSending ? { scale: 0.95 } : undefined}
+          disabled={isSending}
+          title="Enviar áudio"
+          className="w-10 h-10 rounded-2xl flex items-center justify-center bg-gradient-to-br from-red-600 to-red-500 text-white shadow-sm shadow-red-500/30 disabled:opacity-50 flex-shrink-0"
+        >
+          <Send className="w-4 h-4 translate-x-0.5 -translate-y-0.5" />
+        </motion.button>
+      )}
+    </div>
+  );
 }
 
 const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Composer({
@@ -2457,6 +2576,7 @@ const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Compose
   crossOperatorWarning,
   replyTo,
   onCancelReply,
+  onSendAudio,
 }, ref) {
   const { t } = useTranslation();
   const cfg = getConvConfig({ channel, connectedVia: connectedVia as 'baileys' | 'embedded_signup' | undefined });
@@ -2482,6 +2602,187 @@ const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Compose
   const hasContent = text.trim().length > 0 || !!attachment;
   const isDisabled = disabled || false;
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Audio recorder state ────────────────────────────────────────────────
+  // 3 estados: idle (mostra Composer normal), recording (mostra barra de
+  // gravação substituindo o input), preview (mostra player + ações). O
+  // operador grava → preview → escolhe Enviar/Regravar/Cancelar.
+  const [recState, setRecState] = useState<'idle' | 'recording' | 'preview'>('idle');
+  const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
+  const [recordedUrl, setRecordedUrl] = useState<string | null>(null);
+  const [recordedMime, setRecordedMime] = useState<string>('audio/webm');
+  const [recDuration, setRecDuration] = useState(0); // segundos
+  const [previewPlaying, setPreviewPlaying] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const recTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const recStartRef = useRef<number>(0);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Hard limit: 5min. Cloud API permite ~16MB, que dá ~10min de Opus 32kbps.
+  // 5min é confortável pra atendimento (mensagem longa de voz típica) e mantém
+  // o blob pequeno o suficiente pra upload rápido.
+  const REC_LIMIT_SEC = 300;
+
+  // Cleanup: revoga ObjectURL antigo + para stream tracks ao desmontar.
+  useEffect(() => {
+    return () => {
+      if (recordedUrl) URL.revokeObjectURL(recordedUrl);
+      if (recTimerRef.current) clearInterval(recTimerRef.current);
+      const mr = mediaRecorderRef.current;
+      if (mr && mr.state !== 'inactive') {
+        mr.stream.getTracks().forEach(t => t.stop());
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const pickRecorderMime = useCallback((): string => {
+    // Preferência: ogg/opus (aceito direto pelo WhatsApp Cloud). Se não
+    // suportado (Chrome só fornece webm/opus), cai pra webm e o backend
+    // converte pra M4A via ffmpeg. Safari geralmente só dá audio/mp4.
+    if (typeof MediaRecorder === 'undefined') return '';
+    const candidates = [
+      'audio/ogg;codecs=opus',
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/mp4',
+    ];
+    for (const m of candidates) {
+      if (MediaRecorder.isTypeSupported(m)) return m;
+    }
+    return ''; // browser usa default
+  }, []);
+
+  const stopAllTracks = useCallback(() => {
+    const mr = mediaRecorderRef.current;
+    if (mr) mr.stream.getTracks().forEach(t => t.stop());
+  }, []);
+
+  const startRecording = useCallback(async () => {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices) {
+      toast.error('Gravação não suportada neste navegador');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = pickRecorderMime();
+      const mr = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+      mediaRecorderRef.current = mr;
+      recordedChunksRef.current = [];
+      mr.ondataavailable = (ev) => {
+        if (ev.data && ev.data.size > 0) recordedChunksRef.current.push(ev.data);
+      };
+      mr.onstop = () => {
+        const blobMime = mr.mimeType || mime || 'audio/webm';
+        const blob = new Blob(recordedChunksRef.current, { type: blobMime });
+        const url = URL.createObjectURL(blob);
+        setRecordedBlob(blob);
+        setRecordedUrl(url);
+        setRecordedMime(blobMime);
+        setRecState('preview');
+        stopAllTracks();
+      };
+      mr.start();
+      recStartRef.current = Date.now();
+      setRecDuration(0);
+      setRecState('recording');
+      // Tick a cada 250ms — atualiza o display sem custo perceptível e
+      // permite o auto-stop reagir rápido ao limite.
+      recTimerRef.current = setInterval(() => {
+        const elapsed = Math.floor((Date.now() - recStartRef.current) / 1000);
+        setRecDuration(elapsed);
+        if (elapsed >= REC_LIMIT_SEC && mediaRecorderRef.current?.state === 'recording') {
+          mediaRecorderRef.current.stop();
+          if (recTimerRef.current) {
+            clearInterval(recTimerRef.current);
+            recTimerRef.current = null;
+          }
+        }
+      }, 250);
+    } catch (err) {
+      console.error('[Recorder] getUserMedia failed:', err);
+      const msg = (err as Error)?.message || '';
+      if (msg.includes('Permission') || msg.toLowerCase().includes('denied')) {
+        toast.error('Permita o acesso ao microfone nas configurações do navegador.');
+      } else {
+        toast.error('Falha ao iniciar gravação de áudio.');
+      }
+    }
+  }, [pickRecorderMime, stopAllTracks]);
+
+  const stopRecording = useCallback(() => {
+    const mr = mediaRecorderRef.current;
+    if (mr && mr.state === 'recording') mr.stop();
+    if (recTimerRef.current) {
+      clearInterval(recTimerRef.current);
+      recTimerRef.current = null;
+    }
+  }, []);
+
+  const discardRecording = useCallback(() => {
+    if (recTimerRef.current) {
+      clearInterval(recTimerRef.current);
+      recTimerRef.current = null;
+    }
+    const mr = mediaRecorderRef.current;
+    if (mr && mr.state === 'recording') {
+      // Override onstop antes de parar pra não cair no preview.
+      mr.onstop = () => stopAllTracks();
+      mr.stop();
+    }
+    if (recordedUrl) URL.revokeObjectURL(recordedUrl);
+    if (previewAudioRef.current) {
+      previewAudioRef.current.pause();
+      previewAudioRef.current = null;
+    }
+    setRecordedBlob(null);
+    setRecordedUrl(null);
+    setRecDuration(0);
+    setPreviewPlaying(false);
+    setRecState('idle');
+  }, [recordedUrl, stopAllTracks]);
+
+  const togglePreviewPlayback = useCallback(() => {
+    if (!recordedUrl) return;
+    if (!previewAudioRef.current) {
+      const audio = new Audio(recordedUrl);
+      audio.onended = () => setPreviewPlaying(false);
+      previewAudioRef.current = audio;
+    }
+    const audio = previewAudioRef.current;
+    if (audio.paused) {
+      void audio.play();
+      setPreviewPlaying(true);
+    } else {
+      audio.pause();
+      setPreviewPlaying(false);
+    }
+  }, [recordedUrl]);
+
+  const sendRecording = useCallback(() => {
+    if (!recordedBlob || !onSendAudio) return;
+    // Nome com extensão correta — o backend usa ela pra detectar se precisa
+    // converter (needsAudioConversion lê .webm/.weba/etc da URL).
+    const ext = recordedMime.includes('ogg') ? 'ogg'
+      : recordedMime.includes('webm') ? 'webm'
+      : recordedMime.includes('mp4') ? 'm4a'
+      : 'audio';
+    const filename = `voz_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.${ext}`;
+    const file = new File([recordedBlob], filename, { type: recordedMime, lastModified: Date.now() });
+    onSendAudio(file);
+    // Limpa state — sendMediaMessage do pai cuida do upload + envio assíncrono.
+    if (recordedUrl) URL.revokeObjectURL(recordedUrl);
+    if (previewAudioRef.current) {
+      previewAudioRef.current.pause();
+      previewAudioRef.current = null;
+    }
+    setRecordedBlob(null);
+    setRecordedUrl(null);
+    setRecDuration(0);
+    setPreviewPlaying(false);
+    setRecState('idle');
+  }, [recordedBlob, recordedMime, recordedUrl, onSendAudio]);
 
   // Generate thumbnail preview for images
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -2593,6 +2894,21 @@ const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Compose
             {t('conversations.sendTemplate', 'Enviar Template')}
           </motion.button>
         </div>
+      ) : recState !== 'idle' ? (
+        /* Modo gravação: substitui a área toda do composer pra evitar ações
+           paralelas (anexo, emoji, snippet) durante a gravação — operador foca
+           só em terminar/cancelar/enviar. */
+        <AudioRecorderBar
+          state={recState}
+          duration={recDuration}
+          limit={REC_LIMIT_SEC}
+          previewPlaying={previewPlaying}
+          onStop={stopRecording}
+          onDiscard={discardRecording}
+          onTogglePlay={togglePreviewPlayback}
+          onSend={sendRecording}
+          isSending={isSending}
+        />
       ) : (
       <>
       {/* Reply preview — quando o operador clicou "Responder" em alguma bolha.
@@ -2769,21 +3085,37 @@ const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Compose
           )}
         </div>
 
-        {/* Send button */}
-        <motion.button
-          onClick={() => onSend(textRef.current)}
-          whileHover={hasContent && !isSending ? { scale: 1.05 } : undefined}
-          whileTap={hasContent && !isSending ? { scale: 0.95 } : undefined}
-          disabled={!hasContent || isSending}
-          className={cn(
-            'w-10 h-10 rounded-2xl flex items-center justify-center flex-shrink-0 transition-all duration-200 shadow-sm mb-0.5',
-            hasContent && !isSending
-              ? 'bg-gradient-to-br from-red-600 to-red-500 text-white shadow-red-500/30 shadow-md'
-              : 'bg-gray-100 dark:bg-white/[0.06] text-gray-400 dark:text-gray-600 cursor-not-allowed',
-          )}
-        >
-          <Send className={cn('w-4 h-4', hasContent && !isSending && 'translate-x-0.5 -translate-y-0.5')} />
-        </motion.button>
+        {/* Send/Mic — alterna conforme contexto (padrão WhatsApp Web):
+              • Texto digitado ou anexo presente → ícone Send (vermelho)
+              • Composer vazio + suporte a áudio → ícone Mic (vermelho)
+              • Em notas internas, Mic some (notas são só texto/anexo) */}
+        {hasContent || isInternalNote || !onSendAudio ? (
+          <motion.button
+            onClick={() => onSend(textRef.current)}
+            whileHover={hasContent && !isSending ? { scale: 1.05 } : undefined}
+            whileTap={hasContent && !isSending ? { scale: 0.95 } : undefined}
+            disabled={!hasContent || isSending}
+            className={cn(
+              'w-10 h-10 rounded-2xl flex items-center justify-center flex-shrink-0 transition-all duration-200 shadow-sm mb-0.5',
+              hasContent && !isSending
+                ? 'bg-gradient-to-br from-red-600 to-red-500 text-white shadow-red-500/30 shadow-md'
+                : 'bg-gray-100 dark:bg-white/[0.06] text-gray-400 dark:text-gray-600 cursor-not-allowed',
+            )}
+          >
+            <Send className={cn('w-4 h-4', hasContent && !isSending && 'translate-x-0.5 -translate-y-0.5')} />
+          </motion.button>
+        ) : (
+          <motion.button
+            onClick={startRecording}
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            disabled={isSending}
+            title={t('conversations.recordAudio', 'Gravar áudio')}
+            className="w-10 h-10 rounded-2xl flex items-center justify-center flex-shrink-0 transition-all duration-200 shadow-sm mb-0.5 bg-gradient-to-br from-red-600 to-red-500 text-white shadow-red-500/30 shadow-md disabled:opacity-50"
+          >
+            <Mic className="w-4 h-4" />
+          </motion.button>
+        )}
       </div>
       </>
       )}
@@ -7380,9 +7712,11 @@ export default function ConversasModule() {
 
   // ── File attachment handling (Task 1) ──────────────────────────────────────
 
-  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    // Reset cedo — operador pode re-selecionar o mesmo arquivo se cancelar/falhar.
+    e.target.value = '';
 
     // Limites por tipo — alinhados com WhatsApp Cloud API.
     // Documento: 100MB (Cloud); imagem 5MB; áudio/vídeo 16MB. Baileys aceita
@@ -7392,27 +7726,47 @@ export default function ConversasModule() {
       : file.type.startsWith('video/') ? 'video'
       : file.type.startsWith('audio/') ? 'audio'
       : 'document';
+
+    // Imagem >5MB: tenta comprimir client-side antes de falhar. Smartphone
+    // moderno gera 5-15MB facilmente — sem isso, operador toma "muito grande"
+    // por algo que poderia ser auto-resolvido.
+    let finalFile = file;
+    if (mt === 'image' && file.size > 5 * 1024 * 1024) {
+      try {
+        const original = file.size;
+        finalFile = await compressImage(file);
+        if (finalFile.size < original) {
+          toast.info(`Imagem comprimida: ${formatFileSize(original)} → ${formatFileSize(finalFile.size)}`);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Falha ao comprimir imagem';
+        toast.error(msg);
+        return;
+      }
+    }
+
     const limits = { image: 5, video: 16, audio: 16, document: 100 } as const;
     const limitMb = limits[mt];
-    if (file.size > limitMb * 1024 * 1024) {
+    if (finalFile.size > limitMb * 1024 * 1024) {
       const labels = { image: 'imagem', video: 'vídeo', audio: 'áudio', document: 'documento' } as const;
       alert(`Arquivo de ${labels[mt]} muito grande (máximo ${limitMb}MB).`);
       return;
     }
 
-    // Validate audio format for WhatsApp (Cloud API requires specific MIME types)
+    // Validate audio format for WhatsApp (Cloud API requires specific MIME types).
+    // Áudio gravado pelo Composer (webm/opus) é tratado pelo conversor server-side
+    // em prepareAudioForChannel — não cai por este caminho. Aqui só uploads
+    // manuais do operador (audio file selecionado via Anexar).
     const channel = selectedConversation?.channel;
-    if (file.type.startsWith('audio/') && channel === 'whatsapp') {
+    if (finalFile.type.startsWith('audio/') && channel === 'whatsapp') {
       const WA_SUPPORTED_AUDIO = ['audio/aac', 'audio/mp4', 'audio/mpeg', 'audio/amr', 'audio/ogg', 'audio/opus'];
-      if (!WA_SUPPORTED_AUDIO.includes(file.type)) {
-        alert(`Formato de áudio não suportado pelo WhatsApp (${file.type}).\nUse MP3, M4A, AAC, AMR ou OGG/Opus.`);
+      if (!WA_SUPPORTED_AUDIO.includes(finalFile.type)) {
+        alert(`Formato de áudio não suportado pelo WhatsApp (${finalFile.type}).\nUse MP3, M4A, AAC, AMR ou OGG/Opus.`);
         return;
       }
     }
 
-    setAttachment(file);
-    // Reset input so the same file can be re-selected
-    e.target.value = '';
+    setAttachment(finalFile);
   }, [selectedConversation]);
 
   const handleRemoveAttachment = useCallback(() => {
@@ -9048,6 +9402,7 @@ export default function ConversasModule() {
                       crossOperatorWarning={crossOpWarning}
                       replyTo={replyToMessage}
                       onCancelReply={() => setReplyToMessage(null)}
+                      onSendAudio={(file) => { void sendMediaMessage(file, isInternalNote); }}
                     />
                   );
                 })()}
