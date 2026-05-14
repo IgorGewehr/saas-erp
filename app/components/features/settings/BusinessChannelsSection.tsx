@@ -1,27 +1,32 @@
 'use client';
 
 /**
- * MyChannelsTab — gestão dos canais visíveis ao usuário (Phase 2 do refactor
- * multi-canal).
+ * BusinessChannelsSection — seção dentro da aba Canais (Settings) que lista
+ * os WhatsApp Web (Baileys) COMPARTILHADOS da empresa.
+ *
+ * Origem: refator de MyChannelsTab. A aba "Meus Canais" foi removida porque
+ * ninguém usava WhatsApp pessoal — agora tudo é canal-empresa, gerenciado
+ * dentro da aba Canais ao lado dos canais oficiais (Cloud/FB/IG).
  *
  * O que mostra:
- *   - Canais da empresa (ownerType='business') — read-only, exibidos em cinza
- *     pra contexto. Quem gerencia é admin via Settings → Empresa → Canais.
- *   - Canais pessoais do usuário (ownerType='user', ownerId=self) — totalmente
- *     gerenciáveis. Operator+ pode adicionar/remover/renomear.
+ *   - Lista de Baileys com ownerType='business' (compartilhados pela equipe)
+ *   - CTA admin: "Adicionar WhatsApp da empresa" (limit Phase 3.1: múltiplos
+ *     permitidos, o primeiro vira primary)
  *
- * Fluxo de adicionar Baileys pessoal:
- *   1. POST /api/channels/connections {type:'whatsapp_baileys', ownerType:'user'}
- *   2. Abre modal QR conectado a /api/whatsapp/connect?connectionId=...
- *   3. SSE entrega QR → user escaneia → status='connected'
- *   4. Modal fecha, lista atualiza via refetch (channelConnection.isConnected=true)
+ * O que EXCLUI (intencionalmente):
+ *   - purpose='validator': o chip validador tem card próprio em outra seção
+ *     (ValidatorChipSection) com aviso claro e fluxo distinto. Sem isolar,
+ *     o validator apareceria misturado e o operador confundiria com chip de
+ *     envio — um dos riscos centrais do design.
+ *   - ownerType='user': WhatsApp pessoais foram descontinuados. Conexões
+ *     legadas ainda funcionam no backend mas não são mais expostas aqui.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Smartphone, Plus, Loader2, X, Check, AlertCircle, QrCode,
-  Trash2, RefreshCw, Building2, User as UserIcon, Edit3, Star,
+  Trash2, RefreshCw, Building2, Edit3, Star,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -36,10 +41,9 @@ const CHANNEL_LABELS: Record<string, string> = {
   instagram: 'Instagram',
 };
 
-export default function MyChannelsTab() {
+export default function BusinessChannelsSection() {
   const { user, business } = useAuth();
   const businessId = business?.id;
-  const userId = user?.uid;
   const isAdmin = !!user && ROLE_HIERARCHY[user.role] >= ROLE_HIERARCHY['admin'];
 
   const [connections, setConnections] = useState<ChannelConnection[]>([]);
@@ -62,7 +66,7 @@ export default function MyChannelsTab() {
       const data = await res.json();
       setConnections((data.connections || []) as ChannelConnection[]);
     } catch (err) {
-      console.error('[MyChannelsTab] fetch failed:', err);
+      console.error('[BusinessChannelsSection] fetch failed:', err);
       toast.error('Falha ao carregar canais.');
     } finally {
       setLoading(false);
@@ -71,40 +75,24 @@ export default function MyChannelsTab() {
 
   useEffect(() => { void fetchConnections(); }, [fetchConnections]);
 
-  // Polling leve enquanto há conexão sendo estabelecida (modal QR aberto) —
-  // 3s pra responder rápido ao "Conectado!" e fechar modal automaticamente.
+  // Polling rápido enquanto QR modal aberto — responde ao "Conectado!" e
+  // fecha modal automaticamente.
   useEffect(() => {
     if (!qrConnectionId) return;
     const t = setInterval(() => { void fetchConnections(); }, 3_000);
     return () => clearInterval(t);
   }, [qrConnectionId, fetchConnections]);
 
-  // Polling de fundo enquanto MyChannelsTab está montada — captura mudanças
-  // de estado como `disconnectReason='replaced'` (outro dispositivo conectou
-  // com as mesmas creds) sem o operador precisar dar F5. Intervalo maior pra
-  // não martelar o Firestore. Se o modal QR estiver aberto, o poll rápido
-  // acima cobre — esse aqui complementa pra estados pós-pareamento.
+  // Polling de fundo — captura mudanças tipo `disconnectReason='replaced'`
+  // (outro dispositivo conectou com as mesmas creds) sem F5.
   useEffect(() => {
-    if (qrConnectionId) return; // evita poll duplo enquanto QR modal aberto
+    if (qrConnectionId) return;
     const t = setInterval(() => { void fetchConnections(); }, 15_000);
     return () => clearInterval(t);
   }, [qrConnectionId, fetchConnections]);
 
-  const handleCreatePersonal = async () => {
-    return createConnection('user');
-  };
-
-  /**
-   * Phase 3.1: admin pode adicionar canais Baileys da EMPRESA (não-pessoais).
-   * Quando já existe primary, esta vira secundária — admin promove via UI.
-   */
   const handleCreateBusinessChannel = async () => {
-    if (!isAdmin) return;
-    return createConnection('business');
-  };
-
-  const createConnection = async (ownerKind: 'user' | 'business') => {
-    if (!businessId) return;
+    if (!isAdmin || !businessId) return;
     setCreating(true);
     try {
       const { getAuth } = await import('firebase/auth');
@@ -115,14 +103,13 @@ export default function MyChannelsTab() {
         body: JSON.stringify({
           businessId,
           type: 'whatsapp_baileys',
-          ownerType: ownerKind,
-          ...(ownerKind === 'business' ? { displayName: 'WhatsApp Empresa' } : {}),
+          ownerType: 'business',
+          displayName: 'WhatsApp Empresa',
         }),
       });
       const data = await res.json();
       if (!res.ok) {
         if (res.status === 409 && data.existingConnectionId) {
-          // Já tem — abre QR direto da existente
           setQrConnectionId(data.existingConnectionId);
           await fetchConnections();
           return;
@@ -130,20 +117,15 @@ export default function MyChannelsTab() {
         throw new Error(data.error || `HTTP ${res.status}`);
       }
       await fetchConnections();
-      // Abre modal QR pra escaneamento
       setQrConnectionId(data.connection.id);
     } catch (err) {
-      console.error('[MyChannelsTab] create failed:', err);
+      console.error('[BusinessChannelsSection] create failed:', err);
       toast.error(err instanceof Error ? err.message : 'Falha ao criar canal');
     } finally {
       setCreating(false);
     }
   };
 
-  /**
-   * Phase 3.1: promove uma connection a primary. Backend faz demote da
-   * primary atual automaticamente (PATCH com isPrimary=true).
-   */
   const handleSetPrimary = async (conn: ChannelConnection) => {
     try {
       const { getAuth } = await import('firebase/auth');
@@ -160,7 +142,7 @@ export default function MyChannelsTab() {
       toast.success('Canal definido como principal.');
       await fetchConnections();
     } catch (err) {
-      console.error('[MyChannelsTab] set primary failed:', err);
+      console.error('[BusinessChannelsSection] set primary failed:', err);
       toast.error(err instanceof Error ? err.message : 'Falha ao alterar canal principal');
     }
   };
@@ -182,7 +164,7 @@ export default function MyChannelsTab() {
       toast.success('Canal removido.');
       await fetchConnections();
     } catch (err) {
-      console.error('[MyChannelsTab] delete failed:', err);
+      console.error('[BusinessChannelsSection] delete failed:', err);
       toast.error(err instanceof Error ? err.message : 'Falha ao remover');
     } finally {
       setDeletingId(null);
@@ -211,111 +193,63 @@ export default function MyChannelsTab() {
       setRenamingId(null);
       setRenameValue('');
     } catch (err) {
-      console.error('[MyChannelsTab] rename failed:', err);
+      console.error('[BusinessChannelsSection] rename failed:', err);
       toast.error(err instanceof Error ? err.message : 'Falha ao renomear');
     }
   };
 
-  // Separa em duas seções: canais empresa (compartilhados) e pessoais.
-  // Phase 3.1: business pode ter MÚLTIPLOS Baileys; ordena com primary primeiro.
-  const businessChannels = connections
-    .filter(c => c.ownerType === 'business')
+  // Filtros:
+  //  - ownerType='business' (compartilhado, não pessoal)
+  //  - type='whatsapp_baileys' (esta seção é só pra WA Web)
+  //  - purpose !== 'validator' (validator tem seção própria)
+  // Ordena: primary primeiro, conectados antes de desconectados, depois nome.
+  const businessBaileysChannels = connections
+    .filter(c =>
+      c.ownerType === 'business'
+      && c.type === 'whatsapp_baileys'
+      && c.purpose !== 'validator'
+    )
     .sort((a, b) => {
-      // Primary primeiro
       if (a.isPrimary && !b.isPrimary) return -1;
       if (!a.isPrimary && b.isPrimary) return 1;
-      // Connected antes de desconectado
       if (a.isConnected && !b.isConnected) return -1;
       if (!a.isConnected && b.isConnected) return 1;
       return a.displayName.localeCompare(b.displayName);
     });
-  const baileysBusinessChannels = businessChannels.filter(c => c.type === 'whatsapp_baileys');
-  const myChannels = connections.filter(c => c.ownerType === 'user' && c.ownerId === userId);
-  // Admin também vê canais 'user' de OUTROS operadores
-  const otherUserChannels = isAdmin
-    ? connections.filter(c => c.ownerType === 'user' && c.ownerId !== userId)
-    : [];
 
   if (!businessId) return null;
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
+    <section className="space-y-4">
       <div>
-        <h2 className="text-lg font-display font-bold text-gray-900 dark:text-gray-100">
-          Meus canais
-        </h2>
-        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-          Conecte seu WhatsApp pessoal de trabalho. As conversas que chegam nele
-          aparecem na sua bandeja com o número como remetente.
+        <h3 className="text-sm font-display font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+          <Building2 className="w-4 h-4 text-blue-500" />
+          WhatsApp da empresa (via QR Code)
+        </h3>
+        <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+          Conecte celulares da empresa via WhatsApp Web. Operadores acessam todos compartilhados.
         </p>
       </div>
 
-      {/* Adicionar canal pessoal */}
-      <div className="p-4 rounded-2xl border border-dashed border-gray-300 dark:border-white/[0.1] bg-gray-50/40 dark:bg-white/[0.02]">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-[#25D366]/15 flex items-center justify-center shrink-0">
-            <Smartphone className="w-5 h-5 text-[#25D366]" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-              Adicionar WhatsApp pessoal
-            </p>
-            <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
-              Escaneie o QR Code com o WhatsApp do seu celular pra conectar.
-            </p>
-          </div>
-          <button
-            onClick={handleCreatePersonal}
-            disabled={creating}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#25D366] hover:bg-[#128C7E] text-white disabled:opacity-50 transition-colors shrink-0"
-          >
-            {creating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
-            Conectar
-          </button>
-        </div>
-      </div>
-
-      {/* Lista: Meus canais pessoais */}
-      <ConnectionSection
-        title="Pessoais"
-        subtitle="Canais conectados ao seu próprio número"
-        icon={<UserIcon className="w-4 h-4 text-violet-500" />}
-        connections={myChannels}
-        loading={loading}
-        emptyMsg="Nenhum canal pessoal conectado ainda."
-        deletingId={deletingId}
-        onDelete={handleDelete}
-        onConnect={(conn) => setQrConnectionId(conn.id)}
-        onRenameStart={(conn) => { setRenamingId(conn.id); setRenameValue(conn.displayName); }}
-        renamingId={renamingId}
-        renameValue={renameValue}
-        onRenameChange={setRenameValue}
-        onRenameSubmit={handleRename}
-        onRenameCancel={() => { setRenamingId(null); setRenameValue(''); }}
-        canManage={() => true}
-      />
-
-      {/* Phase 3.1: admin pode adicionar mais Baileys-empresa.
-          Útil pra ter número Comercial + Suporte separados, etc. */}
+      {/* CTA admin: adicionar mais um WhatsApp business */}
       {isAdmin && (
         <div className="p-4 rounded-2xl border border-dashed border-blue-300 dark:border-blue-500/30 bg-blue-50/30 dark:bg-blue-500/5">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-blue-100 dark:bg-blue-500/15 flex items-center justify-center shrink-0">
-              <Building2 className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+              <Smartphone className="w-5 h-5 text-blue-600 dark:text-blue-400" />
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
                 Adicionar WhatsApp da empresa
-                {baileysBusinessChannels.length > 0 && (
+                {businessBaileysChannels.length > 0 && (
                   <span className="ml-2 text-[10px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider">
-                    {baileysBusinessChannels.length} já conectados
+                    {businessBaileysChannels.length} já {businessBaileysChannels.length === 1 ? 'conectado' : 'conectados'}
                   </span>
                 )}
               </p>
               <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
-                Conecte mais um número da empresa (ex: Comercial, Suporte). Operadores acessam todos.
-                {baileysBusinessChannels.length > 0 && ' O novo canal será secundário — promova como principal depois se quiser.'}
+                Conecte mais um número (ex: Comercial, Suporte). Operadores acessam todos.
+                {businessBaileysChannels.length > 0 && ' O novo canal será secundário — promova como principal depois se quiser.'}
               </p>
             </div>
             <button
@@ -330,14 +264,11 @@ export default function MyChannelsTab() {
         </div>
       )}
 
-      {/* Lista: Canais da empresa */}
-      <ConnectionSection
-        title="Da empresa"
-        subtitle={isAdmin ? 'Compartilhados — você pode promover, renomear e remover.' : 'Compartilhados pela empresa'}
-        icon={<Building2 className="w-4 h-4 text-blue-500" />}
-        connections={businessChannels}
+      {/* Lista dos canais business já conectados */}
+      <ConnectionList
+        connections={businessBaileysChannels}
         loading={loading}
-        emptyMsg="A empresa não tem canais conectados."
+        emptyMsg="Nenhum WhatsApp da empresa conectado ainda."
         deletingId={isAdmin ? deletingId : null}
         onDelete={isAdmin ? handleDelete : () => {}}
         onConnect={isAdmin ? (conn) => setQrConnectionId(conn.id) : () => {}}
@@ -352,29 +283,7 @@ export default function MyChannelsTab() {
         onSetPrimary={isAdmin ? handleSetPrimary : undefined}
       />
 
-      {/* Admin extra: canais pessoais de outros operadores */}
-      {isAdmin && otherUserChannels.length > 0 && (
-        <ConnectionSection
-          title="Canais pessoais da equipe (admin)"
-          subtitle="Visível porque você é admin. Você pode remover ou transferir ownership."
-          icon={<UserIcon className="w-4 h-4 text-amber-500" />}
-          connections={otherUserChannels}
-          loading={false}
-          emptyMsg=""
-          deletingId={deletingId}
-          onDelete={handleDelete}
-          onConnect={(conn) => setQrConnectionId(conn.id)}
-          onRenameStart={() => {}}
-          renamingId={null}
-          renameValue=""
-          onRenameChange={() => {}}
-          onRenameSubmit={() => {}}
-          onRenameCancel={() => {}}
-          canManage={() => true}
-        />
-      )}
-
-      {/* QR modal */}
+      {/* QR modal pro fluxo de pareamento Baileys */}
       <AnimatePresence>
         {qrConnectionId && (
           <QrModal
@@ -384,16 +293,13 @@ export default function MyChannelsTab() {
           />
         )}
       </AnimatePresence>
-    </div>
+    </section>
   );
 }
 
 // ─── Sub-components ─────────────────────────────────────────────────────────
 
-interface SectionProps {
-  title: string;
-  subtitle: string;
-  icon: React.ReactNode;
+interface ListProps {
   connections: ChannelConnection[];
   loading: boolean;
   emptyMsg: string;
@@ -408,197 +314,176 @@ interface SectionProps {
   onRenameCancel: () => void;
   canManage: (c: ChannelConnection) => boolean;
   readonly?: boolean;
-  /** Phase 3.1: admin pode promover canal-empresa secundário a principal. */
   onSetPrimary?: (c: ChannelConnection) => void;
 }
 
-function ConnectionSection(p: SectionProps) {
+function ConnectionList(p: ListProps) {
+  if (p.loading) {
+    return <div className="text-xs text-gray-400 py-3">Carregando…</div>;
+  }
+  if (p.connections.length === 0) {
+    return <div className="text-xs text-gray-400 py-3">{p.emptyMsg}</div>;
+  }
   return (
-    <section>
-      <div className="flex items-center gap-2 mb-3">
-        {p.icon}
-        <div className="flex-1 min-w-0">
-          <h3 className="text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider">
-            {p.title}
-          </h3>
-          <p className="text-[10px] text-gray-400 dark:text-gray-500">{p.subtitle}</p>
-        </div>
-      </div>
-      {p.loading ? (
-        <div className="text-xs text-gray-400 py-3">Carregando…</div>
-      ) : p.connections.length === 0 ? (
-        <div className="text-xs text-gray-400 py-3">{p.emptyMsg}</div>
-      ) : (
-        <ul className="space-y-2">
-          {p.connections.map((c) => (
-            <li
-              key={c.id}
-              className="flex items-center gap-3 p-3 rounded-xl border border-gray-200 dark:border-white/[0.06] bg-white dark:bg-white/[0.02]"
-            >
-              <div className={cn(
-                'w-9 h-9 rounded-lg flex items-center justify-center shrink-0',
-                c.isConnected
-                  ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
-                  : 'bg-gray-200 dark:bg-white/[0.06] text-gray-500',
-              )}>
-                <Smartphone className="w-4 h-4" />
+    <ul className="space-y-2">
+      {p.connections.map((c) => (
+        <li
+          key={c.id}
+          className="flex items-center gap-3 p-3 rounded-xl border border-gray-200 dark:border-white/[0.06] bg-white dark:bg-white/[0.02] group"
+        >
+          <div className={cn(
+            'w-9 h-9 rounded-lg flex items-center justify-center shrink-0',
+            c.isConnected
+              ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+              : 'bg-gray-200 dark:bg-white/[0.06] text-gray-500',
+          )}>
+            <Smartphone className="w-4 h-4" />
+          </div>
+          <div className="flex-1 min-w-0">
+            {p.renamingId === c.id ? (
+              <div className="flex items-center gap-1">
+                <input
+                  type="text"
+                  value={p.renameValue}
+                  onChange={(e) => p.onRenameChange(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') p.onRenameSubmit(c);
+                    if (e.key === 'Escape') p.onRenameCancel();
+                  }}
+                  autoFocus
+                  className="flex-1 text-sm font-semibold px-2 py-0.5 rounded border border-gray-300 dark:border-white/[0.1] bg-white dark:bg-white/[0.03] text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-violet-400"
+                />
+                <button
+                  onClick={() => p.onRenameSubmit(c)}
+                  className="p-1 rounded text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-500/10"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={p.onRenameCancel}
+                  className="p-1 rounded text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.04]"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
               </div>
-              <div className="flex-1 min-w-0">
-                {p.renamingId === c.id ? (
-                  <div className="flex items-center gap-1">
-                    <input
-                      type="text"
-                      value={p.renameValue}
-                      onChange={(e) => p.onRenameChange(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') p.onRenameSubmit(c);
-                        if (e.key === 'Escape') p.onRenameCancel();
-                      }}
-                      autoFocus
-                      className="flex-1 text-sm font-semibold px-2 py-0.5 rounded border border-gray-300 dark:border-white/[0.1] bg-white dark:bg-white/[0.03] text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-violet-400"
-                    />
-                    <button
-                      onClick={() => p.onRenameSubmit(c)}
-                      className="p-1 rounded text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-500/10"
-                    >
-                      <Check className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      onClick={p.onRenameCancel}
-                      className="p-1 rounded text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.04]"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2 min-w-0">
-                    <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">
-                      {c.displayName}
-                    </p>
-                    {!p.readonly && p.canManage(c) && (
-                      <button
-                        onClick={() => p.onRenameStart(c)}
-                        title="Renomear"
-                        className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 opacity-0 group-hover:opacity-100"
-                      >
-                        <Edit3 className="w-3 h-3" />
-                      </button>
-                    )}
-                  </div>
+            ) : (
+              <div className="flex items-center gap-2 min-w-0">
+                <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">
+                  {c.displayName}
+                </p>
+                {!p.readonly && p.canManage(c) && (
+                  <button
+                    onClick={() => p.onRenameStart(c)}
+                    title="Renomear"
+                    className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 opacity-0 group-hover:opacity-100"
+                  >
+                    <Edit3 className="w-3 h-3" />
+                  </button>
                 )}
-                <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                  <span className="text-[10px] text-gray-400 dark:text-gray-500">
-                    {CHANNEL_LABELS[c.type] || c.type}
+              </div>
+            )}
+            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+              <span className="text-[10px] text-gray-400 dark:text-gray-500">
+                {CHANNEL_LABELS[c.type] || c.type}
+              </span>
+              {c.phoneNumber && (
+                <>
+                  <span className="text-[10px] text-gray-300 dark:text-gray-700">·</span>
+                  <span className="text-[10px] text-gray-500 dark:text-gray-400 font-mono">
+                    +{c.phoneNumber}
                   </span>
-                  {c.phoneNumber && (
-                    <>
-                      <span className="text-[10px] text-gray-300 dark:text-gray-700">·</span>
-                      <span className="text-[10px] text-gray-500 dark:text-gray-400 font-mono">
-                        +{c.phoneNumber}
-                      </span>
-                    </>
-                  )}
-                  {/* Status badge: cor depende do motivo da última desconexão.
-                      'replaced' (outro dispositivo) recebe destaque âmbar pra
-                      diferenciar de queda de rede genérica. */}
-                  {(() => {
-                    const isReplaced = !c.isConnected && c.disconnectReason === 'replaced';
-                    const isLoggedOut = !c.isConnected && c.disconnectReason === 'logged_out';
-                    if (c.isConnected) {
-                      return (
-                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400">
-                          Conectado
-                        </span>
-                      );
-                    }
-                    if (isReplaced) {
-                      return (
-                        <span
-                          title="Outro dispositivo se conectou com as mesmas credenciais. Clique em 'Reconectar' pra usar aqui."
-                          className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400"
-                        >
-                          Substituído
-                        </span>
-                      );
-                    }
-                    if (isLoggedOut) {
-                      return (
-                        <span
-                          title="Sessão revogada pelo telefone — escaneie o QR Code novamente."
-                          className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-400"
-                        >
-                          Revogado
-                        </span>
-                      );
-                    }
-                    return (
-                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 dark:bg-white/[0.06] dark:text-gray-400">
-                        Desconectado
-                      </span>
-                    );
-                  })()}
-                  {/* Phase 3.1: badge "Principal" pra connection primária */}
-                  {c.ownerType === 'business' && c.isPrimary && (
+                </>
+              )}
+              {(() => {
+                const isReplaced = !c.isConnected && c.disconnectReason === 'replaced';
+                const isLoggedOut = !c.isConnected && c.disconnectReason === 'logged_out';
+                if (c.isConnected) {
+                  return (
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400">
+                      Conectado
+                    </span>
+                  );
+                }
+                if (isReplaced) {
+                  return (
                     <span
-                      title="Canal principal — usado como default em fallbacks"
+                      title="Outro dispositivo se conectou com as mesmas credenciais. Clique em 'Reconectar' pra usar aqui."
                       className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400"
                     >
-                      PRINCIPAL
+                      Substituído
                     </span>
-                  )}
-                </div>
-                {/* Linha explicativa quando o canal está em estado especial.
-                    Aparece embaixo dos badges pra dar contexto sem poluir. */}
-                {!c.isConnected && c.disconnectReason === 'replaced' && (
-                  <p className="text-[10px] text-amber-700/90 dark:text-amber-400/90 mt-1 leading-snug">
-                    ⚠ Este canal foi tomado por outro dispositivo (computador, celular ou
-                    outro membro da equipe usando o mesmo número). Reconectar aqui vai
-                    desconectar o outro. Para usar simultâneo, cada pessoa deve conectar
-                    o próprio canal pessoal — WhatsApp permite até 4 dispositivos por número.
-                  </p>
-                )}
-                {!c.isConnected && c.disconnectReason === 'logged_out' && (
-                  <p className="text-[10px] text-red-700/90 dark:text-red-400/90 mt-1 leading-snug">
-                    A sessão foi revogada (logout pelo telefone ou WhatsApp Web). Escaneie o QR Code novamente para reconectar.
-                  </p>
-                )}
-              </div>
-              {!p.readonly && p.canManage(c) && (
-                <div className="flex items-center gap-1 shrink-0">
-                  {/* Phase 3.1: tornar principal (só pra business secundárias) */}
-                  {p.onSetPrimary && c.ownerType === 'business' && !c.isPrimary && c.isConnected && (
-                    <button
-                      onClick={() => p.onSetPrimary?.(c)}
-                      title="Definir como canal principal"
-                      className="p-1.5 rounded-lg text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-500/10 transition-colors"
+                  );
+                }
+                if (isLoggedOut) {
+                  return (
+                    <span
+                      title="Sessão revogada pelo telefone — escaneie o QR Code novamente."
+                      className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-400"
                     >
-                      <Star className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                  {!c.isConnected && c.type === 'whatsapp_baileys' && (
-                    <button
-                      onClick={() => p.onConnect(c)}
-                      title="Reconectar / mostrar QR"
-                      className="p-1.5 rounded-lg text-[#25D366] hover:bg-[#25D366]/10 transition-colors"
-                    >
-                      <RefreshCw className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                  <button
-                    onClick={() => p.onDelete(c)}
-                    disabled={p.deletingId === c.id}
-                    title="Remover canal"
-                    className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 disabled:opacity-50 transition-colors"
-                  >
-                    {p.deletingId === c.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-                  </button>
-                </div>
+                      Revogado
+                    </span>
+                  );
+                }
+                return (
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 dark:bg-white/[0.06] dark:text-gray-400">
+                    Desconectado
+                  </span>
+                );
+              })()}
+              {c.isPrimary && (
+                <span
+                  title="Canal principal — usado como default em fallbacks"
+                  className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400"
+                >
+                  PRINCIPAL
+                </span>
               )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
+            </div>
+            {!c.isConnected && c.disconnectReason === 'replaced' && (
+              <p className="text-[10px] text-amber-700/90 dark:text-amber-400/90 mt-1 leading-snug">
+                ⚠ Este canal foi tomado por outro dispositivo. Reconectar aqui vai
+                desconectar o outro. WhatsApp permite até 4 dispositivos por número.
+              </p>
+            )}
+            {!c.isConnected && c.disconnectReason === 'logged_out' && (
+              <p className="text-[10px] text-red-700/90 dark:text-red-400/90 mt-1 leading-snug">
+                A sessão foi revogada (logout pelo telefone ou WhatsApp Web). Escaneie o QR Code novamente para reconectar.
+              </p>
+            )}
+          </div>
+          {!p.readonly && p.canManage(c) && (
+            <div className="flex items-center gap-1 shrink-0">
+              {p.onSetPrimary && !c.isPrimary && c.isConnected && (
+                <button
+                  onClick={() => p.onSetPrimary?.(c)}
+                  title="Definir como canal principal"
+                  className="p-1.5 rounded-lg text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-500/10 transition-colors"
+                >
+                  <Star className="w-3.5 h-3.5" />
+                </button>
+              )}
+              {!c.isConnected && c.type === 'whatsapp_baileys' && (
+                <button
+                  onClick={() => p.onConnect(c)}
+                  title="Reconectar / mostrar QR"
+                  className="p-1.5 rounded-lg text-[#25D366] hover:bg-[#25D366]/10 transition-colors"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                </button>
+              )}
+              <button
+                onClick={() => p.onDelete(c)}
+                disabled={p.deletingId === c.id}
+                title="Remover canal"
+                className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 disabled:opacity-50 transition-colors"
+              >
+                {p.deletingId === c.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+          )}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -669,9 +554,6 @@ function QrModal({ businessId, connectionId, onClose }: QrModalProps) {
                   setStatus('error');
                   setErrorMsg('Sessão revogada pelo telefone. Escaneie o QR Code novamente.');
                 } else if (data.reason === 'replaced') {
-                  // Outro dispositivo (outra máquina, outro membro da equipe, ou
-                  // o WhatsApp Web do navegador) conectou com as mesmas credenciais.
-                  // Limite multi-device do WhatsApp.
                   setStatus('replaced');
                   setErrorMsg(
                     typeof data.message === 'string' && data.message
@@ -687,7 +569,7 @@ function QrModal({ businessId, connectionId, onClose }: QrModalProps) {
         if (!cancelled && !(err instanceof DOMException && err.name === 'AbortError')) {
           setStatus('error');
           setErrorMsg('Erro de conexão.');
-          console.error('[MyChannels QR] SSE error:', err);
+          console.error('[BusinessChannelsSection QR] SSE error:', err);
         }
       }
     };
@@ -718,7 +600,7 @@ function QrModal({ businessId, connectionId, onClose }: QrModalProps) {
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-white/[0.06]">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-[#25D366]/15 flex items-center justify-center">
-              <QrCode className="w-4.5 h-4.5 text-[#25D366]" />
+              <QrCode className="w-4 h-4 text-[#25D366]" />
             </div>
             <div>
               <h3 className="font-display font-bold text-gray-900 dark:text-white text-sm">WhatsApp Web</h3>

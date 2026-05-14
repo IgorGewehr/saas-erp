@@ -96,7 +96,7 @@ import { getAuth } from 'firebase/auth';
 import NotificationServerSection from './NotificationServerConfig';
 import WhatsAppProfileSection from './WhatsAppProfileSection';
 import QuickRepliesTab from './QuickRepliesTab';
-import MyChannelsTab from './MyChannelsTab';
+import BusinessChannelsSection from './BusinessChannelsSection';
 import { CachedImage } from '@/app/components/ui/CachedImage';
 import SidebarEditorTab from './SidebarEditorTab';
 import {
@@ -123,7 +123,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'setores' | 'enterprise' | 'canais' | 'meus-canais' | 'modo' | 'agente' | 'cofre' | 'logs';
+type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'setores' | 'enterprise' | 'canais' | 'modo' | 'agente' | 'cofre' | 'logs';
 
 interface CertStatus {
   hasCertificate: boolean;
@@ -7292,6 +7292,11 @@ function CanaisTab() {
       )}
 
       {/* ── WhatsApp QR Code Modal ── */}
+      {/* Seção dedicada aos WhatsApp Web compartilhados da empresa (Baileys
+          via QR Code). Renderiza com seu próprio fetcher e modal de QR — fluxo
+          isolado dos canais oficiais Meta logo acima. */}
+      <BusinessChannelsSection />
+
       {showQrModal && (
         <WhatsAppQrModal
           businessId={business?.id || ''}
@@ -7656,7 +7661,9 @@ export default function SettingsModule() {
     // 'respostas' foi unificado dentro de 'canais' como sub-seção (Respostas
     // Rápidas aparece abaixo das conexões de canal). Tab top-level removida
     // pra reduzir poluição na barra de configurações.
-    { id: 'meus-canais' as Tab, label: 'Meus Canais',                            icon: Smartphone },
+    // 'meus-canais' (WhatsApp pessoal) também foi removida — ninguém usava
+    // canais pessoais, e a parte útil (WhatsApp Web compartilhado da empresa)
+    // migrou pra dentro da aba Canais via BusinessChannelsSection.
     { id: 'enterprise' as Tab, label: t('settings.tabs.enterprise', 'Enterprise'), icon: Blocks     },
     { id: 'logs'       as Tab, label: t('settings.tabs.logs',       'Logs'),       icon: ScrollText },
   ];
@@ -7777,7 +7784,6 @@ export default function SettingsModule() {
         {activeTab === 'setores'    && <SectorsTab key="setores" />}
 
         {activeTab === 'canais'     && <CanaisTab key="canais" />}
-        {activeTab === 'meus-canais' && <MyChannelsTab key="meus-canais" />}
         {activeTab === 'enterprise' && <EnterpriseTab key="enterprise" />}
         {activeTab === 'logs'       && <LogsTab key="logs" />}
       </AnimatePresence>
