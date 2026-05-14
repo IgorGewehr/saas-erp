@@ -4929,6 +4929,12 @@ function LinkContactDrawer({
 }) {
   const [search, setSearch] = useState('');
   const [linkingId, setLinkingId] = useState<string | null>(null);
+  // Match candidato detectado por dedup de telefone. Quando setado, mostra
+  // confirmation dialog antes de vincular — operador escolhe entre "Vincular
+  // a este" e "Criar novo mesmo assim". Sem essa etapa, false positives
+  // (família compartilhando número, número reciclado) virariam vínculo
+  // silencioso sem o operador perceber.
+  const [duplicateMatch, setDuplicateMatch] = useState<Client | null>(null);
   const { setActivePage, setPendingOpenClientId } = useAppContext();
 
   const linkedClient = useMemo(
@@ -5008,10 +5014,12 @@ function LinkContactDrawer({
     }
   };
 
-  // Antes de abrir o dialog de criar, checa se já existe cliente com mesmo
-  // telefone (compara últimos 8 dígitos com DDD batendo — cobre variação BR
-  // de 9º dígito e código do país). Se encontrar, linka direto em vez de
-  // abrir o dialog — evita o operador criar duplicata sem perceber.
+  // Checa se já existe cliente com mesmo telefone (últimos 8 dígitos + DDD
+  // batendo — cobre variação BR de 9º dígito e código do país). Se achar,
+  // abre confirmação em vez de vincular direto: a heurística tem falsos
+  // positivos (família compartilhando número, número reciclado, erro de
+  // cadastro) e operador precisa decidir consciente entre vincular ao
+  // existente ou criar novo cliente mesmo assim.
   const handleCreateRequest = () => {
     const phoneDigits = digits(conversation.contactPhone || conversation.contactExternalId);
     if (phoneDigits) {
@@ -5031,8 +5039,7 @@ function LinkContactDrawer({
         return false;
       });
       if (existing && !existing.mergedInto && !(existing as { deletedAt?: string }).deletedAt) {
-        console.log('[Conversations] Create: cliente existente com mesmo telefone, linkando:', existing.id);
-        void link(existing.id);
+        setDuplicateMatch(existing);
         return;
       }
     }
@@ -5176,6 +5183,90 @@ function LinkContactDrawer({
           )}
         </div>
       </div>
+
+      {/* Confirmation: telefone bate com cliente existente. Operador escolhe
+          entre vincular ao existente OU prosseguir com a criação assumindo
+          que é cliente diferente (família, número reciclado, etc.). */}
+      <AnimatePresence>
+        {duplicateMatch && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-10 bg-black/40 flex items-center justify-center p-4"
+            onClick={(e) => { if (e.target === e.currentTarget) setDuplicateMatch(null); }}
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 8 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 8 }}
+              className="w-full max-w-sm bg-white dark:bg-[#111827] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden"
+            >
+              <div className="p-5">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400 mb-2">
+                  Telefone já cadastrado
+                </p>
+                <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
+                  Já existe um cliente com este telefone:
+                </p>
+                <div className="flex items-center gap-3 p-3 rounded-xl bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700">
+                  <div className="w-9 h-9 rounded-lg overflow-hidden flex-shrink-0">
+                    {duplicateMatch.avatarUrl ? (
+                      <img src={duplicateMatch.avatarUrl} alt={duplicateMatch.name} className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center text-white font-bold text-xs">
+                        {(duplicateMatch.name?.[0] || '?').toUpperCase()}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-bold text-gray-900 dark:text-gray-100 truncate">{duplicateMatch.name}</p>
+                    <p className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                      {duplicateMatch.phone || duplicateMatch.whatsapp || duplicateMatch.email || 'Sem outro contato'}
+                    </p>
+                  </div>
+                </div>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed mt-3">
+                  Pode ser o mesmo contato — ou família/empresa compartilhando o número. Escolha:
+                </p>
+              </div>
+              <div className="px-5 py-3 border-t border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-white/[0.02] flex flex-col sm:flex-row gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const id = duplicateMatch.id;
+                    setDuplicateMatch(null);
+                    void link(id);
+                  }}
+                  disabled={linkingId === duplicateMatch.id}
+                  className="flex-1 px-3 py-2 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50"
+                >
+                  Vincular a este
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDuplicateMatch(null);
+                    onRequestCreate?.();
+                  }}
+                  className="flex-1 px-3 py-2 rounded-xl text-xs font-semibold border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+                >
+                  Criar novo mesmo assim
+                </button>
+              </div>
+              <div className="px-5 py-2 border-t border-gray-100 dark:border-gray-800">
+                <button
+                  type="button"
+                  onClick={() => setDuplicateMatch(null)}
+                  className="w-full text-[11px] text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
