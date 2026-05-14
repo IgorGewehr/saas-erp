@@ -32,12 +32,19 @@ interface ParsedLine {
   error?: string;
   /** Colunas extras do CSV preservadas para uso em template params (5.8). */
   customColumns?: Record<string, string>;
+  /** True quando o phone parsa OK mas é telefone fixo BR (sem WhatsApp).
+   *  Mantido separado dos inválidos pra mostrar contagem clara ao operador
+   *  ("12 inválidos" vs "47 fixos" — diagnóstico distinto). Linhas com
+   *  isLandline=true são EXCLUÍDAS do envio. */
+  isLandline?: boolean;
 }
 
 interface ListStats {
   valid: number;
   invalid: number;
   duplicates: number;
+  /** Telefones fixos BR — válidos como número mas sem WhatsApp possível. */
+  landlines: number;
   linkedToCrm: number;
   /** Nomes das colunas extras detectadas no CSV (ordenadas como aparecem). */
   csvColumns: string[];
@@ -60,6 +67,24 @@ const EMAIL_RE = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
  * Rejeita CNPJ (14 dígitos colados por engano) e CPF colado como número
  * (11 dígitos onde o "celular" não começa com 9 — regra ANATEL pós-2013).
  */
+/**
+ * Detecta telefone fixo BR a partir do número já normalizado por
+ * `normalizePhone` (formato `55<DDD><resto>`).
+ *
+ *  - 13 dígitos (55 + DDD + 9XXXXXXXX) = celular (regra ANATEL pós-2013
+ *    força 9° dígito em mobiles BR)
+ *  - 12 dígitos (55 + DDD + NXXXXXXX) = fixo (8 dígitos no número local,
+ *    sem o 9° prefixo)
+ *
+ * Pra números internacionais (`!startsWith('55')`), retorna false — sem
+ * libphonenumber-js não dá pra inferir tipo confiavelmente em outros países.
+ * Operador que enviar pra DDI estrangeiro com fixo vai falhar no disparo,
+ * aceitável dado que volume internacional é baixo nesta base.
+ */
+function isBrLandline(normalizedPhone: string): boolean {
+  return normalizedPhone.length === 12 && normalizedPhone.startsWith('55');
+}
+
 function normalizePhone(raw: string): string | null {
   let digits = raw.replace(/\D/g, '');
   if (!digits) return null;
@@ -150,20 +175,23 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
   const [textValue, setTextValue] = useState('');
   const [csvFileName, setCsvFileName] = useState<string | null>(null);
   const [parsedLines, setParsedLines] = useState<ParsedLine[]>([]);
-  const [expandedSection, setExpandedSection] = useState<'valid' | 'invalid' | 'duplicates' | null>(null);
+  const [expandedSection, setExpandedSection] = useState<'valid' | 'invalid' | 'duplicates' | 'landlines' | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   /**
-   * Categoriza as linhas em 3 buckets para os painéis expansíveis:
-   *  - validLines: passaram parse + não são duplicadas (entram no envio)
+   * Categoriza as linhas em 4 buckets para os painéis expansíveis:
+   *  - validLines: passaram parse + não são duplicadas + não é fixo (entram no envio)
    *  - invalidLines: parse falhou (formato inválido)
    *  - duplicateLines: parse OK mas chave já vista (segunda+ ocorrência)
+   *  - landlineLines: parse OK mas é telefone fixo BR (sem WhatsApp)
+   * Ordem de prioridade na categorização: error > !key > duplicate > landline > valid.
    * Linkagem ao CRM é feita em buildRecipients (filtro por phone/email match).
    */
   const categorizedLines = useMemo(() => {
     const valid: ParsedLine[] = [];
     const invalid: ParsedLine[] = [];
     const duplicates: ParsedLine[] = [];
+    const landlines: ParsedLine[] = [];
     const seen = new Set<string>();
     for (const line of parsedLines) {
       if (line.error) { invalid.push(line); continue; }
@@ -172,9 +200,12 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
       const key = mode === 'email' ? rawKey.toLowerCase() : rawKey;
       if (seen.has(key)) { duplicates.push(line); continue; }
       seen.add(key);
+      // Fixo entra antes de virar "valid" pra sair fora do envio mas permanecer
+      // visível pro operador entender quanto da base era fixo.
+      if (line.isLandline) { landlines.push(line); continue; }
       valid.push(line);
     }
-    return { valid, invalid, duplicates };
+    return { valid, invalid, duplicates, landlines };
   }, [parsedLines, mode]);
 
   /** Aplica dedup, valida e produz array de BroadcastRecipient + stats. */
@@ -182,6 +213,7 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
     (lines: ParsedLine[]): { recipients: BroadcastRecipient[]; stats: ListStats } => {
       const seen = new Set<string>();
       let duplicates = 0;
+      let landlines = 0;
       let linkedToCrm = 0;
       const recipients: BroadcastRecipient[] = [];
 
@@ -193,6 +225,10 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
         const key = mode === 'email' ? rawKey.toLowerCase() : rawKey;
         if (seen.has(key)) { duplicates++; continue; }
         seen.add(key);
+        // Fixo BR: conta na stats e EXCLUI do recipients (sem WhatsApp).
+        // Mantém o seen.add acima pra que duplicatas de fixos também sejam
+        // detectadas (operador vê stats consistente).
+        if (line.isLandline) { landlines++; continue; }
 
         // Auto-link com CRM
         let contactId: string | undefined;
@@ -246,6 +282,7 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
           valid: recipients.length,
           invalid: lines.filter(l => l.error).length,
           duplicates,
+          landlines,
           linkedToCrm,
           csvColumns,
         },
@@ -328,7 +365,12 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
           const phone = normalizePhone(token);
           if (!phone) return { raw: token, error: 'Telefone inválido' };
           const name = extractNameFromToken(token);
-          return { raw: token, phoneNumber: phone, ...(name ? { name } : {}) };
+          return {
+            raw: token,
+            phoneNumber: phone,
+            ...(name ? { name } : {}),
+            ...(isBrLandline(phone) ? { isLandline: true } : {}),
+          };
         } else {
           // Email mode: extrai email + nome opcional do token.
           // Aceita formatos: "joao@x.com", "Joao Silva <joao@x.com>",
@@ -391,6 +433,7 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
             name: name && name !== rawPhone ? name : undefined,
             phoneNumber: phone,
             ...(hasExtras ? { customColumns } : {}),
+            ...(isBrLandline(phone) ? { isLandline: true } : {}),
           };
         } else {
           const rawEmail = emailIdx >= 0 ? cells[emailIdx] : cells[cells.length === 1 ? 0 : 1];
@@ -416,7 +459,7 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
     setCsvFileName(null);
     setParsedLines([]);
     setExpandedSection(null);
-    onChange([], { valid: 0, invalid: 0, duplicates: 0, linkedToCrm: 0, csvColumns: [] });
+    onChange([], { valid: 0, invalid: 0, duplicates: 0, landlines: 0, linkedToCrm: 0, csvColumns: [] });
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -509,6 +552,15 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
               tone="amber"
             />
           )}
+          {stats.landlines > 0 && mode === 'phone' && (
+            <BadgeButton
+              active={expandedSection === 'landlines'}
+              onClick={() => setExpandedSection(s => s === 'landlines' ? null : 'landlines')}
+              count={stats.landlines}
+              label={stats.landlines === 1 ? 'fixo' : 'fixos'}
+              tone="slate"
+            />
+          )}
           {stats.linkedToCrm > 0 && (
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 font-semibold">
               <LinkIcon className="w-2.5 h-2.5" /> {stats.linkedToCrm} vinculados ao CRM
@@ -534,6 +586,7 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
               expandedSection === 'valid' && 'border-emerald-200 dark:border-emerald-500/20 bg-emerald-50 dark:bg-emerald-500/5',
               expandedSection === 'invalid' && 'border-red-200 dark:border-red-500/20 bg-red-50 dark:bg-red-500/5',
               expandedSection === 'duplicates' && 'border-amber-200 dark:border-amber-500/20 bg-amber-50 dark:bg-amber-500/5',
+              expandedSection === 'landlines' && 'border-slate-200 dark:border-slate-500/20 bg-slate-50 dark:bg-slate-500/5',
             )}
           >
             <RecipientPanel
@@ -541,7 +594,8 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
               lines={
                 expandedSection === 'valid' ? categorizedLines.valid
                 : expandedSection === 'invalid' ? categorizedLines.invalid
-                : categorizedLines.duplicates
+                : expandedSection === 'duplicates' ? categorizedLines.duplicates
+                : categorizedLines.landlines
               }
               mode={mode}
               onClose={() => setExpandedSection(null)}
@@ -567,6 +621,10 @@ const BADGE_TONES = {
   amber: {
     base: 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400',
     active: 'ring-2 ring-amber-400 bg-amber-100 dark:bg-amber-500/20',
+  },
+  slate: {
+    base: 'bg-slate-50 dark:bg-slate-500/10 text-slate-700 dark:text-slate-300',
+    active: 'ring-2 ring-slate-400 bg-slate-100 dark:bg-slate-500/20',
   },
 } as const;
 
@@ -600,7 +658,7 @@ function BadgeButton({ active, onClick, count, label, tone, icon }: BadgeButtonP
 }
 
 interface RecipientPanelProps {
-  section: 'valid' | 'invalid' | 'duplicates';
+  section: 'valid' | 'invalid' | 'duplicates' | 'landlines';
   lines: ParsedLine[];
   mode: 'phone' | 'email';
   onClose: () => void;
@@ -610,11 +668,13 @@ function RecipientPanel({ section, lines, mode, onClose }: RecipientPanelProps) 
     valid: 'Recipientes válidos',
     invalid: 'Entradas inválidas',
     duplicates: 'Duplicados (ignorados no envio)',
+    landlines: 'Telefones fixos (sem WhatsApp, ignorados no envio)',
   };
   const colors = {
     valid: 'text-emerald-700 dark:text-emerald-400',
     invalid: 'text-red-700 dark:text-red-400',
     duplicates: 'text-amber-700 dark:text-amber-400',
+    landlines: 'text-slate-700 dark:text-slate-300',
   };
 
   if (lines.length === 0) {
@@ -655,7 +715,7 @@ function RecipientPanel({ section, lines, mode, onClose }: RecipientPanelProps) 
   );
 }
 
-function RecipientLineRow({ line, mode, section }: { line: ParsedLine; mode: 'phone' | 'email'; section: 'valid' | 'invalid' | 'duplicates' }) {
+function RecipientLineRow({ line, mode, section }: { line: ParsedLine; mode: 'phone' | 'email'; section: 'valid' | 'invalid' | 'duplicates' | 'landlines' }) {
   // Formato exibido: phone/email "primário" + nome se houver + erro se inválido
   const primary = mode === 'phone' ? line.phoneNumber : line.email;
   return (
