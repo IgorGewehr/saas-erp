@@ -12,7 +12,7 @@ import {
   UserPlus, Briefcase, Tag, Hash, AlertTriangle, Heart, Shield, Zap, Brain,
   Sparkles, Filter, Crown, Settings2, GripVertical, Eye, EyeOff, ChevronUp, ChevronDown,
   Download, Upload, GitBranch, LayoutList, LayoutDashboard, Megaphone, Radio, SlidersHorizontal,
-  Check, Link as LinkIcon, CheckSquare, Repeat,
+  Check, Link as LinkIcon, CheckSquare, Repeat, Cake,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -2034,6 +2034,13 @@ function CampaignsTab({ businessId }: { businessId: string }) {
               const dayLabel = bc.daysBeforeBirthday === 0
                 ? 'No dia'
                 : `${bc.daysBeforeBirthday}d antes`;
+              // Backward-compat: docs sem recurrenceType são 'birthday' (default).
+              const bcType = bc.recurrenceType ?? 'birthday';
+              const isBcFixedDate = bcType === 'fixed_date';
+              // Label da data festiva — formato DD/MM legível pra exibição rápida.
+              const festiveLabel = isBcFixedDate && bc.festiveDate && /^\d{2}-\d{2}$/.test(bc.festiveDate)
+                ? `${bc.festiveDate.slice(3, 5)}/${bc.festiveDate.slice(0, 2)}`
+                : null;
               return (
                 <motion.div
                   key={bc.id}
@@ -2049,6 +2056,16 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                   <div className="flex items-center justify-between gap-2 flex-wrap">
                     <div className="flex items-center gap-2 min-w-0">
                       <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{bc.name}</h4>
+                      {/* Badge do tipo — diferencia 🎂 aniversário vs 📅 data festiva.
+                          Cor amber pra ambos (recorrentes), só ícone+label muda. */}
+                      <span className={cn(
+                        'inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full',
+                        'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400',
+                      )}>
+                        {isBcFixedDate
+                          ? <><Calendar className="w-2.5 h-2.5" />{festiveLabel ?? 'Data festiva'}</>
+                          : <><Cake className="w-2.5 h-2.5" />Aniversário</>}
+                      </span>
                       <span className={cn(
                         'text-[10px] font-semibold px-2 py-0.5 rounded-full',
                         bc.enabled
