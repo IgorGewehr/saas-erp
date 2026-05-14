@@ -53,14 +53,22 @@ export async function GET(
   }
   const userName = userDoc.data()?.name || 'Profissional';
 
-  // Fetch appointments for this professional (last 7 days + future)
+  // Fetch appointments for this professional (last 7 days + future).
+  // Multi-prof: usa helper que mergeia query legada (professionalId) com
+  // a nova (professionalIds array-contains) — captura também os appts onde
+  // o usuário está em 2°+ posição do array.
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-  const apptSnap = await adminDb.collection('appointments')
-    .where('businessId', '==', businessId)
-    .where('professionalId', '==', userId)
-    .where('date', '>=', sevenDaysAgo)
-    .get();
+  const { fetchAppointmentsForProfessional } = await import('@/lib/services/appointments-server');
+  const apptDocs = await fetchAppointmentsForProfessional(
+    () => adminDb.collection('appointments')
+      .where('businessId', '==', businessId)
+      .where('date', '>=', sevenDaysAgo) as FirebaseFirestore.Query,
+    userId,
+  );
+  // Estrutura compatível com `.forEach(...)` que os callers esperam — usa
+  // shape mínimo (docs) pra não exigir refactor extra dos consumers do snap.
+  const apptSnap = { docs: apptDocs };
 
   // Build .ics content
   const lines: string[] = [

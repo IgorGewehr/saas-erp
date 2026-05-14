@@ -98,13 +98,23 @@ async function getMember(businessId: string, id: string): Promise<Partial<User> 
 async function capacityToday(businessId: string, userId?: string): Promise<Array<{ userId: string; userName: string; appointments: number; orders: number; kanbanCards: number; conversations: number }>> {
   const today = new Date().toISOString().slice(0, 10);
 
-  // 1. Appointments scheduled today
-  let apptQ: FirebaseFirestore.Query = adminDb
+  // 1. Appointments scheduled today (multi-prof: 2 queries paralelas pra
+  // capturar tanto o profissional principal quanto secundário no array).
+  const buildApptBase = () => adminDb
     .collection('appointments')
     .where('businessId', '==', businessId)
-    .where('date', '==', today);
-  if (userId) apptQ = apptQ.where('professionalId', '==', userId);
-  const appts = await apptQ.get();
+    .where('date', '==', today) as FirebaseFirestore.Query;
+  let apptDocs: FirebaseFirestore.QueryDocumentSnapshot[];
+  if (userId) {
+    const { fetchAppointmentsForProfessional } = await import('@/lib/services/appointments-server');
+    apptDocs = await fetchAppointmentsForProfessional(buildApptBase, userId);
+  } else {
+    const snap = await buildApptBase().get();
+    apptDocs = snap.docs;
+  }
+  // Mantém shape semelhante a um QuerySnapshot pra não quebrar caller que
+  // espera `.docs` mais abaixo.
+  const appts = { docs: apptDocs, size: apptDocs.length };
 
   // 2. Kanban cards assigned and due today or earlier, status not done
   // (approximation — we just check assignee)

@@ -77,27 +77,37 @@ export async function GET(req: NextRequest) {
     if (status) {
       query = query.where('status', '==', status);
     }
-    if (professionalId) {
-      query = query.where('professionalId', '==', professionalId);
-    }
     if (clientId) {
       query = query.where('clientId', '==', clientId);
     }
+    // professionalId filter é tratado separadamente abaixo via helper
+    // multi-prof (precisa de 2 queries paralelas + merge + sort em-memória)
 
-    // Ordering
-    query = query.orderBy('date', 'asc').orderBy('startTime', 'asc');
-
-    // Pagination
-    if (offset > 0) {
-      query = query.offset(offset);
+    let appointments: Array<{ id: string; [k: string]: unknown }>;
+    if (professionalId) {
+      // Multi-prof: query base já tem businessId + date + status + clientId
+      // filtros aplicados. Helper roda 2x (legado + array-contains) e mergeia.
+      // Sort/offset/limit em-memória — só impacta queries com este filtro.
+      const baseQuery = query;
+      const { fetchAppointmentsForProfessional } = await import('@/lib/services/appointments-server');
+      const docs = await fetchAppointmentsForProfessional(() => baseQuery, professionalId);
+      const all = docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+      all.sort((a, b) => {
+        const aDate = String((a as { date?: string }).date ?? '');
+        const bDate = String((b as { date?: string }).date ?? '');
+        const aTime = String((a as { startTime?: string }).startTime ?? '');
+        const bTime = String((b as { startTime?: string }).startTime ?? '');
+        return aDate.localeCompare(bDate) || aTime.localeCompare(bTime);
+      });
+      appointments = all.slice(offset, offset + limit);
+    } else {
+      // Sem professionalId: query única com orderBy/offset/limit nativos
+      query = query.orderBy('date', 'asc').orderBy('startTime', 'asc');
+      if (offset > 0) query = query.offset(offset);
+      query = query.limit(limit);
+      const snapshot = await query.get();
+      appointments = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
     }
-    query = query.limit(limit);
-
-    const snapshot = await query.get();
-    const appointments = snapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...doc.data(),
-    }));
 
     return apiSuccess({
       appointments,

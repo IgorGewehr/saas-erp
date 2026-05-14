@@ -548,16 +548,27 @@ async function listUpcoming(
   const end = new Date();
   end.setDate(end.getDate() + Math.min(Math.max(daysAhead, 1), 60));
   const endIso = end.toISOString().slice(0, 10);
+  const cap = Math.min(limit, 50);
 
-  let q: FirebaseFirestore.Query = adminDb
+  const buildBase = () => adminDb
     .collection('appointments')
     .where('businessId', '==', businessId)
     .where('date', '>=', today)
-    .where('date', '<=', endIso);
-  if (professionalId) q = q.where('professionalId', '==', professionalId);
+    .where('date', '<=', endIso) as FirebaseFirestore.Query;
 
-  const snap = await q.orderBy('date', 'asc').orderBy('startTime', 'asc').limit(Math.min(limit, 50)).get();
-  // Filter out cancelled/concluido client-side — index shape stays stable
+  if (professionalId) {
+    // Multi-prof: 2 queries paralelas (legado + array-contains) e merge.
+    // Sort em-memória pq merge perde ordem global do Firestore.
+    const { fetchAppointmentsForProfessional } = await import('@/lib/services/appointments-server');
+    const docs = await fetchAppointmentsForProfessional(buildBase, professionalId);
+    return docs
+      .map((d) => ({ ...(d.data() as Appointment), id: d.id }))
+      .filter((a) => a.status !== 'cancelado' && a.status !== 'concluido')
+      .sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime))
+      .slice(0, cap);
+  }
+
+  const snap = await buildBase().orderBy('date', 'asc').orderBy('startTime', 'asc').limit(cap).get();
   return snap.docs
     .map((d) => ({ ...(d.data() as Appointment), id: d.id }))
     .filter((a) => a.status !== 'cancelado' && a.status !== 'concluido');
