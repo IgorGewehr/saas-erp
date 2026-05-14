@@ -12,7 +12,7 @@ import {
   UserPlus, Briefcase, Tag, Hash, AlertTriangle, Heart, Shield, Zap, Brain,
   Sparkles, Filter, Crown, Settings2, GripVertical, Eye, EyeOff, ChevronUp, ChevronDown,
   Download, Upload, GitBranch, LayoutList, LayoutDashboard, Megaphone, Radio, SlidersHorizontal,
-  Check, Link as LinkIcon, CheckSquare,
+  Check, Link as LinkIcon, CheckSquare, Repeat,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -58,6 +58,7 @@ import {
 import RecipientListInput from './RecipientListInput';
 import BroadcastDetailDialog from './BroadcastDetailDialog';
 import BirthdayCampaignDialog from './BirthdayCampaignDialog';
+import CampaignTypeChooserDialog from './CampaignTypeChooserDialog';
 import {
   ModernDialog, ModernDialogActions, ModernCancelButton, ModernPrimaryButton,
   ModernSection, ModernPill, type ModernPillTone,
@@ -1395,6 +1396,10 @@ function CampaignsTab({ businessId }: { businessId: string }) {
   // (`birthdayCampaigns`) — não se misturam com broadcasts pontuais.
   const [birthdayCampaigns, setBirthdayCampaigns] = useState<BirthdayCampaign[]>([]);
   const [showNewBirthday, setShowNewBirthday] = useState(false);
+  // Chooser de tipo de campanha — substitui os 2 botões antigos por 1 CTA
+  // único "Nova Campanha" que abre este modal pra escolher entre Pontual e
+  // Recorrente. State independente dos 2 dialogs finais (showNew, showNewBirthday).
+  const [showCampaignChooser, setShowCampaignChooser] = useState(false);
   const [editingBirthday, setEditingBirthday] = useState<BirthdayCampaign | null>(null);
   const [formName, setFormName] = useState('');
   const [formChannel, setFormChannel] = useState<'whatsapp' | 'facebook' | 'instagram' | 'email'>('whatsapp');
@@ -2003,33 +2008,26 @@ function CampaignsTab({ businessId }: { businessId: string }) {
           <p className="text-xs text-gray-500 dark:text-gray-400">
             {broadcasts.length} {broadcasts.length !== 1 ? 'pontuais' : 'pontual'}
             {birthdayCampaigns.length > 0 && (
-              <> · {birthdayCampaigns.length} aniversário{birthdayCampaigns.length !== 1 ? '' : ''}</>
+              <> · {birthdayCampaigns.length} recorrente{birthdayCampaigns.length !== 1 ? 's' : ''}</>
             )}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          {/* Botão de campanha de aniversário — visualmente secundário (outline)
-              pra não competir com o CTA primário "Nova Campanha". O 🎂 deixa
-              claro que é a feature recorrente, não one-shot. */}
-          <button
-            onClick={() => { setEditingBirthday(null); setShowNewBirthday(true); }}
-            className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-semibold border-2 border-amber-400 text-amber-700 dark:text-amber-400 bg-amber-50/50 dark:bg-amber-500/5 hover:bg-amber-50 dark:hover:bg-amber-500/10 transition-colors"
-          >
-            <span className="text-base leading-none">🎂</span>
-            Nova de aniversariante
-          </button>
-          <button onClick={() => setShowNew(true)} className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-red-600 to-red-500 shadow-lg shadow-red-500/25">
-            <Plus size={16} />{t('crm.action.newCampaign', 'Nova Campanha')}
-          </button>
-        </div>
+        {/* CTA único — abre chooser pra escolher entre Pontual e Recorrente.
+            Substitui os 2 botões antigos (aniversariante / nova campanha). */}
+        <button onClick={() => setShowCampaignChooser(true)} className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-red-600 to-red-500 shadow-lg shadow-red-500/25">
+          <Plus size={16} />{t('crm.action.newCampaign', 'Nova Campanha')}
+        </button>
       </div>
 
-      {/* Seção de campanhas de aniversário — só aparece quando há ≥ 1.
-          Lista compacta: nome, status, antecedência, hora, stats acumuladas. */}
+      {/* Seção de campanhas recorrentes — só aparece quando há ≥ 1.
+          Lista compacta: nome, status, antecedência, hora, stats acumuladas.
+          Cobre hoje aniversários; futuramente também datas festivas fixas
+          (Natal, Dia das Mães) quando backend suportar. */}
       {birthdayCampaigns.length > 0 && (
         <div className="space-y-2">
-          <p className="text-[11px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider px-1">
-            🎂 Aniversariantes (recorrentes)
+          <p className="text-[11px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider px-1 flex items-center gap-1.5">
+            <Repeat className="w-3 h-3" />
+            Recorrentes
           </p>
           <div className="space-y-2">
             {birthdayCampaigns.map(bc => {
@@ -2174,6 +2172,16 @@ function CampaignsTab({ businessId }: { businessId: string }) {
           );
         })}</div>}
       <AnimatePresence>{openBroadcast && <BroadcastDetailDialog broadcast={openBroadcast} onClose={() => setOpenBroadcast(null)} onRetryCreated={() => setOpenBroadcast(null)} onDeleted={() => setOpenBroadcast(null)} />}</AnimatePresence>
+      {/* Chooser de tipo — abre quando user clica "Nova Campanha". Cada
+          opção fecha o chooser e abre o dialog específico (pontual ou
+          recorrente). Estados independentes pra que o ESC fechar 1 não
+          desfaça o outro. */}
+      <CampaignTypeChooserDialog
+        open={showCampaignChooser}
+        onClose={() => setShowCampaignChooser(false)}
+        onSelectPontual={() => { setShowCampaignChooser(false); setShowNew(true); }}
+        onSelectRecorrente={() => { setShowCampaignChooser(false); setEditingBirthday(null); setShowNewBirthday(true); }}
+      />
       {user && (
         <BirthdayCampaignDialog
           open={showNewBirthday}
