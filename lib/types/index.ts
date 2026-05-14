@@ -3094,8 +3094,25 @@ export interface BirthdayCampaign {
   name: string;                            // ex: "Promoção 10% no aniversário"
   enabled: boolean;                        // toggle pausa/ativa
 
+  // ── Tipo da recorrência ────────────────────────
+  /** Define como o disparo é agendado.
+   *   - 'birthday' (default; ausente em docs antigos): dispara baseado no
+   *     birthDate de CADA contato — cada cliente recebe no SEU aniversário.
+   *   - 'fixed_date': dispara em UMA data específica do calendário (MM-DD)
+   *     pra TODOS os contatos do filtro. Usado pra datas festivas (Natal,
+   *     Dia das Mães, Black Friday, etc.).
+   *  Campo opcional pra retrocompat — todos os docs criados antes deste
+   *  campo são tratados como 'birthday'. */
+  recurrenceType?: 'birthday' | 'fixed_date';
+  /** MM-DD da data fixa do calendário (ex: '12-25' pra Natal). Só usado
+   *  quando recurrenceType === 'fixed_date'. */
+  festiveDate?: string;
+
   // ── Quando dispara ─────────────────────────────
-  /** Dias ANTES do aniversário pra disparar. 0 = no dia, 7 = uma semana antes. */
+  /** Dias ANTES do evento pra disparar. 0 = no dia, 7 = uma semana antes.
+   *  Pra recurrenceType='birthday': dias antes do aniversário do contato.
+   *  Pra recurrenceType='fixed_date': dias antes da festiveDate.
+   *  Nome legado (`daysBeforeBirthday`) preservado pra retrocompat. */
   daysBeforeBirthday: number;
   /** Hora do envio (0-23) no fuso do business. PR-C respeita timezone. */
   sendAtHour: number;

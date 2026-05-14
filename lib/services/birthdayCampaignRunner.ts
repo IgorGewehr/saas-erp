@@ -129,32 +129,58 @@ function targetMmDdInTz(now: Date, tz: string, daysBefore: number): { mmDd: stri
 }
 
 /**
- * Filtra clients eligible pra uma campanha. Aplica em sequência:
- *   - Match no MM-DD do birthDate
- *   - filters.tipo
- *   - filters.status
- *   - filters.tags (precisa ter TODAS)
+ * Aplica filtros de tipo/status/tags/sectorId — comuns aos 2 tipos de
+ * recorrência (birthday e fixed_date). Extraído pra evitar duplicação
+ * entre as branches do findEligibleClients.
+ */
+function matchesCampaignFilters(c: Client, campaign: BirthdayCampaign): boolean {
+  if (c.mergedInto || (c as { deletedAt?: string }).deletedAt) return false;
+  const f = campaign.filters;
+  if (f?.tipo && f.tipo !== 'all' && c.tipo !== f.tipo) return false;
+  if (f?.status?.length && !f.status.includes(c.status)) return false;
+  if (f?.tags?.length) {
+    const cTags = (c.tags || []).map(t => t.toLowerCase());
+    const wanted = f.tags.map(t => t.toLowerCase());
+    if (!wanted.every(t => cTags.includes(t))) return false;
+  }
+  if (f?.sectorId && c.sectorId !== f.sectorId) return false;
+  return true;
+}
+
+/**
+ * Filtra clients eligible pra uma campanha. Branches por recurrenceType:
+ *
+ *  - 'birthday' (default): match MM-DD do birthDate de CADA contato contra
+ *    targetMmDd. Cada cliente é avaliado individualmente — só dispara pros
+ *    aniversariantes do dia.
+ *
+ *  - 'fixed_date': compara campaign.festiveDate (MM-DD da data festiva)
+ *    contra targetMmDd. Se bate, TODOS os clientes filtrados disparam (não
+ *    é por-contato — é dia X do calendário pra todo mundo). Se não bate, [].
+ *
+ * Filtros comuns (tipo/status/tags/sectorId) aplicados via matchesCampaignFilters.
+ * Docs antigos sem recurrenceType caem na branch 'birthday' (default).
  */
 function findEligibleClients(
   clients: Client[],
   campaign: BirthdayCampaign,
   targetMmDd: string,
 ): Client[] {
+  const type = campaign.recurrenceType ?? 'birthday';
+
+  if (type === 'fixed_date') {
+    // Dispara só se HOJE (após offset de daysBeforeBirthday) === festiveDate.
+    // Caso contrário, nenhum cliente é elegível — a campanha "passou" o slot
+    // ou ainda não chegou. Idempotência via logId já cobre re-runs no mesmo dia.
+    if (!campaign.festiveDate || campaign.festiveDate !== targetMmDd) return [];
+    return clients.filter(c => matchesCampaignFilters(c, campaign));
+  }
+
+  // type === 'birthday' (default)
   return clients.filter(c => {
     if (!c.birthDate || c.birthDate.length < 10) return false;
     if (c.birthDate.slice(5, 10) !== targetMmDd) return false;
-    if (c.mergedInto || (c as { deletedAt?: string }).deletedAt) return false;
-
-    const f = campaign.filters;
-    if (f?.tipo && f.tipo !== 'all' && c.tipo !== f.tipo) return false;
-    if (f?.status?.length && !f.status.includes(c.status)) return false;
-    if (f?.tags?.length) {
-      const cTags = (c.tags || []).map(t => t.toLowerCase());
-      const wanted = f.tags.map(t => t.toLowerCase());
-      if (!wanted.every(t => cTags.includes(t))) return false;
-    }
-    if (f?.sectorId && c.sectorId !== f.sectorId) return false;
-    return true;
+    return matchesCampaignFilters(c, campaign);
   });
 }
 
