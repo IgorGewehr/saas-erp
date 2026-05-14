@@ -6043,8 +6043,28 @@ export default function ConversasModule() {
     }
   }, [deleteConfirmConv, business?.id]);
 
-  const handleMarkUnread = useCallback(async (conv: Conversation) => {
+  // `isCurrentlyOpen` é passado pelo callsite (que sabe se a conversa está
+  // selecionada). Necessário porque `selectedConversation` é declarado depois
+  // neste arquivo — passar via param evita reorganizar o módulo inteiro e
+  // mantém o handler com deps mínimas (estável).
+  const handleMarkUnread = useCallback(async (conv: Conversation, isCurrentlyOpen: boolean) => {
     if (!business?.id) return;
+    // Fecha a conversa ANTES de marcar — sem isso o useEffect de
+    // auto-markAsRead detecta `unreadCount > 0` na conversa selecionada
+    // (após o snapshot voltar) e re-marca como lida imediatamente. Bug
+    // visível: "marca como não lida" piscava por <1s e revertia.
+    // Bonus: faz sentido semântica ("estou guardando pra depois").
+    if (isCurrentlyOpen) {
+      setSelectedConversation(null);
+      setShowMobileThread(false);
+    }
+    // Marca intent — defesa em profundidade contra race do setState com
+    // o snapshot do Firestore. Effect auto-mark pula IDs neste Set.
+    setIntentionallyUnreadIds(prev => {
+      const next = new Set(prev);
+      next.add(conv.id);
+      return next;
+    });
     try {
       await updateDoc(doc(db, 'conversations', conv.id), {
         unreadCount: Math.max(1, conv.unreadCount || 0) + 1,
@@ -6369,6 +6389,13 @@ export default function ConversasModule() {
   const [isSending, setIsSending] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showMobileThread, setShowMobileThread] = useState(false);
+  // IDs de conversas que o user marcou "não lida" intencionalmente nesta
+  // sessão. Suprime o auto-markAsRead enquanto o ID estiver aqui — defesa
+  // em profundidade contra race onde `setSelectedConversation(null)` ainda
+  // não propagou quando o snapshot do Firestore volta com unreadCount > 0.
+  // Limpo quando o user re-seleciona a conversa explicitamente (engaja
+  // = quer marcar lida de novo).
+  const [intentionallyUnreadIds, setIntentionallyUnreadIds] = useState<Set<string>>(new Set());
   const [showTemplateSelector, setShowTemplateSelector] = useState(false);
   const [templateList, setTemplateList] = useState<Array<{ name: string; language: string; category: string; preview: string; hasVariables: boolean }>>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
@@ -7570,13 +7597,19 @@ export default function ConversasModule() {
   //
   // Também re-roda quando a aba volta a ficar visível (user troca pra essa
   // aba e a conversa selecionada acumulou unread enquanto estava no fundo).
+  //
+  // Pula IDs em `intentionallyUnreadIds`: defesa em profundidade contra
+  // race do "Marcar como não lida" — sem este check, o updateDoc com
+  // unreadCount=1 voltava via snapshot e o effect re-marcava como lida.
   useEffect(() => {
     const id = selectedConversation?.id;
     if (!id) return;
+    if (intentionallyUnreadIds.has(id)) return;
 
     const tryMark = () => {
       const fresh = conversations.find(c => c.id === id);
       if (!fresh || (fresh.unreadCount ?? 0) === 0) return;
+      if (intentionallyUnreadIds.has(id)) return;
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
       void markAsRead(id);
     };
@@ -7586,7 +7619,7 @@ export default function ConversasModule() {
     if (typeof document === 'undefined') return;
     document.addEventListener('visibilitychange', tryMark);
     return () => document.removeEventListener('visibilitychange', tryMark);
-  }, [conversations, selectedConversation?.id, markAsRead]);
+  }, [conversations, selectedConversation?.id, intentionallyUnreadIds, markAsRead]);
 
   // ── Send read receipt to platform (Task 3) ─────────────────────────────────
 
@@ -7613,6 +7646,14 @@ export default function ConversasModule() {
       setSelectedConversation(conv);
       setShowMobileThread(true);
       setAttachment(null);
+      // Re-seleção explícita = "vou ler agora" — limpa o flag de intencional
+      // pra que o auto-markAsRead possa voltar a funcionar normalmente.
+      setIntentionallyUnreadIds(prev => {
+        if (!prev.has(conv.id)) return prev;
+        const next = new Set(prev);
+        next.delete(conv.id);
+        return next;
+      });
       if (conv.unreadCount > 0) {
         markAsRead(conv.id);
         // Read receipt is sent in the messages useEffect once the new conversation's
@@ -9159,7 +9200,7 @@ export default function ConversasModule() {
                       : undefined
                   }
                   onDeleteConversation={() => handleDeleteConversation(selectedConversation)}
-                  onMarkUnread={() => handleMarkUnread(selectedConversation)}
+                  onMarkUnread={() => handleMarkUnread(selectedConversation, true)}
                   onSnooze={(untilIso) => handleSnooze(selectedConversation, untilIso)}
                   onUnsnooze={() => handleUnsnooze(selectedConversation)}
                   onTogglePrivate={handleTogglePrivate}
