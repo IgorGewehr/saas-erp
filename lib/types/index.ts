@@ -801,8 +801,23 @@ export interface Appointment {
   clientPhone?: string;
   serviceId?: string;
   serviceName: string;
+  /** UID do profissional principal (legado: 1 profissional por appt).
+   *  Preservado pra retrocompat: APIs externas e queries server-side antigas
+   *  ainda leem este campo. Quando há múltiplos, contém o primeiro do array
+   *  (o "responsável principal"). Pra ler corretamente, use o helper
+   *  `getAppointmentProfessionalIds()` em lib/utils/appointment.ts. */
   professionalId?: string;
+  /** Nome denormalizado do profissional principal (mesma regra de
+   *  professionalId — primeiro do array de professionalNames). */
   professionalName?: string;
+  /** UIDs de TODOS os profissionais atribuídos (1+). Lista canônica
+   *  pra cálculos modernos (conflito de agenda, notificações, filtros).
+   *  Quando vazio/ausente, falls back pra [professionalId] via helper.
+   *  Docs criados antes deste campo não têm — helper trata. */
+  professionalIds?: string[];
+  /** Nomes denormalizados na mesma ordem de professionalIds. Display
+   *  rápido sem precisar fazer lookup em `members` no client. */
+  professionalNames?: string[];
   date: string; // YYYY-MM-DD
   startTime: string; // HH:mm
   endTime: string; // HH:mm
