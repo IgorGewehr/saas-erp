@@ -15,7 +15,7 @@ import {
   TextField, Select, MenuItem, FormControl, InputLabel,
   FormControlLabel, Switch, Slider,
 } from '@mui/material';
-import { addDoc, updateDoc, deleteDoc, doc, collection } from 'firebase/firestore';
+import { addDoc, updateDoc, deleteDoc, doc, collection, deleteField } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { toast } from 'react-toastify';
 import { Cake, Clock, Send, Filter, ShieldCheck, Trash2, AlertTriangle, Calendar, Repeat } from 'lucide-react';
@@ -345,48 +345,75 @@ export default function BirthdayCampaignDialog({
       if (filterStatus.length) filtersClean.status = filterStatus;
       if (filterTags.length) filtersClean.tags = filterTags;
 
-      const payload: Partial<BirthdayCampaign> = {
+      // Campos do payload + limpeza explícita via deleteField() quando muda
+      // de tipo. Sem isso, docs editados de fixed_date pra birthday ficavam
+      // com festiveDate/festivePreset órfãos no Firestore (não causava bug
+      // funcional — runner ignora — mas poluía o DB).
+      // updateDoc aceita FieldValue.delete() em qualquer campo; tipo Partial
+      // não permite, então uso cast pontual via Record.
+      const payload: Record<string, unknown> = {
         businessId,
         name: name.trim(),
         enabled,
-        // recurrenceType sempre persiste em docs criados/atualizados via dialog,
-        // mesmo quando 'birthday' — assim ao editar de fixed_date pra birthday,
-        // o pre-fill da próxima abertura reflete a escolha (sem precisar deletar
-        // campos no Firestore). festiveDate/festivePreset só persistem em
-        // fixed_date; resíduos em birthday são ignorados pelo runner.
-        // (Cleanup full via FieldValue.delete fica pra commit dedicado.)
+        // recurrenceType sempre persiste — pre-fill na próxima abertura
+        // reflete a escolha sem ambiguidade.
         recurrenceType,
-        ...(recurrenceType === 'fixed_date'
-          ? festivePreset
-            ? { festivePreset, festiveDate: '' }
-            : { festiveDate, festivePreset: '' }
-          : {}),
         daysBeforeBirthday: daysBefore,
         sendAtHour,
         channel: 'whatsapp',
         viaBaileys,
         ...(connectionId ? { channelConnectionId: connectionId } : {}),
-        ...(viaBaileys
-          ? { messageContent: messageContent.trim() }
-          : {
-              templateName: template?.name,
-              templateLanguage: template?.language,
-              templateParams: template?.params,
-              templateBody: template?.preview,
-            }),
-        filters: filtersClean,
-        consentBasis,
-        consentAcknowledgedAt: now,
-        consentAcknowledgedBy: user.uid,
-        updatedAt: now,
       };
+
+      // Lógica de festivePreset/festiveDate por estado atual:
+      //  - fixed_date + preset móvel: persiste preset, REMOVE festiveDate
+      //  - fixed_date + MM-DD fixo:   persiste festiveDate, REMOVE festivePreset
+      //  - birthday:                  REMOVE ambos (limpeza completa)
+      if (recurrenceType === 'fixed_date') {
+        if (festivePreset) {
+          payload.festivePreset = festivePreset;
+          payload.festiveDate = deleteField();
+        } else {
+          payload.festiveDate = festiveDate;
+          payload.festivePreset = deleteField();
+        }
+      } else {
+        payload.festivePreset = deleteField();
+        payload.festiveDate = deleteField();
+      }
+
+      // Conteúdo da mensagem — branch por viaBaileys.
+      if (viaBaileys) {
+        payload.messageContent = messageContent.trim();
+      } else {
+        payload.templateName = template?.name;
+        payload.templateLanguage = template?.language;
+        payload.templateParams = template?.params;
+        payload.templateBody = template?.preview;
+      }
+
+      payload.filters = filtersClean;
+      payload.consentBasis = consentBasis;
+      payload.consentAcknowledgedAt = now;
+      payload.consentAcknowledgedBy = user.uid;
+      payload.updatedAt = now;
 
       if (editing) {
         await updateDoc(doc(db, 'birthdayCampaigns', editing.id), payload);
         toast.success('Campanha atualizada');
       } else {
+        // No create, deleteField() não faz sentido (não há campo a deletar)
+        // — substitui esses por undefined (que addDoc também ignora). Já
+        // que docs novos partem sem os campos, o resultado é o mesmo.
+        const createPayload = { ...payload };
+        if (createPayload.festivePreset && typeof createPayload.festivePreset !== 'string') {
+          delete createPayload.festivePreset;
+        }
+        if (createPayload.festiveDate && typeof createPayload.festiveDate !== 'string') {
+          delete createPayload.festiveDate;
+        }
         await addDoc(collection(db, 'birthdayCampaigns'), {
-          ...payload,
+          ...createPayload,
           stats: { totalSent: 0, totalDelivered: 0, totalRead: 0, totalFailed: 0 },
           createdBy: user.uid,
           createdByName: user.name,
