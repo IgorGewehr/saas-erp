@@ -3105,8 +3105,15 @@ export interface BirthdayCampaign {
    *  campo são tratados como 'birthday'. */
   recurrenceType?: 'birthday' | 'fixed_date';
   /** MM-DD da data fixa do calendário (ex: '12-25' pra Natal). Só usado
-   *  quando recurrenceType === 'fixed_date'. */
+   *  quando recurrenceType === 'fixed_date' E festivePreset NÃO está setado. */
   festiveDate?: string;
+  /** Chave de preset de data MÓVEL (ex: 'mothers_day', 'easter', 'carnaval').
+   *  Quando setado, sobrepõe `festiveDate` — o runner resolve a data correta
+   *  pro ano da execução via lib/utils/festive-dates. Necessário porque
+   *  datas como Páscoa/Carnaval/Dia das Mães variam por ano e exigiriam
+   *  ajuste manual MM-DD todo ano sem isso. Só usado quando recurrenceType
+   *  === 'fixed_date'. Lista completa em MOVABLE_PRESETS no util. */
+  festivePreset?: string;
 
   // ── Quando dispara ─────────────────────────────
   /** Dias ANTES do evento pra disparar. 0 = no dia, 7 = uma semana antes.

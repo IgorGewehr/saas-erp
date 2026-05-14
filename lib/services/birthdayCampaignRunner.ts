@@ -161,18 +161,38 @@ function matchesCampaignFilters(c: Client, campaign: BirthdayCampaign): boolean 
  * Filtros comuns (tipo/status/tags/sectorId) aplicados via matchesCampaignFilters.
  * Docs antigos sem recurrenceType caem na branch 'birthday' (default).
  */
-function findEligibleClients(
+async function findEligibleClients(
   clients: Client[],
   campaign: BirthdayCampaign,
   targetMmDd: string,
-): Client[] {
+): Promise<Client[]> {
   const type = campaign.recurrenceType ?? 'birthday';
 
   if (type === 'fixed_date') {
-    // Dispara só se HOJE (após offset de daysBeforeBirthday) === festiveDate.
-    // Caso contrário, nenhum cliente é elegível — a campanha "passou" o slot
-    // ou ainda não chegou. Idempotência via logId já cobre re-runs no mesmo dia.
-    if (!campaign.festiveDate || campaign.festiveDate !== targetMmDd) return [];
+    // Dispara só se HOJE (após offset de daysBeforeBirthday) === data resolvida.
+    //
+    // Data resolvida:
+    //  - Se festivePreset setado (ex: 'mothers_day', 'easter'): calcula via
+    //    festive-dates util pro ANO do disparo (targetMmDd já carrega o mês/dia
+    //    do alvo, então usamos o ano corrente do servidor).
+    //  - Senão, usa festiveDate (MM-DD fixo).
+    //
+    // Sem isso, datas móveis (Páscoa, Carnaval, Mães…) exigiriam ajuste manual
+    // MM-DD todo ano — operador esqueceria e a campanha falharia silenciosa.
+    let expectedMmDd: string | null = null;
+    if (campaign.festivePreset) {
+      // Importação lazy pra evitar custo no import-time de quem não usa preset.
+      // Util é puro, sem side effects.
+      const { resolvePresetMmDd } = await import('@/lib/utils/festive-dates');
+      const currentYear = new Date().getFullYear();
+      expectedMmDd = resolvePresetMmDd(
+        campaign.festivePreset as Parameters<typeof resolvePresetMmDd>[0],
+        currentYear,
+      );
+    } else {
+      expectedMmDd = campaign.festiveDate ?? null;
+    }
+    if (!expectedMmDd || expectedMmDd !== targetMmDd) return [];
     return clients.filter(c => matchesCampaignFilters(c, campaign));
   }
 
@@ -423,7 +443,7 @@ async function executeCampaign(
   };
 
   const { mmDd, year } = targetMmDdInTz(now, tz, campaign.daysBeforeBirthday);
-  const matches = findEligibleClients(clients, campaign, mmDd);
+  const matches = await findEligibleClients(clients, campaign, mmDd);
   result.matched = matches.length;
 
   if (matches.length === 0) {
