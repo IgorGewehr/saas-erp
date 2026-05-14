@@ -18,6 +18,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getAuth } from 'firebase/auth';
 import { Loader2, AlertTriangle, Check, Sparkles, Type as TypeIcon, User as UserIcon, Phone, Mail, Database } from 'lucide-react';
+import { FormControl, InputLabel, Select, MenuItem, Box } from '@mui/material';
 import { cn } from '@/lib/utils';
 import type { BroadcastRecipient, BroadcastTemplateParam } from '@/lib/types';
 
@@ -189,8 +190,7 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [variableCount, selected]);
 
-  const handleSelectTemplate = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const v = e.target.value;
+  const handleSelectTemplateValue = (v: string) => {
     if (!v) { onChange(null); return; }
     const tpl = templates.find(t => `${t.name}__${t.language}` === v);
     if (!tpl) return;
@@ -224,34 +224,65 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
 
   return (
     <div className={cn('space-y-2.5', className)}>
-      {/* Dropdown de template */}
+      {/* Dropdown de template — MUI Select pra casar com os outros campos
+          do form (Tipo, Vincular oferta). Native <select> ficava bizarramente
+          pequeno comparado aos vizinhos. */}
       <div>
-        <label htmlFor="broadcast-template-select" className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 block">Template aprovado</label>
         {loading ? (
-          <div className="flex items-center gap-2 text-xs text-gray-400 py-2.5 px-3 bg-gray-50 dark:bg-white/[0.04] rounded-lg border border-gray-200 dark:border-gray-700">
-            <Loader2 className="w-3 h-3 animate-spin" /> Carregando templates da WABA…
-          </div>
+          <FormControl fullWidth size="small" disabled>
+            <InputLabel shrink>Template aprovado</InputLabel>
+            <Select value="" label="Template aprovado" displayEmpty
+              renderValue={() => (
+                <span className="inline-flex items-center gap-2 text-gray-400">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" /> Carregando templates da WABA…
+                </span>
+              )}
+            >
+              <MenuItem value="" disabled>Carregando…</MenuItem>
+            </Select>
+          </FormControl>
         ) : error ? (
-          <div className="px-3 py-2 rounded-lg bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20">
-            <p className="text-[11px] text-red-600 dark:text-red-400">
-              <AlertTriangle className="w-3 h-3 inline mr-1 -mt-0.5" />
-              {error}
-            </p>
+          <div>
+            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">Template aprovado</p>
+            <div className="px-3 py-2 rounded-lg bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20">
+              <p className="text-[11px] text-red-600 dark:text-red-400">
+                <AlertTriangle className="w-3 h-3 inline mr-1 -mt-0.5" />
+                {error}
+              </p>
+            </div>
           </div>
         ) : (
-          <select
-            id="broadcast-template-select"
-            value={value ? `${value.name}__${value.language}` : ''}
-            onChange={handleSelectTemplate}
-            className={inputCls}
-          >
-            <option value="">Selecione um template…</option>
-            {templates.map(t => (
-              <option key={`${t.name}__${t.language}`} value={`${t.name}__${t.language}`}>
-                {t.name} — {t.category} ({t.language})
-              </option>
-            ))}
-          </select>
+          <FormControl fullWidth size="small">
+            <InputLabel id="broadcast-template-select-label" shrink>Template aprovado</InputLabel>
+            <Select
+              labelId="broadcast-template-select-label"
+              label="Template aprovado"
+              value={value ? `${value.name}__${value.language}` : ''}
+              onChange={(e) => handleSelectTemplateValue(e.target.value as string)}
+              displayEmpty
+              renderValue={(sel) => {
+                if (!sel) return <span className="text-gray-400">Selecione um template…</span>;
+                const tpl = templates.find(t => `${t.name}__${t.language}` === sel);
+                if (!tpl) return sel as string;
+                return (
+                  <span className="inline-flex items-center gap-2">
+                    <span className="font-medium">{tpl.name}</span>
+                    <span className="text-xs text-gray-400">— {tpl.category} ({tpl.language})</span>
+                  </span>
+                );
+              }}
+            >
+              <MenuItem value="" disabled>Selecione um template…</MenuItem>
+              {templates.map(t => (
+                <MenuItem key={`${t.name}__${t.language}`} value={`${t.name}__${t.language}`}>
+                  <Box className="flex items-center justify-between w-full gap-3 min-w-0">
+                    <span className="font-medium text-sm truncate">{t.name}</span>
+                    <span className="text-xs text-gray-400 flex-shrink-0">{t.category} • {t.language}</span>
+                  </Box>
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
         )}
       </div>
 
